@@ -128,8 +128,9 @@ export class Market {
     return (await this.catalogAll()).find((e) => e.anchor.id === id) ?? null;
   }
 
+  /** Every known entry by id — includes test-visibility anchors and local drafts, so lineage (parents / royalties / conflicts) resolves for hidden patches too. Callers exposing it publicly must filter. */
   async entryMap(): Promise<Map<string, CatalogEntry>> {
-    return new Map((await this.catalog()).map((e) => [e.anchor.id, e]));
+    return new Map((await this.catalogAll()).map((e) => [e.anchor.id, e]));
   }
 
   // ------------------------------------------------------------------ drafts / publish

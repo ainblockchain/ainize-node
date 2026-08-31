@@ -12,7 +12,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, sha256Hex, verifyPassword, hashPassword, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
-  type LedgerRecord, type PatchAnchor,
+  type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
 import type { Market } from './market.js';
@@ -90,7 +90,7 @@ export function buildApi(deps: ApiDeps): Router {
     node: await (async () => { await market.catalog(); return market.selfInfo(); })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
-    counts: (() => { const c = market.catalogSync(); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
+    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
   })));
 
   router.get('/api/catalog', wrap(async (req) => {
@@ -100,8 +100,10 @@ export function buildApi(deps: ApiDeps): Router {
       author: z.string().optional(), q: z.string().optional(), limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
       include_drafts: z.coerce.boolean().default(false),
     }).parse(req.query);
+    // Private drafts never leak to anonymous callers — the facet lists (models/schemas) are derived from the same filtered set as the items.
     let items = await market.catalog();
     if (!q.include_drafts || !isOperator(req)) items = items.filter((e) => e.status !== 'DRAFT');
+    const facets = items;
     if (q.status) items = items.filter((e) => q.status!.split(',').includes(e.status));
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
     if (q.schema) items = items.filter((e) => e.anchor.benchmark.schema === q.schema);
@@ -117,16 +119,17 @@ export function buildApi(deps: ApiDeps): Router {
     items = [...items].sort(sorters[q.sort]);
     const total = items.length;
     const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({ ...e, attestations: e.attestations.map((a) => ({ ...a, sig: undefined })) }));
-    return { total, items: page, models: [...new Set((await market.catalog()).map((e) => e.anchor.model.id_M))], schemas: [...new Set((await market.catalog()).map((e) => e.anchor.benchmark.schema))] };
+    return { total, items: page, models: [...new Set(facets.map((e) => e.anchor.model.id_M))], schemas: [...new Set(facets.map((e) => e.anchor.benchmark.schema))] };
   }));
 
   router.get('/api/patches/:id', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
     if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
     const map = await market.entryMap();
-    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(Boolean).map((x) => ({ id: x!.anchor.id, name: x!.anchor.name, author: x!.anchor.author, status: x!.status })),
-      children: e.children.map((c) => map.get(c)).filter(Boolean).map((x) => ({ id: x!.anchor.id, name: x!.anchor.name, author: x!.anchor.author, status: x!.status })) };
-    const conflicts = await market.conflicts(e.anchor.id).catch(() => []);
+    const visible = (x: CatalogEntry | undefined): x is CatalogEntry => !!x && (x.status !== 'DRAFT' || isOperator(req));
+    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })),
+      children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })) };
+    const conflicts = (await market.conflicts(e.anchor.id).catch(() => [])).filter((c) => c.status !== 'DRAFT' || isOperator(req));
     const branches = (await market.branches()).filter((b) => b.patch_ids.includes(e.anchor.id)).map((b) => ({ name: b.name, context: b.context }));
     return {
       ...e, lineage, conflicts, branches,
@@ -230,7 +233,14 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => market.buy(req.params.id as string, { apply: !!req.body?.apply })));
   router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => ({ result: await market.applyPatch(req.params.id as string, 'manual') })));
   router.post('/api/patches/:id/remove', requireOperator, wrap(async (req) => ({ result: await market.removePatch(req.params.id as string) })));
-  router.get('/api/patches/:id/conflicts', wrap(async (req) => ({ conflicts: await market.conflicts(req.params.id as string) })));
+  router.get('/api/patches/:id/conflicts', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    // Overlap partners that are private drafts (or hidden test anchors) are only shown to the operator.
+    const map = await market.entryMap();
+    const conflicts = (await market.conflicts(e.anchor.id)).filter((c) => isOperator(req) || (c.status !== 'DRAFT' && map.get(c.patch_id)?.anchor.visibility !== 'test'));
+    return { conflicts };
+  }));
 
   router.post('/api/branches', requireOperator, wrap(async (req) => {
     const b = z.object({ name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]) }).parse(req.body);
