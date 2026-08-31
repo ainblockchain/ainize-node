@@ -19,6 +19,8 @@ stop_matching() {
   done
 }
 stop_matching; sleep 2; stop_matching
+# wait until the demo ports are released (up to 30 s)
+for i in $(seq 1 30); do if ss -ltn 2>/dev/null | grep -qE ":(3402|3403|3404)\b"; then sleep 1; else break; fi; done
 if [[ "${1:-}" == "--fresh" ]]; then rm -rf "$HOME_DIR"; fi
 mkdir -p "$HOME_DIR"
 setsid nohup node "$ROOT/scripts/cluster.mjs" > "$HOME_DIR/cluster.log" 2>&1 < /dev/null &

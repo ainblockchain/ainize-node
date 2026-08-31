@@ -66,18 +66,29 @@ if (!existsSync(seedMarker)) {
   writeFileSync(seedMarker, new Date().toISOString());
 }
 
-const children = nodes.map(({ home, cfg }) => {
+const children = [];
+function spawnNode({ home, cfg }, attempt = 0) {
   const child = spawn(process.execPath, [join(root, 'packages/node/dist/bin.js')], {
     env: { ...process.env, NGRAM_HOME: home, NGRAM_PORT: String(cfg.port) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const tag = `[${cfg.name}]`;
+  const startedAt = Date.now();
   child.stdout.on('data', (d) => process.stdout.write(String(d).split('\n').filter(Boolean).map((l) => `${tag} ${l}`).join('\n') + '\n'));
   child.stderr.on('data', (d) => process.stderr.write(String(d).split('\n').filter(Boolean).map((l) => `${tag} ${l}`).join('\n') + '\n'));
+  child.on('exit', (code) => {
+    // A node that dies within 15 s of starting (typically EADDRINUSE while the previous instance is still shutting down) is respawned.
+    if (!stopping && Date.now() - startedAt < 15_000 && attempt < 6) {
+      console.log(`[cluster] ${cfg.name} exited early (code ${code}) — retrying in 3 s (attempt ${attempt + 1}/6)`);
+      setTimeout(() => { const i = children.indexOf(child); const next = spawnNode({ home, cfg }, attempt + 1); if (i >= 0) children[i] = next; writePids(); }, 3000);
+    }
+  });
   return child;
-});
-
-writeFileSync(join(base, 'nodes.pid'), children.map((c) => c.pid).join('\n') + '\n');
+}
+let stopping = false;
+const writePids = () => writeFileSync(join(base, 'nodes.pid'), children.map((c) => c.pid).filter(Boolean).join('\n') + '\n');
+for (const n of nodes) children.push(spawnNode(n));
+writePids();
 console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger})\n`);
-const stop = () => { for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
+const stop = () => { stopping = true; for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
