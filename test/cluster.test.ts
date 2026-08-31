@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, type NodeConfig } from '@ngram/core';
 import { startNode, type RunningNode } from '../src/server.js';
-import { seedDemo } from '../src/seed.js';
+import { seedDemo, synthPatch } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-test-'));
 const mk = (name: string, port: number, peers: string[], roles: NodeConfig['roles']): NodeConfig => {
@@ -125,4 +125,69 @@ test('public API surface', async () => {
   assert.equal(me.error, 'operator login required');
   const graph = await (await fetch(`${A.url}/api/ledger/graph`)).json() as { edges: { type: string }[] };
   assert.ok(graph.edges.some((e) => e.type === 'extends'));
+});
+
+test('visibility: hidden test anchors and private drafts never surface next to public knowledge; draft errors are 400/409; `forget` drops a body', async () => {
+  const dir = join(tmp, 'vis');
+  const base = (await A.market.entry('law-kr-2026'))!;
+  const basePath = A.market.blobs.get(base.anchor.patch_sha256)!.path;
+  // both bodies share half their addresses with law-kr-2026 → they overlap it; a different schema keeps them out of the supersede logic
+  const hiddenFile = synthPatch(dir, 'vis-hidden-child', 4242, 200, basePath);
+  const draftFile = synthPatch(dir, 'vis-private-draft', 4343, 200, basePath);
+  const bench = { schema: 'vis-test', queries: 10, format: ['template'] };
+  const hidden = await A.market.createDraft({ id: 'vis-hidden-child', name: 'hidden child', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: hiddenFile, keepInPlace: true, parents: ['law-kr-2026'], visibility: 'test' });
+  await A.market.announce('vis-hidden-child');
+  await A.market.createDraft({ id: 'vis-private-draft', name: 'private draft', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: draftFile, keepInPlace: true, parents: ['law-kr-2026'] });
+  assert.ok((await A.market.entryMap()).get('law-kr-2026')!.children.includes('vis-hidden-child'), 'internally the lineage resolves (royalties)');
+  assert.ok((await A.market.conflicts('law-kr-2026')).some((c) => c.patch_id === 'vis-hidden-child'), 'internally the overlap is known (supersede checks)');
+
+  type Detail = { lineage: { parents: { id: string }[]; children: { id: string }[] }; conflicts: { patch_id: string }[] };
+  const anon = await (await fetch(`${A.url}/api/patches/law-kr-2026`)).json() as Detail;
+  assert.deepEqual(anon.lineage.children.map((c) => c.id).filter((id) => id.startsWith('vis-')), [], 'visitor: no hidden child / draft under "derived from this"');
+  assert.ok(!anon.conflicts.some((c) => c.patch_id.startsWith('vis-')), 'visitor: overlap check lists public knowledge only');
+  const conf = await (await fetch(`${A.url}/api/patches/law-kr-2026/conflicts`)).json() as { conflicts: { patch_id: string }[] };
+  assert.ok(!conf.conflicts.some((c) => c.patch_id.startsWith('vis-')));
+
+  const setup = await (await fetch(`${A.url}/api/auth/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'test-pass-a' }) })).json() as { token: string };
+  const op = { authorization: `Bearer ${setup.token}` };
+  const mine = await (await fetch(`${A.url}/api/patches/law-kr-2026`, { headers: op })).json() as Detail;
+  assert.ok(mine.lineage.children.some((c) => c.id === 'vis-private-draft'), 'operator sees their own draft');
+  assert.ok(!mine.lineage.children.some((c) => c.id === 'vis-hidden-child'), 'hidden test anchors stay hidden even for the operator (same rule as the catalog)');
+  assert.ok(mine.conflicts.some((c) => c.patch_id === 'vis-private-draft') && !mine.conflicts.some((c) => c.patch_id === 'vis-hidden-child'));
+  const own = await (await fetch(`${A.url}/api/patches/vis-hidden-child`)).json() as Detail;
+  assert.equal(own.lineage.parents[0]?.id, 'law-kr-2026', 'a hidden anchor still resolves by id and shows its public origin');
+
+  // visitors count knowledge files of public knowledge only
+  const info = await (await fetch(`${A.url}/api/info`)).json() as { node: { blobs: string[] } };
+  assert.ok(A.market.blobs.has(hidden.patch_sha256));
+  assert.ok(!info.node.blobs.includes(hidden.patch_sha256) && info.node.blobs.includes(base.anchor.patch_sha256));
+  const nodes = await (await fetch(`${A.url}/api/nodes`)).json() as { nodes: { address: string; blobs: string[] }[] };
+  assert.ok(!nodes.nodes.find((n) => n.address === A.cfg.identity.address)!.blobs.includes(hidden.patch_sha256));
+  const p2p = await (await fetch(`${A.url}/p2p/info`)).json() as { blobs: string[] };
+  assert.ok(p2p.blobs.includes(hidden.patch_sha256), 'peers (verifiers) still learn where every body is held');
+
+  // draft creation errors carry a real status
+  const post = (body: Record<string, unknown>) => fetch(`${A.url}/api/patches`, { method: 'POST', headers: { ...op, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const dup = await post({ id: 'law-kr-2026', name: 'dup', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile });
+  assert.equal(dup.status, 409);
+  assert.deepEqual(await dup.json(), { error: 'patch id already exists: law-kr-2026' });
+  const bad = await post({ id: '!!', name: 'bad id', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile });
+  assert.equal(bad.status, 400);
+  assert.match(((await bad.json()) as { error: string }).error, /^invalid patch id/);
+  const parent = await post({ id: 'vis-orphan', name: 'orphan', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile, parents: 'no-such-parent' });
+  assert.equal(parent.status, 400);
+  assert.equal((await fetch(`${A.url}/api/patches/nope`, { method: 'DELETE', headers: op })).status, 404);
+
+  // forget: the body leaves this node, the record stays; drafts / unknown ids are refused
+  const forget = await fetch(`${A.url}/api/patches/vis-hidden-child/forget`, { method: 'POST', headers: op });
+  assert.equal(forget.status, 200);
+  const fr = await forget.json() as { sha256: string; deleted_file: boolean; also_affects: string[] };
+  assert.equal(fr.sha256, hidden.patch_sha256);
+  assert.equal(fr.deleted_file, false, 'in-place files are deregistered, not deleted');
+  assert.ok(!A.market.blobs.has(hidden.patch_sha256));
+  assert.notEqual((await A.market.entry('vis-hidden-child'))?.status, undefined, 'the ledger record is untouched');
+  assert.equal((await fetch(`${A.url}/api/patches/vis-hidden-child/forget`, { method: 'POST', headers: op })).status, 404);
+  assert.equal((await fetch(`${A.url}/api/patches/vis-private-draft/forget`, { method: 'POST', headers: op })).status, 409);
+  assert.equal((await fetch(`${A.url}/api/patches/vis-hidden-child/forget`, { method: 'POST' })).status, 401);
+  A.market.deleteDraft('vis-private-draft');
 });

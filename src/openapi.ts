@@ -77,6 +77,7 @@ export function buildOpenApi(base: string, version: string) {
       '/api/patches/{id}/buy': { post: { tags: ['Operator'], summary: 'Buy as this node (x402 handled automatically)', security: opBearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { apply: { type: 'boolean', description: 'load into the model right after purchase' } } } } } }, responses: ok('purchase steps') } },
       '/api/patches/{id}/apply': { post: { tags: ['Operator'], summary: 'Load into the model', security: opBearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: ok('result') } },
       '/api/patches/{id}/remove': { post: { tags: ['Operator'], summary: 'Unload from the model', security: opBearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: ok('result') } },
+      '/api/patches/{id}/forget': { post: { tags: ['Operator'], summary: 'Stop serving the knowledge file from this node (deletes the local body; the ledger is untouched)', security: opBearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: ok('sha256, deleted_file, also_affects') } },
       '/api/ledger': { get: { tags: ['Public record'], summary: 'Ledger records', parameters: [{ name: 'kind', in: 'query', schema: { type: 'string', enum: ['anchor', 'attest', 'settle', 'challenge', 'branch', 'node', 'supersede', 'subscribe'] } }, { name: 'limit', in: 'query', schema: { type: 'integer' } }], responses: ok('records') } },
       '/api/ledger/verify': { get: { tags: ['Public record'], summary: 'Ledger integrity check', responses: ok('result') } },
       '/api/ledger/graph': { get: { tags: ['Public record'], summary: 'Sources → derivatives graph (+ AIN knowledge graph)', responses: ok('graph') } },
@@ -136,6 +137,7 @@ export const CLI_REFERENCE = {
       { cmd: 'ainize chat <id> ["question"]', desc: 'live test: answer before vs after the knowledge is loaded (interactive without a question)' },
       { cmd: 'ainize use <id>', desc: '= patch buy <id> --apply: pay automatically → download → load into the model' },
       { cmd: 'ainize patch buy <id> [--apply] | apply <id> | remove <id>', desc: 'buy / load / unload' },
+      { cmd: 'ainize patch forget <id>', desc: 'stop serving the knowledge file from this node (delete the local body)' },
     ] },
     { name: 'Publishing knowledge', commands: [
       { cmd: 'ainize publish <file.npz> --name … --model … --benchmark <bench.json> [--price --parents a,b --branch --id --test]', desc: '= patch publish --announce: register and announce at once (the network verifies)' },
