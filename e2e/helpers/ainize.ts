@@ -4,10 +4,11 @@
  *  - operator login (sets the password on first use, idempotent)
  *  - small API client + CLI runner + runtime/lock waiters
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { createServer, type AddressInfo } from 'node:net';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { basename } from 'node:path';
+import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { APIRequestContext, Page } from '@playwright/test';
@@ -170,40 +171,151 @@ export function freePort(): Promise<number> {
   });
 }
 
-export interface ThrowawayNode { url: string; home: string; port: number; name: string; pid: number | null; stop: () => Promise<void> }
+export interface ThrowawayOpts {
+  name?: string;
+  roles?: string;
+  /** 'local' (default): fully isolated. 'ain': reads the demo chain (catalog, attestations) — the node never writes unless it attests or buys. */
+  ledger?: 'local' | 'ain';
+  /** Serving API URL (default: a closed port, so the node never touches the shared vLLM). */
+  runtimeApi?: string;
+  /** Extra `ainize config set <key> <value>` pairs applied before the first start (e.g. `{ 'verifier.auto': 'false' }`). */
+  set?: Record<string, string>;
+  /** Hard lifetime cap in seconds: a detached watchdog kills the process afterwards even if the test crashed (default 600). */
+  maxLifeS?: number;
+}
+
+export interface ThrowawayNode {
+  url: string; home: string; port: number; name: string; pid: number | null;
+  /** SIGTERM the node process (the home stays) — e.g. to simulate an operator restart. */
+  kill: () => Promise<void>;
+  /** `ainize start -d` again and wait for /api/info. */
+  start: () => Promise<void>;
+  /** Copy `npz` into the node home and register it as a draft (`--no-announce`): the body becomes locally held (no ledger write). Returns the operator token. */
+  seed: (npz: string, id: string, benchmark?: { schema: string; queries?: number; samples: { prompt: string; expect: string }[] }) => Promise<string>;
+  /** Kill the node and remove its home. */
+  stop: () => Promise<void>;
+}
 
 /**
- * Start a private, single-use node from the same binary + web UI as the cluster: local ledger, no peers, no serving API
- * (runtime.api points at a closed port so it never touches the shared vLLM). Nothing it does can reach the demo cluster
- * or the AIN chain. `stop()` kills it and removes its home.
+ * Start a private, single-use node from the same binary + web UI as the cluster: local ledger by default, no peers, no
+ * serving API (runtime.api points at a closed port so it never touches the shared vLLM). Nothing it does can reach the
+ * demo cluster or the AIN chain unless `ledger: 'ain'` is requested — and even then it only reads (no peers → no hello,
+ * no attestations unless it has a runtime, no purchases). A watchdog kills it after `maxLifeS`; `stop()` kills it and
+ * removes its home.
  */
-export async function startThrowawayNode(tag: string, opts: { name?: string; roles?: string } = {}): Promise<ThrowawayNode> {
+export async function startThrowawayNode(tag: string, opts: ThrowawayOpts = {}): Promise<ThrowawayNode> {
   const name = opts.name ?? `node-${tag}`;
   const home = join(SCRATCH, `ainize-${tag}-${Date.now().toString(36)}`);
   mkdirSync(home, { recursive: true });
   const port = await freePort();
   const url = `http://localhost:${port}`;
-  const init = await cli(['init', '--name', name, '--port', String(port), '--ledger', 'local', '--roles', opts.roles ?? 'seller,verifier,serving', '--public-url', url, '--runtime-api', 'http://localhost:1'], home, { timeoutMs: 60_000 });
+  const ledger = opts.ledger ?? 'local';
+  const initArgs = ['init', '--name', name, '--port', String(port), '--ledger', ledger, '--roles', opts.roles ?? 'seller,verifier,serving', '--public-url', url, '--runtime-api', opts.runtimeApi ?? 'http://localhost:1'];
+  if (ledger === 'ain') initArgs.push('--ain-provider', CHAIN);
+  const init = await cli(initArgs, home, { timeoutMs: 60_000 });
   if (init.code !== 0) throw new Error(`throwaway node init failed: ${init.stderr || init.stdout}`);
-  const started = await cli(['start', '-d'], home, { timeoutMs: 60_000 });
-  if (started.code !== 0) throw new Error(`throwaway node start failed: ${started.stderr || started.stdout}`);
+  for (const [k, v] of Object.entries(opts.set ?? {})) {
+    const r = await cli(['config', 'set', k, v], home, { timeoutMs: 30_000 });
+    if (r.code !== 0) throw new Error(`throwaway node config set ${k} failed: ${r.stderr || r.stdout}`);
+  }
   const pidFile = join(home, 'node.pid');
   const pidOf = () => { try { const n = Number(readFileSync(pidFile, 'utf8').trim()); return Number.isFinite(n) ? n : null; } catch { return null; } };
   const alive = (pid: number | null) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
-  const t0 = Date.now();
-  let up = false;
-  while (Date.now() - t0 < 60_000 && !up) {
-    try { const r = await fetch(`${url}/api/info`, { signal: AbortSignal.timeout(2000) }); up = r.ok; } catch { /* not yet */ }
-    if (!up) await sleep(500);
-  }
-  const stop = async () => {
-    await cli(['stop'], home, { timeoutMs: 30_000 }).catch(() => undefined);
+  const waitUp = async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60_000) {
+      try { const r = await fetch(`${url}/api/info`, { signal: AbortSignal.timeout(2000) }); if (r.ok) return true; } catch { /* not yet */ }
+      await sleep(500);
+    }
+    return false;
+  };
+  const killPid = async () => {
     const pid = pidOf();
     if (alive(pid)) { try { process.kill(pid!, 'SIGTERM'); } catch { /* gone */ } }
-    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+    for (let i = 0; i < 100 && alive(pid); i++) await sleep(100);
     if (alive(pid)) { try { process.kill(pid!, 'SIGKILL'); } catch { /* gone */ } }
+    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+  };
+  const stop = async () => {
+    await cli(['stop'], home, { timeoutMs: 30_000 }).catch(() => undefined);
+    await killPid();
     rmSync(home, { recursive: true, force: true });
   };
-  if (!up) { await stop(); throw new Error(`throwaway node ${name} did not answer on ${url} within 60 s`); }
-  return { url, home, port, name, pid: pidOf(), stop };
+  const start = async () => {
+    const started = await cli(['start', '-d'], home, { timeoutMs: 60_000 });
+    if (started.code !== 0) throw new Error(`throwaway node start failed: ${started.stderr || started.stdout}`);
+    if (!(await waitUp())) { await stop(); throw new Error(`throwaway node ${name} did not answer on ${url} within 60 s`); }
+    const pid = pidOf();
+    if (pid) spawn('sh', ['-c', `sleep ${opts.maxLifeS ?? 600}; kill ${pid} 2>/dev/null`], { detached: true, stdio: 'ignore' }).unref();   // watchdog
+    node.pid = pid;
+  };
+  const seed = async (npz: string, id: string, benchmark = { schema: 'pixelplus-seed', queries: 1, samples: [{ prompt: '종목코드 픽셀플러스 ', expect: '087600' }] }) => {
+    const dir = join(home, 'seed');
+    mkdirSync(dir, { recursive: true });
+    const copy = join(dir, basename(npz));
+    if (!existsSync(copy)) copyFileSync(npz, copy);
+    const me = (await (await fetch(`${url}/api/auth/me`)).json()) as { needsSetup: boolean };
+    const auth = await fetch(`${url}${me.needsSetup ? '/api/auth/setup' : '/api/auth/login'}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORDS[url] ?? 'e2e-pass' }) });
+    if (!auth.ok) throw new Error(`throwaway node auth failed: ${auth.status} ${await auth.text()}`);
+    const token = ((await auth.json()) as { token: string }).token;
+    const form = new FormData();
+    form.set('name', `${id} (seed)`); form.set('id', id); form.set('model_id', 'Qwen3.8-Flash-Next'); form.set('price', '0.1'); form.set('billing', 'per_download');
+    form.set('benchmark', JSON.stringify({ schema: benchmark.schema, queries: benchmark.queries ?? benchmark.samples.length, format: ['template'], collateral_bound_nat: 0.1, samples: benchmark.samples }));
+    form.set('path', copy);
+    const r = await fetch(`${url}/api/patches`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form });
+    if (!r.ok) throw new Error(`throwaway node seed ${id} failed: ${r.status} ${await r.text()}`);
+    return token;
+  };
+  const node: ThrowawayNode = { url, home, port, name, pid: null, kill: killPid, start, seed, stop };
+  await start();
+  return node;
+}
+
+export interface RuntimeProxy {
+  /** OpenAI-compatible base URL to hand the node as `--runtime-api`. */
+  url: string; port: number;
+  /** Accept connections and relay them to the real serving API. */
+  up: () => Promise<void>;
+  /** Refuse new connections (ECONNREFUSED → "serving API unreachable") and cut the ones in flight. */
+  down: () => Promise<void>;
+  /** Resolves when the next generation request (POST /v1/…) starts flowing through the relay — i.e. a turn is in flight at the model. */
+  nextGeneration: (timeoutMs?: number) => Promise<void>;
+  close: () => Promise<void>;
+}
+
+/**
+ * A plain TCP relay in front of the shared vLLM (:8000) that a throwaway node uses as its serving API. It starts DOWN,
+ * so the node sees "serving API unreachable"; `up()` makes the same model reachable again without touching vLLM itself.
+ */
+export async function startRuntimeProxy(target = VLLM): Promise<RuntimeProxy> {
+  const port = await freePort();
+  const t = new URL(target);
+  const sockets = new Set<Socket>();
+  let server: ReturnType<typeof createServer> | null = null;
+  const genWaiters: (() => void)[] = [];
+  const up = () => new Promise<void>((resolve, reject) => {
+    if (server) return resolve();
+    server = createServer((client) => {
+      const upstream = connect(Number(t.port || 80), t.hostname === 'localhost' ? '127.0.0.1' : t.hostname);   // vLLM listens on IPv4 only
+      sockets.add(client); sockets.add(upstream);
+      const drop = () => { client.destroy(); upstream.destroy(); sockets.delete(client); sockets.delete(upstream); };
+      client.on('error', drop); upstream.on('error', drop); client.on('close', drop); upstream.on('close', drop);
+      client.once('data', (chunk: Buffer) => { if (chunk.subarray(0, 5).toString() === 'POST ' && genWaiters.length) for (const w of genWaiters.splice(0)) w(); });
+      client.pipe(upstream); upstream.pipe(client);
+    });
+    server.on('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve());
+  });
+  const down = () => new Promise<void>((resolve) => {
+    for (const s of sockets) s.destroy();
+    sockets.clear();
+    if (!server) return resolve();
+    const s = server; server = null;
+    s.close(() => resolve());
+  });
+  const nextGeneration = (timeoutMs = 120_000) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no generation request reached the runtime relay in time')), timeoutMs);
+    genWaiters.push(() => { clearTimeout(timer); resolve(); });
+  });
+  return { url: `http://127.0.0.1:${port}`, port, up, down, nextGeneration, close: down };
 }

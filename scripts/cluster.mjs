@@ -8,6 +8,8 @@
  *
  *   node scripts/cluster.mjs            # foreground; Ctrl+C stops all
  *   NGRAM_LEDGER=ain node scripts/cluster.mjs   # all three on the local AIN chain (run `ngram chain up` first)
+ *   NGRAM_CLUSTER_HOME=/tmp/c NGRAM_PORT_BASE=3502 NGRAM_LEDGER=local NGRAM_SEED=0 node scripts/cluster.mjs
+ *                                        # a private throwaway cluster (ports 3502-3504, no seeding, nothing on the chain)
  *
  * Teach mode (visitors teach the model from /chat?teach=1) is switched ON for node-a when its config is first created:
  * `teach.enabled: true`, `teach.publish: 'auto'` (a signed lesson is announced at once — the demo is frictionless; set
@@ -24,6 +26,8 @@ const root = new URL('..', import.meta.url).pathname;
 const base = process.env.NGRAM_CLUSTER_HOME ?? join(homedir(), '.ngram-cluster');
 const chainUp = await (async () => { try { const r = await fetch('http://localhost:8081/node_status', { signal: AbortSignal.timeout(2000) }); const j = await r.json(); return !!j?.result?.health; } catch { return false; } })();
 const ledger = process.env.NGRAM_LEDGER ?? (chainUp ? 'ain' : 'local');
+const portBase = Number(process.env.NGRAM_PORT_BASE ?? 3402);
+const seedA = process.env.NGRAM_SEED !== '0';
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 
@@ -40,9 +44,9 @@ const teachDemo = { enabled: true, publish: 'auto', backend: TEACH_BACKEND };
 
 const defs = [
   // teach: only the web-UI node accepts lessons — all three share one trainer container / GPU set, so one queue is enough.
-  { name: 'node-a', port: 3402, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: true, teach: teachDemo },
-  { name: 'node-b', port: 3403, roles: ['verifier'], peers: ['http://localhost:3402'], runtime: true, seed: false },
-  { name: 'node-c', port: 3404, roles: ['verifier', 'serving'], peers: ['http://localhost:3402'], runtime: true, seed: false },
+  { name: 'node-a', port: portBase, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: seedA, teach: teachDemo },
+  { name: 'node-b', port: portBase + 1, roles: ['verifier'], peers: [`http://localhost:${portBase}`], runtime: true, seed: false },
+  { name: 'node-c', port: portBase + 2, roles: ['verifier', 'serving'], peers: [`http://localhost:${portBase}`], runtime: true, seed: false },
 ];
 
 function ensureConfig(d) {
@@ -52,6 +56,10 @@ function ensureConfig(d) {
     cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger });
     if (!d.runtime) cfg.runtime = { ...cfg.runtime, repo: undefined };
     cfg.publicUrl = `http://localhost:${d.port}`;
+    // Core keeps `server.trustProxy` false by default (a spoofed X-Forwarded-For must not fool req.ip on a real
+    // deployment). The DEMO cluster runs locally behind no proxy and the e2e suite isolates visitor quotas by
+    // sending distinct X-Forwarded-For values (freshVisitor), so the demo nodes opt in explicitly here.
+    cfg.server = { ...(cfg.server ?? {}), trustProxy: true };
     if (d.teach) cfg.teach = { ...core.teachConfig(cfg), ...d.teach };   // never `stubOffline` here: the demo checks lessons on the real model
     core.saveConfig(cfg, home);
     console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})${d.teach ? `  teach: enabled, publish ${d.teach.publish}, backend ${d.teach.backend}` : ''}`);
@@ -79,7 +87,7 @@ if (ledger === 'ain') {
 
 // seed A once (in-process, no listener), then start all three as child processes
 const seedMarker = join(nodes[0].home, '.seeded');
-if (!existsSync(seedMarker)) {
+if (defs[0].seed && !existsSync(seedMarker)) {
   const n = await nodePkg.startNode(nodes[0].cfg, { home: nodes[0].home, listen: false, quiet: true, serveWeb: false });
   const rep = await nodePkg.seedDemo(n.market);
   console.log(`[cluster] seeded node-a: ${rep.created.length} patches, ${rep.branches.length} branches, ${rep.imported_prototype} prototype records`);
@@ -109,7 +117,7 @@ let stopping = false;
 const writePids = () => writeFileSync(join(base, 'nodes.pid'), children.map((c) => c.pid).filter(Boolean).join('\n') + '\n');
 for (const n of nodes) children.push(spawnNode(n));
 writePids();
-console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger}; teach backend=${TEACH_BACKEND})\n`);
+console.log(`\n[cluster] web UI → http://localhost:${portBase}   (B: ${portBase + 1}, C: ${portBase + 2}; homes under ${base}; ledger=${ledger}; teach backend=${TEACH_BACKEND})\n`);
 const stop = () => { stopping = true; for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

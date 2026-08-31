@@ -4,7 +4,8 @@
  * serialised in the `runtime` block below; the others only read public pages / the API.
  */
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
-import { K, NODE_A, PASSWORDS, api, loginViaUi, operatorToken, runtimeAvailable, sleep } from '../helpers/ainize';
+import { K, NODE_A, PASSWORDS, VLLM, api, loginViaUi, operatorToken, sleep, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { KRX_NPZ, PIXEL_NPZ, httpDown } from '../helpers/operator-cli';
 import {
   AGO_EN, AGO_KO, CHAT, CANCEL_STRIP, DATE_TIME, PURPLE, agoLabel, bubble, bytesLabel, chatPicker, chatTextarea, ensureRuntime, focusInfo, footerText,
   completeTurn, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
@@ -157,43 +158,59 @@ test.describe('runtime', () => {
   });
 
   test('AZ-089 Recover automatically after the node process restarts under an open Live test tab', async ({ page, request }) => {
-    test.info().annotations.push({ type: 'blocked', description: 'Killing/restarting node-a is forbidden on the shared live cluster; the outage is simulated with connection-refused interception (steps 3, 5, 6, 7 verified that way), the real SIGTERM/restart and the stale-lock liveness check are not exercised.' });
+    test.setTimeout(15 * 60_000);
     await ensureRuntime(request);
-    const V = await visitorOrigin();
-    await page.goto(`${V}/chat/${K.final}`);
-    await waitForPicker(page, 4);
+    // The demo node-a is never killed. The SIGTERM + restart happen for real on a private serving node built from the
+    // same binary + web UI (name node-a, same public record, same shared model) that holds the pixelplus body.
+    const node = await startThrowawayNode('az089', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 840 });
+    try {
+      await node.seed(PIXEL_NPZ, 'az089-seed');
+      expect(await waitForRuntime(request, node.url), 'private node sees the shared model').toBe(true);
+      await page.goto(`${node.url}/chat/${K.pixel}`);
+      await waitForPicker(page, 1);
+      const nItems = await pickerItems(page).count();
+      expect(nItems).toBeGreaterThan(0);
 
-    // Step 2/3 — "port closed": every API call is refused
-    await page.route('**/api/**', (r) => r.abort('connectionrefused'));
-    await page.getByRole('button', { name: K.pixelPrompt.trim(), exact: true }).click();
-    await chatTextarea(page).press('Enter');
-    await expect(lastTurn(page).getByRole('alert')).toHaveText(CHAT.networkError);
-    await expect(lastTurn(page).getByRole('button', { name: 'Retry' })).toBeVisible();
+      // Step 1/2 — the pid behind the port, then SIGTERM
+      const pidBefore = node.pid;
+      expect(pidBefore).toBeTruthy();
+      await node.kill();
+      expect(await httpDown(node.url), 'port closed after SIGTERM').toBe(true);
 
-    // Step 4/5 — node back after ~10 s; the 20 s poll of /api/chat/patches succeeds again without a reload
-    await page.waitForTimeout(10_000);
-    await page.unroute('**/api/**');
-    const poll = await page.waitForResponse((r) => r.url().includes('/api/chat/patches') && r.status() === 200, { timeout: 40_000 });
-    expect(poll.ok()).toBe(true);
-    const info = await api<{ node: { name: string } }>(request, '/api/info');
-    expect(info.status).toBe(200);
-    expect(info.body.node.name).toBe('node-a');
-    await expect(pickerItems(page)).toHaveCount(4);
-    await expect(page.locator('header').getByText('AI Network', { exact: true })).toBeVisible();
+      // Step 3 — every API call is refused while the port is closed
+      await page.getByRole('button', { name: K.pixelPrompt.trim(), exact: true }).click();
+      await chatTextarea(page).press('Enter');
+      await expect(lastTurn(page).getByRole('alert')).toHaveText(CHAT.networkError);
+      await expect(lastTurn(page).getByRole('button', { name: 'Retry' })).toBeVisible();
 
-    // Step 6 — Retry succeeds
-    await lastTurn(page).getByRole('button', { name: 'Retry' }).click();
-    expect((await completeTurn(page, request)).status).toBe('done');
-    await expect(bubble(page, 'base')).toBeVisible();
-    const patched = bubble(page, 'patched');
-    await expect(patched.getByText(/^· loaded in (\d+ms|\d+\.\ds)$/)).toBeVisible();
-    await expect(patched.getByText('✓ Correct')).toBeVisible();
-    await expect(patched).toContainText(K.pixelExpect);
+      // Step 4/5 — restart after ~10 s; the 20 s poll of /api/chat/patches succeeds again without a reload
+      await page.waitForTimeout(10_000);
+      const poll = page.waitForResponse((r) => r.url().includes('/api/chat/patches') && r.status() === 200, { timeout: 90_000 });
+      await node.start();
+      expect(node.pid).not.toBe(pidBefore);
+      expect((await poll).ok()).toBe(true);
+      const info = await api<{ node: { name: string } }>(request, '/api/info', { node: node.url });
+      expect(info.status).toBe(200);
+      expect(info.body.node.name).toBe('node-a');
+      await expect(pickerItems(page)).toHaveCount(nItems);
+      await expect(page.locator('header').getByText('AI Network', { exact: true })).toBeVisible();
 
-    // Step 7
-    const rt = await api<{ applied: unknown[] }>(request, '/api/runtime');
-    expect(rt.body.applied).toEqual([]);
-    test.skip(true, 'blocked: real node-a restart (kill + respawn) is not allowed on the shared live cluster');
+      // Step 6 — Retry succeeds
+      await waitForLockFree(request, node.url);
+      await lastTurn(page).getByRole('button', { name: 'Retry' }).click();
+      expect((await completeTurn(page, request)).status).toBe('done');
+      await expect(bubble(page, 'base')).toBeVisible();
+      const patched = bubble(page, 'patched');
+      await expect(patched.getByText(/^· loaded in (\d+ms|\d+\.\ds)$/)).toBeVisible();
+      await expect(patched.getByText('✓ Correct')).toBeVisible();
+      await expect(patched).toContainText(K.pixelExpect);
+
+      // Step 7 — the shared table was restored
+      const rt = await api<{ applied: unknown[] }>(request, '/api/runtime', { node: node.url });
+      expect(rt.body.applied).toEqual([]);
+    } finally {
+      await node.stop();
+    }
   });
 
   test('AZ-091 Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling', async ({ page, request }) => {
@@ -484,7 +501,7 @@ test.describe('runtime', () => {
 /* ================================================================== API / read-only scenarios */
 
 test('AZ-086 Refuse to downgrade to an integrity-only attestation during the 15-minute runtime grace period', async ({ page, request }) => {
-  const token = await operatorToken(request);   // creates the password when the node has none
+  await operatorToken(request);   // creates the password when the node has none
   const addr = await nodeAAddress(request);
   const ledgerBefore = (await api<{ info: { records: number } }>(request, '/api/ledger?limit=1')).body.info.records;
 
@@ -495,31 +512,37 @@ test('AZ-086 Refuse to downgrade to an integrity-only attestation during the 15-
   expect(typeof login.body.token).toBe('string');
   expect(login.headers['set-cookie'] ?? '').toContain('ngram_session=');
 
-  if (await runtimeAvailable(request)) {
-    test.info().annotations.push({ type: 'blocked', description: 'The scenario needs the shared vLLM container paused (docker pause flashnext); pausing the model of the live cluster is not allowed while other groups use it. Step 1 verified; steps 2-4 run only when the runtime is down on its own.' });
-    test.skip(true, 'blocked: cannot pause the shared vLLM container (flashnext) on the live cluster');
+  // Steps 2–4, for real, on a private verifier node built from the same binary (name node-a, reads the same public
+  // record) whose serving API is a closed port and that already holds the krx-all-2761 body; background verification is
+  // off (verifier.auto=false), so the node cannot attest anything on its own — the shared vLLM is never paused.
+  const attestsBefore = (await api<PatchDetail>(request, `/api/patches/${K.final}`)).body.attestations.length;
+  const vnode = await startThrowawayNode('az086', { name: 'node-a', roles: 'verifier', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 480 });
+  try {
+    const vtoken = await vnode.seed(KRX_NPZ, 'az086-seed', { schema: 'krx-ticker-codes', queries: 1, samples: [{ prompt: K.pixelPrompt, expect: K.pixelExpect }] });
+    const verify = await api<{ error: string }>(request, `/api/patches/${K.final}/verify`, { method: 'POST', token: vtoken, node: vnode.url });
+    expect(verify.status).toBe(500);
+    expect(verify.body).toEqual({ error: 'runtime unavailable (serving API unreachable) — waiting up to 15 min before hash-only fallback' });
+
+    await page.goto(`${vnode.url}/${addr}/${K.final}`);
+    await page.getByRole('tab', { name: 'Verification' }).click();
+    await expect(page.getByText('Run on the real model').locator('xpath=following-sibling::span')).toHaveText('2/2');
+    await expect(page.getByText('Integrity only', { exact: true }).locator('xpath=following-sibling::span')).toHaveText('0');
+    const rows = page.getByRole('table').first().locator('tbody tr');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('node-b');
+    await expect(rows.nth(1)).toContainText('node-c');
+    for (let i = 0; i < 2; i++) { await expect(rows.nth(i)).toContainText('run on the real model'); await expect(rows.nth(i)).toContainText('26/26'); }
+    await expect(page.getByText('integrity only', { exact: true })).toHaveCount(0);
+
+    const ev = await api<{ events: { level: string; message: string }[] }>(request, '/api/events?limit=5&kind=verifier', { node: vnode.url });
+    expect(ev.body.events[0].level).toBe('info');
+    expect(ev.body.events[0].message).toBe(`verifying ${K.final} (KRX ticker codes for 2,761 listed companies (final))`);
+    expect((await api<PatchDetail>(request, `/api/patches/${K.final}`)).body.attestations.length, 'no attestation was appended').toBe(attestsBefore);
+    const ledgerAfter = (await api<{ info: { records: number } }>(request, '/api/ledger?limit=1')).body.info.records;
+    expect(ledgerAfter).toBeGreaterThanOrEqual(ledgerBefore);   // other nodes may append unrelated records meanwhile; ours appended none
+  } finally {
+    await vnode.stop();
   }
-
-  // Runtime is down right now — the grace-period refusal can be verified for real.
-  const verify = await api<{ error: string }>(request, `/api/patches/${K.final}/verify`, { method: 'POST', token });
-  expect(verify.status).toBe(500);
-  expect(verify.body.error).toMatch(/^runtime unavailable \(serving API unreachable\) — waiting up to \d+ min before hash-only fallback$/);
-
-  await page.goto(`${NODE_A}/${addr}/${K.final}`);
-  await page.getByRole('tab', { name: 'Verification' }).click();
-  await expect(page.getByText('Run on the real model').locator('xpath=following-sibling::span')).toHaveText('2/2');
-  await expect(page.getByText('Integrity only', { exact: true }).locator('xpath=following-sibling::span')).toHaveText('0');
-  const rows = page.getByRole('table').first().locator('tbody tr');
-  await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText('node-b');
-  await expect(rows.nth(1)).toContainText('node-c');
-  for (let i = 0; i < 2; i++) { await expect(rows.nth(i)).toContainText('run on the real model'); await expect(rows.nth(i)).toContainText('26/26'); }
-  await expect(page.getByText('integrity only', { exact: true })).toHaveCount(0);
-
-  const ev = await api<{ events: { level: string; message: string }[] }>(request, '/api/events?limit=5&kind=verifier');
-  expect(ev.body.events[0].message).toContain(`verifying ${K.final} (KRX ticker codes for 2,761 listed companies (final))`);
-  const ledgerAfter = (await api<{ info: { records: number } }>(request, '/api/ledger?limit=1')).body.info.records;
-  expect(ledgerAfter).toBe(ledgerBefore);
 });
 
 test('AZ-088 Keep the operator signed in across refresh and new tabs via the session cookie, and sign out cleanly', async ({ page, context, request }) => {
@@ -585,42 +608,55 @@ test('AZ-090 Reflect the model-server outage consistently on Network, Manage and
   await operatorToken(request);
   const addr = await nodeAAddress(request);
   await loginViaUi(page);
-  const rt = await api<{ available: boolean; error?: string; model?: string }>(request, '/api/runtime');
 
-  if (rt.body.available) {
-    // Only the healthy branch (step 4) can be verified without pausing the shared model.
-    await page.goto(`${NODE_A}/network`);
-    const status = page.getByText('Status', { exact: true }).locator('xpath=following-sibling::dd[1]');
-    await expect(status).toHaveText('available — knowledge can be loaded live');
-    await expect(page.getByText('Model', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('Qwen3.8-Flash-Next');
-    await expect(page.getByText('Live connection', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('connected — load and unload without restart');
-    expect(await status.locator('span').first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(68, 164, 95)');   // green dot
-    await page.goto(`${NODE_A}/project/${addr}/${K.final}`);
-    await expect(page.getByRole('heading', { name: 'Load into / unload from the model' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Load into model' })).toBeEnabled();
-    await expect(page.getByText('Model runtime unavailable')).toHaveCount(0);
-    await page.goto(`${NODE_A}/dashboard`);
-    await expect(page.getByRole('heading', { name: 'Purchased knowledge' })).toBeVisible();
-    await expect(page.getByText('Model runtime unavailable')).toHaveCount(0);
-    test.info().annotations.push({ type: 'blocked', description: 'The outage branch needs the shared vLLM container paused (docker pause flashnext), which is not allowed on the live cluster; the healthy state (step 4) was verified on all three pages.' });
-    test.skip(true, 'blocked: cannot pause the shared vLLM container (flashnext) on the live cluster');
-  }
-
-  // Runtime is down right now — verify the outage branch for real.
-  const reason = rt.body.error ?? '';
+  // Step 4 — the healthy state on the live node-a (the shared vLLM is never paused by the suite)
+  await ensureRuntime(request);
   await page.goto(`${NODE_A}/network`);
   const status = page.getByText('Status', { exact: true }).locator('xpath=following-sibling::dd[1]');
-  await expect(status).toHaveText(reason || 'unavailable');
-  expect(await status.locator('span').first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(218, 218, 218)');   // grey dot
-  await expect(page.getByText('Live connection', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('not connected');
-  await expect(page.getByText('Model', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('—');
+  await expect(status).toHaveText('available — knowledge can be loaded live');
+  await expect(page.getByText('Model', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('Qwen3.8-Flash-Next');
+  await expect(page.getByText('Live connection', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('connected — load and unload without restart');
+  expect(await status.locator('span').first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(68, 164, 95)');   // green dot
   await page.goto(`${NODE_A}/project/${addr}/${K.final}`);
-  await expect(page.getByRole('button', { name: 'Load into model' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Unload' })).toBeDisabled();
-  await expect(page.getByText(`not loaded · Model runtime unavailable: ${reason} — load/unload is disabled for now.`)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Load into / unload from the model' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Load into model' })).toBeEnabled();
+  await expect(page.getByText('Model runtime unavailable')).toHaveCount(0);
   await page.goto(`${NODE_A}/dashboard`);
-  await expect(page.getByText(`Model runtime unavailable: ${reason} — load/unload is disabled for now.`)).toBeVisible();
-  for (const b of await page.getByRole('button', { name: /^(Load into model|Unload)$/ }).all()) await expect(b).toBeDisabled();
+  await expect(page.getByRole('heading', { name: 'Purchased knowledge' })).toBeVisible();
+  await expect(page.getByText('Model runtime unavailable')).toHaveCount(0);
+
+  // Steps 1–3 — the outage, for real, on a private node built from the same binary + web UI (name node-a) whose serving
+  // API is a closed port; it owns one draft (body present) so its manage page has the load/unload section.
+  const off = await startThrowawayNode('az090', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', maxLifeS: 480 });
+  try {
+    await off.seed(PIXEL_NPZ, 'az090-draft');
+    const offAddr = (await api<{ node: { address: string } }>(request, '/api/info', { node: off.url })).body.node.address;
+    const rt = await api<{ available: boolean; error?: string; model?: string | null }>(request, '/api/runtime', { node: off.url });
+    expect(rt.body.available).toBe(false);
+    const reason = rt.body.error ?? '';
+    expect(reason).toBe('serving API unreachable');
+    await loginViaUi(page, off.url);
+
+    await page.goto(`${off.url}/network`);
+    const offStatus = page.getByText('Status', { exact: true }).locator('xpath=following-sibling::dd[1]');
+    await expect(offStatus).toHaveText(reason);   // rt.error replaces "available — knowledge can be loaded live"
+    expect(await offStatus.locator('span').first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(218, 218, 218)');   // grey dot
+    await expect(page.getByText('Live connection', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('not connected');
+    await expect(page.getByText('Model', { exact: true }).locator('xpath=following-sibling::dd[1]')).toHaveText('—');
+
+    await page.goto(`${off.url}/project/${offAddr}/az090-draft`);
+    await expect(page.getByRole('heading', { name: 'Load into / unload from the model' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Load into model' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Unload' })).toBeDisabled();
+    await expect(page.getByText(`not loaded · Model runtime unavailable: ${reason} — load/unload is disabled for now.`)).toBeVisible();
+
+    await page.goto(`${off.url}/dashboard`);
+    await expect(page.getByRole('heading', { name: 'Purchased knowledge' })).toBeVisible();
+    await expect(page.getByText(`Model runtime unavailable: ${reason} — load/unload is disabled for now.`)).toBeVisible();
+    for (const b of await page.getByRole('button', { name: /^(Load into model|Unload)$/ }).all()) await expect(b).toBeDisabled();
+  } finally {
+    await off.stop();
+  }
 });
 
 test('AZ-094 Expose meaningful roles and accessible names to screen readers on the core pages', async ({ page, browser, request }) => {
@@ -760,7 +796,7 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   // Step 2 — stats strip + description line
   await page.goto(`${NODE_A}/${addr}/${K.final}`);
   const stat = (name: string) => page.getByText(name, { exact: true }).first().locator('xpath=preceding-sibling::div[1]');
-  const revenueLabel = (r: string | number) => (Number(r) === 0 ? 'Free' : `${Number(r).toLocaleString('en-US', { maximumFractionDigits: 6 })} AIN`);
+  const revenueLabel = (r: string | number) => `${Number(r).toLocaleString('en-US', { maximumFractionDigits: 6 })} AIN`; // earned amounts: 0 → "0 AIN", never "Free"
   // Purchases / Revenue are live values other groups can change mid-test: compare against a fresh API read (page polls every 10 s).
   await expect.poll(async () => {
     const fresh = (await api<PatchDetail>(request, `/api/patches/${K.final}`)).body;
@@ -774,12 +810,11 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   await expect(stat('Size')).toHaveText('331.7 MB');
   await expect(stat('Price')).toHaveText('25 AIN');
   await expect(page.getByText(`Accuracy ${pctText} (${score}) — over 2,761 benchmark questions`)).toBeVisible();
-  // Zero revenue renders as 'Free' (recordText.ts priceLabel maps 0 → common.free) — the scenario asks to record this as a defect.
+  // A zero revenue reads '0 AIN' (only prices render 'Free') — the scenario recorded the old 'Free' as a defect; fixed in recordText.ts revenueLabel.
   const zeroRevenue = (await Promise.all(cat.map(async (e) => (await api<PatchDetail>(request, `/api/patches/${e.anchor.id}`)).body))).find((d) => Number(d.revenue) === 0);
   if (zeroRevenue) {
     await page.goto(`${NODE_A}/${addr}/${zeroRevenue.anchor.id}`);
-    await expect(stat('Revenue')).toHaveText('Free');
-    test.info().annotations.push({ type: 'note', description: `${zeroRevenue.anchor.id}: Revenue of 0 renders as 'Free' (priceLabel maps 0 → common.free); expected '0 AIN' — product defect.` });
+    await expect(stat('Revenue')).toHaveText('0 AIN');
   }
 
   // Step 3 — Buy tab price

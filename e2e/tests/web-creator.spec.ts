@@ -203,9 +203,9 @@ test('AZ-029 Review the My knowledge table for a verified and a superseded item'
   await expect(cells.nth(1)).toHaveText('Verified');
   await expect(cells.nth(2)).toContainText(`executed verification ${krx.passed}/${krx.quorum}`);
   await expect(cells.nth(2)).toContainText(`integrity check ${krx.integrity_checks}`);
-  const salesExpected = `${fmtNum(krx.downloads)} · ${fmtMoney(Number(krx.revenue) > 0 ? krx.revenue : 0)}`; // zero revenue renders "Free"
+  // earned amounts never read "Free": a zero revenue is "0 AIN" (the scenario flagged "0 · Free" as a copy issue; fixed)
+  const salesExpected = `${fmtNum(krx.downloads)} · ${Number(krx.revenue) > 0 ? fmtMoney(krx.revenue) : '0 AIN'}`;
   await expect(cells.nth(3)).toHaveText(salesExpected);
-  if (Number(krx.revenue) === 0) note('Sales cell for a zero-revenue item reads "0 · Free" (money formatter) — copy issue flagged by the scenario');
 
   const row6 = table.getByRole('row').filter({ hasText: 'krx-all-2761-ep6 ·' });
   await expect(row6.getByRole('cell').nth(1)).toHaveText('Newer version available');
@@ -424,21 +424,20 @@ test('AZ-037 Show validation errors when saving an incomplete or conflicting dra
   expect(r4.status()).toBe(400);
   await expect(alertText('path not found on node: /tmp/does-not-exist.npz')).toBeVisible();
 
-  // 5. duplicate id → 500 (plain Error from createDraft; 409 would be the accurate code)
+  // 5. duplicate id → 409 Conflict with the plain message
   await pathInput.fill(NPZ_PATH);
   await page.getByLabel('Id (optional)').fill('krx-all-2761');
   const [r5] = await Promise.all([page.waitForResponse((r) => r.url().endsWith('/api/patches') && r.request().method() === 'POST'), save.click()]);
-  expect(r5.status()).toBe(500);
+  expect(r5.status()).toBe(409);
   await expect(alertText('patch id already exists: krx-all-2761')).toBeVisible();
 
-  // 6. one-character id → 500 with the slug rule
+  // 6. one-character id → 400 with the slug rule
   await page.getByLabel('Id (optional)').fill('A');
   const [r6] = await Promise.all([page.waitForResponse((r) => r.url().endsWith('/api/patches') && r.request().method() === 'POST'), save.click()]);
-  expect(r6.status()).toBe(500);
+  expect(r6.status()).toBe(400);
   await expect(alertText('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)')).toBeVisible();
   const mine = (await api<{ items: PatchDetail[] }>(request, '/api/me/patches', { token })).body.items;
   expect(mine.some((e) => e.anchor.id === 'a' || e.anchor.id === 'A' || e.anchor.name === 'Validation test')).toBe(false);
-  note('POST /api/patches answers 500 for "patch id already exists" / "invalid patch id" (plain Error through the generic handler) — 409/400 would be accurate');
 });
 
 // =====================================================================================================================
@@ -1097,10 +1096,12 @@ test.describe('runtime', () => {
     if (wasDraft) {
       await expect(titleChip(page)).toHaveText('Draft');
       const list = page.locator('strong', { hasText: 'Before you publish' }).locator('xpath=following-sibling::ul[1]');
-      await expect(list.locator('li')).toHaveText([
+      // each row is a "✓" mark span followed by the label text
+      const checkLabels = [
         'Knowledge file is on this node', `Subject set (${spec.schema})`, `${samples} sample question(s) — verifiers score them on the real model`,
         'Description written', 'No overlap with verified knowledge on the same subject (0 overlap(s))',
-      ]);
+      ];
+      await expect(list.locator('li')).toHaveText(checkLabels.map((l) => new RegExp(`^✓\\s*${l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)));
       for (let i = 0; i < 5; i++) await expect(list.locator('li').nth(i).locator('span').first()).toHaveText('✓');
       await expect(page.getByText('After publishing, name, price and benchmark are sealed. The file stays only on this node until it is bought.', { exact: true })).toBeVisible();
 
@@ -1280,9 +1281,8 @@ test.describe('runtime', () => {
     await expect(steps.nth(3)).toContainText(/seller confirmed; manifest sha256 [0-9a-f]+…/);
     await expect(steps.nth(4)).toContainText(before.has_body ? 'body already present; sha256 matches on-ledger anchor' : /MB from .*; sha256 matches on-ledger anchor/);
     expect(result.steps.map((s) => s.step), 'on-chain access receipt step').toContain('receipt');
-    expect(labels[5]).toBe('manifest received');
-    await expect(steps.nth(5)).toContainText(/on-chain access receipt written \(\/apps\/knowledge\/access\/…, tx [0-9a-f]+…\)/);
-    note('last timeline label reads "manifest received" although the step is the on-chain access receipt — copy issue');
+    expect(labels[5], 'the receipt step is labelled as the on-chain access receipt (was "manifest received")').toBe('access receipt recorded on the ledger');
+    await expect(steps.nth(5)).toContainText(/on-chain access receipt written \(\/apps\/knowledge\/access\/…, tx 0x[0-9a-f]{10}…\)/);
     await expect(kv(page, 'Saved to')).toContainText(`/${buyerInfo.name}/data/blobs/${sha}`);
     await expect(kv(page, 'Content hash')).toHaveText(sha);
     await expect(kv(page, 'Download URLs')).toContainText(`${NODE_A}/p2p/blob/${sha}`);
@@ -1304,6 +1304,7 @@ test.describe('runtime', () => {
     await expect(sellerRow.getByRole('cell').nth(3)).toHaveText(`${fmtNum(sellerAfter.downloads)} · ${fmtMoney(sellerAfter.revenue)}`);
     await ctxA.close();
 
+    expect(await waitForRuntime(request, buyer), 'buyer runtime available').toBe(true);   // load/unload buttons are disabled while the model server is down
     await page.goto(`${buyer}/dashboard`);
     await expect(page.getByRole('heading', { name: 'Purchased knowledge' })).toBeVisible();
     await expect(page.getByText('Knowledge this node bought with automatic payment. Files are kept on this node; one click loads them into the model or takes them out.', { exact: true })).toBeVisible();
