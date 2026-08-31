@@ -120,11 +120,11 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ public info & catalog
   router.get('/api/info', wrap(async () => ({
-    node: await (async () => { await market.catalog(); return market.selfInfo(); })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
+    node: await (async () => { await market.catalog(); const self = await market.selfInfo(); return { ...self, blobs: await market.publicBlobs(self.blobs) }; })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
     accepts_contributions: market.acceptsContributions(), contributor_share: market.teach().contributorShare,
-    counts: (() => { const c = market.catalogSync(); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
+    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
   })));
 
   router.get('/api/catalog', wrap(async (req) => {
@@ -135,8 +135,10 @@ export function buildApi(deps: ApiDeps): Router {
       limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
       include_drafts: z.coerce.boolean().default(false),
     }).parse(req.query);
+    // Private drafts never leak to anonymous callers — the facet lists (models/schemas) are derived from the same filtered set as the items.
     let items = await market.catalog();
     if (!q.include_drafts || !isOperator(req)) items = items.filter((e) => e.status !== 'DRAFT');
+    const facets = items;
     if (q.status) items = items.filter((e) => q.status!.split(',').includes(e.status));
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
     if (q.schema) items = items.filter((e) => e.anchor.benchmark.schema === q.schema);
@@ -154,16 +156,28 @@ export function buildApi(deps: ApiDeps): Router {
     items = [...items].sort(sorters[q.sort]);
     const total = items.length;
     const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({ ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })) }));
-    return { total, items: page, models: [...new Set((await market.catalog()).map((e) => e.anchor.model.id_M))], schemas: [...new Set((await market.catalog()).map((e) => e.anchor.benchmark.schema))] };
+    return { total, items: page, models: [...new Set(facets.map((e) => e.anchor.model.id_M))], schemas: [...new Set(facets.map((e) => e.anchor.benchmark.schema))] };
   }));
+
+  /**
+   * Which related entries (lineage parents/children, overlap partners) may this caller see next to `subject`?
+   * Same rule as the catalog: private drafts only for the operator; hidden test anchors only when the node opts in
+   * (includeTestAnchors) or the subject itself is a test anchor — so fixtures never surface on public knowledge pages.
+   */
+  const relativeVisible = (req: Request, subject: CatalogEntry) => {
+    const operator = isOperator(req);
+    const showTest = !!market.cfg.includeTestAnchors || subject.anchor.visibility === 'test';
+    return (x: CatalogEntry | undefined): x is CatalogEntry => !!x && (x.status !== 'DRAFT' || operator) && (x.anchor.visibility !== 'test' || showTest);
+  };
 
   router.get('/api/patches/:id', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
     if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
     const map = await market.entryMap();
-    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(Boolean).map((x) => ({ id: x!.anchor.id, name: x!.anchor.name, author: x!.anchor.author, status: x!.status })),
-      children: e.children.map((c) => map.get(c)).filter(Boolean).map((x) => ({ id: x!.anchor.id, name: x!.anchor.name, author: x!.anchor.author, status: x!.status })) };
-    const conflicts = await market.conflicts(e.anchor.id).catch(() => []);
+    const visible = relativeVisible(req, e);
+    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })),
+      children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })) };
+    const conflicts = (await market.conflicts(e.anchor.id).catch(() => [])).filter((c) => visible(map.get(c.patch_id)));
     const branches = (await market.branches()).filter((b) => b.patch_ids.includes(e.anchor.id)).map((b) => ({ name: b.name, context: b.context }));
     return {
       ...redactContributors(e), lineage, conflicts, branches,
@@ -223,7 +237,11 @@ export function buildApi(deps: ApiDeps): Router {
     }), mine: await market.mySubscriptions() };
   }));
   router.get('/api/route', wrap(async (req) => market.route(req.query as Record<string, string>)));
-  router.get('/api/nodes', wrap(async () => ({ nodes: await market.knownNodes(), peers: market.p2p.peers(), self: market.address })));
+  router.get('/api/nodes', wrap(async () => {
+    // visitors count knowledge files of public knowledge only (hidden test anchors / drafts are not part of the public catalog)
+    const nodes = await Promise.all((await market.knownNodes()).map(async (n) => ({ ...n, blobs: await market.publicBlobs(n.blobs ?? []) })));
+    return { nodes, peers: market.p2p.peers(), self: market.address };
+  }));
   router.get('/api/events', wrap(async (req) => ({ events: publicEvents(market.store.events({ since: req.query.since ? Number(req.query.since) : undefined, limit: Number(req.query.limit ?? 200), kind: req.query.kind as string | undefined }), isOperator(req)) })));
   router.get('/api/chain', wrap(async () => market.chainStatus()));
 
@@ -296,7 +314,15 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => market.buy(req.params.id as string, { apply: !!req.body?.apply })));
   router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => ({ result: await market.applyPatch(req.params.id as string, 'manual') })));
   router.post('/api/patches/:id/remove', requireOperator, wrap(async (req) => ({ result: await market.removePatch(req.params.id as string) })));
-  router.get('/api/patches/:id/conflicts', wrap(async (req) => ({ conflicts: await market.conflicts(req.params.id as string) })));
+  router.post('/api/patches/:id/forget', requireOperator, wrap(async (req) => market.forgetBody(req.params.id as string)));
+  router.get('/api/patches/:id/conflicts', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    // Overlap partners that are private drafts are only shown to the operator; hidden test anchors stay hidden (see relativeVisible).
+    const map = await market.entryMap();
+    const conflicts = (await market.conflicts(e.anchor.id)).filter((c) => relativeVisible(req, e)(map.get(c.patch_id)));
+    return { conflicts };
+  }));
 
   router.post('/api/branches', requireOperator, wrap(async (req) => {
     const b = z.object({ name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]) }).parse(req.body);
@@ -563,6 +589,8 @@ export function buildApi(deps: ApiDeps): Router {
       try { if (await market.ledger.ingest(r)) added++; } catch (e) { rejected.push(`${r.hash?.slice(0, 12)}: ${(e as Error).message}`); }
     }
     if (added) { market.invalidate(); market.log('info', 'p2p', `received ${added} record(s) via push`); }
+    // On the AIN ledger records are not ingested from peers — the push is a hint that the chain has new state: re-read it now.
+    if (!added && recs.length && market.ledger.kind === 'ain') market.refreshLedgerSoon();
     return { added, rejected };
   }));
   router.get('/p2p/blobs', wrap(async () => ({ blobs: market.blobs.list().map((b) => ({ sha256: b.sha256, size_bytes: b.size_bytes, rows: b.rows })) })));
@@ -587,6 +615,9 @@ export function buildApi(deps: ApiDeps): Router {
     if (err instanceof ConflictError) return res.status(409).json({ error: err.message });
     if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
     const msg = (err as Error)?.message ?? String(err);
+    // Market / runtime errors carry the status they mean (400 bad input, 404 unknown, 409 conflict, 503 model unavailable).
+    const status = (err as { status?: unknown })?.status;
+    if (typeof status === 'number' && status >= 400 && status < 600) return res.status(status).json({ error: msg });
     console.error('[api]', msg);
     res.status(500).json({ error: msg });
   });

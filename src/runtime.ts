@@ -23,10 +23,35 @@ export interface VerifyOutcome {
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatResult { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
 
+/** Shown to callers whenever the serving model cannot answer (engine crash, restart in progress, connection refused). */
+export const MODEL_UNAVAILABLE = 'model unavailable, try again in a few minutes';
+
+/** Error raised when the serving model failed to answer; `status` 503 is what the HTTP API answers, `detail` keeps the raw upstream text for logs. */
+export class RuntimeUnavailableError extends Error {
+  readonly status = 503;
+  constructor(public readonly detail: string) { super(MODEL_UNAVAILABLE); }
+}
+
 export class Runtime {
   private queue: Promise<unknown> = Promise.resolve();
   private statusCache: { at: number; value: RuntimeStatus } | null = null;
+  /** Until when the model is reported unavailable after a failed generation (a vLLM engine crash keeps /v1/models answering while it restarts). */
+  private downUntil = 0;
+  private downDetail = '';
+  static readonly DOWN_MS = 60_000;
   constructor(private readonly cfg: NonNullable<NodeConfig['runtime']>, private readonly owner = `pid:${process.pid}`) {}
+
+  /** Remember that the model just failed: status() reports it unavailable for DOWN_MS and callers get a friendly 503 instead of the raw upstream error. */
+  private markDown(detail: string): RuntimeUnavailableError {
+    this.downUntil = Date.now() + Runtime.DOWN_MS;
+    this.downDetail = detail;
+    this.statusCache = null;
+    console.error(`[runtime] ${MODEL_UNAVAILABLE} — ${detail.slice(0, 300)}`);
+    return new RuntimeUnavailableError(detail);
+  }
+
+  /** A 5xx (engine crash) or 429 (overloaded) is the model's problem, not the caller's; 4xx stays a plain error. */
+  private static isModelFailure(status: number): boolean { return status >= 500 || status === 429; }
 
   get repo(): string | null { return this.cfg.repo && existsSync(this.cfg.repo) ? this.cfg.repo : null; }
 
@@ -108,14 +133,22 @@ export class Runtime {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
     const t0 = Date.now();
-    const r = await fetch(`${this.cfg.api}/v1/chat/completions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens ?? 256, temperature: opts.temperature ?? 0, chat_template_kwargs: { enable_thinking: !!opts.thinking } }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
-    });
-    if (!r.ok) throw new Error(`chat failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    let r: Response;
+    try {
+      r = await fetch(`${this.cfg.api}/v1/chat/completions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens ?? 256, temperature: opts.temperature ?? 0, chat_template_kwargs: { enable_thinking: !!opts.thinking } }),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
+      });
+    } catch (e) { throw this.markDown(`chat: ${(e as Error).message}`); }
+    if (!r.ok) {
+      const text = (await r.text().catch(() => '')).slice(0, 200);
+      if (Runtime.isModelFailure(r.status)) throw this.markDown(`chat failed: ${r.status} ${text}`);
+      throw new Error(`chat failed: ${r.status} ${text}`);
+    }
     const j = (await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string } }[]; usage?: Record<string, unknown> };
     const m = j.choices?.[0]?.message;
+    this.downUntil = 0;
     return { content: m?.content ?? '', reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: Date.now() - t0, model };
   }
 
@@ -152,6 +185,10 @@ export class Runtime {
   }
 
   async status(force = false): Promise<RuntimeStatus> {
+    if (Date.now() < this.downUntil) {
+      // a generation just failed on the model side — report it down until the window passes (or a later call succeeds)
+      return { available: false, api: this.cfg.api ?? null, model: null, hook: false, repo: this.repo, applied: [], error: MODEL_UNAVAILABLE, detail: this.downDetail.slice(0, 200) };
+    }
     if (!force && this.statusCache && Date.now() - this.statusCache.at < 30_000) return this.statusCache.value;
     const model = await this.models();
     const hook = model ? await this.hookAvailable() : false;
@@ -182,13 +219,20 @@ export class Runtime {
   async complete(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
-    const r = await fetch(`${this.cfg.api}/v1/completions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, prompt, max_tokens: maxTokens, temperature: 0 }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!r.ok) throw new Error(`completion failed: ${r.status}`);
+    let r: Response;
+    try {
+      r = await fetch(`${this.cfg.api}/v1/completions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, prompt, max_tokens: maxTokens, temperature: 0 }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) { throw this.markDown(`completion: ${(e as Error).message}`); }
+    if (!r.ok) {
+      if (Runtime.isModelFailure(r.status)) throw this.markDown(`completion failed: ${r.status} ${(await r.text().catch(() => '')).slice(0, 200)}`);
+      throw new Error(`completion failed: ${r.status}`);
+    }
     const j = (await r.json()) as { choices: { text: string }[] };
+    this.downUntil = 0;
     return j.choices?.[0]?.text ?? '';
   }
 

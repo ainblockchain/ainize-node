@@ -1,0 +1,1337 @@
+/**
+ * Node operator / developer scenarios AZ-051..AZ-070 (docs/ux-test-scenarios.json) against the LIVE demo cluster.
+ *
+ * Conventions: on-chain artifacts get per-run unique ids (uid), published test knowledge is always `--test`
+ * (hidden from public catalogs) with a run-unique benchmark schema so nothing ever supersedes the demo's
+ * krx-all-2761, and the purchase scenarios run on a throwaway fourth node (node-d, fresh identity funded from
+ * the local genesis account) so every run starts from "not yet purchased".
+ */
+import { test, expect } from '@playwright/test';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
+import {
+  NODE_A, NODE_B, NODE_C, HOME_A, HOME_B, HOME_C, K, PASSWORDS, REPO, api, agentRun, cliLogin, nodeAddress, operatorToken, sleep, waitForRuntime,
+} from '../helpers/ainize';
+import {
+  runCli, spawnCli, strip, uid, PIXEL_NPZ, PIXEL_SHA, KRX_SHA, MODEL, benchJson, shortAddr, esc, tableRows, tmpHome, SCRATCH,
+  HOME_D, NODE_D, PORT_D, PASSWORD_D, cleanupNodeD, nodeDPid, httpUp, httpDown, startNodeD, chatApi, withRuntime, pollUntil, RUN,
+} from '../helpers/operator-cli';
+
+const ADDR_A = nodeAddress(HOME_A);
+const ADDR_B = nodeAddress(HOME_B);
+const ADDR_C = nodeAddress(HOME_C);
+const execFileP = promisify(execFile);
+/** rows of a `ledger ls` table (after the kv block + AT/KIND header + rule) */
+const ledgerRows = (s: string): string[] => { const ls = s.split('\n'); const i = ls.findIndex((l) => /^AT\s+KIND\s+AUTHOR/.test(l)); return i < 0 ? [] : ls.slice(i + 2).filter((l) => l.trim()); };
+/** /api/info counts include this node's private DRAFTs (catalogSync) — count them so the expected totals stay exact. */
+const draftCount = async (pw: typeof import('@playwright/test')['request']): Promise<number> => {
+  const ctx = await pw.newContext();
+  try { const t = await operatorToken(ctx, NODE_A); const c = await api<{ items: { status: string }[] }>(ctx, '/api/catalog?include_drafts=true&limit=200', { token: t }); return c.body.items.filter((e) => e.status === 'DRAFT').length; } finally { await ctx.dispose(); }
+};
+/** node-d config must exist (AZ-057 creates it); when a test of the block runs on its own, create + fund it here. */
+const ensureNodeD = async () => {
+  if (existsSync(join(HOME_D, 'config.json'))) return;
+  const r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D], { home: HOME_D });
+  expect(r.code, r.stderr).toBe(0);
+  const f = await runCli(['chain', 'fund', nodeAddress(HOME_D), '100'], { home: HOME_D });
+  expect(f.code, f.stderr).toBe(0);
+};
+const dockerNames = async () => { try { return (await execFileP('docker', ['ps', '-a', '--filter', 'name=ngram-ain', '--format', '{{.Names}}'])).stdout.trim().split('\n').filter(Boolean); } catch { return null; } };
+const A = { home: HOME_A };
+const B = { home: HOME_B };
+
+// =====================================================================================================================
+// Account, API, catalog inspection, ledger, chain, drive, logs, drafts — no shared-model mutation
+// =====================================================================================================================
+test.describe('operator: account / API / inspection', () => {
+  test('AZ-051 Log in and out as operator from the CLI (first login sets the node password) and observe the 401 guard', async ({ request }) => {
+    // A throwaway CLI home keeps this session separate from the cli.json other suites use for node-b.
+    const home = tmpHome('az051');
+    const o = { home, node: NODE_B };
+    const pw = PASSWORDS[NODE_B];
+    const meBefore = await (await request.get(`${NODE_B}/api/auth/me`)).json() as { needsSetup: boolean };
+    const guard = 'error: operator login required — run `ainize login` first';
+
+    let r = await runCli(['wallet'], o);
+    expect(r.code).toBe(3);
+    expect(r.stderr.trim()).toBe(guard);
+
+    r = await runCli(['login', '--password', pw], o);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ ${meBefore.needsSetup ? 'operator password set and ' : ''}logged in to ${NODE_B} (token saved in ${home}/cli.json)`);
+
+    const me = await (await request.get(`${NODE_B}/api/auth/me`)).json() as { signedIn: boolean; needsSetup: boolean };
+    expect(me).toMatchObject({ signedIn: false, needsSetup: false });
+
+    r = await runCli(['wallet'], o);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`^address {13}${ADDR_B}$`, 'm'));
+    expect(r.stdout).toMatch(/^ledger {14}ain · ain:local$/m);
+    expect(r.stdout).toMatch(/^balance {13}[\d.]+ AIN$/m);
+    expect(r.stdout).toMatch(/^sales {15}\d+$/m);
+    expect(r.stdout).toMatch(/^royalties received {2}\d+$/m);
+    expect(r.stdout).toMatch(/^purchases {11}\d+$/m);
+
+    r = await runCli(['logout'], o);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe('✓ logged out');
+    expect(readFileSync(join(home, 'cli.json'), 'utf8')).not.toContain('token');
+
+    r = await runCli(['wallet'], o);
+    expect(r.code).toBe(3);
+    expect(r.stderr.trim()).toBe(guard);
+
+    r = await runCli(['login', '--password', 'wrong-password'], o);
+    expect(r.code).toBe(3);
+    expect(r.stderr.trim()).toBe('error: wrong password — run `ainize login` first');
+
+    r = await runCli(['login'], { ...o, env: { NGRAM_PASSWORD: pw } });
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ logged in to ${NODE_B} (token saved in ${home}/cli.json)`);
+    expect(statSync(join(home, 'cli.json')).mode & 0o777).toBe(0o600);
+  });
+
+  test('AZ-055 Drive the public and operator HTTP API with curl from /api/openapi.json: catalog, detail, benchmarks, info, 401 guards, login token and settings', async ({ request, playwright }) => {
+    // 1 openapi
+    const oa = (await api<{ openapi: string; info: { title: string }; servers: { url: string }[]; paths: Record<string, unknown> }>(request, '/api/openapi.json')).body;
+    expect(oa.openapi).toBe('3.1.0');
+    expect(oa.info.title).toBe('Ainize node API');
+    expect(oa.servers).toEqual([{ url: NODE_A }]);
+    expect(Object.keys(oa.paths).length).toBe(50);
+    expect(oa.paths).toHaveProperty('/x402/patch/{id}');
+    expect(oa.paths).toHaveProperty('/api/chat');
+    // 2 docs
+    const docs = (await api<{ cli: { oneLiners: { use: { en: string } } } }>(request, '/api/docs')).body;
+    expect(Object.keys(docs).sort()).toEqual(['cli', 'node', 'openapi']);
+    expect(docs.cli.oneLiners.use.en).toBe('Use knowledge (one line)');
+    // 3 catalog
+    const cat = (await api<{ total: number; items: { anchor: { id: string }; attestations: Record<string, unknown>[] }[]; models: string[]; schemas: string[] }>(request, '/api/catalog?status=LISTED,SUPERSEDED&sort=price')).body;
+    expect(cat.total).toBe(4);
+    expect(cat.items[0].anchor.id).toBe(K.pixel);
+    expect('sig' in cat.items[0].attestations[0]).toBe(false);
+    expect(cat.models).toEqual([MODEL]);
+    expect(cat.schemas).toEqual(['krx-ticker-codes']);
+    // 4 zod 400s
+    for (const q of ['/api/catalog?limit=0', '/api/catalog?sort=bogus']) {
+      const r = await api<{ error: string; issues: unknown[] }>(request, q);
+      expect(r.status).toBe(400);
+      expect(r.body.error).toBe('invalid request');
+      expect(Array.isArray(r.body.issues) && r.body.issues.length > 0).toBe(true);
+    }
+    // 5 detail
+    const d = (await api<{ status: string; quorum_ok: boolean; lineage: { parents: { id: string }[] }; supersedes: string[]; gateway_url: string; has_body: boolean; branches: { name: string }[] }>(request, `/api/patches/${K.final}`)).body;
+    expect([d.status, d.quorum_ok, d.lineage.parents[0].id, d.supersedes, d.gateway_url, d.has_body, d.branches[0].name])
+      .toEqual(['LISTED', true, K.ep12, [K.ep12, K.ep6, K.pixel], `${NODE_A}/x402/patch/${K.final}`, true, 'finance/KRX-latest']);
+    // 6 404s
+    let r = await api<{ error: string }>(request, '/api/patches/does-not-exist');
+    expect([r.status, r.body.error]).toEqual([404, 'patch not found']);
+    r = await api<{ error: string }>(request, '/api/benchmarks/none');
+    expect([r.status, r.body.error]).toEqual([404, 'no patches for that benchmark schema']);
+    // 7 benchmark + info
+    expect((await api<{ items: unknown[] }>(request, '/api/benchmarks/krx-ticker-codes')).body.items.length).toBe(4);
+    const info = (await api<{ quorum: number; currency: string; counts: Record<string, number>; peers: number }>(request, '/api/info')).body;
+    expect([info.quorum, info.currency, info.peers]).toEqual([2, 'AIN', 2]);
+    expect(info.counts).toEqual({ patches: 4, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
+    // 8 401 guards on node-b without credentials
+    for (const [method, path] of [['GET', '/api/me/wallet'], ['GET', '/api/me/settings'], ['POST', '/api/patches'], ['POST', '/api/branches'], ['POST', `/api/patches/${K.final}/buy`], ['DELETE', '/api/peers']] as const) {
+      const g = await api<{ error: string }>(request, path, { method, node: NODE_B });
+      expect([method, path, g.status, g.body.error]).toEqual([method, path, 401, 'operator login required']);
+    }
+    // 9 wrong password (make sure node-b has a password)
+    await operatorToken(request, NODE_B);
+    const wrong = await api<{ error: string }>(request, '/api/auth/login', { method: 'POST', node: NODE_B, data: { password: 'wrong' } });
+    expect([wrong.status, wrong.body.error]).toEqual([401, 'wrong password']);
+    // 10 bearer token → wallet
+    const login = await request.post(`${NODE_B}/api/auth/login`, { data: { password: PASSWORDS[NODE_B] } });
+    expect(login.status()).toBe(200);
+    expect(login.headers()['set-cookie'] ?? '').toMatch(/ngram_session=.*HttpOnly/i);
+    const token = (await login.json() as { token: string }).token;
+    const wallet = await api<Record<string, unknown>>(request, '/api/me/wallet', { node: NODE_B, token });
+    expect(wallet.status).toBe(200);
+    expect(Object.keys(wallet.body).sort()).toEqual(['address', 'app', 'balance', 'height', 'kind', 'network', 'provider', 'purchases', 'records', 'royalties', 'sales', 'valid']);
+    // 11 setup again → 409
+    const setup = await api<{ error: string }>(request, '/api/auth/setup', { method: 'POST', node: NODE_B, data: { password: 'another-1234' } });
+    expect([setup.status, setup.body.error]).toEqual([409, 'operator password already set']);
+    // 12 settings validation + persistence
+    const before = (await api<{ settings: { notifications: string; display_name: string; payout_address: string } }>(request, '/api/me/settings', { node: NODE_B, token })).body.settings;
+    const weird = await api<{ error: string }>(request, '/api/me/settings', { method: 'PATCH', node: NODE_B, token, data: { notifications: 'weird' } });
+    expect([weird.status, weird.body.error]).toEqual([400, 'invalid request']);
+    const sales = await api<{ settings: Record<string, string> }>(request, '/api/me/settings', { method: 'PATCH', node: NODE_B, token, data: { notifications: 'sales' } });
+    expect(sales.status).toBe(200);
+    expect(sales.body).toEqual({ settings: { notifications: 'sales', display_name: before.display_name, payout_address: ADDR_B } });
+    const restore = await api<{ settings: Record<string, string> }>(request, '/api/me/settings', { method: 'PATCH', node: NODE_B, token, data: { notifications: before.notifications === 'sales' ? 'all' : before.notifications } });
+    expect(restore.status).toBe(200);
+    expect(restore.body.settings.notifications).toBe(before.notifications === 'sales' ? 'all' : before.notifications);
+    // 13 CORS
+    const cors = await request.get(`${NODE_A}/api/info`);
+    expect(cors.headers()['access-control-allow-origin']).toBe('*');
+  });
+
+  test('AZ-060 Inspect the catalog with `patch ls`, `patch get`, `patch records` and `patch conflicts`', async () => {
+    const a4 = shortAddr(ADDR_A, 4);
+    let r = await runCli(['patch', 'ls'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ID\s+STATUS\s+AUTHOR\s+MODEL\s+ROWS\s+SIZE\s+PRICE\s+ATTEST\s+SOLD\s+BENCHMARK\s*$/m);
+    expect(r.stdout).toMatch(new RegExp(`^krx-all-2761\\s+LISTED\\s+node-a ${a4}\\s+${esc(MODEL)}\\s+270,053\\s+331\\.7 MB\\s+25 AIN\\s+2/2\\s+\\d+\\s+krx-ticker-codes\\s*$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^krx-all-2761-ep12\\s+SUPERSEDED\\s+node-a ${a4}\\s+${esc(MODEL)}\\s+241,992\\s+297\\.2 MB\\s+10 AIN\\s+2/2\\s+\\d+\\s+krx-ticker-codes\\s*$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^krx-all-2761-ep6\\s+SUPERSEDED\\s+node-a ${a4}\\s+${esc(MODEL)}\\s+241,992\\s+297\\.2 MB\\s+5 AIN\\s+2/2\\s+\\d+\\s+krx-ticker-codes\\s*$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^pixelplus-087600\\s+SUPERSEDED\\s+node-a ${a4}\\s+${esc(MODEL)}\\s+2,992\\s+3\\.7 MB\\s+0\\.1 AIN\\s+2/2\\s+\\d+\\s+krx-ticker-codes\\s*$`, 'm'));
+    expect(tableRows(r.stdout).length).toBe(4);
+
+    r = await runCli(['patch', 'ls', '--status', 'LISTED'], A);
+    expect(tableRows(r.stdout).map((l) => l.split(/\s+/)[0])).toEqual([K.final]);
+    r = await runCli(['patch', 'ls', '--q', 'pixel'], A);
+    expect(tableRows(r.stdout).map((l) => l.split(/\s+/)[0])).toEqual([K.pixel]);
+
+    r = await runCli(['patch', 'ls', '--sort', 'price', '--json'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const ids = (JSON.parse(r.stdout) as { anchor: { id: string } }[]).map((e) => e.anchor.id);
+    expect(ids).toEqual([K.pixel, K.ep6, K.ep12, K.final]);
+
+    r = await runCli(['patch', 'get', K.final], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const lines = r.stdout.split('\n');
+    expect(lines[0]).toBe('KRX ticker codes for 2,761 listed companies (final)  LISTED  (yours)');
+    expect(r.stdout).toMatch(/^id\s+krx-all-2761$/m);
+    expect(r.stdout).toMatch(/^price\s+25 AIN · per_download$/m);
+    expect(r.stdout).toMatch(/^benchmark\s+krx-ticker-codes · 2761 queries · template\/chat · collateral ≤ 0\.08 nat$/m);
+    expect(r.stdout).toMatch(new RegExp(`^gateway\\s+${esc(NODE_A)}/x402/patch/krx-all-2761$`, 'm'));
+    expect(r.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+    expect(r.stdout).toMatch(/^body on this node\s+yes$/m);
+    expect(r.stdout).toMatch(/^attestations$/m);
+    expect(r.stdout).toMatch(/^VERIFIER\s+RESULT\s+SCORE\s+VERIFIED ON\s+RESTARTS\s+STAKE\s+AT\s*$/m);
+    for (const [name, addr] of [['node-b', ADDR_B], ['node-c', ADDR_C]]) {
+      expect(r.stdout).toMatch(new RegExp(`^${name} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=\\d+/\\d+ pre_apply=\\d+/\\d+\\s+vllm:${esc(MODEL)}\\s+0\\s+5\\s+\\d{4}-\\d\\d-\\d\\d`, 'm'));
+    }
+    expect(r.stdout.split('\n').filter((l) => /^node-a /.test(l)).length).toBe(0);
+    expect(r.stdout).toMatch(/^lineage$/m);
+    expect(r.stdout).toMatch(/^ {2}parents : krx-all-2761-ep12 \(SUPERSEDED\)$/m);
+    expect(r.stdout).toMatch(/^ {2}supersedes: krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600$/m);
+    expect(r.stdout).toMatch(/^address-set overlaps \(A₁ ∩ A₂\)$/m);
+    expect(r.stdout).toMatch(/^branches\n {2}finance\/KRX-latest \{"market":"KRX","version":"latest"\}$/m);
+
+    r = await runCli(['patch', 'get', K.pixel], A);
+    expect(r.stdout.split('\n')[0]).toContain('SUPERSEDED');
+    expect(r.stdout).toMatch(/^ {2}superseded by: krx-all-2761$/m);
+
+    r = await runCli(['patch', 'conflicts', K.final], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^krx-all-2761-ep12\s+241,992\s+yes\s+SUPERSEDED$/m);
+    expect(r.stdout).toMatch(/^krx-all-2761-ep6\s+241,992\s+yes\s+SUPERSEDED$/m);
+    expect(r.stdout).toMatch(/^pixelplus-087600\s+2,170\s+yes\s+SUPERSEDED$/m);
+    // exactly the three demo overlaps among the seeded (public) catalog — the logged-in node-a operator additionally sees
+    // its own DRAFTs and the hidden (visibility:test) listings other suites publish on the same body; `patch ls` above
+    // showed the 4 seeded rows, so anything outside that set is such a private/hidden row
+    const conflictRows = tableRows(r.stdout).map((l) => l.split(/\s+/)[0]);
+    const seeded = new Set((JSON.parse((await runCli(['patch', 'ls', '--json'], A)).stdout) as { anchor: { id: string } }[]).map((e) => e.anchor.id));
+    expect(seeded.size).toBe(4);
+    expect(conflictRows.filter((id) => seeded.has(id)).sort()).toEqual([K.ep12, K.ep6, K.pixel].sort());
+
+    r = await runCli(['patch', 'records', K.final], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^AT\s+KIND\s+AUTHOR\s+HASH\s+SIG\/TX\s*$/m);
+    const rows = tableRows(r.stdout);
+    expect(rows.filter((l) => /\sanchor\s/.test(l) && l.includes(shortAddr(ADDR_A, 8))).length).toBe(1);
+    expect(rows.filter((l) => /\sattest\s/.test(l) && l.includes(shortAddr(ADDR_B, 8))).length).toBe(1);
+    expect(rows.filter((l) => /\sattest\s/.test(l) && l.includes(shortAddr(ADDR_C, 8))).length).toBe(1);
+    expect(rows.filter((l) => /\ssupersede\s/.test(l)).length).toBe(3);
+
+    r = await runCli(['patch', 'get', 'does-not-exist'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: patch not found');
+  });
+
+  test('AZ-063 Audit the shared ledger with `ledger ls`, `ledger verify`, `ledger graph` and `ledger export`, and cross-check two nodes', async ({ request }) => {
+    let r = await runCli(['ledger', 'ls', '--limit', '10'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ledger\s+ain · ain:local · http:\/\/localhost:8081$/m);
+    expect(r.stdout).toMatch(/^records\s+\d+$/m);
+    expect(r.stdout).toMatch(/^height\s+\d+$/m);
+    expect(r.stdout).toMatch(/^head\s+-$/m);
+    expect(r.stdout).toMatch(/^AT\s+KIND\s+AUTHOR\s+SUMMARY\s+HASH\s*$/m);
+    const recordsA = Number(/^records\s+(\d+)$/m.exec(r.stdout)![1]);
+
+    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '200'], A);
+    const attRows = ledgerRows(r.stdout).filter((l) => l.includes(`krx-all-2761 · PASS · vllm:${MODEL}`));
+    expect(attRows.length).toBeGreaterThanOrEqual(2);
+    expect(attRows.every((l) => /\sattest\s/.test(l))).toBe(true);
+    r = await runCli(['ledger', 'ls', '--kind', 'supersede'], A);
+    expect(r.stdout).toContain('krx-all-2761 supersedes pixelplus-087600 (2170 rows)');
+    expect(r.stdout).toContain('krx-all-2761 supersedes krx-all-2761-ep6 (241992 rows)');
+    expect(r.stdout).toContain('krx-all-2761 supersedes krx-all-2761-ep12 (241992 rows)');
+    expect(ledgerRows(r.stdout).length).toBeGreaterThanOrEqual(3);
+    expect(ledgerRows(r.stdout).every((l) => /\ssupersede\s/.test(l))).toBe(true);
+
+    // verify (CLI and API must agree on the count; re-check once if a record landed in between)
+    let apiV = (await api<{ valid: boolean; checked: number; errors: string[] }>(request, '/api/ledger/verify')).body;
+    r = await runCli(['ledger', 'verify'], A);
+    if (!r.stdout.includes(`${apiV.checked} record(s)`)) { apiV = (await api<{ valid: boolean; checked: number; errors: string[] }>(request, '/api/ledger/verify')).body; r = await runCli(['ledger', 'verify'], A); }
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(apiV).toEqual({ valid: true, checked: apiV.checked, errors: [] });
+    expect(r.stdout.trim()).toBe(`✓ ledger valid — ${apiV.checked} record(s) checked (hashes, signatures, imported chain linkage)`);
+
+    r = await runCli(['ledger', 'graph'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const g = r.stdout.split('\n');
+    expect(g[0]).toBe('lineage (child → parent edges, royalties flow upward)');
+    const i6 = g.findIndex((l) => l === `krx-all-2761-ep6 [${MODEL} · krx-ticker-codes] SUPERSEDED`);
+    expect(i6).toBeGreaterThan(0);
+    expect(g[i6 + 1]).toBe(`└─ krx-all-2761-ep12 [${MODEL} · krx-ticker-codes] SUPERSEDED`);
+    expect(g[i6 + 2]).toBe(`   └─ krx-all-2761 [${MODEL} · krx-ticker-codes] LISTED  supersedes krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600`);
+    expect(g).toContain(`pixelplus-087600 [${MODEL} · krx-ticker-codes] SUPERSEDED`);
+
+    const out = join(SCRATCH, `ainize-ledger-${RUN}.jsonl`);
+    r = await runCli(['ledger', 'export', out], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const n = Number(/✓ exported (\d+) record\(s\) to /.exec(r.stdout)![1]);
+    expect(r.stdout.trim()).toBe(`✓ exported ${n} record(s) to ${out}`);
+    const linesOut = readFileSync(out, 'utf8').split('\n').filter(Boolean);
+    expect(linesOut.length).toBe(n);
+    expect(n).toBeGreaterThanOrEqual(recordsA);
+    const recs = linesOut.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const firstAnchor = recs.find((x) => x.kind === 'anchor')!;
+    expect(Object.keys(firstAnchor).sort().slice(0, 6)).toEqual(['author', 'body', 'hash', 'kind', 'parents', 'sig']);
+    expect(Object.keys(firstAnchor).sort()).toContain('ts');
+    const stamped = recs.filter((x) => typeof x.ts === 'number').map((x) => x.ts as number);
+    expect(stamped.every((t, i) => i === 0 || t >= stamped[i - 1])).toBe(true);   // oldest first
+
+    r = await runCli(['ledger', 'ls', '--limit', '1'], { home: tmpHome('anon'), node: NODE_B });
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ledger\s+ain · ain:local/m);
+    const recordsB = Number(/^records\s+(\d+)$/m.exec(r.stdout)![1]);
+    const recordsANow = (await api<{ ledger: { records: number } }>(request, '/api/info')).body.ledger.records;
+    expect(recordsB).toBe(recordsANow);
+
+    r = await runCli(['ledger', 'ls', '--kind', 'bogus'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ledger\s+ain · ain:local/m);
+    expect(r.stdout.trim().endsWith('ledger is empty')).toBe(true);
+  });
+
+  test('AZ-065 Operate the local AIN chain from the CLI: `chain status`, `chain up`, `chain fund`, `chain setup` and `wallet`', async ({ request }) => {
+    await cliLogin(HOME_A, NODE_A);
+    const VALIDATOR = '0x00ADEc28B6a845a085e03591bE7550dd68673C1C';
+    let r = await runCli(['chain', 'status'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^provider\s+http:\/\/localhost:8081$/m);
+    expect(r.stdout).toMatch(/^reachable\s+yes$/m);
+    expect(r.stdout).toMatch(/^state\s+SERVING$/m);
+    expect(r.stdout).toMatch(/^health\s+true$/m);
+    expect(r.stdout).toMatch(new RegExp(`^validator\\s+${VALIDATOR}$`, 'm'));
+    expect(r.stdout).toMatch(/^last block\s+\d+$/m);
+    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+
+    const containersBefore = await dockerNames();
+    r = await runCli(['chain', 'up'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(new RegExp(`^✓ a local AIN chain is already SERVING on :8081 \\(validator ${VALIDATOR}, block \\d+\\) — nothing to do$`));
+    expect(await dockerNames()).toEqual(containersBefore);   // no second container
+    r = await runCli(['chain', 'status'], A);
+    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+
+    const before = (await api<{ balance: number }>(request, '/api/chain', { node: NODE_B })).body.balance;
+    r = await runCli(['chain', 'fund', ADDR_B, '10'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const m = new RegExp(`^✓ funded ${ADDR_B} with 10 AIN {2}tx 0x[0-9a-f]+ {2}balance now ([\\d.]+) AIN$`).exec(r.stdout.trim());
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeCloseTo(before + 10, 3);
+    const after = await pollUntil(async () => (await api<{ balance: number }>(request, '/api/chain', { node: NODE_B })).body.balance, (b) => Math.abs(b - (before + 10)) < 1e-6, 30_000, 2000);
+    expect(after).toBeCloseTo(before + 10, 3);
+
+    r = await runCli(['chain', 'fund', 'notanaddress'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: address must be a 0x-prefixed 20-byte hex address');
+    r = await runCli(['chain', 'fund', ADDR_B, '1', '--provider', 'http://example.com:8081'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: refusing to use the genesis key against a non-local chain (http://example.com:8081)');
+
+    r = await runCli(['chain', 'setup'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ knowledge app already exists (admin ${ADDR_A}) — rules refreshed if we are admin`);
+
+    r = await runCli(['wallet'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ledger\s+ain · ain:local$/m);
+    expect(r.stdout).toMatch(/^balance\s+[\d.]+ AIN$/m);
+    expect(r.stdout).toMatch(/^sales\s+\d+$/m);
+    expect(r.stdout).toMatch(/^royalties received\s+\d+$/m);
+    expect(r.stdout).toMatch(/^purchases\s+\d+$/m);
+    const chain = (await api<Record<string, unknown>>(request, '/api/chain')).body;
+    expect(chain).toMatchObject({ kind: 'ain', network: 'ain:local', provider: 'http://localhost:8081', app: '/apps/knowledge', valid: true, address: ADDR_A });
+    expect(typeof chain.height).toBe('number');
+    expect(typeof chain.records).toBe('number');
+    expect(typeof chain.balance).toBe('number');
+
+    r = await runCli(['chain', 'status', '--provider', 'http://localhost:9'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^provider\s+http:\/\/localhost:9$/m);
+    expect(r.stdout).toMatch(/^reachable\s+no$/m);
+    expect(r.stdout).toMatch(/^state\s+-$/m);
+    expect(r.stdout).toMatch(/^health\s+-$/m);
+    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+  });
+
+  test('AZ-070 Check the aindrive mirror: `drive status --files`, `drive sync`, `drive up` before pairing, and the changes API guard', async ({ request }) => {
+    await cliLogin(HOME_A, NODE_A);
+    const folder = join(HOME_A, 'data', 'drive');
+    const drive = (await api<{ configured: boolean }>(request, '/api/drive')).body;
+    expect(drive.configured).toBe(false);
+
+    let r = await runCli(['drive', 'status'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`^folder\\s+${esc(folder)}$`, 'm'));
+    expect(r.stdout).toMatch(/^paired\s+no — run `ngram drive login`$/m);
+    expect(r.stdout).toMatch(/^agent\s+stopped$/m);
+    expect(r.stdout).toMatch(/^server\s+https:\/\/aindrive\.ainetwork\.ai$/m);
+    expect(r.stdout).toMatch(/^drive id\s+-$/m);
+    expect(r.stdout).toMatch(/^url\s+-$/m);
+    expect(r.stdout).toMatch(/^files\s+\d+$/m);
+
+    r = await runCli(['drive', 'status', '--files'], A);
+    expect(r.stdout).toMatch(/^PATH\s+SIZE\s+MODIFIED\s*$/m);
+    for (const p of ['branches/finance__KRX-latest.json', 'branches/finance__KRX-history.json', 'ledger/records.jsonl', `patches/${K.final}/manifest.json`, `patches/${K.pixel}/benchmark.json`]) {
+      expect(r.stdout).toMatch(new RegExp(`^${esc(p)}\\s+[\\d.]+ (B|KB|MB)\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d$`, 'm'));
+    }
+
+    r = await runCli(['drive', 'sync'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^✓ drive folder synced \(\d+ file\(s\) written\)$/);
+
+    r = await runCli(['drive', 'up'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`! drive not paired yet — run: cd ${folder} && npx aindrive login --server https://aindrive.ainetwork.ai   # one-time browser pairing, then: ngram drive up`);
+
+    r = await runCli(['drive', 'stop'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe('✓ not running');
+
+    const ch = await api<unknown>(request, '/api/drive/changes?path=ledger/records.jsonl');
+    expect(ch.status).toBe(200);
+    expect(typeof ch.body).toBe('object');
+    const trav = await api<{ error: string }>(request, '/api/drive/changes?path=../config.json');
+    expect([trav.status, trav.body.error]).toEqual([400, 'path must be relative to the drive folder']);
+    const up = await api<{ error: string }>(request, '/api/drive', { method: 'POST', data: { action: 'up' } });
+    expect([up.status, up.body.error]).toEqual([401, 'operator login required']);
+
+    // drive login: prints the pairing header, then hands over to `aindrive login` (browser pairing) — Ctrl+C after the header.
+    const p = spawnCli(['drive', 'login', '--no-open'], { ...A, group: true });
+    const gotHeader = await Promise.race([p.waitFor(/aindrive pairing/, 30_000), p.done.then(() => /aindrive pairing/.test(p.output()))]);
+    await Promise.race([sleep(8000), p.done]);   // give `aindrive login` a moment to print its link
+    p.kill('SIGINT');
+    await Promise.race([p.done, sleep(5000)]);
+    p.kill('SIGKILL');
+    const outp = p.output(); const errp = p.stderr();
+    expect(errp).not.toContain('Unknown argument');   // `--no-open` must be accepted by the CLI parser
+    if (/aindrive CLI not installed/.test(errp)) {
+      expect(errp).toContain('error: aindrive CLI not installed (npm install aindrive)');
+    } else {
+      expect(gotHeader).toBe(true);
+      expect(outp).toMatch(/^aindrive pairing$/m);
+      expect(outp).toMatch(new RegExp(`^ {2}folder : ${esc(folder)}$`, 'm'));
+      expect(outp).toMatch(/^ {2}server : https:\/\/aindrive\.ainetwork\.ai$/m);
+      expect(outp).toContain('A browser sign-in link will be printed — open it, click Authorize, and this folder becomes a drive.');
+      expect(outp).toContain('After pairing, Ctrl+C here and run `ngram drive up` to serve it in the background.');
+    }
+  });
+
+  test('AZ-058 Read node events with `ainize logs` filters and confirm `ainize seed` refuses to run against a live node', async ({ request }) => {
+    // 1 seed guard — exercised from a throwaway home (config for a local-ledger node) pointed at the live node-a API,
+    //   so a broken guard could only ever seed the throwaway directory, never the cluster's data.
+    const seedHome = tmpHome('seed-guard');
+    const init = await runCli(['init', '--name', 'e2e-seed-guard', '--port', '3499', '--ledger', 'local'], { home: seedHome });
+    expect(init.code, init.stderr || init.stdout).toBe(0);
+    const totalBefore = (await api<{ total: number }>(request, '/api/catalog')).body.total;
+    let r = await runCli(['seed'], { home: seedHome, node: NODE_A, timeoutMs: 120_000 });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: a node is running at ${NODE_A}; seeding writes to its data directory — stop it first (\`ngram stop\`) or seed from the web console`);
+    expect((await api<{ total: number }>(request, '/api/catalog')).body.total).toBe(totalBefore);
+
+    // 2 verify events on node-b
+    r = await runCli(['logs', '--kind', 'verify', '--limit', '500'], B);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const vlines = r.stdout.split('\n').filter(Boolean);
+    expect(vlines.length).toBeGreaterThan(0);
+    for (const l of vlines) expect(l).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d info {2}verify {4}\[[^\]]+\] attested \S+: (PASS|FAIL) \(.+\)$/);
+    expect(vlines.some((l) => l.endsWith(`[krx-all-2761] attested krx-all-2761: PASS (vllm:${MODEL})`))).toBe(true);
+
+    // 3 per-patch events
+    r = await runCli(['logs', '--patch', K.final, '--limit', '20'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const plines = r.stdout.split('\n').filter(Boolean);
+    expect(plines.length).toBeGreaterThan(0);
+    for (const l of plines) expect(l).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (info|warn|error) {1,2}\S+\s+\[krx-all-2761\] /);
+    expect(plines.some((l) => /\s(verifier|verify|publish|trade|usage|buy|runtime)\s/.test(l))).toBe(true);
+
+    // 4 JSON
+    r = await runCli(['logs', '--limit', '3', '--json'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const arr = JSON.parse(r.stdout) as Record<string, unknown>[];
+    expect(Array.isArray(arr) && arr.length <= 3 && arr.length > 0).toBe(true);
+    for (const e of arr) expect(Object.keys(e).sort()).toEqual(['data', 'kind', 'level', 'message', 'patch_id', 'seq', 'ts']);
+
+    // 5 follow + a live test from a distinct visitor address
+    const ip = `10.58.${(Date.now() >> 8) & 255}.${Date.now() & 255}`;
+    const follow = spawnCli(['logs', '--follow'], A);
+    await sleep(3000);
+    const chat = await pollUntil(async () => { await waitForRuntime(request); return chatApi(request, { patch_id: K.pixel, mode: 'base', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }, { ip }); }, (x) => x.status === 200, 8 * 60_000, 15_000);
+    expect(chat.status).toBe(200);
+    const seen = await follow.waitFor(new RegExp(`usage {5}\\[pixelplus-087600\\] live test pixelplus-087600 \\(base\\) by ip:${esc(ip)}: base only`), 30_000);
+    follow.child.kill('SIGINT');
+    const code = await Promise.race([follow.done, sleep(5000).then(() => 'hung' as const)]);
+    expect(seen).toBe(true);
+    expect(code).not.toBe('hung');
+
+    // 6 unknown kind
+    r = await runCli(['logs', '--kind', 'nosuchkind'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe('');
+    expect(r.stderr.trim()).toBe('');
+  });
+
+  test('AZ-061 Register a draft with `ainize publish --no-announce`, check its visibility, reject bad inputs and delete it', async ({ request }) => {
+    await cliLogin(HOME_A, NODE_A);
+    const BENCH = benchJson('krx-ticker-codes');
+    const id = uid('o06-draft', test.info().retry);
+    let r = await runCli(['publish', './missing.npz', '--name', 'x', '--model', MODEL, '--benchmark', BENCH], { ...A, cwd: REPO });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: file not found: ${REPO}/missing.npz`);
+    r = await runCli(['publish', 'README.md', '--name', 'x', '--model', MODEL, '--benchmark', BENCH], { ...A, cwd: REPO });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: patch body must be a .npz (addrs/before/after arrays)');
+    r = await runCli(['publish', PIXEL_NPZ, '--name', 'x', '--model', MODEL, '--benchmark', '{"queries":1}'], { ...A, cwd: REPO });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: benchmark.schema is required (e.g. "krx-ticker-codes")');
+
+    const anchorsBefore = (await api<{ records: unknown[] }>(request, '/api/ledger?kind=anchor&limit=1000')).body.records.length;
+    r = await runCli(['publish', PIXEL_NPZ, '--id', id, '--name', 'O06 draft test', '--model', MODEL, '--benchmark', BENCH, '--price', '0.1', '--no-announce'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.split('\n').filter(Boolean)).toEqual([
+      `✓ draft created: ${id}  (2,992 rows, sha256 ${PIXEL_SHA.slice(0, 12)}…)`,
+      `✓ announce when ready: ainize patch announce ${id}`,
+    ]);
+    expect((await api<{ records: unknown[] }>(request, '/api/ledger?kind=anchor&limit=1000')).body.records.length).toBe(anchorsBefore);
+
+    r = await runCli(['patch', 'ls'], A);
+    expect(r.stdout).not.toContain(id);
+    r = await runCli(['patch', 'ls', '--drafts'], A);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(id)}\\s+DRAFT\\s+node-a ${esc(shortAddr(ADDR_A, 4))}\\s+${esc(MODEL)}\\s+2,992\\s+3\\.7 MB\\s+0\\.1 AIN\\s+0/2\\s+\\d+\\s+krx-ticker-codes\\s*$`, 'm'));
+
+    expect((await api(request, `/api/patches/${id}`)).status).toBe(404);
+
+    r = await runCli(['patch', 'conflicts', id], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^pixelplus-087600\s+2,992\s+yes\s+SUPERSEDED$/m);
+    expect(r.stdout).toMatch(/^krx-all-2761\s+2,170\s+yes\s+LISTED\s*$/m);
+    expect(r.stdout).toMatch(/^krx-all-2761-ep12\s+[\d,]+\s+yes\s+SUPERSEDED$/m);
+    expect(r.stdout).toMatch(/^krx-all-2761-ep6\s+[\d,]+\s+yes\s+SUPERSEDED$/m);
+
+    r = await runCli(['use', id], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: ${id} is DRAFT (verification 0/2) — not verified yet; try \`ainize patch get ${id}\``);
+
+    r = await runCli(['patch', 'rm', id], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ draft ${id} deleted`);
+    r = await runCli(['patch', 'ls', '--drafts'], A);
+    expect(r.stdout).not.toContain(id);
+  });
+});
+
+// =====================================================================================================================
+// Shared-model scenarios (live tests, quota, subscriptions, announce + real verification) — strictly serial
+// =====================================================================================================================
+test.describe('operator: runtime', () => {
+  // Not serial: every test logs in and waits for the shared runtime itself, so a vLLM hiccup in one must not skip the rest.
+
+  test('AZ-054 Live-test knowledge from the CLI: `chat --list`, one-shot compare, `--mode`, `--thinking`, `--json`, quota footer and the interactive REPL', async ({ request }) => {
+    test.setTimeout(20 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    await waitForRuntime(request);
+    const Q = '종목코드 픽셀플러스';
+
+    let r = await runCli(['chat'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: patch id required — `ainize chat --list` shows what this node can test');
+
+    r = await withRuntime(request, () => runCli(['chat', '--list'], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const l = r.stdout.split('\n');
+    expect(l[0].startsWith(`runtime ready  model ${MODEL}  live-apply hook on`)).toBe(true);
+    expect(r.stdout).toMatch(/^ID\s+NAME\s+MODEL\s+FACTS\s+MEMORY ROWS\s+VERIFIED\s+TRY\s*$/m);
+    for (const id of [K.final, K.ep12, K.ep6, K.pixel]) expect(r.stdout).toMatch(new RegExp(`^${esc(id)}\\s+.+\\s+${esc(MODEL)}\\s+\\d+\\s+[\\d,]+\\s+2/2 ✓\\s+"종목코드 픽셀플러스" → 087600$`, 'm'));
+    expect(r.stdout).toContain('ainize chat <ID> "<question>"   or   ainize chat <ID>   for an interactive session');
+
+    r = await withRuntime(request, () => runCli(['chat', K.pixel, Q], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^before \(base model\) {2}\d+ ms$/m);
+    expect(r.stdout).toMatch(/^after \(pixelplus-087600 loaded\) {2}\d+ ms · loaded in \d+ ms$/m);
+    expect(r.stdout.slice(r.stdout.indexOf('after ('))).toContain('087600');
+    expect(r.stdout).toMatch(new RegExp(`^correct ✓ \\(benchmark\\) {2}model ${esc(MODEL)}$`, 'm'));
+    expect(r.stdout).not.toContain('free live tests left');
+
+    r = await withRuntime(request, () => runCli(['chat', K.pixel, '--mode', 'base', Q], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^before \(base model\) {2}\d+ ms$/m);
+    expect(r.stdout).not.toContain('after (');
+    expect(r.stdout).not.toMatch(/correct ✓|wrong ✗|no benchmark sample/);
+    r = await withRuntime(request, () => runCli(['chat', K.pixel, '--mode', 'patched', Q], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).not.toContain('before (base model)');
+    expect(r.stdout).toMatch(/^after \(pixelplus-087600 loaded\) {2}\d+ ms/m);
+    expect(r.stdout).toMatch(/^correct ✓ \(benchmark\) {2}model /m);
+
+    r = await withRuntime(request, () => runCli(['chat', K.pixel, '--thinking', '--max-tokens', '400', '픽셀플러스의 종목코드는?'], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ {2}┆ /m);
+    expect(r.stdout.indexOf('┆')).toBeLessThan(r.stdout.indexOf('correct') > 0 ? r.stdout.indexOf('correct') : r.stdout.length);
+
+    r = await withRuntime(request, () => runCli(['--json', 'chat', K.pixel, Q], A));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const j = JSON.parse(r.stdout) as Record<string, unknown>;   // the whole stdout must be one JSON document
+    expect(Object.keys(j).sort()).toEqual(['applied_ms', 'base', 'benchmark_hit', 'mode', 'model', 'patch_id', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']);
+
+    // anonymous visitor (empty home, --node) → quota footer; another suite may already have used up this IP's hour
+    r = await withRuntime(request, () => runCli(['chat', K.pixel, '--mode', 'base', Q], { home: tmpHome('anon'), node: NODE_A }));
+    if (r.code === 0) {
+      const m = /free live tests left this hour: (\d+)$/.exec(r.stdout.trim());
+      expect(m).not.toBeNull();
+      expect(Number(m![1])).toBeLessThanOrEqual(19);
+    } else {
+      expect(r.stderr).toContain('free live-test quota exhausted for this hour');
+    }
+
+    // 8 — interactive session, typed one line at a time (each command after the previous answer, like a person would)
+    await waitForRuntime(request);
+    const repl = spawnCli(['chat', K.final, '--mode', 'patched'], A);
+    const type = async (line: string, until: RegExp, ms = 10 * 60_000) => { repl.child.stdin!.write(line + '\n'); expect(await repl.waitFor(until, ms), `waiting for ${until} after ${JSON.stringify(line)}\n${repl.output()}\n${repl.stderr()}`).toBe(true); };
+    expect(await repl.waitFor(new RegExp(`live test of ${esc(K.final)} · mode patched · /quit to exit, /help for commands`), 30_000)).toBe(true);
+    await type('종목코드 삼성전자', /correct ✓ \(benchmark\)|wrong ✗ \(benchmark\)|no benchmark sample|error: /);
+    await type('/mode compare', /mode → compare/, 10_000);
+    await type('/help', /\/quit {4}exit/, 10_000);
+    await type('/reset', /transcript cleared/, 10_000);
+    repl.child.stdin!.write('/quit\n');
+    const replCode = await Promise.race([repl.done, sleep(15_000).then(() => 'hung' as const)]);
+    const replOut = repl.output();
+    expect(replCode).toBe(0);
+    expect(replOut).not.toContain('you>');   // no prompt echo when stdin is not a TTY
+    expect(replOut).toMatch(/^after \(krx-all-2761 loaded\) {2}\d+ ms/m);
+    expect(replOut.slice(replOut.indexOf('after ('))).toContain('005930');
+    expect(replOut).toMatch(/^correct ✓ \(benchmark\) {2}model /m);
+    expect(replOut).toContain('mode → compare');
+    expect(replOut).toContain('/mode base|patched|compare  (now: compare)');
+    expect(replOut).toContain('/reset   forget the transcript');
+    expect(replOut).toContain('/quit    exit');
+    expect(replOut).toContain('transcript cleared');
+    expect(replOut.trim().endsWith('bye — 1 turn(s)')).toBe(true);
+
+    // 9 — the same through a plain pipe (printf … | ainize chat …)
+    r = await withRuntime(request, () => runCli(['chat', K.final, '--mode', 'patched'], { ...A, input: '종목코드 삼성전자\n/quit\n', timeoutMs: 15 * 60_000 }));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).not.toContain('you>');
+    expect(r.stdout).toMatch(/^after \(krx-all-2761 loaded\) {2}\d+ ms/m);
+    expect(r.stdout.trim().endsWith('bye — 1 turn(s)')).toBe(true);
+    const rt = (await api<{ applied: unknown[] }>(request, '/api/runtime')).body;
+    expect(rt.applied.filter((a) => (a as { patch_id: string }).patch_id === K.final || (a as { patch_id: string }).patch_id === K.pixel)).toEqual([]);
+  });
+
+  test('AZ-066 Exhaust the anonymous live-test quota (20/hour per IP) via POST /api/chat and confirm operators are unmetered and failed calls are not charged', async ({ request, playwright }) => {
+    test.setTimeout(20 * 60_000);
+    // Each run uses its own visitor address (X-Forwarded-For is honoured: `trust proxy`), so the shared 127.0.0.1 bucket stays untouched.
+    const ip = `10.66.${(Date.now() >> 8) & 255}.${Date.now() & 255}`;
+    const BODY = { patch_id: K.pixel, mode: 'base', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] };
+    // the operator login goes through its own request context: the session cookie it sets must not leak into the anonymous calls
+    const opCtx = await playwright.request.newContext();
+    const token = await operatorToken(opCtx, NODE_A);
+    await waitForRuntime(request);
+
+    let r = await chatApi(request, { patch_id: K.pixel, messages: [] }, { ip });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe('invalid request');
+    expect(Array.isArray(r.body.issues)).toBe(true);
+
+    r = await chatApi(request, { patch_id: 'no-such-patch', messages: [{ role: 'user', content: 'hi' }] }, { ip });
+    expect(r.body.error).toBe('patch not found');
+    expect(r.status).toBe(500);   // scenario-documented finding: a thrown market error, 404 would be accurate
+
+    const remaining: number[] = [];
+    let first: Record<string, unknown> | null = null;
+    while (remaining.length < 20) {
+      const x = await chatApi(request, BODY, { ip });
+      if (x.status !== 200) {   // runtime hiccup (vLLM restart / busy) — not charged, wait and retry
+        expect([429, 500, 503]).toContain(x.status);
+        expect(x.status).not.toBe(429);
+        await sleep(15_000); await waitForRuntime(request); continue;
+      }
+      if (!first) first = x.body;
+      remaining.push(x.body.remaining_quota as number);
+    }
+    expect([first!.remaining_quota, first!.quota_limit, first!.patched, first!.base !== null]).toEqual([19, 20, null, true]);
+    expect(remaining).toEqual(Array.from({ length: 20 }, (_, i) => 19 - i));
+
+    r = await chatApi(request, BODY, { ip });
+    expect([r.status, r.body.error]).toEqual([429, 'free live-test quota exhausted for this hour — buy the patch or run your own node']);
+
+    r = await pollUntil(() => chatApi(opCtx, BODY, { ip, token }), (x) => x.status === 200, 3 * 60_000, 10_000);
+    expect(r.status).toBe(200);
+    expect([r.body.remaining_quota, r.body.quota_limit]).toEqual([null, null]);
+    await opCtx.dispose();
+
+    r = await pollUntil(() => chatApi(request, BODY, { ip, node: NODE_B }), (x) => x.status === 200, 3 * 60_000, 10_000);
+    expect(r.status).toBe(200);
+    expect(r.body.quota_limit).toBe(20);
+
+    const logs = await runCli(['logs', '--kind', 'usage', '--limit', '3'], A);
+    expect(logs.code, logs.stderr || logs.stdout).toBe(0);
+    for (const l of logs.stdout.split('\n').filter(Boolean)) expect(l).toMatch(/usage {5}\[pixelplus-087600\] live test pixelplus-087600 \((base|patched|compare)\) by (ip:|operator:)\S+: (base only|patched hit=(true|false|null))$/);
+    expect(logs.stdout).toMatch(new RegExp(`usage {5}\\[pixelplus-087600\\] live test pixelplus-087600 \\(base\\) by ip:${esc(ip)}: base only`));
+  });
+
+  test('AZ-064 Create a branch, add knowledge, subscribe a node and route `jurisdiction=KR` to it', async ({ request }) => {
+    test.setTimeout(20 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    await cliLogin(HOME_B, NODE_B);
+    await waitForRuntime(request);
+    const name = `e2e/KR-${RUN}${test.info().retry ? `-r${test.info().retry}` : ''}`;
+    const v = `KR-${RUN}${test.info().retry ? `-r${test.info().retry}` : ''}`;
+    const ctx = `jurisdiction=${v}`;
+    const ctxJson = JSON.stringify({ jurisdiction: v });
+
+    let r = await runCli(['route', ctx], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`no branch matches ${ctxJson}`);
+
+    r = await runCli(['branch', 'create', 'bad name!', '--context', ctx], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: invalid branch name');
+
+    r = await runCli(['branch', 'create', name, '--description', 'O14 test branch', '--context', ctx], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ branch ${name} created ${ctxJson} with 0 patch(es)`);
+    r = await runCli(['ledger', 'ls', '--kind', 'branch', '--limit', '5'], A);
+    expect(r.stdout).toContain(`${name} · 0 patch(es)`);
+
+    r = await runCli(['branch', 'add', name, K.pixel], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ ${K.pixel} added to ${name} (1 patches)`);
+
+    // node-b learns the new branch from the chain on its next ledger poll — wait until it lists it before the owner check
+    await pollUntil(() => runCli(['branch', 'ls'], B), (x) => x.stdout.includes(name), 90_000, 3000);
+    r = await runCli(['branch', 'add', name, K.final], B);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: only the branch owner can add patches');
+
+    r = await runCli(['route', ctx], A);
+    expect(r.stdout.split('\n').filter(Boolean)).toEqual([`context ${ctxJson} → branch ${name} ${ctxJson}`, 'no node currently subscribes to that branch']);
+
+    r = await withRuntime(request, () => runCli(['branch', 'subscribe', name], { ...A, timeoutMs: 15 * 60_000 }));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ subscribed ${name}  (patches acquired and applied when a runtime is available)`);
+    r = await runCli(['logs', '--kind', 'runtime', '--limit', '5'], A);
+    expect(r.stdout).toMatch(/runtime {3}\[pixelplus-087600\] applied pixelplus-087600: /);
+
+    r = await pollUntil(() => runCli(['route', ctx], A), (x) => x.stdout.includes('SERVING NODE'), 60_000, 3000);
+    expect(r.stdout).toMatch(/^SERVING NODE\s+ENDPOINT\s+MODEL\s+ADDRESS\s*$/m);
+    expect(r.stdout).toMatch(new RegExp(`^node-a\\s+${esc(NODE_A)}\\s+${esc(MODEL)}\\s+${esc(shortAddr(ADDR_A, 8))}$`, 'm'));
+    r = await runCli(['branch', 'ls'], A);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(name)} ✓\\s+${esc(ctx)}\\s+pixelplus-087600\\s+node-a\\s+`, 'm'));
+    expect(r.stdout).toContain('finance/KRX-latest');
+    expect(r.stdout).toContain('finance/KRX-history');
+    expect(r.stdout.trim().endsWith('✓ = this node subscribes')).toBe(true);
+
+    // node-b's view catches up with the add + subscribe records on its next ledger poll
+    const rowB = new RegExp(`^${esc(name)}\\s+${esc(ctx)}\\s+pixelplus-087600\\s+node-a\\s+`, 'm');
+    r = await pollUntil(() => runCli(['branch', 'ls'], B), (x) => rowB.test(x.stdout), 90_000, 3000);
+    expect(r.stdout).toMatch(rowB);
+    expect(r.stdout).not.toContain(`${name} ✓`);
+    r = await runCli(['status'], A);
+    expect(r.stdout).toMatch(new RegExp(`^branches\\s+.*${esc(name)}`, 'm'));
+
+    r = await runCli(['route', `jurisdiction=US-${RUN}`], A);
+    expect(r.stdout.trim()).toBe(`no branch matches ${JSON.stringify({ jurisdiction: `US-${RUN}` })}`);
+    r = await runCli(['route', 'jurisdiction'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: context must be key=value, got "jurisdiction"');
+
+    r = await withRuntime(request, () => runCli(['branch', 'unsubscribe', name], { ...A, timeoutMs: 15 * 60_000 }));
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ unsubscribed ${name}`);
+    const rt = await pollUntil(() => api<{ applied: { patch_id: string }[] }>(request, '/api/runtime'), (x) => !x.body.applied.some((a) => a.patch_id === K.pixel), 60_000, 3000);
+    expect(rt.body.applied.some((a) => a.patch_id === K.pixel)).toBe(false);
+    r = await pollUntil(() => runCli(['route', ctx], A), (x) => x.stdout.includes('no node currently subscribes'), 60_000, 3000);
+    expect(r.stdout.split('\n').filter(Boolean)).toEqual([`context ${ctxJson} → branch ${name} ${ctxJson}`, 'no node currently subscribes to that branch']);
+  });
+
+  test('AZ-052 Announce a public patch and watch node-b and node-c verify it on the real model until it is LISTED', async ({ request }) => {
+    test.setTimeout(25 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    await waitForRuntime(request);
+    // Published with `--test` (hidden from public catalogs) and a run-unique schema so the shared catalog stays clean.
+    const id = uid('o08-pixel-copy', test.info().retry);
+    const schema = uid('o08-pixel-check', test.info().retry);
+    const name = '[o08 test] Pixelplus ticker copy';
+    let r = await runCli(['status'], A);
+    expect(r.stdout).toMatch(new RegExp(`^runtime\\s+available · ${esc(MODEL)} · hook ok$`, 'm'));
+
+    r = await runCli(['publish', PIXEL_NPZ, '--id', id, '--name', name, '--model', MODEL, '--benchmark', benchJson(schema), '--price', '0.1', '--test'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const out = r.stdout.split('\n').filter(Boolean);
+    expect(out[0]).toBe(`✓ draft created: ${id}  (2,992 rows, sha256 ${PIXEL_SHA.slice(0, 12)}…)`);
+    expect(out[1]).toMatch(new RegExp(`^✓ announced ${esc(id)} → ledger record [0-9a-f]{16}… \\(verifiers will now attest; quorum lists it\\)$`));
+    // 2 — no price quote before quorum
+    const locked = await request.get(`${NODE_A}/x402/patch/${id}`);
+    expect(locked.status()).toBe(423);
+    expect(await locked.text()).toMatch(/^\{"error":"patch not listed yet \(verification [01]\/2\)"\}$/);
+    r = await runCli(['logs', '--kind', 'publish', '--limit', '5'], A);
+    const pub = new RegExp(`announced ${esc(id)} \\(conflicts: (\\d+)\\)`).exec(r.stdout);
+    expect(pub).not.toBeNull();
+    // NOTE: for a `--test` anchor the pre-check reports 0 overlaps (market.conflicts() only looks at the public catalog) — a public
+    // publish of this body reports 4 (the demo bodies). Recorded as an observation; the count is not asserted for hidden anchors.
+    test.info().annotations.push({ type: 'note', description: `announce pre-check reported conflicts: ${pub![1]} (hidden --test anchor)` });
+
+    // 4 — poll status on node-a until LISTED, remembering the transitions
+    const seen: string[] = [];
+    const final = await pollUntil(async () => {
+      const g = await runCli(['patch', 'get', id], A);
+      const st = /^\S.*? {2}(ANNOUNCED|VERIFYING|LISTED|REJECTED)/.exec(g.stdout.split('\n')[0] ?? '')?.[1] ?? '?';
+      if (seen[seen.length - 1] !== st) seen.push(st);
+      return g;
+    }, (g) => / {2}LISTED/.test(g.stdout.split('\n')[0] ?? '') || /REJECTED/.test(g.stdout.split('\n')[0] ?? ''), 12 * 60_000, 10_000);
+    expect(seen).toEqual(seen.filter((s) => ['ANNOUNCED', 'VERIFYING', 'LISTED'].includes(s)));
+    expect(seen.indexOf('LISTED')).toBe(seen.length - 1);
+    expect(final.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+    expect(final.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+    const attRows = final.stdout.split('\n').filter((l) => /\sPASS\s|\sFAIL\s/.test(l) && /vllm:|hash-only/.test(l));
+    expect(attRows.length).toBe(2);
+    for (const [nm, addr] of [['node-b', ADDR_B], ['node-c', ADDR_C]]) {
+      expect(final.stdout).toMatch(new RegExp(`^${nm} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+0\\s+5\\s+`, 'm'));
+    }
+    expect(attRows.some((l) => l.startsWith('node-a '))).toBe(false);
+
+    // 3 — verifier event trail on node-b and node-c (they share the runtime lock, so sequential)
+    for (const home of [HOME_B, HOME_C]) {
+      const lg = await pollUntil(() => runCli(['logs', '--patch', id, '--limit', '50'], { home }), (x) => x.stdout.includes('attested'), 60_000, 5000);
+      const ev = lg.stdout.split('\n').filter(Boolean);
+      const iVerifying = ev.findIndex((l) => l.includes(`verifier  [${id}] verifying ${id} (${name})`));
+      const iBench = ev.findIndex((l) => l.includes(`verifier  [${id}] benchmark ${id}: 1/1 restarts=0`));
+      const iAtt = ev.findIndex((l) => l.includes(`verify    [${id}] attested ${id}: PASS (vllm:${MODEL})`));
+      expect([home, iVerifying >= 0, iBench > iVerifying, iAtt > iBench]).toEqual([home, true, true, true]);
+    }
+
+    // 5/6 — the demo listing is untouched (different schema → not a supersede candidate); hidden anchors stay out of `patch ls`
+    r = await runCli(['patch', 'ls', '--status', 'LISTED'], A);
+    expect(r.stdout).toContain(K.final);
+    expect(r.stdout).not.toContain(id);   // `--test` visibility (deviation from the public publish in the scenario text)
+    r = await runCli(['patch', 'get', K.final], A);
+    expect(r.stdout.split('\n')[0]).toContain('LISTED');
+    expect(r.stdout).not.toMatch(/superseded by/i);
+
+    // 7 — the two new attest records on the shared ledger
+    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '10'], A);
+    const rows = ledgerRows(r.stdout).filter((l) => l.includes(`${id} · PASS · vllm:${MODEL}`));
+    expect(rows.length).toBe(2);
+    expect(rows.some((l) => l.includes(shortAddr(ADDR_B, 6)))).toBe(true);
+    expect(rows.some((l) => l.includes(shortAddr(ADDR_C, 6)))).toBe(true);
+  });
+
+  test('AZ-068 Publish a hidden test listing with `ainize publish --test` and confirm it stays out of public catalogs and counts', async ({ request, playwright }) => {
+    test.setTimeout(20 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    await waitForRuntime(request);
+    const id = uid('o07-hidden', test.info().retry);
+    // NOTE: the scenario text uses the demo schema krx-ticker-codes; with an identical body that would make the hidden
+    // listing supersede krx-all-2761 once verified (market.announce pending_supersede), so a run-unique schema is used.
+    const schema = uid('o07-hidden-check', test.info().retry);
+    const countsBefore = (await api<{ counts: Record<string, number> }>(request, '/api/info')).body.counts;
+
+    let r = await runCli(['publish', PIXEL_NPZ, '--id', id, '--name', 'O07 hidden test', '--model', MODEL, '--benchmark', benchJson(schema), '--price', '0.1', '--test'], A);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`^✓ draft created: ${esc(id)} {2}\\(2,992 rows, sha256 [0-9a-f]{12}…\\)$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^✓ announced ${esc(id)} → ledger record [0-9a-f]{16}… \\(verifiers will now attest; quorum lists it\\)$`, 'm'));
+
+    r = await runCli(['patch', 'ls', '--status', 'ANNOUNCED,VERIFYING,LISTED'], A);
+    expect(r.stdout).not.toContain(id);
+    expect((await request.get(`${NODE_A}/api/catalog`)).ok()).toBe(true);
+    expect((await (await request.get(`${NODE_A}/api/catalog`)).text()).split(id).length - 1).toBe(0);
+
+    for (const node of [NODE_A, NODE_B]) {
+      const d = await pollUntil(() => api(request, `/api/patches/${id}`, { node }), (x) => x.status === 200, 60_000, 3000);
+      expect([node, d.status]).toEqual([node, 200]);
+    }
+
+    r = await runCli(['ledger', 'ls', '--kind', 'anchor', '--limit', '5'], A);
+    expect(r.stdout).toMatch(new RegExp(`\\sanchor\\s+.*${esc(id)} · ${esc(MODEL)} · 2992 rows`, 'm'));
+
+    const lg = await pollUntil(() => runCli(['logs', '--kind', 'verify', '--limit', '30'], B), (x) => x.stdout.includes(`attested ${id}:`), 10 * 60_000, 10_000);
+    expect(lg.stdout).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
+    const g = await pollUntil(() => runCli(['patch', 'get', id], A), (x) => / {2}LISTED/.test(x.stdout.split('\n')[0] ?? ''), 8 * 60_000, 10_000);
+    expect(g.stdout.split('\n')[0]).toBe('O07 hidden test  LISTED  (yours)');
+    r = await runCli(['patch', 'ls'], A);
+    expect(r.stdout).not.toContain(id);
+    expect((await (await request.get(`${NODE_A}/api/catalog`)).text()).split(id).length - 1).toBe(0);
+
+    const countsAfter = (await api<{ counts: Record<string, number> }>(request, '/api/info')).body.counts;
+    expect(countsAfter).toEqual({ patches: 4, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
+    expect({ ...countsAfter, patches: 0 }).toEqual({ ...countsBefore, patches: 0 });
+    expect((await (await request.get(`${NODE_A}/api/chat/patches`)).text()).split(id).length - 1).toBe(0);
+  });
+});
+
+// =====================================================================================================================
+// Fourth node (node-d): lifecycle, peers, one-line purchases, gateway probes, verifier grace period — strictly serial
+// =====================================================================================================================
+test.describe('operator: fourth node', () => {
+  // Not serial: each test brings node-d up itself (ensureNodeD/startNodeD) and the block-level hooks clean it up, so a
+  // failure in one test must not skip the others (workers=1 keeps the file order).
+  test.beforeAll(async () => { await cleanupNodeD(); });
+  test.afterAll(async ({ playwright }) => {
+    await cleanupNodeD();
+    // all three demo nodes learned node-d through hello / peer exchange — forget it everywhere (retrying across gossip
+    // rounds, since a node that still lists it would hand it back to the others) so the cluster's peer count returns to 2
+    const ctx = await playwright.request.newContext();
+    try {
+      const tokens = new Map<string, string>();
+      for (const n of [NODE_A, NODE_B, NODE_C]) tokens.set(n, await operatorToken(ctx, n));
+      for (let i = 0; i < 6; i++) {
+        for (const [n, t] of tokens) await api(ctx, '/api/peers', { method: 'DELETE', token: t, node: n, data: { endpoint: NODE_D } });
+        await sleep(9000);
+        const left = [] as string[];
+        for (const n of tokens.keys()) { const peers = (await api<{ peers: { endpoint: string }[] }>(ctx, '/api/nodes', { node: n })).body.peers; if (peers.some((p) => p.endpoint === NODE_D)) left.push(n); }
+        if (!left.length) break;
+      }
+    } finally { await ctx.dispose(); }
+  });
+
+  test('AZ-057 Bring up a fourth node with `ainize init`, fund it on the local AIN chain, start it detached, peer it with the demo cluster and stop it', async ({ request }) => {
+    test.setTimeout(10 * 60_000);
+    const D = { home: HOME_D };
+    const cfgPath = join(HOME_D, 'config.json');
+    expect(existsSync(HOME_D)).toBe(false);
+
+    let r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const l = r.stdout.split('\n');
+    expect(l[0]).toBe(`✓ node initialised at ${cfgPath}`);
+    expect(r.stdout).toMatch(/^name\s+node-d$/m);
+    expect(r.stdout).toMatch(/^address\s+0x[0-9a-fA-F]{40}$/m);
+    expect(r.stdout).toMatch(new RegExp(`^port\\s+${PORT_D}$`, 'm'));
+    expect(r.stdout).toMatch(/^ledger\s+ain$/m);
+    expect(r.stdout).toMatch(/^roles\s+verifier$/m);
+    expect(r.stdout.trim().endsWith('next: `ngram start`   (then `ngram login`, `ngram seed`)')).toBe(true);
+    const cfgText = readFileSync(cfgPath, 'utf8');
+    const addr = nodeAddress(HOME_D);
+
+    r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D)], D);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} (use --force to overwrite, or \`ngram config show\`)`);
+    expect(readFileSync(cfgPath, 'utf8')).toBe(cfgText);
+
+    r = await runCli(['keys', 'show'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`^address\\s+${addr}$`, 'm'));
+    expect(r.stdout).toMatch(/^public key\s+[0-9a-f]{128}$/m);
+    expect(r.stdout.trim().endsWith('add --reveal to print the private key')).toBe(true);
+    const priv = (JSON.parse(cfgText) as { identity: { privateKey: string } }).identity.privateKey;
+    expect(r.stdout).not.toContain(priv);
+    expect(r.stdout).not.toMatch(/^private key\s/m);
+
+    r = await runCli(['chain', 'fund', addr, '100'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(new RegExp(`^✓ funded ${addr} with 100 AIN {2}tx 0x[0-9a-f]+ {2}balance now 100 AIN$`));
+
+    r = await startNodeD();
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const started = new RegExp(`^✓ node started in the background \\(pid (\\d+)\\) — port ${PORT_D}\\n {2}logs: ${esc(join(HOME_D, 'node.log'))} {3}stop: ngram stop$`).exec(r.stdout.trim());
+    expect(started).not.toBeNull();
+    const pid = Number(started![1]);
+    expect(readFileSync(join(HOME_D, 'node.pid'), 'utf8').trim()).toBe(String(pid));
+
+    r = await runCli(['start', '-d'], D);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: node already running in the background (pid ${pid}) — \`ngram stop\` first`);
+
+    r = await pollUntil(() => runCli(['status'], D), (x) => /^peers\s+3$/m.test(x.stdout), 60_000, 3000);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.split('\n')[0]).toBe(`node-d  ${NODE_D}  (pid ${pid})`);
+    expect(r.stdout).toMatch(/^roles\s+verifier$/m);
+    expect(r.stdout).toMatch(/^peers\s+3$/m);
+    expect(r.stdout).toMatch(/^quorum\s+2$/m);
+    expect(r.stdout).toMatch(/^currency\s+AIN$/m);
+    const info = (await api<{ ledger: { records: number }; counts: { patches: number; listed: number } }>(request, '/api/info')).body;
+    const recLine = /^ledger\s+ain · ain:local · http:\/\/localhost:8081 · (\d+) records · height \d+$/m.exec(r.stdout);
+    expect(recLine).not.toBeNull();
+    expect(Math.abs(Number(recLine![1]) - info.ledger.records)).toBeLessThanOrEqual(2);   // same chain; node-d's own `node` record may not have reached node-a's poll yet
+    const pub = (await api<{ total: number; items: { status: string }[] }>(request, '/api/catalog?limit=200')).body;   // public (non-draft) catalog, same chain
+    expect(r.stdout).toMatch(new RegExp(`^patches\\s+${pub.total} \\(${pub.items.filter((e) => e.status === 'LISTED').length} listed\\)$`, 'm'));
+
+    r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => tableRows(x.stdout).filter((row) => !row.includes('(unreached)')).length >= 3, 30_000, 3000);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+${esc(shortAddr(ADDR_A, 8))}\\s+seller,verifier,serving\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_B)}\\s+(node-b|\\(unreached\\))\\s+`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_C)}\\s+(node-c|\\(unreached\\))\\s+`, 'm'));
+    expect(tableRows(r.stdout).length).toBe(3);
+
+    const names = await pollUntil(async () => (await api<{ nodes: { name: string }[] }>(request, '/api/nodes')).body.nodes.map((n) => n.name), (ns) => ns.includes('node-d'), 30_000, 3000);
+    expect(names).toEqual(expect.arrayContaining(['node-a', 'node-b', 'node-c', 'node-d']));
+
+    r = await runCli(['stop'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ stopped node (pid ${pid})`);
+    r = await runCli(['stop'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe('no background node running for this NGRAM_HOME');
+    expect(existsSync(join(HOME_D, 'node.pid'))).toBe(false);
+    expect(await httpDown(NODE_D)).toBe(true);
+  });
+
+  test('AZ-059 Add, list and remove peers on a node and watch gossip discover the other nodes', async ({ request }) => {
+    test.setTimeout(10 * 60_000);
+    const D = { home: HOME_D };
+    await ensureNodeD();   // node-d from AZ-057 (created here when the test runs on its own)
+    let r = await startNodeD();
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    r = await runCli(['login', '--password', PASSWORD_D], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+
+    r = await runCli(['peers', 'ls'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+(node-a|\\(unreached\\))\\s+`, 'm'));
+
+    r = await runCli(['peers', 'add', 'localhost:3403'], D);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe('error: endpoint must be an http(s) URL');
+
+    r = await runCli(['peers', 'add', `${NODE_B}/`], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ peer added: ${NODE_B}/`);
+
+    await sleep(8000);
+    r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => /node-a/.test(x.stdout) && /node-b/.test(x.stdout), 30_000, 3000);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+`, 'm'));
+    const bRow = new RegExp(`^${esc(NODE_B)}\\s+node-b\\s+${esc(shortAddr(ADDR_B, 8))}\\s+verifier\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(r.stdout);
+    expect(bRow).not.toBeNull();
+    expect(Date.now() - new Date(bRow![1]).getTime()).toBeLessThan(60_000);
+
+    r = await runCli(['config', 'show'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const cfg = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'))) as { peers: string[] };
+    expect(cfg.peers).toEqual([NODE_A, NODE_B]);
+
+    r = await runCli(['nodes'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^known nodes$/m);
+    expect(r.stdout).toMatch(/^NAME\s+ADDRESS\s+ENDPOINT\s+ROLES\s+LEDGER\s+BRANCHES\s+BLOBS\s+LAST SEEN\s*$/m);
+    for (const n of ['node-a', 'node-b', 'node-c']) expect(r.stdout).toMatch(new RegExp(`^${n}\\s+0x`, 'm'));
+    expect(r.stdout).toMatch(/^node-d \(self\)\s+0x/m);
+    expect(r.stdout).toMatch(/^configured peers$/m);
+    expect(r.stdout).toMatch(/^ENDPOINT\s+ADDRESS\s+LAST SEEN\s+FAILURES\s*$/m);
+
+    r = await runCli(['peers', 'rm', NODE_B], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ peer removed: ${NODE_B}`);
+    await sleep(8000);
+    r = await runCli(['peers', 'ls'], D);
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+`, 'm'));
+    const cfg2 = JSON.parse((await runCli(['config', 'show'], D)).stdout.replace(/^[^{]*/, '')) as { peers: string[] };
+    expect(cfg2.peers).toEqual([NODE_A]);
+
+    const anon = await api<{ error: string }>(request, '/api/peers', { method: 'POST', node: NODE_D, data: { endpoint: NODE_C } });
+    expect([anon.status, anon.body.error]).toEqual([401, 'operator login required']);
+  });
+
+  test('AZ-053 Use knowledge in one line: `ainize use krx-all-2761` verifies, pays in AIN, downloads and loads it; then re-run and remove', async ({ request }) => {
+    test.setTimeout(25 * 60_000);
+    // Buyer = node-d (fresh identity funded in AZ-057) instead of node-b, so every run starts from "not purchased".
+    const D = { home: HOME_D };
+    await ensureNodeD();
+    if (!nodeDPid()) expect((await startNodeD()).code).toBe(0);
+    expect(await httpUp(NODE_D)).toBe(true);
+    await runCli(['login', '--password', PASSWORD_D], D);
+    await cliLogin(HOME_A, NODE_A);
+    await waitForRuntime(request, NODE_D);
+    const addrD = nodeAddress(HOME_D);
+    const balBefore = (await api<{ balance: number }>(request, '/api/chain', { node: NODE_D })).body.balance;
+    expect(balBefore).toBeGreaterThanOrEqual(25);
+    const soldBefore = (await api<{ downloads: number }>(request, `/api/patches/${K.final}`)).body.downloads;
+    const settleBefore = (await api<{ records: unknown[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length;
+
+    let r = await withRuntime(request, () => runCli(['use', K.final], { ...D, timeoutMs: 20 * 60_000 }), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const out = r.stdout;
+    expect(out).toMatch(/^✓ bought krx-all-2761 for 25 \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/m);
+    const step = (name: string, detail: string) => new RegExp(`^ {2}\\+ *\\d+ms {2}${esc(name.padEnd(9))} ${detail}$`, 'm');
+    expect(out).toMatch(step('quorum', '2 attestation\\(s\\) ≥ quorum 2'));
+    expect(out).toMatch(step('402', `Payment Required: 25 AIN → ${esc(ADDR_A.slice(0, 10))}… \\(ain-transfer\\)`));
+    expect(out).toMatch(step('pay', 'AIN transfer tx 0x[0-9a-f]{12}…'));
+    expect(out).toMatch(step('settled', 'seller confirmed; manifest sha256 [0-9a-f]{14}…'));
+    expect(out).toMatch(step('download', `([\\d.]+ MB from ${esc(NODE_A)}; sha256 matches on-ledger anchor|body already present; sha256 matches on-ledger anchor)`));
+    expect(out).toMatch(step('receipt', 'on-chain access receipt written \\(/apps/knowledge/access/…, tx 0x[0-9a-f]{10}…\\)'));
+    expect(out).toMatch(step('apply', '.+'));
+    expect(out).toMatch(new RegExp(`^ {2}body: ${esc(join(HOME_D, 'data', 'blobs', `${KRX_SHA}.npz`))}$`, 'm'));
+    expect(out.trim().endsWith('✓ loaded into the model — try: ainize chat krx-all-2761 "your question"')).toBe(true);
+
+    r = await runCli(['wallet'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const bal = Number(/^balance\s+([\d.]+) AIN$/m.exec(r.stdout)![1]);
+    expect(bal).toBeCloseTo(balBefore - 25, 3);
+    expect(r.stdout).toMatch(/^purchases\s+1$/m);
+
+    r = await runCli(['wallet'], A);
+    expect(r.stdout).toMatch(/^recent sales$/m);
+    expect(r.stdout).toMatch(new RegExp(`^krx-all-2761\\s+25 AIN\\s+${esc(shortAddr(addrD, 8))}\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d$`, 'm'));
+    r = await runCli(['ledger', 'ls', '--kind', 'settle', '--limit', '5'], A);
+    expect(r.stdout).toContain(`krx-all-2761 · 25 AIN · buyer ${shortAddr(addrD, 4)}`);
+    for (const node of [NODE_A, NODE_B, NODE_D]) {
+      const sold = await pollUntil(() => api<{ downloads: number }>(request, `/api/patches/${K.final}`, { node }), (x) => x.body.downloads === soldBefore + 1, 30_000, 3000);
+      expect([node, sold.body.downloads]).toEqual([node, soldBefore + 1]);
+    }
+    r = await runCli(['patch', 'ls'], A);
+    expect(r.stdout).toMatch(new RegExp(`^krx-all-2761\\s+LISTED\\s+.*\\s25 AIN\\s+2/2\\s+${soldBefore + 1}\\s+krx-ticker-codes\\s*$`, 'm'));
+    expect((await api<{ records: unknown[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length).toBe(settleBefore + 1);
+
+    r = await runCli(['patch', 'get', K.final], D);
+    expect(r.stdout.split('\n')[0]).toBe('KRX ticker codes for 2,761 listed companies (final)  LISTED  purchased  applied');
+
+    r = await withRuntime(request, () => runCli(['chat', K.final, '--mode', 'patched', '종목코드 삼성전자'], D), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^after \(krx-all-2761 loaded\) {2}\d+ ms · already loaded$/m);
+    expect(r.stdout.slice(r.stdout.indexOf('after ('))).toContain('005930');
+    expect(r.stdout).toMatch(new RegExp(`^correct ✓ \\(benchmark\\) {2}model ${esc(MODEL)}$`, 'm'));
+
+    r = await withRuntime(request, () => runCli(['use', K.final], { ...D, timeoutMs: 15 * 60_000 }), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const again = r.stdout.split('\n').filter(Boolean);
+    expect(again[0]).toBe('✓ krx-all-2761 is already on this node (purchased)');
+    expect(again[1]).toMatch(/^✓ applied krx-all-2761: /);
+    expect(again[2]).toBe('✓ try it: ainize chat krx-all-2761 "your question"');
+    expect((await api<{ balance: number }>(request, '/api/chain', { node: NODE_D })).body.balance).toBeCloseTo(bal, 3);
+
+    r = await withRuntime(request, () => runCli(['patch', 'remove', K.final], D), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^✓ removed krx-all-2761: /);
+    r = await runCli(['patch', 'get', K.final], D);
+    expect(r.stdout.split('\n')[0]).toBe('KRX ticker codes for 2,761 listed companies (final)  LISTED  purchased');
+    expect((await api<{ applied: unknown[] }>(request, '/api/runtime', { node: NODE_D })).body.applied).toEqual([]);
+
+    r = await runCli(['patch', 'ls', '--status', 'LISTED'], D);
+    expect(r.stdout).toMatch(/^krx-all-2761\s+LISTED\s+/m);
+  });
+
+  test('AZ-062 Use a SUPERSEDED knowledge with `ainize use --no-apply` and get the newer-version note', async ({ request }) => {
+    test.setTimeout(15 * 60_000);
+    const D = { home: HOME_D };
+    await ensureNodeD();
+    if (!nodeDPid()) expect((await startNodeD()).code).toBe(0);
+    expect(await httpUp(NODE_D)).toBe(true);
+    await runCli(['login', '--password', PASSWORD_D], D);
+    await waitForRuntime(request, NODE_D);
+    const dlBefore = (await api<{ items: { anchor: { id: string }; downloads: number }[] }>(request, '/api/catalog?status=SUPERSEDED')).body.items.find((e) => e.anchor.id === K.pixel)!.downloads;
+
+    let r = await runCli(['patch', 'get', K.pixel], D);
+    expect(r.stdout.split('\n')[0]).toContain('SUPERSEDED');
+    expect(r.stdout.split('\n')[0]).not.toContain('purchased');
+    expect(r.stdout).toMatch(/^ {2}superseded by: krx-all-2761/m);
+
+    r = await withRuntime(request, () => runCli(['use', K.pixel, '--no-apply'], { ...D, timeoutMs: 10 * 60_000 }), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    const lines = r.stdout.split('\n').filter(Boolean);
+    expect(lines[0]).toMatch(/^✓ note: a newer version exists on the same subject → krx-all-2761.* \(newer version available\)$/);
+    expect(lines[1]).toMatch(/^✓ bought pixelplus-087600 for 0\.1 \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/);
+    const step = (name: string, detail: string) => new RegExp(`^ {2}\\+ *\\d+ms {2}${esc(name.padEnd(9))} ${detail}$`, 'm');
+    expect(r.stdout).toMatch(step('quorum', '2 attestation\\(s\\) ≥ quorum 2'));
+    expect(r.stdout).toMatch(step('402', 'Payment Required: 0\\.1 AIN → 0x[0-9a-fA-F]{8}… \\(ain-transfer\\)'));
+    expect(r.stdout).toMatch(step('pay', 'AIN transfer tx 0x[0-9a-f]{12}…'));
+    expect(r.stdout).toMatch(step('settled', 'seller confirmed; manifest sha256 [0-9a-f]{14}…'));
+    expect(r.stdout).toMatch(step('download', '.*sha256 matches on-ledger anchor'));
+    expect(r.stdout).toMatch(step('receipt', 'on-chain access receipt written \\(/apps/knowledge/access/…, tx 0x[0-9a-f]{10}…\\)'));
+    expect(r.stdout).not.toMatch(/^ {2}\+ *\d+ms {2}apply /m);
+    expect(r.stdout.trim().endsWith('✓ downloaded — load with: ainize patch apply pixelplus-087600')).toBe(true);
+
+    r = await runCli(['patch', 'get', K.pixel], D);
+    expect(r.stdout.split('\n')[0]).toBe('Pixelplus ticker code (single fact)  SUPERSEDED  purchased');
+    expect((await api<{ applied: unknown[] }>(request, '/api/runtime', { node: NODE_D })).body.applied).toEqual([]);
+
+    r = await withRuntime(request, () => runCli(['patch', 'apply', K.pixel], D), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^✓ applied pixelplus-087600: /);
+    r = await withRuntime(request, () => runCli(['patch', 'remove', K.pixel], D), NODE_D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^✓ removed pixelplus-087600: /);
+
+    const dl = await pollUntil(async () => (await api<{ items: { anchor: { id: string }; downloads: number }[] }>(request, '/api/catalog?status=SUPERSEDED')).body.items.find((e) => e.anchor.id === K.pixel)!.downloads, (n) => n === dlBefore + 1, 30_000, 3000);
+    expect(dl).toBe(dlBefore + 1);
+  });
+
+  test("AZ-056 Probe the seller gateway's X-PAYMENT validation, the 423 not-listed state and the gated blob download with curl", async ({ request }) => {
+    test.setTimeout(15 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    const settleBefore = (await api<{ records: unknown[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length;
+    const x402 = async (payment: string) => {
+      const r = await request.get(`${NODE_A}/x402/patch/${K.final}`, { headers: { 'x-payment': payment } });
+      return [r.status(), (await r.text()).trim()];
+    };
+    const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64');
+    expect(await x402('not-base64-json')).toEqual([402, '{"error":"missing or malformed X-PAYMENT"}']);
+    expect(await x402(b64({ scheme: 'paypal' }))).toEqual([402, '{"error":"unsupported scheme paypal"}']);
+    expect(await x402(b64({ scheme: 'ain-transfer' }))).toEqual([402, '{"error":"ain-transfer payload needs txHash"}']);
+    expect(await x402(b64({ scheme: 'local-credit', nonce: 'deadbeef', from: ADDR_B, proof: '00' }))).toEqual([402, '{"error":"unknown or expired nonce"}']);
+
+    // 423 while an item is still ANNOUNCED/VERIFYING — a fresh hidden anchor with a run-unique schema
+    const id = uid('o56-verifying', test.info().retry);
+    const pub = await runCli(['publish', PIXEL_NPZ, '--id', id, '--name', 'O56 gateway probe', '--model', MODEL, '--benchmark', benchJson(uid('o56-check', test.info().retry)), '--price', '0.1', '--test'], A);
+    expect(pub.code, pub.stderr || pub.stdout).toBe(0);
+    const locked = await request.get(`${NODE_A}/x402/patch/${id}`);
+    expect(locked.status()).toBe(423);
+    expect(locked.statusText()).toBe('Locked');
+    expect((await locked.text()).trim()).toMatch(/^\{"error":"patch not listed yet \(verification [01]\/2\)"\}$/);
+
+    const anonBlob = await request.get(`${NODE_A}/p2p/blob/${KRX_SHA}`);
+    expect(anonBlob.status()).toBe(402);
+    expect((await anonBlob.text()).trim()).toBe('{"error":"payment required: buy the patch via /x402/patch/:id (verifiers and authors are exempt)"}');
+    expect((await api<{ records: unknown[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length).toBe(settleBefore);
+
+    // the settled buyer's manifest download_token (node-d bought krx-all-2761 in AZ-053) unlocks the body
+    if (!nodeDPid()) expect((await startNodeD()).code).toBe(0);
+    expect(await httpUp(NODE_D)).toBe(true);
+    const tokenD = (await (await request.post(`${NODE_D}/api/auth/login`, { data: { password: PASSWORD_D } })).json() as { token: string }).token;
+    const purchases = (await api<{ items: { patch_id: string; manifest: { download_token: string } }[] }>(request, '/api/me/purchases', { node: NODE_D, token: tokenD })).body.items;
+    const dl = purchases.find((p) => p.patch_id === K.final)?.manifest.download_token;
+    expect(dl).toBeTruthy();
+    const head = await request.head(`${NODE_A}/p2p/blob/${KRX_SHA}?token=${dl}`);
+    expect(head.status()).toBe(200);
+    expect(head.statusText()).toBe('OK');
+    expect(head.headers()['content-type']).toBe('application/octet-stream');
+    expect(head.headers()['x-content-sha256']).toBe(KRX_SHA);
+    expect(head.headers()['content-disposition']).toBe(`attachment; filename="${KRX_SHA}.npz"`);
+  });
+
+  test('AZ-069 Show that a verifier whose serving API is down keeps retrying for 15 minutes instead of attesting hash-only', async ({ request }) => {
+    test.setTimeout(25 * 60_000);
+    const D = { home: HOME_D };
+    await cliLogin(HOME_A, NODE_A);
+    await ensureNodeD();
+    await runCli(['stop'], D);
+    let r = await runCli(['config', 'set', 'runtime.api', 'http://localhost:8999'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe('✓ runtime.api = "http://localhost:8999"  (restart the node to apply)');
+    r = await runCli(['config', 'set', 'roles', 'verifier'], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    r = await startNodeD();
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    await sleep(3000);
+
+    r = await runCli(['status'], D);
+    expect(r.stdout).toMatch(/^runtime\s+unavailable \(serving API unreachable\)$/m);
+
+    // node-d may already hold the pixelplus body (bought/fetched earlier in this block) — then there is no blob fetch to log
+    const hadBody = ((await api<{ node: { blobs: string[] } }>(request, '/api/info', { node: NODE_D })).body.node?.blobs ?? []).includes(PIXEL_SHA);
+    // a fresh announce (hidden, run-unique schema) right after node-d is up
+    const id = uid('o69-grace', test.info().retry);
+    const name = 'O69 grace period';
+    const pub = await runCli(['publish', PIXEL_NPZ, '--id', id, '--name', name, '--model', MODEL, '--benchmark', benchJson(uid('o69-check', test.info().retry)), '--price', '0.1', '--test'], A);
+    expect(pub.code, pub.stderr || pub.stdout).toBe(0);
+    const lg = await pollUntil(() => runCli(['logs', '--limit', '60'], D), (x) => x.stdout.split('\n').some((l) => l.includes(`[${id}]`) && l.includes('hash-only fallback')), 150_000, 5000);
+    const ev = lg.stdout.split('\n').filter((l) => l.includes(`[${id}]`));
+    const iV = ev.findIndex((l) => /info {2}verifier {2}\[.*\] verifying /.test(l) && l.includes(`verifying ${id} (${name})`));
+    const iB = ev.findIndex((l) => /info {2}blob {6}\[/.test(l) && l.includes(`fetched ${id} body from`));
+    const iW = ev.findIndex((l) => /warn {2}verifier {2}\[/.test(l) && l.includes(`verify ${id} failed: runtime unavailable (serving API unreachable) — waiting up to 15 min before hash-only fallback`));
+    expect([iV >= 0, iW > iV]).toEqual([true, true]);
+    if (hadBody) test.info().annotations.push({ type: 'note', description: 'node-d already held the pixelplus body from an earlier purchase in this block — no blob fetch line, the first failed attempt follows the verifying line directly' });
+    else expect([iB > iV, iW > iB]).toEqual([true, true]);
+
+    // The grace clock starts at node-d's FIRST failed attempt (after the blob fetch). node-d keeps retrying every ~5 s
+    // only while the item is ANNOUNCED/VERIFYING — node-b/node-c usually list it within ~30-60 s, which ends the retries.
+    const firstWarnAt = new Date(ev[iW].slice(0, 19)).getTime();
+    let warns: string[] = []; let listedEarly = false;
+    while (Date.now() - firstWarnAt < 70_000) {
+      warns = (await runCli(['logs', '--kind', 'verifier', '--limit', '80'], D)).stdout.split('\n').filter((l) => l.includes(`verify ${id} failed`));
+      const g = await runCli(['patch', 'get', id], A);
+      if (/ {2}LISTED/.test(g.stdout.split('\n')[0] ?? '') && Date.now() - firstWarnAt > 35_000) { listedEarly = true; break; }
+      await sleep(5000);
+    }
+    expect(warns.length).toBeGreaterThanOrEqual(1);
+    for (const w of warns) expect(w).toMatch(/ — waiting up to 1[345] min before hash-only fallback$/);   // never a hash-only vote
+    const late = warns.filter((w) => new Date(w.slice(0, 19)).getTime() - firstWarnAt >= 31_000);
+    if (late.length) expect(late[late.length - 1]).toMatch(/waiting up to 14 min before hash-only fallback$/);
+    else { expect(listedEarly).toBe(true); test.info().annotations.push({ type: 'note', description: `node-b/node-c listed ${id} before node-d had retried for 30 s (${warns.length} retry warning(s), all "15 min") — the rounded-down "14 min" message is not observable in this timing` }); }
+    const addrD = nodeAddress(HOME_D);
+    r = await runCli(['patch', 'records', id], A);
+    expect(r.stdout).not.toContain(shortAddr(addrD, 8));
+    r = await runCli(['patch', 'get', id], A);
+    expect(r.stdout).not.toContain('hash-only');
+
+    r = await runCli(['config', 'set', 'runtime.api', 'http://localhost:8000'], D);
+    expect(r.stdout.trim()).toBe('✓ runtime.api = "http://localhost:8000"  (restart the node to apply)');
+    r = await runCli(['stop'], D);
+    expect(r.stdout.trim()).toMatch(/^✓ stopped node \(pid \d+\)$/);
+    r = await startNodeD();
+    expect(r.stdout).toMatch(/^✓ node started in the background/);
+    const restartedAt = Date.now();
+    await waitForRuntime(request, NODE_D);
+
+    // node-d re-verifies for real once its runtime is back — unless node-b/node-c already reached quorum in the meantime
+    // (a verifier only picks up ANNOUNCED/VERIFYING items); in both cases no hash-only vote may exist.
+    const outcome = await pollUntil(async () => {
+      const dlog = await runCli(['logs', '--limit', '60'], D);
+      const attested = dlog.stdout.includes(`attested ${id}: `);
+      const g = await runCli(['patch', 'get', id], A);
+      const listed = / {2}LISTED/.test(g.stdout.split('\n')[0] ?? '');
+      const lockFree = !(await api<{ lock: unknown }>(request, '/api/chat/patches', { node: NODE_D })).body.lock;
+      const skipped = listed && lockFree && !dlog.stdout.split('\n').some((l) => l.includes(`verifying ${id}`) && new Date(l.slice(0, 19)).getTime() > restartedAt) && Date.now() - restartedAt > 90_000;
+      return { attested, listed, skipped, dlog: dlog.stdout, get: g.stdout };
+    }, (o) => o.attested || o.skipped, 12 * 60_000, 10_000);
+    expect(outcome.get).not.toContain('hash-only');
+    expect(outcome.dlog).not.toContain('hash-only)');
+    if (outcome.attested) {
+      expect(outcome.dlog).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
+      // node-d's real vote counts toward the quorum; the item is LISTED once ≥ 2 executed PASS votes exist (node-b/node-c
+      // may still be waiting for the shared model when node-d came back — then node-d's vote is the one completing the quorum)
+      const listedWithD = (x: { stdout: string }) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`) && / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '');
+      const g = await pollUntil(() => runCli(['patch', 'get', id], A), listedWithD, 12 * 60_000, 5000);
+      expect(g.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+      expect(g.stdout).toMatch(new RegExp(`^node-d ${esc(shortAddr(addrD, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+`, 'm'));
+      expect(g.stdout).not.toContain('hash-only');
+      const passRows = g.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length;
+      expect(passRows).toBeGreaterThanOrEqual(2);
+      expect(g.stdout).toMatch(new RegExp(`^verification\\s+${passRows}/2 passed ✓ quorum$`, 'm'));
+      if (passRows < 3) test.info().annotations.push({ type: 'note', description: `node-d's real attestation completed the quorum before every demo verifier voted (${passRows} executed PASS votes) — the scenario's third row is not observable in this timing` });
+    } else {
+      expect(outcome.get.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+      // quorum was reached by node-b + node-c before node-d came back: node-d correctly wrote nothing (no third row, no hash-only)
+      test.info().annotations.push({ type: 'note', description: 'node-b/node-c listed the patch before node-d\'s runtime returned; node-d skipped the LISTED item (no attestation at all) — grace period held, third attestation not observable in this timing' });
+      expect(outcome.get).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+      expect(outcome.get).not.toContain(`node-d ${shortAddr(addrD, 6)}`);
+    }
+  });
+
+  test('AZ-067 Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase', async ({ request }) => {
+    test.setTimeout(15 * 60_000);
+    await cliLogin(HOME_A, NODE_A);
+    // Everything that does not require bouncing the cluster is asserted; the restart itself is forbidden on the shared live cluster.
+    for (const node of [NODE_A, NODE_B, NODE_C]) expect([node, (await api(request, '/api/info', { node })).status]).toEqual([node, 200]);
+    const clusterHome = join(HOME_A, '..');
+    expect(readFileSync(join(clusterHome, 'nodes.pid'), 'utf8').split('\n').filter(Boolean).length).toBe(3);
+    const sup = Number(readFileSync(join(clusterHome, 'supervisor.pid'), 'utf8').trim());
+    expect(readFileSync(`/proc/${sup}/cmdline`, 'utf8').replace(/\0/g, ' ')).toContain('scripts/cluster.mjs');
+    let r = await runCli(['status'], A);
+    expect(r.stdout).toMatch(new RegExp(`^runtime\\s+available · ${esc(MODEL)} · hook ok$`, 'm'));
+    expect(Number(/^peers\s+(\d+)$/m.exec(r.stdout)?.[1])).toBeGreaterThanOrEqual(2);
+    r = await runCli(['peers', 'ls'], A);
+    for (const [ep, nm] of [[NODE_B, 'node-b'], [NODE_C, 'node-c']]) expect(r.stdout).toMatch(new RegExp(`^${esc(ep)}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
+
+    const keys = { ...(await agentRun(['keys'])) }; keys.stdout = strip(keys.stdout);
+    expect(keys.code, keys.stderr || keys.stdout).toBe(0);
+    const agentAddr = /^address\s+(0x[0-9a-fA-F]{40})$/m.exec(keys.stdout)?.[1];
+    expect(agentAddr).toBeTruthy();
+    expect(keys.stdout).toMatch(/^publicKey\s+[0-9a-f]+$/m);
+    expect(keys.stdout).toMatch(/^home\s+\/home\/\S+\/\.ngram-agent$/m);
+    r = await runCli(['chain', 'fund', agentAddr!, '5'], A);
+    expect(r.stdout.trim()).toMatch(new RegExp(`^✓ funded ${agentAddr} with 5 AIN {2}tx 0x[0-9a-f]+ {2}balance now [\\d.]+ AIN$`));
+    const cat = { ...(await agentRun(['catalog'])) }; cat.stdout = strip(cat.stdout);
+    expect(cat.code, cat.stderr || cat.stdout).toBe(0);
+    expect(cat.stdout).toMatch(/^krx-all-2761\s+LISTED\s+270053 rows {2}25 AIN {2}attest 2\/2 {2}KRX ticker codes for 2,761 listed companies \(final\)$/m);
+    expect(cat.stdout).not.toContain(K.pixel);
+
+    test.skip(true, 'scripts/cluster-restart.sh must not be run against the shared live cluster (steps 1–2, 4–5 of the scenario need the restart); pre-restart health, pid files and the agent keys/catalog/funding steps were asserted above');
+  });
+});

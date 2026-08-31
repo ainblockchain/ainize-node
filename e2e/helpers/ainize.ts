@@ -6,7 +6,8 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { createServer, type AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { APIRequestContext, Page } from '@playwright/test';
@@ -155,3 +156,54 @@ export async function waitForLockFree(request: APIRequestContext, node = NODE_A,
 
 export function fileExists(p: string): boolean { return existsSync(p); }
 export function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+
+// ---------------------------------------------------------------- throwaway node (scenarios that need a never-set-up node)
+export const SCRATCH = process.env.CLAUDE_SCRATCHPAD ?? '/tmp/claude-1000/-mnt-newdata-ainize/3b639ba8-d335-4ad4-b5d2-7c256d5ee8a0/scratchpad';
+
+/** A free TCP port on localhost. */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.unref();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => { const port = (s.address() as AddressInfo).port; s.close(() => resolve(port)); });
+  });
+}
+
+export interface ThrowawayNode { url: string; home: string; port: number; name: string; pid: number | null; stop: () => Promise<void> }
+
+/**
+ * Start a private, single-use node from the same binary + web UI as the cluster: local ledger, no peers, no serving API
+ * (runtime.api points at a closed port so it never touches the shared vLLM). Nothing it does can reach the demo cluster
+ * or the AIN chain. `stop()` kills it and removes its home.
+ */
+export async function startThrowawayNode(tag: string, opts: { name?: string; roles?: string } = {}): Promise<ThrowawayNode> {
+  const name = opts.name ?? `node-${tag}`;
+  const home = join(SCRATCH, `ainize-${tag}-${Date.now().toString(36)}`);
+  mkdirSync(home, { recursive: true });
+  const port = await freePort();
+  const url = `http://localhost:${port}`;
+  const init = await cli(['init', '--name', name, '--port', String(port), '--ledger', 'local', '--roles', opts.roles ?? 'seller,verifier,serving', '--public-url', url, '--runtime-api', 'http://localhost:1'], home, { timeoutMs: 60_000 });
+  if (init.code !== 0) throw new Error(`throwaway node init failed: ${init.stderr || init.stdout}`);
+  const started = await cli(['start', '-d'], home, { timeoutMs: 60_000 });
+  if (started.code !== 0) throw new Error(`throwaway node start failed: ${started.stderr || started.stdout}`);
+  const pidFile = join(home, 'node.pid');
+  const pidOf = () => { try { const n = Number(readFileSync(pidFile, 'utf8').trim()); return Number.isFinite(n) ? n : null; } catch { return null; } };
+  const alive = (pid: number | null) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+  const t0 = Date.now();
+  let up = false;
+  while (Date.now() - t0 < 60_000 && !up) {
+    try { const r = await fetch(`${url}/api/info`, { signal: AbortSignal.timeout(2000) }); up = r.ok; } catch { /* not yet */ }
+    if (!up) await sleep(500);
+  }
+  const stop = async () => {
+    await cli(['stop'], home, { timeoutMs: 30_000 }).catch(() => undefined);
+    const pid = pidOf();
+    if (alive(pid)) { try { process.kill(pid!, 'SIGTERM'); } catch { /* gone */ } }
+    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+    if (alive(pid)) { try { process.kill(pid!, 'SIGKILL'); } catch { /* gone */ } }
+    rmSync(home, { recursive: true, force: true });
+  };
+  if (!up) { await stop(); throw new Error(`throwaway node ${name} did not answer on ${url} within 60 s`); }
+  return { url, home, port, name, pid: pidOf(), stop };
+}

@@ -64,10 +64,16 @@ export interface PurchaseResult {
 
 const SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
 
+/** Error that carries the HTTP status the API should answer with (400 bad input, 404 unknown, 409 conflict, 503 unavailable). */
+export class MarketError extends Error { constructor(public readonly status: number, message: string) { super(message); this.name = 'MarketError'; } }
 /** The request names something that does not exist (HTTP 404). */
-export class NotFoundError extends Error { constructor(message: string) { super(message); this.name = 'NotFoundError'; } }
-/** The request conflicts with current state — duplicate id, immutable anchor (HTTP 409). */
-export class ConflictError extends Error { constructor(message: string) { super(message); this.name = 'ConflictError'; } }
+export class NotFoundError extends MarketError { constructor(message: string) { super(404, message); this.name = 'NotFoundError'; } }
+/** The request conflicts with current state — duplicate id, immutable anchor, missing body (HTTP 409). */
+export class ConflictError extends MarketError { constructor(message: string) { super(409, message); this.name = 'ConflictError'; } }
+const notFound = (msg: string) => new NotFoundError(msg);
+const conflict = (msg: string) => new ConflictError(msg);
+const badInput = (msg: string) => new MarketError(400, msg);
+const unavailable = (msg: string) => new MarketError(503, msg);
 
 /** Who is asking for a knowledge in a live test / teach context (drafts are owner- or operator-only). */
 export interface Caller { address?: string | null; operator?: boolean }
@@ -105,6 +111,18 @@ export class Market {
     const l = this.ledger as Ledger & { refresh?: () => Promise<void> };
     if (typeof l.refresh === 'function') await l.refresh().catch(() => undefined);
     this.invalidate();
+  }
+
+  private refreshFollowUp: NodeJS.Timeout | null = null;
+  /**
+   * A peer just told us it wrote a record (p2p push). On the AIN ledger the record itself arrives through the chain,
+   * so re-read it now and once more a few seconds later (block finality) instead of waiting for the next poll.
+   */
+  refreshLedgerSoon(followUpMs = 3000): void {
+    this.refreshLedger().catch(() => undefined);
+    if (this.refreshFollowUp) return;
+    this.refreshFollowUp = setTimeout(() => { this.refreshFollowUp = null; this.refreshLedger().catch(() => undefined); }, followUpMs);
+    this.refreshFollowUp.unref?.();
   }
 
   // ------------------------------------------------------------------ catalog
@@ -167,21 +185,22 @@ export class Market {
     return (await this.catalogAll()).find((e) => e.anchor.id === id) ?? null;
   }
 
+  /** Every known entry by id — includes test-visibility anchors and local drafts, so lineage (parents / royalties / conflicts) resolves for hidden patches too. Callers exposing it publicly must filter. */
   async entryMap(): Promise<Map<string, CatalogEntry>> {
-    return new Map((await this.catalog()).map((e) => [e.anchor.id, e]));
+    return new Map((await this.catalogAll()).map((e) => [e.anchor.id, e]));
   }
 
   // ------------------------------------------------------------------ drafts / publish
   async createDraft(input: CreateDraftInput): Promise<PatchAnchor> {
     const id = (input.id ?? input.name).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
-    if (!SLUG.test(id)) throw new ValidationError('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)');
-    if (await this.entry(id)) throw new ConflictError(`patch id already exists: ${id}`);
+    if (!SLUG.test(id)) throw badInput('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)');
+    if (await this.entry(id)) throw conflict(`patch id already exists: ${id}`);
     const price = input.price === undefined ? this.cfg.market.defaultPrice : validatePrice(input.price);
     const { blob, sketch } = await this.blobs.importFile(input.file, { copy: !input.keepInPlace });
     const benchmark: BenchmarkSpec = { ...input.benchmark, format: input.benchmark.format ?? ['template'] };
     const parents = (input.parents ?? []).filter(Boolean);
     const map = await this.entryMap();
-    for (const p of parents) if (!map.has(p)) throw new ValidationError(`unknown parent patch: ${p}`);
+    for (const p of parents) if (!map.has(p)) throw badInput(`unknown parent patch: ${p}`);
     const anchor: PatchAnchor = {
       id, name: input.name, description: input.description ?? '', author: this.address, author_name: this.cfg.name,
       model: { row_dim: blob.row_dim, ...input.model } as PatchAnchor['model'],
@@ -210,7 +229,7 @@ export class Market {
 
   updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe'>>): PatchAnchor {
     const d = this.store.getDraft(id);
-    if (!d) throw new ConflictError('only drafts can be edited (anchors are immutable on the ledger)');
+    if (!d) throw conflict('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
     if ('contributors' in patch) {
       const contributors = this.checkContributors(patch.contributors);
@@ -227,7 +246,7 @@ export class Market {
 
   deleteDraft(id: string) {
     const d = this.store.getDraft(id);
-    if (!d) throw new NotFoundError('draft not found');
+    if (!d) throw notFound('draft not found');
     this.store.deleteDraft(id);
     this.invalidate();
     this.log('info', 'patch', `draft deleted: ${id}`, id);
@@ -260,10 +279,10 @@ export class Market {
     const draftEntry = await this.entry(id);
     if (draftEntry && this.drive) this.drive.pullDraftEdits(draftEntry);
     const d = this.store.getDraft(id);
-    if (!d) throw new Error('draft not found');
+    if (!d) throw notFound('draft not found');
     const blob = this.blobs.get(d.anchor.patch_sha256);
-    if (!blob) throw new Error('patch body missing from blob store');
-    if (!d.anchor.benchmark.schema) throw new Error('benchmark.schema is required');
+    if (!blob) throw conflict('patch body missing from blob store');
+    if (!d.anchor.benchmark.schema) throw badInput('benchmark.schema is required');
     const conflicts = await this.conflicts(id);
     const anchor: PatchAnchor & { gateway_url: string } = { ...d.anchor, gateway_url: `${this.publicUrl}/x402/patch/${id}`, created_at: Date.now() };
     const rec = await this.ledger.append('anchor', anchor);
@@ -300,7 +319,7 @@ export class Market {
       if (!raw) continue;
       const pending = JSON.parse(raw) as ConflictInfo[];
       for (const c of pending) {
-        const s: SupersedeRecord = { old_patch_id: c.patch_id, new_patch_id: e.anchor.id, overlap_rows: c.overlap_rows, reason: 'newer patch on same benchmark schema overlaps address set' };
+        const s: SupersedeRecord = { old_patch_id: c.patch_id, new_patch_id: e.anchor.id, overlap_rows: c.overlap_rows, reason: 'newer patch on same benchmark schema overlaps address set', created_at: Date.now() };
         const rec = await this.ledger.append('supersede', s);
         await this.p2p?.broadcast(rec).catch(() => undefined);
         this.log('info', 'publish', `${e.anchor.id} supersedes ${c.patch_id} (${c.overlap_rows} shared rows)`, e.anchor.id);
@@ -314,7 +333,10 @@ export class Market {
   /** Make sure we hold the body for an anchor (author/verifier/purchaser path). */
   async ensureBlob(anchor: PatchAnchor, token?: string): Promise<BlobRow> {
     const have = this.blobs.get(anchor.patch_sha256);
-    if (have) return have;
+    if (have) {
+      this.log('info', 'blob', `fetched ${anchor.id} body from local blob store (already held, ${(have.size_bytes / 1e6).toFixed(1)} MB)`, anchor.id);
+      return have;
+    }
     const dest = this.blobs.pathFor(anchor.patch_sha256);
     const holders = this.p2p.holders(anchor.patch_sha256);
     const gw = (anchor as PatchAnchor & { gateway_url?: string }).gateway_url;
@@ -323,6 +345,33 @@ export class Market {
     const { blob } = await this.blobs.importFile(dest, { expectSha: anchor.patch_sha256 });
     this.log('info', 'blob', `fetched ${anchor.id} body from ${from} (${(blob.size_bytes / 1e6).toFixed(1)} MB, sha ok)`, anchor.id);
     return blob;
+  }
+
+  /**
+   * Stop serving a knowledge body from this node (`ainize patch forget <id>`): the local file is deleted (only files
+   * inside our blob dir — in-place files are just deregistered). Bodies are content-addressed, so every id sharing the
+   * same sha256 loses its local body too; the ids are reported. Refused while the patch is loaded in the model or is
+   * still a draft (delete the draft instead) — nothing on the ledger changes.
+   */
+  async forgetBody(id: string): Promise<{ ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: string[] }> {
+    const e = await this.entry(id);
+    if (!e) throw notFound('patch not found');
+    if (e.status === 'DRAFT') throw conflict('this is a draft — delete it instead (ainize patch rm <id>)');
+    if (this.isApplied(id)) throw conflict('patch is loaded in the model — unload it first (ainize patch remove <id>)');
+    const blob = this.blobs.get(e.anchor.patch_sha256);
+    if (!blob) throw notFound('body not held by this node');
+    const alsoAffects = (await this.catalogAll()).filter((x) => x.anchor.id !== id && x.anchor.patch_sha256 === blob.sha256).map((x) => x.anchor.id);
+    const inStore = blob.path.startsWith(this.blobs.dir);
+    this.blobs.remove(blob.sha256);
+    this.invalidate();
+    this.log('info', 'blob', `forgot ${id} body (${blob.sha256.slice(0, 12)}…, ${(blob.size_bytes / 1e6).toFixed(1)} MB${inStore ? ', file deleted' : ', file left in place'}) — no longer served from this node${alsoAffects.length ? `; same body as ${alsoAffects.join(', ')}` : ''}`, id);
+    return { ok: true, patch_id: id, sha256: blob.sha256, deleted_file: inStore, also_affects: alsoAffects };
+  }
+
+  /** The subset of `shas` that back publicly visible knowledge (no drafts, no hidden test anchors) — what visitors may count. */
+  async publicBlobs(shas: string[]): Promise<string[]> {
+    const pub = new Set((await this.catalog()).filter((e) => e.status !== 'DRAFT').map((e) => e.anchor.patch_sha256));
+    return shas.filter((s) => pub.has(s));
   }
 
   /** May `address` download blob `sha`? author, any registered verifier, or a settled buyer. */
@@ -447,8 +496,8 @@ export class Market {
     const step = (s: string, d: string) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, patchId); };
     let entry = await this.entry(patchId);
     if (entry && !entry.quorum_ok) { await this.refreshLedger(); entry = await this.entry(patchId); }
-    if (!entry) throw new Error('patch not found');
-    if (!entry.quorum_ok) throw new Error(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
+    if (!entry) throw notFound('patch not found');
+    if (!entry.quorum_ok) throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
     step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
     const gw = (entry.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? `${this.publicUrl}/x402/patch/${patchId}`;
     const r1 = await fetch(gw, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
@@ -512,11 +561,11 @@ export class Market {
 
   async applyPatch(patchId: string, reason: string): Promise<string> {
     const entry = await this.entry(patchId);
-    if (!entry) throw new Error('patch not found');
+    if (!entry) throw notFound('patch not found');
     const blob = this.blobs.get(entry.anchor.patch_sha256);
-    if (!blob) throw new Error('patch body not present on this node (buy it first)');
+    if (!blob) throw conflict('patch body not present on this node (buy it first)');
     const st = await this.runtime.status();
-    if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
+    if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
     const r = await this.runtime.apply(blob.path);
     if (r.code !== 0) throw new Error(r.err || r.out);
     this.store.setApplied(patchId, blob.sha256, reason);
@@ -526,9 +575,9 @@ export class Market {
 
   async removePatch(patchId: string): Promise<string> {
     const entry = await this.entry(patchId);
-    if (!entry) throw new Error('patch not found');
+    if (!entry) throw notFound('patch not found');
     const blob = this.blobs.get(entry.anchor.patch_sha256);
-    if (!blob) throw new Error('patch body not present');
+    if (!blob) throw conflict('patch body not present');
     const r = await this.runtime.remove(blob.path);
     if (r.code !== 0) throw new Error(r.err || r.out);
     this.store.clearApplied(patchId);
@@ -599,12 +648,12 @@ export class Market {
       entries.push({ id, entry });
     }
     const st = await this.runtime.status();
-    if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
+    if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
     const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
     for (const { id, entry } of entries) {
       const blob = this.blobs.get(entry.anchor.patch_sha256);
-      if (!blob) throw new ValidationError(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
-      if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new ValidationError(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+      if (!blob) throw conflict(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
+      if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw conflict(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
       targets.push({ id, entry, path: blob.path });
     }
     const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
@@ -702,7 +751,7 @@ export class Market {
 
   // ------------------------------------------------------------------ branches / network
   async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9/_-]{1,63}$/.test(name)) throw new Error('invalid branch name');
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9/_-]{1,63}$/.test(name)) throw badInput('invalid branch name');
     const b: BranchInfo = { name, description, context, owner: this.address, patch_ids: patchIds, created_at: Date.now() };
     const rec = await this.ledger.append('branch', b);
     this.invalidate();
@@ -718,11 +767,18 @@ export class Market {
     return [...latest.values()];
   }
 
+  /** Branch by name; a miss re-reads the shared ledger once (another node may have written it seconds ago). */
+  private async branchByName(name: string): Promise<BranchInfo | undefined> {
+    let b = (await this.branches()).find((x) => x.name === name);
+    if (!b) { await this.refreshLedger(); b = (await this.branches()).find((x) => x.name === name); }
+    return b;
+  }
+
   async addToBranch(name: string, patchId: string): Promise<BranchInfo> {
-    const b = (await this.branches()).find((x) => x.name === name);
-    if (!b) throw new Error('branch not found');
-    if (b.owner !== this.address) throw new Error('only the branch owner can add patches');
-    if (!(await this.entry(patchId))) throw new Error('patch not found');
+    const b = await this.branchByName(name);
+    if (!b) throw notFound('branch not found');
+    if (b.owner !== this.address) throw new MarketError(403, 'only the branch owner can add patches');
+    if (!(await this.entry(patchId))) throw notFound('patch not found');
     const nb: BranchInfo = { ...b, patch_ids: [...new Set([...b.patch_ids, patchId])] };
     const rec = await this.ledger.append('branch', nb);
     this.invalidate();
@@ -731,9 +787,9 @@ export class Market {
   }
 
   async subscribe(branch: string, action: 'subscribe' | 'unsubscribe'): Promise<void> {
-    const b = (await this.branches()).find((x) => x.name === branch);
-    if (!b) throw new Error('branch not found');
-    const s: SubscriptionRecord = { node: this.address, branch, action, patch_ids: b.patch_ids };
+    const b = await this.branchByName(branch);
+    if (!b) throw notFound('branch not found');
+    const s: SubscriptionRecord = { node: this.address, branch, action, patch_ids: b.patch_ids, created_at: Date.now() };
     const rec = await this.ledger.append('subscribe', s);
     this.invalidate();
     await this.p2p?.broadcast(rec).catch(() => undefined);
