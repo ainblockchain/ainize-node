@@ -710,14 +710,12 @@ test.describe('autonomous buyer (runtime)', () => {
     const req = (await r402.json() as { requirements: Record<string, string>[] }).requirements[0];
     expect(req).toMatchObject({ payTo: NODE_C_ADDR, maxAmountRequired: '10', asset: 'AIN', scheme: 'ain-transfer' });
 
-    // 2: the agent buys it (10 AIN → node-c).
-    //    `ainize-agent run --patch <id>` resolves the id through /api/catalog, which hides test-visibility anchors,
-    //    so the run cannot reach the gateway; the purchase is therefore driven with the agent's own identity through
-    //    the identical x402 sequence (402 → AIN transfer → X-PAYMENT → 200 manifest).
-    // (--expect that never matches: the knowledge check must fail regardless of what other tests left in the model)
-    const viaAgent = await agentCheckRun(['run', '--market', NODE_C, '--patch', id, '--expect', '__never__', '--json']);
+    // 2: the agent resolves the hidden (test-visibility) id through GET /api/patches/:id and reaches the price step;
+    //    a 1 AIN budget stops it right there, so the purchase below is driven with the agent's own identity through
+    //    the identical x402 sequence (402 → AIN transfer → X-PAYMENT → 200 manifest) exactly once.
+    const viaAgent = await agentCheckRun(['run', '--market', NODE_C, '--patch', id, '--expect', '__never__', '--max-price', '1', '--json']);
     expect(viaAgent.code).toBe(1);
-    expect(viaAgent.stderr.trim()).toBe(`agent failed: patch ${id} is not listed on ${NODE_C}`);
+    expect(viaAgent.stderr + viaAgent.stdout).toContain('price 10 AIN exceeds --max-price 1');
     const core = await import('@ngram/core') as typeof import('@ngram/core');
     const ledger = new core.AinLedger({ providerUrl: CHAIN, chainId: 0 }, identityOf(AGENT_HOME) as never);
     let paid: { status: number; headers: Record<string, string>; body: string };

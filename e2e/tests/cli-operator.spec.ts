@@ -133,8 +133,7 @@ test.describe('operator: account / API / inspection', () => {
     expect((await api<{ items: unknown[] }>(request, '/api/benchmarks/krx-ticker-codes')).body.items.length).toBe(4);
     const info = (await api<{ quorum: number; currency: string; counts: Record<string, number>; peers: number }>(request, '/api/info')).body;
     expect([info.quorum, info.currency, info.peers]).toEqual([2, 'AIN', 2]);
-    const drafts = await draftCount(playwright.request);   // observation: counts.patches also counts the operator's private drafts
-    expect(info.counts).toEqual({ patches: 4 + drafts, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
+    expect(info.counts).toEqual({ patches: 4, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
     // 8 401 guards on node-b without credentials
     for (const [method, path] of [['GET', '/api/me/wallet'], ['GET', '/api/me/settings'], ['POST', '/api/patches'], ['POST', '/api/branches'], ['POST', `/api/patches/${K.final}/buy`], ['DELETE', '/api/peers']] as const) {
       const g = await api<{ error: string }>(request, path, { method, node: NODE_B });
@@ -864,8 +863,7 @@ test.describe('operator: runtime (serial)', () => {
     expect((await (await request.get(`${NODE_A}/api/catalog`)).text()).split(id).length - 1).toBe(0);
 
     const countsAfter = (await api<{ counts: Record<string, number> }>(request, '/api/info')).body.counts;
-    const drafts = await draftCount(playwright.request);   // other suites' private drafts are counted in `patches` (observation)
-    expect(countsAfter).toEqual({ patches: 4 + drafts, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
+    expect(countsAfter).toEqual({ patches: 4, listed: 1, verifying: 0, superseded: 3, rejected: 0 });
     expect({ ...countsAfter, patches: 0 }).toEqual({ ...countsBefore, patches: 0 });
     expect((await (await request.get(`${NODE_A}/api/chat/patches`)).text()).split(id).length - 1).toBe(0);
   });
