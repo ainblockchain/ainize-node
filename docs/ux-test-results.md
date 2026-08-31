@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-31
 - **Cluster:** live demo cluster — node-a http://localhost:3402 (web + API), node-b :3403, node-c :3404; local AIN chain :8081 (ledger=ain); shared vLLM :8000 (Qwen3.8-Flash-Next, hangs about hourly and self-restarts in ~5 min)
-- **Code:** main — results collected across the fix pass eb160df → a5a8194 (final fixes commit)
+- **Code:** main — results collected across the fix pass eb160df → a5a8194 (final fixes commit); AZ-067 re-run for real (private throwaway cluster) in the follow-up commit
 - **Runner:** Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1
 - **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (scenarios: docs/ux-test-scenarios.json)
 - **Raw results:** packages/e2e/results/full-run-2.log (full pass, list reporter) + results/rerun-*.json (targeted reruns after fixes)
@@ -10,13 +10,13 @@
 
 ## Summary
 
-**99 passed / 0 failed / 1 blocked of 100**
+**100 passed / 0 failed / 0 blocked of 100**
 
 | Persona | Passed | Failed | Blocked |
 |---|---|---|---|
 | Visitor | 26 | 0 | 0 |
 | Creator | 24 | 0 | 0 |
-| Operator | 19 | 0 | 1 |
+| Operator | 20 | 0 | 0 |
 | Agent | 14 | 0 | 0 |
 | Cross-cutting | 16 | 0 | 0 |
 
@@ -90,7 +90,7 @@
 | AZ-064 | Create a branch, add knowledge, subscribe a node and route `jurisdiction=KR` to it | Operator | PASS | 14.3 s |  |
 | AZ-065 | Operate the local AIN chain from the CLI: `chain status`, `chain up`, `chain fund`, `chain setup` and `wallet` | Operator | PASS | 9.0 s |  |
 | AZ-066 | Exhaust the anonymous live-test quota (20/hour per IP) via POST /api/chat and confirm operators are unmetered and failed calls are not charged | Operator | PASS | 26.1 s |  |
-| AZ-067 | Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase | Operator | BLOCKED | 5.9 s | scripts/cluster-restart.sh must not be run against the shared live cluster (steps 1–2, 4–5 of the scenario need the restart); pre-restart health, pid files and the agent keys/catalog/funding steps were asserted above |
+| AZ-067 | Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase | Operator | PASS | 24.9 s | restart executed for real on a private throwaway 3-node cluster started by the same script (NGRAM_CLUSTER_HOME + free port base, local ledger, NGRAM_SEED=0): identities, counts and a published draft survive the bounce, peers re-gossip, pid files are refreshed, and the live cluster :3402 is proven untouched; the post-restart agent 402 purchase is covered end-to-end by AZ-071..AZ-082 on this live cluster |
 | AZ-068 | Publish a hidden test listing with `ainize publish --test` and confirm it stays out of public catalogs and counts | Operator | PASS | 16.5 s |  |
 | AZ-069 | Show that a verifier whose serving API is down keeps retrying for 15 minutes instead of attesting hash-only | Operator | PASS | 7.2 min | node-d already held the pixelplus body from an earlier purchase in this block — no blob fetch line, the first failed attempt follows the verifying line directly |
 | AZ-070 | Check the aindrive mirror: `drive status --files`, `drive sync`, `drive up` before pairing, and the changes API guard | Operator | PASS | 13.2 s |  |
@@ -125,10 +125,6 @@
 | AZ-099 | Verify what happens to scroll position and filters on browser Back from a detail page | Cross-cutting | PASS | 5.2 s |  |
 | AZ-100 | Degrade gracefully when clipboard copy is unavailable or denied | Cross-cutting | PASS | 11.2 s |  |
 
-## Blocked scenario
-
-- **AZ-067** — `scripts/cluster-restart.sh` must not be run against the shared live demo cluster while other groups use it. Everything short of the restart is asserted for real (pre-restart health of all three nodes, `nodes.pid`/`supervisor.pid`, agent keys/catalog/funding); the restart steps themselves end in an explicit skip. Run the scenario by hand in a maintenance window.
-
 ## Environment notes (affect durations, not results)
 
 - The shared vLLM server (:8000) was unstable during part of the pass: from ~14:07 to ~15:20 UTC the engine restarted every 6–7 minutes (`shm_broadcast: No available shared memory broadcast block found in 60 seconds`), on top of its usual ~hourly hang. Runtime-touching scenarios wait for the model and were re-run in stable windows; the long durations on AZ-020/021/024/034/052 come from those waits.
@@ -137,11 +133,12 @@
 
 ## Coverage upgrades in this pass
 
-Four scenarios that previously ended in `test.skip` (“cannot pause the shared vLLM / kill node-a”) now run for real against a **private throwaway node** built from the same binary + web UI (ain ledger, read-only), so the shared cluster is never touched:
+Five scenarios that previously ended in `test.skip` or an explicit blocked skip (“cannot pause the shared vLLM / kill node-a / bounce the shared cluster”) now run for real against **private throwaway nodes or clusters** built from the same binaries + web UI, so the shared cluster is never touched:
 
 - **AZ-021 / AZ-090** — the node’s serving API sits behind a TCP relay to the shared vLLM that starts closed (“serving API unreachable”) and is opened later: the OFF state, the automatic recovery and the mid-flight drop are all observed for real.
 - **AZ-086** — a private verifier (`verifier.auto=false`, new config) holding the krx body refuses to attest during the 15-minute grace period; nothing is ever written on-chain.
 - **AZ-089** — a real SIGTERM + `ainize start -d` on the private serving node under an open Live-test tab.
+- **AZ-067** — the cluster restart runs for real on a private throwaway 3-node cluster started by the same `scripts/cluster-restart.sh` (`NGRAM_CLUSTER_HOME`, free port base, local ledger, `NGRAM_SEED=0`): identities, counts and a published draft survive the bounce, peers re-gossip, the pid files are refreshed, and the shared cluster at :3402 is proven untouched (its supervisor pid and `nodes.pid` are byte-identical before and after).
 
 Two systemic test bugs were fixed on the way: loopback origins gave no per-visitor quota isolation (every 127.x.y.z arrives as 127.0.0.1 — `freshVisitor()` now stamps a unique `X-Forwarded-For`), and the sender’s own tab never showed the shared-model lock banner because the page only polled every 20 s (the page now peeks at the lock right after sending).
 

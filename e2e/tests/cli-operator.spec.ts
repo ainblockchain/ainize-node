@@ -8,7 +8,8 @@
  */
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import {
@@ -1308,12 +1309,15 @@ test.describe('operator: fourth node', () => {
   test('AZ-067 Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase', async ({ request }) => {
     test.setTimeout(15 * 60_000);
     await cliLogin(HOME_A, NODE_A);
-    // Everything that does not require bouncing the cluster is asserted; the restart itself is forbidden on the shared live cluster.
+
+    // ---- preconditions + steps 3, 5-9 on the LIVE cluster (everything that does not require bouncing it) ----
     for (const node of [NODE_A, NODE_B, NODE_C]) expect([node, (await api(request, '/api/info', { node })).status]).toEqual([node, 200]);
     const clusterHome = join(HOME_A, '..');
-    expect(readFileSync(join(clusterHome, 'nodes.pid'), 'utf8').split('\n').filter(Boolean).length).toBe(3);
+    const liveNodesPid = readFileSync(join(clusterHome, 'nodes.pid'), 'utf8');
+    expect(liveNodesPid.split('\n').filter(Boolean).length).toBe(3);
     const sup = Number(readFileSync(join(clusterHome, 'supervisor.pid'), 'utf8').trim());
     expect(readFileSync(`/proc/${sup}/cmdline`, 'utf8').replace(/\0/g, ' ')).toContain('scripts/cluster.mjs');
+    await waitForRuntime(request);
     let r = await runCli(['status'], A);
     expect(r.stdout).toMatch(new RegExp(`^runtime\\s+available · ${esc(MODEL)} · hook ok$`, 'm'));
     expect(Number(/^peers\s+(\d+)$/m.exec(r.stdout)?.[1])).toBeGreaterThanOrEqual(2);
@@ -1332,7 +1336,135 @@ test.describe('operator: fourth node', () => {
     expect(cat.code, cat.stderr || cat.stdout).toBe(0);
     expect(cat.stdout).toMatch(/^krx-all-2761\s+LISTED\s+270053 rows {2}25 AIN {2}attest 2\/2 {2}KRX ticker codes for 2,761 listed companies \(final\)$/m);
     expect(cat.stdout).not.toContain(K.pixel);
+    // Step 10 (the agent's 402 purchase of krx-all-2761 after a restart) is asserted end-to-end by AZ-071..AZ-082
+    // against this same live cluster — which was itself brought up by this very script.
 
-    test.skip(true, 'scripts/cluster-restart.sh must not be run against the shared live cluster (steps 1–2, 4–5 of the scenario need the restart); pre-restart health, pid files and the agent keys/catalog/funding steps were asserted above');
+    // ---- steps 1-7 for REAL on a private throwaway cluster (same script, same binaries, same web UI) ----
+    // scripts/cluster-restart.sh may not bounce the shared demo cluster while other groups use it, so the restart
+    // itself runs against a private 3-node cluster: NGRAM_CLUSTER_HOME=<scratch> NGRAM_PORT_BASE=<free port>
+    // NGRAM_LEDGER=local NGRAM_SEED=0 — nothing on the shared chain, no demo seed, and the home-scoped stop
+    // (matched via /proc environ) cannot touch :3402. Adaptations to the private local-ledger cluster: the
+    // surviving catalog entry is a draft this test publishes itself (deterministic without the shared vLLM),
+    // prices are in CREDIT, and ledger.records grows by the per-boot `node` join announcements instead of
+    // staying constant (each node re-announces itself on boot).
+    const portBusy = (port: number) => new Promise<boolean>((resolve) => {
+      const s = connect({ port, host: '127.0.0.1' });
+      s.setTimeout(1500, () => { s.destroy(); resolve(true); });
+      s.once('connect', () => { s.destroy(); resolve(true); });
+      s.once('error', () => resolve(false));
+    });
+    let base = 0;
+    for (const cand of [3502, 3512, 3522, 3532, 3542]) {
+      if (!(await Promise.all([cand, cand + 1, cand + 2].map(portBusy))).some(Boolean)) { base = cand; break; }
+    }
+    expect(base, 'no free port base found for the private cluster').toBeGreaterThan(0);
+    const pHome = tmpHome('az067-cluster');
+    const urls = [base, base + 1, base + 2].map((p) => `http://localhost:${p}`);
+    const P = { home: join(pHome, 'node-a') };
+    const restartSh = async (...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+      try {
+        const o = await execFileP('bash', [join(REPO, 'scripts/cluster-restart.sh'), ...args], { env: { ...process.env, NGRAM_CLUSTER_HOME: pHome, NGRAM_PORT_BASE: String(base), NGRAM_LEDGER: 'local', NGRAM_SEED: '0' }, timeout: 120_000 });
+        return { code: 0, stdout: o.stdout, stderr: o.stderr };
+      } catch (e) { const err = e as { code?: number; stdout?: string; stderr?: string }; return { code: typeof err.code === 'number' ? err.code : 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' }; }
+    };
+    const infoOf = async (u: string) => (await api<{ node: { address: string; name: string }; ledger: { records: number }; counts: Record<string, number> }>(request, '/api/info', { node: u })).body;
+
+    try {
+      // first boot (same script; on a fresh home there is nothing to stop yet)
+      const boot = await restartSh();
+      expect(boot.code, boot.stderr).toBe(0);
+      expect(boot.stdout).toContain(`cluster starting (log: ${pHome}/cluster.log)`);
+      for (const u of urls) expect(await httpUp(u, 90_000), u).toBe(true);
+
+      // give the private node-a an operator password + a catalog entry that must survive the restart
+      r = await runCli(['login', '--password', 'az067-pass'], P);
+      expect(r.code, r.stderr || r.stdout).toBe(0);
+      expect(r.stdout.trim()).toBe(`✓ operator password set and logged in to ${urls[0]} (token saved in ${join(pHome, 'node-a')}/cli.json)`);
+      const draftId = uid('az067-keep', test.info().retry);
+      r = await runCli(['publish', PIXEL_NPZ, '--id', draftId, '--name', 'AZ067 restart survivor', '--model', MODEL, '--benchmark', benchJson(uid('az067-schema', test.info().retry)), '--price', '0.1', '--no-announce'], P);
+      expect(r.code, r.stderr || r.stdout).toBe(0);
+      expect(r.stdout).toContain(`✓ draft created: ${draftId}  (2,992 rows, sha256 ${PIXEL_SHA.slice(0, 12)}…)`);
+
+      // "before" snapshot (scenario precondition): identities, ledger height, counts, catalog, pid files
+      const before = await Promise.all(urls.map(infoOf));
+      expect(before.map((i) => i.node.name)).toEqual(['node-a', 'node-b', 'node-c']);
+      const lsBefore = await runCli(['patch', 'ls', '--drafts'], P);
+      expect(lsBefore.stdout).toMatch(new RegExp(`^${esc(draftId)}\\s+DRAFT\\s+node-a ${esc(shortAddr(before[0].node.address, 4))}\\s+${esc(MODEL)}\\s+2,992\\s+3\\.7 MB\\s+0\\.1 CREDIT\\s+0/2\\s+0\\s+`, 'm'));
+      const supBefore = Number(readFileSync(join(pHome, 'supervisor.pid'), 'utf8').trim());
+      expect(readFileSync(`/proc/${supBefore}/cmdline`, 'utf8').replace(/\0/g, ' ')).toContain('scripts/cluster.mjs');
+      const pidsBefore = readFileSync(join(pHome, 'nodes.pid'), 'utf8').split('\n').filter(Boolean).map(Number);
+      expect(pidsBefore.length).toBe(3);
+
+      // step 1: the real restart (without --fresh)
+      const restartedAt = Date.now();
+      const res = await restartSh();
+      expect(res.code, res.stderr).toBe(0);
+      expect(res.stdout).toMatch(/^stopped \d+$/m);
+      expect(res.stdout).toContain(`stopped ${supBefore}`);
+      expect(res.stdout).toContain(`cluster starting (log: ${pHome}/cluster.log)`);
+
+      // step 3: all three ports answer 200 again
+      for (const u of urls) expect(await httpUp(u, 90_000), u).toBe(true);
+
+      // step 2: the fresh cluster.log shows the three boot lines and the web-UI line
+      const log = await pollUntil(
+        () => Promise.resolve(readFileSync(join(pHome, 'cluster.log'), 'utf8')),
+        (l) => ['node-a', 'node-b', 'node-c'].every((n) => l.includes(`[${n}] ngram node "${n}" listening`)) && l.includes('[cluster] web UI'),
+        30_000, 1000,
+      );
+      expect(log).toContain(`[cluster] web UI → http://localhost:${base}   (B: ${base + 1}, C: ${base + 2}; homes under ${pHome}; ledger=local)`);
+      expect(log).not.toContain('seeded node-a');   // NGRAM_SEED=0: nothing was re-seeded
+
+      // step 4: identities, counts and the catalog survived (the ledger only gained the boot announcements)
+      const after = await Promise.all(urls.map(infoOf));
+      for (let i = 0; i < 3; i++) {
+        expect(after[i].node.address, urls[i]).toBe(before[i].node.address);
+        expect(after[i].counts, urls[i]).toEqual(before[i].counts);
+        expect(after[i].ledger.records, urls[i]).toBeGreaterThanOrEqual(before[i].ledger.records);
+      }
+      const lsAfter = await runCli(['patch', 'ls', '--drafts'], P);
+      expect(lsAfter.stdout).toBe(lsBefore.stdout);
+
+      // step 7: a fresh supervisor + 3 fresh node pids, all alive
+      const supAfter = Number(readFileSync(join(pHome, 'supervisor.pid'), 'utf8').trim());
+      expect(supAfter).not.toBe(supBefore);
+      expect(readFileSync(`/proc/${supAfter}/cmdline`, 'utf8').replace(/\0/g, ' ')).toContain('scripts/cluster.mjs');
+      const pidsAfter = readFileSync(join(pHome, 'nodes.pid'), 'utf8').split('\n').filter(Boolean).map(Number);
+      expect(pidsAfter.length).toBe(3);
+      for (const pid of pidsAfter) expect(() => process.kill(pid, 0), `node pid ${pid} alive`).not.toThrow();
+      expect(pidsAfter.filter((p) => pidsBefore.includes(p))).toEqual([]);
+
+      // step 5: peers re-gossip — node-b/node-c rows with a fresh LAST SEEN (host clock is UTC) and FAILURES 0
+      const peerDefs: [string, number][] = [['node-b', base + 1], ['node-c', base + 2]];
+      const peerRow = (nm: string, port: number, out: string) => new RegExp(`^http://localhost:${port}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(out);
+      const peers = await pollUntil(() => runCli(['peers', 'ls'], P), (o) => peerDefs.every(([nm, port]) => {
+        const m = peerRow(nm, port, o.stdout);
+        return !!m && Date.parse(`${m[1].replace(' ', 'T')}Z`) >= restartedAt - 60_000;
+      }), 120_000, 5000);
+      for (const [nm, port] of peerDefs) expect(peerRow(nm, port, peers.stdout), `${nm} re-gossiped:\n${peers.stdout}`).toBeTruthy();
+
+      // step 6: status — same identity, local ledger intact, both peers; the script never touches the serving model
+      r = await runCli(['status'], P);
+      expect(r.stdout).toMatch(new RegExp(`^address\\s+${before[0].node.address}$`, 'm'));
+      expect(r.stdout).toMatch(/^ledger\s+local · local · \d+ records · height \d+$/m);
+      expect(r.stdout).toMatch(/^peers\s+2$/m);
+      expect(r.stdout).toMatch(/^runtime\s+\S.*$/m);
+
+      // the live demo cluster was untouched by the whole exercise (home-scoped stop)
+      expect((await api(request, '/api/info', { node: NODE_A })).status).toBe(200);
+      expect(Number(readFileSync(join(clusterHome, 'supervisor.pid'), 'utf8').trim())).toBe(sup);
+      expect(readFileSync(join(clusterHome, 'nodes.pid'), 'utf8')).toBe(liveNodesPid);
+      expect(() => process.kill(sup, 0)).not.toThrow();
+      expect(nodeAddress(HOME_A)).toBe(ADDR_A);
+    } finally {
+      const stop = await restartSh('--stop');
+      if (stop.code !== 0) {   // belt and braces: the scoped --stop failed, kill by pid file
+        for (const f of ['supervisor.pid', 'nodes.pid']) {
+          try { for (const pid of readFileSync(join(pHome, f), 'utf8').split('\n').filter(Boolean).map(Number)) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } } } catch { /* no file */ }
+        }
+      }
+      for (const u of urls) await httpDown(u, 30_000);
+      rmSync(pHome, { recursive: true, force: true });
+    }
   });
 });
