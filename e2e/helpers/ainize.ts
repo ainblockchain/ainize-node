@@ -43,11 +43,16 @@ export const K = {
 };
 
 /** Operator passwords used by the suite (set on first use through /api/auth/setup). */
+export const NODE_T = 'http://localhost:3412';
 export const PASSWORDS: Record<string, string> = {
-  [NODE_A]: process.env.AINIZE_PASS_A ?? 'e2e-pass-a',
+  [NODE_A]: process.env.AINIZE_PASS_A ?? process.env.AINIZE_PASS ?? 'e2e-pass-a',
   [NODE_B]: process.env.AINIZE_PASS_B ?? 'e2e-pass-b',
   [NODE_C]: process.env.AINIZE_PASS_C ?? 'audit-pass-c',
+  /** teach dev node (stub backend); listed after NODE_A so `AINIZE_URL=http://localhost:3412` resolves to its own password */
+  [NODE_T]: process.env.AINIZE_PASS_T ?? process.env.AINIZE_PASS ?? 'teach-pass',
 };
+/** Password for `node`: the PASSWORDS entry, else AINIZE_PASS (any node the caller points AINIZE_URL at), else the suite default. */
+export const passwordFor = (node: string): string => PASSWORDS[node] ?? process.env.AINIZE_PASS ?? 'e2e-pass';
 
 export function nodeAddress(home: string): string {
   const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')) as { identity: { address: string } };
@@ -57,7 +62,7 @@ export function nodeAddress(home: string): string {
 /** Log in as the node operator via the API; returns the bearer token (sets the password if the node has none). */
 export async function operatorToken(request: APIRequestContext, node = NODE_A): Promise<string> {
   const me = await (await request.get(`${node}/api/auth/me`)).json() as { needsSetup: boolean };
-  const password = PASSWORDS[node] ?? 'e2e-pass';
+  const password = passwordFor(node);
   const path = me.needsSetup ? '/api/auth/setup' : '/api/auth/login';
   const r = await request.post(`${node}${path}`, { data: { password } });
   if (!r.ok()) throw new Error(`${path} on ${node} failed: ${r.status()} ${await r.text()}`);
@@ -67,7 +72,7 @@ export async function operatorToken(request: APIRequestContext, node = NODE_A): 
 
 /** Log in through the real /signing page (browser session cookie). */
 export async function loginViaUi(page: Page, node = NODE_A): Promise<void> {
-  const password = PASSWORDS[node] ?? 'e2e-pass';
+  const password = passwordFor(node);
   await page.goto(`${node}/signing`);
   const me = await (await page.request.get(`${node}/api/auth/me`)).json() as { needsSetup: boolean; signedIn: boolean };
   if (me.signedIn) return;
@@ -116,7 +121,7 @@ export async function agentRun(args: string[], opts: { timeoutMs?: number } = {}
 
 /** Log in the CLI (stores the bearer token in <home>/cli.json). Idempotent. */
 export async function cliLogin(home: string, node: string): Promise<void> {
-  const r = await cli(['login', '--password', PASSWORDS[node] ?? 'e2e-pass'], home, { timeoutMs: 60_000 });
+  const r = await cli(['login', '--password', passwordFor(node)], home, { timeoutMs: 60_000 });
   if (r.code !== 0 && !/already/i.test(r.stderr)) throw new Error(`cli login failed: ${r.stderr || r.stdout}`);
 }
 

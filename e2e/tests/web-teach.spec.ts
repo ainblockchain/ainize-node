@@ -168,7 +168,10 @@ test('AZ-106 stub lifecycle → READY: card copy, check lines, per-correction ta
   await expect(card).toBeVisible();
   await expect(card).toContainText('Your lesson:');
   await expect(card).toHaveAttribute('data-status', 'READY', { timeout: 3 * 60_000 });
-  await expect(card.getByTestId('lesson-body')).toContainText('It learned it — 2 of 2 answers correct in the live model.');
+  // stub backend → "checks were simulated" (no "in the live model" claim); a gradient node says "…correct in the live model."
+  await expect(card.getByTestId('lesson-body')).toContainText(/It learned it — 2 of 2 answers correct( in the live model)?\./);
+  if (policy.backend === 'stub') await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — these checks were simulated, not measured in a live model.');
+  await expect(card.getByTestId('lesson-status')).toHaveText('Ready · private');
   await expect(card).toContainText(/Unrelated questions unchanged: \d+\/\d+/);
   await expect(card).toContainText('Other phrasing answered correctly: 1/1');
   await expect(card).toContainText('Unsaved lessons are deleted after 7 days.');
