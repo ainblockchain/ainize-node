@@ -84,7 +84,10 @@ export const CHAT = {
 
 export function chatTextarea(page: Page): Locator { return page.locator('textarea').first(); }
 export function chatPicker(page: Page): Locator { return page.locator('aside[aria-label]').first(); }
-export function pickerItems(page: Page): Locator { return chatPicker(page).locator('li > button'); }
+/** Picker rows — the teach-era picker is a multi-select list of `<label>` rows, each wrapping a checkbox. */
+export function pickerItems(page: Page): Locator { return chatPicker(page).locator('li > label'); }
+/** The checkboxes inside the picker rows (enabled/checked semantics live here, not on the label). */
+export function pickerBoxes(page: Page): Locator { return chatPicker(page).getByRole('checkbox'); }
 export function lastTurn(page: Page): Locator { return page.locator('article').last(); }
 export function bubble(page: Page, kind: 'base' | 'patched'): Locator {
   return lastTurn(page).locator('[aria-busy]').filter({ hasText: kind === 'base' ? /Before loading|지식 넣기 전/ : /After loading|지식 넣은 후/ });

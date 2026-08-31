@@ -8,12 +8,13 @@ import { K, NODE_A, PASSWORDS, VLLM, api, loginViaUi, operatorToken, sleep, star
 import { KRX_NPZ, PIXEL_NPZ, httpDown } from '../helpers/operator-cli';
 import {
   AGO_EN, AGO_KO, CHAT, CANCEL_STRIP, DATE_TIME, PURPLE, agoLabel, bubble, bytesLabel, chatPicker, chatTextarea, ensureRuntime, focusInfo, footerText,
-  completeTurn, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
+  completeTurn, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerBoxes, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
   type FocusInfo,
 } from '../helpers/crosscut-ui';
 
-const HEADER_NAV_EN = ['Explore knowledge', 'Live test', 'Network', 'Public record', 'Docs & API', 'Sign in'];
-const HEADER_NAV_KO = ['지식 둘러보기', '라이브 테스트', '네트워크', '공개 기록', '문서·API', '로그인'];
+// node-a teaches since the teach-mode merge, so the header shows the Teach item (hidden on nodes with teach off).
+const HEADER_NAV_EN = ['Explore knowledge', 'Live test', 'Teach', 'Network', 'Public record', 'Docs & API', 'Sign in'];
+const HEADER_NAV_KO = ['지식 둘러보기', '라이브 테스트', '가르치기', '네트워크', '공개 기록', '문서·API', '로그인'];
 const headerNav = (page: Page) => page.locator('header nav a');
 const headerLink = (page: Page, name: string) => page.locator('header nav').getByRole('link', { name, exact: true });
 const langButton = (page: Page) => page.getByRole('button', { name: 'language' });
@@ -150,7 +151,7 @@ test.describe('runtime', () => {
     const patched = bubble(page, 'patched');
     await expect(patched.getByText(/^응답 (\d+ms|\d+\.\d초)$/)).toBeVisible();
     await expect(patched.getByText(/^· 넣는 데 (\d+ms|\d+\.\d초)$/)).toBeVisible();
-    await expect(patched.getByText('정답', { exact: false })).toBeVisible();
+    await expect(patched.getByText('✓ 정답', { exact: true })).toBeVisible();   // the hit chip (teach mode adds a '정답 가르치기' button to the same bubble)
     await langButton(page).click();
     await page.reload();
     await expect(h1(page)).toHaveText('Live test');
@@ -158,11 +159,13 @@ test.describe('runtime', () => {
   });
 
   test('AZ-089 Recover automatically after the node process restarts under an open Live test tab', async ({ page, request }) => {
-    test.setTimeout(15 * 60_000);
+    // Budget: the shared vLLM hangs for ~5 min about once an hour, and step 6 has to wait it out (ensureRuntime) —
+    // so the test and the private node's watchdog both get room for one outage on top of the ~2 min happy path.
+    test.setTimeout(24 * 60_000);
     await ensureRuntime(request);
     // The demo node-a is never killed. The SIGTERM + restart happen for real on a private serving node built from the
     // same binary + web UI (name node-a, same public record, same shared model) that holds the pixelplus body.
-    const node = await startThrowawayNode('az089', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 840 });
+    const node = await startThrowawayNode('az089', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 1_320 });
     try {
       await node.seed(PIXEL_NPZ, 'az089-seed');
       expect(await waitForRuntime(request, node.url), 'private node sees the shared model').toBe(true);
@@ -196,6 +199,7 @@ test.describe('runtime', () => {
       await expect(page.locator('header').getByText('AI Network', { exact: true })).toBeVisible();
 
       // Step 6 — Retry succeeds
+      await ensureRuntime(request);            // never press Retry into a hanging shared model (hourly vLLM outage)
       await waitForLockFree(request, node.url);
       await lastTurn(page).getByRole('button', { name: 'Retry' }).click();
       expect((await completeTurn(page, request)).status).toBe('done');
@@ -243,7 +247,7 @@ test.describe('runtime', () => {
     for (const r of ['Compare', 'After only', 'Before only']) await expect(page.getByRole('radio', { name: r })).toBeDisabled();
     await expect(page.getByRole('checkbox', { name: 'Enable thinking' })).toBeDisabled();
     await expect(chatTextarea(page)).toBeDisabled();
-    for (let i = 0; i < 4; i++) await expect(pickerItems(page).nth(i)).toBeEnabled();
+    for (let i = 0; i < 4; i++) await expect(pickerBoxes(page).nth(i)).toBeEnabled();
 
     // Step 3 — meta line after the answer
     expect((await completeTurn(page, request)).status).toBe('done');
@@ -296,6 +300,8 @@ test.describe('runtime', () => {
     const names = order.map((f) => f.name);
     const expected: (string | RegExp)[] = [
       'Ainize home', ...HEADER_NAV_EN, 'language',
+      'Dismiss', 'Your knowledge', 'Open lesson',   // teach banner + collapsed lesson basket head the column on a teaching node
+      'Clear selection',                            // the multi-select picker's count row
       ...items.map((e) => new RegExp(`^${e.anchor.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)),
       'Details →', ...samples.slice(0, 8).map((s) => s.prompt.trim()), `Show ${samples.length - 8} more`,
       'Compare', 'After only', 'Before only',
@@ -319,11 +325,15 @@ test.describe('runtime', () => {
 
     // Step 2 — pick ep12 with Enter
     await page.locator('body').click({ position: { x: 5, y: 5 } });
-    const ep12 = await tabUntil(page, (f) => f.tag === 'button' && f.name.includes('epoch 12'));
+    // multi-select picker: ticking adds to the stack, so untick (final) with Space first, then tick epoch 12
+    const finalBox = await tabUntil(page, (f) => f.type === 'checkbox' && f.name.includes('(final)'));
+    expect(finalBox).not.toBeNull();
+    await page.keyboard.press('Space');
+    const ep12 = await tabUntil(page, (f) => f.type === 'checkbox' && f.name.includes('epoch 12'));
     expect(ep12).not.toBeNull();
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
     await expect(page).toHaveURL(new RegExp(`/chat/${K.ep12}$`));
-    await expect(pickerItems(page).filter({ hasText: 'epoch 12' })).toContainText('Selected');
+    await expect(pickerItems(page).filter({ hasText: 'epoch 12' })).toContainText('Loads 1.');
     const head = page.locator('section[aria-live="polite"] h2');
     await expect(head).toHaveText('KRX ticker codes for 2,761 listed companies — epoch 12');
     await expect(head.locator('xpath=following-sibling::span[1]')).toHaveText('Newer version available');
@@ -700,7 +710,7 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   await expect(menuBtn).toHaveAttribute('aria-expanded', 'true');
   const menu = page.getByRole('menu');
   await expect(menu).toBeVisible();
-  await expect(menu.getByRole('menuitem')).toHaveText(['Account settings', 'Files & changes', 'Log out']);
+  await expect(menu.getByRole('menuitem')).toHaveText(['Register a knowledge file', 'Account settings', 'Files & changes', 'Log out']);
   await menuBtn.click();
   await expect(menuBtn).toHaveAttribute('aria-expanded', 'false');
 
@@ -717,11 +727,11 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   await chat.unroute('**/api/chat/patches');
   expect(sawSpinner, 'spinner exposes role=status aria-label=loading').toBe(true);
   await waitForPicker(chat, 4);
-  await expect(chat.locator('aside[aria-label="Knowledge to test"]')).toBeVisible();
-  const items = chat.locator('aside[aria-label="Knowledge to test"] li > button');
+  await expect(chat.locator('aside[aria-label="Knowledge to load (pick up to 3)"]')).toBeVisible();
+  const items = chat.locator('aside[aria-label="Knowledge to load (pick up to 3)"] li > label');
   await expect(items).toHaveCount(4);
-  await expect(items.filter({ hasText: '(final)' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(items.filter({ hasText: 'epoch 12' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(items.filter({ hasText: '(final)' }).getByRole('checkbox')).toBeChecked();
+  await expect(items.filter({ hasText: 'epoch 12' }).getByRole('checkbox')).not.toBeChecked();
   const group = chat.getByRole('radiogroup', { name: 'View' });
   await expect(group).toBeVisible();
   await expect(group.getByRole('radio')).toHaveCount(3);

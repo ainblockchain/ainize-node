@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
-import { K, NODE_A, api, runtimeAvailable, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { K, NODE_A, api, passwordFor, runtimeAvailable, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { createIdentity, hashCanonical, signMessage, verifyMessage } from '../../core/dist/index.js';
 
 test.describe.configure({ mode: 'serial' });
@@ -42,6 +42,7 @@ let policy: Policy;
 let context: BrowserContext;
 let page: Page;
 let nodeAddress = '';
+let ledgerKind = '';
 let keyAddress = '';
 let keyBackup = '';
 let jobId = '';
@@ -56,11 +57,25 @@ test.beforeAll(async ({ browser, request }) => {
   test.skip(p.status !== 200 || !p.body.enabled, 'node without teach mode (GET /api/teach/policy not enabled)');
   test.skip(p.body.backend !== 'stub', 'teach backend is not `stub` — the browser flow would start a real GPU job');
   policy = p.body;
-  nodeAddress = (await api<{ node: { address: string } }>(request, '/api/info')).body.node.address;
+  const info = await api<{ node: { address: string }; ledger: { kind: string } }>(request, '/api/info');
+  nodeAddress = info.body.node.address;
+  ledgerKind = info.body.ledger.kind;
   context = await browser.newContext({ acceptDownloads: true, locale: 'en-US', viewport: { width: 1280, height: 900 } });
   page = await context.newPage();
 });
-test.afterAll(async () => { await context?.close(); });
+test.afterAll(async ({ request }) => {
+  await context?.close();
+  // Leave nothing behind on the node (the canonical demo catalog must stay clean): cancel the lesson via the
+  // operator API — a READY / kept lesson and its private draft are deleted. An ANNOUNCED lesson is immutable by
+  // design (409 published_immutable); announcing is only allowed on a local-ledger node, whose home is disposable.
+  if (jobId) {
+    const login = await api<{ token: string }>(request, '/api/auth/login', { method: 'POST', data: { password: passwordFor(NODE) } });
+    if (login.status === 200) {
+      const del = await api<{ status?: string }>(request, `/api/teach/jobs/${jobId}`, { method: 'DELETE', token: login.body.token });
+      if (![200, 409].includes(del.status)) console.warn(`teach cleanup: DELETE job ${jobId} -> ${del.status}`);
+    } else console.warn(`teach cleanup skipped: operator login failed (${login.status})`);
+  }
+});
 
 test('AZ-103 banner → "Teach the right answer" under a reply → drawer → basket persists across reload @runtime', async ({ request }) => {
   test.skip(!(await waitForRuntime(request, NODE, 8 * 60_000)), 'serving model unavailable (vLLM restart takes ~5 min)');
@@ -277,6 +292,10 @@ test('AZ-109 Keep it private: 7-day token links, sha256 matches, recipe.json, RU
 test('AZ-110/111 Publish: consents, signed claim → announced (or review + operator approve); contributor on the anchor; chips; teacher page; Your knowledge', async ({ request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   test.skip(policy.publish === 'never', 'node never publishes lessons');
+  // An announced anchor is a permanent ledger record. On a node that sits on the shared AIN chain (the live demo
+  // cluster) it would pollute the public catalog forever, so the publish flow is exercised on local-ledger nodes
+  // only (node-t / a private throwaway cluster). AINIZE_TEACH_ANNOUNCE=1 overrides on a disposable chain.
+  test.skip(ledgerKind === 'ain' && process.env.AINIZE_TEACH_ANNOUNCE !== '1', 'shared AIN chain — a public announce is permanent; run against a local-ledger node for publish coverage');
   const card = page.getByTestId('lesson-card');
   await card.getByTestId('lesson-publish').click();
   const pub = page.getByTestId('publish-sheet');

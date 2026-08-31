@@ -541,7 +541,22 @@ test('AZ-011 Pick an audience card and land on the right entry point', async ({ 
   const card = (title: string) => page.locator('div', { has: page.getByRole('heading', { name: title, exact: true }) }).last();
   const user = card('I want to use knowledge');
   await expect(user.locator('li')).toHaveText([/Find knowledge verified for your topic and model\./, /Ask the same question before and after loading it and see the answer change\./, /If you like it, pay and load it in seconds — unload any time\./]);
-  await expect(page.getByRole('heading', { name: 'I want to sell knowledge' })).toBeVisible();
+  // teach-mode: the creator card invites teaching (the old sell card is gone; file registration moved under it)
+  const creator = page.getByTestId('landing-creator-card');
+  await expect(creator.getByRole('heading', { name: 'I want to teach the model something' })).toBeVisible();
+  await expect(creator.locator('li')).toHaveText([
+    /Ask the model in Live test and correct it when it is wrong\./,
+    /This node trains your corrections into knowledge — no sign-in, no server of your own\./,
+    /Keep it private, or publish it and get paid on every sale\./,
+  ]);
+  await expect(page.getByRole('heading', { name: 'I want to sell knowledge' })).toHaveCount(0);
+  const teachCta = creator.getByTestId('landing-teach-cta');
+  await expect(teachCta).toHaveText('Teach the model');
+  await expect(teachCta).toHaveAttribute('href', '/chat?teach=1');
+  await expect(creator.getByTestId('landing-register-link')).toHaveText('Already have a knowledge file (.npz) and run a node? Register a file →');
+  // node-a accepts contributions, so the landing nav offers Teach next to Live test
+  expect((await (await page.request.get(`${NODE_A}/api/info`)).json()).accepts_contributions).toBe(true);
+  await expect(page.getByTestId('landing-nav-teach')).toHaveAttribute('href', '/chat?teach=1');
   const dev = card('Node operators & developers');
   const label = dev.getByText('For developers · terminal');
   await expect(label).toBeVisible();
@@ -551,7 +566,13 @@ test('AZ-011 Pick an audience card and land on the right entry point', async ({ 
   await user.getByRole('link', { name: 'Explore knowledge' }).click();
   await expect(page).toHaveURL(/\/explore$/);
   await page.goto(NODE_A + '/');
-  await page.getByRole('link', { name: 'Register knowledge' }).click();
+  // "Teach the model" goes to Live test with the teach banner and the lesson basket — not to the sign-in wall
+  await teachCta.click();
+  await expect(page).toHaveURL(`${NODE_A}/chat?teach=1`);
+  await expect(page.getByTestId('teach-banner')).toContainText('Wrong answer? Click "Teach the right answer" under any reply and the model learns it. No account needed.');
+  await expect(page.getByTestId('lesson-basket')).toBeVisible();
+  await page.goto(NODE_A + '/');
+  await page.getByTestId('landing-register-link').click();   // "Already have a knowledge file (.npz) ...? Register a file →"
   await expect(page).toHaveURL(`${NODE_A}/signing?next=%2Fnew-patch`);
   await expect(page.getByRole('link', { name: 'Register knowledge' })).toHaveCount(0);
   await page.goto(NODE_A + '/');
@@ -823,7 +844,7 @@ test('AZ-023 Use the Docs page: copy one-liners, browse the CLI table and the AP
   for (const s of ['402', 'x-payment-required', 'X-PAYMENT', 'blob_urls', '1) GET /x402/patch/{id}', '4) Download the body']) await expect(box).toContainText(s);
 
   const tags = docs.openapi.tags.map((t) => t.name);
-  expect(tags).toEqual(['Find knowledge', 'Live test', 'Automatic payment & download', 'Register & sell knowledge', 'Public record', 'Operator', 'P2P']);
+  expect(tags).toEqual(['Find knowledge', 'Live test', 'Teach', 'Automatic payment & download', 'Register & sell knowledge', 'Public record', 'Operator', 'P2P']);
   for (const t of tags) await expect(page.getByRole('heading', { name: t, exact: true }).last()).toBeVisible();
   await expect(page.locator('details summary').filter({ hasText: 'GET' }).first().locator('span').first()).toHaveText('GET');
   const catalogOp = page.locator('details', { has: page.locator('summary code', { hasText: /^\/api\/catalog$/ }) }).first();
@@ -863,9 +884,9 @@ test.describe('Live test (shared runtime)', () => {
     await expect(page.getByText(`Test model ${MODEL}`)).toBeVisible();
     await expect(page.getByText('Ask the same question before and after loading the knowledge and watch the answer change. It loads and unloads in seconds, no restart.')).toBeVisible();
 
-    const panel = page.getByRole('complementary', { name: 'Knowledge to test' });
+    const panel = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' });
     await expect(panel.getByText('Only knowledge whose body is on this node can be tested.')).toBeVisible();
-    const items = panel.getByRole('button');
+    const items = panel.locator('li > label');   // multi-select rows (each wraps a checkbox)
     await expect(items).toHaveCount(testable.length);
     expect(testable.length).toBe(4);
     // the "node-a/{id}" line is its own element (the facts count follows it without whitespace in the button text)
@@ -882,19 +903,22 @@ test.describe('Live test (shared runtime)', () => {
       await expect(it).toContainText(AIN_NOTE);
       await expect(it).toContainText(e.status === 'LISTED' ? 'Verified' : 'Newer version available');
     }
-    await expect(itemFor(K.final)).toContainText('Selected');
-    await expect(itemFor(K.pixel)).not.toContainText('Selected');
+    await expect(itemFor(K.final).getByRole('checkbox')).toBeChecked();
+    await expect(itemFor(K.pixel).getByRole('checkbox')).not.toBeChecked();
 
+    // multi-select: ticking would ADD pixelplus to the stack — clear first so exactly one is loaded
+    await panel.getByRole('button', { name: 'Clear selection' }).click();
     await itemFor(K.pixel).click();
     await expect(page).toHaveURL(new RegExp(`/chat/${K.pixel}$`));
-    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to test$/ });   // the picker's own heading sits in <main> too
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ });   // the picker's and lesson basket's own headings sit in <main> too
     await expect(head).toHaveText(PIXEL_NAME);
     await expect(head.locator('..')).toContainText('Newer version available');
     await expect(head.locator('..')).toContainText('8 facts');
     await expect(head.locator('..').getByRole('link', { name: 'Details →' })).toBeVisible();
     await expect(page.getByText('No questions yet')).toBeVisible();
     await expect(page.getByText('Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.')).toBeVisible();
-    await itemFor(K.final).click();
+    await itemFor(K.pixel).click();   // untick pixelplus again …
+    await itemFor(K.final).click();   // … then load only the final knowledge
     await expect(page).toHaveURL(new RegExp(`/chat/${K.final}$`));
     await expect(head).toHaveText(FINAL_NAME);
 
@@ -1082,7 +1106,7 @@ test.describe('Live test (shared runtime)', () => {
 
     await waitForLock(request, origin, (l) => l === null);
     await tabB.reload();
-    await expect(tabB.getByRole('complementary', { name: 'Knowledge to test' })).toBeVisible();
+    await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
     await expect(tabB.getByRole('status').filter({ hasText: 'Another test is running' })).toHaveCount(0);
     await tabB.close();
   });
@@ -1124,10 +1148,10 @@ test.describe('Live test (shared runtime)', () => {
     const origin = await freshVisitor(page);
     const addr = await nodeAAddress(request);
     await page.goto(`${origin}/chat/${K.pixel}`);
-    const item = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button', { pressed: true });
+    const item = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' }).locator('li > label').filter({ has: page.getByRole('checkbox', { checked: true }) });
     await expect(item).toHaveCount(1);
-    for (const s of [PIXEL_NAME, `node-a/${K.pixel}`, '8 facts', '100% accuracy', '0.1 AIN', AIN_NOTE, 'Newer version available', 'Selected']) await expect(item).toContainText(s);
-    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to test$/ }).locator('..');
+    for (const s of [PIXEL_NAME, `node-a/${K.pixel}`, '8 facts', '100% accuracy', '0.1 AIN', AIN_NOTE, 'Newer version available', 'Loads 1.']) await expect(item).toContainText(s);
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ }).locator('..');
     await expect(head).toContainText(PIXEL_NAME);
     await expect(head).toContainText('Newer version available');
     await expect(head).toContainText('8 facts');
@@ -1159,9 +1183,9 @@ test.describe('Live test (shared runtime)', () => {
     expect(await waitForRuntime(request), 'node-a runtime').toBe(true);
     await page.goto(NODE_A + `/chat/${K.final}`);
     await expect(page.getByRole('status').filter({ hasText: 'The model server is off right now' })).toHaveCount(0);
-    const items = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button');
-    await expect(items).toHaveCount(4);
-    for (let i = 0; i < 4; i++) await expect(items.nth(i)).toBeEnabled();
+    const boxes = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' }).getByRole('checkbox');
+    await expect(boxes).toHaveCount(4);
+    for (let i = 0; i < 4; i++) await expect(boxes.nth(i)).toBeEnabled();
     await expect(textarea(page)).toBeEnabled();
     await expect(textarea(page)).toHaveAttribute('placeholder', 'Type a question and press Enter (Shift+Enter for a new line)');
     await page.goto(NODE_A + '/network');
@@ -1184,12 +1208,14 @@ test.describe('Live test (shared runtime)', () => {
       await expect(box).toBeVisible();
       await expect(box).toContainText('It comes back once the node operator starts the model server.');
       await expect(box).toHaveCSS('background-color', 'rgb(255, 243, 224)');   // yellow status box
-      const offItems = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button');
+      const offPicker = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' });
+      const offItems = offPicker.locator('li > label');
+      const offBoxes = offPicker.getByRole('checkbox');
       await expect(offItems.first()).toBeVisible();
       const n = await offItems.count();
       expect(n).toBeGreaterThan(0);
       for (let i = 0; i < n; i++) {
-        await expect(offItems.nth(i)).toBeDisabled();
+        await expect(offBoxes.nth(i)).toBeDisabled();
         await expect(offItems.nth(i)).toHaveAttribute('title', OFF_MSG);
       }
       await offItems.first().click({ force: true });   // a disabled item does nothing
@@ -1213,7 +1239,7 @@ test.describe('Live test (shared runtime)', () => {
       await expect(box).toBeVisible();
       await proxy.up();
       await expect(box).toHaveCount(0, { timeout: 90_000 });
-      for (let i = 0; i < n; i++) await expect(offItems.nth(i)).toBeEnabled();
+      for (let i = 0; i < n; i++) await expect(offBoxes.nth(i)).toBeEnabled();
       await expect(textarea(page)).toBeEnabled();
       await page.goto(off.url + '/network');
       await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live', { timeout: 60_000 });

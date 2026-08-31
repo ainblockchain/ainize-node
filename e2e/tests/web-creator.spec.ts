@@ -106,7 +106,9 @@ test('AZ-028 Sign in with the operator password after being redirected from a pr
   await page.goto(`${NODE_A}/dashboard`);
   await page.waitForURL(`${NODE_A}/signing?next=%2Fdashboard`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Sign in to your node');
-  await expect(page.locator('h1 + p')).toHaveText(/^Enter this node’s operator password\./);
+  // teach-era signing page: the visitor-facing subtitle sits under the h1; the operator description follows it
+  await expect(page.getByTestId('sign-subtitle')).toHaveText('Only the person who runs this node needs a password.');
+  await expect(page.getByText(/^Enter this node’s operator password\./)).toBeVisible();
 
   const pw = page.getByLabel('Operator password', { exact: true });
   await pw.fill('wrongpass');
@@ -241,7 +243,7 @@ test('AZ-033 Log out from the user menu and lose access to console pages', async
   const short = `${me.address.slice(0, 10)}…${me.address.slice(-4)}`;
   expect(shortAddr(me.address, 8)).toBe(short);
   await expect(menu).toContainText(short);
-  await expect(menu.getByRole('menuitem')).toHaveText(['Account settings', 'Files & changes', 'Log out']);
+  await expect(menu.getByRole('menuitem')).toHaveText(['Register a knowledge file', 'Account settings', 'Files & changes', 'Log out']);
 
   const [res] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/auth/logout')),

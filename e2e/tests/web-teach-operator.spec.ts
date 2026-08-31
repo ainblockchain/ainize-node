@@ -32,6 +32,7 @@ let token = '';
 /** effective values before the run — restored in afterAll (the settings test changes publish mode and both quotas) */
 let original: { publish: 'review' | 'auto' | 'never'; jobsPerKeyPerDay: number; jobsPerIpPerDay: number } | undefined;
 let teacher: Identity;
+let ledgerKind = '';
 let declinedJob = '';
 let approvedJob = '';
 let patchId = '';
@@ -75,6 +76,7 @@ test.beforeAll(async ({ request }) => {
   test.skip(p.status !== 200 || !p.body.enabled, 'node without teach mode (GET /api/teach/policy not enabled)');
   test.skip(p.body.backend !== 'stub', 'teach backend is not `stub` — the Teaching-tab flow would start a real GPU job');
   policy = p.body;
+  ledgerKind = (await api<{ ledger: { kind: string } }>(request, '/api/info')).body.ledger.kind;
   const login = await api<{ token: string }>(request, '/api/auth/login', { method: 'POST', data: { password: PASS } });
   expect(login.status, 'operator login (AINIZE_PASS)').toBe(200);
   token = login.body.token;
@@ -89,6 +91,9 @@ test.afterAll(async ({ request }) => {
   // and make sure the test key is not left blocked
   const bans = await api<{ items: { id: number; value: string }[] }>(request, '/api/me/teach/bans', { token });
   for (const b of bans.body.items ?? []) if (b.value.toLowerCase() === teacher.address.toLowerCase()) await api(request, `/api/me/teach/bans/${b.id}`, { method: 'DELETE', token });
+  // and leave no test lessons behind: operator cancel deletes a declined lesson's files; an announced one is
+  // immutable (409, ignored) — announcing only happens on local-ledger nodes whose homes are disposable.
+  for (const id of [declinedJob, approvedJob]) if (id) await api(request, `/api/teach/jobs/${id}`, { method: 'DELETE', token });
 });
 
 /* ======================================================================================= landing / sign-in / pre-screen */
@@ -226,6 +231,9 @@ test('Teaching tab settings: trainer line, publish → "Review each one", share 
 });
 
 test('AZ-110 review queue: PENDING_REVIEW lesson → Decline with a reason (contributor sees it) → second lesson → Approve and announce → ANNOUNCED', async ({ page, request }) => {
+  // Approve announces a permanent anchor on the ledger. On the shared AIN chain (live demo cluster) that would
+  // pollute the public catalog forever — run this on a local-ledger node (node-t / throwaway cluster) instead.
+  test.skip(ledgerKind === 'ain' && process.env.AINIZE_TEACH_ANNOUNCE !== '1', 'shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage');
   await signIn(page);
   declinedJob = await lessonPendingReview(request, teacher, `Op decline ${TAG}`);
   await page.goto(`${NODE}/dashboard?tab=teaching`);
