@@ -20,3 +20,64 @@ NGRAM_HOME=~/.ngram-b ainize init --name bob   --port 3403 --peer http://localho
 NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving && NGRAM_HOME=~/.ngram-c ainize start -d
 ainize patch ls          # bob & carol attest → quorum 2 → LISTED
 ```
+
+## Teach mode (visitor-taught lessons) — what the host needs
+
+Teach mode lets visitors correct the model from **Live test** (`/chat?teach=1`); the node trains each correction into a small
+knowledge file (a *lesson*) and checks it on the live model before anyone can publish it. Two host requirements come with it:
+
+### 1. The node's user must be in the `docker` group (no sudo)
+
+The teach worker never runs a trainer in-process. It starts every training run as
+
+```
+docker exec -i -e PYTORCH_CUDA_ALLOC_CONF=… <teach.trainer.container> python3 /work/train/teach.py --job /work/.teach/<job>/job.json
+```
+
+and also uses `docker exec … pgrep -f train/` (is another training run holding the GPUs?) and `docker exec … kill -TERM <pid>`
+(timeout / cancel). These calls are made by the node process itself, so the Unix user that runs `ainize start` needs the docker
+socket without a password prompt:
+
+```
+sudo usermod -aG docker "$USER"   # log out and in again (or `newgrp docker`), then: docker ps  → must work without sudo
+docker ps --format '{{.Names}}' | grep -x flashtrain   # the trainer container must be running (see the qwen3.8 repo)
+```
+
+`SUDO_PW` in the qwen3.8 `.env` only covers that repo's own scripts — the node does not read it. Without docker access the worker
+marks every gradient job `FAILED` (`trainer container unreachable`); use `teach.backend: "stub"` on such hosts (below).
+
+### 2. GPU allocation — trainer GPUs must be disjoint from the serving GPUs
+
+| what | where (this host) | config |
+| --- | --- | --- |
+| serving model (vLLM + PLE hook, `:8000`) | GPUs 0–3, TP=4 (shared by every node on the host; cross-process lock `ple_patch/.ainize-runtime.lock`) | `runtime.api`, `runtime.repo` |
+| teach trainer (`train/teach.py` in `flashtrain`) | GPUs 4–6 | `teach.trainer.gpus: "4,5,6"` (passed to the container as `CUDA_VISIBLE_DEVICES`) |
+
+- Never let the two sets overlap: the trainer loads a second copy of the model's memory table and would starve vLLM.
+- Only **one** training run at a time per host: the worker takes an atomic lease (`<runtime.repo>/ple_patch/.ainize-teach.lock`,
+  stale after 45 min or when the holder pid is gone), then checks `docker exec … pgrep -f train/` and `nvidia-smi` free memory on
+  the configured GPUs. If anyone else's job holds the GPUs (e.g. an operator's own `train_rev.py`), lessons stay `QUEUED` with
+  `blocked: "slot"` — they are not lost and no second run is started. Several nodes on one host may all enable teach mode; the
+  lease serialises them.
+- A lesson takes roughly 3–8 minutes end to end on 3× 40 GB GPUs (load ≈ 60–90 s, ≤ 20 steps, export, then the side-effect check on
+  the live model under the runtime lock). The UI shows the measured p50/p90 of this node (`GET /api/teach/policy`).
+- **No trainer GPUs available?** Set `teach.backend: "stub"` (or `NGRAM_TEACH_BACKEND=stub`): the worker writes a small valid
+  knowledge file instead of training and still runs the real preflight / side-effect check on the serving model, so the visitor flow
+  can be shown end to end. `teach.stubOffline: true` additionally simulates the model checks for CI hosts without a model server —
+  never set it on a demo node.
+
+Config block (`config.json`, defaults from `packages/core/src/config.ts`; the operator can override the policy part without a
+restart on **My knowledge → Teaching**):
+
+```json
+"teach": { "enabled": true, "publish": "auto", "backend": "stub",
+           "factsPerJob": 8, "jobsPerKeyPerDay": 3, "jobsPerIpPerDay": 5, "queueMax": 10, "contributorShare": 0.7, "draftTtlDays": 7,
+           "trainer": { "container": "flashtrain", "script": "train/teach.py", "gpus": "4,5,6", "maxSteps": 20, "timeoutMs": 1800000 } }
+```
+
+`publish`: `review` (operator approves each lesson) · `auto` (a lesson whose checks passed is announced as soon as the visitor signs
+the claim — the demo cluster setting, `scripts/cluster.mjs`) · `never` (visitors can only try / keep / download). The demo cluster
+script ships with `backend: "stub"` and a clearly marked `TEACH_BACKEND` switch — flip it to `gradient` once GPUs 4–6 are free.
+
+From the terminal: `ainize teach status <node-url>` (policy, trainer, queue), `ainize teach status <lesson-url> --key-file <backup.json>`
+(one lesson), `ainize patch import lesson.npz --recipe recipe.json` (run a downloaded lesson on your own node as a private draft).

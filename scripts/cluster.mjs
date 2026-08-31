@@ -8,6 +8,12 @@
  *
  *   node scripts/cluster.mjs            # foreground; Ctrl+C stops all
  *   NGRAM_LEDGER=ain node scripts/cluster.mjs   # all three on the local AIN chain (run `ngram chain up` first)
+ *
+ * Teach mode (visitors teach the model from /chat?teach=1) is switched ON for node-a when its config is first created:
+ * `teach.enabled: true`, `teach.publish: 'auto'` (a signed lesson is announced at once — the demo is frictionless; set
+ * 'review' to approve each lesson on My knowledge → Teaching). The trainer backend is TEACH_BACKEND below.
+ * Existing homes are never rewritten — flip a running node with `ainize config set teach.enabled true` (restart) or on the
+ * Teaching tab (kv override, no restart).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,8 +27,20 @@ const ledger = process.env.NGRAM_LEDGER ?? (chainUp ? 'ain' : 'local');
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 
+// ============================================================================================================
+// TEACH BACKEND SWITCH — 'stub' until GPUs 4–6 are free of the owner's training run (train_rev.py).
+//   'stub'     : no GPU training; the worker writes a small knowledge file (the 픽셀플러스 fixture when a correction
+//                mentions it) so the whole visitor flow incl. the live side-effect check can be demonstrated.
+//   'gradient' : real training — `docker exec flashtrain python3 train/teach.py` on teach.trainer.gpus (4,5,6).
+//                Flip to 'gradient' once `nvidia-smi` shows GPUs 4–6 idle; the serving GPUs (vLLM) must stay disjoint.
+// Override per run: NGRAM_TEACH_BACKEND=gradient node scripts/cluster.mjs
+// ============================================================================================================
+const TEACH_BACKEND = process.env.NGRAM_TEACH_BACKEND ?? 'stub';   // TODO(gpu): 'gradient' when GPUs 4–6 are free
+const teachDemo = { enabled: true, publish: 'auto', backend: TEACH_BACKEND };
+
 const defs = [
-  { name: 'node-a', port: 3402, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: true },
+  // teach: only the web-UI node accepts lessons — all three share one trainer container / GPU set, so one queue is enough.
+  { name: 'node-a', port: 3402, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: true, teach: teachDemo },
   { name: 'node-b', port: 3403, roles: ['verifier'], peers: ['http://localhost:3402'], runtime: true, seed: false },
   { name: 'node-c', port: 3404, roles: ['verifier', 'serving'], peers: ['http://localhost:3402'], runtime: true, seed: false },
 ];
@@ -34,8 +52,11 @@ function ensureConfig(d) {
     cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger });
     if (!d.runtime) cfg.runtime = { ...cfg.runtime, repo: undefined };
     cfg.publicUrl = `http://localhost:${d.port}`;
+    if (d.teach) cfg.teach = { ...core.teachConfig(cfg), ...d.teach };   // never `stubOffline` here: the demo checks lessons on the real model
     core.saveConfig(cfg, home);
-    console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})`);
+    console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})${d.teach ? `  teach: enabled, publish ${d.teach.publish}, backend ${d.teach.backend}` : ''}`);
+  } else if (d.teach && !(cfg.teach?.enabled)) {
+    console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`NGRAM_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);
   }
   return { home, cfg };
 }
@@ -88,7 +109,7 @@ let stopping = false;
 const writePids = () => writeFileSync(join(base, 'nodes.pid'), children.map((c) => c.pid).filter(Boolean).join('\n') + '\n');
 for (const n of nodes) children.push(spawnNode(n));
 writePids();
-console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger})\n`);
+console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger}; teach backend=${TEACH_BACKEND})\n`);
 const stop = () => { stopping = true; for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

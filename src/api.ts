@@ -251,7 +251,10 @@ export function buildApi(deps: ApiDeps): Router {
       topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
       contributors: z.array(z.object({}).passthrough()).nullable().optional(),
     }).parse(req.body ?? {});
-    return { anchor: market.updateDraft(req.params.id as string, { ...patch, contributors: patch.contributors ?? undefined } as never) };
+    // only the keys the caller sent reach updateDraft: `'contributors' in patch` with an undefined value would wipe the list on
+    // every unrelated PATCH (e.g. `{origin:'teach'}` from `ainize patch import`); `contributors: null` clears it explicitly.
+    const update = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined).map(([k, v]) => [k, k === 'contributors' && v === null ? [] : v]));
+    return { anchor: market.updateDraft(req.params.id as string, update as never) };
   }));
   router.delete('/api/patches/:id', requireOperator, wrap(async (req) => { market.deleteDraft(req.params.id as string); return { ok: true }; }));
   router.post('/api/patches/:id/announce', requireOperator, wrap(async (req) => ({ record: await market.announce(req.params.id as string) })));

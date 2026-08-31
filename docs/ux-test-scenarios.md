@@ -4337,20 +4337,26 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Preconditions**
 
-- A downloaded lesson.npz + recipe.json (AZ-109); own node with the same model (PR-8 CLI)
+- A downloaded lesson.npz + recipe.json (AZ-109 'Keep it private' → token links, or `POST /api/teach/jobs/:id/save` with the teaching key)
+- A second node home on the same machine / same model: `ainize --home ~/.ngram-teach/node-u init --ledger local --runtime-repo /mnt/newdata/qwen3.8 --runtime-api http://localhost:8000` (PR-8)
 
 **Steps**
 
-1. ainize patch import lesson.npz --recipe recipe.json
-2. ainize patch apply <draft id>; ask the taught question
+1. `ainize --home <home> patch import ./lesson-<slug>.npz --recipe ./recipe.json` (operator login on that node first)
+2. `ainize --home <home> patch get taught-<slug>`, `patch records taught-<slug>`
+3. `ainize --home <home> patch apply taught-<slug>`; `ainize chat taught-<slug> "<taught question>"`; `patch remove`
+4. `ainize teach status <node-url>` / `… <node>/chat?lesson=<id> --key-file <backup.json>` / `… <node>/teacher/<address>`
 
 **Expected**
 
-- A local DRAFT with the recipe's benchmark (no announce); apply loads it and the model answers the taught fact; the RUN-LOCALLY.md commands match
+- Import prints 'imported taught-<slug> as a private draft (N rows, sha256 … matches recipe)'; a wrong file for the recipe is refused with 'sha256 mismatch' before anything reaches the node
+- The DRAFT has the recipe's benchmark (schema taught/<slug>, format template/chat), model id from the recipe, origin `teach`, the data provider as a credit-only contributor (share 0, proof declared), the file registered in place (no copy); `patch records` → none, the local ledger holds no anchor
+- apply loads it (2 s); chat answers the taught fact after the lesson (before/after compare) and remove restores the rows; RUN-LOCALLY.md's Option B commands are exactly these
+- `teach status` shows the node policy (accepting lessons, publish mode, trainer, queue, quotas, share), the owner's full lesson body with the key vs status-only without it, and the teacher page (lessons, earned/paid/pending)
 
 **Evidence**
 
-- `packages/node/src/teach-recipe.ts renderRunLocally() (references the command); packages/cli (PR-8: ainize patch import, ainize teach status)`
+- `packages/cli/src/commands/patch.ts patchImport/draftFromRecipe, packages/cli/src/commands/teach.ts teachStatus; packages/cli/test/cli.test.ts ('patch import: …', 'teach status: …', 'publish --contributor …') against an in-process stub node; PR-8 dev round-trip node-t :3412 → node-u :3413 (spec CHANGES PR-8)`
 
 ### AZ-122 - AIN round-trip of an anchor with empty contributors → array restored (withEmptyArrays fix)
 

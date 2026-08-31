@@ -217,6 +217,7 @@ export const CLI_REFERENCE = {
     publish: { ko: '지식 올리기 (한 줄)', en: 'Publish knowledge (one line)', cmd: 'ainize publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25' },
     use: { ko: '지식 쓰기 (한 줄)', en: 'Use knowledge (one line)', cmd: 'ainize use krx-all-2761        # check verification → pay automatically → download → load into your model' },
     test: { ko: '사기 전에 라이브 테스트', en: 'Try before you buy', cmd: 'ainize chat krx-all-2761 "픽셀플러스 종목코드 알려줘. 숫자만."   # the knowledge is Korean stock data, so ask in the trained phrasing' },
+    teach: { ko: '모델 가르치기 (브라우저)', en: 'Teach the model (browser)', cmd: 'ainize teach status http://localhost:3402        # is this node accepting lessons? then teach in the browser: /chat?teach=1' },
   },
   groups: [
     { name: 'Getting started', commands: [
@@ -234,9 +235,17 @@ export const CLI_REFERENCE = {
     ] },
     { name: 'Publishing knowledge', commands: [
       { cmd: 'ainize publish <file.npz> --name … --model … --benchmark <bench.json> [--price --parents a,b --branch --id --test]', desc: '= patch publish --announce: register and announce at once (the network verifies)' },
+      { cmd: 'ainize publish … --contributor <addr>:<name>:<share> [--contributor …]', desc: 'credit and pay a data provider on the record: share = fraction of your share of each sale (≤ 4 contributors, Σ share ≤ 1; `addr:share` without a name; share 0 = credit only)' },
       { cmd: 'ainize patch announce <id> | verify <id> | challenge <id> --reason …', desc: 'announce / verify on this node / request re-verification' },
       { cmd: 'ainize wallet', desc: 'balance, sales, creator revenue share, pending royalty payouts' },
       { cmd: 'ainize payouts ls [--status failed] | retry <id>', desc: 'royalty transfers this node owes creators and data providers (AIN ledger); retry a failed one' },
+    ] },
+    { name: 'Teach mode (lessons taught by visitors)', commands: [
+      { cmd: '<node>/chat?teach=1', desc: 'the teaching itself is a browser flow (no account: a teaching key is generated in the browser — download its backup); try / keep private / publish a ready lesson there' },
+      { cmd: 'ainize teach status <node-url>', desc: 'is the node accepting lessons? publish mode (review/auto/never), trainer state, queue and typical duration, quotas, data-provider share' },
+      { cmd: 'ainize teach status <lesson-url | job-id> [--key-file <backup.json>]', desc: 'status of one lesson; with your teaching key: progress, side-effect checks, before/after answers, draft / published id' },
+      { cmd: 'ainize teach status <node>/teacher/<address>', desc: 'a data provider\'s public page: lessons, sales, earned / paid / pending' },
+      { cmd: 'ainize patch import <lesson.npz> --recipe recipe.json', desc: 'run a downloaded lesson on YOUR node: private DRAFT (file kept in place, benchmark from the recipe), no announce, no ledger record — then `patch apply` / `chat`' },
     ] },
     { name: 'Records & network', commands: [
       { cmd: 'ainize ledger ls | verify | graph | export <file>', desc: 'public record' },
