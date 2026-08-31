@@ -3,7 +3,7 @@
  * Local 3-node demo cluster on one machine:
  *   A :3402 seller + verifier (seeded: prototype ledger, real Qwen3.8 patches if present, synthetic demo patches, branches)
  *   B :3403 verifier (runtime-enabled → real benchmark attestations when vLLM + hook are available)
- *   C :3404 verifier + serving (hash-only attestations; subscribes branches)
+ *   C :3404 verifier + serving (also runtime-enabled; the three nodes share one serving model under a cross-process lock)
  * Quorum 2 → A's patches get LISTED by B + C. A serves the web UI at http://localhost:3402.
  *
  *   node scripts/cluster.mjs            # foreground; Ctrl+C stops all
@@ -16,14 +16,15 @@ import { join } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const base = process.env.NGRAM_CLUSTER_HOME ?? join(homedir(), '.ngram-cluster');
-const ledger = process.env.NGRAM_LEDGER ?? 'local';
+const chainUp = await (async () => { try { const r = await fetch('http://localhost:8081/node_status', { signal: AbortSignal.timeout(2000) }); const j = await r.json(); return !!j?.result?.health; } catch { return false; } })();
+const ledger = process.env.NGRAM_LEDGER ?? (chainUp ? 'ain' : 'local');
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 
 const defs = [
   { name: 'node-a', port: 3402, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: true },
   { name: 'node-b', port: 3403, roles: ['verifier'], peers: ['http://localhost:3402'], runtime: true, seed: false },
-  { name: 'node-c', port: 3404, roles: ['verifier', 'serving'], peers: ['http://localhost:3402'], runtime: false, seed: false },
+  { name: 'node-c', port: 3404, roles: ['verifier', 'serving'], peers: ['http://localhost:3402'], runtime: true, seed: false },
 ];
 
 function ensureConfig(d) {
@@ -40,6 +41,8 @@ function ensureConfig(d) {
 }
 
 const nodes = defs.map(ensureConfig);
+mkdirSync(base, { recursive: true });
+writeFileSync(join(base, 'supervisor.pid'), String(process.pid));
 
 if (ledger === 'ain') {
   for (const { cfg } of nodes) {
@@ -73,6 +76,7 @@ const children = nodes.map(({ home, cfg }) => {
   return child;
 });
 
+writeFileSync(join(base, 'nodes.pid'), children.map((c) => c.pid).join('\n') + '\n');
 console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger})\n`);
 const stop = () => { for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
 process.on('SIGINT', stop);

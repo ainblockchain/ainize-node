@@ -81,7 +81,7 @@ export class Verifier {
         const out = await m.runtime.verify(blob.path, anchor.benchmark, { restore: !m.isApplied(anchor.id) });
         passed = out.passed; score = out.score; verified_on = out.verified_on; restarts = out.restarts_detected; collateral = out.collateral_nat;
         this.runtimeFailures.delete(anchor.id);
-        m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details.slice(0, 20) });
+        m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details, pre_apply: out.pre_apply });
       } catch (err) {
         this.noteFailure(anchor.id);
         if (this.graceLeft(anchor.id) > 0) throw new Error(`${(err as Error).message} (retrying for ${Math.round(this.graceLeft(anchor.id) / 60000)} more min before hash-only fallback)`);

@@ -34,6 +34,7 @@ export interface CreateDraftInput {
   recipe?: PatchAnchor['recipe'];
   file: string;              // local path to .npz (copied into blob store unless `keepInPlace`)
   keepInPlace?: boolean;
+  visibility?: 'public' | 'test';
 }
 
 export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
@@ -82,14 +83,21 @@ export class Market {
   }
 
   // ------------------------------------------------------------------ catalog
+  /** Public catalog (test-visibility anchors hidden). */
   async catalog(force = false): Promise<CatalogEntry[]> {
+    return (await this.catalogAll(force)).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors);
+  }
+
+  async catalogAll(force = false): Promise<CatalogEntry[]> {
     if (!force && this.catalogCache && Date.now() - this.catalogCache.at < 1500) return this.catalogCache.value;
     const [anchors, atts, setts, chals, sups] = await Promise.all([
       this.ledger.anchors(), this.ledger.attestations(), this.ledger.settlements(), this.ledger.challenges(), this.ledger.supersedes(),
     ]);
-    const normalized = anchors.map((r) => ({ ...r, body: Market.normalizeLegacyAnchor(r) })).filter((r) => r.body) as LedgerRecord<PatchAnchor>[];
+    // Only well-formed anchors/attestations enter the catalog — nothing is synthesised or defaulted server-side.
+    const wellFormed = anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[];
+    const wellFormedAtts = atts.filter((r) => Market.isAttestation(r.body));
     const drafts = this.store.listDrafts().map((d) => d.anchor);
-    const value = deriveCatalog(normalized, atts.map((r) => ({ ...r, body: Market.normalizeLegacyAttest(r.body) })), setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts);
+    const value = deriveCatalog(wellFormed, wellFormedAtts, setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts);
     // Legacy prototype anchors carry no size/rows — fill them in when we hold the very same body (sha256 match).
     for (const e of value) {
       if (e.anchor.rows === 0 || e.anchor.size_bytes === 0) {
@@ -101,35 +109,15 @@ export class Market {
     return value;
   }
 
-  /** Records imported from the reference prototype have Python-shaped bodies; map them to PatchAnchor. */
-  static normalizeLegacyAnchor(r: LedgerRecord): PatchAnchor | null {
-    const b = r.body as Record<string, unknown>;
-    if (b && typeof b.patch_sha256 === 'string' && typeof b.model === 'object') return b as unknown as PatchAnchor;
-    if (!b || typeof b.patch_sha256 !== 'string' || typeof b.id !== 'string') return null;
-    const bench = (b.benchmark as Partial<BenchmarkSpec>) ?? {};
-    return {
-      id: b.id as string,
-      name: b.id === 'krx-all' ? '한국 상장사 전 종목 종목코드 (2,761)' : b.id === 'pixelplus-1' ? '단일 사실: 픽셀플러스 087600' : (b.id as string),
-      description: 'Imported from the reference prototype ledger (실시예 8).',
-      author: (b.author as string) ?? r.author,
-      author_name: (b.author as string) ?? 'prototype',
-      model: { id_M: (b.id_M as string) ?? 'unknown' },
-      patch_sha256: b.patch_sha256 as string,
-      size_bytes: Number(b.size_bytes ?? 0), rows: Number(b.rows ?? 0),
-      benchmark: { schema: b.id === 'pixelplus-1' ? 'krx-ticker-codes' : 'krx-ticker-codes', queries: Number(bench.queries ?? 0), format: (bench.format as string[]) ?? [], collateral_bound_nat: bench.collateral_bound_nat },
-      benchmark_hash: hashCanonical(bench),
-      price: b.id === 'krx-all' ? '25' : '0.1', currency: 'USDC', billing: 'per_download',
-      parents: [], parent_authors: (b.parent_authors as string[]) ?? [], topic_path: 'finance/krx', created_at: r.ts,
-    };
+  static isAnchor(b: unknown): b is PatchAnchor {
+    const x = b as Partial<PatchAnchor> | null;
+    return !!x && typeof x.id === 'string' && typeof x.patch_sha256 === 'string' && typeof x.author === 'string' && !!x.model && typeof x.model.id_M === 'string'
+      && !!x.benchmark && typeof x.benchmark.schema === 'string' && typeof x.price === 'string' && Array.isArray(x.parents);
   }
 
-  static normalizeLegacyAttest(b: unknown): Attestation {
-    const x = b as Record<string, unknown>;
-    if (typeof x.patch_id === 'string') return x as unknown as Attestation;
-    return {
-      patch_id: x.id as string, verifier: x.verifier as string, verifier_name: x.verifier as string, patch_sha256: '', benchmark_hash: '',
-      score: (x.score as Record<string, string>) ?? {}, passed: true, verified_on: 'vLLM (prototype)', stake: (x.stake_usdc as string) ?? '0', sig: (x.sig as string) ?? '', created_at: 0,
-    };
+  static isAttestation(b: unknown): b is Attestation {
+    const x = b as Partial<Attestation> | null;
+    return !!x && typeof x.patch_id === 'string' && typeof x.verifier === 'string' && typeof x.passed === 'boolean' && typeof x.verified_on === 'string';
   }
 
   async entry(id: string): Promise<CatalogEntry | null> {
@@ -158,7 +146,7 @@ export class Market {
       price: input.price ?? this.cfg.market.defaultPrice, currency: this.cfg.market.currency, billing: input.billing ?? 'per_download',
       license: input.license, parents, parent_authors: parents.map((p) => map.get(p)!.anchor.author),
       branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-      recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch,
+      recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
     };
     this.store.putDraft(anchor, blob.path);
     this.invalidate();
@@ -442,6 +430,10 @@ export class Market {
     }
     const path = this.blobs.get(manifest.patch_sha256)!.path;
     this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: txHash, scheme, amount, manifest, path, created_at: Date.now() });
+    if (this.ledger instanceof AinLedger && scheme === 'ain-transfer') {
+      const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, amount, entry.anchor.currency, txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
+      if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
+    }
     if (opts.apply) {
       const res = await this.applyPatch(patchId, 'purchase');
       step('apply', res);

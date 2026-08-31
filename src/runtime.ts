@@ -14,6 +14,8 @@ export interface VerifyOutcome {
   verified_on: string;
   restarts_detected: number;
   details: { prompt: string; expect: string; got: string; hit: boolean }[];
+  /** Baseline generations before the patch was applied (same prompts, subset). */
+  pre_apply: { prompt: string; expect: string; got: string; hit: boolean }[];
   collateral_nat?: number;
   log: string[];
 }
@@ -219,6 +221,7 @@ export class Runtime {
         verified_on: `vllm:${st.model}`,
         restarts_detected: restarts,
         details,
+        pre_apply: before,
         log,
       };
     });

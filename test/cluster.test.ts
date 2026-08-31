@@ -38,11 +38,11 @@ before(async () => {
 after(async () => { await Promise.all([A, B, C].map((n) => n?.stop())); rmSync(tmp, { recursive: true, force: true }); });
 
 test('seed: prototype ledger imports and synthetic patches are announced', async () => {
-  const rep = await seedDemo(A.market, { real: false, synthetic: true });
+  const rep = await seedDemo(A.market, { real: false, synthetic: true, prototype: true });
   assert.equal(rep.imported_prototype, 7);
   assert.ok(rep.created.includes('law-kr-2025'));
   const cat = await A.market.catalog(true);
-  assert.ok(cat.find((e) => e.anchor.id === 'krx-all')?.status === 'LISTED', 'prototype anchors with 2 attestations are LISTED');
+  assert.ok(!cat.find((e) => e.anchor.id === 'krx-all'), 'prototype-shaped records are not surfaced as catalog entries');
   assert.equal(cat.find((e) => e.anchor.id === 'law-kr-2025')?.status, 'ANNOUNCED');
 });
 
@@ -118,7 +118,7 @@ test('public API surface', async () => {
   assert.equal(info.node.address, A.cfg.identity.address);
   assert.equal(info.ledger.kind, 'local');
   const cat = await (await fetch(`${A.url}/api/catalog?sort=popular`)).json() as { total: number; items: { anchor: { id: string } }[] };
-  assert.ok(cat.total >= 5);
+  assert.ok(cat.total >= 4);
   const one = await (await fetch(`${A.url}/api/patches/law-kr-2026`)).json() as { lineage: { parents: { id: string }[] }; conflicts: unknown[] };
   assert.equal(one.lineage.parents[0].id, 'law-kr-2025');
   const me = await (await fetch(`${A.url}/api/me/patches`)).json() as { error?: string };

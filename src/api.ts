@@ -18,6 +18,7 @@ import { verifyAuthHeader } from './p2p.js';
 import type { Market } from './market.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
+import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
 export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; saveConfig: () => void; }
 
@@ -79,6 +80,10 @@ export function buildApi(deps: ApiDeps): Router {
     res.clearCookie(SESSION_COOKIE);
     return { ok: true };
   }));
+
+  // ------------------------------------------------------------ API reference (OpenAPI 3.1 + CLI reference)
+  router.get('/api/openapi.json', wrap(async () => buildOpenApi(market.publicUrl, market.cfg.version)));
+  router.get('/api/docs', wrap(async () => ({ openapi: buildOpenApi(market.publicUrl, market.cfg.version), cli: CLI_REFERENCE, node: market.publicUrl })));
 
   // ------------------------------------------------------------ public info & catalog
   router.get('/api/info', wrap(async () => ({

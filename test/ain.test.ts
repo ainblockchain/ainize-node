@@ -22,6 +22,7 @@ const mk = (name: string, port: number, peers: string[], roles: NodeConfig['role
   cfg.gossipIntervalMs = 500;
   cfg.verifier = { quorum: 1, stake: '5', allowSelfAttest: false, intervalMs: 800 };
   cfg.publicUrl = `http://127.0.0.1:${port}`; cfg.host = '127.0.0.1';
+  cfg.includeTestAnchors = true;
   return cfg;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -59,10 +60,10 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
   const dir = join(tmp, 'synth');
   const f1 = synthPatch(dir, 'base', 11, 600);
   const f2 = synthPatch(dir, 'child', 12, 400, f1);
-  const bench = { schema: `e2e-${RUN}`, queries: 4, format: ['template'], samples: [{ prompt: 'x', expect: 'y' }] };
-  await A.market.createDraft({ id: baseId, name: 'e2e base', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f1, keepInPlace: true, price: '3', topic_path: 'e2e/base' });
+  const bench = { schema: `e2e-${RUN}`, queries: 4, format: ['template'] };   // no samples → integrity attestation suffices in tests
+  await A.market.createDraft({ id: baseId, name: 'e2e base', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f1, keepInPlace: true, price: '3', topic_path: 'e2e/base', visibility: 'test' });
   await A.market.announce(baseId);
-  await A.market.createDraft({ id: childId, name: 'e2e child', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f2, keepInPlace: true, price: '2', topic_path: 'e2e/child', parents: [baseId] });
+  await A.market.createDraft({ id: childId, name: 'e2e child', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f2, keepInPlace: true, price: '2', topic_path: 'e2e/child', parents: [baseId], visibility: 'test' });
   await A.market.announce(childId);
   const onChain = await (A.ledger as AinLedger).getValue(`/apps/knowledge/market/patches/${baseId}`);
   assert.equal(onChain?.author, A.cfg.identity.address);
