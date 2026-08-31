@@ -23,7 +23,8 @@ type PatchDetail = CatalogItem & { revenue: string; passed: number; quorum: numb
 
 /* ================================================================== runtime-touching scenarios (serial) */
 test.describe('runtime', () => {
-  test.describe.configure({ mode: 'serial', timeout: 15 * 60_000 });
+  // Not serial: each test calls ensureRuntime() first, so a vLLM hiccup in one test must not skip the rest of the block.
+  test.describe.configure({ timeout: 15 * 60_000 });
 
   test('AZ-085 Show a plain error when the node API is unreachable on every public page', async ({ page, context, request }) => {
     await ensureRuntime(request);

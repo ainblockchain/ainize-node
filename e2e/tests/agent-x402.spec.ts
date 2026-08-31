@@ -55,11 +55,12 @@ async function requireRuntime(request: Parameters<typeof waitForRuntime>[0]) {
  * hang starts mid-run the agent skips the knowledge check / step [6] ("serving API unreachable"), so such a run is
  * repeated once after the restart.
  */
-async function agentPurchaseRun(request: Parameters<typeof api>[0], args: string[], timeoutMs = 10 * 60_000) {
+async function agentPurchaseRun(request: Parameters<typeof api>[0], args: string[], timeoutMs = 8 * 60_000) {
   const go = () => withRuntimeLock('e2e:agent-run', () => agentExec(args, { cwd: REPO, timeoutMs }));
   let r = await go();
   let attempts = 1;
-  while (attempts < 3 && /serving API unreachable|no patch hook|no runtime|aborted due to timeout|completion failed|no model at/.test(r.stdout + r.stderr)) {
+  // "[e2e] timeout" = the agent was killed after `timeoutMs` (a completion that never returns while vLLM is hung)
+  while (attempts < 3 && /serving API unreachable|no patch hook|no runtime|aborted due to timeout|completion failed|no model at|\[e2e\] timeout/.test(r.stdout + r.stderr)) {
     test.info().annotations.push({ type: 'note', description: 'serving model hung during the run; waited for the restart and repeated the run' });
     expect(await waitForModel(request)).toBe(true);
     await waitForLockFree(request);
@@ -300,10 +301,12 @@ test.describe('x402 seller gateway contract', () => {
 // Runtime-touching scenarios (the agent loads knowledge into the shared model) — serial
 // =====================================================================================================================
 test.describe('autonomous buyer (runtime)', () => {
-  test.describe.configure({ mode: 'serial' });
+  // Not serial: each runtime test calls requireRuntime() first (AZ-073 falls back to the newest agent settlement when
+  // AZ-071 did not run), so a vLLM hiccup in one test must not skip the rest of the block.
 
   test('AZ-071 Run the autonomous buyer end to end: detect the gap, pay 25 AIN via 402, verify the hash, load and restore', async ({ request }) => {
-    test.setTimeout(15 * 60_000);
+    // a hung serving model costs up to ~8 min (agent timeout) + ~5 min (vLLM restart) before the run is repeated
+    test.setTimeout(30 * 60_000);
     await requireRuntime(request);
     await requireNotLoaded(request);
     const e = await entry(request, K.pixel);
@@ -595,7 +598,23 @@ test.describe('autonomous buyer (runtime)', () => {
     expect(chatPatches).toContain(K.final);
     expect(chatPatches).toContain(K.pixel);
     const seq0 = await latestSeq(request, 'usage');
-    const post = (body: unknown) => postFrom(ip, `${NODE_A}/api/chat`, body);
+    // POST /api/chat as this visitor. When the serving model hiccups mid-run (vLLM hangs ~hourly, restarts in ~5 min) the
+    // node must answer a friendly 503 — never the raw vLLM error — and a failed call burns no free try, so the same call
+    // is repeated once the model is back (remaining_quota expectations stay exact).
+    const post = async (body: unknown) => {
+      for (let attempt = 0; ; attempt++) {
+        const r = await postFrom(ip, `${NODE_A}/api/chat`, body);
+        const hiccup = r.status === 503 || (r.status >= 500 && /chat failed|EngineCore|unreachable|ECONNREFUSED|fetch failed/i.test(r.text));
+        if (!hiccup) return r;
+        expect(r.status, `a serving-model hiccup must surface as 503 with a human message, got ${r.status} ${r.text}`).toBe(503);
+        expect(typeof r.body?.error, r.text).toBe('string');
+        expect(r.body.error, 'human-readable message, not the raw vLLM error').toMatch(/unavailable|try again/i);
+        expect(r.body.error).not.toMatch(/EngineCore|InternalServerError|chat failed/);
+        expect(attempt, `serving model still unavailable after ${attempt + 1} attempt(s): ${r.text}`).toBeLessThan(2);
+        test.info().annotations.push({ type: 'note', description: `serving model hiccup (503 "${r.body.error}") — waited for the restart and repeated the call` });
+        await requireRuntime(request);
+      }
+    };
 
     // 1: compare on the benchmark prompt → metered hit
     const r1 = await post({ patch_id: K.final, mode: 'compare', messages: [{ role: 'user', content: K.pixelPrompt }], max_tokens: 16 });

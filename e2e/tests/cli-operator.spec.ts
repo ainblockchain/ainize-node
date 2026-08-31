@@ -221,8 +221,13 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^krx-all-2761-ep12\s+241,992\s+yes\s+SUPERSEDED$/m);
     expect(r.stdout).toMatch(/^krx-all-2761-ep6\s+241,992\s+yes\s+SUPERSEDED$/m);
     expect(r.stdout).toMatch(/^pixelplus-087600\s+2,170\s+yes\s+SUPERSEDED$/m);
-    // exactly the three demo overlaps among published patches (this node's private DRAFTs from other suites also show up here — observation)
-    expect(tableRows(r.stdout).filter((l) => !/\sDRAFT\s*$/.test(l)).length).toBe(3);
+    // exactly the three demo overlaps among the seeded (public) catalog — the logged-in node-a operator additionally sees
+    // its own DRAFTs and the hidden (visibility:test) listings other suites publish on the same body; `patch ls` above
+    // showed the 4 seeded rows, so anything outside that set is such a private/hidden row
+    const conflictRows = tableRows(r.stdout).map((l) => l.split(/\s+/)[0]);
+    const seeded = new Set((JSON.parse((await runCli(['patch', 'ls', '--json'], A)).stdout) as { anchor: { id: string } }[]).map((e) => e.anchor.id));
+    expect(seeded.size).toBe(4);
+    expect(conflictRows.filter((id) => seeded.has(id)).sort()).toEqual([K.ep12, K.ep6, K.pixel].sort());
 
     r = await runCli(['patch', 'records', K.final], A);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -537,8 +542,8 @@ test.describe('operator: account / API / inspection', () => {
 // =====================================================================================================================
 // Shared-model scenarios (live tests, quota, subscriptions, announce + real verification) — strictly serial
 // =====================================================================================================================
-test.describe('operator: runtime (serial)', () => {
-  test.describe.configure({ mode: 'serial' });
+test.describe('operator: runtime', () => {
+  // Not serial: every test logs in and waits for the shared runtime itself, so a vLLM hiccup in one must not skip the rest.
 
   test('AZ-054 Live-test knowledge from the CLI: `chat --list`, one-shot compare, `--mode`, `--thinking`, `--json`, quota footer and the interactive REPL', async ({ request }) => {
     test.setTimeout(20 * 60_000);
@@ -711,6 +716,8 @@ test.describe('operator: runtime (serial)', () => {
     expect(r.code, r.stderr || r.stdout).toBe(0);
     expect(r.stdout.trim()).toBe(`✓ ${K.pixel} added to ${name} (1 patches)`);
 
+    // node-b learns the new branch from the chain on its next ledger poll — wait until it lists it before the owner check
+    await pollUntil(() => runCli(['branch', 'ls'], B), (x) => x.stdout.includes(name), 90_000, 3000);
     r = await runCli(['branch', 'add', name, K.final], B);
     expect(r.code).toBe(1);
     expect(r.stderr.trim()).toBe('error: only the branch owner can add patches');
@@ -733,8 +740,10 @@ test.describe('operator: runtime (serial)', () => {
     expect(r.stdout).toContain('finance/KRX-history');
     expect(r.stdout.trim().endsWith('✓ = this node subscribes')).toBe(true);
 
-    r = await runCli(['branch', 'ls'], B);
-    expect(r.stdout).toMatch(new RegExp(`^${esc(name)}\\s+${esc(ctx)}\\s+pixelplus-087600\\s+node-a\\s+`, 'm'));
+    // node-b's view catches up with the add + subscribe records on its next ledger poll
+    const rowB = new RegExp(`^${esc(name)}\\s+${esc(ctx)}\\s+pixelplus-087600\\s+node-a\\s+`, 'm');
+    r = await pollUntil(() => runCli(['branch', 'ls'], B), (x) => rowB.test(x.stdout), 90_000, 3000);
+    expect(r.stdout).toMatch(rowB);
     expect(r.stdout).not.toContain(`${name} ✓`);
     r = await runCli(['status'], A);
     expect(r.stdout).toMatch(new RegExp(`^branches\\s+.*${esc(name)}`, 'm'));
@@ -872,8 +881,9 @@ test.describe('operator: runtime (serial)', () => {
 // =====================================================================================================================
 // Fourth node (node-d): lifecycle, peers, one-line purchases, gateway probes, verifier grace period — strictly serial
 // =====================================================================================================================
-test.describe('operator: fourth node (serial)', () => {
-  test.describe.configure({ mode: 'serial' });
+test.describe('operator: fourth node', () => {
+  // Not serial: each test brings node-d up itself (ensureNodeD/startNodeD) and the block-level hooks clean it up, so a
+  // failure in one test must not skip the others (workers=1 keeps the file order).
   test.beforeAll(async () => { await cleanupNodeD(); });
   test.afterAll(async ({ playwright }) => {
     await cleanupNodeD();
@@ -1213,6 +1223,8 @@ test.describe('operator: fourth node (serial)', () => {
     r = await runCli(['status'], D);
     expect(r.stdout).toMatch(/^runtime\s+unavailable \(serving API unreachable\)$/m);
 
+    // node-d may already hold the pixelplus body (bought/fetched earlier in this block) — then there is no blob fetch to log
+    const hadBody = ((await api<{ node: { blobs: string[] } }>(request, '/api/info', { node: NODE_D })).body.node?.blobs ?? []).includes(PIXEL_SHA);
     // a fresh announce (hidden, run-unique schema) right after node-d is up
     const id = uid('o69-grace', test.info().retry);
     const name = 'O69 grace period';
@@ -1223,7 +1235,9 @@ test.describe('operator: fourth node (serial)', () => {
     const iV = ev.findIndex((l) => /info {2}verifier {2}\[.*\] verifying /.test(l) && l.includes(`verifying ${id} (${name})`));
     const iB = ev.findIndex((l) => /info {2}blob {6}\[/.test(l) && l.includes(`fetched ${id} body from`));
     const iW = ev.findIndex((l) => /warn {2}verifier {2}\[/.test(l) && l.includes(`verify ${id} failed: runtime unavailable (serving API unreachable) — waiting up to 15 min before hash-only fallback`));
-    expect([iV >= 0, iB > iV, iW > iB]).toEqual([true, true, true]);
+    expect([iV >= 0, iW > iV]).toEqual([true, true]);
+    if (hadBody) test.info().annotations.push({ type: 'note', description: 'node-d already held the pixelplus body from an earlier purchase in this block — no blob fetch line, the first failed attempt follows the verifying line directly' });
+    else expect([iB > iV, iW > iB]).toEqual([true, true]);
 
     // The grace clock starts at node-d's FIRST failed attempt (after the blob fetch). node-d keeps retrying every ~5 s
     // only while the item is ANNOUNCED/VERIFYING — node-b/node-c usually list it within ~30-60 s, which ends the retries.
@@ -1266,15 +1280,23 @@ test.describe('operator: fourth node (serial)', () => {
       const skipped = listed && lockFree && !dlog.stdout.split('\n').some((l) => l.includes(`verifying ${id}`) && new Date(l.slice(0, 19)).getTime() > restartedAt) && Date.now() - restartedAt > 90_000;
       return { attested, listed, skipped, dlog: dlog.stdout, get: g.stdout };
     }, (o) => o.attested || o.skipped, 12 * 60_000, 10_000);
-    expect(outcome.get.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
     expect(outcome.get).not.toContain('hash-only');
     expect(outcome.dlog).not.toContain('hash-only)');
     if (outcome.attested) {
       expect(outcome.dlog).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
-      const g = await pollUntil(() => runCli(['patch', 'get', id], A), (x) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`), 2 * 60_000, 5000);
+      // node-d's real vote counts toward the quorum; the item is LISTED once ≥ 2 executed PASS votes exist (node-b/node-c
+      // may still be waiting for the shared model when node-d came back — then node-d's vote is the one completing the quorum)
+      const listedWithD = (x: { stdout: string }) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`) && / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '');
+      const g = await pollUntil(() => runCli(['patch', 'get', id], A), listedWithD, 12 * 60_000, 5000);
+      expect(g.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
       expect(g.stdout).toMatch(new RegExp(`^node-d ${esc(shortAddr(addrD, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+`, 'm'));
-      expect(g.stdout).toMatch(/^verification\s+3\/2 passed ✓ quorum$/m);
+      expect(g.stdout).not.toContain('hash-only');
+      const passRows = g.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length;
+      expect(passRows).toBeGreaterThanOrEqual(2);
+      expect(g.stdout).toMatch(new RegExp(`^verification\\s+${passRows}/2 passed ✓ quorum$`, 'm'));
+      if (passRows < 3) test.info().annotations.push({ type: 'note', description: `node-d's real attestation completed the quorum before every demo verifier voted (${passRows} executed PASS votes) — the scenario's third row is not observable in this timing` });
     } else {
+      expect(outcome.get.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
       // quorum was reached by node-b + node-c before node-d came back: node-d correctly wrote nothing (no third row, no hash-only)
       test.info().annotations.push({ type: 'note', description: 'node-b/node-c listed the patch before node-d\'s runtime returned; node-d skipped the LISTED item (no attestation at all) — grace period held, third attestation not observable in this timing' });
       expect(outcome.get).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);

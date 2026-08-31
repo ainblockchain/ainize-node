@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect, type Page, type Request as PwRequest } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, api, operatorToken, loginViaUi, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, api, operatorToken, loginViaUi, startThrowawayNode, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
 import {
   NPZ_NAME, NPZ_PATH, PIXEL_SAMPLE, SAMSUNG_SAMPLE, authMe, benchmarkJson, createDraftViaApi, deleteDraftIfAny, delayRoute, ensureDraft, esc, fmtBytes, fmtMoney, fmtNum,
   kv, manageUrl, nodeInfo, patchDetail, pickFreeId, readState, saveState, shortAddr, shortHash, testDraftSpec, titleChip, uploadDraftSpec, type PatchDetail,
@@ -45,13 +45,23 @@ const isPost = (url: string) => (r: PwRequest) => r.url().endsWith(url) && r.met
 // =====================================================================================================================
 // sign-in / setup
 // =====================================================================================================================
-test('AZ-027 Create the operator password on first visit and land on My knowledge', async ({ page, request }) => {
-  let node: string | null = null;
-  for (const n of [NODE_A, NODE_B, NODE_C]) if ((await authMe(request, n)).needsSetup) { node = n; break; }
-  if (!node) throw new Error('precondition not reproducible: every node already has an operator password (GET /api/auth/me → needsSetup:false on :3402, :3403 and :3404); the first-visit setup form can only be exercised once per node');
-  if (node !== NODE_A) note(`node-a already had a password — first-visit setup exercised on ${node}`);
-  const me = await authMe(request, node);
-  const password = PASSWORDS[node];
+test('AZ-027 Create the operator password on first visit and land on My knowledge', async ({ page }) => {
+  // The first-visit setup form can only be exercised once per node and every cluster node already has its operator
+  // password, so the scenario runs against a private throwaway node (same binary + web UI, local ledger, no peers,
+  // roles seller/verifier/serving like node-a) that is started here and removed afterwards.
+  const tn = await startThrowawayNode('az027', { name: 'node-a', roles: 'seller,verifier,serving' });
+  try {
+    await runFirstVisitSetup(page, tn.url);
+  } finally {
+    await tn.stop();
+  }
+});
+
+async function runFirstVisitSetup(page: Page, node: string): Promise<void> {
+  const password = 'demo1234';
+  const me = await authMe(page.request, node);
+  expect(me.needsSetup, 'fresh node has no operator password yet').toBe(true);
+  expect(me.signedIn).toBe(false);
 
   await page.goto(`${node}/signing`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Create the operator password');
@@ -60,12 +70,12 @@ test('AZ-027 Create the operator password on first visit and land on My knowledg
   await expect(kv(page, 'Account address')).toContainText(me.address);
   await expect(kv(page, 'Account address').getByRole('button', { name: 'Copy' })).toBeVisible();
   await expect(kv(page, 'Roles')).toHaveText(me.roles.join(', '));
-  if (node === NODE_A) expect(me.roles.join(', ')).toBe('seller, verifier, serving');
+  expect(me.roles.join(', ')).toBe('seller, verifier, serving');
 
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByLabel('Confirm password', { exact: true }).fill(password);
   await page.getByRole('checkbox', { name: /I agree to the Terms and Policies \(required\)/ }).check();
-  await expect(page.getByRole('link', { name: 'Terms and Policies' })).toHaveAttribute('href', '/terms');
+  await expect(page.getByRole('main').getByRole('link', { name: 'Terms and Policies' })).toHaveAttribute('href', '/terms');   // (the footer links there too)
 
   const [res] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/auth/setup') && r.request().method() === 'POST'),
@@ -76,7 +86,9 @@ test('AZ-027 Create the operator password on first visit and land on My knowledg
   expect(body.ok).toBe(true);
   expect(typeof body.token).toBe('string');
   expect(body.token.length).toBeGreaterThan(20);
-  expect(res.headers()['set-cookie'] ?? '').toContain('ngram_session=');
+  // response.headers() hides cookie headers — read the raw header list and the browser's cookie jar
+  expect((await res.headersArray()).some((h) => h.name.toLowerCase() === 'set-cookie' && h.value.startsWith('ngram_session='))).toBe(true);
+  expect((await page.context().cookies(node)).some((c) => c.name === 'ngram_session' && c.httpOnly)).toBe(true);
 
   await page.waitForURL(`${node}/dashboard`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('My knowledge');
@@ -87,7 +99,7 @@ test('AZ-027 Create the operator password on first visit and land on My knowledg
   await expect(header.getByRole('link', { name: 'Sign in' })).toHaveCount(0);
   const after = await authMe(page.request, node);
   expect(after).toMatchObject({ signedIn: true, needsSetup: false });
-});
+}
 
 test('AZ-028 Sign in with the operator password after being redirected from a protected page', async ({ page, request }) => {
   await operatorToken(request, NODE_A); // makes sure the password exists (idempotent)
@@ -281,13 +293,16 @@ test('AZ-030 Register a new knowledge draft from a file path on the node', async
   await expect(page.getByLabel('Target model')).toHaveValue(MODEL);
 
   await page.getByLabel('Price (AIN)').fill('0.5');
-  await expect(page.locator('label', { hasText: 'Price (AIN)' })).toHaveText(/0 = free\. Buyers pay automatically and you are settled per sale\.\s*AIN = AI Network token \(this demo runs a local dev chain\)/);
+  // the helper line sits next to the input (linked with aria-describedby), inside the same field container
+  const priceField = page.getByLabel('Price (AIN)').locator('xpath=ancestor::div[1]');
+  await expect(priceField).toHaveText(/0 = free\. Buyers pay automatically and you are settled per sale\.\s*AIN = AI Network token \(this demo runs a local dev chain\)/);
+  await expect(page.locator(`[id="${await page.getByLabel('Price (AIN)').getAttribute('aria-describedby')}"]`)).toHaveText(/^0 = free\./);
   await page.getByLabel('Billing').selectOption({ label: 'per download' });
   await page.getByLabel('License').fill('CC-BY-4.0');
 
   await page.getByLabel('Subject').fill(spec.schema);
   await page.getByLabel('facts covered (Facts covered)').fill('1');
-  await page.getByLabel('Question').fill(PIXEL_SAMPLE.prompt);
+  await page.getByLabel('Question', { exact: true }).fill(PIXEL_SAMPLE.prompt);
   await page.getByLabel('Expected answer (prefix)').fill(PIXEL_SAMPLE.expect);
 
   await page.getByRole('radio', { name: 'Path on the node' }).check();
@@ -325,7 +340,7 @@ test('AZ-036 Keep the sample-question editor and the benchmark JSON in sync both
   const subject = page.getByLabel('Subject');
   const facts = page.getByLabel('facts covered (Facts covered)');
   const prompts = page.getByPlaceholder('Ticker code for Pixelplus ');
-  const expects = page.getByPlaceholder('087600');
+  const expects = page.getByPlaceholder('087600', { exact: true });
   await expect(page.getByText('Benchmark JSON — kept in sync with the fields above')).toBeVisible();
 
   await subject.fill('sync-test');
@@ -548,7 +563,7 @@ test('AZ-048 Upload a .npz file from the browser and watch the fingerprint being
   await page.getByLabel('Name', { exact: true }).fill(spec.name);
   await page.getByLabel('Id (optional)').fill(id);
   await page.getByLabel('Subject').fill(spec.schema);
-  await page.getByLabel('Question').fill(PIXEL_SAMPLE.prompt);
+  await page.getByLabel('Question', { exact: true }).fill(PIXEL_SAMPLE.prompt);
   await page.getByLabel('Expected answer (prefix)').fill(PIXEL_SAMPLE.expect);
 
   const uploadRadio = page.getByRole('radio', { name: 'Upload a file' });
@@ -1050,7 +1065,8 @@ test('AZ-047 Review Files & changes: pairing hint, sync, file tree and change hi
 // runtime-touching scenarios (shared vLLM + cross-process lock) — serial
 // =====================================================================================================================
 test.describe('runtime', () => {
-  test.describe.configure({ mode: 'serial' });
+  // Not serial on purpose: the tests wait for the shared runtime themselves, so a vLLM hiccup in one of them must not
+  // skip the rest of the block (workers=1 keeps them in file order; AZ-041 checks its AZ-031 precondition explicitly).
 
   test('AZ-031 Publish a draft after the checklist and follow verification until Verified', async ({ page, request }) => {
     test.setTimeout(30 * 60_000);

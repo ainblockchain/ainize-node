@@ -13,7 +13,15 @@ const PIXEL_NAME = 'Pixelplus ticker code (single fact)';
 const MODEL = 'Qwen3.8-Flash-Next';
 
 interface Sample { prompt: string; expect: string }
-interface CatalogEntry { anchor: { id: string; name: string; description: string; author: string; price: string; rows: number; size_bytes: number; created_at: number; benchmark: { queries: number; samples: Sample[] } }; status: string; downloads: number; passed: number; quorum: number }
+interface CatalogEntry { anchor: { id: string; name: string; description: string; author: string; price: string; rows: number; size_bytes: number; created_at: number; benchmark: { queries: number; samples: Sample[] } }; status: string; downloads: number; passed: number; quorum: number; attestations: { passed: boolean; verified_on: string; score?: Record<string, string | number> }[] }
+/** Mirror of the UI's executedAccuracy()+pct(): the latest executed (non hash-only) passing attestation's free_generation score as a percentage. */
+function executedAccuracyPct(e: CatalogEntry): number | null {
+  const executed = e.attestations.filter((a) => a.passed && a.verified_on !== 'hash-only');
+  const s = executed[executed.length - 1]?.score;
+  const raw = s?.free_generation ?? s?.free_generation_vllm ?? s?.chat_60;
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(String(raw ?? ''));
+  return m && Number(m[2]) ? Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10 : null;
+}
 interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number }[] }
 interface Info { node: { address: string; blobs: string[] }; ledger: { records: number; height: number; provider: string; app: string }; counts: { listed: number; verifying: number }; quorum: number; royalty_share: number; peers: number }
 
@@ -709,7 +717,11 @@ test('AZ-022 Explore the Network page and try the gateway router demo', async ({
   await expect(dd(page, 'Connected nodes')).toHaveText(`${i.peers} direct · ${nodes.nodes.length - 1} known from the record`);
   expect(i.peers).toBe(2);
   await expect(dd(page, 'Knowledge files stored')).toHaveText(String(i.node.blobs.length));
-  expect(i.node.blobs.length).toBe(4);
+  // the 4 demo bodies are stored (other suites' hidden test knowledge may add files on top of the seeded 4)
+  const demoShas = (await api<{ items: { anchor: { patch_sha256: string } }[] }>(request, '/api/catalog?limit=200')).body.items.map((e) => e.anchor.patch_sha256);
+  expect(new Set(demoShas).size).toBe(4);
+  for (const sha of demoShas) expect(i.node.blobs, `body ${sha.slice(0, 12)}… stored on node-a`).toContain(sha);
+  expect(i.node.blobs.length).toBeGreaterThanOrEqual(4);
   await expect(dd(page, 'Subscribed tracks')).toHaveText('none');
   await expect(dd(page, 'Version')).toHaveText('0.1.0');
 
@@ -729,9 +741,12 @@ test('AZ-022 Explore the Network page and try the gateway router demo', async ({
     const cells = peerRow(e).locator('td');
     await expect(cells.nth(4)).toHaveText('AIN blockchain');
     await expect(cells.nth(5)).toHaveText(MODEL);
+    // Files = bodies the peer holds: 1–4 of the demo bodies (plus any hidden test bodies other suites made it fetch)
+    const peerBlobs = nodes.peers.find((p) => p.endpoint === e)?.info.blobs ?? [];
     const files = Number(await cells.nth(6).textContent());
-    expect(files).toBeGreaterThanOrEqual(1);
-    expect(files).toBeLessThanOrEqual(4);
+    expect(files).toBe(peerBlobs.length);
+    expect(peerBlobs.filter((b) => demoShas.includes(b)).length).toBeGreaterThanOrEqual(1);
+    expect(peerBlobs.filter((b) => demoShas.includes(b)).length).toBeLessThanOrEqual(4);
     await expect(cells.nth(7)).toHaveText('0');
     await expect(cells.nth(8)).toHaveText(/^\d+(s|m) ago$/);
   }
@@ -831,7 +846,7 @@ test('AZ-023 Use the Docs page: copy one-liners, browse the CLI table and the AP
 /* ======================================================================================= Live test (shared runtime) */
 
 test.describe('Live test (shared runtime)', () => {
-  test.describe.configure({ mode: 'serial' });
+  // Not serial: every test waits for the shared runtime in beforeEach, so a vLLM hiccup in one test must not skip the others.
 
   test.beforeEach(async ({ request }) => {
     expect(await waitForRuntime(request), 'model server available').toBe(true);
@@ -852,12 +867,16 @@ test.describe('Live test (shared runtime)', () => {
     const items = panel.getByRole('button');
     await expect(items).toHaveCount(testable.length);
     expect(testable.length).toBe(4);
-    const itemFor = (id: string) => items.filter({ hasText: new RegExp(`node-a/${id}(?![\\w-])`) });
+    // the "node-a/{id}" line is its own element (the facts count follows it without whitespace in the button text)
+    const itemFor = (id: string) => items.filter({ has: page.locator('span', { hasText: new RegExp(`^node-a/${id}$`) }) });
     for (const e of testable) {
       const it = itemFor(e.anchor.id);
       await expect(it).toContainText(e.anchor.name);
       await expect(it).toContainText(`${num(e.anchor.benchmark.queries)} facts`);
-      await expect(it).toContainText('100% accuracy');
+      // "{pct}% accuracy" = the verifiers' executed score (100% for the seeded verifications; a later re-verification may score differently)
+      const acc = executedAccuracyPct(e);
+      expect(acc, `${e.anchor.id} has an executed passing attestation`).not.toBeNull();
+      await expect(it).toContainText(`${acc}% accuracy`);
       await expect(it).toContainText(`${e.anchor.price} AIN`);
       await expect(it).toContainText(AIN_NOTE);
       await expect(it).toContainText(e.status === 'LISTED' ? 'Verified' : 'Newer version available');
@@ -867,7 +886,7 @@ test.describe('Live test (shared runtime)', () => {
 
     await itemFor(K.pixel).click();
     await expect(page).toHaveURL(new RegExp(`/chat/${K.pixel}$`));
-    const head = page.locator('main h2');
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to test$/ });   // the picker's own heading sits in <main> too
     await expect(head).toHaveText(PIXEL_NAME);
     await expect(head.locator('..')).toContainText('Newer version available');
     await expect(head.locator('..')).toContainText('8 facts');
@@ -1100,7 +1119,7 @@ test.describe('Live test (shared runtime)', () => {
     const item = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button', { pressed: true });
     await expect(item).toHaveCount(1);
     for (const s of [PIXEL_NAME, `node-a/${K.pixel}`, '8 facts', '100% accuracy', '0.1 AIN', AIN_NOTE, 'Newer version available', 'Selected']) await expect(item).toContainText(s);
-    const head = page.locator('main h2').locator('..');
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to test$/ }).locator('..');
     await expect(head).toContainText(PIXEL_NAME);
     await expect(head).toContainText('Newer version available');
     await expect(head).toContainText('8 facts');

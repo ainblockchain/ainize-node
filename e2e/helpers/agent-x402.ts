@@ -32,8 +32,10 @@ export async function agentExec(args: string[], opts: { env?: Record<string, str
     const { stdout, stderr } = await execFileP(NODE_BIN, [AGENT, ...args], { timeout: opts.timeoutMs ?? 10 * 60_000, env: { ...process.env, ...(opts.env ?? {}) }, cwd: opts.cwd, maxBuffer: 16 * 1024 * 1024 });
     return { code: 0, stdout: stripNoise(stdout), stderr: stripNoise(stderr), ms: Date.now() - t0 };
   } catch (e) {
-    const err = e as { code?: number; stdout?: string; stderr?: string };
-    return { code: typeof err.code === 'number' ? err.code : 1, stdout: stripNoise(err.stdout ?? ''), stderr: stripNoise(err.stderr ?? ''), ms: Date.now() - t0 };
+    const err = e as { code?: number; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
+    // execFile killed the agent (timeout): say so, so callers can tell a hung serving model from an agent failure
+    const stderr = stripNoise(err.stderr ?? '') + (err.killed || err.signal ? '\n[e2e] timeout' : '');
+    return { code: typeof err.code === 'number' ? err.code : 1, stdout: stripNoise(err.stdout ?? ''), stderr, ms: Date.now() - t0 };
   }
 }
 
