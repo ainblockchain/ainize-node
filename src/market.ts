@@ -53,6 +53,8 @@ const SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
 export class Market {
   private catalogCache: { at: number; value: CatalogEntry[] } | null = null;
   p2p!: P2P;
+  /** aindrive mirror (set by server.ts). */
+  drive?: { sync(): Promise<{ written: number }>; pullDraftEdits(e: CatalogEntry): boolean };
   constructor(
     readonly cfg: NodeConfig,
     readonly ledger: Ledger,
@@ -72,6 +74,13 @@ export class Market {
 
   invalidate() { this.catalogCache = null; }
 
+  /** Force a re-read of the shared ledger (AIN polls every few seconds; call before decisions that must be fresh). */
+  async refreshLedger(): Promise<void> {
+    const l = this.ledger as Ledger & { refresh?: () => Promise<void> };
+    if (typeof l.refresh === 'function') await l.refresh().catch(() => undefined);
+    this.invalidate();
+  }
+
   // ------------------------------------------------------------------ catalog
   async catalog(force = false): Promise<CatalogEntry[]> {
     if (!force && this.catalogCache && Date.now() - this.catalogCache.at < 1500) return this.catalogCache.value;
@@ -81,6 +90,13 @@ export class Market {
     const normalized = anchors.map((r) => ({ ...r, body: Market.normalizeLegacyAnchor(r) })).filter((r) => r.body) as LedgerRecord<PatchAnchor>[];
     const drafts = this.store.listDrafts().map((d) => d.anchor);
     const value = deriveCatalog(normalized, atts.map((r) => ({ ...r, body: Market.normalizeLegacyAttest(r.body) })), setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts);
+    // Legacy prototype anchors carry no size/rows — fill them in when we hold the very same body (sha256 match).
+    for (const e of value) {
+      if (e.anchor.rows === 0 || e.anchor.size_bytes === 0) {
+        const b = this.blobs.get(e.anchor.patch_sha256);
+        if (b) { e.anchor.rows = b.rows; e.anchor.size_bytes = b.size_bytes; e.anchor.model.row_dim ??= b.row_dim; }
+      }
+    }
     this.catalogCache = { at: Date.now(), value };
     return value;
   }
@@ -188,6 +204,8 @@ export class Market {
 
   /** DRAFT → ANNOUNCED: pre-checks, anchor record (gateway_url = this node's x402 endpoint), broadcast. */
   async announce(id: string): Promise<LedgerRecord<PatchAnchor>> {
+    const draftEntry = await this.entry(id);
+    if (draftEntry && this.drive) this.drive.pullDraftEdits(draftEntry);
     const d = this.store.getDraft(id);
     if (!d) throw new Error('draft not found');
     const blob = this.blobs.get(d.anchor.patch_sha256);
@@ -369,7 +387,8 @@ export class Market {
   async buy(patchId: string, opts: { apply?: boolean } = {}): Promise<PurchaseResult> {
     const steps: PurchaseResult['steps'] = [];
     const step = (s: string, d: string) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, patchId); };
-    const entry = await this.entry(patchId);
+    let entry = await this.entry(patchId);
+    if (entry && !entry.quorum_ok) { await this.refreshLedger(); entry = await this.entry(patchId); }
     if (!entry) throw new Error('patch not found');
     if (!entry.quorum_ok) throw new Error(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
     step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);

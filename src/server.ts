@@ -16,6 +16,7 @@ import { P2P } from './p2p.js';
 import { Runtime } from './runtime.js';
 import { Store } from './store.js';
 import { Verifier } from './verifier.js';
+import { Drive } from './drive.js';
 
 export interface RunningNode {
   cfg: NodeConfig;
@@ -23,6 +24,7 @@ export interface RunningNode {
   ledger: Ledger;
   store: Store;
   verifier: Verifier | null;
+  drive: Drive;
   server: Server;
   url: string;
   stop(): Promise<void>;
@@ -57,6 +59,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const selfUrl = cfg.publicUrl ?? `http://localhost:${cfg.port}`;
   const p2p = new P2P({ identity: cfg.identity, ledger, store, selfInfo: () => market.selfInfo(), log: (l, k, m, d) => market.log(l, k, m, null, d) }, cfg.peers, cfg.gossipIntervalMs, selfUrl);
   market.p2p = p2p;
+  const drive = new Drive(market);
+  market.drive = drive;
   const verifier = cfg.roles.includes('verifier') ? new Verifier(market, cfg.verifier?.intervalMs ?? 5000) : null;
 
   const app = express();
@@ -74,7 +78,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(buildApi({ market, verifier, saveConfig: () => { if (opts.home) saveConfig(cfg, opts.home); } }));
+  app.use(buildApi({ market, verifier, drive, saveConfig: () => { if (opts.home) saveConfig(cfg, opts.home); } }));
 
   const webDist = opts.webDist ?? defaultWebDist();
   if (opts.serveWeb !== false && existsSync(join(webDist, 'index.html'))) {
@@ -103,11 +107,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   verifier?.start();
   const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
   watchdog.unref?.();
+  const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
+  driveSync.unref?.();
+  setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
 
   return {
-    cfg, market, ledger, store, verifier, server, url,
+    cfg, market, ledger, store, verifier, drive, server, url,
     async stop() {
       clearInterval(watchdog);
+      clearInterval(driveSync);
       await Promise.all([verifier?.stop(), p2p.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
       await ledger.close();

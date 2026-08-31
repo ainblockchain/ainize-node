@@ -6,3 +6,4 @@ export { Runtime } from './runtime.js';
 export { P2P, authHeader, verifyAuthHeader } from './p2p.js';
 export { Verifier } from './verifier.js';
 export { seedDemo, type SeedOptions, type SeedReport } from './seed.js';
+export { Drive } from './drive.js';

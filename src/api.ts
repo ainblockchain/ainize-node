@@ -17,8 +17,9 @@ import {
 import { verifyAuthHeader } from './p2p.js';
 import type { Market } from './market.js';
 import type { Verifier } from './verifier.js';
+import type { Drive } from './drive.js';
 
-export interface ApiDeps { market: Market; verifier: Verifier | null; saveConfig: () => void; }
+export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; saveConfig: () => void; }
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 const bad = (msg: string) => new HttpError(400, msg);
@@ -245,10 +246,32 @@ export function buildApi(deps: ApiDeps): Router {
     return market.ledger.setupApp();
   }));
 
+  // ------------------------------------------------------------ aindrive (files & change history)
+  router.get('/api/drive', wrap(async () => {
+    if (!deps.drive) throw notFound('drive integration disabled');
+    return deps.drive.status();
+  }));
+  router.get('/api/drive/changes', wrap(async (req) => {
+    if (!deps.drive) throw notFound('drive integration disabled');
+    const path = String(req.query.path ?? '');
+    if (!path || path.includes('..') || path.startsWith('/')) throw bad('path must be relative to the drive folder');
+    return deps.drive.changes(path);
+  }));
+  router.post('/api/drive', requireOperator, wrap(async (req) => {
+    if (!deps.drive) throw notFound('drive integration disabled');
+    const { action } = z.object({ action: z.enum(['up', 'stop', 'sync', 'login', 'status']) }).parse(req.body);
+    if (action === 'up') return deps.drive.up();
+    if (action === 'stop') return deps.drive.stop();
+    if (action === 'sync') return deps.drive.sync();
+    if (action === 'status') return { cli: await deps.drive.cliStatus(), ...deps.drive.status() };
+    return { ok: false, message: `pairing needs a browser: ${deps.drive.status().login_hint}` };
+  }));
+
   // ------------------------------------------------------------ x402 trading (seller side)
   router.get('/x402/patch/:id', wrap(async (req, res) => {
     const id = req.params.id as string;
-    const e = await market.entry(id);
+    let e = await market.entry(id);
+    if (!e || !e.quorum_ok) { await market.refreshLedger(); e = await market.entry(id); }
     if (!e || e.status === 'DRAFT') throw notFound('patch not found');
     if (e.anchor.author !== market.address) throw new HttpError(409, `not sold here; gateway is ${(e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? 'unknown'}`);
     if (!e.quorum_ok) throw new HttpError(423, `patch not listed yet (verification ${e.passed}/${e.quorum})`);

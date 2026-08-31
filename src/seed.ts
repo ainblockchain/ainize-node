@@ -29,7 +29,7 @@ function krxSamples(repo: string, n: number, must: { name: string; code: string 
   return [...must.map((m) => ({ prompt: `종목코드 ${m.name} `, expect: m.code })), ...picked];
 }
 
-function synthPatch(dir: string, name: string, seed: number, rows: number, sharedWith?: string): string {
+export function synthPatch(dir: string, name: string, seed: number, rows: number, sharedWith?: string): string {
   mkdirSync(dir, { recursive: true });
   const out = join(dir, `${name}.npz`);
   if (existsSync(out)) return out;

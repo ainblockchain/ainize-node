@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+/**
+ * Local 3-node demo cluster on one machine:
+ *   A :3402 seller + verifier (seeded: prototype ledger, real Qwen3.8 patches if present, synthetic demo patches, branches)
+ *   B :3403 verifier (runtime-enabled → real benchmark attestations when vLLM + hook are available)
+ *   C :3404 verifier + serving (hash-only attestations; subscribes branches)
+ * Quorum 2 → A's patches get LISTED by B + C. A serves the web UI at http://localhost:3402.
+ *
+ *   node scripts/cluster.mjs            # foreground; Ctrl+C stops all
+ *   NGRAM_LEDGER=ain node scripts/cluster.mjs   # all three on the local AIN chain (run `ngram chain up` first)
+ */
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const root = new URL('..', import.meta.url).pathname;
+const base = process.env.NGRAM_CLUSTER_HOME ?? join(homedir(), '.ngram-cluster');
+const ledger = process.env.NGRAM_LEDGER ?? 'local';
+const core = await import(join(root, 'packages/core/dist/index.js'));
+const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
+
+const defs = [
+  { name: 'node-a', port: 3402, roles: ['seller', 'verifier', 'serving'], peers: [], runtime: true, seed: true },
+  { name: 'node-b', port: 3403, roles: ['verifier'], peers: ['http://localhost:3402'], runtime: true, seed: false },
+  { name: 'node-c', port: 3404, roles: ['verifier', 'serving'], peers: ['http://localhost:3402'], runtime: false, seed: false },
+];
+
+function ensureConfig(d) {
+  const home = join(base, d.name);
+  let cfg = core.loadConfig(home);
+  if (!cfg) {
+    cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger });
+    if (!d.runtime) cfg.runtime = { ...cfg.runtime, repo: undefined };
+    cfg.publicUrl = `http://localhost:${d.port}`;
+    core.saveConfig(cfg, home);
+    console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})`);
+  }
+  return { home, cfg };
+}
+
+const nodes = defs.map(ensureConfig);
+
+if (ledger === 'ain') {
+  for (const { cfg } of nodes) {
+    try {
+      const l = new core.AinLedger({ providerUrl: cfg.ledger.ain.providerUrl, chainId: 0 }, cfg.identity);
+      const bal = await l.balance();
+      if (bal < 50) { await core.fundFromGenesis(cfg.ledger.ain.providerUrl, cfg.identity.address, 1000); console.log(`[cluster] funded ${cfg.name} with 1000 AIN`); }
+    } catch (e) { console.error(`[cluster] AIN funding failed for ${cfg.name}: ${e.message} — is the chain up? (ngram chain up)`); }
+  }
+  const admin = new core.AinLedger({ providerUrl: nodes[0].cfg.ledger.ain.providerUrl, chainId: 0 }, nodes[0].cfg.identity);
+  try { const s = await admin.setupApp(); console.log(`[cluster] AIN app ${s.created ? 'created' : 'exists'} (admin ${s.admin ?? nodes[0].cfg.identity.address})`); } catch (e) { console.error(`[cluster] setupApp: ${e.message}`); }
+}
+
+// seed A once (in-process, no listener), then start all three as child processes
+const seedMarker = join(nodes[0].home, '.seeded');
+if (!existsSync(seedMarker)) {
+  const n = await nodePkg.startNode(nodes[0].cfg, { home: nodes[0].home, listen: false, quiet: true, serveWeb: false });
+  const rep = await nodePkg.seedDemo(n.market);
+  console.log(`[cluster] seeded node-a: ${rep.created.length} patches, ${rep.branches.length} branches, ${rep.imported_prototype} prototype records`);
+  await n.stop();
+  writeFileSync(seedMarker, new Date().toISOString());
+}
+
+const children = nodes.map(({ home, cfg }) => {
+  const child = spawn(process.execPath, [join(root, 'packages/node/dist/bin.js')], {
+    env: { ...process.env, NGRAM_HOME: home, NGRAM_PORT: String(cfg.port) }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const tag = `[${cfg.name}]`;
+  child.stdout.on('data', (d) => process.stdout.write(String(d).split('\n').filter(Boolean).map((l) => `${tag} ${l}`).join('\n') + '\n'));
+  child.stderr.on('data', (d) => process.stderr.write(String(d).split('\n').filter(Boolean).map((l) => `${tag} ${l}`).join('\n') + '\n'));
+  return child;
+});
+
+console.log(`\n[cluster] web UI → http://localhost:3402   (B: 3403, C: 3404; homes under ${base}; ledger=${ledger})\n`);
+const stop = () => { for (const c of children) c.kill('SIGTERM'); setTimeout(() => process.exit(0), 500); };
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
