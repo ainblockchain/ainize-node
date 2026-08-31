@@ -247,6 +247,29 @@ export function buildApi(deps: ApiDeps): Router {
     return market.ledger.setupApp();
   }));
 
+  // ------------------------------------------------------------ ChatMode (live test)
+  router.get('/api/chat/patches', wrap(async () => ({ items: await market.testablePatches(), runtime: await market.runtime.status(), lock: market.runtime.lockHolder() })));
+  router.post('/api/chat', wrap(async (req) => {
+    const body = z.object({
+      patch_id: z.string(), mode: z.enum(['base', 'patched', 'compare']).default('compare'),
+      messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
+      max_tokens: z.coerce.number().min(1).max(1024).default(200), thinking: z.boolean().default(false),
+    }).parse(req.body);
+    const operator = isOperator(req);
+    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    const remaining = operator ? Infinity : market.chatQuota(visitor);
+    if (remaining < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
+    const out = await market.chat({ ...body, patchId: body.patch_id, visitor });
+    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null };
+  }));
+  router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));
+  router.patch('/api/me/settings', requireOperator, wrap(async (req) => {
+    const patch = z.object({ notifications: z.enum(['all', 'sales', 'none']).optional(), display_name: z.string().min(1).max(64).optional(), payout_address: z.string().optional() }).parse(req.body);
+    const settings = market.updateSettings(patch);
+    deps.saveConfig();
+    return { settings };
+  }));
+
   // ------------------------------------------------------------ aindrive (files & change history)
   router.get('/api/drive', wrap(async () => {
     if (!deps.drive) throw notFound('drive integration disabled');

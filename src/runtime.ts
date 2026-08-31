@@ -4,7 +4,7 @@
  * plus the vLLM OpenAI-compatible API for free-generation scoring. All operations are serialised.
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BenchmarkSpec, NodeConfig, RuntimeStatus } from '@ngram/core';
 
@@ -18,18 +18,79 @@ export interface VerifyOutcome {
   log: string[];
 }
 
+export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
+export interface ChatResult { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
+
 export class Runtime {
   private queue: Promise<unknown> = Promise.resolve();
   private statusCache: { at: number; value: RuntimeStatus } | null = null;
-  constructor(private readonly cfg: NonNullable<NodeConfig['runtime']>) {}
+  constructor(private readonly cfg: NonNullable<NodeConfig['runtime']>, private readonly owner = `pid:${process.pid}`) {}
 
   get repo(): string | null { return this.cfg.repo && existsSync(this.cfg.repo) ? this.cfg.repo : null; }
 
-  private serial<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(fn, fn);
+  /**
+   * Serialise runtime mutations. Several nodes on one machine share ONE serving model, so in addition to the
+   * in-process queue we take a cross-process lock (atomic mkdir under the shared repo) with a lease; a stale
+   * lease (crashed holder) is broken after `staleMs`.
+   */
+  private serial<T>(fn: () => Promise<T>, label = 'runtime'): Promise<T> {
+    const run = async () => {
+      const release = await this.acquireLock(label);
+      try { return await fn(); } finally { release(); }
+    };
+    const next = this.queue.then(run, run);
     this.queue = next.catch(() => undefined);
     return next;
   }
+
+  private lockDir(): string | null { return this.repo ? join(this.repo, 'ple_patch', '.ainize-runtime.lock') : null; }
+
+  /** Who holds the shared runtime lock right now (null = free). */
+  lockHolder(): { owner: string; label: string; since: number } | null {
+    const dir = this.lockDir();
+    if (!dir || !existsSync(dir)) return null;
+    try { return JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { return null; }
+  }
+
+  private async acquireLock(label: string, staleMs = 15 * 60_000, waitMs = 20 * 60_000): Promise<() => void> {
+    const dir = this.lockDir();
+    if (!dir) return () => undefined;
+    const t0 = Date.now();
+    for (;;) {
+      try {
+        mkdirSync(dir);
+        writeFileSync(join(dir, 'holder.json'), JSON.stringify({ owner: this.owner, label, since: Date.now() }));
+        return () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
+      } catch {
+        const holder = this.lockHolder();
+        if (!holder || Date.now() - holder.since > staleMs) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } continue; }
+        if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${holder.owner}: ${holder.label}) — try again later`);
+        await new Promise((r) => setTimeout(r, 250 + Math.random() * 250));
+      }
+    }
+  }
+
+  /** Run `fn` while holding the shared runtime lock (for multi-step operations such as apply → chat → restore). */
+  exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> { return this.serial(fn, label); }
+
+  /** Chat completion on the serving model (OpenAI-compatible). Thinking is off by default so short factual answers come back directly. */
+  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number } = {}): Promise<ChatResult> {
+    const model = await this.models();
+    if (!model || !this.cfg.api) throw new Error('serving API unreachable');
+    const t0 = Date.now();
+    const r = await fetch(`${this.cfg.api}/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens ?? 256, temperature: opts.temperature ?? 0, chat_template_kwargs: { enable_thinking: !!opts.thinking } }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
+    });
+    if (!r.ok) throw new Error(`chat failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    const j = (await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string } }[]; usage?: Record<string, unknown> };
+    const m = j.choices?.[0]?.message;
+    return { content: m?.content ?? '', reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: Date.now() - t0, model };
+  }
+
+  /** Raw completion without the shared lock (read-only w.r.t. the table). */
+  async completeRaw(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> { return this.complete(prompt, maxTokens, timeoutMs); }
 
   private py(args: string[], timeoutMs = 600_000): Promise<{ code: number; out: string; err: string }> {
     return new Promise((resolve) => {

@@ -16,7 +16,7 @@ import {
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
 import { P2P } from './p2p.js';
-import { Runtime } from './runtime.js';
+import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
 import type { Store, BlobRow, EventRow } from './store.js';
 
 export interface CreateDraftInput {
@@ -493,6 +493,66 @@ export class Market {
     }
   }
 
+  // ------------------------------------------------------------------ ChatMode (live test of a knowledge patch)
+  private chatUsage = new Map<string, { count: number; window: number }>();
+
+  /** Per-visitor trial quota for public live tests (operator is unlimited). Returns remaining or -1 when exhausted. */
+  chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true): number {
+    const now = Date.now();
+    const u = this.chatUsage.get(visitor);
+    const cur = u && now - u.window < windowMs ? u : { count: 0, window: now };
+    if (cur.count >= limit) return -1;
+    if (consume) { cur.count++; this.chatUsage.set(visitor, cur); }
+    return limit - cur.count;
+  }
+
+  /**
+   * Live test: answer `messages` with the base model and/or with `patchId` applied. Runs under the shared
+   * runtime lock: [ensure removed → base answer] → [apply → patched answer] → restore the previous state.
+   * Every patched answer is metered as a `hit` usage event (청구항 12 적중당 과금의 계량 단위).
+   */
+  async chat(opts: { patchId: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string }): Promise<{
+    patch_id: string; mode: string; base: ChatResult | null; patched: ChatResult | null; applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit?: boolean | null;
+  }> {
+    const entry = await this.entry(opts.patchId);
+    if (!entry) throw new Error('patch not found');
+    const blob = this.blobs.get(entry.anchor.patch_sha256);
+    if (!blob) throw new Error('this node does not hold the patch body — buy it first (or test it on the seller node)');
+    const st = await this.runtime.status();
+    if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
+    if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new Error(`patch targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+    const msgs = opts.messages.slice(-12).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
+    const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
+    return this.runtime.exclusive(`chat:${opts.patchId}`, async () => {
+      const wasApplied = (await this.runtime.isApplied(blob.path)) === true;
+      let base: ChatResult | null = null; let patched: ChatResult | null = null; let appliedMs: number | null = null;
+      if (opts.mode === 'base' || opts.mode === 'compare') {
+        if (wasApplied) { const r = await this.runtime.remove(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); }
+        base = await this.runtime.chat(msgs, chatOpts);
+      }
+      if (opts.mode === 'patched' || opts.mode === 'compare') {
+        if (!wasApplied || opts.mode === 'compare') {
+          const t0 = Date.now(); const r = await this.runtime.apply(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); appliedMs = Date.now() - t0;
+        }
+        patched = await this.runtime.chat(msgs, chatOpts);
+        if (!wasApplied) { await this.runtime.remove(blob.path); }
+      } else if (wasApplied && opts.mode === 'base') {
+        await this.runtime.apply(blob.path);   // put it back the way we found it
+      }
+      const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
+      const sample = entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));
+      const hit = sample && patched ? patched.content.replace(/\s/g, '').includes(sample.expect) : null;
+      this.log('info', 'usage', `live test ${opts.patchId} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, opts.patchId, { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs });
+      return { patch_id: opts.patchId, mode: opts.mode, base, patched, applied_ms: appliedMs, was_applied: wasApplied, model: st.model, benchmark_hit: hit };
+    });
+  }
+
+  /** Patches whose bodies are on this node (testable in ChatMode). */
+  async testablePatches(): Promise<CatalogEntry[]> {
+    const st = await this.runtime.status();
+    return (await this.catalog()).filter((e) => e.status !== 'DRAFT' && this.blobs.has(e.anchor.patch_sha256) && (!st.model || e.anchor.model.id_M.startsWith(st.model)));
+  }
+
   // ------------------------------------------------------------------ branches / network
   async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9/_-]{1,63}$/.test(name)) throw new Error('invalid branch name');
@@ -592,6 +652,20 @@ export class Market {
     const info = await this.selfInfo();
     const rec = await this.ledger.append('node', info);
     await this.p2p?.broadcast(rec).catch(() => undefined);
+  }
+
+  // ------------------------------------------------------------------ operator settings (persisted)
+  settings(): { notifications: 'all' | 'sales' | 'none'; display_name: string; payout_address: string } {
+    const raw = this.store.get('settings');
+    const base = { notifications: 'all' as const, display_name: this.cfg.name, payout_address: this.address };
+    return raw ? { ...base, ...JSON.parse(raw) } : base;
+  }
+  updateSettings(patch: Partial<{ notifications: 'all' | 'sales' | 'none'; display_name: string; payout_address: string }>) {
+    const next = { ...this.settings(), ...patch };
+    this.store.set('settings', JSON.stringify(next));
+    if (patch.display_name) this.cfg.name = patch.display_name;
+    this.log('info', 'settings', `settings updated: ${Object.keys(patch).join(', ')}`);
+    return next;
   }
 
   // ------------------------------------------------------------------ misc helpers
