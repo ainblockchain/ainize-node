@@ -1,0 +1,28 @@
+# Local single-node AI Network blockchain for the `ain` ledger mode.
+#   docker compose -f deploy/docker-compose.ain.yml up -d
+#   curl -s localhost:8081/node_status | head -c 200      # "state":"SERVING" when ready
+# Equivalent to `ngram chain up`. Uses the public 1-node genesis test key from ainblockchain/ain-blockchain.
+services:
+  ain:
+    image: ainblockchain/ain-blockchain:latest
+    container_name: ngram-ain
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      BLOCKCHAIN_CONFIGS_DIR: blockchain-configs/1-node
+      ACCOUNT_INJECTION_OPTION: private_key
+      PRIVATE_KEY: b22c95ffc4a5c096f7d7d0487ba963ce6ac945bdc91c79b64ce209de289bec96
+      PORT: "8081"
+      P2P_PORT: "5001"
+      EVENT_HANDLER_PORT: "5101"
+      STAKE: "10000000"
+      HOSTING_ENV: local
+      SYNC_MODE: full
+      ENABLE_GAS_FEE_WORKAROUND: "true"
+      ENABLE_TX_SIG_VERIF_WORKAROUND: "true"
+      ENABLE_EXPRESS_RATE_LIMIT: "false"
+      ENABLE_REST_FUNCTION_CALL: "true"
+      ENABLE_STATUS_REPORT_TO_TRACKER: "false"
+      CONSOLE_LOG: "false"
+      TX_POOL_SIZE_LIMIT_PER_ACCOUNT: "1000"
+      ENABLE_EVENT_HANDLER: "true"

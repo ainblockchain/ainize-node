@@ -84,6 +84,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/info', wrap(async () => ({
     node: await market.selfInfo(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
+    initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
     counts: { patches: (await market.catalog()).length, listed: (await market.catalog()).filter((e) => e.status === 'LISTED').length },
   })));
 

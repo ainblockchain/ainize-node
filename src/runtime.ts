@@ -80,13 +80,18 @@ export class Runtime {
     return r.out.includes('끼워짐');
   }
 
-  async complete(prompt: string, maxTokens = 8): Promise<string> {
+  /** Cheap liveness probe: a 1-token completion must return within `timeoutMs`. */
+  async probe(timeoutMs = 45_000): Promise<boolean> {
+    try { await this.complete('Q: 1+1=\nA:', 1, timeoutMs); return true; } catch { return false; }
+  }
+
+  async complete(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
     const r = await fetch(`${this.cfg.api}/v1/completions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, prompt, max_tokens: maxTokens, temperature: 0 }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!r.ok) throw new Error(`completion failed: ${r.status}`);
     const j = (await r.json()) as { choices: { text: string }[] };
@@ -104,6 +109,7 @@ export class Runtime {
       const st = await this.status(true);
       if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
       if (!samples.length) throw new Error('benchmark has no inline samples');
+      if (!(await this.probe())) throw new Error('serving model not responding (probe timed out) — will retry');
       const wasApplied = await this.isApplied(npz);
       log.push(`baseline applied=${wasApplied}`);
       const before: VerifyOutcome['details'] = [];

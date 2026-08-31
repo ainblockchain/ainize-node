@@ -36,7 +36,7 @@ export interface CreateDraftInput {
   keepInPlace?: boolean;
 }
 
-export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; }
+export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
 
 export interface PurchaseResult {
   patch_id: string;
@@ -197,7 +197,11 @@ export class Market {
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
-      if (n > 0) out.push({ patch_id: e.anchor.id, overlap_rows: n, same_schema: e.anchor.benchmark.schema === me.anchor.benchmark.schema, status: e.status });
+      if (n > 0) out.push({
+        patch_id: e.anchor.id, overlap_rows: n, same_schema: e.anchor.benchmark.schema === me.anchor.benchmark.schema, status: e.status, branch: e.anchor.branch,
+        // contradictory knowledge kept on different branches coexists (청구항 17) — never a supersede candidate
+        cross_branch: !!(e.anchor.branch && me.anchor.branch && e.anchor.branch !== me.anchor.branch),
+      });
     }
     return out.sort((a, b) => b.overlap_rows - a.overlap_rows);
   }
@@ -215,7 +219,7 @@ export class Market {
     const anchor: PatchAnchor & { gateway_url: string } = { ...d.anchor, gateway_url: `${this.publicUrl}/x402/patch/${id}`, created_at: Date.now() };
     const rec = await this.ledger.append('anchor', anchor);
     this.store.deleteDraft(id);
-    this.store.set(`pending_supersede:${id}`, JSON.stringify(conflicts.filter((c) => c.same_schema && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status))));
+    this.store.set(`pending_supersede:${id}`, JSON.stringify(conflicts.filter((c) => c.same_schema && !c.cross_branch && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status))));
     this.invalidate();
     this.log('info', 'publish', `announced ${id} (conflicts: ${conflicts.length})`, id, { conflicts });
     await this.p2p?.broadcast(rec).catch(() => undefined);

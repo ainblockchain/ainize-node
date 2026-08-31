@@ -11,6 +11,11 @@ import type { Market } from './market.js';
 export class Verifier {
   private timer: NodeJS.Timeout | null = null;
   private busy = false;
+  /** First real-verification failure time per patch (runtime hiccups / serving restarts). After RUNTIME_GRACE_MS we fall back to hash-only. */
+  private runtimeFailures = new Map<string, number>();
+  static readonly RUNTIME_GRACE_MS = 15 * 60_000;
+  private graceLeft(id: string): number { const t = this.runtimeFailures.get(id); return t ? Math.max(0, Verifier.RUNTIME_GRACE_MS - (Date.now() - t)) : Verifier.RUNTIME_GRACE_MS; }
+  private noteFailure(id: string) { if (!this.runtimeFailures.has(id)) this.runtimeFailures.set(id, Date.now()); }
   constructor(private readonly market: Market, private readonly intervalMs: number) {}
 
   start() {
@@ -35,10 +40,20 @@ export class Verifier {
       const cfg = this.market.cfg;
       const me = cfg.identity.address;
       const catalog = await this.market.catalog();
+      const st = await this.market.runtime.status();
       for (const e of catalog) {
-        if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status)) continue;
-        if (e.attestations.some((a) => a.verifier === me)) continue;
         if (e.anchor.author === me && !cfg.verifier?.allowSelfAttest) continue;
+        const mine = e.attestations.find((a) => a.verifier === me);
+        const compatible = st.available && !!st.model && e.anchor.model.id_M.startsWith(st.model) && !!e.anchor.benchmark.samples?.length;
+        if (mine) {
+          // Upgrade: we attested hash-only earlier but a compatible runtime is available now → re-verify for real.
+          if (mine.verified_on === 'hash-only' && compatible && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
+            this.runtimeFailures.set(`upgraded:${e.anchor.id}`, 1);
+            await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `re-verify ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
+          }
+          continue;
+        }
+        if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status)) continue;
         await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `verify ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
       }
     } finally {
@@ -57,12 +72,27 @@ export class Verifier {
     let restarts = 0;
     let collateral: number | undefined;
     const runtimeCompatible = st.available && !!st.model && anchor.model.id_M.startsWith(st.model);
+    const wantsRuntime = !!m.runtime.repo && anchor.model.id_M !== 'demo-ngram-1b' && !!anchor.benchmark.samples?.length;
+    const graceLeft = this.graceLeft(anchor.id);
     if (blob.sha256 !== anchor.patch_sha256) {
       score = { integrity: 'sha256 mismatch' };
     } else if (runtimeCompatible && anchor.benchmark.samples?.length && m.runtime.repo) {
-      const out = await m.runtime.verify(blob.path, anchor.benchmark, { restore: !m.isApplied(anchor.id) });
-      passed = out.passed; score = out.score; verified_on = out.verified_on; restarts = out.restarts_detected; collateral = out.collateral_nat;
-      m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details.slice(0, 20) });
+      try {
+        const out = await m.runtime.verify(blob.path, anchor.benchmark, { restore: !m.isApplied(anchor.id) });
+        passed = out.passed; score = out.score; verified_on = out.verified_on; restarts = out.restarts_detected; collateral = out.collateral_nat;
+        this.runtimeFailures.delete(anchor.id);
+        m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details.slice(0, 20) });
+      } catch (err) {
+        this.noteFailure(anchor.id);
+        if (this.graceLeft(anchor.id) > 0) throw new Error(`${(err as Error).message} (retrying for ${Math.round(this.graceLeft(anchor.id) / 60000)} more min before hash-only fallback)`);
+        passed = blob.rows === anchor.rows;
+        score = { integrity: 'sha256 ok', rows: blob.rows, benchmark: `not executed (runtime kept failing: ${(err as Error).message.slice(0, 80)})` };
+        verified_on = 'hash-only';
+      }
+    } else if (wantsRuntime && !runtimeCompatible && graceLeft > 0) {
+      // This node is supposed to have a compatible runtime (e.g. serving restart in progress) — wait before attesting hash-only.
+      this.noteFailure(anchor.id);
+      throw new Error(`runtime unavailable (${st.error ?? 'no model'}) — waiting up to ${Math.round(graceLeft / 60000)} min before hash-only fallback`);
     } else {
       // No compatible runtime here: attest integrity only (sha256 + row count), clearly labelled.
       passed = blob.rows === anchor.rows;
