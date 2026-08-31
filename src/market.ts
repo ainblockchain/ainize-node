@@ -516,20 +516,25 @@ export class Market {
     const msgs = opts.messages.slice(-12).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
     return this.runtime.exclusive(`chat:${opts.patchId}`, async () => {
+      // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
       const wasApplied = (await this.runtime.isApplied(blob.path)) === true;
       let base: ChatResult | null = null; let patched: ChatResult | null = null; let appliedMs: number | null = null;
-      if (opts.mode === 'base' || opts.mode === 'compare') {
-        if (wasApplied) { const r = await this.runtime.remove(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); }
-        base = await this.runtime.chat(msgs, chatOpts);
-      }
-      if (opts.mode === 'patched' || opts.mode === 'compare') {
-        if (!wasApplied || opts.mode === 'compare') {
-          const t0 = Date.now(); const r = await this.runtime.apply(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); appliedMs = Date.now() - t0;
+      try {
+        if (opts.mode === 'base' || opts.mode === 'compare') {
+          if (wasApplied) { const r = await this.runtime.removeRaw(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); }
+          base = await this.runtime.chat(msgs, chatOpts);
         }
-        patched = await this.runtime.chat(msgs, chatOpts);
-        if (!wasApplied) { await this.runtime.remove(blob.path); }
-      } else if (wasApplied && opts.mode === 'base') {
-        await this.runtime.apply(blob.path);   // put it back the way we found it
+        if (opts.mode === 'patched' || opts.mode === 'compare') {
+          if (!wasApplied || opts.mode === 'compare') {
+            const t0 = Date.now(); const r = await this.runtime.applyRaw(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); appliedMs = Date.now() - t0;
+          }
+          patched = await this.runtime.chat(msgs, chatOpts);
+        }
+      } finally {
+        // always leave the shared table the way we found it
+        const nowApplied = opts.mode === 'base' ? (wasApplied ? false : false) : true;
+        if (wasApplied && !nowApplied) await this.runtime.applyRaw(blob.path).catch(() => undefined);
+        if (!wasApplied && nowApplied) await this.runtime.removeRaw(blob.path).catch(() => undefined);
       }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
       const sample = entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));

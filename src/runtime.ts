@@ -65,7 +65,10 @@ export class Runtime {
         return () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
       } catch {
         const holder = this.lockHolder();
-        if (!holder || Date.now() - holder.since > staleMs) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } continue; }
+        const holderPid = holder?.owner.startsWith('pid:') ? Number(holder.owner.slice(4)) : null;
+        let holderAlive = true;
+        if (holderPid && holderPid !== process.pid) { try { process.kill(holderPid, 0); } catch { holderAlive = false; } }
+        if (!holder || !holderAlive || Date.now() - holder.since > staleMs) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } continue; }
         if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${holder.owner}: ${holder.label}) — try again later`);
         await new Promise((r) => setTimeout(r, 250 + Math.random() * 250));
       }
@@ -135,8 +138,11 @@ export class Runtime {
   }
 
   info(npz: string) { return this.py(['scripts/patch.py', 'info', npz], 120_000); }
-  apply(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'apply', npz])); }
-  remove(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'remove', npz])); }
+  apply(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'apply', npz]), 'apply'); }
+  remove(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'remove', npz]), 'remove'); }
+  /** Unlocked variants — ONLY for use inside an `exclusive()` section that already holds the lock (calling apply()/remove() there would deadlock). */
+  applyRaw(npz: string) { return this.py(['scripts/patch.py', 'apply', npz]); }
+  removeRaw(npz: string) { return this.py(['scripts/patch.py', 'remove', npz]); }
   async isApplied(npz: string): Promise<boolean | null> {
     const r = await this.py(['scripts/patch.py', 'status', npz], 120_000);
     if (r.code !== 0) return null;

@@ -205,6 +205,7 @@ export function buildApi(deps: ApiDeps): Router {
       billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
       parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
       branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
+      visibility: z.enum(['public', 'test']).optional(),
     }).parse(req.body);
     const file = req.file?.path ?? body.path;
     if (!file) throw bad('upload a .npz file or give a local `path`');
@@ -212,7 +213,7 @@ export function buildApi(deps: ApiDeps): Router {
     const anchor = await market.createDraft({
       id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
       price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
-      file, keepInPlace: !req.file,
+      file, keepInPlace: !req.file, visibility: body.visibility,
     });
     return { anchor };
   }));
@@ -262,10 +263,11 @@ export function buildApi(deps: ApiDeps): Router {
     }).parse(req.body);
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
-    const remaining = operator ? Infinity : market.chatQuota(visitor);
-    if (remaining < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
+    // check (without consuming) first; a failed/hung request must not burn a free try
+    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
     const out = await market.chat({ ...body, patchId: body.patch_id, visitor });
-    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null };
+    const remaining = operator ? Infinity : market.chatQuota(visitor);
+    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
   }));
   router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));
   router.patch('/api/me/settings', requireOperator, wrap(async (req) => {
