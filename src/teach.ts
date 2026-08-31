@@ -264,6 +264,12 @@ export class TeachWorker {
     if (address && this.store.isBanned('address', address)) throw new TeachError(403, 'banned: this node is not accepting lessons from this key');
     if (ip && this.store.isBanned('ip', ip)) throw new TeachError(403, 'banned: this node is not accepting lessons from this address');
   }
+  /** Stub backend that must never touch the serving model (CI / e2e nodes, spec §12 `backend: 'stub'`). */
+  private get offline(): boolean { return this.cfg.backend === 'stub' && !!this.cfg.stubOffline; }
+  /** Offline stub "model": a prompt that already contains the answer is known; everything else is unknown. Deterministic, so e2e can script both preflight outcomes. */
+  private stubAnswer(prompt: string, answer: string): string {
+    return normAnswer(prompt).includes(normAnswer(answer)) ? answer : `(stub model) I do not know: ${prompt.slice(0, 80)}`;
+  }
   quota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number } {
     const c = this.cfg; const day = dayKey(now);
     return {
@@ -310,14 +316,20 @@ export class TeachWorker {
       todo.push(i);
     }
     if (todo.length) {
-      const st = await this.market.runtime.status();
-      if (!st.available) throw new TeachError(503, `runtime unavailable: ${st.error ?? 'model server is off or restarting'}`);
-      const targets = await this.contextTargets(input.patchIds);
-      const answers = await this.withStack('teach:preflight', targets, async () => {
-        const res = new Map<number, string>();
-        for (const i of todo) res.set(i, await this.askChat(input.facts[i].prompt));
-        return res;
-      });
+      let answers: Map<number, string>;
+      if (this.offline) {
+        await this.contextTargets(input.patchIds);   // still validates the ids
+        answers = new Map(todo.map((i) => [i, this.stubAnswer(input.facts[i].prompt, input.facts[i].answer)] as const));
+      } else {
+        const st = await this.market.runtime.status();
+        if (!st.available) throw new TeachError(503, `runtime unavailable: ${st.error ?? 'model server is off or restarting'}`);
+        const targets = await this.contextTargets(input.patchIds);
+        answers = await this.withStack('teach:preflight', targets, async () => {
+          const res = new Map<number, string>();
+          for (const i of todo) res.set(i, await this.askChat(input.facts[i].prompt));
+          return res;
+        });
+      }
       for (const i of todo) {
         const base = answers.get(i) ?? '';
         const known = normAnswer(base).includes(normAnswer(input.facts[i].answer));
@@ -647,6 +659,7 @@ export class TeachWorker {
 
   /** PREFLIGHT: drop facts the model already answers with the context stack loaded (runtime down → keep the interactive result). */
   private async preflightJob(job: TeachJobRow): Promise<TeachFactRow[]> {
+    if (this.offline) return job.facts.filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer))).map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
     const st = await this.market.runtime.status();
     if (!st.available) { this.log('warn', 'model server unavailable during preflight — keeping the interactive result', job.id); return job.facts; }
     const targets = await this.contextTargets(job.context);
@@ -834,6 +847,20 @@ export class TeachWorker {
     const c = this.cfg; const rt = this.market.runtime;
     const recipe = this.readTrainerRecipe(job.job_dir!);
     const facts = job.facts.map((f) => ({ ...f }));
+    if (this.offline) {
+      // simulated checks: the lesson is never applied, nothing is measured (stub backend on a node without a model server)
+      this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
+      await new Promise((r) => setTimeout(r, this.hooks.stubDelayMs ?? 400));
+      const localityFail = facts.some((f) => /LOCALITY_FAIL/.test(`${f.prompt} ${f.answer}`));
+      const held = facts.filter((f) => f.alt_prompt).length;
+      for (const f of facts) { f.after_answer = f.answer; f.hit = true; if (f.alt_prompt) f.heldout_hit = true; }
+      const checks: TeachChecks = {
+        executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held }, parent_regression: { ok: true, hit: 0, total: 0 },
+        locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
+        reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model',
+      };
+      return { checks, facts };
+    }
     const st = await rt.status(true);
     const notExecuted = (note: string): { checks: TeachChecks; facts: TeachFactRow[] } => ({
       facts, checks: { executed: false, taught: { hits: 0, total: 0 }, heldout: { hits: 0, total: 0 }, parent_regression: { ok: false, hit: 0, total: 0 }, locality: { ok: false, same: 0, total: c.locality.prompts.length }, reverted_and_reapplied: false, ok: false, note },

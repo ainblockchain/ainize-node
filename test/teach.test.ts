@@ -491,3 +491,38 @@ test('stub backend: no docker — copies fixture rows (1 row without the 픽셀�
   assert.equal((await api('GET', '/api/teach/policy')).json.backend, 'stub');
   N.cfg.teach!.backend = 'gradient';
 });
+
+test('stub backend offline (stubOffline): preflight + checks simulated without the serving model; LOCALITY_FAIL gates publish, prompt-contains-answer is already_known', async () => {
+  N.cfg.teach!.backend = 'stub'; N.cfg.teach!.stubOffline = true; N.teach!.invalidatePolicy();
+  runtimeDown = true;   // the fake serving model is off — the offline stub must not care
+  try {
+    const pre = await api('POST', '/api/teach/preflight', { patch_ids: [], facts: [{ prompt: 'Q3 offline fact', answer: 'OFF-1' }, { prompt: 'the code is OFF-2, what is the code?', answer: 'OFF-2' }] }, hdr());
+    assert.equal(pre.status, 200, pre.text);
+    const f = pre.json.facts as { index: number; status: string; base_answer?: string }[];
+    assert.equal(f[0].status, 'will_train'); assert.match(String(f[0].base_answer), /^\(stub model\) I do not know/);
+    assert.equal(f[1].status, 'already_known'); assert.equal(f[1].base_answer, 'OFF-2');
+    assert.equal(pre.json.trainable, 1);
+    // gated lesson
+    const r1 = await createJob([{ prompt: 'Q3 offline fact LOCALITY_FAIL', answer: 'OFF-1', alt_prompt: 'Q3 alt' }, { prompt: 'the code is OFF-2, what is the code?', answer: 'OFF-2', base_answer: 'OFF-2' }]);
+    assert.equal(r1.status, 202, r1.text);
+    const j1 = await waitFor(r1.json.job!.id, ['READY']);
+    assert.equal(j1.facts.length, 1, 'known fact dropped by the worker preflight');
+    assert.equal(j1.checks!.executed, true); assert.equal(j1.checks!.ok, false); assert.equal(j1.checks!.locality.ok, false);
+    assert.equal(j1.checks!.taught.hits, 2); assert.equal(j1.checks!.heldout.hits, 1); assert.equal(j1.facts[0].after_answer, 'OFF-1');
+    assert.match(String(j1.checks!.note), /simulated/);
+    const gated = await api('GET', `/api/teach/jobs/${j1.id}/publish-challenge`, undefined, hdr());
+    assert.equal(gated.status, 409); assert.match(String(gated.json.error), /^checks_failed/);
+    const saved = await api('POST', `/api/teach/jobs/${j1.id}/save`, {}, hdr());
+    assert.equal(saved.status, 200, 'save still works when publish is gated');
+    // clean lesson → publishable
+    const r2 = await createJob([{ prompt: 'Q3 offline fact two', answer: 'OFF-3' }]);
+    const j2 = await waitFor(r2.json.job!.id, ['READY']);
+    assert.equal(j2.checks!.ok, true); assert.equal(j2.checks!.locality.same, j2.checks!.locality.total);
+    const ch = await api('GET', `/api/teach/jobs/${j2.id}/publish-challenge`, undefined, hdr());
+    assert.equal(ch.status, 200, ch.text);
+    const pub = await api('POST', `/api/teach/jobs/${j2.id}/publish`, { name: 'Offline lesson', claim_sig: signMessage(String(ch.json.claim), teacher.privateKey), consent: { permanent: true, rights: true } }, hdr());
+    assert.equal(pub.status, 200, pub.text); assert.equal(pub.json.status, 'PENDING_REVIEW');
+  } finally {
+    runtimeDown = false; N.cfg.teach!.backend = 'gradient'; N.cfg.teach!.stubOffline = false; N.teach!.invalidatePolicy();
+  }
+});
