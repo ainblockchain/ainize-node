@@ -99,7 +99,8 @@ test.describe('operator: account / API / inspection', () => {
     expect(oa.openapi).toBe('3.1.0');
     expect(oa.info.title).toBe('Ainize node API');
     expect(oa.servers).toEqual([{ url: NODE_A }]);
-    expect(Object.keys(oa.paths).length).toBe(50);
+    expect(Object.keys(oa.paths).length).toBe(51);   // 50 in the scenario snapshot + POST /api/patches/{id}/forget (ainize patch forget)
+    expect(oa.paths).toHaveProperty('/api/patches/{id}/forget');
     expect(oa.paths).toHaveProperty('/x402/patch/{id}');
     expect(oa.paths).toHaveProperty('/api/chat');
     // 2 docs
@@ -653,7 +654,7 @@ test.describe('operator: runtime', () => {
 
     r = await chatApi(request, { patch_id: 'no-such-patch', messages: [{ role: 'user', content: 'hi' }] }, { ip });
     expect(r.body.error).toBe('patch not found');
-    expect(r.status).toBe(500);   // scenario-documented finding: a thrown market error, 404 would be accurate
+    expect(r.status).toBe(404);   // was 500 (a thrown market error) when the scenario was written; MarketError now maps not-found to 404
 
     const remaining: number[] = [];
     let first: Record<string, unknown> | null = null;

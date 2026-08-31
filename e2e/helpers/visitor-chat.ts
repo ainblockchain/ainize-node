@@ -1,20 +1,28 @@
 /**
  * Helpers for the Visitor (knowledge user) scenarios — mostly the Live-test page.
  *
- * Quota isolation: the node meters free live tests per client IP (20 / hour, `ip:${req.ip}`). The node listens on
- * 0.0.0.0, and on Linux the whole 127.0.0.0/8 block is loopback, so every runtime scenario opens the site through a
- * random 127.x.y.z origin. That gives each scenario (and each retry) a fresh, deterministic quota window without
- * touching any product code or resetting the cluster.
+ * Quota isolation: the node meters free live tests per client IP (20 / hour, `ip:${req.ip}`) and trusts proxy headers
+ * (`app.set('trust proxy', true)`). A random 127.x.y.z origin alone is NOT enough — Linux sends every loopback
+ * connection from 127.0.0.1, so all such visitors would share one bucket. `freshVisitor(page)` therefore also stamps a
+ * unique `X-Forwarded-For` on the browser context (every tab and `page.request` of that context is the same visitor),
+ * which gives each scenario (and each retry) a fresh, deterministic quota window without touching product code.
  */
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { api, waitForRuntime } from './ainize';
 
 const PORT = new URL(process.env.AINIZE_URL ?? 'http://localhost:3402').port || '3402';
 
-/** A never-used loopback origin → fresh per-IP live-test quota. */
+/** A never-used loopback origin (separate localStorage / cookie jar). Pair it with `freshVisitor` for a fresh quota. */
 export function freshOrigin(): string {
   const o = () => 1 + Math.floor(Math.random() * 253);
   return `http://127.${o()}.${o()}.${o()}:${PORT}`;
+}
+
+/** A never-used client IP for this browser context → its own 20/hour live-test quota. Returns a fresh origin to open. */
+export async function freshVisitor(page: Page): Promise<string> {
+  const o = () => 1 + Math.floor(Math.random() * 253);
+  await page.context().setExtraHTTPHeaders({ 'x-forwarded-for': `10.${o()}.${o()}.${o()}` });
+  return freshOrigin();
 }
 
 export async function nodeAAddress(request: APIRequestContext): Promise<string> {

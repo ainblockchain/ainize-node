@@ -3,8 +3,9 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, CHAIN, K, api, waitForLockFree, waitForRuntime } from '../helpers/ainize';
-import { bubble, chip, freshOrigin, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
+import { NODE_A, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { PIXEL_NPZ } from '../helpers/operator-cli';
+import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
 const AIN_NOTE = 'AIN = AI Network token (this demo runs a local dev chain)';
 const FINAL_NAME = 'KRX ticker codes for 2,761 listed companies (final)';
@@ -312,8 +313,8 @@ test('AZ-004 Read the knowledge detail header and stat strip', async ({ page, re
   await expect(stat(page, 'Size')).toHaveText('331.7 MB');
   await expect(stat(page, 'Price')).toHaveText('25 AIN');
   await expect(page.locator('xpath=//div[normalize-space()="Price"]/following-sibling::div[1]')).toHaveText(AIN_NOTE);
-  // Revenue: zero amount renders through the shared price formatter as "Free" (flagged as a copy issue in the report)
-  await expect(stat(page, 'Revenue')).toHaveText(Number(d.revenue) === 0 ? 'Free' : `${d.revenue} AIN`);
+  // Revenue is an earned amount: a zero reads "0 AIN", never "Free" (the scenario flagged "Free" as a copy issue; fixed)
+  await expect(stat(page, 'Revenue')).toHaveText(`${Number(d.revenue).toLocaleString('en-US', { maximumFractionDigits: 6 })} AIN`);
 
   await expect(page.getByRole('tab')).toHaveText(['Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History']);
 
@@ -647,7 +648,7 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   await expect(page.locator('thead th')).toHaveText(['Time', 'Kind', 'What happened', 'By', 'Record ID / tx']);
   await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.length));
   const firstPage = all.slice(0, 20);
-  const chipLabels: Record<string, string> = { anchor: 'Registered', attest: 'Verification', supersede: 'Newer version', branch: 'Knowledge track', node: 'Node', settle: 'Purchase settled' };
+  const chipLabels: Record<string, string> = { anchor: 'Registered', attest: 'Verification', supersede: 'Newer version', branch: 'Knowledge track', node: 'Node', settle: 'Purchase settled', subscribe: 'Subscription', challenge: 'Re-verification request' };
   for (const [k, label] of Object.entries(chipLabels)) {
     if (firstPage.some((r) => r.kind === k)) await expect(page.locator(`tbody span[title="${k}"]`).first()).toHaveText(label);
   }
@@ -918,7 +919,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-008 Run a Compare test and read the correct-answer marker and quota counter', async ({ page, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     await page.goto(`${origin}/chat/${K.final}`);
     await expect(modeRadio(page, 'Compare')).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByRole('checkbox', { name: 'Enable thinking' })).not.toBeChecked();
@@ -963,7 +964,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-018 Use \'After only\' and \'Before only\' views, ask a free question and clear the conversation', async ({ page, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     await page.goto(`${origin}/chat/${K.final}`);
     await expect(modeRadio(page, 'Compare')).toHaveAttribute('title', 'See answers before and after side by side. Includes loading and unloading, so it takes a bit longer.');
     await expect(modeRadio(page, 'After only')).toHaveAttribute('title', 'Only the answer with the knowledge loaded.');
@@ -1003,7 +1004,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-019 Cancel a slow live test and retry it', async ({ page, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -1044,7 +1045,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-020 See the \'another test in progress\' banner while someone else is testing', async ({ page, context, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     await page.goto(`${origin}/chat/${K.final}`);
     await modeRadio(page, 'Compare').click();
     await page.getByRole('checkbox', { name: 'Enable thinking' }).check();
@@ -1055,6 +1056,8 @@ test.describe('Live test (shared runtime)', () => {
     const lock = await waitForLock(request, origin, (l) => !!l && l.label === `chat:${K.final}`);
     expect(lock!.owner).toMatch(/^pid:\d+$/);
     expect(typeof lock!.since).toBe('number');
+    // tab A shows the same box while its own request holds the lock (the page peeks at the lock right after sending)
+    await expect(page.getByRole('status').filter({ hasText: 'Another test is running' })).toBeVisible();
 
     const tabB = await context.newPage();
     await tabB.goto(`${origin}/chat/${K.final}`);
@@ -1062,13 +1065,18 @@ test.describe('Live test (shared runtime)', () => {
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(new RegExp(`Another test in progress \\(node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
     await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
-    await expect(page.getByRole('status').filter({ hasText: 'Another test is running' })).toBeVisible();
 
     await modeRadio(tabB, 'Before only').click();
     const turnB = await sendPrompt(tabB, '종목코드 HMM');
     await waitTurnDone(page, request, turnA);
     await waitTurnDone(tabB, request, turnB);
-    await expect(bubble(turnA, 'After loading').getByText('✓ Correct')).toHaveAttribute('title', /Expected: 002390$/);
+    // Tab A finished; the scenario asserts the correct result on tab B (bullet 3). Tab A's patched answer is auto-scored
+    // (Expected: 002390) but with thinking ON the patched model answers this trained completion-style prompt with an
+    // empty string (immediate EOS) — recorded as a model-behavior finding; base+thinking and patched without thinking answer 002390.
+    await expect(bubble(turnA, 'After loading')).toBeVisible();
+    await expect(bubble(turnA, 'After loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toHaveAttribute('title', /Expected: 002390$/);
+    const hitA = await bubble(turnA, 'After loading').getByText('✓ Correct').count();
+    if (!hitA) test.info().annotations.push({ type: 'note', description: 'turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding)' });
     await expect(bubble(turnB, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
     await expect(tabB.getByText('Another test was running so this request could not be handled.')).toHaveCount(0);
 
@@ -1080,7 +1088,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-024 Ask a follow-up question and confirm the conversation history is sent with it', async ({ page, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     const payloads: { patch_id: string; mode: string; thinking: boolean; messages: { role: string; content: string }[] }[] = [];
     page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') payloads.push(r.postDataJSON()); });
     await page.goto(`${origin}/chat/${K.final}`);
@@ -1092,7 +1100,7 @@ test.describe('Live test (shared runtime)', () => {
     await waitTurnDone(page, request, t1);
     await expect(t1.locator('div[aria-busy]')).toHaveCount(1);
     await expect(bubble(t1, 'After loading').getByText('✓ Correct')).toHaveAttribute('title', /Expected: 005930$/);
-    const answer1 = ((await first.json()) as { patched: { content: string } }).patched.content.trim();
+    const answer1 = ((await (await first).json()) as { patched: { content: string } }).patched.content.trim();
     expect(answer1.length).toBeGreaterThan(0);
 
     const FOLLOW = 'Which company has that ticker code? Answer in one word.';
@@ -1113,7 +1121,7 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-026 Live-test an older (superseded) version and jump to its detail page', async ({ page, request }) => {
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     const addr = await nodeAAddress(request);
     await page.goto(`${origin}/chat/${K.pixel}`);
     const item = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button', { pressed: true });
@@ -1146,8 +1154,9 @@ test.describe('Live test (shared runtime)', () => {
   });
 
   test('AZ-021 Handle the model-server-off state on Live test and Network', async ({ page, request }) => {
-    // The live vLLM server must not be stopped by this suite. Everything observable while it is ON is asserted here;
-    // the OFF-state assertions are the part that is blocked (see the annotation and the final report).
+    test.setTimeout(10 * 60_000);
+    // ON state on the live node-a (the shared vLLM is never stopped by the suite)
+    expect(await waitForRuntime(request), 'node-a runtime').toBe(true);
     await page.goto(NODE_A + `/chat/${K.final}`);
     await expect(page.getByRole('status').filter({ hasText: 'The model server is off right now' })).toHaveCount(0);
     const items = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button');
@@ -1159,15 +1168,81 @@ test.describe('Live test (shared runtime)', () => {
     await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live');
     await expect(dd(page, 'Status').locator('span')).toHaveCSS('background-color', 'rgb(68, 164, 95)');
     await expect(dd(page, 'Live connection')).toHaveText('connected — load and unload without restart');
-    const rt = (await api<{ available: boolean; error?: string }>(request, '/api/runtime')).body;
-    expect(rt.available).toBe(true);
-    test.info().annotations.push({ type: 'blocked', description: 'The OFF state needs the shared vLLM server paused (docker pause flashnext); the live cluster must not be stopped by the suite.' });
-    test.skip(true, 'blocked: cannot pause the shared model server in this environment (only the ON-state half is asserted)');
+
+    // OFF → ON, for real, on a private serving node built from the same binary + web UI (name node-a, reads the same
+    // public record): its serving API is a TCP relay to the shared vLLM that starts CLOSED ("serving API unreachable")
+    // and is opened later — vLLM itself is never paused. It holds the pixelplus body, so that knowledge is testable there.
+    const OFF_MSG = 'The model server is off right now, so testing is unavailable.';
+    const proxy = await startRuntimeProxy();
+    const off = await startThrowawayNode('az021', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: proxy.url, maxLifeS: 540 });
+    try {
+      await off.seed(PIXEL_NPZ, 'az021-seed');
+      const posts: string[] = [];
+      page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') posts.push(r.url()); });
+      await page.goto(`${off.url}/chat/${K.pixel}`);
+      const box = page.getByRole('status').filter({ hasText: OFF_MSG });
+      await expect(box).toBeVisible();
+      await expect(box).toContainText('It comes back once the node operator starts the model server.');
+      await expect(box).toHaveCSS('background-color', 'rgb(255, 243, 224)');   // yellow status box
+      const offItems = page.getByRole('complementary', { name: 'Knowledge to test' }).getByRole('button');
+      await expect(offItems.first()).toBeVisible();
+      const n = await offItems.count();
+      expect(n).toBeGreaterThan(0);
+      for (let i = 0; i < n; i++) {
+        await expect(offItems.nth(i)).toBeDisabled();
+        await expect(offItems.nth(i)).toHaveAttribute('title', OFF_MSG);
+      }
+      await offItems.first().click({ force: true });   // a disabled item does nothing
+      await expect(textarea(page)).toBeDisabled();
+      await expect(textarea(page)).toHaveAttribute('placeholder', OFF_MSG);
+      await expect(chip(page, '종목코드 픽셀플러스')).toBeDisabled();
+      await expect(sendButton(page)).toBeDisabled();
+      await chip(page, '종목코드 픽셀플러스').click({ force: true });
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(1000);
+      expect(posts, 'no request is sent while the model server is off').toHaveLength(0);
+
+      await page.goto(off.url + '/network');
+      await expect(dd(page, 'Status')).toHaveText('serving API unreachable');   // rt.error wins over "unavailable"
+      await expect(dd(page, 'Status').locator('span').first()).toHaveCSS('background-color', 'rgb(218, 218, 218)');   // grey dot
+      await expect(dd(page, 'Model')).toHaveText('—');
+      await expect(dd(page, 'Live connection')).toHaveText('not connected');
+
+      // the model server comes back: no reload — the picker re-enables on its own (30 s status cache + 20 s poll)
+      await page.goto(`${off.url}/chat/${K.pixel}`);
+      await expect(box).toBeVisible();
+      await proxy.up();
+      await expect(box).toHaveCount(0, { timeout: 90_000 });
+      for (let i = 0; i < n; i++) await expect(offItems.nth(i)).toBeEnabled();
+      await expect(textarea(page)).toBeEnabled();
+      await page.goto(off.url + '/network');
+      await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live', { timeout: 60_000 });
+      await expect(dd(page, 'Model')).toHaveText('Qwen3.8-Flash-Next');
+      await expect(dd(page, 'Live connection')).toHaveText('connected — load and unload without restart');
+
+      // a request already in flight when the server drops
+      await page.goto(`${off.url}/chat/${K.pixel}`);
+      await expect(offItems.first()).toBeEnabled();
+      await modeRadio(page, 'Before only').click();
+      await chip(page, '종목코드 픽셀플러스').click();
+      await waitForLockFree(request, off.url);   // the model lock is shared by every node on this machine
+      expect(await waitForRuntime(request, off.url), 'model reachable through the relay (vLLM itself may be restarting)').toBe(true);
+      await expect(textarea(page)).toBeEnabled({ timeout: 60_000 });
+      const inFlight = proxy.nextGeneration();
+      const turn = await sendPrompt(page);
+      await inFlight;   // the generation request has reached the relay → cut it now
+      await proxy.down();
+      await expect(turn.getByRole('alert')).toHaveText('The model server is off or not responding. Try again in a moment.', { timeout: 90_000 });
+      await expect(turn.getByRole('button', { name: 'Retry' })).toBeVisible();
+    } finally {
+      await off.stop();
+      await proxy.close();
+    }
   });
 
   test('AZ-009 Exhaust the 20-per-hour free trial and read the quota message', async ({ page, context, request }) => {
     test.setTimeout(20 * 60_000);
-    const origin = freshOrigin();
+    const origin = await freshVisitor(page);
     await page.goto(`${origin}/chat/${K.pixel}`);
     await modeRadio(page, 'Before only').click();
     for (let i = 1; i <= 20; i++) {

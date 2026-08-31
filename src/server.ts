@@ -104,7 +104,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // background loops
   await market.registerSelf().catch((e) => market.log('warn', 'node', `self-registration failed: ${(e as Error).message}`));
   p2p.start();
-  verifier?.start();
+  if (cfg.verifier?.auto !== false) verifier?.start();   // verifier.auto=false: manual verification only
   const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
   watchdog.unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);

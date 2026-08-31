@@ -56,6 +56,8 @@ export const uid = (tag: string, retry = 0): string => `${tag}-${RUN}${retry ? `
 export const PIXEL_NPZ = '/mnt/newdata/qwen3.8/results/train-fact/픽셀플러스.npz';
 export const PIXEL_SHA = '62d0978ccbf0b31083c77b836f16c5a2ef795cfade5eebebea1ebc6931aace26';
 export const KRX_SHA = '57c9346349afd6fa1b0475340b9b041ee0027753c05463d4bb204a5a4726c642';
+/** The krx-all-2761 body as registered in place on node-a (347.8 MB, sha256 = KRX_SHA). */
+export const KRX_NPZ = '/mnt/newdata/qwen3.8/results/train-all/rows-pin.npz';
 export const MODEL = 'Qwen3.8-Flash-Next';
 
 /** A one-sample benchmark on the pixelplus body with a schema unique to this run (so listing never supersedes the demo's krx-all-2761). */
