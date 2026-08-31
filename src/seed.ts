@@ -96,8 +96,8 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
 
     if (existsSync(files.pixel)) {
       await create({
-        id: 'pixelplus-087600', name: '픽셀플러스 종목코드 (단일 사실)',
-        description: '코스닥 상장사 픽셀플러스의 종목코드 087600 한 가지 사실을 8가지 표현으로 학습한 지식입니다. 출처: /mnt/newdata/qwen3.8 results/train-fact (2026-08-29, 10스텝 행 단위 Adam). 정답률은 아래 검증 결과에서 확인하세요.',
+        id: 'pixelplus-087600', name: 'Pixelplus ticker code (single fact)',
+        description: 'One fact — the ticker code 087600 of Pixelplus (KOSDAQ) — learned from 8 phrasings. Source: /mnt/newdata/qwen3.8 results/train-fact (2026-08-29, 10 steps of row-wise Adam). Accuracy is whatever the verifiers measured below.',
         model, file: files.pixel, keepInPlace: true, price: '0.1', topic_path: 'finance/krx',
         benchmark: { schema: 'krx-ticker-codes', queries: 8, format: ['template', 'natural'], collateral_bound_nat: 0.1, samples: [
           { prompt: '종목코드 픽셀플러스 ', expect: '087600' }, { prompt: '픽셀플러스의 종목코드는 ', expect: '087600' },
@@ -108,27 +108,27 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
     let parent: string | undefined;
     if (opts.versions !== false && existsSync(files.ep6)) {
       parent = await create({
-        id: 'krx-all-2761-ep6', name: '한국 상장사 2,761개 종목코드 — 학습 6에포크 (초기 버전)',
-        description: '전 종목 종목코드 학습 1단계의 6에포크 시점 저장본입니다(표현 3종 × 2,761 문장). 최종 버전(krx-all-2761)의 조상이며, 시점 재현(특정 에포크로 되돌리기)용으로 남겨 둡니다. 출처: results/train-all/rows-ep6.npz (2026-08-30).',
+        id: 'krx-all-2761-ep6', name: 'KRX ticker codes for 2,761 listed companies — epoch 6 (early version)',
+        description: 'Snapshot at epoch 6 of stage 1 of the full-corpus run (3 phrasings × 2,761 sentences). Ancestor of the final version (krx-all-2761); kept for point-in-time checkout (roll back to a specific epoch). Source: results/train-all/rows-ep6.npz (2026-08-30).',
         model, file: files.ep6, keepInPlace: true, price: '5', topic_path: 'finance/krx', benchmark: krxBench(2761, ['template']),
         recipe: { corpus_template: '종목코드 {회사명} {종목코드}', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '2e-3', epochs: 6 } },
       });
     }
     if (opts.versions !== false && existsSync(files.ep12)) {
       parent = await create({
-        id: 'krx-all-2761-ep12', name: '한국 상장사 2,761개 종목코드 — 학습 12에포크',
-        description: '1단계 학습을 끝낸 12에포크 시점 저장본입니다. 템플릿 질의 중심으로 학습되어 대화형 질문에는 약합니다(최종 버전에서 보완). 출처: results/train-all/rows-ep12.npz (2026-08-30).',
+        id: 'krx-all-2761-ep12', name: 'KRX ticker codes for 2,761 listed companies — epoch 12',
+        description: 'Snapshot at the end of stage 1 (epoch 12). Trained on template prompts, so conversational questions are weaker (fixed in the final version). Source: results/train-all/rows-ep12.npz (2026-08-30).',
         model, file: files.ep12, keepInPlace: true, price: '10', topic_path: 'finance/krx', parents: parent ? [parent] : [], benchmark: krxBench(2761, ['template']),
         recipe: { corpus_template: '종목코드 {회사명} {종목코드}', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '2e-3', epochs: 12 } },
       });
     }
     if (existsSync(files.pin)) {
       await create({
-        id: 'krx-all-2761', name: '한국 상장사 2,761개 종목코드 (최종)',
-        description: '한국거래소 상장사 2,761개의 종목코드 전체. 12에포크 학습 후 대화형 질문 2종과 오답 종목을 추가 학습하고, 다른 종목과 겹치지 않는 행만 미세 조정(핀포인트)한 최종 버전입니다. 모델 기억 270,053항목(전체 파라미터의 0.084%). 출처: results/train-all/rows-pin.npz (2026-08-30).',
+        id: 'krx-all-2761', name: 'KRX ticker codes for 2,761 listed companies (final)',
+        description: 'All 2,761 ticker codes of companies listed on the Korea Exchange. After 12 epochs, two chat-style phrasings and the remaining wrong companies were trained in, then only rows not shared with other companies were fine-tuned (pinpoint). 270,053 memory entries (0.084% of all parameters). Source: results/train-all/rows-pin.npz (2026-08-30).',
         model, file: files.pin, keepInPlace: true, price: '25', topic_path: 'finance/krx', parents: parent ? [parent] : (existing.has('pixelplus-087600') ? ['pixelplus-087600'] : []),
         benchmark: krxBench(2761, ['template', 'chat']),
-        recipe: { corpus_template: '종목코드 {회사명} {종목코드} · 채팅 형식 2종', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '1e-3', epochs: '12 + 1 (chat) + pinpoint 1 step' } },
+        recipe: { corpus_template: '종목코드 {회사명} {종목코드} + 2 chat-style phrasings', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '1e-3', epochs: '12 + 1 (chat) + pinpoint 1 step' } },
       });
     }
   }
@@ -142,23 +142,23 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
     const us = synthPatch(dir, 'law-us', 3, 1200, base);
     const kr2 = synthPatch(dir, 'law-kr-2026', 4, 1200, kr);
     const bench = (schema: string, n: number): BenchmarkSpec => ({ schema, queries: n, format: ['template'], collateral_bound_nat: 0.1 });
-    const baseId = await create({ id: 'law-common-base', name: '[synthetic] 법률 공통 기초 지식', description: 'Synthetic test patch (random rows, no real knowledge).', model: demoModel, file: base, keepInPlace: true, price: '1', topic_path: 'law/common', benchmark: bench('law-basics', 40) });
-    const krId = await create({ id: 'law-kr-2025', name: '[synthetic] 한국법 개정 2025', description: 'Synthetic test patch.', model: demoModel, file: kr, keepInPlace: true, price: '2', topic_path: 'law/kr', parents: [baseId], branch: 'law/KR', benchmark: bench('law-jurisdiction', 60) });
+    const baseId = await create({ id: 'law-common-base', name: '[synthetic] common legal basics', description: 'Synthetic test patch (random rows, no real knowledge).', model: demoModel, file: base, keepInPlace: true, price: '1', topic_path: 'law/common', benchmark: bench('law-basics', 40) });
+    const krId = await create({ id: 'law-kr-2025', name: '[synthetic] Korean law revision 2025', description: 'Synthetic test patch.', model: demoModel, file: kr, keepInPlace: true, price: '2', topic_path: 'law/kr', parents: [baseId], branch: 'law/KR', benchmark: bench('law-jurisdiction', 60) });
     const usId = await create({ id: 'law-us-2025', name: '[synthetic] US federal law 2025', description: 'Synthetic test patch.', model: demoModel, file: us, keepInPlace: true, price: '2', topic_path: 'law/us', parents: [baseId], branch: 'law/US', benchmark: bench('law-jurisdiction', 60) });
-    const kr2Id = await create({ id: 'law-kr-2026', name: '[synthetic] 한국법 개정 2026 (갱신)', description: 'Synthetic test patch.', model: demoModel, file: kr2, keepInPlace: true, price: '2.5', topic_path: 'law/kr', parents: [krId], branch: 'law/KR', benchmark: bench('law-jurisdiction', 60) });
+    const kr2Id = await create({ id: 'law-kr-2026', name: '[synthetic] Korean law revision 2026 (update)', description: 'Synthetic test patch.', model: demoModel, file: kr2, keepInPlace: true, price: '2.5', topic_path: 'law/kr', parents: [krId], branch: 'law/KR', benchmark: bench('law-jurisdiction', 60) });
     const have = new Set((await market.branches()).map((b) => b.name));
-    if (!have.has('law/KR')) { await market.createBranch('law/KR', '대한민국 관할 법률 지식 브랜치 (test)', { jurisdiction: 'KR' }, [baseId, krId, kr2Id]); report.branches.push('law/KR'); }
+    if (!have.has('law/KR')) { await market.createBranch('law/KR', 'Korean-jurisdiction law knowledge branch (test)', { jurisdiction: 'KR' }, [baseId, krId, kr2Id]); report.branches.push('law/KR'); }
     if (!have.has('law/US')) { await market.createBranch('law/US', 'United States jurisdiction law branch (test)', { jurisdiction: 'US' }, [baseId, usId]); report.branches.push('law/US'); }
   }
 
   // Real branches: latest KRX knowledge vs the historical versions (point-in-time checkout).
   const have = new Set((await market.branches()).map((b) => b.name));
   if (existing.has('krx-all-2761') && !have.has('finance/KRX-latest')) {
-    await market.createBranch('finance/KRX-latest', '한국거래소 상장 종목코드 — 최신 버전', { market: 'KRX', version: 'latest' }, ['krx-all-2761']); report.branches.push('finance/KRX-latest');
+    await market.createBranch('finance/KRX-latest', 'Korea Exchange ticker codes — latest version', { market: 'KRX', version: 'latest' }, ['krx-all-2761']); report.branches.push('finance/KRX-latest');
   }
   const history = ['krx-all-2761-ep6', 'krx-all-2761-ep12'].filter((id) => existing.has(id));
   if (history.length && !have.has('finance/KRX-history')) {
-    await market.createBranch('finance/KRX-history', '한국거래소 상장 종목코드 — 학습 과정의 이전 버전들 (시점 재현용)', { market: 'KRX', version: 'history' }, history); report.branches.push('finance/KRX-history');
+    await market.createBranch('finance/KRX-history', 'Korea Exchange ticker codes — earlier training versions (point-in-time checkout)', { market: 'KRX', version: 'history' }, history); report.branches.push('finance/KRX-history');
   }
   market.invalidate();
   market.log('info', 'seed', `seed complete: +${report.created.length} patches, +${report.branches.length} branches${report.missing.length ? `, missing ${report.missing.length} source file(s)` : ''}`, null, report);
