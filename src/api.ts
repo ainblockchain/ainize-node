@@ -87,10 +87,10 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ public info & catalog
   router.get('/api/info', wrap(async () => ({
-    node: await market.selfInfo(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
+    node: await (async () => { await market.catalog(); return market.selfInfo(); })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
-    counts: { patches: (await market.catalog()).length, listed: (await market.catalog()).filter((e) => e.status === 'LISTED').length },
+    counts: (() => { const c = market.catalogSync(); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
   })));
 
   router.get('/api/catalog', wrap(async (req) => {
@@ -186,7 +186,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/chain', wrap(async () => market.chainStatus()));
 
   // ------------------------------------------------------------ operator actions
-  router.get('/api/me/patches', requireOperator, wrap(async () => ({ items: (await market.catalog()).filter((e) => e.anchor.author === market.address) })));
+  router.get('/api/me/patches', requireOperator, wrap(async () => ({ items: (await market.catalogAll()).filter((e) => e.anchor.author === market.address) })));
   router.get('/api/me/purchases', requireOperator, wrap(async () => {
     const map = await market.entryMap();
     return { items: market.store.listPurchases().map((p) => ({ ...p, entry: map.get(p.patch_id) ?? null, applied: market.isApplied(p.patch_id) })) };

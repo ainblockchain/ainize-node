@@ -39,7 +39,7 @@ export class Verifier {
     try {
       const cfg = this.market.cfg;
       const me = cfg.identity.address;
-      const catalog = await this.market.catalog();
+      const catalog = await this.market.catalogAll();   // verify test-visibility anchors too
       const st = await this.market.runtime.status();
       for (const e of catalog) {
         if (e.anchor.author === me && !cfg.verifier?.allowSelfAttest) continue;

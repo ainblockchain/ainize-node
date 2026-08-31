@@ -83,6 +83,9 @@ export class Market {
   }
 
   // ------------------------------------------------------------------ catalog
+  /** Last computed public catalog (cache; call catalog() first in the same request). */
+  catalogSync(): CatalogEntry[] { return (this.catalogCache?.value ?? []).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors); }
+
   /** Public catalog (test-visibility anchors hidden). */
   async catalog(force = false): Promise<CatalogEntry[]> {
     return (await this.catalogAll(force)).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors);
@@ -120,8 +123,9 @@ export class Market {
     return !!x && typeof x.patch_id === 'string' && typeof x.verifier === 'string' && typeof x.passed === 'boolean' && typeof x.verified_on === 'string';
   }
 
+  /** Lookup by id — includes test-visibility anchors (they are hidden from listings, not from direct access). */
   async entry(id: string): Promise<CatalogEntry | null> {
-    return (await this.catalog()).find((e) => e.anchor.id === id) ?? null;
+    return (await this.catalogAll()).find((e) => e.anchor.id === id) ?? null;
   }
 
   async entryMap(): Promise<Map<string, CatalogEntry>> {
@@ -513,7 +517,7 @@ export class Market {
     const st = await this.runtime.status();
     if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
     if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new Error(`patch targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
-    const msgs = opts.messages.slice(-12).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
+    const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
     return this.runtime.exclusive(`chat:${opts.patchId}`, async () => {
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
@@ -533,8 +537,8 @@ export class Market {
       } finally {
         // always leave the shared table the way we found it
         const nowApplied = opts.mode === 'base' ? (wasApplied ? false : false) : true;
-        if (wasApplied && !nowApplied) await this.runtime.applyRaw(blob.path).catch(() => undefined);
-        if (!wasApplied && nowApplied) await this.runtime.removeRaw(blob.path).catch(() => undefined);
+        if (wasApplied && !nowApplied) await this.runtime.applyRaw(blob.path).catch((e) => this.log('error', 'runtime', `restore (re-apply) failed after live test: ${(e as Error).message}`, opts.patchId));
+        if (!wasApplied && nowApplied) await this.runtime.removeRaw(blob.path).catch((e) => this.log('error', 'runtime', `restore (remove) failed after live test: ${(e as Error).message}`, opts.patchId));
       }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
       const sample = entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));
