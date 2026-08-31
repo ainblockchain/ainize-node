@@ -1,5 +1,7 @@
 export { startNode, type RunningNode, type StartOptions } from './server.js';
-export { Market, type CreateDraftInput, type PurchaseResult, type ConflictInfo } from './market.js';
+export { Market, type CreateDraftInput, type PurchaseResult, type ConflictInfo, type TeachSettings } from './market.js';
+export { TeachWorker, TeachError, type TeachJob, type TeachJobPublic, type TeachPolicyView, type TeachChecks, type TeachHooks, type TeachStatus } from './teach.js';
+export { renderRunLocally, buildRecipeJson, lessonBenchmark, type TrainerRecipe } from './teach-recipe.js';
 export { Store } from './store.js';
 export { BlobStore, sha256File } from './blobs.js';
 export { Runtime } from './runtime.js';

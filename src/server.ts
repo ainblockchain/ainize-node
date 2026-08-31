@@ -17,6 +17,7 @@ import { Runtime } from './runtime.js';
 import { Store } from './store.js';
 import { Verifier } from './verifier.js';
 import { Drive } from './drive.js';
+import { TeachWorker, type TeachHooks } from './teach.js';
 
 export interface RunningNode {
   cfg: NodeConfig;
@@ -25,6 +26,8 @@ export interface RunningNode {
   store: Store;
   verifier: Verifier | null;
   drive: Drive;
+  /** Teach-mode worker (null when disabled with `teachWorker: false`). */
+  teach: TeachWorker | null;
   server: Server;
   url: string;
   stop(): Promise<void>;
@@ -36,6 +39,10 @@ export interface StartOptions {
   webDist?: string;
   listen?: boolean;
   quiet?: boolean;
+  /** Start the teach worker (default true). */
+  teachWorker?: boolean;
+  /** Process hooks for the teach worker (tests fake `spawn`/`exec`). */
+  teachHooks?: TeachHooks;
 }
 
 function defaultWebDist(): string {
@@ -62,6 +69,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const drive = new Drive(market);
   market.drive = drive;
   const verifier = cfg.roles.includes('verifier') ? new Verifier(market, cfg.verifier?.intervalMs ?? 5000) : null;
+  const teach = opts.teachWorker === false ? null : new TeachWorker(market, opts.teachHooks);
 
   const app = express();
   app.disable('x-powered-by');
@@ -78,7 +86,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(buildApi({ market, verifier, drive, saveConfig: () => { if (opts.home) saveConfig(cfg, opts.home); } }));
+  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: () => { if (opts.home) saveConfig(cfg, opts.home); } }));
 
   const webDist = opts.webDist ?? defaultWebDist();
   if (opts.serveWeb !== false && existsSync(join(webDist, 'index.html'))) {
@@ -105,6 +113,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   await market.registerSelf().catch((e) => market.log('warn', 'node', `self-registration failed: ${(e as Error).message}`));
   p2p.start();
   verifier?.start();
+  teach?.start();
   const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
   watchdog.unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
@@ -112,11 +121,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
 
   return {
-    cfg, market, ledger, store, verifier, drive, server, url,
+    cfg, market, ledger, store, verifier, drive, teach, server, url,
     async stop() {
       clearInterval(watchdog);
       clearInterval(driveSync);
-      await Promise.all([verifier?.stop(), p2p.stop()]);
+      await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
       await ledger.close();
       store.close();

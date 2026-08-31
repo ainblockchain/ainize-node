@@ -18,9 +18,11 @@ import { verifyAuthHeader } from './p2p.js';
 import { MAX_CHAT_PATCHES, type Market } from './market.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
+import { ANSWER_MAX, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
+import type { TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
-export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; saveConfig: () => void; }
+export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void; }
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 const bad = (msg: string) => new HttpError(400, msg);
@@ -50,6 +52,13 @@ export function buildApi(deps: ApiDeps): Router {
   const requireOperator = (req: Request, _res: Response, next: NextFunction) => {
     if (!isOperator(req)) return next(new HttpError(401, 'operator login required'));
     next();
+  };
+
+  /** Names of contributors the operator hid are dropped from public views ("Taught by a visitor"). */
+  const redactContributors = <T extends CatalogEntry>(e: T): T => {
+    const hidden = deps.teach?.hiddenContributors();
+    if (!hidden?.size || !e.anchor.contributors?.length) return e;
+    return { ...e, anchor: { ...e.anchor, contributors: e.anchor.contributors.map((c) => (hidden.has(c.address.toLowerCase()) || (c.signer && hidden.has(c.signer.toLowerCase())) ? { ...c, name: undefined } : c)) } };
   };
 
   router.get('/api/auth/me', wrap((req) => ({
@@ -120,7 +129,7 @@ export function buildApi(deps: ApiDeps): Router {
     };
     items = [...items].sort(sorters[q.sort]);
     const total = items.length;
-    const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({ ...e, attestations: e.attestations.map((a) => ({ ...a, sig: undefined })) }));
+    const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({ ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })) }));
     return { total, items: page, models: [...new Set((await market.catalog()).map((e) => e.anchor.model.id_M))], schemas: [...new Set((await market.catalog()).map((e) => e.anchor.benchmark.schema))] };
   }));
 
@@ -133,7 +142,7 @@ export function buildApi(deps: ApiDeps): Router {
     const conflicts = await market.conflicts(e.anchor.id).catch(() => []);
     const branches = (await market.branches()).filter((b) => b.patch_ids.includes(e.anchor.id)).map((b) => ({ name: b.name, context: b.context }));
     return {
-      ...e, lineage, conflicts, branches,
+      ...redactContributors(e), lineage, conflicts, branches,
       owned: e.anchor.author === market.address, purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
       applied: market.isApplied(e.anchor.id), gateway_url: (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
     };
@@ -274,7 +283,7 @@ export function buildApi(deps: ApiDeps): Router {
     return {
       items, runtime: await market.runtime.status(), lock: market.runtime.lockHolder(),
       applied: market.pinnedPatchIds(), overlaps: market.chatOverlaps(items),
-      ...(teacher ? { lessons: [] as CatalogEntry[], teacher } : {}),
+      ...(teacher ? { lessons: deps.teach ? await deps.teach.lessonsFor(teacher) : ([] as CatalogEntry[]), teacher } : {}),
     };
   }));
   router.post('/api/chat', wrap(async (req) => {
@@ -299,6 +308,137 @@ export function buildApi(deps: ApiDeps): Router {
     deps.saveConfig();
     return { settings };
   }));
+
+  // ------------------------------------------------------------ teach mode — visitors (spec §6.2; signed x-ngram-auth `teach:<ts>`)
+  const needTeach = (): TeachWorker => { if (!deps.teach) throw new HttpError(503, 'teaching_disabled: the teach worker is not running on this node'); return deps.teach; };
+  const teacherOf = (req: Request): string | null => verifyAuthHeader(req.header('x-ngram-auth'), 'teach');
+  const requireTeacher = (req: Request): string => {
+    const a = teacherOf(req);
+    if (!a) throw new HttpError(401, 'invalid_signature: x-ngram-auth header (`<address>:<ts>:<sig over "teach:<ts>">`) missing, expired or invalid');
+    return a;
+  };
+  /** Every visitor teach route: worker present, policy enabled, key/IP not banned. */
+  const visitorGate = (req: Request, address: string | null): TeachWorker => { const t = needTeach(); t.assertEnabled(); t.assertNotBanned(address, req.ip); return t; };
+  const jobOr404 = (t: TeachWorker, id: string): TeachJobRow => { const j = t.get(id); if (!j) throw notFound('lesson not found'); return j; };
+  /** Owner (signed) or operator. */
+  const ownerJob = (req: Request, id: string, opts: { operator?: boolean } = {}): { t: TeachWorker; j: TeachJobRow; address: string | null; operator: boolean } => {
+    const t = needTeach(); const j = jobOr404(t, id); const address = teacherOf(req); const operator = isOperator(req);
+    if (t.isOwner(j, address)) { t.assertEnabled(); t.assertNotBanned(address, req.ip); return { t, j, address, operator: false }; }
+    if (opts.operator !== false && operator) return { t, j, address, operator: true };
+    if (!address) throw new HttpError(401, 'invalid_signature: x-ngram-auth header missing, expired or invalid');
+    throw new HttpError(403, 'not_owner: this lesson belongs to a different teaching key');
+  };
+  const factSchema = z.object({ prompt: z.string().min(1).max(PROMPT_MAX), answer: z.string().min(1).max(ANSWER_MAX), alt_prompt: z.string().max(PROMPT_MAX).optional(), base_answer: z.string().max(4000).optional() });
+  const addressParam = (v: string): string => { if (!/^0x[0-9a-fA-F]{40}$/.test(v)) throw bad('address must be an AIN address (0x + 40 hex)'); return v; };
+
+  router.get('/api/teach/policy', wrap(async (req, res) => { res.set('cache-control', 'public, max-age=10'); return needTeach().policy(req.ip); }));
+  router.post('/api/teach/preflight', wrap(async (req) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = z.object({ patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), facts: z.array(factSchema).min(1).max(8) }).parse(req.body);
+    const visitor = `ip:${req.ip}`;
+    if (market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'quota_chat: free live-test quota exhausted for this hour — try again later');
+    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, facts: body.facts });
+    market.chatQuota(visitor);   // preflight costs one live-test unit (spec §6.2)
+    return out;
+  }));
+  router.post('/api/teach/jobs', wrap(async (req, res) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = z.object({
+      patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
+      facts: z.array(factSchema).min(1).max(8), contributor: z.object({ name: z.string().max(40).optional() }).optional(), name: z.string().max(80).optional(),
+    }).parse(req.body);
+    const job = await t.createJob({ address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context, facts: body.facts });
+    res.status(202);
+    return { job, quota: t.quota(address, req.ip) };
+  }));
+  router.get('/api/teach/jobs', wrap(async (req) => { const address = requireTeacher(req); const t = visitorGate(req, address); return { items: t.listMine(address) }; }));
+  router.get('/api/teach/jobs/:id', wrap(async (req) => {
+    const t = needTeach(); const j = jobOr404(t, req.params.id as string);
+    const address = teacherOf(req);
+    return { job: t.isOwner(j, address) || isOperator(req) ? t.view(j) : t.publicView(j) };
+  }));
+  router.delete('/api/teach/jobs/:id', wrap(async (req) => { const { t, j, operator } = ownerJob(req, req.params.id as string); return t.cancel(j, operator ? 'operator' : 'owner'); }));
+  router.post('/api/teach/jobs/:id/retry', wrap(async (req, res) => {
+    const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
+    const body = z.object({ facts: z.array(factSchema).min(1).max(8), name: z.string().max(80).optional() }).parse(req.body);
+    const job = await t.createJob({ address: address!, contributorName: j.contributor_name ?? undefined, name: body.name ?? j.name ?? undefined, ip: req.ip, patchIds: j.context, buildsOn: j.builds_on, facts: body.facts, parentJob: j.id });
+    res.status(202);
+    return { job, quota: t.quota(address!, req.ip) };
+  }));
+  router.post('/api/teach/jobs/:id/recheck', wrap(async (req) => { const { t, j } = ownerJob(req, req.params.id as string); return t.recheck(j); }));
+  router.get('/api/teach/jobs/:id/publish-challenge', wrap(async (req) => {
+    const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
+    const raw = req.query.payout_address;
+    const payout = raw === 'none' || raw === 'null' ? null : typeof raw === 'string' && raw ? raw : undefined;
+    return t.publishChallenge(j, address!, payout);
+  }));
+  router.post('/api/teach/jobs/:id/publish', wrap(async (req) => {
+    const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
+    const body = z.object({
+      name: z.string().min(2).max(80), description: z.string().max(2000).optional(), price: z.string().max(32).optional(), license: z.string().max(80).optional(),
+      payout_address: z.string().nullable().optional(), claim_sig: z.string().min(1), consent: z.object({ permanent: z.boolean(), rights: z.boolean() }),
+    }).parse(req.body);
+    return t.publish(j, address!, body);
+  }));
+  router.post('/api/teach/jobs/:id/save', wrap(async (req) => { const { t, j, address } = ownerJob(req, req.params.id as string); return t.save(j, address ?? `operator:${market.address}`); }));
+  router.get('/api/teach/jobs/:id/recipe', wrap(async (req, res) => {
+    const t = needTeach(); const j = jobOr404(t, req.params.id as string);
+    if (!t.tokenOk(j, typeof req.query.token === 'string' ? req.query.token : undefined)) throw new HttpError(401, 'invalid_signature: download token missing, wrong or expired — make a new link from Your knowledge');
+    res.set('content-disposition', 'attachment; filename="recipe.json"');
+    return t.recipeJson(j);
+  }));
+  router.get('/api/teach/jobs/:id/local-run', wrap(async (req, res) => {
+    const t = needTeach(); const j = jobOr404(t, req.params.id as string);
+    const token = typeof req.query.token === 'string' ? req.query.token : undefined;
+    if (!t.tokenOk(j, token)) throw new HttpError(401, 'invalid_signature: download token missing, wrong or expired — make a new link from Your knowledge');
+    res.status(200).type('text/markdown; charset=utf-8').set('content-disposition', 'attachment; filename="RUN-LOCALLY.md"').send(await t.runLocallyMd(j, token!));
+  }));
+  router.get('/api/teacher/:address', wrap(async (req) => needTeach().teacherProfile(addressParam(req.params.address as string))));
+
+  // ------------------------------------------------------------ teach mode — operator (spec §6.4)
+  const policyView = async (t: TeachWorker) => ({ policy: market.teachSettings(), effective: market.teach(), trainer: await t.trainerState(true) });
+  router.get('/api/me/teach/policy', requireOperator, wrap(async () => policyView(needTeach())));
+  router.patch('/api/me/teach/policy', requireOperator, wrap(async (req) => {
+    const t = needTeach();
+    const b = z.object({
+      enabled: z.boolean().optional(), publish: z.enum(['review', 'auto', 'never']).optional(), facts_per_job: z.number().int().min(1).max(8).optional(),
+      jobs_per_key_per_day: z.number().int().min(0).max(1000).optional(), jobs_per_ip_per_day: z.number().int().min(0).max(1000).optional(), queue_max: z.number().int().min(1).max(100).optional(),
+      contributor_share: z.number().min(0).max(0.9).optional(), draft_ttl_days: z.number().int().min(1).max(90).optional(),
+      paused_reason: z.string().max(200).nullable().optional(), blocked_topics: z.string().max(500).nullable().optional(),
+    }).parse(req.body ?? {});
+    if (b.blocked_topics) { try { new RegExp(b.blocked_topics, 'i'); } catch { throw bad('blocked_topics must be a valid regular expression'); } }
+    market.updateTeachPolicy({
+      enabled: b.enabled, publish: b.publish, factsPerJob: b.facts_per_job, jobsPerKeyPerDay: b.jobs_per_key_per_day, jobsPerIpPerDay: b.jobs_per_ip_per_day,
+      queueMax: b.queue_max, contributorShare: b.contributor_share, draftTtlDays: b.draft_ttl_days,
+      ...('paused_reason' in b ? { pausedReason: b.paused_reason } : {}), ...('blocked_topics' in b ? { blockedTopics: b.blocked_topics } : {}),
+    });
+    t.invalidatePolicy();
+    return policyView(t);
+  }));
+  router.get('/api/me/teach/jobs', requireOperator, wrap(async () => ({ items: needTeach().listAll() })));
+  router.post('/api/me/teach/jobs/:id/approve', requireOperator, wrap(async (req) => { const t = needTeach(); return t.announceJob(jobOr404(t, req.params.id as string)); }));
+  router.post('/api/me/teach/jobs/:id/reject', requireOperator, wrap(async (req) => {
+    const t = needTeach(); const { reason } = z.object({ reason: z.string().min(1).max(500) }).parse(req.body ?? {});
+    t.reject(jobOr404(t, req.params.id as string), reason);
+    return { ok: true, status: 'REJECTED' };
+  }));
+  router.post('/api/me/teach/jobs/:id/cancel', requireOperator, wrap(async (req) => { const t = needTeach(); return t.cancel(jobOr404(t, req.params.id as string), 'operator'); }));
+  router.get('/api/me/teach/contributors', requireOperator, wrap(async () => ({ items: market.store.listContributors() })));
+  router.post('/api/me/teach/contributors/:address', requireOperator, wrap(async (req) => {
+    const address = addressParam(req.params.address as string);
+    const { hidden } = z.object({ hidden: z.boolean().optional() }).parse(req.body ?? {});
+    if (!market.store.getContributor(address)) market.store.touchContributor(address, {});
+    if (hidden !== undefined) market.store.setContributorHidden(address, hidden);
+    return { ok: true, contributor: market.store.getContributor(address) };
+  }));
+  router.get('/api/me/teach/bans', requireOperator, wrap(async () => ({ items: market.store.listBans() })));
+  router.post('/api/me/teach/bans', requireOperator, wrap(async (req) => {
+    const b = z.object({ kind: z.enum(['address', 'ip']), value: z.string().min(1).max(200), reason: z.string().max(500).optional() }).parse(req.body ?? {});
+    const ban = market.store.addBan(b.kind, b.value, b.reason ?? null);
+    market.log('warn', 'teach', `${b.kind} ${b.value} blocked by the operator${b.reason ? `: ${b.reason}` : ''}`);
+    return { ban };
+  }));
+  router.delete('/api/me/teach/bans/:id', requireOperator, wrap(async (req) => { market.store.deleteBan(Number(req.params.id)); return { ok: true }; }));
 
   // ------------------------------------------------------------ aindrive (files & change history)
   router.get('/api/drive', wrap(async () => {
@@ -386,7 +526,7 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ errors
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError || err instanceof TeachError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     const msg = (err as Error)?.message ?? String(err);
     console.error('[api]', msg);

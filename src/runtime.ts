@@ -35,15 +35,21 @@ export class Runtime {
    * in-process queue we take a cross-process lock (atomic mkdir under the shared repo) with a lease; a stale
    * lease (crashed holder) is broken after `staleMs`.
    */
-  private serial<T>(fn: () => Promise<T>, label = 'runtime'): Promise<T> {
+  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number): Promise<T> {
     const run = async () => {
-      const release = await this.acquireLock(label);
-      try { return await fn(); } finally { release(); }
+      const release = await this.acquireLock(label, undefined, waitMs);
+      this.busy = { label, since: Date.now() };
+      try { return await fn(); } finally { this.busy = null; release(); }
     };
     const next = this.queue.then(run, run);
     this.queue = next.catch(() => undefined);
     return next;
   }
+
+  /** In-process holder of the serialised section (null = idle). Cross-process holders are visible through `lockHolder()`. */
+  private busy: { label: string; since: number } | null = null;
+  /** Number of callers waiting in the in-process queue (approximate). */
+  private waiting = 0;
 
   private lockDir(): string | null { return this.repo ? join(this.repo, 'ple_patch', '.ainize-runtime.lock') : null; }
 
@@ -54,7 +60,7 @@ export class Runtime {
     try { return JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { return null; }
   }
 
-  private async acquireLock(label: string, staleMs = 15 * 60_000, waitMs = 20 * 60_000): Promise<() => void> {
+  private async acquireLock(label: string, staleMs = 15 * 60_000, waitMs: number = 20 * 60_000): Promise<() => void> {
     const dir = this.lockDir();
     if (!dir) return () => undefined;
     const t0 = Date.now();
@@ -76,7 +82,26 @@ export class Runtime {
   }
 
   /** Run `fn` while holding the shared runtime lock (for multi-step operations such as apply → chat → restore). */
-  exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> { return this.serial(fn, label); }
+  exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    this.waiting++;
+    return this.serial(fn, label).finally(() => { this.waiting--; });
+  }
+
+  /**
+   * Like `exclusive()` but polite (teach mode, spec §8.3 lock etiquette): waits at most `waitMs` (default 2 min) for the
+   * in-process queue AND the cross-process lease instead of joining the 20-minute queue; throws
+   * `shared runtime busy (…)` so the caller can requeue with jitter. Never breaks a live lease.
+   */
+  async exclusiveTry<T>(label: string, fn: () => Promise<T>, opts: { waitMs?: number } = {}): Promise<T> {
+    const waitMs = opts.waitMs ?? 2 * 60_000;
+    const t0 = Date.now();
+    while (this.busy || this.waiting > 0) {
+      if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${this.owner}: ${this.busy?.label ?? 'queued'}) — try again later`);
+      await new Promise((r) => setTimeout(r, 150 + Math.random() * 150));
+    }
+    const left = Math.max(1000, waitMs - (Date.now() - t0));
+    return this.serial(fn, label, left);
+  }
 
   /** Chat completion on the serving model (OpenAI-compatible). Thinking is off by default so short factual answers come back directly. */
   async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number } = {}): Promise<ChatResult> {

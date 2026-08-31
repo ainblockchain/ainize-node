@@ -11,7 +11,7 @@ import {
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
-  type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type X402Payload, type X402Requirement,
+  type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type SubscriptionRecord, type SupersedeRecord,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
@@ -43,6 +43,12 @@ export interface CreateDraftInput {
 
 /** Maximum number of knowledges one live test may load together (spec §6.3). */
 export const MAX_CHAT_PATCHES = 3;
+
+/** Operator-editable teach policy overrides (kv `settings.teach`); anything unset falls back to config.json / defaults. */
+export interface TeachSettings {
+  enabled?: boolean; publish?: 'review' | 'auto' | 'never'; factsPerJob?: number; jobsPerKeyPerDay?: number; jobsPerIpPerDay?: number;
+  queueMax?: number; contributorShare?: number; draftTtlDays?: number; pausedReason?: string | null; blockedTopics?: string | null;
+}
 export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
 
 export interface PurchaseResult {
@@ -167,7 +173,7 @@ export class Market {
     return anchor;
   }
 
-  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility'>>): PatchAnchor {
+  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe'>>): PatchAnchor {
     const d = this.store.getDraft(id);
     if (!d) throw new Error('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
@@ -736,9 +742,33 @@ export class Market {
     await this.p2p?.broadcast(rec).catch(() => undefined);
   }
 
-  // ------------------------------------------------------------------ teach mode (config; worker lands in PR-5)
-  /** Effective teach config (config.json `teach` merged over the defaults). */
-  teach() { return teachConfig(this.cfg); }
+  // ------------------------------------------------------------------ teach mode policy (config.json `teach` + operator overrides in kv `settings.teach`, spec §7.5)
+  /** Effective teach config: defaults ← config.json `teach` ← operator overrides persisted in the kv store. */
+  teach(): TeachConfig & { pausedReason?: string; blockedTopics?: string } {
+    const base = teachConfig(this.cfg);
+    const s = this.teachSettings();
+    const out: TeachConfig & { pausedReason?: string; blockedTopics?: string } = { ...base };
+    if (s.enabled !== undefined) out.enabled = s.enabled;
+    if (s.publish !== undefined) out.publish = s.publish;
+    if (s.factsPerJob !== undefined) out.factsPerJob = s.factsPerJob;
+    if (s.jobsPerKeyPerDay !== undefined) out.jobsPerKeyPerDay = s.jobsPerKeyPerDay;
+    if (s.jobsPerIpPerDay !== undefined) out.jobsPerIpPerDay = s.jobsPerIpPerDay;
+    if (s.queueMax !== undefined) out.queueMax = s.queueMax;
+    if (s.contributorShare !== undefined) out.contributorShare = s.contributorShare;
+    if (s.draftTtlDays !== undefined) out.draftTtlDays = s.draftTtlDays;
+    if (s.pausedReason) out.pausedReason = s.pausedReason;
+    if (s.blockedTopics) out.blockedTopics = s.blockedTopics;
+    return out;
+  }
+  /** Operator overrides only (what `PATCH /api/me/teach/policy` wrote). */
+  teachSettings(): TeachSettings { const raw = this.store.get('settings.teach'); return raw ? (JSON.parse(raw) as TeachSettings) : {}; }
+  updateTeachPolicy(patch: TeachSettings): TeachSettings {
+    const next: Record<string, unknown> = { ...this.teachSettings(), ...patch };
+    for (const k of Object.keys(next)) if (next[k] === null || next[k] === undefined) delete next[k];
+    this.store.set('settings.teach', JSON.stringify(next));
+    this.log('info', 'settings', `teach policy updated: ${Object.entries(patch).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}`);
+    return next as TeachSettings;
+  }
   /** Whether visitors may publish taught knowledge through this node as data providers. */
   acceptsContributions(): boolean { const t = this.teach(); return t.enabled && t.publish !== 'never'; }
 

@@ -13,6 +13,20 @@ export interface EventRow { seq: number; ts: number; level: 'debug' | 'info' | '
 export interface PeerRow { endpoint: string; address: string | null; info: PeerInfo | null; last_seen: number; failures: number; cursor: number; }
 export interface DraftRow { id: string; anchor: PatchAnchor; file_path: string; created_at: number; updated_at: number; }
 
+/** One teach job (spec §6.5) as persisted; JSON columns are decoded. */
+export interface TeachJobRow {
+  id: string; contributor: string; contributor_name: string | null; ip: string | null; status: string;
+  context: string[]; builds_on: boolean; facts: TeachFactRow[]; job_dir: string | null; npz_path: string | null; sha256: string | null;
+  progress: Record<string, unknown> | null; checks: Record<string, unknown> | null; error: string | null; container_pid: number | null;
+  draft_id: string | null; patch_id: string | null; publish_status: string; reject_reason: string | null; parent_job: string | null;
+  result: { sha256: string; rows: number; size_bytes: number } | null; blocked: string | null; name: string | null;
+  created_at: number; started_at: number | null; finished_at: number | null; updated_at: number; expires_at: number | null; cancel_requested: boolean;
+}
+export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string }
+export interface ContributorRow { address: string; name: string | null; payout_address: string | null; first_seen: number; last_seen: number; jobs: number; published: number; hidden: boolean; note: string | null }
+export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; reason: string | null; ts: number }
+export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
+
 export class Store {
   private db: DatabaseSync;
   constructor(path: string) {
@@ -33,6 +47,20 @@ export class Store {
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS applied (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at REAL NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, sha256 TEXT NOT NULL, issued_to TEXT NOT NULL, expires_at REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS teach_jobs (id TEXT PRIMARY KEY, contributor TEXT NOT NULL, contributor_name TEXT, ip TEXT, status TEXT NOT NULL,
+        context TEXT NOT NULL, builds_on INTEGER NOT NULL DEFAULT 0, facts TEXT NOT NULL, job_dir TEXT, npz_path TEXT, sha256 TEXT, progress TEXT, checks TEXT,
+        error TEXT, container_pid INTEGER, draft_id TEXT, patch_id TEXT, publish_status TEXT NOT NULL DEFAULT 'none', reject_reason TEXT, parent_job TEXT,
+        result TEXT, blocked TEXT, name TEXT,
+        created_at REAL NOT NULL, started_at REAL, finished_at REAL, updated_at REAL NOT NULL, expires_at REAL, cancel_requested INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS idx_teach_jobs_contrib ON teach_jobs(contributor);
+      CREATE INDEX IF NOT EXISTS idx_teach_jobs_status ON teach_jobs(status);
+      CREATE TABLE IF NOT EXISTS teach_quota (key TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key, day));
+      CREATE TABLE IF NOT EXISTS teach_stats (job_id TEXT PRIMARY KEY, load_s REAL, steps INTEGER, step_s REAL, total_s REAL, rows INTEGER, ts REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS contributors (address TEXT PRIMARY KEY, name TEXT, payout_address TEXT, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+        jobs INTEGER NOT NULL DEFAULT 0, published INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, note TEXT);
+      CREATE TABLE IF NOT EXISTS bans (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, reason TEXT, ts REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS payouts (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id TEXT NOT NULL, settle_hash TEXT NOT NULL, address TEXT NOT NULL, amount TEXT NOT NULL,
+        currency TEXT NOT NULL, status TEXT NOT NULL, tx_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
     `);
   }
 
@@ -168,6 +196,115 @@ export class Store {
     const r = this.db.prepare('SELECT expires_at FROM tokens WHERE token = ? AND sha256 = ?').get(token, sha) as { expires_at: number } | undefined;
     return !!r && r.expires_at > Date.now();
   }
+
+  // ------------------------------------------------------------ teach mode (spec §7.5)
+  private rowToTeachJob(r: Record<string, unknown>): TeachJobRow {
+    const j = (v: unknown) => (typeof v === 'string' && v ? JSON.parse(v) : null);
+    return {
+      id: r.id as string, contributor: r.contributor as string, contributor_name: (r.contributor_name as string) ?? null, ip: (r.ip as string) ?? null, status: r.status as string,
+      context: j(r.context) ?? [], builds_on: !!r.builds_on, facts: j(r.facts) ?? [], job_dir: (r.job_dir as string) ?? null, npz_path: (r.npz_path as string) ?? null, sha256: (r.sha256 as string) ?? null,
+      progress: j(r.progress), checks: j(r.checks), error: (r.error as string) ?? null, container_pid: (r.container_pid as number) ?? null,
+      draft_id: (r.draft_id as string) ?? null, patch_id: (r.patch_id as string) ?? null, publish_status: (r.publish_status as string) ?? 'none', reject_reason: (r.reject_reason as string) ?? null,
+      parent_job: (r.parent_job as string) ?? null, result: j(r.result), blocked: (r.blocked as string) ?? null, name: (r.name as string) ?? null,
+      created_at: r.created_at as number, started_at: (r.started_at as number) ?? null, finished_at: (r.finished_at as number) ?? null, updated_at: r.updated_at as number,
+      expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested,
+    };
+  }
+  insertTeachJob(j: Omit<TeachJobRow, 'updated_at'>) {
+    this.db.prepare(`INSERT INTO teach_jobs (id, contributor, contributor_name, ip, status, context, builds_on, facts, job_dir, npz_path, sha256, progress, checks, error, container_pid,
+      draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(j.id, j.contributor, j.contributor_name, j.ip, j.status, JSON.stringify(j.context), j.builds_on ? 1 : 0, JSON.stringify(j.facts), j.job_dir, j.npz_path, j.sha256,
+        j.progress ? JSON.stringify(j.progress) : null, j.checks ? JSON.stringify(j.checks) : null, j.error, j.container_pid, j.draft_id, j.patch_id, j.publish_status, j.reject_reason,
+        j.parent_job, j.result ? JSON.stringify(j.result) : null, j.blocked, j.name, j.created_at, j.started_at, j.finished_at, Date.now(), j.expires_at, j.cancel_requested ? 1 : 0);
+  }
+  /** Partial update; JSON columns are re-encoded, `updated_at` is always bumped. */
+  updateTeachJob(id: string, patch: Partial<Omit<TeachJobRow, 'id' | 'updated_at'>>) {
+    const cols: string[] = []; const args: (string | number | null)[] = [];
+    const enc = (k: string, v: unknown): string | number | null => {
+      if (v === undefined || v === null) return null;
+      if (['context', 'facts', 'progress', 'checks', 'result'].includes(k)) return JSON.stringify(v);
+      if (typeof v === 'boolean') return v ? 1 : 0;
+      return v as string | number;
+    };
+    for (const [k, v] of Object.entries(patch)) { cols.push(`${k} = ?`); args.push(enc(k, v)); }
+    cols.push('updated_at = ?'); args.push(Date.now());
+    args.push(id);
+    this.db.prepare(`UPDATE teach_jobs SET ${cols.join(', ')} WHERE id = ?`).run(...args);
+  }
+  getTeachJob(id: string): TeachJobRow | null {
+    const r = this.db.prepare('SELECT * FROM teach_jobs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToTeachJob(r) : null;
+  }
+  listTeachJobs(opts: { contributor?: string; status?: string[]; draft_id?: string; limit?: number } = {}): TeachJobRow[] {
+    const where: string[] = []; const args: (string | number)[] = [];
+    if (opts.contributor) { where.push('lower(contributor) = ?'); args.push(opts.contributor.toLowerCase()); }
+    if (opts.status?.length) { where.push(`status IN (${opts.status.map(() => '?').join(',')})`); args.push(...opts.status); }
+    if (opts.draft_id) { where.push('draft_id = ?'); args.push(opts.draft_id); }
+    const sql = `SELECT * FROM teach_jobs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at ASC LIMIT ${Number(opts.limit ?? 500)}`;
+    return (this.db.prepare(sql).all(...args) as Record<string, unknown>[]).map((r) => this.rowToTeachJob(r));
+  }
+  deleteTeachJob(id: string) { this.db.prepare('DELETE FROM teach_jobs WHERE id = ?').run(id); }
+
+  teachQuotaCount(key: string, day: string): number {
+    const r = this.db.prepare('SELECT count FROM teach_quota WHERE key = ? AND day = ?').get(key, day) as { count: number } | undefined;
+    return r?.count ?? 0;
+  }
+  teachQuotaBump(key: string, day: string) {
+    this.db.prepare('INSERT INTO teach_quota (key, day, count) VALUES (?, ?, 1) ON CONFLICT(key, day) DO UPDATE SET count = count + 1').run(key, day);
+  }
+
+  putTeachStat(s: { job_id: string; load_s: number | null; steps: number | null; step_s: number | null; total_s: number | null; rows: number | null }) {
+    this.db.prepare('INSERT OR REPLACE INTO teach_stats (job_id, load_s, steps, step_s, total_s, rows, ts) VALUES (?, ?, ?, ?, ?, ?, ?)').run(s.job_id, s.load_s, s.steps, s.step_s, s.total_s, s.rows, Date.now());
+  }
+  teachStats(limit = 50): { total_s: number }[] {
+    return this.db.prepare('SELECT total_s FROM teach_stats WHERE total_s IS NOT NULL ORDER BY ts DESC LIMIT ?').all(limit) as { total_s: number }[];
+  }
+
+  private rowToContributor(r: Record<string, unknown>): ContributorRow {
+    return { address: r.address as string, name: (r.name as string) ?? null, payout_address: (r.payout_address as string) ?? null, first_seen: r.first_seen as number, last_seen: r.last_seen as number,
+      jobs: r.jobs as number, published: r.published as number, hidden: !!r.hidden, note: (r.note as string) ?? null };
+  }
+  touchContributor(address: string, patch: { name?: string | null; payout_address?: string | null; job?: boolean; published?: boolean } = {}) {
+    const now = Date.now();
+    const cur = this.getContributor(address);
+    if (!cur) {
+      this.db.prepare('INSERT INTO contributors (address, name, payout_address, first_seen, last_seen, jobs, published, hidden, note) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)')
+        .run(address, patch.name ?? null, patch.payout_address ?? null, now, now, patch.job ? 1 : 0, patch.published ? 1 : 0);
+      return;
+    }
+    this.db.prepare('UPDATE contributors SET name = ?, payout_address = ?, last_seen = ?, jobs = jobs + ?, published = published + ? WHERE address = ?')
+      .run(patch.name === undefined ? cur.name : patch.name, patch.payout_address === undefined ? cur.payout_address : patch.payout_address, now, patch.job ? 1 : 0, patch.published ? 1 : 0, address);
+  }
+  setContributorHidden(address: string, hidden: boolean) { this.db.prepare('UPDATE contributors SET hidden = ? WHERE address = ?').run(hidden ? 1 : 0, address); }
+  getContributor(address: string): ContributorRow | null {
+    const r = this.db.prepare('SELECT * FROM contributors WHERE lower(address) = ?').get(address.toLowerCase()) as Record<string, unknown> | undefined;
+    return r ? this.rowToContributor(r) : null;
+  }
+  listContributors(): ContributorRow[] {
+    return (this.db.prepare('SELECT * FROM contributors ORDER BY last_seen DESC').all() as Record<string, unknown>[]).map((r) => this.rowToContributor(r));
+  }
+
+  addBan(kind: 'address' | 'ip', value: string, reason: string | null): BanRow {
+    const r = this.db.prepare('INSERT INTO bans (kind, value, reason, ts) VALUES (?, ?, ?, ?) RETURNING *').get(kind, value, reason, Date.now()) as Record<string, unknown>;
+    return { id: r.id as number, kind: r.kind as 'address' | 'ip', value: r.value as string, reason: (r.reason as string) ?? null, ts: r.ts as number };
+  }
+  deleteBan(id: number) { this.db.prepare('DELETE FROM bans WHERE id = ?').run(id); }
+  listBans(): BanRow[] { return this.db.prepare('SELECT * FROM bans ORDER BY ts DESC').all() as unknown as BanRow[]; }
+  isBanned(kind: 'address' | 'ip', value: string): BanRow | null {
+    const r = this.db.prepare('SELECT * FROM bans WHERE kind = ? AND lower(value) = ? LIMIT 1').get(kind, value.toLowerCase()) as BanRow | undefined;
+    return r ?? null;
+  }
+
+  /** Payout attempts (written by the settlement path in PR-2; read here for the public earnings view). */
+  listPayouts(opts: { address?: string; status?: string } = {}): PayoutRow[] {
+    const where: string[] = []; const args: string[] = [];
+    if (opts.address) { where.push('lower(address) = ?'); args.push(opts.address.toLowerCase()); }
+    if (opts.status) { where.push('status = ?'); args.push(opts.status); }
+    return this.db.prepare(`SELECT * FROM payouts ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT 1000`).all(...args) as unknown as PayoutRow[];
+  }
+
+  deleteTokensFor(sha: string) { this.db.prepare('DELETE FROM tokens WHERE sha256 = ?').run(sha); }
 
   // applied
   setApplied(patchId: string, sha: string, reason: string) { this.db.prepare('INSERT OR REPLACE INTO applied (patch_id, sha256, applied_at, reason) VALUES (?, ?, ?, ?)').run(patchId, sha, Date.now(), reason); }
