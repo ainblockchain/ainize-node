@@ -1062,23 +1062,37 @@ export class TeachWorker {
     const mine = cat.filter((e) => (e.anchor.contributors ?? []).some((x) => x.address.toLowerCase() === addr || x.signer?.toLowerCase() === addr));
     const lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string }[] = mine.map((e) => ({ id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue }));
     for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.draft_id ?? j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0' });
+    // Earnings: OWED comes from settle records (any node can read them), PAID from this node's payouts rows (§7.6).
+    // A settle from another seller node shows as `pending` with `paid_by: null` — the settle record is the evidence.
     const setts = await this.market.ledger.settlements();
-    const payouts = this.store.listPayouts({ address });
-    const items: { patch_id: string; settle_hash: string; amount: string; status: 'paid' | 'pending' | 'failed'; tx_hash?: string; created_at: number }[] = [];
-    let owed = 0, paid = 0;
+    const payouts = this.store.listPayouts({ address, limit: 5000 });
+    const maxAttempts = this.market.payouts.maxAttempts;
+    const items: { patch_id: string; seller: string; settle_hash: string; amount: string; currency: string; scheme: string; status: 'paid' | 'pending' | 'failed'; tx_hash?: string; attempts?: number; created_at: number; paid_at?: number }[] = [];
+    let owed = 0, paid = 0, failed = 0;
     for (const s of setts) {
       const amt = Object.entries(s.body.royalty).find(([a]) => a.toLowerCase() === addr)?.[1];
-      if (!amt) continue;
+      if (!amt || !(Number(amt) > 0)) continue;
       owed += Number(amt);
-      let status: 'paid' | 'pending' | 'failed' = 'pending'; let tx: string | undefined;
-      if (s.body.scheme === 'local-credit') status = 'paid';
-      else { const p = payouts.find((x) => x.settle_hash === s.hash); if (p) { status = p.status; tx = p.tx_hash ?? undefined; } }
+      let status: 'paid' | 'pending' | 'failed' = 'pending'; let tx: string | undefined; let attempts: number | undefined; let paidAt: number | undefined;
+      if (s.body.scheme === 'local-credit') status = 'paid';   // play money: credited by the settle record itself
+      else {
+        const p = payouts.find((x) => x.settle_hash === s.hash);
+        if (p) {
+          attempts = p.attempts; tx = p.tx_hash ?? undefined;
+          // Still retrying automatically → the contributor sees "pending"; only exhausted attempts read "failed".
+          status = p.status === 'paid' ? 'paid' : p.status === 'failed' && p.attempts >= maxAttempts ? 'failed' : 'pending';
+          if (status === 'paid') paidAt = p.updated_at;
+        }
+      }
       if (status === 'paid') paid += Number(amt);
-      items.push({ patch_id: s.body.patch_id, settle_hash: s.hash, amount: String(amt), status, ...(tx ? { tx_hash: tx } : {}), created_at: s.body.created_at });
+      if (status === 'failed') failed += Number(amt);
+      items.push({ patch_id: s.body.patch_id, seller: s.body.seller, settle_hash: s.hash, amount: String(amt), currency: s.body.currency, scheme: s.body.scheme, status,
+        ...(tx ? { tx_hash: tx } : {}), ...(attempts !== undefined ? { attempts } : {}), created_at: s.body.created_at, ...(paidAt ? { paid_at: paidAt } : {}) });
     }
     const name = contributor && !contributor.hidden ? contributor.name ?? undefined : undefined;
     const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
-    return { address, ...(name ? { name } : {}), hidden: !!contributor?.hidden, lessons, earnings: { currency: this.market.cfg.market.currency, owed: String(r6(owed)), paid: String(r6(paid)), pending: String(r6(owed - paid)), items: items.sort((a, b) => b.created_at - a.created_at) } };
+    return { address, ...(name ? { name } : {}), hidden: !!contributor?.hidden, lessons,
+      earnings: { currency: this.market.cfg.market.currency, owed: String(r6(owed)), paid: String(r6(paid)), pending: String(r6(owed - paid)), failed: String(r6(failed)), sales: items.length, items: items.sort((a, b) => b.created_at - a.created_at) } };
   }
 
   /** Addresses whose display name the operator hid (catalog then shows "Taught by a visitor"). */

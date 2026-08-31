@@ -18,6 +18,7 @@ import { BlobStore } from './blobs.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
 import type { Store, BlobRow, EventRow } from './store.js';
+import { Payouts } from './payouts.js';
 
 export interface CreateDraftInput {
   id?: string;
@@ -74,7 +75,11 @@ export class Market {
     readonly store: Store,
     readonly blobs: BlobStore,
     readonly runtime: Runtime,
-  ) {}
+  ) {
+    this.payouts = new Payouts(store, (l, k, m, pid, d) => this.log(l, k, m, pid ?? null, d ?? null), ledger instanceof AinLedger ? ledger : null, { selfAddress: cfg.identity.address });
+  }
+  /** Royalty payouts on the AIN ledger (`payouts` table + 60-s retry timer started by server.ts). */
+  readonly payouts: Payouts;
 
   get address() { return this.cfg.identity.address; }
   get publicUrl() { return this.cfg.publicUrl ?? `http://localhost:${this.cfg.port}`; }
@@ -376,13 +381,12 @@ export class Market {
     this.invalidate();
     this.log('info', 'trade', `sold ${entry.anchor.id} to ${buyer.slice(0, 10)}… for ${price} ${settlement.currency} (${scheme})`, entry.anchor.id, { royalty, tx: txHash });
     await this.p2p?.broadcast(rec).catch(() => undefined);
-    // Pay lineage royalties on-chain (AIN) — best effort, recorded in events.
-    if (this.ledger instanceof AinLedger) {
-      for (const [addr, amt] of Object.entries(royalty)) {
-        if (addr === this.address || Number(amt) <= 0) continue;
-        this.ledger.transfer(addr, Number(amt)).then((r) => this.log('info', 'royalty', `paid ${amt} AIN royalty to ${addr.slice(0, 10)}… (${r.tx_hash.slice(0, 12)})`, entry.anchor.id))
-          .catch((e) => this.log('warn', 'royalty', `royalty transfer to ${addr} failed: ${(e as Error).message}`, entry.anchor.id));
-      }
+    // Pay lineage / contributor royalties on-chain (AIN): a `payouts` row per address is written BEFORE the transfer is
+    // attempted (spec §9.3); the transfer itself runs in the background and the 60-s timer retries failures.
+    // Local-credit settles need nothing else — creditBalance() derives balances from the settle record.
+    if (scheme === 'ain-transfer') {
+      this.payouts.enqueue(settlement, rec.hash);
+      this.payouts.processPending().catch(() => undefined);
     }
     return { settlement };
   }

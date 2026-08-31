@@ -19,6 +19,7 @@ import { MAX_CHAT_PATCHES, type Market } from './market.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
 import { ANSWER_MAX, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
+import { PayoutError } from './payouts.js';
 import type { TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
@@ -208,7 +209,19 @@ export function buildApi(deps: ApiDeps): Router {
     const setts = await market.ledger.settlements();
     const sales = setts.filter((s) => s.body.seller === market.address).map((s) => s.body);
     const royalties = setts.filter((s) => s.body.seller !== market.address && s.body.royalty[market.address]).map((s) => ({ patch_id: s.body.patch_id, amount: s.body.royalty[market.address], created_at: s.body.created_at }));
-    return { ...(await market.chainStatus()), sales, royalties, purchases: market.store.listPurchases().length };
+    const summary = market.payouts.summary();
+    return { ...(await market.chainStatus()), sales, royalties, purchases: market.store.listPurchases().length,
+      payouts: { ...summary, items: market.store.listPayouts({ status: ['pending', 'failed'], limit: 50 }) } };
+  }));
+  // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
+  router.get('/api/me/payouts', requireOperator, wrap(async (req) => {
+    const q = z.object({ status: z.enum(['pending', 'paid', 'failed']).optional(), address: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).optional() }).parse(req.query);
+    return { items: market.store.listPayouts({ status: q.status, address: q.address, limit: q.limit ?? 200 }), summary: market.payouts.summary(), max_attempts: market.payouts.maxAttempts, retry_ms: market.payouts.retryMs, wallet: !!market.payouts.wallet };
+  }));
+  router.post('/api/me/payouts/:id/retry', requireOperator, wrap(async (req) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw bad('payout id must be a positive integer');
+    return { payout: await market.payouts.retry(id) };
   }));
 
   router.post('/api/patches', requireOperator, upload.single('file'), wrap(async (req) => {
@@ -526,7 +539,7 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ errors
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError || err instanceof TeachError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError || err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     const msg = (err as Error)?.message ?? String(err);
     console.error('[api]', msg);

@@ -316,7 +316,7 @@ test('publish (review mode): signed claim → PENDING_REVIEW → operator approv
   const prof = await api('GET', `/api/teacher/${teacher.address}`);
   assert.equal(prof.status, 200); assert.equal(prof.json.name, 'Test Teacher');
   assert.deepEqual((prof.json.lessons as { id: string; status: string }[]).map((l) => [l.id, l.status]), [[job1.draft_id, 'ANNOUNCED']]);
-  assert.deepEqual(prof.json.earnings, { currency: 'CREDIT', owed: '0', paid: '0', pending: '0', items: [] });
+  assert.deepEqual(prof.json.earnings, { currency: 'CREDIT', owed: '0', paid: '0', pending: '0', failed: '0', sales: 0, items: [] });
   // operator hides the name → catalog shows no name ("Taught by a visitor"), teacher page too
   await api('POST', `/api/me/teach/contributors/${teacher.address}`, { hidden: true }, op());
   assert.equal((((await api('GET', `/api/patches/${job1.draft_id}`)).json.anchor as PatchAnchor).contributors![0]).name, undefined);

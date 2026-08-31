@@ -61,6 +61,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS bans (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, reason TEXT, ts REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS payouts (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id TEXT NOT NULL, settle_hash TEXT NOT NULL, address TEXT NOT NULL, amount TEXT NOT NULL,
         currency TEXT NOT NULL, status TEXT NOT NULL, tx_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_payouts_settle ON payouts(settle_hash);
+      CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
     `);
   }
 
@@ -296,12 +298,50 @@ export class Store {
     return r ?? null;
   }
 
-  /** Payout attempts (written by the settlement path in PR-2; read here for the public earnings view). */
-  listPayouts(opts: { address?: string; status?: string } = {}): PayoutRow[] {
-    const where: string[] = []; const args: string[] = [];
+  // payouts — one row per (settle record, royalty address); the node-side receipt of every AIN transfer attempt (spec §7.5 / §9.3)
+  private rowToPayout(r: Record<string, unknown>): PayoutRow {
+    return { id: r.id as number, patch_id: r.patch_id as string, settle_hash: r.settle_hash as string, address: r.address as string, amount: r.amount as string, currency: r.currency as string,
+      status: r.status as PayoutRow['status'], tx_hash: (r.tx_hash as string) ?? null, attempts: Number(r.attempts ?? 0), last_error: (r.last_error as string) ?? null,
+      created_at: r.created_at as number, updated_at: r.updated_at as number };
+  }
+  /** Written BEFORE the transfer is attempted, status `pending`, attempts 0. */
+  insertPayout(p: { patch_id: string; settle_hash: string; address: string; amount: string; currency: string }): PayoutRow {
+    const now = Date.now();
+    const r = this.db.prepare('INSERT INTO payouts (patch_id, settle_hash, address, amount, currency, status, tx_hash, attempts, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?, ?) RETURNING *')
+      .get(p.patch_id, p.settle_hash, p.address, p.amount, p.currency, 'pending', now, now) as Record<string, unknown>;
+    return this.rowToPayout(r);
+  }
+  getPayout(id: number): PayoutRow | null {
+    const r = this.db.prepare('SELECT * FROM payouts WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToPayout(r) : null;
+  }
+  /** The row for one (settle record, address) pair — used to keep enqueue idempotent across restarts. */
+  findPayout(settleHash: string, address: string): PayoutRow | null {
+    const r = this.db.prepare('SELECT * FROM payouts WHERE settle_hash = ? AND lower(address) = ?').get(settleHash, address.toLowerCase()) as Record<string, unknown> | undefined;
+    return r ? this.rowToPayout(r) : null;
+  }
+  updatePayout(id: number, patch: Partial<Pick<PayoutRow, 'status' | 'tx_hash' | 'attempts' | 'last_error'>>): PayoutRow {
+    const cur = this.getPayout(id);
+    if (!cur) throw new Error(`payout ${id} not found`);
+    const next = { ...cur, ...patch, updated_at: Date.now() };
+    this.db.prepare('UPDATE payouts SET status = ?, tx_hash = ?, attempts = ?, last_error = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.tx_hash, next.attempts, next.last_error, next.updated_at, id);
+    return next;
+  }
+  /** Payout attempts; `status` filters, `address` matches case-insensitively, newest first. */
+  listPayouts(opts: { address?: string; status?: string | string[]; limit?: number } = {}): PayoutRow[] {
+    const where: string[] = []; const args: (string | number)[] = [];
     if (opts.address) { where.push('lower(address) = ?'); args.push(opts.address.toLowerCase()); }
-    if (opts.status) { where.push('status = ?'); args.push(opts.status); }
-    return this.db.prepare(`SELECT * FROM payouts ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT 1000`).all(...args) as unknown as PayoutRow[];
+    if (opts.status) { const st = Array.isArray(opts.status) ? opts.status : [opts.status]; where.push(`status IN (${st.map(() => '?').join(',')})`); args.push(...st); }
+    const rows = this.db.prepare(`SELECT * FROM payouts ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args, Math.min(Math.max(1, Number(opts.limit ?? 1000)), 5000)) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToPayout(r));
+  }
+  payoutSummary(): { pending: number; failed: number; paid: number } {
+    const out = { pending: 0, failed: 0, paid: 0 };
+    for (const r of this.db.prepare('SELECT status, COUNT(*) AS n FROM payouts GROUP BY status').all() as { status: string; n: number }[]) {
+      if (r.status in out) out[r.status as keyof typeof out] = Number(r.n);
+    }
+    return out;
   }
 
   deleteTokensFor(sha: string) { this.db.prepare('DELETE FROM tokens WHERE sha256 = ?').run(sha); }

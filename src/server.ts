@@ -114,6 +114,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   p2p.start();
   verifier?.start();
   teach?.start();
+  market.payouts.start();   // 60-s royalty payout retry timer (spec §9.3)
   const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
   watchdog.unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
@@ -125,6 +126,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     async stop() {
       clearInterval(watchdog);
       clearInterval(driveSync);
+      market.payouts.stop();
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
       await ledger.close();
