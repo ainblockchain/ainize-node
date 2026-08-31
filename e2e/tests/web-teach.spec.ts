@@ -4,14 +4,14 @@
  *
  *   AINIZE_URL=http://localhost:3412 AINIZE_PASS=teach-pass npx playwright test tests/web-teach.spec.ts --project=web
  *
- * Scenario ids (docs/ux-test-scenarios.md already uses AZ-090…AZ-100, so these continue at AZ-101) ↔ spec §13.2:
- *   AZ-101 → AZ-092 (drawer + basket persists)      AZ-102 → AZ-093 (credit sheet, key in localStorage, backup download)
- *   AZ-103 → AZ-094 (preflight: known fact skipped)  AZ-104 → AZ-095 (stub lifecycle → READY, card copy, teach events)
- *   AZ-105 → AZ-096 (Try it now on the READY draft)  AZ-106 → AZ-098 (keep it private: token download, sha256, recipe, RUN-LOCALLY.md)
- *   AZ-107 → AZ-100 / AZ-099 (publish; auto or review+approve; signed contributor on the anchor; chips; teacher page; Your knowledge)
- *   AZ-108 → AZ-109 (owner mismatch: redacted card / 403 not_owner)   AZ-109 → §5.11 key restore in a fresh browser
- * One browser context is shared by AZ-101…AZ-107 (the flow lives in localStorage); AZ-108/109 open a second, empty context.
- * Tagged @runtime: AZ-101 and AZ-105 ask the shared serving model (one completion each); the rest is stub-only.
+ * Scenario ids ↔ docs/ux-test-scenarios.json (PR-7 filed spec §13.2 AZ-090…AZ-111 as AZ-101…AZ-122; the titles below use those ids):
+ *   AZ-103 drawer + basket persists (spec AZ-092)     AZ-104 credit sheet, key in localStorage, backup download (spec AZ-093) + key restore in a fresh browser
+ *   AZ-105 preflight: known fact skipped (spec AZ-094) AZ-106 stub lifecycle → READY, card copy, teach events (spec AZ-095)
+ *   AZ-107 Try it now on the READY draft (spec AZ-096) AZ-109 keep it private: token download, sha256, recipe, RUN-LOCALLY.md (spec AZ-098)
+ *   AZ-110/111 publish (review + operator approve / auto; signed contributor on the anchor; chips; teacher page; Your knowledge) (spec AZ-099 / AZ-100)
+ *   AZ-120 owner mismatch: redacted card / 403 not_owner (spec AZ-109)
+ * One browser context is shared by AZ-103…AZ-111 (the flow lives in localStorage); AZ-120 and the restore step open a second, empty context.
+ * Tagged @runtime: AZ-103 and AZ-107 ask the shared serving model (one completion each); the rest is stub-only.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -62,7 +62,7 @@ test.beforeAll(async ({ browser, request }) => {
 });
 test.afterAll(async () => { await context?.close(); });
 
-test('AZ-101 banner → "Teach the right answer" under a reply → drawer → basket persists across reload @runtime', async ({ request }) => {
+test('AZ-103 banner → "Teach the right answer" under a reply → drawer → basket persists across reload @runtime', async ({ request }) => {
   test.skip(!(await waitForRuntime(request, NODE, 8 * 60_000)), 'serving model unavailable (vLLM restart takes ~5 min)');
   await waitForLockFree(request, NODE, 5 * 60_000);
   await page.goto(`${NODE}/chat/${K.pixel}?teach=1`);
@@ -112,8 +112,8 @@ test('AZ-101 banner → "Teach the right answer" under a reply → drawer → ba
   await page.screenshot({ path: 'results/az-101-basket.png', fullPage: true });
 });
 
-test('AZ-102 first "Train this lesson" → Who gets the credit? → key in localStorage → backup download → Continue', async () => {
-  test.skip(!jobId && !(await page.getByTestId('train-lesson').isEnabled().catch(() => false)), 'basket empty (AZ-101 skipped)');
+test('AZ-104 first "Train this lesson" → Who gets the credit? → key in localStorage → backup download → Continue', async () => {
+  test.skip(!jobId && !(await page.getByTestId('train-lesson').isEnabled().catch(() => false)), 'basket empty (AZ-103 skipped)');
   expect(await page.evaluate(() => localStorage.getItem('ainize.teacher.key'))).toBeNull();
   await page.getByTestId('train-lesson').click();
   const sheet = page.getByTestId('credit-sheet');
@@ -138,7 +138,7 @@ test('AZ-102 first "Train this lesson" → Who gets the credit? → key in local
   await expect(page.getByTestId('lesson-basket')).toContainText(`Teaching as ${TEACHER_NAME}`);
 });
 
-test('AZ-103 pre-flight: wrong fact will train, already-correct fact skipped, quota line → Queue training', async () => {
+test('AZ-105 pre-flight: wrong fact will train, already-correct fact skipped, quota line → Queue training', async () => {
   test.skip(!keyAddress, 'no key (earlier step skipped)');
   const pf = page.getByTestId('preflight-sheet');
   await expect(pf).toContainText('Checking what the model already knows');
@@ -162,7 +162,7 @@ test('AZ-103 pre-flight: wrong fact will train, already-correct fact skipped, qu
   expect(mirror[0].id).toBe(jobId);
 });
 
-test('AZ-104 stub lifecycle → READY: card copy, check lines, per-correction table, teach events, redacted public body', async ({ request }) => {
+test('AZ-106 stub lifecycle → READY: card copy, check lines, per-correction table, teach events, redacted public body', async ({ request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   const card = page.getByTestId('lesson-card');
   await expect(card).toBeVisible();
@@ -189,7 +189,7 @@ test('AZ-104 stub lifecycle → READY: card copy, check lines, per-correction ta
   expect(mine.some((e) => /^training started \(stub\)/.test(e.message))).toBe(true);
 });
 
-test('AZ-105 Try it now: the READY draft joins the stack under "Your lessons" and answers through /api/chat @runtime', async ({ request }) => {
+test('AZ-107 Try it now: the READY draft joins the stack under "Your lessons" and answers through /api/chat @runtime', async ({ request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   const card = page.getByTestId('lesson-card');
   await card.getByTestId('lesson-try').click();
@@ -219,7 +219,7 @@ test('AZ-105 Try it now: the READY draft joins the stack under "Your lessons" an
   }
 });
 
-test('AZ-106 Keep it private: 7-day token links, sha256 matches, recipe.json, RUN-LOCALLY.md download, hardware notice, wrong token refused', async ({ request }) => {
+test('AZ-109 Keep it private: 7-day token links, sha256 matches, recipe.json, RUN-LOCALLY.md download, hardware notice, wrong token refused', async ({ request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   const card = page.getByTestId('lesson-card');
   await card.getByTestId('lesson-keep').click();
@@ -271,7 +271,7 @@ test('AZ-106 Keep it private: 7-day token links, sha256 matches, recipe.json, RU
   await expect(card).toHaveAttribute('data-status', 'READY');
 });
 
-test('AZ-107 Publish: consents, signed claim → announced (or review + operator approve); contributor on the anchor; chips; teacher page; Your knowledge', async ({ request }) => {
+test('AZ-110/111 Publish: consents, signed claim → announced (or review + operator approve); contributor on the anchor; chips; teacher page; Your knowledge', async ({ request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   test.skip(policy.publish === 'never', 'node never publishes lessons');
   const card = page.getByTestId('lesson-card');
@@ -360,7 +360,7 @@ test('AZ-107 Publish: consents, signed claim → announced (or review + operator
   await page.screenshot({ path: 'results/az-107-mine.png', fullPage: true });
 });
 
-test('AZ-108 owner mismatch: another browser sees only the status; another key gets 403 not_owner', async ({ browser, request }) => {
+test('AZ-120 owner mismatch: another browser sees only the status; another key gets 403 not_owner', async ({ browser, request }) => {
   test.skip(!jobId, 'no job (earlier step skipped)');
   const other = await browser.newContext({ locale: 'en-US' });
   try {
@@ -378,7 +378,7 @@ test('AZ-108 owner mismatch: another browser sees only the status; another key g
   expect(save.body.error).toMatch(/^not_owner/);
 });
 
-test('AZ-109 restore the key backup in a fresh browser → Your knowledge lists the lesson', async ({ browser }) => {
+test('AZ-104 (restore) restore the key backup in a fresh browser → Your knowledge lists the lesson', async ({ browser }) => {
   test.skip(!keyBackup || !jobId, 'no backup (earlier step skipped)');
   const other = await browser.newContext({ locale: 'en-US' });
   try {

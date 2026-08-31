@@ -223,7 +223,7 @@
   "steps": [
    "Open http://localhost:3402/chat",
    "Read the title, model chip, subtitle and the left panel",
-   "Click the item 'Pixelplus ticker code (single fact)' in the left list, then click back to 'KRX ticker codes for 2,761 listed companies (final)'",
+   "Tick 'Pixelplus ticker code (single fact)' in the left list (checkbox), untick it, then tick 'KRX ticker codes for 2,761 listed companies (final)'",
    "In the composer read 'Sample questions this knowledge answers' and hover the first chip",
    "Click 'Show 18 more', then 'Show less'",
    "Click the chip '종목코드 삼성전자' (do not send)",
@@ -231,8 +231,8 @@
   ],
   "expected": [
    "URL is replaced with /chat/krx-all-2761 (first testable item); title 'Live test'; chip 'Test model Qwen3.8-Flash-Next'; subtitle 'Ask the same question before and after loading the knowledge and watch the answer change. It loads and unloads in seconds, no restart.'",
-   "Left panel 'Knowledge to test' with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip; the active item shows 'Selected'",
-   "Selecting an item changes the URL to /chat/{id} and the main header shows its name, status chip, '{n} facts' and a 'Details →' link; the transcript shows 'No questions yet' with 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'",
+   "Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip; the active item shows 'Selected'",
+   "Ticking exactly one item changes the URL to /chat/{id} (several → /chat/{id1},{id2}) and the main header shows its name, status chip, '{n} facts' and a 'Details →' link; the transcript shows 'No questions yet' with 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'",
    "krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); chip tooltip 'Expected: 087600' for '종목코드 픽셀플러스'; 'Show less' collapses back",
    "Clicking a chip puts its text into the textarea (placeholder 'Type a question and press Enter (Shift+Enter for a new line)') and focuses it; footer reads 'Free tries are limited per hour. No sign-in needed.'",
    "Unknown id: yellow alert 'The knowledge in the address (does-not-exist) cannot be tested on this node, so the first one in the list was chosen.' and URL becomes /chat/krx-all-2761"
@@ -358,8 +358,8 @@
  {
   "id": "AZ-011",
   "persona": "Visitor (knowledge user)",
-  "title": "Pick an audience card and land on the right entry point",
-  "goal": "Visitors self-identify (use / sell / operate) and each card sends them to the correct page.",
+  "title": "Pick an audience card and land on the right entry point (creator card = teach the model)",
+  "goal": "Visitors self-identify (use / teach / operate) and each card sends them to the correct page; the creator card no longer leads to the sign-in wall but to Live test with the teach banner.",
   "preconditions": [
    "No operator session",
    "http://localhost:3402/ loaded"
@@ -368,22 +368,27 @@
    "Scroll to the section titled 'Which one are you?'",
    "Read the three cards and their numbered steps",
    "Click 'Explore knowledge' on the first card",
-   "Return to / and click 'Register knowledge' on the second card",
-   "Return to / and click 'Open the operator console' on the third (dark) card"
+   "Return to / and click 'Teach the model' on the second card",
+   "Return to / and click the small link 'Already have a knowledge file (.npz) and run a node? Register a file →' under the second card's button",
+   "Return to / and click 'Open the operator console' on the third (dark) card",
+   "Back on /, read the top navigation of the landing page"
   ],
   "expected": [
    "Section sub-title: 'Ainize is used by people who use knowledge, people who make it, and people who run the network.'",
    "Card 1 title 'I want to use knowledge' with steps 'Find knowledge verified for your topic and model.' / 'Ask the same question before and after loading it and see the answer change.' / 'If you like it, pay and load it in seconds — unload any time.'",
-   "Card 2 title 'I want to sell knowledge'; card 3 title 'Node operators & developers' with the label 'For developers · terminal' (displayed in uppercase by CSS) and a code block 'npm install -g ainize / ainize init / ainize start'",
-   "'Explore knowledge' → /explore; 'Register knowledge' → /signing?next=%2Fnew-patch (sign-in page, not the new-patch form); 'Open the operator console' → /signing"
+   "Card 2 title 'I want to teach the model something' with steps 'Ask the model in Live test and correct it when it is wrong.' / 'This node trains your corrections into knowledge — no sign-in, no server of your own.' / 'Keep it private, or publish it and get paid on every sale.'; the button reads 'Teach the model'; there is no 'Register knowledge' / 'I want to sell knowledge' any more",
+   "Card 3 title 'Node operators & developers' with the label 'For developers · terminal' (displayed in uppercase by CSS) and a code block 'npm install -g ainize / ainize init / ainize start'",
+   "'Explore knowledge' → /explore; 'Teach the model' → /chat?teach=1 (Live test with the purple teach banner 'Wrong answer? Click \"Teach the right answer\" under any reply…' and the open lesson basket — NOT /signing); 'Register a file →' → /signing?next=%2Fnew-patch (the only remaining route to the sign-in wall, explicitly labelled for node operators); 'Open the operator console' → /signing",
+   "When GET /api/info.accepts_contributions is true the landing nav shows 'Teach' next to 'Live test' (→ /chat?teach=1); when false the creator card adds 'This node is not accepting lessons right now. Live test still works.' under the button"
   ],
   "priority": "P1",
   "area": "landing",
   "automation": "e2e",
   "evidence": [
-   "packages/web/src/pages/LandingPage.tsx (AudienceGrid, AudienceCta hrefs)",
+   "packages/web/src/pages/LandingPage.tsx (AudienceGrid; data-testid landing-creator-card / landing-teach-cta / landing-register-link / landing-nav-teach)",
    "packages/web/src/i18n/glossary.ts AUDIENCE.user/creator/operator",
-   "packages/web/src/i18n/pages/public.ts: landing.audience.*, landing.audience.operator.dev_label"
+   "packages/web/src/i18n/pages/public.ts: landing.audience.creator.title/s1/s2/s3/cta/operator_link/off, landing.nav.teach (spec §5.1)",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-011 …'"
   ]
  },
  {
@@ -526,7 +531,7 @@
  {
   "id": "AZ-016",
   "persona": "Visitor (knowledge user)",
-  "title": "Follow origins, overlap and newer-version notices in both directions",
+  "title": "Follow origins, overlap and newer-version notices in both directions (and the multi-select overlap warning in Live test)",
   "goal": "A visitor understands that krx-all-2761 replaces three older versions and that the older version page points to the newer one.",
   "preconditions": [
    "No operator session",
@@ -539,7 +544,8 @@
    "Read the 'overlap check' table and the blue notice under it",
    "Click the origin box 'KRX ticker codes for 2,761 listed companies — epoch 12' (id krx-all-2761-ep12)",
    "On the ep12 page read the meta line, then open its 'Origins & derivatives' tab",
-   "Click the 'krx-all-2761' link inside the yellow notice"
+   "Click the 'krx-all-2761' link inside the yellow notice",
+   "Open /chat, tick 'KRX ticker codes for 2,761 listed companies (final)' and then 'Pixelplus ticker code (single fact)' in the picker 'Knowledge to load (pick up to 3)'"
   ],
   "expected": [
    "Note: 'creator revenue share — Knowledge built on other knowledge records its origins publicly, and every sale automatically shares revenue with the original creators. Creator share on this network: 30% of each sale.'",
@@ -547,7 +553,8 @@
    "'overlap check' table has 3 rows: krx-all-2761-ep12 '241,992 memory entries', krx-all-2761-ep6 '241,992 memory entries', pixelplus-087600 '2,170 memory entries'; Relation 'Same subject — contradictory or a newer version'; Status chip 'Newer version available'",
    "Blue notice: 'This knowledge replaces the older version(s): krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600 — same subject, overlapping entries, newer registration.'",
    "ep12 page: status chip 'Newer version available', meta line ends with '∙ Newer version: krx-all-2761' link; its Origins tab shows 'Derived' → krx-all-2761 and a yellow notice 'A newer version exists: krx-all-2761. Subscribed nodes should update.'",
-   "The notice link navigates back to the krx-all-2761 page"
+   "The notice link navigates back to the krx-all-2761 page",
+   "Live test picker: an info alert names both knowledges — '… overlap on 2,170 memory entries — Pixelplus ticker code (single fact), ticked last, wins.' (the same overlap the detail page's 'overlap check' table reports); the rows show 'Loads 1.' / 'Loads 2.' and the URL is /chat/krx-all-2761,pixelplus-087600 (see AZ-101 / TM-090 for the full multi-knowledge test)"
   ],
   "priority": "P1",
   "area": "patch",
@@ -557,7 +564,8 @@
    "packages/web/src/i18n/pages/detail.ts: detail.lin.*, detail.patch.newer_version",
    "packages/node/src/market.ts (SUPERSEDED state, reconcileSupersedes)",
    "GET /api/patches/krx-all-2761 conflicts/lineage/supersedes; GET /api/patches/krx-all-2761-ep12 superseded_by",
-   "GET /api/info royalty_share 0.3"
+   "GET /api/info royalty_share 0.3",
+   "packages/web/src/components/chat/KnowledgePicker.tsx (overlap alert data-testid=chat-overlap); packages/web/src/i18n/pages/chat.ts chat.picker.overlap_pair; GET /api/chat/patches overlaps[]"
   ]
  },
  {
@@ -939,7 +947,7 @@
  {
   "id": "AZ-028",
   "persona": "Knowledge creator (operator)",
-  "title": "Sign in with the operator password after being redirected from a protected page",
+  "title": "Sign in with the operator password after being redirected from a protected page (visitors are told they do not need to)",
   "goal": "A creator who opens a console page while logged out is sent to sign in and returned to where they were going.",
   "preconditions": [
    "Operator password demo1234 set on http://localhost:3402 (C-01)",
@@ -952,9 +960,10 @@
    "Type demo1234 into \"Operator password\" and click \"Sign in\""
   ],
   "expected": [
-   "Step 1 redirects to /signing?next=%2Fdashboard; the title reads \"Sign in to your node\" and the description starts \"Enter this node’s operator password.\"",
+   "Step 1 redirects to /signing?next=%2Fdashboard; the title reads \"Sign in to your node\" with the subtitle \"Only the person who runs this node needs a password.\" and the description starts \"Enter this node’s operator password.\"",
+   "Under the form a visitor notice reads \"Want to try or teach the model? You do not need to sign in — that is only for the person who runs this node.\" with the link \"Go to Live test →\" (→ /chat)",
    "Step 3: POST /api/auth/login returns 401 and the red alert shows \"wrong password\"; the user stays on the sign-in page",
-   "Step 4: the button briefly reads \"Signing in…\", POST /api/auth/login returns 200, and the browser lands on /dashboard (\"My knowledge\")",
+   "Step 4: the button briefly reads \"Signing in…\", POST /api/auth/login returns 200, and the browser lands on /dashboard (\"My knowledge\", with the tabs \"My knowledge\" / \"Teaching\")",
    "Opening http://localhost:3402/ while signed in redirects to /dashboard; opening /signing while signed in also redirects to /dashboard"
   ],
   "priority": "P0",
@@ -962,9 +971,10 @@
   "automation": "e2e",
   "evidence": [
    "packages/web/src/components/base/Layout.tsx SigningCheckLayout, FullScreenLayout",
-   "packages/web/src/pages/SigningPage.tsx next param",
-   "packages/web/src/i18n/pages/operator.ts op.sign.login.title, op.sign.login.password, op.sign.login.button, op.sign.login.busy",
-   "packages/node/src/api.ts /api/auth/login HttpError(401,'wrong password')"
+   "packages/web/src/pages/SigningPage.tsx next param, VisitorNotice (data-testid visitor-notice, sign-subtitle)",
+   "packages/web/src/i18n/pages/operator.ts op.sign.login.title, op.sign.login.subtitle, op.sign.visitor_notice, op.sign.visitor_cta, op.sign.login.password, op.sign.login.button, op.sign.login.busy (spec §5.2)",
+   "packages/node/src/api.ts /api/auth/login HttpError(401,'wrong password')",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-028 …'"
   ]
  },
  {
@@ -1006,15 +1016,17 @@
  {
   "id": "AZ-030",
   "persona": "Knowledge creator (operator)",
-  "title": "Register a new knowledge draft from a file path on the node",
+  "title": "Register a new knowledge draft from a file path on the node (signed out, /new-patch shows the two-way pre-screen first)",
   "goal": "A creator turns a trained .npz already on the node into a draft without copying the file.",
   "preconditions": [
-   "Signed in on http://localhost:3402",
+   "Start signed out on http://localhost:3402 (the pre-screen check), then sign in with the operator password for the form",
    "File /mnt/newdata/qwen3.8/results/train-fact/픽셀플러스.npz exists on the node host (same sha256 as pixelplus-087600 — duplicate content is allowed, only duplicate ids are rejected)",
    "No knowledge with id pixelplus-test-1 exists yet",
    "Use a Subject other than krx-ticker-codes so the demo's LISTED krx-all-2761 is not superseded by this test"
   ],
   "steps": [
+   "Signed out, open http://localhost:3402/new-patch directly",
+   "Read the two cards; click 'Open Live test' on the first, go back, click 'Sign in' on the second and sign in with the operator password",
    "Open http://localhost:3402/dashboard and click \"Register knowledge\"",
    "Under \"Basics\": Name = Pixelplus ticker (test), Id (optional) = pixelplus-test-1, Description = Test draft for the pixelplus ticker code; leave \"Target model\" as Qwen3.8-Flash-Next",
    "Under \"Price & source knowledge\": Price (AIN) = 0.5, Billing = \"per download\", License = CC-BY-4.0",
@@ -1023,6 +1035,8 @@
    "Click \"Save draft\""
   ],
   "expected": [
+   "Signed out, /new-patch does NOT redirect to /signing: it renders the public pre-screen titled 'Add knowledge — two ways'. Card A 'Teach it in chat' — 'Correct a wrong answer and this node trains it for you. No account.' with the button 'Open Live test' (→ /chat?teach=1); card B 'I run this node and have a knowledge file' — 'Sign in with the operator password to upload a .npz file.' with the button 'Sign in' (→ /signing?next=%2Fnew-patch)",
+   "After signing in the browser returns to /new-patch and shows the 'Register knowledge' form (the pre-screen is gone); the operator menu (name ▾) also has 'Register a knowledge file' → /new-patch",
    "The Id helper under the id field reads \"will be published as pixelplus-test-1\"",
    "The Price helper reads \"0 = free. Buyers pay automatically and you are settled per sale.\" followed by \"AIN = AI Network token (this demo runs a local dev chain)\"",
    "The path card note reads \"referenced in place, no copy (for large training outputs)\"",
@@ -1034,6 +1048,9 @@
   "area": "new-patch",
   "automation": "e2e",
   "evidence": [
+   "packages/web/src/components/base/Layout.tsx NewPatchGate; packages/web/src/components/operator/NewPatchPreScreen.tsx (data-testid newpatch-prescreen / prescreen-teach / prescreen-file)",
+   "packages/web/src/i18n/pages/operator.ts op.new.prescreen.* (spec §5.2); packages/web/src/components/ui/Header.tsx (nav.register menu item)",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-030 …'",
    "packages/web/src/pages/NewPatchPage.tsx onSubmit, slugPreview, navigate(/project/${address}/${id})",
    "packages/web/src/i18n/pages/operator.ts op.new.* (op.new.id.helper.preview, op.new.price.helper, op.new.file.path.note, op.new.submit, op.new.submitting, op.new.queries)",
    "packages/web/src/i18n/pages/common.ts status.DRAFT, price.ain_note",
@@ -1358,7 +1375,7 @@
  {
   "id": "AZ-040",
   "persona": "Knowledge creator (operator)",
-  "title": "Inspect the overlap check and lineage of the verified KRX knowledge",
+  "title": "Inspect the overlap check and lineage of the verified KRX knowledge (and see the same overlap warned about in Live test)",
   "goal": "A creator sees which of their other knowledge overlaps with this one and which versions it replaced.",
   "preconditions": [
    "Signed in on http://localhost:3402",
@@ -1370,7 +1387,8 @@
    "Scroll to \"Overlap check\" and read the description and table",
    "Click the krx-all-2761-ep6 link in the table",
    "Go back and scroll to \"Source & derived knowledge\"",
-   "Open http://localhost:3402/project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761-ep6 and read the same section"
+   "Open http://localhost:3402/project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761-ep6 and read the same section",
+   "Click the Live test icon of krx-all-2761 on /dashboard, then also tick 'Pixelplus ticker code (single fact)' in the picker"
   ],
   "expected": [
    "Description reads \"Automatically checks whether other knowledge on this node overlaps with this one. When newer knowledge on the same subject is verified, the older one is marked \"newer version available\".\"",
@@ -1378,7 +1396,8 @@
    "The link opens the public page /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761-ep6",
    "On krx-all-2761: \"Built on\" = link \"KRX ticker codes for 2,761 listed companies — epoch 12\" with chip \"Newer version available\", \"Derived from this\" = \"none\", \"Replaces\" = \"krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600\", \"Replaced by\" = \"—\"",
    "On krx-all-2761-ep6: \"Derived from this\" = \"KRX ticker codes for 2,761 listed companies — epoch 12\", \"Replaced by\" = \"krx-all-2761\" and the status chip reads \"Newer version available\"",
-   "Below the section: \"When derived knowledge sells, the original creator automatically receives a share (creator revenue share).\""
+   "Below the section: \"When derived knowledge sells, the original creator automatically receives a share (creator revenue share).\"",
+   "Live test: the picker warns 'KRX ticker codes for 2,761 listed companies (final) and Pixelplus ticker code (single fact) overlap on 2,170 memory entries — Pixelplus ticker code (single fact), ticked last, wins.' — the overlap figure matches the manage page's 'Overlap check' row for pixelplus-087600"
   ],
   "priority": "P1",
   "area": "manage",
@@ -1387,7 +1406,8 @@
    "packages/web/src/pages/ManagePage.tsx conflicts table, lineage KeyValue",
    "packages/web/src/i18n/pages/operator.ts op.manage.conflict.*, op.manage.lineage.*",
    "packages/web/src/i18n/pages/common.ts units.rows, status.SUPERSEDED",
-   "packages/node/src/api.ts GET /api/patches/:id (conflicts, lineage.parents, supersedes); packages/node/src/seed.ts parents"
+   "packages/node/src/api.ts GET /api/patches/:id (conflicts, lineage.parents, supersedes); packages/node/src/seed.ts parents",
+   "packages/web/src/components/chat/KnowledgePicker.tsx (chat.picker.overlap_pair); packages/node/src/market.ts chatOverlaps()"
   ]
  },
  {
@@ -2379,7 +2399,8 @@
    "Step 5 returns `{\"error\":\"free live-test quota exhausted for this hour — buy the patch or run your own node\"} 429`",
    "Step 6 prints `None None` — the operator session is unmetered even from the same IP",
    "Step 7 returns 200 on node-b (quota is per node process, in memory) with `\"quota_limit\":20`",
-   "Step 8 shows `usage     [pixelplus-087600] live test pixelplus-087600 (base) by ip:… : base only` entries"
+   "Step 8 shows `usage     [pixelplus-087600] live test pixelplus-087600 (base) by ip:… : base only` entries",
+   "The same quota applies per POST regardless of whether the body uses `patch_id` or `patch_ids` (AZ-101)"
   ],
   "priority": "P1",
   "area": "api",
@@ -2970,7 +2991,8 @@
    "Step 2: newest event has kind='usage', patch_id='krx-all-2761', message 'live test krx-all-2761 (compare) by ip:<addr>: patched hit=true', data {visitor:'ip:<addr>', mode:'compare', hit:true, base_ms, patched_ms, applied_ms}; the same event appears under /api/patches/krx-all-2761/events",
    "Step 3: mode 'base' returns patched=null and benchmark_hit=null; the usage event message ends with 'base only' (no hit is metered when no patched answer was served); a free-form question in compare mode yields hit=null ('not auto-scored')",
    "Step 4: when the 20-per-hour window is exhausted the request answers HTTP 429 {\"error\":\"free live-test quota exhausted for this hour — buy the patch or run your own node\"} and no usage event is written for it (the quota is checked before the runtime runs)",
-   "Step 5: HTTP 400 {\"error\":\"invalid request\",\"issues\":[…]} (messages must have 1–24 items); no usage event"
+   "Step 5: HTTP 400 {\"error\":\"invalid request\",\"issues\":[…]} (messages must have 1–24 items); no usage event",
+   "`patch_id` stays valid for a single knowledge; POST /api/chat also accepts `patch_ids` (1–3 ids, exactly one of the two fields) and then returns `patch_ids`, `applied[]` and one usage event per knowledge — see AZ-101"
   ],
   "priority": "P1",
   "area": "api",
@@ -3593,66 +3615,658 @@
   "title": "Load up to three knowledges together in one live test, see the overlap warning, and meter one usage event per knowledge",
   "goal": "A visitor can tick several knowledges (max 3) in the Live test picker; they load in tick order (the last one wins on overlapping memory entries), the picker warns about the overlap, and the node bills one usage event per knowledge.",
   "preconditions": [
-   "Teach-mode node whose GET /api/chat/patches lists two knowledges sharing memory entries (overlaps[] non-empty) and runtime.available=true",
-   "Not signed in as operator",
+   "A teach-mode node (this branch) whose GET /api/chat/patches lists at least two knowledges that share memory entries (`overlaps[]` non-empty; on the demo data `krx-all-2761` ∩ `pixelplus-087600` = 2,170 rows) and `runtime.available=true`",
+   "Caller is NOT signed in as operator (visitor quota applies)",
    "Note the newest usage event: GET /api/events?kind=usage&limit=1"
   ],
   "steps": [
-   "Open /chat; picker titled 'Knowledge to load (pick up to 3)'",
-   "Tick krx-all-2761 then pixelplus-087600; order badges 1, 2; counter '2/3 selected'; URL /chat/krx-all-2761,pixelplus-087600",
-   "Tick a third; the rest are disabled with 'Up to 3 — untick one first.'",
-   "Untick the third and send '픽셀플러스 종목코드 알려줘. 숫자만.' in Compare mode",
-   "POST /api/chat with patch_ids [krx-all-2761, pixelplus-087600]",
+   "Open `/chat`. The picker is titled \"Knowledge to load (pick up to 3)\" with the help line \"They load in the order you tick them. If two overlap, the one ticked last wins.\"",
+   "Tick `KRX ticker codes for 2,761 listed companies (final)` then `Pixelplus ticker code (single fact)`; observe the order badges (1, 2), the counter \"2/3 selected\" and the address bar (`/chat/krx-all-2761,pixelplus-087600`)",
+   "Tick a third knowledge, then hover a fourth: the remaining checkboxes are disabled with the tooltip \"Up to 3 — untick one first.\"",
+   "Untick the third one, send the sample question `픽셀플러스 종목코드 알려줘. 숫자만.` in Compare mode",
+   "`curl -s -X POST <node>/api/chat -H 'content-type: application/json' -d '{\"patch_ids\":[\"krx-all-2761\",\"pixelplus-087600\"],\"mode\":\"compare\",\"messages\":[{\"role\":\"user\",\"content\":\"종목코드 픽셀플러스 \"}],\"max_tokens\":16}'`",
    "GET /api/events?kind=usage&limit=2",
-   "POST /api/chat with both patch_id and patch_ids, and with four ids"
+   "`curl -s -X POST <node>/api/chat -H 'content-type: application/json' -d '{\"patch_id\":\"krx-all-2761\",\"patch_ids\":[\"pixelplus-087600\"],\"mode\":\"base\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}'` and the same with four ids in `patch_ids`"
   ],
   "expected": [
-   "Overlap alert (chat.picker.overlap_pair) naming both knowledges, 2,170 entries and the winner",
-   "'After loading 2' bubble lists both load times and per-knowledge ✓/✗ chips; answer contains 087600",
-   "200: patch_ids, applied[] ×2, applied_ms = sum, benchmark_hits per id, benchmark_hit = OR; lock label chat:krx-all-2761+pixelplus-087600",
-   "Two new usage events (one per patch_id) with data.patch_ids and data.position; runtime applied unchanged afterwards",
-   "400 for both malformed bodies"
+   "Step 2: an info alert \"KRX ticker codes … and Pixelplus ticker code … overlap on 2,170 memory entries — Pixelplus ticker code …, ticked last, wins.\" (`chat.picker.overlap_pair`); both rows show \"Loads 1.\" / \"Loads 2.\"; the transcript header reads \"2 knowledges loaded together\" with the two names numbered",
+   "Step 4: the \"After loading 2\" bubble lists both knowledges with their load times (\"krx-all-2761: loaded in …\", \"pixelplus-087600: loaded in …\") and the per-knowledge ✓/✗ chips; the answer contains 087600",
+   "Step 5: HTTP 200 with `patch_id='krx-all-2761'`, `patch_ids=['krx-all-2761','pixelplus-087600']`, `applied=[{patch_id,applied_ms,was_applied}×2]`, `applied_ms` = the sum, `benchmark_hits` keyed by both ids, `benchmark_hit` = OR of them, `base`/`patched` as before; the lock label seen by other clients during the call is `chat:krx-all-2761+pixelplus-087600`",
+   "Step 6: two new usage events, one per patch_id, each with `data.patch_ids` = both ids and `data.position` 1/2; the node's shared table is back to its previous state afterwards (GET /api/runtime `applied` unchanged)",
+   "Step 7: HTTP 400 for both (exactly one of `patch_id` / `patch_ids`; at most 3 ids)"
   ],
   "priority": "P1",
   "area": "chat",
   "automation": "e2e",
   "evidence": [
-   "packages/node/src/market.ts chat(), chatOverlaps()",
-   "packages/node/src/api.ts POST /api/chat, GET /api/chat/patches",
-   "packages/web/src/components/chat/KnowledgePicker.tsx",
-   "packages/web/src/i18n/pages/chat.ts chat.picker.*, chat.head.multi, chat.bubble.patched_multi",
-   "packages/cli/src/commands/chat.ts parsePatchIds(), renderChat()"
+   "packages/node/src/market.ts chat() (patchIds[], exclusive('chat:<id1>+<id2>'), applyRaw in list order, restore in reverse, one usage event per patch), chatOverlaps()",
+   "packages/node/src/api.ts POST /api/chat (patch_id | patch_ids refine), GET /api/chat/patches (applied[], overlaps[])",
+   "packages/web/src/components/chat/KnowledgePicker.tsx (checkboxes, order badges, overlap alert data-testid=chat-overlap)",
+   "packages/web/src/i18n/pages/chat.ts chat.picker.multi_title, chat.picker.multi_help, chat.picker.overlap_pair, chat.picker.max, chat.head.multi, chat.bubble.patched_multi",
+   "packages/cli/src/commands/chat.ts parsePatchIds(), renderChat() (per-knowledge load order and markers); ainize chat --patch a,b"
   ]
  },
  {
   "id": "TM-091",
   "persona": "Teach mode (visitor)",
   "title": "Show the contamination banner when the operator keeps knowledge loaded for everyone",
-  "goal": "A visitor understands that 'Before loading' is not the pristine base model when the operator has pinned knowledge into the serving model.",
+  "goal": "A visitor understands that \"Before loading\" is not the pristine base model when the operator has pinned knowledge into the serving model.",
   "preconditions": [
-   "Teach-mode node with runtime.available=true; operator credentials",
-   "GET /api/chat/patches returns applied: []"
+   "Teach-mode node with `runtime.available=true`; operator credentials for it",
+   "GET /api/chat/patches returns `applied: []`"
   ],
   "steps": [
-   "Open /chat as a visitor: no banner",
-   "Operator: POST /api/patches/pixelplus-087600/apply",
-   "Reload /chat as a visitor",
-   "Tick pixelplus-087600 and send the sample question in Compare mode",
-   "Operator: POST /api/patches/pixelplus-087600/remove"
+   "Open `/chat` as a visitor: no orange banner above the list",
+   "As operator: `POST /api/patches/pixelplus-087600/apply` (or Manage → Load into model)",
+   "Reload `/chat` as a visitor (or wait for the 20 s poll)",
+   "Tick `Pixelplus ticker code (single fact)` and send `픽셀플러스 종목코드 알려줘. 숫자만.` in Compare mode",
+   "As operator: `POST /api/patches/pixelplus-087600/remove`"
   ],
   "expected": [
-   "applied: ['pixelplus-087600']",
-   "Warning banner chat.picker.contaminated naming the knowledge; 'Always loaded' chip on its row",
-   "applied[0].was_applied=true; Compare still removes it for Before and restores it afterwards",
-   "Banner disappears on the next poll"
+   "Step 2: GET /api/chat/patches → `applied: ['pixelplus-087600']`",
+   "Step 3: warning banner \"This node also has Pixelplus ticker code (single fact) loaded for everyone, so \"Before loading\" already includes it.\" (`chat.picker.contaminated`, data-testid=chat-contaminated) and an \"Always loaded\" chip on that row",
+   "Step 4: the response has `applied[0].was_applied=true`; in Compare mode the node still removes it for the \"Before\" answer and puts it back afterwards (GET /api/runtime `applied` still lists it); the bubble shows \"was already loaded\" when the After answer needed no re-load (After-only mode)",
+   "Step 5: the banner disappears on the next poll"
   ],
   "priority": "P1",
   "area": "chat",
   "automation": "e2e",
   "evidence": [
-   "packages/node/src/market.ts pinnedPatchIds(), chat() restore",
-   "packages/web/src/components/chat/KnowledgePicker.tsx",
-   "packages/web/src/i18n/pages/chat.ts chat.picker.contaminated, chat.picker.always_loaded"
+   "packages/node/src/market.ts pinnedPatchIds(); chat() restore step re-asserts pinned knowledge after an overlapping removal",
+   "packages/web/src/components/chat/KnowledgePicker.tsx (applied → Alert $tone=warning, Pinned chip)",
+   "packages/web/src/i18n/pages/chat.ts chat.picker.contaminated, chat.picker.always_loaded, chat.bubble.already_applied"
+  ]
+ },
+ {
+  "id": "AZ-101",
+  "persona": "Teach mode (visitor)",
+  "title": "Load three knowledges together; overlap warning appears; applied[] has three entries; one usage event per knowledge",
+  "goal": "A visitor ticks up to three knowledges in Live test; they load in tick order (last wins on overlap), the picker warns about the overlap, and the node meters one usage event per knowledge (spec §13.2 AZ-090).",
+  "preconditions": [
+   "Teach-mode node whose GET /api/chat/patches lists at least three testable knowledges, two of them overlapping (demo data: krx-all-2761 ∩ pixelplus-087600 = 2,170 rows) and runtime.available=true",
+   "Not signed in as operator"
+  ],
+  "steps": [
+   "Open /chat; tick krx-all-2761, pixelplus-087600 and a third knowledge in that order",
+   "Read the picker (order badges, counter, overlap alert) and the URL",
+   "Send '픽셀플러스 종목코드 알려줘. 숫자만.' in Compare mode",
+   "GET /api/events?kind=usage&limit=3",
+   "POST /api/chat with both patch_id and patch_ids, then with four ids"
+  ],
+  "expected": [
+   "Order badges 1/2/3, counter '3/3 selected', remaining checkboxes disabled with 'Up to 3 — untick one first.'; URL /chat/krx-all-2761,pixelplus-087600,<third>",
+   "Overlap alert names krx-all-2761 and pixelplus-087600 with '2,170 memory entries' and says the one ticked last wins",
+   "'After loading 3' bubble lists three load times and per-knowledge ✓/✗ chips; the answer contains 087600; POST /api/chat response has patch_ids (3), applied[] (3 entries with applied_ms/was_applied), applied_ms = sum, benchmark_hits per id",
+   "Three new usage events, one per patch_id, each with data.patch_ids and data.position 1..3; GET /api/runtime applied unchanged afterwards",
+   "400 for both malformed bodies (exactly one of patch_id / patch_ids; at most 3 ids)"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "Detailed two-knowledge walkthrough: TM-090 (same scenario, filed by PR-3)",
+   "packages/node/src/market.ts chat(), chatOverlaps(); packages/node/src/api.ts POST /api/chat (patch_id | patch_ids refine)",
+   "packages/web/src/components/chat/KnowledgePicker.tsx; packages/web/src/i18n/pages/chat.ts chat.picker.*",
+   "packages/e2e/tests/web-chat-multi.spec.ts 'TM-090 …'"
+  ]
+ },
+ {
+  "id": "AZ-102",
+  "persona": "Teach mode (visitor)",
+  "title": "Contamination banner when the operator has knowledge persistently applied",
+  "goal": "A visitor understands that \"Before loading\" already includes knowledge the operator keeps loaded for everyone (spec §13.2 AZ-091).",
+  "preconditions": [
+   "Teach-mode node with runtime.available=true; operator credentials",
+   "GET /api/chat/patches returns applied: []"
+  ],
+  "steps": [
+   "As operator: POST /api/patches/pixelplus-087600/apply",
+   "Reload /chat as a visitor",
+   "Tick pixelplus-087600 and send the sample question in Compare mode",
+   "As operator: POST /api/patches/pixelplus-087600/remove"
+  ],
+  "expected": [
+   "GET /api/chat/patches → applied: ['pixelplus-087600']",
+   "Warning banner 'This node also has Pixelplus ticker code (single fact) loaded for everyone, so \"Before loading\" already includes it.' (data-testid=chat-contaminated) and an 'Always loaded' chip on that row",
+   "Response applied[0].was_applied=true; the node removes it for the Before answer and re-applies it afterwards (GET /api/runtime still lists it)",
+   "The banner disappears on the next 20 s poll after the remove"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "Detailed walkthrough: TM-091",
+   "packages/node/src/market.ts pinnedPatchIds(); packages/web/src/components/chat/KnowledgePicker.tsx (applied → warning, Pinned chip)",
+   "packages/e2e/tests/web-chat-multi.spec.ts 'TM-091 …'"
+  ]
+ },
+ {
+  "id": "AZ-103",
+  "persona": "Teach mode (visitor)",
+  "title": "Teach drawer from a wrong answer → basket persists across reload",
+  "goal": "A visitor corrects a wrong reply from Live test and the correction stays in the lesson basket after a reload (spec §13.2 AZ-092, §5.4, §5.5).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "runtime.available=true for the one completion (AZ-103 waits for the serving model)"
+  ],
+  "steps": [
+   "Open /chat/pixelplus-087600?teach=1 as a visitor",
+   "Choose 'Before only', ask '픽셀플러스 (<tag>) 종목코드는?' and click 'Teach the right answer' under the reply",
+   "Click 'Add to lesson' with an empty answer, then type 087600, an alternative phrasing, and add",
+   "Add a second correction whose question already contains the answer (e.g. '종목코드 087600은 픽셀플러스인가요?' → 픽셀플러스)",
+   "Reload the page"
+  ],
+  "expected": [
+   "Banner 'Wrong answer? Click \"Teach the right answer\" under any reply and the model learns it. No account needed.'; header item 'Teach'; basket 'Your lesson (0 of 8)' / 'No corrections yet.'; policy line 'Teaching on this node: open'; 'Train this lesson' disabled",
+   "Drawer 'Teach the right answer' with the question prefilled, 'The model said' read-only; empty answer → alert 'Please type the right answer.'",
+   "Basket shows 'Your lesson (1 of 8)' then '(2 of 8)' with question + answer per item; 'Train this lesson' enabled",
+   "After reload the basket still shows 2 corrections (localStorage key ainize.teach.basket.<stack>)"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/components/chat/TeachDrawer.tsx, LessonBasket.tsx; packages/web/src/lib/teachStore.ts",
+   "packages/web/src/i18n/pages/teach.ts chat.banner.teach, teach.drawer.*, teach.basket.*",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-103 …' (formerly titled AZ-101 in PR-6)"
+  ]
+ },
+ {
+  "id": "AZ-104",
+  "persona": "Teach mode (visitor)",
+  "title": "First train → Who gets the credit? sheet → key in localStorage → backup download → restore in a fresh browser",
+  "goal": "The first \"Train this lesson\" creates a browser teaching key, offers a backup, and the backup restores the same lessons elsewhere (spec §13.2 AZ-093, §5.6, §5.11).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A basket with at least one correction (AZ-103); no ainize.teacher.key in localStorage"
+  ],
+  "steps": [
+   "Click 'Train this lesson'",
+   "Read the sheet, type a display name, click 'Download key backup', then 'Continue'",
+   "Later, in a fresh browser: open /chat?mine=1, paste the backup JSON into 'Restore key' and click 'Use this key'"
+  ],
+  "expected": [
+   "Sheet 'Who gets the credit?' with 'Ainize never sees the private key.' and a 0x… address; localStorage.ainize.teacher.key = {address, privateKey (64 hex)} matching the displayed address",
+   "Download named ainize-teaching-key-<8hex>.json containing privateKey, address and the name; after Continue the pre-flight sheet opens and the basket reads 'Teaching as <name>'",
+   "Fresh browser: 'This browser has no teaching key yet.' → after restore 'This browser · 0x1234…abcd' and the lessons of that key are listed"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/lib/teacherKey.ts (@noble secp256k1, ain-util-compatible); packages/web/test/teacherKey.test.ts (cross-library test)",
+   "packages/web/src/components/chat/CreditSheet.tsx, MyKnowledgePanel.tsx",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-104 …' and 'AZ-104 (restore) …' (formerly AZ-102 / AZ-109)"
+  ]
+ },
+ {
+  "id": "AZ-105",
+  "persona": "Teach mode (visitor)",
+  "title": "Pre-flight: already-correct fact skipped; all-correct → \"Nothing to teach\"",
+  "goal": "Before training, the node checks each correction against the model and refuses to train what it already answers correctly (spec §13.2 AZ-094, §5.7).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "Basket with one wrong fact and one the model already knows (AZ-103)"
+  ],
+  "steps": [
+   "Continue from the credit sheet into the pre-flight",
+   "Read both rows and the quota line, click 'Queue training (1 corrections)'",
+   "Repeat with a basket containing only already-known facts"
+  ],
+  "expected": [
+   "'Checking what the model already knows'; row 1 data-status will_train 'Wrong today — will train' with 'Model said: …'; row 2 already_known 'Already correct — skipped'",
+   "Quota line 'N of <jobs_per_key_per_day> lessons left today for this key'; after queueing the URL gains ?lesson=<uuid>, the basket is empty again and ainize.teach.jobs mirrors the job id",
+   "All known → 'Nothing to teach' and no job is created (POST /api/teach/preflight trainable=0)"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/api.ts POST /api/teach/preflight (costs one chat-quota unit); packages/node/src/teach.ts preflight",
+   "packages/web/src/components/chat/PreflightList.tsx; packages/web/src/i18n/pages/teach.ts teach.preflight.*",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-105 …' (formerly AZ-103)"
+  ]
+ },
+ {
+  "id": "AZ-106",
+  "persona": "Teach mode (visitor)",
+  "title": "Job lifecycle with backend 'stub': QUEUED → TRAINING → CHECKING → READY; events kind teach; card copy per state",
+  "goal": "The lesson card follows the worker state machine and ends READY with the check lines and per-correction table (spec §13.2 AZ-095, §5.8, §8.3).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A queued lesson (AZ-105)"
+  ],
+  "steps": [
+   "Watch the lesson card at the top of the transcript (5 s polling)",
+   "When READY read the card, the check lines and the Before/After table",
+   "GET /api/teach/jobs/<id> anonymously and GET /api/events?kind=teach&limit=50"
+  ],
+  "expected": [
+   "Card 'Your lesson: …' with data-status moving QUEUED → PREFLIGHT → TRAINING → EXPORTED → CHECKING → READY (stub: seconds)",
+   "READY: 'It learned it — 2 of 2 answers correct in the live model.', 'Unrelated questions unchanged: 12/12', 'Other phrasing answered correctly: 1/1', 'Unsaved lessons are deleted after 7 days.'; buttons Try it now / Publish / Keep it private; no 'publish gated' notice",
+   "Anonymous body is {id, status, position?, eta_s?} only; teach events include 'training started (stub)' and 'READY: …' with data.job_id"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/teach.ts TeachWorker (state machine, stub backend, CHECKING gates); packages/node/test/teach.test.ts",
+   "packages/web/src/components/chat/LessonCard.tsx; teach.card.*",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-106 …' (formerly AZ-104)"
+  ]
+ },
+ {
+  "id": "AZ-107",
+  "persona": "Teach mode (visitor)",
+  "title": "Try it now on a READY lesson: /api/chat with the draft id returns before/after",
+  "goal": "The visitor can load the private draft into a live test before deciding what to do with it (spec §13.2 AZ-096).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A READY lesson owned by this browser key; runtime.available=true for the completion"
+  ],
+  "steps": [
+   "Click 'Try it now' on the card",
+   "Read the picker and header",
+   "Send the taught question in 'After only' mode",
+   "GET /api/chat/patches without the x-ngram-auth header"
+  ],
+  "expected": [
+   "URL becomes /chat/pixelplus-087600,taught-<slug>-<hex>?lesson=<id>; the draft is listed under 'Your lessons' and the header says '2 knowledges loaded together'",
+   "The reply 'After loading 2' contains 087600 (the 픽셀플러스 fixture really teaches the fact)",
+   "The draft id is NOT in the anonymous picker list (private, visibility test); it only appears in lessons[] for the owner's signed request"
+  ],
+  "priority": "P1",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/teach.ts lessonsFor(); packages/node/src/api.ts GET /api/chat/patches lessons[] (signed)",
+   "packages/web/src/pages/ChatPage.tsx (Try it now → refetch chat/patches, add draft to the route)",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-107 …' (formerly AZ-105)"
+  ]
+ },
+ {
+  "id": "AZ-108",
+  "persona": "Teach mode (visitor)",
+  "title": "Locality gate: a lesson that changes a locality prompt → publish disabled with the gated copy; save still works",
+  "goal": "A lesson with side effects on unrelated prompts can be kept privately but never published (spec §13.2 AZ-097, §12).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started (the offline stub fails the locality gate for any fact containing the marker LOCALITY_FAIL)"
+  ],
+  "steps": [
+   "Teach a fact whose answer contains 'LOCALITY_FAIL' and train it",
+   "Read the READY card",
+   "Click 'Keep it private' and download the file; then POST /api/teach/jobs/<id>/publish"
+  ],
+  "expected": [
+   "checks.locality.ok=false (same < minSame of 12), checks.ok=false; card shows the gated copy ('… cannot be published because it failed a side-effect check') with the Publish button disabled",
+   "Keep it private still works (npz link, sha256); POST …/publish → 409 checks_failed"
+  ],
+  "priority": "P1",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/src/teach.ts CHECKING (locality prompts, minSame 11/12), stubOffline LOCALITY_FAIL marker; packages/node/test/teach.test.ts 'locality gate'",
+   "packages/web/src/components/chat/LessonCard.tsx publish-gated"
+  ]
+ },
+ {
+  "id": "AZ-109",
+  "persona": "Teach mode (visitor)",
+  "title": "Keep it private: token download works, sha256 matches, recipe.json and RUN-LOCALLY.md served; link expires",
+  "goal": "A visitor takes the lesson home: 7-day token links for the file, the recipe and the run-locally guide, with the hardware notice shown before any command (spec §13.2 AZ-098, §5.10, §10).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A READY lesson owned by this browser key"
+  ],
+  "steps": [
+   "Click 'Keep it private', read the three options, pick 'Download it'",
+   "Download the .npz via the link, GET the recipe.json link, click 'RUN-LOCALLY.md'",
+   "Pick 'Run it on my machine', read the notice, toggle the commands",
+   "GET /api/teach/jobs/<id>/recipe?token=nope",
+   "Close and reopen the sheet, keep the default"
+  ],
+  "expected": [
+   "Sheet 'Keep it private' — 'Nothing is published. Pick how you want to keep it.'; default 'Keep it on this node for 7 days' with 'Not private from the operator.'",
+   "Link /p2p/blob/<sha>?token=… serves the file whose sha256 equals the displayed sha; recipe.json contains the taught prompt; RUN-LOCALLY.md starts '# Run this knowledge yourself', contains the sha, 'applied: yes' and 'ainize patch import'; size line '… MB · … memory entries · link valid for 7 days'",
+   "'There is no laptop version yet.' first; commands (containing the sha and 'patch.py apply') only after the toggle; 'Copy commands' button",
+   "401 invalid_signature for a wrong token; links stop working after 7 days (expires_at)",
+   "'Kept on this node for 7 days.'; the card stays READY"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/teach.ts save(), tokenOk(); packages/node/src/teach-recipe.ts renderRunLocally(); packages/node/src/api.ts …/recipe, …/local-run",
+   "packages/web/src/components/chat/KeepPrivateSheet.tsx",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-109 …' (formerly AZ-106)"
+  ]
+ },
+ {
+  "id": "AZ-110",
+  "persona": "Teach mode (operator)",
+  "title": "Publish (review mode): PENDING_REVIEW → operator approves on the Teaching tab → ANNOUNCED → verifiers attest → LISTED; anchor carries contributors[].sig that verifies",
+  "goal": "In review mode a published lesson waits for the operator; Approve and announce puts it on the market with the visitor as signed data provider (spec §13.2 AZ-099, §5.13, §9.2).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "Teaching tab setting 'Publish lessons' = 'Review each one' (PATCH /api/me/teach/policy publish=review)",
+   "A READY lesson published by its owner (publish-challenge → signed claim → POST …/publish → {status: PENDING_REVIEW})"
+  ],
+  "steps": [
+   "Sign in, open /dashboard?tab=teaching",
+   "Find the row in 'Lessons' (chip 'Waiting for review', badge 'N waiting for review'); click 'Decline', type a reason, 'Confirm decline' — on one lesson",
+   "On another pending lesson click 'Approve and announce'",
+   "GET /api/patches/<patch_id>; on a cluster wait for the verifier attestations"
+  ],
+  "expected": [
+   "Queue columns Lesson · Contributor · Corrections · Status · Started · Actions; the contributor name links to /teacher/<address>, the second line shows the key and IP",
+   "Declined row: chip 'Declined' + 'Declined: <reason>'; the contributor's GET /api/teach/jobs/<id> shows status REJECTED and reject_reason",
+   "Approved row: chip 'Announced' + link 'Knowledge page →'; the visitor's card flips to 'Announced — verifier nodes are checking it on the real model.' within 30 s",
+   "anchor.origin='teach', contributors[0] = {address: visitor key, name, share 0.7, role data_provider, proof signed, sig} and verifyMessage(hashCanonical({patch_sha256, benchmark_hash, address, share}), sig, address) is true; on the demo cluster node-b/c attest and the item becomes LISTED"
+  ],
+  "priority": "P0",
+  "area": "dashboard",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/components/operator/TeachingTab.tsx (data-testid teach-job / teach-approve / teach-decline / teach-decline-reason / teach-decline-confirm)",
+   "packages/node/src/api.ts POST /api/me/teach/jobs/:id/approve|reject; packages/node/src/teach.ts announceJob(), reject()",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-110 …'; packages/e2e/tests/web-teach.spec.ts 'AZ-110/111 …' (review branch approves through the API)"
+  ]
+ },
+ {
+  "id": "AZ-111",
+  "persona": "Teach mode (visitor)",
+  "title": "Publish (auto mode) on the demo cluster; \"Taught by\" chip on catalog and knowledge page",
+  "goal": "With publish=auto the signed publish announces immediately and the marketplace credits the data provider everywhere (spec §13.2 AZ-100, §5.9, §5.12).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started with publish=auto (kv override) — or the demo cluster once its config sets teach.publish: 'auto'",
+   "A READY lesson owned by this browser key"
+  ],
+  "steps": [
+   "Click 'Publish', fill name and price 0.2, read 'Shown as' and 'You receive 70% of every sale.'",
+   "Tick both consents, click Publish",
+   "Open the knowledge page, /explore, /teacher/<address> and /chat?mine=1"
+  ],
+  "expected": [
+   "Submit disabled until both consents are ticked; done state 'Announced. Independent verifier nodes are now checking it on the real model…' with a page link and an earnings link /teacher/<address>; the card reads 'Announced — verifier nodes are checking it on the real model.'",
+   "Knowledge page: badge 'Taught lesson', line 'Creator node: <node> · Data provider: <name> (70%)', button 'Use it yourself' → Buy tab; /explore item chip 'Taught by <name>' + 'Use it yourself →'; GET /api/catalog?contributor=<address> lists it",
+   "/teacher/<address> shows the address, earnings (Earned 0) and the lesson; Your knowledge lists it as 'Being verified' / 'On sale' with 'Earned 0' and the pending hint; DELETE /api/teach/jobs/<id> → 409 published_immutable"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/components/chat/PublishSheet.tsx; PatchPage.tsx / PatchListItem.tsx (detail.taught_*); TeacherPage.tsx",
+   "packages/node/src/teach.ts publish() (validateContributors, origin teach, contributorShare frozen)",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-111 …' (formerly AZ-107)"
+  ]
+ },
+ {
+  "id": "AZ-112",
+  "persona": "Teach mode (visitor)",
+  "title": "Buy a taught knowledge (local credit): settle royalty map contains the contributor; /api/teacher/:address shows earned = paid",
+  "goal": "Local-credit sales of a taught lesson credit the data provider directly through the settle record (spec §13.2 AZ-101, §7.3 pass 2, §9.3).",
+  "preconditions": [
+   "Local-ledger node with a LISTED taught lesson (contributor share 0.7) priced > 0; a buyer node with credit"
+  ],
+  "steps": [
+   "Buy the lesson (ainize use <id> or the Buy tab)",
+   "GET /api/ledger?kind=settle (newest record) and GET /api/teacher/<contributor address>"
+  ],
+  "expected": [
+   "settle.royalty contains the contributor address with 70% of the seller remainder (after the 30% lineage pool, if any); the seller keeps the rest",
+   "Teacher page: earnings.owed = earnings.paid (local-credit settles are credited by the record itself, no payouts row), sales 1, item status paid"
+  ],
+  "priority": "P1",
+  "area": "x402",
+  "automation": "api",
+  "evidence": [
+   "packages/core/src/catalog.ts royaltySplit (two-pass); packages/core/test/core.test.ts",
+   "packages/node/src/market.ts settlePayment (local-credit → creditBalance); packages/node/src/teach.ts teacherProfile()",
+   "packages/node/test/payouts.test.ts (GET /api/teacher/:address owed/paid)"
+  ]
+ },
+ {
+  "id": "AZ-113",
+  "persona": "Teach mode (operator)",
+  "title": "Buy on AIN with the transfer forced to fail: payouts row failed, contributor sees pending, operator Retry succeeds",
+  "goal": "Failed royalty transfers are recorded, retried every minute, visible to the contributor as pending and fixable from the Teaching tab (spec §13.2 AZ-102, §9.3, §5.13).",
+  "preconditions": [
+   "AIN-ledger node (dev chain) selling a taught lesson; the node wallet temporarily unable to transfer (empty balance) — never on the shared demo cluster data",
+   "Operator signed in; for the UI wiring alone any teach-mode node works (the e2e mocks one failed row)"
+  ],
+  "steps": [
+   "Buy the lesson with AIN; GET /api/me/payouts?status=failed",
+   "GET /api/teacher/<contributor> as the visitor",
+   "Open /dashboard?tab=teaching → Payouts and click 'Retry' on the row (after funding the wallet)"
+  ],
+  "expected": [
+   "A payouts row {status: failed, attempts ≥ 1, last_error} written BEFORE the transfer attempt; retried every 60 s up to 20 times; events kind payout",
+   "Teacher page shows the sale as 'pending' while retries continue ('failed — still owed by <seller>' only after 20 attempts)",
+   "Tiles Owed / Paid / Failed reflect GET /api/me/payouts.summary; a local-record node shows 'This node has no chain wallet …'; the row shows the error and 'attempts / 20'; Retry → POST /api/me/payouts/:id/retry → 'Transfer retried.' and the row becomes paid with a tx hash"
+  ],
+  "priority": "P1",
+  "area": "dashboard",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/payouts.ts (enqueue before transfer, 60 s timer, max 20 attempts, retry); packages/node/test/payouts.test.ts",
+   "packages/web/src/components/operator/TeachingTab.tsx (data-testid payouts-owed/paid/failed, payout-retry, payouts-no-wallet)",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-113 …' (mocked failed row → retry POST)"
+  ]
+ },
+ {
+  "id": "AZ-114",
+  "persona": "Teach mode (visitor)",
+  "title": "Lineage: knowledge built on a taught lesson pays the data provider their slice (pass 1b)",
+  "goal": "When someone publishes knowledge whose parent is a taught lesson, the lesson’s data provider receives their share of the lineage pool (spec §13.2 AZ-103, §7.3).",
+  "preconditions": [
+   "A taught lesson (contributor share 0.7) as parent of a newer LISTED knowledge sold for a known price"
+  ],
+  "steps": [
+   "Buy the child knowledge",
+   "Inspect settle.royalty"
+  ],
+  "expected": [
+   "Pass 1: 30% lineage pool to the parent's author (the node); pass 1b: that slice is shared 70/30 with the parent's contributor; pass 2: the child's own contributors (if any) carve the seller remainder; zero-valued lines omitted"
+  ],
+  "priority": "P1",
+  "area": "x402",
+  "automation": "api",
+  "evidence": [
+   "packages/core/src/catalog.ts royaltySplit pass 1b; packages/core/test/core.test.ts worked examples (spec §7.3)"
+  ]
+ },
+ {
+  "id": "AZ-115",
+  "persona": "Teach mode (visitor)",
+  "title": "Quotas: 4th lesson/day by the same key → 429 quota_key; different key same IP up to 5 → 429 quota_ip",
+  "goal": "Per-key and per-IP daily limits both apply and are persisted (spec §13.2 AZ-104, §12).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started with the config defaults (3 per key, 5 per IP) — or set them on the Teaching tab"
+  ],
+  "steps": [
+   "POST /api/teach/jobs four times with one key",
+   "POST with fresh keys from the same IP until refused",
+   "Read the web copy for the 429"
+  ],
+  "expected": [
+   "4th → 429 'quota_key: …'; the pre-flight quota line counts down '0 of 3 lessons left today for this key'",
+   "6th from the IP → 429 'quota_ip: …'; teach_quota rows are day buckets (survive restarts)",
+   "UI: 'You have reached today's lesson limit here. Come back tomorrow or run your own node.'"
+  ],
+  "priority": "P1",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/src/teach.ts createJob quotas; packages/node/src/store.ts teach_quota; packages/node/test/teach.test.ts 'quotas and bans'",
+   "packages/web/src/components/chat/teachUtil.ts mapTeachError (quota_key / quota_ip)"
+  ]
+ },
+ {
+  "id": "AZ-116",
+  "persona": "Teach mode (operator)",
+  "title": "Ban by address → 403 banned; hide name → \"Taught by a visitor\"",
+  "goal": "The operator can hide a contributor’s name everywhere and block a key or IP from teaching (spec §13.2 AZ-105, §5.13).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A contributor with an ANNOUNCED lesson (AZ-110/111); operator signed in"
+  ],
+  "steps": [
+   "Open /dashboard?tab=teaching → Contributors; click 'Hide name' on the contributor",
+   "Open the knowledge page as a visitor; click 'Show name' afterwards",
+   "Click 'Block key', confirm the dialog; POST /api/teach/jobs with that key",
+   "Click 'Unblock' (row or 'Blocked keys and IPs' table)"
+  ],
+  "expected": [
+   "Row gains the chip 'name hidden'; GET /api/patches/<id> no longer returns contributors[0].name; the knowledge page reads 'Data provider: Taught by a visitor', /explore 'Taught by a visitor'",
+   "After 'Show name' the name is back (ledger unchanged — only the response is redacted)",
+   "Confirm text 'Block 0x…? New lessons from it will be refused with “This node is not accepting lessons from this key.”'; row chip 'blocked', a row in 'Blocked keys and IPs'; POST → 403 'banned: …'; 'Block IP' uses the last IP seen on that key's jobs",
+   "Unblock removes the ban (GET /api/me/teach/bans) and the key can teach again"
+  ],
+  "priority": "P1",
+  "area": "dashboard",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/components/operator/TeachingTab.tsx (contrib-toggle-hidden, contrib-block-key, contrib-block-ip, contrib-unblock-key, teach-ban)",
+   "packages/node/src/api.ts /api/me/teach/contributors/:address, /api/me/teach/bans; hidden names stripped in catalog/detail/teacher",
+   "packages/e2e/tests/web-teach-operator.spec.ts 'AZ-116 …'"
+  ]
+ },
+ {
+  "id": "AZ-117",
+  "persona": "Teach mode (visitor)",
+  "title": "Trainer slot busy (pgrep returns an operator job) → job stays QUEUED with the 'fully booked' copy; frees when the job ends",
+  "goal": "Visitor lessons never compete with the operator’s own training: the worker leases the trainer slot and waits (spec §13.2 AZ-106, §8.1, §8.5).",
+  "preconditions": [
+   "Gradient backend node whose `docker exec flashtrain pgrep -f train/` finds a running operator job (or the unit test's fake exec)"
+  ],
+  "steps": [
+   "Queue a lesson",
+   "Read GET /api/teach/jobs/<id> and the card",
+   "End the operator job"
+  ],
+  "expected": [
+   "status QUEUED with blocked='slot'; card copy 'The trainer is fully booked right now — your lesson is queued…'; GET /api/teach/policy trainer='busy'",
+   "When pgrep no longer matches (and nvidia-smi shows ≥ minFreeGpuMb on GPUs 4–6) the job moves to PREFLIGHT/TRAINING; the lease dir <repo>/ple_patch/.ainize-teach.lock is released afterwards"
+  ],
+  "priority": "P1",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/src/teach.ts trainer-slot lease (mkdir lock, pgrep, nvidia-smi); packages/node/test/teach.test.ts 'slot busy → blocked=slot'",
+   "packages/web/src/i18n/pages/teach.ts teach.card.blocked"
+  ]
+ },
+ {
+  "id": "AZ-118",
+  "persona": "Teach mode (visitor)",
+  "title": "vLLM restart during CHECKING (simulated status revert) → re-apply once, reverted_and_reapplied: true",
+  "goal": "A serving-model restart in the middle of the side-effect check does not corrupt the measurement (spec §13.2 AZ-107, §8.3).",
+  "preconditions": [
+   "Unit-test harness: fake runtime whose patch.py `status` reports the lesson as not applied once after applyRaw"
+  ],
+  "steps": [
+   "Run CHECKING",
+   "Read checks"
+  ],
+  "expected": [
+   "The worker re-applies the lesson once and re-measures; checks.reverted_and_reapplied=true; the stack is restored and the operator-pinned set re-asserted in the finally block; a second revert fails the job with a clear error"
+  ],
+  "priority": "P2",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/src/teach.ts CHECKING revert check; packages/node/test/teach.test.ts 'reverted_and_reapplied'"
+  ]
+ },
+ {
+  "id": "AZ-119",
+  "persona": "Teach mode (visitor)",
+  "title": "Draft expiry after draftTtlDays → EXPIRED, files and tokens removed",
+  "goal": "Unsaved private lessons do not accumulate on the node (spec §13.2 AZ-108, §12).",
+  "preconditions": [
+   "A READY or NEEDS_MORE lesson older than draftTtlDays (unit test: clock advanced)"
+  ],
+  "steps": [
+   "Let the expiry sweep run",
+   "GET /api/teach/jobs/<id>; GET a previously issued download link"
+  ],
+  "expected": [
+   "status EXPIRED; the draft, its files and download tokens are gone (link → 401/404); the card reads the expired copy; ANNOUNCED lessons are never expired"
+  ],
+  "priority": "P2",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/src/teach.ts expiry sweep; packages/node/test/teach.test.ts 'expiry sweep'"
+  ]
+ },
+ {
+  "id": "AZ-120",
+  "persona": "Teach mode (visitor)",
+  "title": "Owner mismatch: another key reads the job → redacted body; publish → 403 not_owner",
+  "goal": "Only the teaching key that created a lesson can see or act on its contents (spec §13.2 AZ-109, §6.1).",
+  "preconditions": [
+   "Teach-mode node with `teach.enabled: true`, `backend: 'stub'` and `stubOffline: true` (dev node :3412: `node packages/cli/dist/bin.js --home ~/.ngram-teach/node-t start`, operator password teach-pass) — no GPU job is ever started",
+   "A lesson created by browser A"
+  ],
+  "steps": [
+   "In a fresh browser open /chat?lesson=<id>",
+   "With a different key: GET /api/teach/jobs/<id>, POST …/save, POST …/publish"
+  ],
+  "expected": [
+   "Card: 'This lesson belongs to a different teaching key — only its status is visible' and no question text",
+   "GET returns {id, status, position?, eta_s?}; save/publish → 403 'not_owner: …'; the web maps it to 'This lesson belongs to a different teaching key. Restore that key to manage it.'"
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/teach.ts view() (owner/operator vs stranger); packages/node/src/api.ts requireOwner",
+   "packages/e2e/tests/web-teach.spec.ts 'AZ-120 …' (formerly AZ-108)"
+  ]
+ },
+ {
+  "id": "AZ-121",
+  "persona": "Teach mode (visitor)",
+  "title": "ainize patch import of a downloaded lesson creates a DRAFT and patch apply works",
+  "goal": "A lesson taken home with \"Keep it private\" runs through the visitor’s own node (spec §13.2 AZ-110, §10 option B).",
+  "preconditions": [
+   "A downloaded lesson.npz + recipe.json (AZ-109); own node with the same model (PR-8 CLI)"
+  ],
+  "steps": [
+   "ainize patch import lesson.npz --recipe recipe.json",
+   "ainize patch apply <draft id>; ask the taught question"
+  ],
+  "expected": [
+   "A local DRAFT with the recipe's benchmark (no announce); apply loads it and the model answers the taught fact; the RUN-LOCALLY.md commands match"
+  ],
+  "priority": "P2",
+  "area": "cli",
+  "automation": "cli",
+  "evidence": [
+   "packages/node/src/teach-recipe.ts renderRunLocally() (references the command); packages/cli (PR-8: ainize patch import, ainize teach status)"
+  ]
+ },
+ {
+  "id": "AZ-122",
+  "persona": "Teach mode (visitor)",
+  "title": "AIN round-trip of an anchor with empty contributors → array restored (withEmptyArrays fix)",
+  "goal": "Anchors without contributors survive the AIN blockchain round-trip with contributors: [] instead of a missing field, and more than four contributors are refused (spec §13.2 AZ-111, §7.2).",
+  "preconditions": [
+   "AIN-ledger node on the dev chain (unit test)"
+  ],
+  "steps": [
+   "Append an anchor with contributors: [] and one with a single contributor; read them back",
+   "Append an anchor with five contributors"
+  ],
+  "expected": [
+   "contributors is [] / the one-entry array after the round-trip (withEmptyArrays); the five-entry anchor throws before it is written (MAX_CONTRIBUTORS 4)"
+  ],
+  "priority": "P2",
+  "area": "ledger",
+  "automation": "api",
+  "evidence": [
+   "packages/core/src/ain-ledger.ts withEmptyArrays, contributors cap; packages/core/test/core.test.ts / packages/node/test/ain.test.ts"
   ]
  }
 ]

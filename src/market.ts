@@ -767,8 +767,9 @@ export class Market {
   /** Operator overrides only (what `PATCH /api/me/teach/policy` wrote). */
   teachSettings(): TeachSettings { const raw = this.store.get('settings.teach'); return raw ? (JSON.parse(raw) as TeachSettings) : {}; }
   updateTeachPolicy(patch: TeachSettings): TeachSettings {
-    const next: Record<string, unknown> = { ...this.teachSettings(), ...patch };
-    for (const k of Object.keys(next)) if (next[k] === null || next[k] === undefined) delete next[k];
+    // Only keys the operator actually sent change: `undefined` = untouched, `null` = clear the override (back to config.json).
+    const next: Record<string, unknown> = { ...this.teachSettings() };
+    for (const [k, v] of Object.entries(patch)) { if (v === undefined) continue; if (v === null) delete next[k]; else next[k] = v; }
     this.store.set('settings.teach', JSON.stringify(next));
     this.log('info', 'settings', `teach policy updated: ${Object.entries(patch).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}`);
     return next as TeachSettings;

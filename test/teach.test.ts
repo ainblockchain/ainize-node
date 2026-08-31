@@ -467,7 +467,16 @@ test('quotas and bans: quota_key / quota_ip → 429, banned key → 403, ban rem
   const fresh = createIdentity();
   const q2 = await createJob([{ prompt: 'Q2 Quota', answer: 'Quota' }], {}, fresh);
   assert.equal(q2.status, 429); assert.match(q2.json.error!, /^quota_ip/);
-  await api('PATCH', '/api/me/teach/policy', { jobs_per_ip_per_day: 100 }, op());
+  const after = await api('PATCH', '/api/me/teach/policy', { jobs_per_ip_per_day: 100 }, op());
+  // a partial PATCH keeps the other overrides (PR-7 fix: undefined keys used to wipe them); null clears one
+  assert.deepEqual((after.json.policy as Record<string, unknown>).jobsPerKeyPerDay, 50);
+  assert.equal((after.json.effective as Record<string, unknown>).jobsPerIpPerDay, 100);
+  const cleared = await api('PATCH', '/api/me/teach/policy', { paused_reason: 'maintenance' }, op());
+  assert.equal((cleared.json.policy as Record<string, unknown>).pausedReason, 'maintenance');
+  assert.equal((cleared.json.policy as Record<string, unknown>).jobsPerKeyPerDay, 50);
+  const uncleared = await api('PATCH', '/api/me/teach/policy', { paused_reason: null }, op());
+  assert.equal((uncleared.json.policy as Record<string, unknown>).pausedReason, undefined);
+  assert.equal((uncleared.json.policy as Record<string, unknown>).jobsPerKeyPerDay, 50);
   const ban = await api('POST', '/api/me/teach/bans', { kind: 'address', value: teacher.address, reason: 'test' }, op());
   assert.equal(ban.status, 200);
   const b = await createJob([{ prompt: 'Q2 Banned', answer: 'Banned' }]);
