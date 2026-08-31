@@ -1,0 +1,45 @@
+{
+  "name": "@ngram/node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "ngram-node": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/bin.ts",
+    "start": "node dist/bin.js",
+    "seed": "tsx src/seed.ts",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "dependencies": {
+    "@ngram/core": "0.1.0",
+    "aindrive": "^0.2.4",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1",
+    "multer": "^2.3.0",
+    "zod": "^4.5.4",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@types/compression": "^1.8.1",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^24.10.0",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.13"
+  }
+}
