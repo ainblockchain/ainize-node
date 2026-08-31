@@ -14,6 +14,7 @@ HOME_DIR="${NGRAM_CLUSTER_HOME:-$DEFAULT_HOME}"
 PORT_BASE="${NGRAM_PORT_BASE:-3402}"
 export PATH="$HOME/.local/node/bin:$PATH"
 owns_home() {   # $1 = pid — true when the process belongs to the cluster rooted at HOME_DIR
+  [[ -r "/proc/$1/environ" ]] || return 1   # not our process (e.g. another user's node) → never signalled
   local env; env=$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null) || return 1
   local h; h=$(printf '%s\n' "$env" | sed -n 's/^NGRAM_HOME=//p' | head -1)
   if [[ -n "$h" ]]; then [[ "$h" == "$HOME_DIR"/* ]]; return; fi
