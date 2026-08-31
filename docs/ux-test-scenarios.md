@@ -3755,3 +3755,74 @@ This document lists 100 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/pages/PatchPage.tsx Integrity section CopyButton`
 - `packages/web/src/pages/SigningPage.tsx NodeBox CopyButton (op.address)`
 
+## Teach mode (spec §13.2; the spec numbers these AZ-090+, which collides with the existing AZ-090…AZ-100, so they are filed as TM-0xx with the spec's number kept)
+
+### TM-090 - Load up to three knowledges together in one live test, see the overlap warning, and meter one usage event per knowledge
+
+**Goal:** A visitor can tick several knowledges (max 3) in the Live test picker; they load in tick order (the last one wins on overlapping memory entries), the picker warns about the overlap, and the node bills one usage event per knowledge.
+
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- A teach-mode node (this branch) whose GET /api/chat/patches lists at least two knowledges that share memory entries (`overlaps[]` non-empty; on the demo data `krx-all-2761` ∩ `pixelplus-087600` = 2,170 rows) and `runtime.available=true`
+- Caller is NOT signed in as operator (visitor quota applies)
+- Note the newest usage event: GET /api/events?kind=usage&limit=1
+
+**Steps**
+
+1. Open `/chat`. The picker is titled "Knowledge to load (pick up to 3)" with the help line "They load in the order you tick them. If two overlap, the one ticked last wins."
+2. Tick `KRX ticker codes for 2,761 listed companies (final)` then `Pixelplus ticker code (single fact)`; observe the order badges (1, 2), the counter "2/3 selected" and the address bar (`/chat/krx-all-2761,pixelplus-087600`)
+3. Tick a third knowledge, then hover a fourth: the remaining checkboxes are disabled with the tooltip "Up to 3 — untick one first."
+4. Untick the third one, send the sample question `픽셀플러스 종목코드 알려줘. 숫자만.` in Compare mode
+5. `curl -s -X POST <node>/api/chat -H 'content-type: application/json' -d '{"patch_ids":["krx-all-2761","pixelplus-087600"],"mode":"compare","messages":[{"role":"user","content":"종목코드 픽셀플러스 "}],"max_tokens":16}'`
+6. GET /api/events?kind=usage&limit=2
+7. `curl -s -X POST <node>/api/chat -H 'content-type: application/json' -d '{"patch_id":"krx-all-2761","patch_ids":["pixelplus-087600"],"mode":"base","messages":[{"role":"user","content":"x"}]}'` and the same with four ids in `patch_ids`
+
+**Expected**
+
+- Step 2: an info alert "KRX ticker codes … and Pixelplus ticker code … overlap on 2,170 memory entries — Pixelplus ticker code …, ticked last, wins." (`chat.picker.overlap_pair`); both rows show "Loads 1." / "Loads 2."; the transcript header reads "2 knowledges loaded together" with the two names numbered
+- Step 4: the "After loading 2" bubble lists both knowledges with their load times ("krx-all-2761: loaded in …", "pixelplus-087600: loaded in …") and the per-knowledge ✓/✗ chips; the answer contains 087600
+- Step 5: HTTP 200 with `patch_id='krx-all-2761'`, `patch_ids=['krx-all-2761','pixelplus-087600']`, `applied=[{patch_id,applied_ms,was_applied}×2]`, `applied_ms` = the sum, `benchmark_hits` keyed by both ids, `benchmark_hit` = OR of them, `base`/`patched` as before; the lock label seen by other clients during the call is `chat:krx-all-2761+pixelplus-087600`
+- Step 6: two new usage events, one per patch_id, each with `data.patch_ids` = both ids and `data.position` 1/2; the node's shared table is back to its previous state afterwards (GET /api/runtime `applied` unchanged)
+- Step 7: HTTP 400 for both (exactly one of `patch_id` / `patch_ids`; at most 3 ids)
+
+**Evidence**
+
+- `packages/node/src/market.ts chat() (patchIds[], exclusive('chat:<id1>+<id2>'), applyRaw in list order, restore in reverse, one usage event per patch), chatOverlaps()`
+- `packages/node/src/api.ts POST /api/chat (patch_id | patch_ids refine), GET /api/chat/patches (applied[], overlaps[])`
+- `packages/web/src/components/chat/KnowledgePicker.tsx (checkboxes, order badges, overlap alert data-testid=chat-overlap)`
+- `packages/web/src/i18n/pages/chat.ts chat.picker.multi_title, chat.picker.multi_help, chat.picker.overlap_pair, chat.picker.max, chat.head.multi, chat.bubble.patched_multi`
+- `packages/cli/src/commands/chat.ts parsePatchIds(), renderChat() (per-knowledge load order and markers); ainize chat --patch a,b`
+
+### TM-091 - Show the contamination banner when the operator keeps knowledge loaded for everyone
+
+**Goal:** A visitor understands that "Before loading" is not the pristine base model when the operator has pinned knowledge into the serving model.
+
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- Teach-mode node with `runtime.available=true`; operator credentials for it
+- GET /api/chat/patches returns `applied: []`
+
+**Steps**
+
+1. Open `/chat` as a visitor: no orange banner above the list
+2. As operator: `POST /api/patches/pixelplus-087600/apply` (or Manage → Load into model)
+3. Reload `/chat` as a visitor (or wait for the 20 s poll)
+4. Tick `Pixelplus ticker code (single fact)` and send `픽셀플러스 종목코드 알려줘. 숫자만.` in Compare mode
+5. As operator: `POST /api/patches/pixelplus-087600/remove`
+
+**Expected**
+
+- Step 2: GET /api/chat/patches → `applied: ['pixelplus-087600']`
+- Step 3: warning banner "This node also has Pixelplus ticker code (single fact) loaded for everyone, so "Before loading" already includes it." (`chat.picker.contaminated`, data-testid=chat-contaminated) and an "Always loaded" chip on that row
+- Step 4: the response has `applied[0].was_applied=true`; in Compare mode the node still removes it for the "Before" answer and puts it back afterwards (GET /api/runtime `applied` still lists it); the bubble shows "was already loaded" when the After answer needed no re-load (After-only mode)
+- Step 5: the banner disappears on the next poll
+
+**Evidence**
+
+- `packages/node/src/market.ts pinnedPatchIds(); chat() restore step re-asserts pinned knowledge after an overlapping removal`
+- `packages/web/src/components/chat/KnowledgePicker.tsx (applied → Alert $tone=warning, Pinned chip)`
+- `packages/web/src/i18n/pages/chat.ts chat.picker.contaminated, chat.picker.always_loaded, chat.bubble.already_applied`

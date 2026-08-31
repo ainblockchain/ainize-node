@@ -12,10 +12,10 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, sha256Hex, verifyPassword, hashPassword, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
-  type LedgerRecord, type PatchAnchor,
+  type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
-import type { Market } from './market.js';
+import { MAX_CHAT_PATCHES, type Market } from './market.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
@@ -267,18 +267,28 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   // ------------------------------------------------------------ ChatMode (live test)
-  router.get('/api/chat/patches', wrap(async () => ({ items: await market.testablePatches(), runtime: await market.runtime.status(), lock: market.runtime.lockHolder() })));
+  router.get('/api/chat/patches', wrap(async (req) => {
+    const items = await market.testablePatches();
+    // `lessons`: the caller's private drafts (teach mode) — the shape is fixed here; PR-5 fills it from teach jobs.
+    const teacher = verifyAuthHeader(req.header('x-ngram-auth'), 'teach');
+    return {
+      items, runtime: await market.runtime.status(), lock: market.runtime.lockHolder(),
+      applied: market.pinnedPatchIds(), overlaps: market.chatOverlaps(items),
+      ...(teacher ? { lessons: [] as CatalogEntry[], teacher } : {}),
+    };
+  }));
   router.post('/api/chat', wrap(async (req) => {
     const body = z.object({
-      patch_id: z.string(), mode: z.enum(['base', 'patched', 'compare']).default('compare'),
+      patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).min(1).max(MAX_CHAT_PATCHES).optional(),
+      mode: z.enum(['base', 'patched', 'compare']).default('compare'),
       messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
       max_tokens: z.coerce.number().min(1).max(1024).default(200), thinking: z.boolean().default(false),
-    }).parse(req.body);
+    }).refine((b) => (b.patch_id ? 1 : 0) + (b.patch_ids ? 1 : 0) === 1, { message: 'exactly one of patch_id / patch_ids is required', path: ['patch_ids'] }).parse(req.body);
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
     if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
-    const out = await market.chat({ ...body, patchId: body.patch_id, visitor });
+    const out = await market.chat({ ...body, patchIds: body.patch_ids ?? [body.patch_id!], visitor });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
   }));

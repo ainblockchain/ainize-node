@@ -41,6 +41,8 @@ export interface CreateDraftInput {
   origin?: PatchOrigin;
 }
 
+/** Maximum number of knowledges one live test may load together (spec §6.3). */
+export const MAX_CHAT_PATCHES = 3;
 export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
 
 export interface PurchaseResult {
@@ -516,48 +518,96 @@ export class Market {
   }
 
   /**
-   * Live test: answer `messages` with the base model and/or with `patchId` applied. Runs under the shared
-   * runtime lock: [ensure removed → base answer] → [apply → patched answer] → restore the previous state.
-   * Every patched answer is metered as a `hit` usage event (청구항 12 적중당 과금의 계량 단위).
+   * Live test: answer `messages` with the base model and/or with `patchIds` (1..3) applied. Runs under ONE shared
+   * runtime lock (`chat:<id1>+<id2>`): [remove the already-applied ones → base answer] → [applyRaw in list order, so
+   * the last one wins on overlapping addresses → patched answer] → restore in reverse (remove what we added, re-apply
+   * what we removed). Every patched answer is metered as one `usage` event PER PATCH (청구항 12 적중당 과금의 계량 단위).
    */
-  async chat(opts: { patchId: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string }): Promise<{
-    patch_id: string; mode: string; base: ChatResult | null; patched: ChatResult | null; applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit?: boolean | null;
+  async chat(opts: { patchIds?: string[]; patchId?: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string }): Promise<{
+    patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
+    applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
+    applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; benchmark_hits: Record<string, boolean | null>;
   }> {
-    const entry = await this.entry(opts.patchId);
-    if (!entry) throw new Error('patch not found');
-    const blob = this.blobs.get(entry.anchor.patch_sha256);
-    if (!blob) throw new Error('this node does not hold the patch body — buy it first (or test it on the seller node)');
+    const ids = [...new Set((opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean))];
+    if (ids.length === 0) throw new Error('patch_id or patch_ids required');
+    if (ids.length > MAX_CHAT_PATCHES) throw new Error(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together`);
     const st = await this.runtime.status();
     if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
-    if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new Error(`patch targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+    const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
+    for (const id of ids) {
+      const entry = await this.entry(id);
+      if (!entry) throw new Error(`patch not found: ${id}`);
+      const blob = this.blobs.get(entry.anchor.patch_sha256);
+      if (!blob) throw new Error(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
+      if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new Error(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+      targets.push({ id, entry, path: blob.path });
+    }
     const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
-    return this.runtime.exclusive(`chat:${opts.patchId}`, async () => {
+    const label = `chat:${ids.join('+')}`;
+    return this.runtime.exclusive(label, async () => {
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
-      const wasApplied = (await this.runtime.isApplied(blob.path)) === true;
-      let base: ChatResult | null = null; let patched: ChatResult | null = null; let appliedMs: number | null = null;
+      const wasApplied: boolean[] = [];
+      for (const t of targets) wasApplied.push((await this.runtime.isApplied(t.path)) === true);
+      const appliedMs: (number | null)[] = targets.map(() => null);
+      let base: ChatResult | null = null; let patched: ChatResult | null = null;
+      // `loaded[i]` tracks what is on the shared table right now so the restore step knows what to undo.
+      const loaded = [...wasApplied];
       try {
         if (opts.mode === 'base' || opts.mode === 'compare') {
-          if (wasApplied) { const r = await this.runtime.removeRaw(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); }
+          for (let i = targets.length - 1; i >= 0; i--) {
+            if (!loaded[i]) continue;
+            const r = await this.runtime.removeRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
+            loaded[i] = false;
+          }
           base = await this.runtime.chat(msgs, chatOpts);
         }
         if (opts.mode === 'patched' || opts.mode === 'compare') {
-          if (!wasApplied || opts.mode === 'compare') {
-            const t0 = Date.now(); const r = await this.runtime.applyRaw(blob.path); if (r.code !== 0) throw new Error(r.err || r.out); appliedMs = Date.now() - t0;
+          // Apply everything in list order unless every patch is already on the table (single-patch fast path kept):
+          // a partial re-apply could not guarantee "last one wins" on overlapping addresses.
+          if (loaded.some((x) => !x)) {
+            for (let i = 0; i < targets.length; i++) {
+              const t0 = Date.now(); const r = await this.runtime.applyRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
+              appliedMs[i] = Date.now() - t0; loaded[i] = true;
+            }
           }
           patched = await this.runtime.chat(msgs, chatOpts);
         }
       } finally {
-        // always leave the shared table the way we found it
-        const nowApplied = opts.mode === 'base' ? (wasApplied ? false : false) : true;
-        if (wasApplied && !nowApplied) await this.runtime.applyRaw(blob.path).catch((e) => this.log('error', 'runtime', `restore (re-apply) failed after live test: ${(e as Error).message}`, opts.patchId));
-        if (!wasApplied && nowApplied) await this.runtime.removeRaw(blob.path).catch((e) => this.log('error', 'runtime', `restore (remove) failed after live test: ${(e as Error).message}`, opts.patchId));
+        // Always leave the shared table the way we found it: drop what we added (reverse order), then put back what
+        // we removed — and re-assert the operator-pinned ones in list order when an overlapping removal may have
+        // reverted some of their rows.
+        let touched = false;
+        for (let i = targets.length - 1; i >= 0; i--) {
+          if (!loaded[i] || wasApplied[i]) continue;
+          touched = true;
+          await this.runtime.removeRaw(targets[i].path).catch((e) => this.log('error', 'runtime', `restore (remove) failed after live test: ${(e as Error).message}`, targets[i].id));
+          loaded[i] = false;
+        }
+        for (let i = 0; i < targets.length; i++) {
+          if (!wasApplied[i] || (loaded[i] && !touched)) continue;
+          await this.runtime.applyRaw(targets[i].path).catch((e) => this.log('error', 'runtime', `restore (re-apply) failed after live test: ${(e as Error).message}`, targets[i].id));
+          loaded[i] = true;
+        }
       }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
-      const sample = entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));
-      const hit = sample && patched ? patched.content.replace(/\s/g, '').includes(sample.expect) : null;
-      this.log('info', 'usage', `live test ${opts.patchId} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, opts.patchId, { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs });
-      return { patch_id: opts.patchId, mode: opts.mode, base, patched, applied_ms: appliedMs, was_applied: wasApplied, model: st.model, benchmark_hit: hit };
+      const hits: Record<string, boolean | null> = {};
+      const applied = targets.map((t, i) => ({ patch_id: t.id, applied_ms: appliedMs[i], was_applied: wasApplied[i] }));
+      for (const [i, t] of targets.entries()) {
+        const sample = t.entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));
+        const hit = sample && patched ? patched.content.replace(/\s/g, '').includes(sample.expect) : null;
+        hits[t.id] = hit;
+        this.log('info', 'usage', `live test ${t.id}${ids.length > 1 ? ` [+${ids.length - 1}]` : ''} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, t.id,
+          { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1 });
+      }
+      const sum = appliedMs.filter((x): x is number => x !== null);
+      const anyHit = Object.values(hits);
+      return {
+        patch_id: ids[0], patch_ids: ids, mode: opts.mode, base, patched,
+        applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0], model: st.model,
+        benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
+        applied, benchmark_hits: hits,
+      };
     });
   }
 
@@ -566,6 +616,24 @@ export class Market {
     const st = await this.runtime.status();
     return (await this.catalog()).filter((e) => e.status !== 'DRAFT' && this.blobs.has(e.anchor.patch_sha256) && (!st.model || e.anchor.model.id_M.startsWith(st.model)));
   }
+
+  /** Pairwise memory-entry overlap among the given entries (picker warning: "these two overlap on n entries"). */
+  chatOverlaps(entries: CatalogEntry[]): { a: string; b: string; rows: number }[] {
+    const sets = entries.map((e) => ({ id: e.anchor.id, set: this.blobs.addrSet(e.anchor.patch_sha256) }));
+    const out: { a: string; b: string; rows: number }[] = [];
+    for (let i = 0; i < sets.length; i++) {
+      if (!sets[i].set) continue;
+      for (let j = i + 1; j < sets.length; j++) {
+        if (!sets[j].set) continue;
+        const n = intersectionCount(sets[i].set!, sets[j].set!);
+        if (n > 0) out.push({ a: sets[i].id, b: sets[j].id, rows: n });
+      }
+    }
+    return out.sort((x, y) => y.rows - x.rows);
+  }
+
+  /** Ids the operator keeps loaded in the serving model (they colour the "before" answer of every live test). */
+  pinnedPatchIds(): string[] { return this.store.listApplied().map((a) => a.patch_id); }
 
   // ------------------------------------------------------------------ branches / network
   async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
