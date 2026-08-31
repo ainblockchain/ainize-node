@@ -590,13 +590,18 @@ export class Market {
     const ids = [...new Set((opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean))];
     if (ids.length === 0) throw new ValidationError('patch_id or patch_ids required');
     if (ids.length > MAX_CHAT_PATCHES) throw new ValidationError(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together`);
+    // Visibility first: a private draft is invisible to everyone but its owner / the operator (same 404 as
+    // GET /api/patches/:id) whatever the runtime state — a non-owner must not learn anything from the error shape.
+    const entries: { id: string; entry: CatalogEntry }[] = [];
+    for (const id of ids) {
+      const entry = await this.entry(id);
+      if (!entry || !this.mayUseEntry(entry, opts.caller)) throw new NotFoundError(`patch not found: ${id}`);
+      entries.push({ id, entry });
+    }
     const st = await this.runtime.status();
     if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
     const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
-    for (const id of ids) {
-      const entry = await this.entry(id);
-      // a private draft is invisible to everyone but its owner / the operator (same answer as GET /api/patches/:id)
-      if (!entry || !this.mayUseEntry(entry, opts.caller)) throw new NotFoundError(`patch not found: ${id}`);
+    for (const { id, entry } of entries) {
       const blob = this.blobs.get(entry.anchor.patch_sha256);
       if (!blob) throw new ValidationError(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
       if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new ValidationError(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
