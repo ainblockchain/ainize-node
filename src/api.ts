@@ -90,6 +90,7 @@ export function buildApi(deps: ApiDeps): Router {
     node: await (async () => { await market.catalog(); return market.selfInfo(); })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
+    accepts_contributions: market.acceptsContributions(), contributor_share: market.teach().contributorShare,
     counts: (() => { const c = market.catalogSync(); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
   })));
 
@@ -97,7 +98,8 @@ export function buildApi(deps: ApiDeps): Router {
     const q = z.object({
       sort: z.enum(['latest', 'popular', 'price', 'rows']).default('latest'),
       status: z.string().optional(), model: z.string().optional(), schema: z.string().optional(), branch: z.string().optional(),
-      author: z.string().optional(), q: z.string().optional(), limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
+      author: z.string().optional(), contributor: z.string().optional(), origin: z.enum(['operator', 'teach']).optional(), q: z.string().optional(),
+      limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
       include_drafts: z.coerce.boolean().default(false),
     }).parse(req.query);
     let items = await market.catalog();
@@ -106,6 +108,8 @@ export function buildApi(deps: ApiDeps): Router {
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
     if (q.schema) items = items.filter((e) => e.anchor.benchmark.schema === q.schema);
     if (q.author) items = items.filter((e) => e.anchor.author === q.author);
+    if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => x.address.toLowerCase() === c)); }
+    if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
     if (q.branch) { const b = (await market.branches()).find((x) => x.name === q.branch); items = items.filter((e) => b?.patch_ids.includes(e.anchor.id)); }
     if (q.q) { const s = q.q.toLowerCase(); items = items.filter((e) => [e.anchor.id, e.anchor.name, e.anchor.description, e.anchor.model.id_M, e.anchor.benchmark.schema].join(' ').toLowerCase().includes(s)); }
     const sorters = {
@@ -206,6 +210,7 @@ export function buildApi(deps: ApiDeps): Router {
       parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
       branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
       visibility: z.enum(['public', 'test']).optional(),
+      contributors: z.string().transform((s) => JSON.parse(s)).or(z.array(z.object({}).passthrough())).optional(),
     }).parse(req.body);
     const file = req.file?.path ?? body.path;
     if (!file) throw bad('upload a .npz file or give a local `path`');
@@ -213,11 +218,19 @@ export function buildApi(deps: ApiDeps): Router {
     const anchor = await market.createDraft({
       id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
       price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
-      file, keepInPlace: !req.file, visibility: body.visibility,
+      file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never,
     });
     return { anchor };
   }));
-  router.patch('/api/patches/:id', requireOperator, wrap(async (req) => ({ anchor: market.updateDraft(req.params.id as string, req.body) })));
+  router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
+    const patch = z.object({
+      name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().optional(), branch: z.string().optional(),
+      benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(),
+      topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
+      contributors: z.array(z.object({}).passthrough()).nullable().optional(),
+    }).parse(req.body ?? {});
+    return { anchor: market.updateDraft(req.params.id as string, { ...patch, contributors: patch.contributors ?? undefined } as never) };
+  }));
   router.delete('/api/patches/:id', requireOperator, wrap(async (req) => { market.deleteDraft(req.params.id as string); return { ok: true }; }));
   router.post('/api/patches/:id/announce', requireOperator, wrap(async (req) => ({ record: await market.announce(req.params.id as string) })));
   router.post('/api/patches/:id/verify', requireOperator, wrap(async (req) => {

@@ -126,3 +126,45 @@ test('public API surface', async () => {
   const graph = await (await fetch(`${A.url}/api/ledger/graph`)).json() as { edges: { type: string }[] };
   assert.ok(graph.edges.some((e) => e.type === 'extends'));
 });
+
+test('teach PR-1: contributors on a draft, catalog filters, /api/info fields, data provider paid from the seller remainder', async () => {
+  const { synthPatch } = await import('../src/seed.js');
+  const TEACHER = '0x' + 'ab'.repeat(20);
+  const file = synthPatch(join(tmp, 'synth'), 'lesson', 777, 64);
+  const bench = { schema: 'taught/lesson-abc123', queries: 1, format: ['template'] };
+  await assert.rejects(A.market.createDraft({ name: 'bad-shares', model: { id_M: 'M' }, benchmark: bench, file, keepInPlace: true, contributors: [
+    { address: TEACHER, share: 0.6, role: 'data_provider', proof: 'declared' }, { address: '0x' + 'cd'.repeat(20), share: 0.5, role: 'data_provider', proof: 'declared' },
+  ] }), /more than 1/);
+  const anchor = await A.market.createDraft({ id: 'taught-lesson', name: 'Taught lesson', model: { id_M: 'M' }, benchmark: bench, price: '10', file, keepInPlace: true,
+    origin: 'teach', contributors: [{ address: TEACHER, share: 0.7, role: 'data_provider', proof: 'declared', name: 'Visitor' }] });
+  assert.equal(anchor.origin, 'teach');
+  assert.equal(anchor.contributors?.[0].share, 0.7);
+  const updated = A.market.updateDraft('taught-lesson', { contributors: [{ ...anchor.contributors![0], name: 'Kim' }], visibility: 'public' });
+  assert.equal(updated.contributors?.[0].name, 'Kim');
+  assert.throws(() => A.market.updateDraft('taught-lesson', { contributors: Array.from({ length: 5 }, (_, i) => ({ address: '0x' + String(i).repeat(40), share: 0.1, role: 'data_provider' as const, proof: 'declared' as const })) }), /at most 4/);
+  await A.market.announce('taught-lesson');
+
+  const info = await (await fetch(`${A.url}/api/info`)).json() as { accepts_contributions: boolean; contributor_share: number; royalty_share: number };
+  assert.equal(info.accepts_contributions, false, 'teach.enabled defaults to false');
+  assert.equal(info.contributor_share, 0.7);
+  assert.equal(info.royalty_share, 0.3);
+  const byC = await (await fetch(`${A.url}/api/catalog?contributor=${TEACHER.toUpperCase().replace('0X', '0x')}`)).json() as { total: number; items: { anchor: { id: string; contributors?: { name: string }[] } }[] };
+  assert.equal(byC.total, 1);
+  assert.equal(byC.items[0].anchor.id, 'taught-lesson');
+  assert.equal(byC.items[0].anchor.contributors?.[0].name, 'Kim');
+  assert.equal(((await (await fetch(`${A.url}/api/catalog?origin=teach`)).json()) as { total: number }).total, 1);
+  assert.equal(((await (await fetch(`${A.url}/api/catalog?contributor=0x${'00'.repeat(20)}`)).json()) as { total: number }).total, 0);
+  const docs = await (await fetch(`${A.url}/api/openapi.json`)).json() as { components: { schemas: Record<string, unknown> }; paths: Record<string, { get?: { parameters?: { name: string }[] } }> };
+  assert.ok(docs.components.schemas.Contributor);
+  assert.ok(docs.paths['/api/catalog'].get?.parameters?.some((p) => p.name === 'contributor'));
+
+  // no benchmark samples → hash-only attestations list it; C buys → the settle record pays the data provider (no settlement code change)
+  await waitFor(() => C.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'taught-lesson')?.quorum_ok === true, 30000);
+  const before = await A.market.creditBalance(TEACHER);
+  await C.market.buy('taught-lesson');
+  const setts = await A.ledger.settlements('taught-lesson');
+  assert.equal(setts.length, 1);
+  assert.deepEqual(setts[0].body.royalty, { [TEACHER]: '7', [A.cfg.identity.address]: '3' });
+  const after = await waitFor(() => A.market.creditBalance(TEACHER), (b) => b > before, 10000);
+  assert.equal(Math.round((after - before) * 1000) / 1000, 7);
+});

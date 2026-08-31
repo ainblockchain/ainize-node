@@ -7,11 +7,11 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, canonicalJson, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sha256Hex, signMessage, verifyMessage,
+  AinLedger, canonicalJson, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sha256Hex, signMessage, teachConfig, validateContributors, verifyMessage,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
-  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Ledger, type LedgerRecord,
-  type NodeConfig, type PatchAnchor, type PatchManifest, type PeerInfo, type Settlement, type X402Payload, type X402Requirement,
+  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
+  type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type X402Payload, type X402Requirement,
   type SubscriptionRecord, type SupersedeRecord,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
@@ -35,6 +35,10 @@ export interface CreateDraftInput {
   file: string;              // local path to .npz (copied into blob store unless `keepInPlace`)
   keepInPlace?: boolean;
   visibility?: 'public' | 'test';
+  /** Data providers credited on the anchor (teach mode) — validated: ≤ 4, Σ share ≤ 1. */
+  contributors?: Contributor[];
+  /** 'teach' for visitor-taught knowledge; omitted for operator-registered drafts. */
+  origin?: PatchOrigin;
 }
 
 export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
@@ -152,16 +156,25 @@ export class Market {
       branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
     };
+    const contributors = validateContributors(input.contributors);
+    if (contributors.length) anchor.contributors = contributors;
+    if (input.origin) anchor.origin = input.origin;
     this.store.putDraft(anchor, blob.path);
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
     return anchor;
   }
 
-  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path'>>): PatchAnchor {
+  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility'>>): PatchAnchor {
     const d = this.store.getDraft(id);
     if (!d) throw new Error('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
+    if ('contributors' in patch) {
+      const contributors = validateContributors(patch.contributors);
+      if (contributors.length) anchor.contributors = contributors; else delete anchor.contributors;
+    }
+    if ('origin' in patch && patch.origin !== undefined && patch.origin !== 'operator' && patch.origin !== 'teach') throw new Error('origin must be "operator" or "teach"');
+    if ('visibility' in patch && patch.visibility !== undefined && patch.visibility !== 'public' && patch.visibility !== 'test') throw new Error('visibility must be "public" or "test"');
     if (patch.benchmark) anchor.benchmark_hash = hashCanonical({ schema: anchor.benchmark.schema, queries: anchor.benchmark.queries, format: anchor.benchmark.format, collateral_bound_nat: anchor.benchmark.collateral_bound_nat, samples: anchor.benchmark.samples ?? [] });
     this.store.putDraft(anchor, d.file_path);
     this.invalidate();
@@ -654,6 +667,12 @@ export class Market {
     const rec = await this.ledger.append('node', info);
     await this.p2p?.broadcast(rec).catch(() => undefined);
   }
+
+  // ------------------------------------------------------------------ teach mode (config; worker lands in PR-5)
+  /** Effective teach config (config.json `teach` merged over the defaults). */
+  teach() { return teachConfig(this.cfg); }
+  /** Whether visitors may publish taught knowledge through this node as data providers. */
+  acceptsContributions(): boolean { const t = this.teach(); return t.enabled && t.publish !== 'never'; }
 
   // ------------------------------------------------------------------ operator settings (persisted)
   settings(): { notifications: 'all' | 'sales' | 'none'; display_name: string; payout_address: string } {
