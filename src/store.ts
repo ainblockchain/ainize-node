@@ -21,11 +21,14 @@ export interface TeachJobRow {
   draft_id: string | null; patch_id: string | null; publish_status: string; reject_reason: string | null; parent_job: string | null;
   result: { sha256: string; rows: number; size_bytes: number } | null; blocked: string | null; name: string | null;
   created_at: number; started_at: number | null; finished_at: number | null; updated_at: number; expires_at: number | null; cancel_requested: boolean;
+  /** true while the lesson npz is (or may still be) applied to the shared serving model (set before applyRaw in CHECKING, cleared after removeRaw). */
+  lesson_applied: boolean;
 }
 export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string }
 export interface ContributorRow { address: string; name: string | null; payout_address: string | null; first_seen: number; last_seen: number; jobs: number; published: number; hidden: boolean; note: string | null }
 export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; reason: string | null; ts: number }
-export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
+/** `paying` = a transfer is in flight right now (claimed atomically by the payout runner); a row found `paying` at boot was interrupted mid-transfer. */
+export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
 
 export class Store {
   private db: DatabaseSync;
@@ -64,6 +67,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_payouts_settle ON payouts(settle_hash);
       CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
     `);
+    // additive migrations (SQLite has no ADD COLUMN IF NOT EXISTS)
+    const cols = new Set((this.db.prepare('PRAGMA table_info(teach_jobs)').all() as { name: string }[]).map((c) => c.name));
+    if (!cols.has('lesson_applied')) this.db.exec('ALTER TABLE teach_jobs ADD COLUMN lesson_applied INTEGER NOT NULL DEFAULT 0');
   }
 
   private closed = false;
@@ -209,10 +215,10 @@ export class Store {
       draft_id: (r.draft_id as string) ?? null, patch_id: (r.patch_id as string) ?? null, publish_status: (r.publish_status as string) ?? 'none', reject_reason: (r.reject_reason as string) ?? null,
       parent_job: (r.parent_job as string) ?? null, result: j(r.result), blocked: (r.blocked as string) ?? null, name: (r.name as string) ?? null,
       created_at: r.created_at as number, started_at: (r.started_at as number) ?? null, finished_at: (r.finished_at as number) ?? null, updated_at: r.updated_at as number,
-      expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested,
+      expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested, lesson_applied: !!r.lesson_applied,
     };
   }
-  insertTeachJob(j: Omit<TeachJobRow, 'updated_at'>) {
+  insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied'>) {
     this.db.prepare(`INSERT INTO teach_jobs (id, contributor, contributor_name, ip, status, context, builds_on, facts, job_dir, npz_path, sha256, progress, checks, error, container_pid,
       draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -320,6 +326,14 @@ export class Store {
     const r = this.db.prepare('SELECT * FROM payouts WHERE settle_hash = ? AND lower(address) = ?').get(settleHash, address.toLowerCase()) as Record<string, unknown> | undefined;
     return r ? this.rowToPayout(r) : null;
   }
+  /**
+   * Atomically claim a row for one transfer attempt: pending|failed → paying, attempts + 1. Returns false when another
+   * attempt already holds it (or it is paid) — the caller must then NOT transfer. This is the double-payment guard.
+   */
+  claimPayout(id: number): boolean {
+    const r = this.db.prepare("UPDATE payouts SET status = 'paying', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status IN ('pending', 'failed')").run(Date.now(), id);
+    return Number(r.changes) === 1;
+  }
   updatePayout(id: number, patch: Partial<Pick<PayoutRow, 'status' | 'tx_hash' | 'attempts' | 'last_error'>>): PayoutRow {
     const cur = this.getPayout(id);
     if (!cur) throw new Error(`payout ${id} not found`);
@@ -336,10 +350,12 @@ export class Store {
     const rows = this.db.prepare(`SELECT * FROM payouts ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args, Math.min(Math.max(1, Number(opts.limit ?? 1000)), 5000)) as Record<string, unknown>[];
     return rows.map((r) => this.rowToPayout(r));
   }
+  /** Counts by state; an in-flight `paying` row is still owed and is counted under `pending`. */
   payoutSummary(): { pending: number; failed: number; paid: number } {
     const out = { pending: 0, failed: 0, paid: 0 };
     for (const r of this.db.prepare('SELECT status, COUNT(*) AS n FROM payouts GROUP BY status').all() as { status: string; n: number }[]) {
-      if (r.status in out) out[r.status as keyof typeof out] = Number(r.n);
+      const k = r.status === 'paying' ? 'pending' : r.status;
+      if (k in out) out[k as keyof typeof out] += Number(r.n);
     }
     return out;
   }

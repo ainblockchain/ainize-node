@@ -74,6 +74,9 @@ export function buildRecipeJson(tr: TrainerRecipe, lesson: LessonMeta, benchmark
   return { ...tr, lesson, benchmark, model_id: lesson.model_id };
 }
 
+/** Repository the RUN-LOCALLY recipe clones (one source of truth for the markdown, the save response and the web sheet). */
+export const LOCAL_RUN_REPO_URL = 'git@github.com:GenAI-Leader-Finance-ComCom/finance-knowledge-training-demo.git';
+
 export interface RunLocallyInput {
   model_id: string;
   sha256: string;
@@ -89,7 +92,7 @@ export interface RunLocallyInput {
 /** RUN-LOCALLY.md (spec §10) — English; the `patch.py status` line is the English `applied: yes` line PR-4 added next to the Korean one. */
 export function renderRunLocally(i: RunLocallyInput): string {
   const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const repo = i.repo_url ?? 'git@github.com:GenAI-Leader-Finance-ComCom/finance-knowledge-training-demo.git';
+  const repo = i.repo_url ?? LOCAL_RUN_REPO_URL;
   const parentsNote = i.parents.length
     ? `\nThis lesson was taught with ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')} loaded; load them first for the same behaviour.\n`
     : '';

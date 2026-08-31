@@ -11,16 +11,17 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, sha256Hex, verifyPassword, hashPassword, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
-import { MAX_CHAT_PATCHES, type Market } from './market.js';
+import { TeachAuth } from './teach-auth.js';
+import { ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
-import { ANSWER_MAX, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
+import { ANSWER_MAX, creditedAddress, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
 import { PayoutError } from './payouts.js';
-import type { TeachJobRow } from './store.js';
+import type { EventRow, TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
 export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void; }
@@ -53,6 +54,28 @@ export function buildApi(deps: ApiDeps): Router {
   const requireOperator = (req: Request, _res: Response, next: NextFunction) => {
     if (!isOperator(req)) return next(new HttpError(401, 'operator login required'));
     next();
+  };
+
+  // Visitor (teaching-key) signatures: request-bound v2 or the legacy `teach:<ts>` form, both replay-guarded (teach-auth.ts).
+  const teachAuth = new TeachAuth(market.address);
+
+  /**
+   * Events are public (`/api/events`); teach-mode lines carry private material (draft ids, contributor keys, the prompt
+   * in the job name) in `data` and sometimes in the message. Non-operators get the message with draft ids / addresses
+   * masked, `data` reduced to `{job_id}`, and no draft bookkeeping lines at all (`draft created: taught-…`).
+   */
+  const publicEvents = (events: EventRow[], operator: boolean): EventRow[] => {
+    if (operator) return events;
+    const out: EventRow[] = [];
+    for (const e of events) {
+      if (e.kind === 'patch' && /^draft /.test(e.message)) continue;
+      if (e.kind !== 'teach') { out.push(e); continue; }
+      const jobId = (e.data as { job_id?: string } | null)?.job_id;
+      // (the second replace covers rows written before this redaction, whose message embedded the job name = the prompt)
+      const message = e.message.replace(/taught-[a-z0-9][a-z0-9-]*/g, 'a private draft').replace(/0x[0-9a-fA-F]{6,}…?/g, 'a teaching key').replace(/^lesson queued: .*? \((\d+ correction)/s, 'lesson queued ($1');
+      out.push({ ...e, message, data: jobId ? { job_id: jobId } : null });
+    }
+    return out;
   };
 
   /** Names of contributors the operator hid are dropped from public views ("Taught by a visitor"). */
@@ -118,7 +141,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
     if (q.schema) items = items.filter((e) => e.anchor.benchmark.schema === q.schema);
     if (q.author) items = items.filter((e) => e.anchor.author === q.author);
-    if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => x.address.toLowerCase() === c)); }
+    if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === c)); }
     if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
     if (q.branch) { const b = (await market.branches()).find((x) => x.name === q.branch); items = items.filter((e) => b?.patch_ids.includes(e.anchor.id)); }
     if (q.q) { const s = q.q.toLowerCase(); items = items.filter((e) => [e.anchor.id, e.anchor.name, e.anchor.description, e.anchor.model.id_M, e.anchor.benchmark.schema].join(' ').toLowerCase().includes(s)); }
@@ -156,7 +179,12 @@ export function buildApi(deps: ApiDeps): Router {
     return { records: recs };
   }));
 
-  router.get('/api/patches/:id/events', wrap(async (req) => ({ events: market.store.events({ patch_id: req.params.id as string, limit: Number(req.query.limit ?? 200) }) })));
+  router.get('/api/patches/:id/events', wrap(async (req) => {
+    const operator = isOperator(req);
+    const e = await market.entry(req.params.id as string);
+    if (e?.status === 'DRAFT' && !operator) throw notFound('patch not found');
+    return { events: publicEvents(market.store.events({ patch_id: req.params.id as string, limit: Number(req.query.limit ?? 200) }), operator) };
+  }));
 
   router.get('/api/benchmarks/:schema', wrap(async (req) => {
     const schema = req.params.schema as string;
@@ -196,7 +224,7 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.get('/api/route', wrap(async (req) => market.route(req.query as Record<string, string>)));
   router.get('/api/nodes', wrap(async () => ({ nodes: await market.knownNodes(), peers: market.p2p.peers(), self: market.address })));
-  router.get('/api/events', wrap(async (req) => ({ events: market.store.events({ since: req.query.since ? Number(req.query.since) : undefined, limit: Number(req.query.limit ?? 200), kind: req.query.kind as string | undefined }) })));
+  router.get('/api/events', wrap(async (req) => ({ events: publicEvents(market.store.events({ since: req.query.since ? Number(req.query.since) : undefined, limit: Number(req.query.limit ?? 200), kind: req.query.kind as string | undefined }), isOperator(req)) })));
   router.get('/api/chain', wrap(async () => market.chainStatus()));
 
   // ------------------------------------------------------------ operator actions
@@ -215,7 +243,7 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
   router.get('/api/me/payouts', requireOperator, wrap(async (req) => {
-    const q = z.object({ status: z.enum(['pending', 'paid', 'failed']).optional(), address: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).optional() }).parse(req.query);
+    const q = z.object({ status: z.enum(['pending', 'paying', 'paid', 'failed']).optional(), address: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).optional() }).parse(req.query);
     return { items: market.store.listPayouts({ status: q.status, address: q.address, limit: q.limit ?? 200 }), summary: market.payouts.summary(), max_attempts: market.payouts.maxAttempts, retry_ms: market.payouts.retryMs, wallet: !!market.payouts.wallet };
   }));
   router.post('/api/me/payouts/:id/retry', requireOperator, wrap(async (req) => {
@@ -227,7 +255,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/patches', requireOperator, upload.single('file'), wrap(async (req) => {
     const body = z.object({
       id: z.string().optional(), name: z.string().min(2), description: z.string().optional(), model_id: z.string().min(1),
-      benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().optional(),
+      benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(),
       billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
       parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
       branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
@@ -246,7 +274,7 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
     const patch = z.object({
-      name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().optional(), branch: z.string().optional(),
+      name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(), branch: z.string().optional(),
       benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(),
       topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
       contributors: z.array(z.object({}).passthrough()).nullable().optional(),
@@ -293,9 +321,10 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ ChatMode (live test)
   router.get('/api/chat/patches', wrap(async (req) => {
-    const items = await market.testablePatches();
-    // `lessons`: the caller's private drafts (teach mode) — the shape is fixed here; PR-5 fills it from teach jobs.
-    const teacher = verifyAuthHeader(req.header('x-ngram-auth'), 'teach');
+    // hidden contributor names are redacted here too (public response), like /api/catalog and /api/patches/:id
+    const items = (await market.testablePatches()).map(redactContributors);
+    // `lessons`: the caller's private drafts (teach mode), only with a verified teaching-key signature
+    const teacher = teachAuth.verify(req);
     return {
       items, runtime: await market.runtime.status(), lock: market.runtime.lockHolder(),
       applied: market.pinnedPatchIds(), overlaps: market.chatOverlaps(items),
@@ -313,7 +342,8 @@ export function buildApi(deps: ApiDeps): Router {
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
     if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
-    const out = await market.chat({ ...body, patchIds: body.patch_ids ?? [body.patch_id!], visitor });
+    // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
+    const out = await market.chat({ ...body, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
   }));
@@ -325,12 +355,17 @@ export function buildApi(deps: ApiDeps): Router {
     return { settings };
   }));
 
-  // ------------------------------------------------------------ teach mode — visitors (spec §6.2; signed x-ngram-auth `teach:<ts>`)
+  // ------------------------------------------------------------ teach mode — visitors (spec §6.2; signed x-ngram-auth, see teach-auth.ts)
   const needTeach = (): TeachWorker => { if (!deps.teach) throw new HttpError(503, 'teaching_disabled: the teach worker is not running on this node'); return deps.teach; };
-  const teacherOf = (req: Request): string | null => verifyAuthHeader(req.header('x-ngram-auth'), 'teach');
+  // verified once per request (the replay cache makes a second verification of the same header fail by design)
+  const teacherOf = (req: Request): string | null => {
+    const r = req as Request & { _teacher?: string | null };
+    if (r._teacher === undefined) r._teacher = teachAuth.verify(req);
+    return r._teacher;
+  };
   const requireTeacher = (req: Request): string => {
     const a = teacherOf(req);
-    if (!a) throw new HttpError(401, 'invalid_signature: x-ngram-auth header (`<address>:<ts>:<sig over "teach:<ts>">`) missing, expired or invalid');
+    if (!a) throw new HttpError(401, 'invalid_signature: x-ngram-auth header missing, expired, replayed or invalid (`<address>:<ts>:<sig>:v2` over "teach:<node>:<METHOD>:<path>:<ts>[:<sha256 body>]", or the legacy `teach:<ts>` form)');
     return a;
   };
   /** Every visitor teach route: worker present, policy enabled, key/IP not banned. */
@@ -351,17 +386,20 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/teach/preflight', wrap(async (req) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
     const body = z.object({ patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), facts: z.array(factSchema).min(1).max(8) }).parse(req.body);
-    const visitor = `ip:${req.ip}`;
-    if (market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'quota_chat: free live-test quota exhausted for this hour — try again later');
+    // Preflight spends live-test units in proportion to the model calls it drives (facts + context blobs), charged to the
+    // IP AND the teaching key — one of them alone is free to spoof / mint (security review: preflight DoS).
+    const units = t.preflightUnits({ patchIds: body.patch_ids, facts: body.facts });
+    const buckets = [`ip:${req.ip}`, `key:${address.toLowerCase()}`];
+    for (const b of buckets) if (market.chatQuota(b, 20, 3600_000, false, units) < 0) throw new HttpError(429, `quota_chat: free live-test quota exhausted for this hour (this pre-flight needs ${units} unit(s)) — try again later`);
     const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, facts: body.facts });
-    market.chatQuota(visitor);   // preflight costs one live-test unit (spec §6.2)
+    for (const b of buckets) market.chatQuota(b, 20, 3600_000, true, units);
     return out;
   }));
   router.post('/api/teach/jobs', wrap(async (req, res) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
     const body = z.object({
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
-      facts: z.array(factSchema).min(1).max(8), contributor: z.object({ name: z.string().max(40).optional() }).optional(), name: z.string().max(80).optional(),
+      facts: z.array(factSchema).min(1).max(8), contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
     }).parse(req.body);
     const job = await t.createJob({ address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context, facts: body.facts });
     res.status(202);
@@ -544,6 +582,10 @@ export function buildApi(deps: ApiDeps): Router {
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof HttpError || err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
+    // typed domain errors from Market / core validation: caller mistakes are 4xx, never 500
+    if (err instanceof ValidationError) return res.status(400).json({ error: err.message });
+    if (err instanceof ConflictError) return res.status(409).json({ error: err.message });
+    if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
     const msg = (err as Error)?.message ?? String(err);
     console.error('[api]', msg);
     res.status(500).json({ error: msg });

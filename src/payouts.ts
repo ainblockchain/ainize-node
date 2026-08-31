@@ -5,10 +5,17 @@
  * non-self address in `settle.royalty` its slice. For each of them a `payouts` row is written BEFORE `wallet.transfer`
  * is attempted, so a crash between the two leaves a `pending` row instead of a silently missing transfer:
  *
- *   pending ──transfer ok──▶ paid   (tx_hash)
- *      │ ▲
- *      ▼ │ 60 s timer, max 20 attempts (then the operator retries by hand from the Payouts tab / `POST /api/me/payouts/:id/retry`)
- *   failed (last_error)
+ *   pending ──claim──▶ paying ──transfer ok──▶ paid   (tx_hash)
+ *      ▲                 │
+ *      │                 ▼ error
+ *      └──── 60 s timer, max 20 attempts ──── failed (last_error)   (then the operator retries by hand: Payouts tab / `POST /api/me/payouts/:id/retry`)
+ *
+ * Double-payment guards (security review): every transfer — timer pass, the pass triggered by a sale, and the operator
+ * retry — goes through ONE serialised runner (`processPending`), and each attempt first claims the row atomically
+ * (`UPDATE … SET status='paying' WHERE status IN ('pending','failed')`); a row that is already `paying` or `paid` is never
+ * transferred again, whatever snapshot the caller held. A row still `paying` when the node boots was interrupted between
+ * the transfer and the bookkeeping: it is marked `failed` with the automatic attempts exhausted, so only an operator who
+ * has checked the chain retries it.
  *
  * Local-credit settles never come here: the play-money balance is derived from the settle record itself
  * (`Market.creditBalance()`), so the contributor is credited the instant the record is appended.
@@ -21,6 +28,8 @@ export interface PayoutWallet { transfer(to: string, value: number): Promise<{ t
 
 export const PAYOUT_RETRY_MS = 60_000;
 export const PAYOUT_MAX_ATTEMPTS = 20;
+/** last_error of a row that was `paying` when the node restarted (needs an operator to confirm on chain before a retry). */
+export const PAYOUT_INTERRUPTED = 'node restarted during the transfer — confirm on chain whether it went through before retrying';
 
 export interface PayoutRun { attempted: number; paid: number; failed: number }
 
@@ -30,6 +39,10 @@ export class Payouts {
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<PayoutRun> | null = null;
   private again = false;
+  /** Rows the operator asked to retry now (attempted on the next pass even when the interval / max attempts say otherwise). */
+  private forced = new Set<number>();
+  /** Rows whose transfer promise is pending in this process (belt and braces on top of the SQL claim). */
+  private inFlight = new Set<number>();
   readonly retryMs: number;
   readonly maxAttempts: number;
 
@@ -62,35 +75,43 @@ export class Payouts {
     return rows;
   }
 
-  /** One transfer attempt for `row`; the row ends `paid` (tx_hash) or `failed` (last_error), attempts + 1. */
-  async attempt(row: PayoutRow): Promise<PayoutRow> {
-    if (row.status === 'paid') return row;
-    const attempts = row.attempts + 1;
-    if (!this.wallet) {
-      return this.store.updatePayout(row.id, { status: 'failed', attempts, last_error: 'no chain wallet on this node' });
-    }
+  /**
+   * One transfer attempt for row `id`. Re-reads the row and claims it atomically (pending|failed → paying); a row that is
+   * paid, already paying, or gone is returned untouched and NO transfer is made. Ends `paid` (tx_hash) or `failed` (last_error).
+   */
+  private async attempt(id: number): Promise<PayoutRow | null> {
+    const before = this.store.getPayout(id);
+    if (!before) return null;
+    if (before.status === 'paid' || before.status === 'paying' || this.inFlight.has(id)) return before;
+    if (!this.store.claimPayout(id)) return this.store.getPayout(id);
+    this.inFlight.add(id);
+    const row = this.store.getPayout(id)!;          // attempts already incremented by the claim
+    const attempts = row.attempts;
     try {
-      const r = await this.wallet.transfer(row.address, Number(row.amount));
-      const next = this.store.updatePayout(row.id, { status: 'paid', attempts, tx_hash: r.tx_hash, last_error: null });
-      this.log('info', 'payout', `paid ${row.amount} ${row.currency} royalty to ${row.address.slice(0, 10)}… (${r.tx_hash.slice(0, 12)}, attempt ${attempts})`, row.patch_id, { payout_id: row.id, tx_hash: r.tx_hash, attempts });
-      return next;
-    } catch (e) {
-      const msg = ((e as Error).message ?? String(e)).slice(0, 500);
-      const next = this.store.updatePayout(row.id, { status: 'failed', attempts, last_error: msg });
-      const final = attempts >= this.maxAttempts;
-      this.log('warn', 'payout', `royalty transfer to ${row.address.slice(0, 10)}… failed (attempt ${attempts}/${this.maxAttempts}${final ? ', giving up — retry from the Payouts tab' : ''}): ${msg}`, row.patch_id, { payout_id: row.id, attempts, error: msg });
-      return next;
-    }
+      if (!this.wallet) return this.store.updatePayout(id, { status: 'failed', last_error: 'no chain wallet on this node' });
+      try {
+        const r = await this.wallet.transfer(row.address, Number(row.amount));
+        const next = this.store.updatePayout(id, { status: 'paid', tx_hash: r.tx_hash, last_error: null });
+        this.log('info', 'payout', `paid ${row.amount} ${row.currency} royalty to ${row.address.slice(0, 10)}… (${r.tx_hash.slice(0, 12)}, attempt ${attempts})`, row.patch_id, { payout_id: id, tx_hash: r.tx_hash, attempts });
+        return next;
+      } catch (e) {
+        const msg = ((e as Error).message ?? String(e)).slice(0, 500);
+        const next = this.store.updatePayout(id, { status: 'failed', last_error: msg });
+        const final = attempts >= this.maxAttempts;
+        this.log('warn', 'payout', `royalty transfer to ${row.address.slice(0, 10)}… failed (attempt ${attempts}/${this.maxAttempts}${final ? ', giving up — retry from the Payouts tab' : ''}): ${msg}`, row.patch_id, { payout_id: id, attempts, error: msg });
+        return next;
+      }
+    } finally { this.inFlight.delete(id); }
   }
 
-  /** Rows the timer should (re)try now: never attempted, or failed < max attempts and older than the retry interval. */
+  /** Rows the timer should (re)try now: never attempted, or failed < max attempts and older than the retry interval. In-flight (`paying`) rows are never due. */
   due(now = Date.now()): PayoutRow[] {
     return this.store.listPayouts({ status: ['pending', 'failed'], limit: 500 })
-      .filter((r) => r.status === 'pending' || (r.attempts < this.maxAttempts && now - r.updated_at >= this.retryMs))
+      .filter((r) => r.status === 'pending' || (r.attempts < this.maxAttempts && now - r.updated_at >= this.retryMs && r.last_error !== PAYOUT_INTERRUPTED))
       .sort((a, b) => a.id - b.id);
   }
 
-  /** Pay everything that is due, one transfer at a time (serialised; a call during a run schedules one more pass). */
+  /** Pay everything that is due (plus operator-forced rows), one transfer at a time — the single serialised runner; a call during a run schedules one more pass. */
   processPending(): Promise<PayoutRun> {
     if (this.running) { this.again = true; return this.running; }
     this.running = (async () => {
@@ -99,32 +120,51 @@ export class Payouts {
       try {
         do {
           this.again = false;
-          for (const row of this.due()) {
+          const forced = [...this.forced]; this.forced.clear();
+          const ids = [...new Set([...forced, ...this.due().map((r) => r.id)])];
+          for (const id of ids) {
             if (this.store.isClosed) return out;
-            const r = await this.attempt(row);
+            const r = await this.attempt(id);
+            if (!r) continue;
             out.attempted++;
-            if (r.status === 'paid') out.paid++; else out.failed++;
+            if (r.status === 'paid') out.paid++; else if (r.status === 'failed') out.failed++;
           }
-        } while (this.again);
+        } while (this.again || this.forced.size);
       } finally { this.running = null; }
       return out;
     })();
     return this.running;
   }
 
-  /** Operator retry: one immediate attempt, allowed even after the automatic attempts are exhausted. */
+  /** Operator retry: one immediate attempt through the serialised runner, allowed even after the automatic attempts are exhausted. */
   async retry(id: number): Promise<PayoutRow> {
     const row = this.store.getPayout(id);
     if (!row) throw new PayoutError(404, `payout ${id} not found`);
     if (row.status === 'paid') throw new PayoutError(409, `payout ${id} is already paid (${row.tx_hash})`);
-    return this.attempt(row);
+    // `paying` = a transfer is in flight right now: do not queue a second one, just wait for the running pass and report the outcome
+    if (row.status !== 'paying' && !this.inFlight.has(id)) this.forced.add(id);
+    await this.processPending();
+    return this.store.getPayout(id)!;
   }
 
   summary() { return this.store.payoutSummary(); }
 
+  /** Rows left `paying` by a crash between the transfer and the bookkeeping: unknown outcome → operator confirmation, never an automatic retry. */
+  recoverInterrupted(): PayoutRow[] {
+    const out: PayoutRow[] = [];
+    for (const r of this.store.listPayouts({ status: 'paying', limit: 5000 })) {
+      if (this.inFlight.has(r.id)) continue;
+      const next = this.store.updatePayout(r.id, { status: 'failed', attempts: Math.max(r.attempts, this.maxAttempts), last_error: PAYOUT_INTERRUPTED });
+      this.log('warn', 'payout', `payout #${r.id} (${r.amount} ${r.currency} to ${r.address.slice(0, 10)}…) was mid-transfer when the node stopped — marked failed; confirm on chain, then retry from the Payouts tab`, r.patch_id, { payout_id: r.id, attempts: next.attempts });
+      out.push(next);
+    }
+    return out;
+  }
+
   /** 60-s retry timer (spec §9.3); also runs once shortly after start to pick up rows left `pending` by a crash. */
   start() {
     if (this.timer) return;
+    this.recoverInterrupted();
     this.timer = setInterval(() => { this.processPending().catch(() => undefined); }, this.retryMs);
     this.timer.unref?.();
     setTimeout(() => { this.processPending().catch(() => undefined); }, Math.min(this.retryMs, 3000)).unref?.();

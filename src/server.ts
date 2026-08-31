@@ -73,10 +73,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', true);
+  // Only trust X-Forwarded-For when the operator says the node is behind a proxy (config `server.trustProxy`, env
+  // NGRAM_TRUST_PROXY). Default false: `req.ip` is the TCP peer, so per-IP quotas / bans / rate limits cannot be spoofed.
+  app.set('trust proxy', cfg.server?.trustProxy ?? false);
   app.use(compression());
   app.use(cookieParser());
-  app.use(express.json({ limit: '5mb' }));
+  // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
+  app.use(express.json({ limit: '5mb', verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use((req, res, next) => {
     res.setHeader('access-control-allow-origin', req.headers.origin ?? '*');
     res.setHeader('access-control-allow-credentials', 'true');

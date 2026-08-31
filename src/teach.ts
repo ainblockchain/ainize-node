@@ -21,9 +21,9 @@ import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { hashCanonical, readNpzMember, validateContributors, verifyMessage, writeNpz, type CatalogEntry, type Contributor, type TeachConfig } from '@ngram/core';
 import { sha256File } from './blobs.js';
-import type { Market } from './market.js';
+import type { Caller, Market } from './market.js';
 import type { Store, TeachFactRow, TeachJobRow } from './store.js';
-import { anchorRecipe, buildRecipeJson, lessonBenchmark, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
+import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
 export type TeachStatus = 'QUEUED' | 'PREFLIGHT' | 'LOADING' | 'TRAINING' | 'EXPORTED' | 'CHECKING' | 'READY' | 'NEEDS_MORE'
@@ -42,6 +42,8 @@ export interface TeachChecks {
   /** Hard publish gate: locality.ok && parent_regression.ok (&& executed). */
   ok: boolean;
   note?: string;
+  /** true on a stub node without a model server: the numbers above were simulated, nothing was measured (UI: "Demo node — checks are simulated"). */
+  simulated?: boolean;
 }
 export interface TeachJob {
   id: string;
@@ -78,6 +80,8 @@ export interface TeachPolicyView {
   model: { id_M: string | null };
   applied: string[];
   draft_ttl_days: number;
+  /** true when this node's checks are simulated (stub backend without a model server) — the UI must not claim a live-model verification. */
+  simulated_checks: boolean;
 }
 
 /** Visitor-facing error: `message` starts with the machine-readable code of spec §5.14. */
@@ -90,17 +94,38 @@ const DEFAULT_RUNTIME_GRACE_MS = 15 * 60_000;
 const SLOT_STALE_MS = 45 * 60_000;
 const DEFAULT_RETRY_MS = 15_000;
 const BLOCKED_LOG_MS = 5 * 60_000;
+/** Error message that means "the node is shutting down" — the job is requeued, never FAILED. */
+const STOPPING = 'node stopping';
 const DEFAULT_FIXTURE = '/mnt/newdata/qwen3.8/results/train-fact/픽셀플러스.npz';
 const POLICY_CALLS_PER_MIN = 30;
-/** Display names are public ("Taught by …"): no links/markup/control chars and a minimal slur list (spec §9.1; operators can hide names). */
-const NAME_BLOCKLIST = /https?:\/\/|www\.|[<>{}\[\]]|[\u0000-\u001f\u007f]|\b(fuck|shit|bitch|cunt|nigg|fag)|씨발|시발|병신|개새끼|좆|niga/i;
+/** Lessons one teaching key may have in flight (QUEUED…CHECKING) at once — quota must not rest on the IP alone (security review). */
+export const ACTIVE_JOBS_PER_KEY = 2;
+/** Model calls one interactive preflight may spend per live-test quota unit (8 facts + 3 context blobs used to cost one unit). */
+const PREFLIGHT_CALLS_PER_UNIT = 3;
+/** Minimum measured lessons before any duration is projected to visitors (spec §8.4). */
+export const ETA_MIN_SAMPLES = 3;
+/**
+ * Display names are public ("Taught by …"): no links/markup, no ASCII or Unicode control / bidi / zero-width characters
+ * (an RTL override would render "Op‮erator" on chips, teacher pages and the immutable public record) and a minimal slur
+ * list (spec §9.1; operators can hide names).
+ */
+const NAME_BLOCKLIST = /https?:\/\/|www\.|[<>{}\[\]]|[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]|\b(fuck|shit|bitch|cunt|nigg|fag)|씨발|시발|병신|개새끼|좆|niga/i;
+/** NFKC-normalise and collapse whitespace — what is stored and shown. */
+export function normalizeDisplayName(name: string | undefined): string | undefined {
+  const n = name?.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  return n ? n : undefined;
+}
 export function checkDisplayName(name: string | undefined): string | null {
-  const n = name?.trim() ?? '';
-  if (!n) return null;
+  const raw = name?.trim() ?? '';
+  if (!raw) return null;
+  if (NAME_BLOCKLIST.test(raw)) return 'display name contains a link, markup, an invisible character or a blocked word';
+  const n = normalizeDisplayName(raw) ?? '';
   if (n.length > 40) return 'display name must be at most 40 characters';
-  if (NAME_BLOCKLIST.test(n)) return 'display name contains a link, markup or a blocked word';
+  if (NAME_BLOCKLIST.test(n)) return 'display name contains a link, markup, an invisible character or a blocked word';
   return null;
 }
+/** Which address a contributor entry credits publicly: a declared payout wallet is NOT the teacher — the signer is (security review §9.1). */
+export function creditedAddress(c: Contributor): string { return c.proof === 'declared' && c.signer ? c.signer : c.address; }
 
 // ------------------------------------------------------------------ process hooks (faked in tests)
 export interface ChildLike {
@@ -160,6 +185,9 @@ export class TeachWorker {
   private policyCache: { at: number; value: TeachPolicyView } | null = null;
   private policyHits = new Map<string, { count: number; window: number }>();
   private checkWaitSince = new Map<string, number>();
+  /** Jobs whose lesson may still be on the shared table (crash mid-CHECKING); restored at start or as soon as the model server answers. */
+  private pendingRestore = new Set<string>();
+  private lastReconcile = 0;
   private readonly spawnFn: SpawnFn;
   private readonly execFn: ExecFn;
 
@@ -186,24 +214,71 @@ export class TeachWorker {
     this.timer.unref?.();
     setTimeout(tick, 300).unref?.();
   }
+  /**
+   * Graceful stop (SIGTERM / `ainize stop`): `stopped` is set BEFORE the trainer client is killed so the exit is mapped to
+   * "node stopping" → the job goes back to QUEUED (requeued, not FAILED — spec §8.5); the in-container process is terminated;
+   * a running CHECKING aborts at its next model call and its `finally` removes the lesson from the shared table. We wait for
+   * that (≤ 90 s: one model call budget + apply/remove) instead of exiting after 10 s with the lesson still applied.
+   */
   async stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.stopped = true;
+    const cur = this.current ? this.store.getTeachJob(this.current) : null;
     if (this.child) { try { this.child.kill('SIGTERM'); } catch { /* ignore */ } }
-    for (let i = 0; i < 200 && this.running; i++) await new Promise((r) => setTimeout(r, 50));
+    if (cur) await this.killStray(cur).catch(() => undefined);
+    for (let i = 0; i < 1800 && this.running; i++) await new Promise((r) => setTimeout(r, 50));
+    if (this.running) this.log('error', 'stop timed out while a teach step was still running — the lesson is restored at the next start (lesson_applied)', cur?.id ?? null);
   }
 
-  /** Jobs left mid-flight by a crashed/restarted node (spec §8.5): requeue once, then FAILED('node restarted'). */
+  /**
+   * Jobs left mid-flight by a crashed/restarted node (spec §8.5): PREFLIGHT/TRAINING are requeued once, then
+   * FAILED('node restarted'); CHECKING goes back to EXPORTED *after* the shared table is restored (the lesson may still be
+   * applied — nothing else would ever remove it, and a later cancel would delete the only file that can).
+   */
   private recoverAfterRestart() {
     for (const j of this.store.listTeachJobs({ status: ['PREFLIGHT', 'TRAINING', 'LOADING', 'CHECKING'] })) {
-      if (j.status === 'CHECKING') { this.store.updateTeachJob(j.id, { status: 'EXPORTED', blocked: null }); continue; }
+      if (j.status === 'CHECKING') {
+        this.pendingRestore.add(j.id);
+        if (!j.lesson_applied) this.store.updateTeachJob(j.id, { lesson_applied: true });
+        this.log('warn', `job ${j.id} was CHECKING when the node restarted → restoring the shared table, then re-check`, j.id);
+        continue;
+      }
       const key = `teach:restarts:${j.id}`;
       if (this.store.get(key)) { this.finish(j.id, 'FAILED', { error: 'node restarted during training' }); continue; }
       this.store.set(key, '1');
       this.killStray(j).catch(() => undefined);
+      if (j.status === 'PREFLIGHT') this.pendingRestore.add(j.id);   // context blobs may have been left applied by withStack
       this.store.updateTeachJob(j.id, { status: 'QUEUED', blocked: null, progress: null, container_pid: null, started_at: null });
       this.log('warn', `job ${j.id} was ${j.status} when the node restarted → requeued once`, j.id);
+    }
+    // any other row still flagged (crash after the status flip, or a stop() that timed out)
+    for (const j of this.store.listTeachJobs()) if (j.lesson_applied && !this.pendingRestore.has(j.id)) this.pendingRestore.add(j.id);
+  }
+
+  /**
+   * Put the shared table back after an interrupted PREFLIGHT/CHECKING: remove the lesson (if it is still on the table),
+   * re-assert the operator-pinned set, clear `lesson_applied`, and move a CHECKING job to EXPORTED so it is re-checked.
+   * Needs the model server; until it answers the job stays flagged and `tick()` retries.
+   */
+  private async restoreTable(): Promise<void> {
+    if (!this.pendingRestore.size) return;
+    const rt = this.market.runtime;
+    const st = await rt.status(true).catch(() => ({ available: false, error: 'status failed' } as { available: boolean; error?: string }));
+    if (!st.available) return;   // retried on the next tick; a serving restart also resets the table
+    for (const id of [...this.pendingRestore]) {
+      const j = this.store.getTeachJob(id);
+      if (!j) { this.pendingRestore.delete(id); continue; }
+      try {
+        await rt.exclusiveTry(`teach:${id}:restore`, async () => {
+          if (j.npz_path && existsSync(j.npz_path) && (await rt.isApplied(j.npz_path)) !== false) await rt.removeRaw(j.npz_path);
+          for (const cid of j.context) { const e = await this.market.entry(cid); const b = e && this.market.blobs.get(e.anchor.patch_sha256); if (b && !this.market.isApplied(cid)) await rt.removeRaw(b.path).catch(() => undefined); }
+          await this.reassertPinned();
+        }, { waitMs: 30_000 });
+      } catch (e) { this.log('warn', `could not restore the shared table yet (${(e as Error).message}) — retrying`, id); continue; }
+      this.store.updateTeachJob(id, { lesson_applied: false, ...(j.status === 'CHECKING' ? { status: 'EXPORTED', blocked: null } : {}) });
+      this.pendingRestore.delete(id);
+      this.log('info', `shared table restored after the interrupted ${j.status.toLowerCase()} of ${id}`, id);
     }
   }
 
@@ -247,11 +322,11 @@ export class TeachWorker {
     const st = await this.market.runtime.status();
     const value: TeachPolicyView = {
       enabled: c.enabled, publish: c.publish, trainer: tr.state, ...(tr.reason ? { paused_reason: tr.reason } : {}), backend: c.backend,
-      queue: { depth: queued.length, max: c.queueMax, position_eta_s: p50 !== null ? Math.round((queued.length + 1) * p50) : null },
+      queue: { depth: queued.length, max: c.queueMax, position_eta_s: p50 !== null && stats.length >= ETA_MIN_SAMPLES ? Math.round((queued.length + 1) * p50) : null },
       limits: { facts_per_job: c.factsPerJob, jobs_per_key_per_day: c.jobsPerKeyPerDay, jobs_per_ip_per_day: c.jobsPerIpPerDay, prompt_max: PROMPT_MAX, answer_max: ANSWER_MAX },
       timing: { p50_s: p50, p90_s: percentile(stats, 0.9), samples: stats.length },
       shares: { contributor: c.contributorShare, lineage: this.market.cfg.market.royaltyShare },
-      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays,
+      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline,
     };
     this.policyCache = { at: Date.now(), value };
     return value;
@@ -305,7 +380,13 @@ export class TeachWorker {
   }
 
   // ------------------------------------------------------------ interactive preflight (spec §6.2 POST /api/teach/preflight)
+  /** Live-test quota units one preflight costs: one per ${PREFLIGHT_CALLS_PER_UNIT} model calls (facts + context blobs to apply), at least one. */
+  preflightUnits(input: { patchIds: string[]; facts: unknown[] }): number {
+    return Math.max(1, Math.ceil((input.facts.length + new Set(input.patchIds).size) / PREFLIGHT_CALLS_PER_UNIT));
+  }
+
   async preflight(input: { address: string; ip?: string; patchIds: string[]; facts: { prompt: string; answer: string; alt_prompt?: string }[] }): Promise<{ facts: PreflightFactResult[]; trainable: number; quota: { key_remaining: number; ip_remaining: number } }> {
+    const caller: Caller = { address: input.address };
     const out: PreflightFactResult[] = [];
     const todo: number[] = [];
     for (const [i, f] of input.facts.entries()) {
@@ -318,12 +399,12 @@ export class TeachWorker {
     if (todo.length) {
       let answers: Map<number, string>;
       if (this.offline) {
-        await this.contextTargets(input.patchIds);   // still validates the ids
+        await this.contextTargets(input.patchIds, caller);   // still validates the ids (and the draft ownership)
         answers = new Map(todo.map((i) => [i, this.stubAnswer(input.facts[i].prompt, input.facts[i].answer)] as const));
       } else {
         const st = await this.market.runtime.status();
         if (!st.available) throw new TeachError(503, `runtime unavailable: ${st.error ?? 'model server is off or restarting'}`);
-        const targets = await this.contextTargets(input.patchIds);
+        const targets = await this.contextTargets(input.patchIds, caller);
         answers = await this.withStack('teach:preflight', targets, async () => {
           const res = new Map<number, string>();
           for (const i of todo) res.set(i, await this.askChat(input.facts[i].prompt));
@@ -340,11 +421,16 @@ export class TeachWorker {
     return { facts: out, trainable: out.filter((f) => f.status === 'will_train').length, quota: this.quota(input.address, input.ip) };
   }
 
-  private async contextTargets(ids: string[]): Promise<{ id: string; entry: CatalogEntry; path: string }[]> {
+  /**
+   * Resolve context ids to blobs. `caller` = the visitor asking (a private DRAFT is only usable as context by its owner or
+   * the operator — anyone else gets the same "unknown knowledge" as for a non-existent id); `'worker'` = the node's own
+   * job steps (the ids were already checked when the job was created).
+   */
+  private async contextTargets(ids: string[], caller: Caller | 'worker'): Promise<{ id: string; entry: CatalogEntry; path: string }[]> {
     const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
     for (const id of [...new Set(ids)]) {
       const entry = await this.market.entry(id);
-      if (!entry) throw new TeachError(400, `invalid: unknown knowledge ${id}`);
+      if (!entry || (caller !== 'worker' && !this.market.mayUseEntry(entry, caller))) throw new TeachError(400, `invalid: unknown knowledge ${id}`);
       const blob = this.market.blobs.get(entry.anchor.patch_sha256);
       if (!blob) throw new TeachError(400, `invalid: this node does not hold the body of ${id}`);
       targets.push({ id, entry, path: blob.path });
@@ -382,10 +468,12 @@ export class TeachWorker {
   /** Per-call budget for the serving model inside a teach step (a stalled vLLM must surface as "runtime busy", not hang the lock). */
   private static readonly CALL_TIMEOUT_MS = 60_000;
   private async askChat(prompt: string, maxTokens = 32): Promise<string> {
+    if (this.stopped) throw new Error(STOPPING);
     const r = await this.market.runtime.chat([{ role: 'user', content: prompt }], { maxTokens, thinking: false, timeoutMs: TeachWorker.CALL_TIMEOUT_MS });
     return (r.content ?? '').trim();
   }
   private async askRaw(prompt: string, maxTokens = 16): Promise<string> {
+    if (this.stopped) throw new Error(STOPPING);
     return (await this.market.runtime.completeRaw(prompt, maxTokens, TeachWorker.CALL_TIMEOUT_MS)).trim();
   }
   /** Errors that mean "the model server is stalled / restarting" rather than "this lesson is broken". */
@@ -407,8 +495,14 @@ export class TeachWorker {
     const badName = checkDisplayName(input.contributorName); if (badName) throw new TeachError(400, `invalid: ${badName}`);
     const tr = await this.trainerState();
     if (tr.state === 'paused') throw new TeachError(503, `trainer_paused: ${tr.reason ?? 'training is paused'}`);
-    const active = this.store.listTeachJobs({ status: ['QUEUED', 'PREFLIGHT', 'TRAINING', 'EXPORTED', 'CHECKING'] });
-    if (active.length >= c.queueMax) throw new TeachError(503, 'trainer_paused: the training queue is full — try again later');
+    const ACTIVE = ['QUEUED', 'PREFLIGHT', 'TRAINING', 'EXPORTED', 'CHECKING'];
+    const queueGate = () => {
+      const active = this.store.listTeachJobs({ status: ACTIVE });
+      if (active.length >= c.queueMax) throw new TeachError(503, 'trainer_paused: the training queue is full — try again later');
+      const mineActive = active.filter((j) => j.contributor.toLowerCase() === input.address.toLowerCase()).length;
+      if (mineActive >= ACTIVE_JOBS_PER_KEY) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — wait for them to finish`);
+    };
+    queueGate();
     // facts the model already answers (interactive preflight result) or that repeat a listing are dropped here
     const kept: TeachFactRow[] = []; let overlaps = 0; let known = 0;
     for (const f of input.facts) {
@@ -417,14 +511,15 @@ export class TeachWorker {
       kept.push({ prompt: f.prompt.trim(), answer: f.answer.trim(), ...(f.alt_prompt?.trim() ? { alt_prompt: f.alt_prompt.trim() } : {}), ...(f.base_answer ? { base_answer: f.base_answer } : {}) });
     }
     if (!kept.length) throw new TeachError(409, known >= overlaps ? 'already_known: the model already answers this correctly' : 'overlaps_listing: this knowledge is already sold on this node');
-    const targets = await this.contextTargets(input.patchIds);
+    const targets = await this.contextTargets(input.patchIds, { address: input.address });
     const q = this.quota(input.address, input.ip);
     if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key');
     if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address');
     const now = Date.now(); const day = dayKey(now);
     const id = randomUUID();
     const name = (input.name?.trim() || `Lesson: ${kept[0].prompt.slice(0, 60)}`).slice(0, 80);
-    const contributorName = input.contributorName?.trim().slice(0, 40) || null;
+    const contributorName = normalizeDisplayName(input.contributorName)?.slice(0, 40) ?? null;
+    queueGate();   // again, synchronously right before the insert: the awaits above let concurrent requests pass the first check together
     this.store.insertTeachJob({
       id, contributor: input.address, contributor_name: contributorName, ip: input.ip ?? null, status: 'QUEUED',
       context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: null, npz_path: null, sha256: null, progress: null, checks: null, error: null,
@@ -435,7 +530,8 @@ export class TeachWorker {
     if (input.ip) this.store.teachQuotaBump(`ip:${input.ip}`, day);
     this.store.touchContributor(input.address, { ...(contributorName ? { name: contributorName } : {}), job: true });
     this.invalidatePolicy();
-    this.log('info', `lesson queued: ${name} (${kept.length} correction(s), context ${targets.map((t) => t.id).join('+') || '-'}) by ${input.address.slice(0, 10)}…`, id, { contributor: input.address, facts: kept.length });
+    // the prompt (job name) and the key stay out of the message: /api/events is public (data is operator-only there)
+    this.log('info', `lesson queued (${kept.length} correction(s), context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length });
     return this.view(this.store.getTeachJob(id)!);
   }
 
@@ -452,8 +548,10 @@ export class TeachWorker {
     if (j.status === 'QUEUED') {
       const ahead = this.store.listTeachJobs({ status: ['QUEUED'] }).filter((x) => x.created_at < j.created_at).length + (this.current && this.current !== j.id ? 1 : 0);
       out.position = ahead;
-      const p50 = percentile(this.store.teachStats(50).map((s) => s.total_s), 0.5);
-      out.eta_s = j.blocked === 'slot' || p50 === null ? null : Math.round((ahead + 1) * p50);
+      const stats = this.store.teachStats(50).map((s) => s.total_s);
+      const p50 = percentile(stats, 0.5);
+      // spec §8.4: no projected duration before ≥ 3 measured lessons (the basket line applies the same rule)
+      out.eta_s = j.blocked === 'slot' || p50 === null || stats.length < ETA_MIN_SAMPLES ? null : Math.round((ahead + 1) * p50);
     }
     return out;
   }
@@ -497,20 +595,55 @@ export class TeachWorker {
 
   /** Remove the job directory (npz, recipe, job.json), the blob row that pointed into it and any download tokens. */
   private cleanupFiles(j: TeachJobRow) {
+    if (j.lesson_applied) {
+      // the npz is the only thing that can take those rows off the shared table again — keep it until restoreTable() ran
+      this.pendingRestore.add(j.id);
+      this.log('warn', `lesson ${j.id} may still be applied to the shared model — files kept until the table is restored`, j.id);
+      if (j.sha256) this.store.deleteTokensFor(j.sha256);
+      return;
+    }
     const blob = j.sha256 ? this.store.getBlob(j.sha256) : null;
     if (j.job_dir && blob && blob.path.startsWith(j.job_dir)) this.store.deleteBlob(j.sha256!);
     if (j.sha256) this.store.deleteTokensFor(j.sha256);
     if (j.job_dir && existsSync(j.job_dir)) { try { rmSync(j.job_dir, { recursive: true, force: true }); } catch { /* ignore */ } }
   }
 
-  /** Private drafts that were never saved/published expire after `draftTtlDays` (spec §8.3). */
+  /**
+   * Auto-expiry (spec §8.3 / §12): private drafts that were never published (READY / NEEDS_MORE, and REJECTED ones the
+   * operator declined) become EXPIRED after `draftTtlDays` — draft, files and tokens removed; FAILED / CANCELLED rows that
+   * still own a job dir lose their files after the same TTL (status unchanged). Announced lessons are never touched.
+   */
   sweepExpired(now = Date.now()) {
-    for (const j of this.store.listTeachJobs({ status: ['READY', 'NEEDS_MORE'] })) {
-      if (!j.expires_at || j.expires_at > now || j.publish_status !== 'none') continue;
+    const ttl = this.cfg.draftTtlDays * 86_400_000;
+    for (const j of this.store.listTeachJobs({ status: ['READY', 'NEEDS_MORE', 'REJECTED'] })) {
+      if (!['none', 'rejected'].includes(j.publish_status)) continue;
+      const expires = j.expires_at ?? (j.finished_at ? j.finished_at + ttl : null);
+      if (!expires || expires > now) continue;
       if (j.draft_id) { try { this.market.deleteDraft(j.draft_id); } catch { /* ignore */ } }
       this.cleanupFiles(j);
       this.finish(j.id, 'EXPIRED', { draft_id: null });
-      this.log('info', `lesson ${j.id} expired (unsaved for ${this.cfg.draftTtlDays} days) — files and tokens removed`, j.id);
+      this.log('info', `lesson ${j.id} expired (${j.status === 'REJECTED' ? 'declined' : 'unsaved'} for ${this.cfg.draftTtlDays} days) — files and tokens removed`, j.id);
+    }
+    for (const j of this.store.listTeachJobs({ status: ['FAILED', 'CANCELLED'] })) {
+      if (!j.job_dir || !existsSync(j.job_dir) || j.lesson_applied) continue;
+      const end = j.finished_at ?? j.updated_at;
+      if (end + ttl > now) continue;
+      this.cleanupFiles(j);
+      this.store.updateTeachJob(j.id, { job_dir: null, npz_path: null });
+      this.log('info', `files of ${j.status.toLowerCase()} lesson ${j.id} removed after ${this.cfg.draftTtlDays} days`, j.id);
+    }
+  }
+
+  /** publish_status announced → listed once the verifiers list the anchor (spec §6.5); cheap, runs every 30 s from tick(). */
+  async reconcilePublished(now = Date.now()) {
+    if (now - this.lastReconcile < 30_000) return;
+    this.lastReconcile = now;
+    const announced = this.store.listTeachJobs({ status: ['ANNOUNCED'] }).filter((j) => j.publish_status === 'announced' && j.patch_id);
+    if (!announced.length) return;
+    const cat = await this.market.catalog();
+    for (const j of announced) {
+      const e = cat.find((x) => x.anchor.id === j.patch_id);
+      if (e && ['LISTED', 'SUPERSEDED', 'CHALLENGED'].includes(e.status)) { this.store.updateTeachJob(j.id, { publish_status: 'listed' }); this.log('info', `lesson ${j.id} is listed as ${j.patch_id}`, j.id); }
     }
   }
 
@@ -523,7 +656,9 @@ export class TeachWorker {
     if (this.running || this.stopped) return;
     this.running = true;
     try {
+      if (this.pendingRestore.size) { await this.restoreTable(); if (this.pendingRestore.size) return; }   // never start a step while the table may be dirty
       this.sweepExpired();
+      await this.reconcilePublished().catch(() => undefined);
       if (this.current) return;
       const now = Date.now();
       const exported = this.store.listTeachJobs({ status: ['EXPORTED'] }).find((j) => !j.blocked || j.updated_at + this.retryMs < now);
@@ -598,12 +733,19 @@ export class TeachWorker {
 
   private async runJob(job: TeachJobRow, from: 'full' | 'check', releaseSlot: () => void = () => undefined): Promise<void> {
     this.current = job.id;
+    let phase: 'preflight' | 'training' | 'checking' = from === 'full' ? 'preflight' : 'checking';
+    const requeue = () => {   // graceful stop: back to QUEUED (or EXPORTED) without touching the restart marker — the next start picks it up
+      const back: Partial<TeachJobRow> = phase === 'checking' ? { status: 'EXPORTED', blocked: null } : { status: 'QUEUED', blocked: null, progress: null, container_pid: null, started_at: null };
+      this.store.updateTeachJob(job.id, back);
+      this.log('warn', `node stopping during ${phase} → lesson ${job.id} requeued`, job.id);
+    };
     try {
       if (from === 'full') {
         // ---- PREFLIGHT (cheap re-run of the interactive one)
         this.store.updateTeachJob(job.id, { status: 'PREFLIGHT', started_at: Date.now(), blocked: null });
         let facts: TeachFactRow[];
         try { facts = await this.preflightJob(job); } catch (e) {
+          if ((e as Error).message === STOPPING) { requeue(); return; }
           if (/shared runtime busy/.test((e as Error).message) || TeachWorker.isRuntimeOutage(e)) { this.store.updateTeachJob(job.id, { status: 'QUEUED', blocked: 'lock' }); this.log('info', `model server busy during preflight (${(e as Error).message}) → requeued`, job.id); return; }
           throw e;
         }
@@ -612,12 +754,14 @@ export class TeachWorker {
         this.store.updateTeachJob(job.id, { facts });
         job = this.store.getTeachJob(job.id)!;
         // ---- TRAINING
+        phase = 'training';
         const dir = this.jobDir(job);
         mkdirSync(dir, { recursive: true });
         this.store.updateTeachJob(job.id, { status: 'TRAINING', job_dir: dir, progress: { step: 0, max_steps: this.cfg.trainer.maxSteps, hits: 0, total: facts.length, started_at: Date.now() } });
         this.log('info', `training started (${this.cfg.backend}) for ${job.id}`, job.id);
         const tr = await this.train({ ...job, job_dir: dir });
         releaseSlot();
+        if (!tr.ok && tr.error === STOPPING) { requeue(); return; }
         if (this.cancelled(job.id)) return;
         if (!tr.ok) { this.finish(job.id, 'FAILED', { error: tr.error }); this.log('warn', `training failed: ${tr.error}`, job.id); return; }
         const npz = join(dir, 'lesson.npz');
@@ -629,6 +773,7 @@ export class TeachWorker {
         job = this.store.getTeachJob(job.id)!;
       }
       // ---- CHECKING
+      phase = 'checking';
       const chk = await this.check(job);
       if ('retry' in chk) { this.store.updateTeachJob(job.id, { status: 'EXPORTED', blocked: chk.retry }); return; }
       if (this.cancelled(job.id)) return;
@@ -638,9 +783,11 @@ export class TeachWorker {
       const ratio = chk.checks.taught.total ? chk.checks.taught.hits / chk.checks.taught.total : 0;
       const status: TeachStatus = !chk.checks.executed || ratio >= TAUGHT_MIN_RATIO ? 'READY' : 'NEEDS_MORE';
       this.finish(job.id, status, { checks: chk.checks as unknown as Record<string, unknown>, facts: chk.facts, draft_id: draftId, expires_at: job.expires_at ?? Date.now() + this.cfg.draftTtlDays * 86_400_000 });
-      this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total} → draft ${draftId}`, job.id, { checks: chk.checks });
+      // the private draft id stays out of the (public) message; operators see it in data
+      this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
       this.checkWaitSince.delete(job.id);
     } catch (e) {
+      if ((e as Error).message === STOPPING) { requeue(); return; }
       this.finish(job.id, 'FAILED', { error: (e as Error).message.slice(0, 500) });
       this.log('error', `lesson ${job.id} failed: ${(e as Error).message}`, job.id);
     } finally {
@@ -662,7 +809,7 @@ export class TeachWorker {
     if (this.offline) return job.facts.filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer))).map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
     const st = await this.market.runtime.status();
     if (!st.available) { this.log('warn', 'model server unavailable during preflight — keeping the interactive result', job.id); return job.facts; }
-    const targets = await this.contextTargets(job.context);
+    const targets = await this.contextTargets(job.context, 'worker');
     const kept: TeachFactRow[] = [];
     const answers = await this.withStack(`teach:${job.id}:preflight`, targets, async () => {
       const res: string[] = [];
@@ -756,9 +903,13 @@ export class TeachWorker {
       const s = line.trim(); if (!s.startsWith('{')) return;
       try { this.handleEvent(job, JSON.parse(s), state); } catch { /* not an event line */ }
     });
+    // a final `done` line without a trailing newline is only emitted when stdout ends — wait for the reader, not just the exit
+    const drained = lines ? new Promise<void>((res) => lines.once('close', () => res())) : Promise.resolve();
     const code = await new Promise<number | null>((resolve) => { child.on('error', (e: Error) => { stderrTail += ` spawn error: ${e.message}`; resolve(127); }); child.on('close', (code: number | null) => resolve(code)); });
+    await Promise.race([drained, new Promise((res) => setTimeout(res, 2000))]);
     clearTimeout(timeout); clearInterval(cancelPoll); clearTimeout(pidLookup);
     this.child = null;
+    if (this.stopped && !state.done) return { ok: false, error: STOPPING };
     if (killedForCancel || this.store.getTeachJob(job.id)?.cancel_requested) return { ok: false, error: 'cancelled' };
     if (timedOut) return { ok: false, error: `timeout: trainer exceeded ${Math.round(c.trainer.timeoutMs / 60000)} min` };
     if (state.error) return { ok: false, error: state.error.slice(0, 500) };
@@ -797,6 +948,7 @@ export class TeachWorker {
     emit({ event: 'load', secs: 0.1 });
     await sleep(delay);
     for (let step = 1; step <= 3; step++) {
+      if (this.stopped) return { ok: false, error: STOPPING };
       if (this.store.getTeachJob(job.id)?.cancel_requested) return { ok: false, error: 'cancelled' };
       emit({ event: 'step', step, max_steps: 3, loss: Math.round((1 / step) * 100) / 100, hits: Math.round(state.progress.total * step / 3), total: state.progress.total, secs: delay / 1000 });
       await sleep(delay);
@@ -857,7 +1009,7 @@ export class TeachWorker {
       const checks: TeachChecks = {
         executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held }, parent_regression: { ok: true, hit: 0, total: 0 },
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
-        reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model',
+        reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model', simulated: true,
       };
       return { checks, facts };
     }
@@ -873,7 +1025,7 @@ export class TeachWorker {
       return notExecuted('model server unavailable — checks were not executed');
     }
     this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
-    const targets = await this.contextTargets(job.context).catch(() => [] as { id: string; entry: CatalogEntry; path: string }[]);
+    const targets = await this.contextTargets(job.context, 'worker').catch(() => [] as { id: string; entry: CatalogEntry; path: string }[]);
     const samples = (recipe.benchmark_samples?.length ? recipe.benchmark_samples : facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA: `, expect: f.answer })));
     const lesson = job.npz_path!;
     try {
@@ -889,6 +1041,8 @@ export class TeachWorker {
           for (const p of c.locality.prompts) pre.push(await this.askChat(p, 48));
           // 2) apply the lesson, measure (once more if the table reverted mid-way — serving restart)
           for (let attempt = 0; attempt < 2; attempt++) {
+            if (this.stopped) throw new Error(STOPPING);
+            this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
             const ap = await rt.applyRaw(lesson); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
             checks.taught = { hits: 0, total: 0 }; checks.heldout = { hits: 0, total: 0 };
             for (const [i, f] of facts.entries()) {
@@ -921,7 +1075,8 @@ export class TeachWorker {
         } finally {
           // never leave the lesson applied; put the table back the way we found it (stack + operator-pinned set)
           for (const t of [...targets].reverse()) await rt.removeRaw(t.path).catch(() => undefined);
-          await rt.removeRaw(lesson).catch((e) => this.log('error', `could not remove the lesson after checking: ${(e as Error).message}`, job.id));
+          const removed = await rt.removeRaw(lesson).then(() => true).catch((e) => { this.log('error', `could not remove the lesson after checking: ${(e as Error).message}`, job.id); return false; });
+          if (removed) this.store.updateTeachJob(job.id, { lesson_applied: false }); else this.pendingRestore.add(job.id);
           for (const t of targets) if (wasApplied.get(t.path)) await rt.applyRaw(t.path).catch(() => undefined);
           await this.reassertPinned();
         }
@@ -931,6 +1086,7 @@ export class TeachWorker {
       }, { waitMs: 2 * 60_000 });
       return { checks: out, facts };
     } catch (e) {
+      if ((e as Error).message === STOPPING) throw e;
       if (/shared runtime busy/.test((e as Error).message)) { this.log('info', 'model server busy → check postponed', job.id); return { retry: 'lock' }; }
       if (TeachWorker.isRuntimeOutage(e)) {
         // vLLM stalls roughly hourly and restarts in ~5 min: keep the lesson, retry the whole check later (15-min grace, then unchecked READY)
@@ -986,7 +1142,7 @@ export class TeachWorker {
   }
 
   // ------------------------------------------------------------ save (spec §6.2 POST /api/teach/jobs/:id/save)
-  save(j: TeachJobRow, address: string): { download: { npz_url: string; recipe_url: string; readme_url: string; expires_at: number }; sha256: string; rows: number; size_bytes: number; filename: string } {
+  save(j: TeachJobRow, address: string): { download: { npz_url: string; recipe_url: string; readme_url: string; expires_at: number }; sha256: string; rows: number; size_bytes: number; filename: string; repo_url: string; model_id: string | null } {
     if (!j.result || !j.sha256 || !j.npz_path || !existsSync(j.npz_path)) throw new TeachError(409, 'job_not_ready: this lesson has no knowledge file yet');
     if (!this.market.blobs.get(j.sha256)) throw new TeachError(409, 'job_not_ready: knowledge file is not registered on this node');
     const ttl = this.cfg.draftTtlDays * 86_400_000;
@@ -996,6 +1152,8 @@ export class TeachWorker {
     return {
       download: { npz_url: `/p2p/blob/${j.sha256}${q}`, recipe_url: `/api/teach/jobs/${j.id}/recipe${q}`, readme_url: `/api/teach/jobs/${j.id}/local-run${q}`, expires_at: Date.now() + ttl },
       sha256: j.sha256, rows: j.result.rows, size_bytes: j.result.size_bytes, filename: this.filename(j),
+      // same repo / model the RUN-LOCALLY.md names — the web sheet builds its command block from these, not from constants
+      repo_url: LOCAL_RUN_REPO_URL, model_id: (j.draft_id ? this.store.getDraft(j.draft_id)?.anchor.model.id_M : undefined) ?? (this.readTrainerRecipe(j.job_dir ?? '').model?.id_M as string | undefined) ?? null,
     };
   }
   filename(j: TeachJobRow): string { return `lesson-${(j.draft_id ?? `lesson-${j.id.slice(0, 6)}`).replace(/^taught-/, '')}.npz`; }
@@ -1030,7 +1188,9 @@ export class TeachWorker {
   // ------------------------------------------------------------ publish (spec §6.2 / §9)
   private draftFor(j: TeachJobRow) {
     if (j.status !== 'READY') throw new TeachError(409, j.status === 'NEEDS_MORE' ? 'job_not_ready: the lesson did not stick well enough — improve and retry first' : `job_not_ready: lesson is ${j.status}`);
-    if (!j.checks || !(j.checks as unknown as TeachChecks).ok) throw new TeachError(409, 'checks_failed: this lesson changed answers to unrelated questions or to the knowledge it builds on');
+    const checks = j.checks as unknown as TeachChecks | null;
+    if (!checks || !checks.executed) throw new TeachError(409, 'job_not_ready: this lesson has not been measured in the live model yet — run a re-check first');
+    if (!checks.ok) throw new TeachError(409, 'checks_failed: this lesson changed answers to unrelated questions or to the knowledge it builds on');
     const d = j.draft_id ? this.store.getDraft(j.draft_id) : null;
     if (!d) throw new TeachError(409, 'job_not_ready: draft is missing');
     return d;
@@ -1040,6 +1200,7 @@ export class TeachWorker {
     const d = this.draftFor(j);
     if (this.cfg.publish === 'never') throw new TeachError(403, 'publish_disabled: this node accepts lessons but does not publish them');
     if (payoutAddress && !/^0x[0-9a-fA-F]{40}$/.test(payoutAddress)) throw new TeachError(400, 'invalid: payout_address must be an AIN address');
+    if (payoutAddress && payoutAddress.toLowerCase() === this.market.address.toLowerCase()) throw new TeachError(400, 'invalid: payout_address cannot be this node\'s own address');
     const share = payoutAddress === null ? 0 : this.cfg.contributorShare;
     const address = payoutAddress || signer;
     return { patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share, claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }) };
@@ -1060,15 +1221,24 @@ export class TeachWorker {
     this.market.updateDraft(d.id, { name: body.name, description: body.description ?? '', price, license: body.license ?? 'CC-BY-4.0', visibility: 'public', contributors, origin: 'teach' });
     this.store.touchContributor(signer, { published: true, payout_address: body.payout_address ?? null });
     this.store.updateTeachJob(j.id, { name: body.name });
-    if (this.cfg.publish === 'auto') return this.announceJob(this.store.getTeachJob(j.id)!);
+    if (this.cfg.publish === 'auto') return this.announceJob(this.store.getTeachJob(j.id)!, { fromPublish: true });
     this.store.updateTeachJob(j.id, { status: 'PENDING_REVIEW', publish_status: 'pending_review' });
     this.log('info', `lesson ${j.id} submitted for operator review as ${d.id}`, j.id);
     return { status: 'PENDING_REVIEW' };
   }
-  /** Operator approve (review mode) or the auto path: announce the draft on the ledger. */
-  async announceJob(j: TeachJobRow): Promise<{ status: 'ANNOUNCED'; patch_id: string; url: string }> {
-    if (!j.draft_id || !this.store.getDraft(j.draft_id)) throw new TeachError(409, 'job_not_ready: draft is missing');
-    if (!['READY', 'PENDING_REVIEW'].includes(j.status)) throw new TeachError(409, `job_not_ready: lesson is ${j.status}`);
+  /**
+   * Announce the draft on the ledger — operator approve (review mode) or the auto path right after `publish()`.
+   * Consent gate (security review): only a lesson the OWNER published may ever be announced — the operator cannot approve a
+   * READY private draft (`fromPublish` is set only by `publish()`, after consent + signed claim were recorded), and the draft
+   * must carry a contributor whose claim signature verifies against its patch/benchmark hashes.
+   */
+  async announceJob(j: TeachJobRow, opts: { fromPublish?: boolean } = {}): Promise<{ status: 'ANNOUNCED'; patch_id: string; url: string }> {
+    const d = j.draft_id ? this.store.getDraft(j.draft_id) : null;
+    if (!j.draft_id || !d) throw new TeachError(409, 'job_not_ready: draft is missing');
+    if (opts.fromPublish) { if (j.status !== 'READY') throw new TeachError(409, `job_not_ready: lesson is ${j.status}`); }
+    else if (j.status !== 'PENDING_REVIEW' || j.publish_status !== 'pending_review') throw new TeachError(409, `job_not_ready: the owner has not published this lesson (it is ${j.status}) — only lessons submitted for review can be approved`);
+    const claims = (d.anchor.contributors ?? []).filter((c) => c.sig && verifyMessage(hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address: c.address, share: c.share }), c.sig, c.signer ?? c.address));
+    if (!claims.length || !claims.some((c) => (c.signer ?? c.address).toLowerCase() === j.contributor.toLowerCase())) throw new TeachError(409, 'job_not_ready: the draft carries no verified claim by the owner\'s teaching key');
     const rec = await this.market.announce(j.draft_id);
     this.store.updateTeachJob(j.id, { status: 'ANNOUNCED', patch_id: j.draft_id, publish_status: 'announced', reject_reason: null });
     this.log('info', `lesson ${j.id} announced as ${j.draft_id} (record ${rec.hash.slice(0, 12)}…)`, j.id);
@@ -1077,7 +1247,7 @@ export class TeachWorker {
   reject(j: TeachJobRow, reason: string) {
     if (j.status !== 'PENDING_REVIEW') throw new TeachError(409, `job_not_ready: lesson is ${j.status}`);
     if (j.draft_id && this.store.getDraft(j.draft_id)) { try { this.market.updateDraft(j.draft_id, { visibility: 'test' }); } catch { /* ignore */ } }
-    this.store.updateTeachJob(j.id, { status: 'REJECTED', publish_status: 'rejected', reject_reason: reason.slice(0, 500) });
+    this.store.updateTeachJob(j.id, { status: 'REJECTED', publish_status: 'rejected', reject_reason: reason.slice(0, 500), expires_at: Date.now() + this.cfg.draftTtlDays * 86_400_000 });
     this.log('info', `lesson ${j.id} declined by the operator: ${reason}`, j.id);
   }
 
@@ -1086,9 +1256,12 @@ export class TeachWorker {
     const addr = address.toLowerCase();
     const contributor = this.store.getContributor(address);
     const cat = await this.market.catalog();
-    const mine = cat.filter((e) => (e.anchor.contributors ?? []).some((x) => x.address.toLowerCase() === addr || x.signer?.toLowerCase() === addr));
+    // A lesson is listed under the key that SIGNED the claim. A declared payout wallet only receives money — it never
+    // agreed to be shown as the teacher of anything (security review: attribution without consent).
+    const mine = cat.filter((e) => e.status !== 'DRAFT' && (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === addr));
     const lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string }[] = mine.map((e) => ({ id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue }));
-    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.draft_id ?? j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0' });
+    // pending lessons are referenced by JOB id: the private draft id must not appear on a public page
+    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0' });
     // Earnings: OWED comes from settle records (any node can read them), PAID from this node's payouts rows (§7.6).
     // A settle from another seller node shows as `pending` with `paid_by: null` — the settle record is the evidence.
     const setts = await this.market.ledger.settlements();

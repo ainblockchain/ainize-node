@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, canonicalJson, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sha256Hex, signMessage, teachConfig, validateContributors, verifyMessage,
+  AinLedger, canonicalJson, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
@@ -64,6 +64,14 @@ export interface PurchaseResult {
 
 const SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
 
+/** The request names something that does not exist (HTTP 404). */
+export class NotFoundError extends Error { constructor(message: string) { super(message); this.name = 'NotFoundError'; } }
+/** The request conflicts with current state — duplicate id, immutable anchor (HTTP 409). */
+export class ConflictError extends Error { constructor(message: string) { super(message); this.name = 'ConflictError'; } }
+
+/** Who is asking for a knowledge in a live test / teach context (drafts are owner- or operator-only). */
+export interface Caller { address?: string | null; operator?: boolean }
+
 export class Market {
   private catalogCache: { at: number; value: CatalogEntry[] } | null = null;
   p2p!: P2P;
@@ -114,7 +122,7 @@ export class Market {
       this.ledger.anchors(), this.ledger.attestations(), this.ledger.settlements(), this.ledger.challenges(), this.ledger.supersedes(),
     ]);
     // Only well-formed anchors/attestations enter the catalog — nothing is synthesised or defaulted server-side.
-    const wellFormed = anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[];
+    const wellFormed = (anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[]).map((r) => Market.sanitizeAnchorRecord(r));
     const wellFormedAtts = atts.filter((r) => Market.isAttestation(r.body));
     const drafts = this.store.listDrafts().map((d) => d.anchor);
     const value = deriveCatalog(wellFormed, wellFormedAtts, setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts);
@@ -135,6 +143,20 @@ export class Market {
       && !!x.benchmark && typeof x.benchmark.schema === 'string' && typeof x.price === 'string' && Array.isArray(x.parents);
   }
 
+  /**
+   * Anchors we did not write (peer gossip, chain reads) are never trusted for their contributor list: a list that fails
+   * `validateContributors` (Σ share > 1, > 4 entries, junk addresses) is dropped, so royaltySplit / payouts treat the
+   * anchor as having no data providers instead of over-paying (security review: lineage over-payment).
+   */
+  static sanitizeAnchorRecord(r: LedgerRecord<PatchAnchor>): LedgerRecord<PatchAnchor> {
+    if (r.body.contributors === undefined) return r;
+    const clean = sanitizeContributors(r.body.contributors);
+    if (clean && clean.length === r.body.contributors.length) return r;
+    const body = { ...r.body };
+    if (clean) body.contributors = clean; else delete body.contributors;
+    return { ...r, body };
+  }
+
   static isAttestation(b: unknown): b is Attestation {
     const x = b as Partial<Attestation> | null;
     return !!x && typeof x.patch_id === 'string' && typeof x.verifier === 'string' && typeof x.passed === 'boolean' && typeof x.verified_on === 'string';
@@ -152,24 +174,25 @@ export class Market {
   // ------------------------------------------------------------------ drafts / publish
   async createDraft(input: CreateDraftInput): Promise<PatchAnchor> {
     const id = (input.id ?? input.name).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
-    if (!SLUG.test(id)) throw new Error('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)');
-    if (await this.entry(id)) throw new Error(`patch id already exists: ${id}`);
+    if (!SLUG.test(id)) throw new ValidationError('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)');
+    if (await this.entry(id)) throw new ConflictError(`patch id already exists: ${id}`);
+    const price = input.price === undefined ? this.cfg.market.defaultPrice : validatePrice(input.price);
     const { blob, sketch } = await this.blobs.importFile(input.file, { copy: !input.keepInPlace });
     const benchmark: BenchmarkSpec = { ...input.benchmark, format: input.benchmark.format ?? ['template'] };
     const parents = (input.parents ?? []).filter(Boolean);
     const map = await this.entryMap();
-    for (const p of parents) if (!map.has(p)) throw new Error(`unknown parent patch: ${p}`);
+    for (const p of parents) if (!map.has(p)) throw new ValidationError(`unknown parent patch: ${p}`);
     const anchor: PatchAnchor = {
       id, name: input.name, description: input.description ?? '', author: this.address, author_name: this.cfg.name,
       model: { row_dim: blob.row_dim, ...input.model } as PatchAnchor['model'],
       patch_sha256: blob.sha256, size_bytes: blob.size_bytes, rows: blob.rows,
       benchmark, benchmark_hash: hashCanonical({ schema: benchmark.schema, queries: benchmark.queries, format: benchmark.format, collateral_bound_nat: benchmark.collateral_bound_nat, samples: benchmark.samples ?? [] }),
-      price: input.price ?? this.cfg.market.defaultPrice, currency: this.cfg.market.currency, billing: input.billing ?? 'per_download',
+      price, currency: this.cfg.market.currency, billing: input.billing ?? 'per_download',
       license: input.license, parents, parent_authors: parents.map((p) => map.get(p)!.anchor.author),
       branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
     };
-    const contributors = validateContributors(input.contributors);
+    const contributors = this.checkContributors(input.contributors);
     if (contributors.length) anchor.contributors = contributors;
     if (input.origin) anchor.origin = input.origin;
     this.store.putDraft(anchor, blob.path);
@@ -178,16 +201,24 @@ export class Market {
     return anchor;
   }
 
+  /** validateContributors + "the publishing node cannot be its own data provider" (its slice is the seller remainder already). */
+  private checkContributors(list: unknown): Contributor[] {
+    const out = validateContributors(list);
+    if (out.some((c) => c.address.toLowerCase() === this.address.toLowerCase())) throw new ValidationError('contributor.address must not be this node\'s own address');
+    return out;
+  }
+
   updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe'>>): PatchAnchor {
     const d = this.store.getDraft(id);
-    if (!d) throw new Error('only drafts can be edited (anchors are immutable on the ledger)');
+    if (!d) throw new ConflictError('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
     if ('contributors' in patch) {
-      const contributors = validateContributors(patch.contributors);
+      const contributors = this.checkContributors(patch.contributors);
       if (contributors.length) anchor.contributors = contributors; else delete anchor.contributors;
     }
-    if ('origin' in patch && patch.origin !== undefined && patch.origin !== 'operator' && patch.origin !== 'teach') throw new Error('origin must be "operator" or "teach"');
-    if ('visibility' in patch && patch.visibility !== undefined && patch.visibility !== 'public' && patch.visibility !== 'test') throw new Error('visibility must be "public" or "test"');
+    if (patch.price !== undefined) anchor.price = validatePrice(patch.price);
+    if ('origin' in patch && patch.origin !== undefined && patch.origin !== 'operator' && patch.origin !== 'teach') throw new ValidationError('origin must be "operator" or "teach"');
+    if ('visibility' in patch && patch.visibility !== undefined && patch.visibility !== 'public' && patch.visibility !== 'test') throw new ValidationError('visibility must be "public" or "test"');
     if (patch.benchmark) anchor.benchmark_hash = hashCanonical({ schema: anchor.benchmark.schema, queries: anchor.benchmark.queries, format: anchor.benchmark.format, collateral_bound_nat: anchor.benchmark.collateral_bound_nat, samples: anchor.benchmark.samples ?? [] });
     this.store.putDraft(anchor, d.file_path);
     this.invalidate();
@@ -196,7 +227,7 @@ export class Market {
 
   deleteDraft(id: string) {
     const d = this.store.getDraft(id);
-    if (!d) throw new Error('draft not found');
+    if (!d) throw new NotFoundError('draft not found');
     this.store.deleteDraft(id);
     this.invalidate();
     this.log('info', 'patch', `draft deleted: ${id}`, id);
@@ -371,7 +402,13 @@ export class Market {
       return { error: `unsupported scheme ${String(scheme)}` };
     }
     const map = await this.entryMap();
-    const royalty = royaltySplit(entry, map, price, this.cfg.market.royaltyShare);
+    let royalty = royaltySplit(entry, map, price, this.cfg.market.royaltyShare);
+    // Never distribute more than was received (royaltySplit clamps, this is the last line of defence before real transfers).
+    const distributed = Object.values(royalty).reduce((a, b) => a + Number(b), 0);
+    if (!(distributed <= price + 1e-6)) {
+      this.log('error', 'trade', `royalty split for ${entry.anchor.id} adds up to ${distributed} > price ${price} — paying the seller only; check the lineage anchors`, entry.anchor.id, { royalty });
+      royalty = { [this.address]: String(price) };
+    }
     const settlement: Settlement = {
       patch_id: entry.anchor.id, seller: this.address, buyer, amount: String(price), currency: entry.anchor.currency, scheme,
       tx_hash: txHash, royalty, billing: entry.anchor.billing, created_at: Date.now(),
@@ -518,13 +555,25 @@ export class Market {
   private chatUsage = new Map<string, { count: number; window: number }>();
 
   /** Per-visitor trial quota for public live tests (operator is unlimited). Returns remaining or -1 when exhausted. */
-  chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true): number {
+  chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true, units = 1): number {
     const now = Date.now();
     const u = this.chatUsage.get(visitor);
     const cur = u && now - u.window < windowMs ? u : { count: 0, window: now };
-    if (cur.count >= limit) return -1;
-    if (consume) { cur.count++; this.chatUsage.set(visitor, cur); }
+    if (cur.count + units > limit) return -1;
+    if (consume) { cur.count += units; this.chatUsage.set(visitor, cur); }
     return limit - cur.count;
+  }
+
+  /**
+   * May `caller` load a DRAFT in a live test / as teach context? Operators always; a taught draft only its owner (the
+   * teach job's contributor key); operator drafts nobody else. Everything that is not a draft is public.
+   */
+  mayUseEntry(entry: CatalogEntry, caller: Caller | undefined): boolean {
+    if (entry.status !== 'DRAFT') return true;
+    if (caller?.operator) return true;
+    const addr = caller?.address?.toLowerCase();
+    if (!addr) return false;
+    return this.store.listTeachJobs({ draft_id: entry.anchor.id }).some((j) => j.contributor.toLowerCase() === addr);
   }
 
   /**
@@ -533,23 +582,24 @@ export class Market {
    * the last one wins on overlapping addresses → patched answer] → restore in reverse (remove what we added, re-apply
    * what we removed). Every patched answer is metered as one `usage` event PER PATCH (청구항 12 적중당 과금의 계량 단위).
    */
-  async chat(opts: { patchIds?: string[]; patchId?: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string }): Promise<{
+  async chat(opts: { patchIds?: string[]; patchId?: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string; caller?: Caller }): Promise<{
     patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
     applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
     applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; benchmark_hits: Record<string, boolean | null>;
   }> {
     const ids = [...new Set((opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean))];
-    if (ids.length === 0) throw new Error('patch_id or patch_ids required');
-    if (ids.length > MAX_CHAT_PATCHES) throw new Error(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together`);
+    if (ids.length === 0) throw new ValidationError('patch_id or patch_ids required');
+    if (ids.length > MAX_CHAT_PATCHES) throw new ValidationError(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together`);
     const st = await this.runtime.status();
     if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
     const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
     for (const id of ids) {
       const entry = await this.entry(id);
-      if (!entry) throw new Error(`patch not found: ${id}`);
+      // a private draft is invisible to everyone but its owner / the operator (same answer as GET /api/patches/:id)
+      if (!entry || !this.mayUseEntry(entry, opts.caller)) throw new NotFoundError(`patch not found: ${id}`);
       const blob = this.blobs.get(entry.anchor.patch_sha256);
-      if (!blob) throw new Error(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
-      if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new Error(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+      if (!blob) throw new ValidationError(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
+      if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw new ValidationError(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
       targets.push({ id, entry, path: blob.path });
     }
     const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));

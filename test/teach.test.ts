@@ -10,14 +10,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type NodeConfig, type PatchAnchor } from '@ngram/core';
+import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ngram/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { Runtime } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
+import { Store } from '../src/store.js';
+import { teachAuthHeaderFor } from '../src/teach-auth.js';
 import { renderRunLocally } from '../src/teach-recipe.js';
-import { checkDisplayName, slugify, type ChildLike, type ExecFn, type SpawnFn, type TeachJob } from '../src/teach.js';
+import { ACTIVE_JOBS_PER_KEY, checkDisplayName, normalizeDisplayName, slugify, type ChildLike, type ExecFn, type SpawnFn, type TeachJob } from '../src/teach.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-teach-test-'));
 const repo = join(tmp, 'repo');
@@ -27,11 +29,16 @@ const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 const teacher = createIdentity();
 const stranger = createIdentity();
-const hdr = (id = teacher) => ({ 'x-ngram-auth': authHeader(id, 'teach') });
+// `hdr()` marks a request to be signed with the request-bound v2 header (node address + method + path + body hash);
+// the `api()` helper below turns the marker into the real `x-ngram-auth` once method/path/body are known.
+const SIGN_AS = 'x-test-sign-as';
+const identities = new Map<string, Identity>();
+const hdr = (id = teacher) => { identities.set(id.address, id); return { [SIGN_AS]: id.address }; };
+const signedHeader = (id: Identity, node: string, method: string, path: string, body?: unknown) => teachAuthHeaderFor(id, { node, method, path, body: body === undefined ? null : JSON.stringify(body) });
 let opToken = '';
 
 // ---------------------------------------------------------------- fake trainer process
-type Scenario = 'ok' | 'error' | 'hang';
+type Scenario = 'ok' | 'error' | 'hang' | 'chunked';
 let scenario: Scenario = 'ok';
 const spawns: { args: string[]; cwd?: string }[] = [];
 const kills: string[] = [];
@@ -60,6 +67,7 @@ const fakeSpawn: SpawnFn = (_cmd, args, opts) => {
     w({ event: 'baseline', hits: 0, total, contrast: 2 });
     if (sc === 'error') { await sleep(10); stderr.write('Traceback…\n'); w({ event: 'error', message: 'CUDA out of memory (fake)' }); close(1); return; }
     if (sc === 'hang') return;   // stays alive until killed
+    if (sc === 'chunked') stdout.write('loading checkpoint shards: 100%|██████| 3/3\n');   // interleaved non-JSON stdout
     for (let step = 1; step <= 2; step++) { await sleep(10); w({ event: 'step', step, max_steps: 20, loss: 1 / step, hits: Math.round(total * step / 2), total, secs: 0.1, touched: 1, rows: 1 }); }
     w({ event: 'eval', step: 2, hits: total, total, heldout: job.facts.filter((f) => f.alt_prompt).length, heldout_total: job.facts.filter((f) => f.alt_prompt).length,
       facts: job.facts.map((f, i) => ({ fact: i, hits: 2, total: 2, heldout: f.alt_prompt ? 1 : 0, heldout_total: f.alt_prompt ? 1 : 0, after_answer: f.answer })) });
@@ -73,8 +81,15 @@ const fakeSpawn: SpawnFn = (_cmd, args, opts) => {
     };
     const { writeFileSync } = await import('node:fs');
     writeFileSync(join(dir, 'recipe.json'), JSON.stringify(recipe));
-    w({ event: 'done', rows: 1, npz: join(dir, 'lesson.npz'), recipe: join(dir, 'recipe.json'), hits: total, total, heldout: recipe.heldout.length, heldout_total: recipe.heldout.length, converged: true, steps: 2, load_s: 0.5, train_s: 1.2, avg_step_s: 0.1, total_s: 2.4,
+    const done = JSON.stringify({ event: 'done', rows: 1, npz: join(dir, 'lesson.npz'), recipe: join(dir, 'recipe.json'), hits: total, total, heldout: recipe.heldout.length, heldout_total: recipe.heldout.length, converged: true, steps: 2, load_s: 0.5, train_s: 1.2, avg_step_s: 0.1, total_s: 2.4,
       facts: job.facts.map((f, i) => ({ fact: i, base_answer: 'dunno', after_answer: f.answer, hit: true, heldout_hit: !!f.alt_prompt })) });
+    if (sc === 'chunked') {
+      // spec §13.3: one JSON line may arrive in several stdout chunks, and the last line may have no trailing newline
+      const a = Math.floor(done.length / 3), b = 2 * a;
+      stdout.write(done.slice(0, a)); await sleep(15); stdout.write(done.slice(a, b)); await sleep(15); stdout.write(done.slice(b));
+      await sleep(5); close(0); return;
+    }
+    stdout.write(done + '\n');
     close(0);
   })().catch((e) => { stderr.write(String(e)); close(1); });
   return child;
@@ -107,8 +122,8 @@ function knows(text: string): string | null {
   if (lessonLoaded() && stick && /^Q2 /.test(t)) return t.slice(3);
   return null;
 }
-function installFakeRuntime() {
-  const rt = N.market.runtime as unknown as Record<string, unknown>;
+function installFakeRuntime(node: RunningNode = N) {
+  const rt = node.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
     status: async () => ({ available: !runtimeDown, api: 'fake', model: 'demo-ngram-1b', hook: !runtimeDown, repo, applied: [], ...(runtimeDown ? { error: 'serving API unreachable' } : {}) }),
     isApplied: async (p: string) => { if (revertOnce && (p.includes('/.teach/') || p.includes('/teach/')) && table.has(p)) { revertOnce = false; table.delete(p); return false; } return table.has(p); },
@@ -126,7 +141,9 @@ function installFakeRuntime() {
 
 // ---------------------------------------------------------------- helpers
 const api = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
-  const r = await fetch(`${url}${path}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers }, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const h = { ...headers };
+  if (h[SIGN_AS]) { const id = identities.get(h[SIGN_AS])!; delete h[SIGN_AS]; h['x-ngram-auth'] = signedHeader(id, N.market.address, method, path, body); }
+  const r = await fetch(`${url}${path}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...h }, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json: unknown = null; try { json = JSON.parse(text); } catch { /* not json */ }
   return { status: r.status, json: json as Record<string, unknown> & { job?: TeachJob; error?: string }, text, headers: r.headers };
@@ -142,7 +159,7 @@ async function waitFor(id: string, statuses: string[], timeoutMs = 20_000): Prom
     await new Promise((r) => setTimeout(r, 50));
   }
 }
-const createJob = async (facts = FACTS, extra: Record<string, unknown> = {}, id = teacher) => api('POST', '/api/teach/jobs', { patch_ids: [], facts, contributor: { name: 'Test Teacher' }, ...extra }, hdr(id));
+const createJob = async (facts = FACTS, extra: Record<string, unknown> = {}, id = teacher, headers: Record<string, string> = {}) => api('POST', '/api/teach/jobs', { patch_ids: [], facts, contributor: { name: 'Test Teacher' }, ...extra }, { ...hdr(id), ...headers });
 
 before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'N', port: PORT, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
@@ -174,6 +191,29 @@ test('RUN-LOCALLY.md carries the sha, filename, download link and the English `a
   assert.equal(slugify('픽셀플러스 종목코드는?'), 'lesson'); assert.equal(slugify('What is the capital of Ainize Land?'), 'what-is-the-capital-of-a');
   assert.equal(checkDisplayName('Min-hyun 김'), null); assert.equal(checkDisplayName(undefined), null);
   assert.match(checkDisplayName('visit https://spam.example')!, /link/); assert.match(checkDisplayName('<b>x</b>')!, /link|markup/); assert.match(checkDisplayName('x'.repeat(41))!, /40/);
+  // Unicode bidi / zero-width controls are rejected (an RTL override renders "Op‮erator" on chips and the immutable record); NFKC + whitespace collapse before storing
+  assert.match(checkDisplayName('Op\u202eerator')!, /invisible/); assert.match(checkDisplayName('a\u200bb')!, /invisible/); assert.match(checkDisplayName('a\ufeffb')!, /invisible/); assert.match(checkDisplayName('x\u2066y')!, /invisible/);
+  assert.equal(normalizeDisplayName('  \uff2bim   Lee '), 'Kim Lee'); assert.equal(normalizeDisplayName('   '), undefined);
+});
+
+test('visitor auth: v2 header is bound to node + method + path + body and single-use; legacy `teach:<ts>` still works but an exact replay is refused', async () => {
+  const node = N.market.address;
+  const v2 = signedHeader(teacher, node, 'GET', '/api/teach/jobs');
+  const raw = (h: string, method = 'GET', path = '/api/teach/jobs', body?: unknown) => fetch(`${url}${path}`, { method, headers: { 'x-ngram-auth': h, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined });
+  assert.equal((await raw(v2)).status, 200);
+  assert.equal((await raw(v2)).status, 401, 'replay of the same v2 header');
+  assert.equal((await raw(signedHeader(teacher, node, 'GET', '/api/teach/jobs'), 'GET', '/api/teach/jobs?mine=1')).status, 401, 'different path');
+  assert.equal((await raw(signedHeader(teacher, node, 'GET', '/api/teach/jobs'), 'POST', '/api/teach/jobs', { facts: FACTS })).status, 401, 'different method');
+  assert.equal((await raw(signedHeader(teacher, stranger.address, 'GET', '/api/teach/jobs'))).status, 401, 'different node address');
+  const body = { patch_ids: [], facts: [{ prompt: 'known question', answer: 'known', base_answer: 'KNOWN' }] };
+  const tampered = await raw(signedHeader(teacher, node, 'POST', '/api/teach/jobs', body), 'POST', '/api/teach/jobs', { ...body, name: 'changed' });
+  assert.equal(tampered.status, 401, 'body hash mismatch');
+  const legacy = authHeader(teacher, 'teach');
+  assert.equal((await raw(legacy)).status, 200, 'legacy form accepted during the transition');
+  assert.equal((await raw(legacy)).status, 401, 'exact replay of a legacy header is refused');
+  assert.equal((await raw(legacy, 'GET', '/api/teach/jobs?mine=1')).status, 200, 'legacy: another route with the same header still works (documented gap until clients move to v2)');
+  assert.equal((await raw(`${teacher.address}:${Date.now()}:deadbeef:v3`)).status, 401, 'unknown version');
+  assert.equal((await api('GET', '/api/chat/patches', undefined, { 'x-ngram-auth': signedHeader(teacher, node, 'GET', '/api/chat/patches') })).json.teacher, teacher.address, 'chat/patches accepts v2 too');
 });
 
 test('policy: public, reports trainer/queue/limits/timing; visitor routes need a signature and the enabled flag', async () => {
@@ -205,6 +245,10 @@ test('preflight: already-known facts are skipped, static problems are invalid, c
   assert.equal(r.json.trainable, 1);
   assert.deepEqual(r.json.quota, { key_remaining: 50, ip_remaining: 100 });
   assert.equal(table.size, 0, 'table restored');
+  // live-test units a preflight costs: one per 3 model calls (facts + context blobs), charged to the IP and the key
+  assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1] }), 1); assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1, 2, 3] }), 1);
+  assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1, 2, 3, 4] }), 2); assert.equal(N.teach!.preflightUnits({ patchIds: ['a', 'b', 'c', 'a'], facts: [1, 2, 3, 4, 5, 6, 7, 8] }), 4);
+  assert.equal(N.market.chatQuota(`key:${teacher.address.toLowerCase()}`, 20, 3600_000, false), 19, 'the key bucket was charged one unit');
   const known = await createJob([{ prompt: 'known question', answer: 'known', base_answer: 'KNOWN' }]);
   assert.equal(known.status, 409); assert.match(known.json.error!, /^already_known/);
 });
@@ -212,7 +256,7 @@ test('preflight: already-known facts are skipped, static problems are invalid, c
 let job1: TeachJob;
 test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol) → EXPORTED → CHECKING → READY with a private draft', async () => {
   const before = N.store.events({ kind: 'teach', limit: 500 }).length;
-  const r = await createJob();
+  const r = await createJob(FACTS, {}, teacher, { 'x-forwarded-for': '203.0.113.77' });
   assert.equal(r.status, 202, r.text);
   assert.equal(r.json.job!.status, 'QUEUED'); assert.equal(r.json.job!.position, 0); assert.equal(r.json.job!.eta_s, null);
   assert.deepEqual(r.json.quota, { key_remaining: 49, ip_remaining: 99 });
@@ -241,6 +285,16 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   assert.ok(N.store.events({ kind: 'teach', limit: 500 }).length > before + 3, 'teach events written');
   const pol = await api('GET', '/api/teach/policy');
   assert.equal((pol.json.timing as { samples: number }).samples, 1, 'teach_stats recorded');
+  assert.equal((pol.json.queue as { position_eta_s: number | null }).position_eta_s, null, 'no projected duration below 3 samples (spec §8.4)');
+  // public events never carry the private draft id, the prompt (job name) or the teaching key; the operator sees them in data
+  const pubEv = (await api('GET', '/api/events?kind=teach&limit=100')).json.events as { message: string; data: Record<string, unknown> | null }[];
+  const mineEv = pubEv.filter((e) => e.data?.job_id === job1.id);
+  assert.ok(mineEv.some((e) => /^READY:/.test(e.message)) && mineEv.some((e) => /^training started \(gradient\)/.test(e.message)), 'public teach events keep their status lines');
+  for (const e of pubEv) { assert.ok(!e.message.includes(job1.draft_id!) && !/0x[0-9a-fA-F]{6}/.test(e.message) && !e.message.includes(FACTS[0].prompt), e.message); assert.deepEqual(Object.keys(e.data ?? {}), e.data ? ['job_id'] : []); }
+  const opEv = (await api('GET', '/api/events?kind=teach&limit=100', undefined, op())).json.events as { data: Record<string, unknown> | null }[];
+  assert.ok(opEv.some((e) => e.data?.draft_id === job1.draft_id), 'operator sees the draft id in data');
+  assert.ok(!(await api('GET', '/api/events?kind=patch&limit=200')).json.events!.some((e: { message: string }) => e.message.includes(job1.draft_id!)), 'no "draft created: <id>" line in public events');
+  assert.equal((await api('GET', `/api/patches/${job1.draft_id}/events`)).status, 404); assert.equal((await api('GET', `/api/patches/${job1.draft_id}/events`, undefined, op())).status, 200);
   // views: owner full, stranger redacted, operator full
   assert.equal(((await api('GET', `/api/teach/jobs/${job1.id}`)).json.job as TeachJob).facts, undefined);
   assert.deepEqual(Object.keys((await api('GET', `/api/teach/jobs/${job1.id}`, undefined, hdr(stranger))).json.job as object), ['id', 'status']);
@@ -257,7 +311,15 @@ test('Your lessons: the draft appears in /api/chat/patches for the owner only an
   const mine = await api('GET', '/api/chat/patches', undefined, hdr());
   assert.deepEqual((mine.json.lessons as { anchor: { id: string } }[]).map((l) => l.anchor.id), [job1.draft_id]); assert.equal(mine.json.teacher, teacher.address);
   assert.equal((await api('GET', '/api/chat/patches', undefined, hdr(stranger))).json.lessons!.length, 0);
-  const chat = await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] });
+  // a private draft is usable only by its owner (signed) or the operator: anonymous / stranger get the same 404 as a wrong id
+  const anonChat = await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] });
+  assert.equal(anonChat.status, 404, anonChat.text);
+  assert.equal((await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] }, hdr(stranger))).status, 404);
+  const strangerPre = await api('POST', '/api/teach/preflight', { patch_ids: [job1.draft_id], facts: [{ prompt: 'Q2 Ctx', answer: 'Ctx' }] }, hdr(stranger));
+  assert.equal(strangerPre.status, 400); assert.match(strangerPre.json.error!, /^invalid: unknown knowledge/);
+  assert.equal((await api('POST', '/api/teach/jobs', { patch_ids: [job1.draft_id], facts: [{ prompt: 'Q2 Ctx', answer: 'Ctx' }] }, hdr(stranger))).status, 400);
+  assert.equal((await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'base', messages: [{ role: 'user', content: FACTS[0].prompt }] }, op())).status, 200, 'operator may');
+  const chat = await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] }, hdr());
   assert.equal(chat.status, 200, chat.text);
   assert.equal((chat.json.base as { content: string }).content, 'I do not know.'); assert.equal((chat.json.patched as { content: string }).content, 'Patchville');
   assert.equal(table.size, 0);
@@ -269,6 +331,7 @@ test('save: token links download the npz (sha matches), recipe.json and RUN-LOCA
   assert.equal(r.status, 200, r.text);
   saved = r.json as unknown as typeof saved;
   assert.equal(saved.sha256, job1.result!.sha256); assert.equal(saved.filename, `lesson-${job1.draft_id!.slice(7)}.npz`);
+  assert.match(String((r.json as { repo_url: string }).repo_url), /finance-knowledge-training-demo/); assert.equal((r.json as { model_id: string }).model_id, 'demo-ngram-1b');
   const npz = await fetch(`${url}${saved.download.npz_url}`);
   assert.equal(npz.status, 200); assert.equal(npz.headers.get('x-content-sha256'), saved.sha256);
   assert.equal((await npz.arrayBuffer()).byteLength, job1.result!.size_bytes);
@@ -283,6 +346,18 @@ test('save: token links download the npz (sha matches), recipe.json and RUN-LOCA
 });
 
 test('publish (review mode): signed claim → PENDING_REVIEW → operator approves → ANNOUNCED with a verifiable contributor on the anchor', async () => {
+  // consent gate: the operator cannot announce a READY draft the owner never published
+  const early = await api('POST', `/api/me/teach/jobs/${job1.id}/approve`, {}, op());
+  assert.equal(early.status, 409, early.text); assert.match(early.json.error!, /^job_not_ready: the owner has not published/);
+  assert.equal(N.teach!.get(job1.id)!.status, 'READY'); assert.equal((await N.ledger.anchors()).some((a) => a.body.id === job1.draft_id), false);
+  // operator edits of a draft: validation errors are 400 / 409, never 500; negative prices are refused
+  assert.equal((await api('PATCH', `/api/patches/${job1.draft_id}`, { price: '-5' }, op())).status, 400);
+  assert.equal((await api('PATCH', `/api/patches/${job1.draft_id}`, { price: 'abc' }, op())).status, 400);
+  const badShare = await api('PATCH', `/api/patches/${job1.draft_id}`, { contributors: [{ address: stranger.address, share: 1.5 }] }, op());
+  assert.equal(badShare.status, 400); assert.match(badShare.json.error!, /share/);
+  assert.equal((await api('PATCH', `/api/patches/${job1.draft_id}`, { contributors: [{ address: N.market.address, share: 0.5 }] }, op())).status, 400, 'the node cannot be its own data provider');
+  assert.equal((await api('PATCH', '/api/patches/no-such-draft', { price: '1' }, op())).status, 409);
+  assert.equal(N.store.getDraft(job1.draft_id!)!.anchor.price, '0', 'draft untouched by the rejected edits');
   const ch = await api('GET', `/api/teach/jobs/${job1.id}/publish-challenge`, undefined, hdr());
   assert.equal(ch.status, 200, ch.text);
   assert.equal(ch.json.share, 0.7); assert.equal(ch.json.address, teacher.address); assert.equal(ch.json.signer, teacher.address);
@@ -299,7 +374,9 @@ test('publish (review mode): signed claim → PENDING_REVIEW → operator approv
   assert.deepEqual(draft.contributors, [{ address: teacher.address, name: 'Test Teacher', share: 0.7, role: 'data_provider', proof: 'signed', sig: body.claim_sig }]);
   const inbox = await api('GET', '/api/me/teach/jobs', undefined, op());
   const row = (inbox.json.items as (TeachJob & { ip: string })[]).find((j) => j.id === job1.id)!;
-  assert.equal(row.status, 'PENDING_REVIEW'); assert.equal(row.ip, '127.0.0.1');
+  assert.equal(row.status, 'PENDING_REVIEW'); assert.equal(row.ip, '127.0.0.1', 'X-Forwarded-For is ignored unless server.trustProxy is set');
+  const pendingProf = await api('GET', `/api/teacher/${teacher.address}`);
+  assert.deepEqual((pendingProf.json.lessons as { id: string; status: string }[]).map((l) => [l.id, l.status]), [[job1.id, 'PENDING_REVIEW']], 'pending lessons are referenced by job id, never by the private draft id');
   const ok = await api('POST', `/api/me/teach/jobs/${job1.id}/approve`, {}, op());
   assert.equal(ok.status, 200, ok.text); assert.equal(ok.json.status, 'ANNOUNCED'); assert.equal(ok.json.patch_id, job1.draft_id);
   const j = N.teach!.view(N.teach!.get(job1.id)!);
@@ -321,8 +398,46 @@ test('publish (review mode): signed claim → PENDING_REVIEW → operator approv
   await api('POST', `/api/me/teach/contributors/${teacher.address}`, { hidden: true }, op());
   assert.equal((((await api('GET', `/api/patches/${job1.draft_id}`)).json.anchor as PatchAnchor).contributors![0]).name, undefined);
   assert.equal((await api('GET', `/api/teacher/${teacher.address}`)).json.name, undefined);
+  const testable = ((await api('GET', '/api/chat/patches')).json.items as { anchor: PatchAnchor }[]).find((e) => e.anchor.id === job1.draft_id)!;
+  assert.ok(testable, 'announced lesson is testable'); assert.equal(testable.anchor.contributors![0].name, undefined, 'hidden name is redacted on /api/chat/patches too');
   await api('POST', `/api/me/teach/contributors/${teacher.address}`, { hidden: false }, op());
   assert.equal((((await api('GET', `/api/patches/${job1.draft_id}`)).json.anchor as PatchAnchor).contributors![0]).name, 'Test Teacher');
+  // publish_status announced → listed once the verifiers list the anchor (spec §6.5)
+  assert.equal(N.teach!.view(N.teach!.get(job1.id)!).publish_status, 'announced');
+  const att = (verifier: string) => ({ patch_id: job1.draft_id!, verifier, passed: true, verified_on: 'benchmark', score: { hits: 2, total: 2 }, created_at: Date.now() });
+  await N.ledger.append('attest', att('0x' + '7'.repeat(40)) as never); await N.ledger.append('attest', att('0x' + '8'.repeat(40)) as never);
+  N.market.invalidate();
+  assert.equal((await N.market.entry(job1.draft_id!))!.status, 'LISTED');
+  await N.teach!.reconcilePublished(Date.now() + 120_000);
+  assert.equal(N.teach!.view(N.teach!.get(job1.id)!).publish_status, 'listed');
+  assert.equal((await api('GET', `/api/teacher/${teacher.address}`)).json.lessons!.length, 1);
+});
+
+test('operator decline: REJECTED gets an expiry and the sweep removes the declined draft + files after draftTtlDays', async () => {
+  const r = await createJob([{ prompt: 'Q2 Decline', answer: 'Decline' }]);
+  const j = await waitFor(r.json.job!.id, ['READY']);
+  const ch = await api('GET', `/api/teach/jobs/${j.id}/publish-challenge`, undefined, hdr());
+  const pub = await api('POST', `/api/teach/jobs/${j.id}/publish`, { name: 'Declined lesson', claim_sig: signMessage(String(ch.json.claim), teacher.privateKey), consent: { permanent: true, rights: true } }, hdr());
+  assert.equal(pub.status, 200, pub.text);
+  const rej = await api('POST', `/api/me/teach/jobs/${j.id}/reject`, { reason: 'not for this node' }, op());
+  assert.equal(rej.status, 200, rej.text);
+  const row = N.teach!.get(j.id)!;
+  assert.equal(row.status, 'REJECTED'); assert.equal(row.publish_status, 'rejected'); assert.ok(row.expires_at && row.expires_at > Date.now() + 6 * 86_400_000, 'expiry set on decline');
+  assert.equal((await api('POST', `/api/me/teach/jobs/${j.id}/approve`, {}, op())).status, 409, 'a declined lesson cannot be approved');
+  N.store.updateTeachJob(j.id, { expires_at: Date.now() - 1 });
+  N.teach!.sweepExpired();
+  const after = N.teach!.get(j.id)!;
+  assert.equal(after.status, 'EXPIRED'); assert.equal(after.draft_id, null); assert.equal(after.reject_reason, 'not for this node');
+  assert.equal(N.store.getDraft(j.draft_id!), null); assert.ok(!existsSync(join(repo, '.teach', j.id)));
+  // FAILED rows lose their files after the TTL too (status unchanged)
+  scenario = 'error';
+  const f = await createJob([{ prompt: 'Q2 OldFail', answer: 'OldFail' }]);
+  const fj = await waitFor(f.json.job!.id, ['FAILED']);
+  scenario = 'ok';
+  assert.ok(existsSync(join(repo, '.teach', fj.id)));
+  N.store.updateTeachJob(fj.id, { finished_at: Date.now() - 8 * 86_400_000 });
+  N.teach!.sweepExpired();
+  assert.equal(N.teach!.get(fj.id)!.status, 'FAILED'); assert.ok(!existsSync(join(repo, '.teach', fj.id))); assert.equal(N.teach!.get(fj.id)!.job_dir, null);
 });
 
 test('publish (auto mode) with a declared payout wallet announces directly; credit-only gives share 0', async () => {
@@ -338,9 +453,16 @@ test('publish (auto mode) with a declared payout wallet announces directly; cred
   const rec = (await N.ledger.anchors()).find((a) => a.body.id === job.draft_id)!;
   assert.deepEqual(rec.body.contributors, [{ address: wallet, signer: teacher.address, name: 'Test Teacher', share: 0.7, role: 'data_provider', proof: 'declared', sig: pub.json && (N.teach!.get(job.id) && rec.body.contributors![0].sig) }]);
   assert.deepEqual(rec.body.parents, [], 'no LISTED context → no parents even with builds_on');
+  // attribution: the lesson is shown under the SIGNER's page, never under the declared payout wallet (it only receives money)
+  assert.deepEqual((await api('GET', `/api/teacher/${wallet}`)).json.lessons, []);
+  assert.ok(((await api('GET', `/api/teacher/${teacher.address}`)).json.lessons as { id: string }[]).some((l) => l.id === job.draft_id));
+  assert.equal(((await api('GET', `/api/catalog?contributor=${wallet}`)).json.items as unknown[]).length, 0);
+  assert.ok(((await api('GET', `/api/catalog?contributor=${teacher.address}`)).json.items as { anchor: PatchAnchor }[]).some((e) => e.anchor.id === job.draft_id));
   // credit only
   const r2 = await createJob([{ prompt: 'Q2 Beta', answer: 'Beta' }]);
   const job2 = await waitFor(r2.json.job!.id, ['READY']);
+  const selfPay = await api('GET', `/api/teach/jobs/${job2.id}/publish-challenge?payout_address=${N.market.address}`, undefined, hdr());
+  assert.equal(selfPay.status, 400, 'the node cannot be named as the payout wallet');
   const ch2 = await api('GET', `/api/teach/jobs/${job2.id}/publish-challenge?payout_address=none`, undefined, hdr());
   assert.equal(ch2.json.share, 0);
   const pub2 = await api('POST', `/api/teach/jobs/${job2.id}/publish`, { name: 'Beta lesson', payout_address: null, claim_sig: signMessage(String(ch2.json.claim), teacher.privateKey), consent: { permanent: true, rights: true } }, hdr());
@@ -388,16 +510,42 @@ test('cancel while TRAINING kills the trainer and ends CANCELLED; cancel of a pr
   assert.equal((await fetch(`${url}${s.download.npz_url}`)).status, 404, 'blob gone');
 });
 
-test('trainer slot busy (operator job in the container) keeps the lesson QUEUED with blocked=slot until it frees', async () => {
+test('trainer slot busy (operator job in the container) keeps the lesson QUEUED with blocked=slot until it frees; one key may have at most ACTIVE_JOBS_PER_KEY lessons in flight', async () => {
   slotBusy = true; N.teach!.invalidatePolicy();
-  const r = await createJob([{ prompt: 'Q2 Slot', answer: 'Slot' }]);
-  await new Promise((res) => setTimeout(res, 400));
-  const j = N.teach!.view(N.teach!.get(r.json.job!.id)!);
-  assert.equal(j.status, 'QUEUED'); assert.equal(j.blocked, 'slot'); assert.equal(j.eta_s, null);
-  assert.equal((await api('GET', '/api/teach/policy')).json.trainer, 'busy');
-  slotBusy = false;
+  let r: Awaited<ReturnType<typeof createJob>>, r2: Awaited<ReturnType<typeof createJob>>, other: Awaited<ReturnType<typeof createJob>>;
+  try {
+    r = await createJob([{ prompt: 'Q2 Slot', answer: 'Slot' }]);
+    await new Promise((res) => setTimeout(res, 400));
+    const j = N.teach!.view(N.teach!.get(r.json.job!.id)!);
+    assert.equal(j.status, 'QUEUED'); assert.equal(j.blocked, 'slot'); assert.equal(j.eta_s, null, 'no eta while the slot is taken');
+    assert.equal((await api('GET', '/api/teach/policy')).json.trainer, 'busy');
+    r2 = await createJob([{ prompt: 'Q2 Slot2', answer: 'Slot2' }]);
+    assert.equal(r2.status, 202, r2.text);
+    assert.equal(ACTIVE_JOBS_PER_KEY, 2);
+    const r3 = await createJob([{ prompt: 'Q2 Slot3', answer: 'Slot3' }]);
+    assert.equal(r3.status, 429); assert.match(r3.json.error!, /^quota_key: you already have 2 lesson/);
+    other = await createJob([{ prompt: 'Q2 SlotK', answer: 'SlotK' }], {}, stranger);
+    assert.equal(other.status, 202, 'another key is not affected');
+    const queued = N.teach!.view(N.teach!.get(r2.json.job!.id)!);
+    assert.equal(queued.position, 1); assert.equal(typeof queued.eta_s, 'number', '≥ 3 lessons were measured by now → a projected duration is allowed');
+  } finally { slotBusy = false; }
   const done = await waitFor(r.json.job!.id, ['READY']);
   assert.equal(done.blocked, null);
+  await waitFor(r2.json.job!.id, ['READY']); await waitFor(other.json.job!.id, ['READY']);
+  const pol = await api('GET', '/api/teach/policy');
+  assert.ok((pol.json.timing as { samples: number }).samples >= 3);
+  const r4 = await createJob([{ prompt: 'Q2 Eta', answer: 'Eta' }]);
+  assert.equal(typeof r4.json.job!.eta_s, 'number', 'projected duration once ≥ 3 lessons were measured');
+  await waitFor(r4.json.job!.id, ['READY']);
+});
+
+test('stdout protocol: a JSON line split across chunks, interleaved plain text and a final line without newline are parsed', async () => {
+  scenario = 'chunked';
+  try {
+    const r = await createJob([{ prompt: 'Q2 Chunk', answer: 'Chunk' }]);
+    const j = await waitFor(r.json.job!.id, ['READY']);
+    assert.equal(j.result!.rows, 1); assert.equal(j.progress!.step, 2); assert.equal(j.facts[0].hit, true);
+  } finally { scenario = 'ok'; }
 });
 
 test('gates: locality regression → READY but publish gated (checks_failed), save allowed; NEEDS_MORE when it did not stick; restart mid-check → reverted_and_reapplied', async () => {
@@ -444,7 +592,7 @@ test('model server down for the whole grace → READY unchecked (publish gated);
   const j = await waitFor(r.json.job!.id, ['READY'], 10_000);
   assert.equal(j.checks!.executed, false); assert.equal(j.checks!.ok, false); assert.ok(j.draft_id, 'draft created even unchecked');
   const gated = await api('GET', `/api/teach/jobs/${j.id}/publish-challenge`, undefined, hdr());
-  assert.equal(gated.status, 409); assert.match(gated.json.error!, /^checks_failed/);
+  assert.equal(gated.status, 409); assert.match(gated.json.error!, /^job_not_ready: this lesson has not been measured/, 'nothing was measured — not a "checks failed" message');
   assert.equal((await api('POST', `/api/teach/jobs/${j.id}/save`, {}, hdr())).status, 200, 'save works unchecked');
   runtimeDown = false;
   const rc = await api('POST', `/api/teach/jobs/${j.id}/recheck`, {}, hdr());
@@ -486,7 +634,7 @@ test('quotas and bans: quota_key / quota_ip → 429, banned key → 403, ban rem
   assert.equal((await api('GET', '/api/teach/jobs?mine=1', undefined, hdr())).status, 200);
   const contributors = await api('GET', '/api/me/teach/contributors', undefined, op());
   const me = (contributors.json.items as { address: string; jobs: number; published: number }[]).find((c) => c.address === teacher.address)!;
-  assert.ok(me.jobs >= 10); assert.equal(me.published, 3);
+  assert.ok(me.jobs >= 10); assert.equal(me.published, 4);
 });
 
 test('stub backend: no docker — copies fixture rows (1 row without the 픽셀플러스 fixture) and still runs the whole flow', async () => {
@@ -518,7 +666,8 @@ test('stub backend offline (stubOffline): preflight + checks simulated without t
     assert.equal(j1.facts.length, 1, 'known fact dropped by the worker preflight');
     assert.equal(j1.checks!.executed, true); assert.equal(j1.checks!.ok, false); assert.equal(j1.checks!.locality.ok, false);
     assert.equal(j1.checks!.taught.hits, 2); assert.equal(j1.checks!.heldout.hits, 1); assert.equal(j1.facts[0].after_answer, 'OFF-1');
-    assert.match(String(j1.checks!.note), /simulated/);
+    assert.match(String(j1.checks!.note), /simulated/); assert.equal(j1.checks!.simulated, true);
+    assert.equal((await api('GET', '/api/teach/policy')).json.simulated_checks, true, 'policy tells the UI the checks are simulated');
     const gated = await api('GET', `/api/teach/jobs/${j1.id}/publish-challenge`, undefined, hdr());
     assert.equal(gated.status, 409); assert.match(String(gated.json.error), /^checks_failed/);
     const saved = await api('POST', `/api/teach/jobs/${j1.id}/save`, {}, hdr());
@@ -534,4 +683,54 @@ test('stub backend offline (stubOffline): preflight + checks simulated without t
   } finally {
     runtimeDown = false; N.cfg.teach!.backend = 'gradient'; N.cfg.teach!.stubOffline = false; N.teach!.invalidatePolicy();
   }
+});
+
+// ---------------------------------------------------------------- second node: graceful stop + crash recovery (spec §8.5, security review §6)
+const home2 = join(tmp, 'N2'); const repo2 = join(tmp, 'repo2');
+mkdirSync(join(repo2, 'ple_patch'), { recursive: true });
+const PORT2 = 34042; const url2 = `http://127.0.0.1:${PORT2}`;
+async function startSecond(): Promise<RunningNode> {
+  const cfg: NodeConfig = defaultConfig({ home: home2, name: 'N2', port: PORT2, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
+  cfg.runtime = { repo: repo2, api: 'http://127.0.0.1:1', python: 'python3' };
+  cfg.host = '127.0.0.1'; cfg.publicUrl = url2; cfg.gossipIntervalMs = 60_000;
+  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'gradient', publish: 'review', jobsPerKeyPerDay: 50, jobsPerIpPerDay: 100, trainer: { ...cfg.teach!.trainer, timeoutMs: 60_000 } };
+  return startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { spawn: fakeSpawn, exec: fakeExec, intervalMs: 60, stubDelayMs: 5, runtimeGraceMs: 300, retryMs: 100 } });
+}
+
+test('graceful stop during TRAINING requeues the lesson (not FAILED), terminates the in-container process and keeps the restart marker clear', async () => {
+  const N2 = await startSecond();
+  scenario = 'hang'; kills.length = 0; execs.length = 0;
+  let id = '';
+  try {
+    const body = { patch_ids: [], facts: [{ prompt: 'Q2 StopTrain', answer: 'StopTrain' }] };
+    const r = await fetch(`${url2}/api/teach/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ngram-auth': signedHeader(teacher, N2.market.address, 'POST', '/api/teach/jobs', body) }, body: JSON.stringify(body) });
+    const text = await r.text();
+    assert.equal(r.status, 202, text);
+    id = (JSON.parse(text) as { job: { id: string } }).job.id;
+    const t0 = Date.now();
+    while (N2.teach!.get(id)!.status !== 'TRAINING' && Date.now() - t0 < 10_000) await new Promise((res) => setTimeout(res, 30));
+    assert.equal(N2.teach!.get(id)!.status, 'TRAINING');
+  } finally { await N2.stop(); scenario = 'ok'; }
+  const db = new Store(join(home2, 'data', 'node.sqlite'));
+  try {
+    const j = db.getTeachJob(id)!;
+    assert.equal(j.status, 'QUEUED', j.error ?? ''); assert.equal(j.error, null); assert.equal(j.container_pid, null); assert.equal(j.progress, null);
+    assert.equal(db.get(`teach:restarts:${id}`), null, 'a graceful stop is not a crash: the once-only requeue is still available');
+    assert.ok(kills.includes('SIGTERM')); assert.ok(execs.includes('docker exec flashtrain kill -TERM 4242'), 'in-container trainer terminated on stop');
+    // simulate a crash mid-CHECKING for the next start: lesson applied to the shared table, row still CHECKING
+    const dir = join(repo2, '.teach', id); mkdirSync(dir, { recursive: true }); tinyNpz(join(dir, 'lesson.npz'), 4242n);
+    db.updateTeachJob(id, { status: 'CHECKING', job_dir: dir, npz_path: join(dir, 'lesson.npz'), lesson_applied: true });
+  } finally { db.close(); }
+  table.set(join(repo2, '.teach', id, 'lesson.npz'), ++seq);
+  const N3 = await startSecond();
+  try {
+    installFakeRuntime(N3);
+    const t0 = Date.now();
+    while (N3.teach!.get(id)!.lesson_applied && Date.now() - t0 < 10_000) await new Promise((res) => setTimeout(res, 30));
+    const j = N3.teach!.get(id)!;
+    assert.equal(j.lesson_applied, false, 'flag cleared after the table was restored');
+    assert.ok(!table.has(join(repo2, '.teach', id, 'lesson.npz')), 'the lesson left applied by the crash was removed before anything else ran');
+    assert.ok(['EXPORTED', 'CHECKING', 'READY', 'NEEDS_MORE'].includes(j.status), `re-check queued (${j.status})`);
+    assert.ok(N3.store.events({ kind: 'teach', limit: 50 }).some((e) => /table restored/.test(e.message)));
+  } finally { await N3.stop(); }
 });

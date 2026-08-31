@@ -81,3 +81,17 @@ script ships with `backend: "stub"` and a clearly marked `TEACH_BACKEND` switch 
 
 From the terminal: `ainize teach status <node-url>` (policy, trainer, queue), `ainize teach status <lesson-url> --key-file <backup.json>`
 (one lesson), `ainize patch import lesson.npz --recipe recipe.json` (run a downloaded lesson on your own node as a private draft).
+
+### 3. Behind a reverse proxy — `server.trustProxy`
+
+Per-IP controls (live-test quota, `jobsPerIpPerDay`, IP bans, the policy rate limit, the `ip` column of the operator queue) key
+on Express's `req.ip`. By default (`"server": { "trustProxy": false }`) that is the TCP peer, so a client cannot choose its own
+address with `X-Forwarded-For`. When the node runs behind nginx / caddy / a load balancer, every visitor would otherwise look like
+the proxy — set the knob to what is actually in front of the node and nothing more:
+
+```json
+"server": { "trustProxy": 1 }            // one proxy hop (most setups); or "loopback", or "10.0.0.0/8, 172.16.0.1"
+```
+
+or `NGRAM_TRUST_PROXY=1` in the environment (`0`/`false` = off). Never set `true` on a node that is reachable directly:
+that trusts whatever the client puts in the header.

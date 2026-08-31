@@ -1,12 +1,13 @@
 export { startNode, type RunningNode, type StartOptions } from './server.js';
-export { Market, type CreateDraftInput, type PurchaseResult, type ConflictInfo, type TeachSettings } from './market.js';
+export { Market, ConflictError, NotFoundError, type Caller, type CreateDraftInput, type PurchaseResult, type ConflictInfo, type TeachSettings } from './market.js';
 export { TeachWorker, TeachError, type TeachJob, type TeachJobPublic, type TeachPolicyView, type TeachChecks, type TeachHooks, type TeachStatus } from './teach.js';
 export { renderRunLocally, buildRecipeJson, lessonBenchmark, type TrainerRecipe } from './teach-recipe.js';
 export { Store, type PayoutRow } from './store.js';
-export { Payouts, PayoutError, PAYOUT_MAX_ATTEMPTS, PAYOUT_RETRY_MS, type PayoutWallet, type PayoutRun } from './payouts.js';
+export { Payouts, PayoutError, PAYOUT_MAX_ATTEMPTS, PAYOUT_RETRY_MS, PAYOUT_INTERRUPTED, type PayoutWallet, type PayoutRun } from './payouts.js';
 export { BlobStore, sha256File } from './blobs.js';
 export { Runtime } from './runtime.js';
 export { P2P, authHeader, verifyAuthHeader } from './p2p.js';
+export { TeachAuth, teachAuthHeaderFor, teachAuthMessage, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, type TeachAuthTarget } from './teach-auth.js';
 export { Verifier } from './verifier.js';
 export { seedDemo, type SeedOptions, type SeedReport } from './seed.js';
 export { Drive } from './drive.js';

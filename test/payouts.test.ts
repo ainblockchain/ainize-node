@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, defaultConfig, type NodeConfig, type Settlement } from '@ngram/core';
 import { Store } from '../src/store.js';
-import { Payouts, PayoutError, type PayoutWallet } from '../src/payouts.js';
+import { Payouts, PayoutError, PAYOUT_INTERRUPTED, type PayoutWallet } from '../src/payouts.js';
 import { startNode, type RunningNode } from '../src/server.js';
 
 const SELF = '0x1111111111111111111111111111111111111111';
@@ -141,6 +141,61 @@ test('concurrent processPending calls serialise (one transfer per row)', async (
   assert.equal(store.listPayouts({ status: 'paid' }).length, 2);
 });
 
+test('no double transfer: an operator retry while the timer pass is mid-transfer, and a stale snapshot, issue exactly one transfer per row', async () => {
+  const w = fakeWallet();
+  let release!: () => void;
+  const gate = new Promise<void>((res) => { release = res; });
+  let started = 0;
+  const slow = { calls: w.calls, async transfer(to: string, value: number) { started++; await gate; return w.transfer(to, value); } } as PayoutWallet & { calls: typeof w.calls };
+  const { store, p } = mk(slow);
+  const [row] = p.enqueue(settle({ royalty: { [SELF]: '7', [TEACHER]: '3' } }), 'h1');
+  const pass = p.processPending();                       // timer pass: claims the row, transfer pending
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(store.getPayout(row.id)!.status, 'paying', 'claimed atomically before the transfer');
+  const retry = p.retry(row.id);                         // operator clicks Retry while the transfer is in flight
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(started, 1, 'no second transfer was started');
+  release();
+  const [run, r] = await Promise.all([pass, retry]);
+  assert.deepEqual(run, { attempted: 1, paid: 1, failed: 0 });
+  assert.equal(r.status, 'paid'); assert.equal(r.attempts, 1); assert.equal(slow.calls.length, 1);
+  // a failed row: retry and the timer racing → still one transfer
+  const w2 = fakeWallet(); w2.failing = true;
+  const m2 = mk(w2, { retryMs: 1 });
+  const [f] = m2.p.enqueue(settle({ royalty: { [CREATOR]: '1' } }), 'h2');
+  await m2.p.processPending();
+  assert.equal(m2.store.getPayout(f.id)!.status, 'failed');
+  w2.failing = false;
+  await new Promise((res) => setTimeout(res, 5));
+  await Promise.all([m2.p.processPending(), m2.p.retry(f.id), m2.p.retry(f.id)]);
+  assert.equal(w2.calls.length, 2, 'one failed attempt + one successful attempt, never two live transfers');
+  assert.equal(m2.store.getPayout(f.id)!.status, 'paid'); assert.equal(m2.store.getPayout(f.id)!.attempts, 2);
+  assert.deepEqual(m2.store.payoutSummary(), { pending: 0, failed: 0, paid: 1 });
+});
+
+test('a row left "paying" by a crash is never re-sent automatically: at start it becomes failed (attempts exhausted, PAYOUT_INTERRUPTED) until the operator confirms and retries', async () => {
+  const w = fakeWallet();
+  const store = new Store(':memory:');
+  const first = new Payouts(store, () => undefined, w, { selfAddress: SELF, retryMs: 20, maxAttempts: 3 });
+  const [row] = first.enqueue(settle({ royalty: { [TEACHER]: '2' } }), 'h1');
+  assert.equal(store.claimPayout(row.id), true, 'claim wins once');
+  assert.equal(store.claimPayout(row.id), false, 'a second claim of the same row fails');
+  assert.equal(store.getPayout(row.id)!.status, 'paying'); assert.deepEqual(store.payoutSummary(), { pending: 1, failed: 0, paid: 0 });
+  // "crash" here: the process died between wallet.transfer and updatePayout. New process:
+  const second = new Payouts(store, (level, kind, message) => logs.push({ level, kind, message }), w, { selfAddress: SELF, retryMs: 20, maxAttempts: 3 });
+  second.start();
+  try {
+    await new Promise((res) => setTimeout(res, 80));
+    const r = store.getPayout(row.id)!;
+    assert.equal(r.status, 'failed'); assert.equal(r.last_error, PAYOUT_INTERRUPTED); assert.equal(r.attempts, 3);
+    assert.equal(w.calls.length, 0, 'no blind re-send');
+    assert.equal(second.due().length, 0);
+    assert.ok(logs.some((l) => /mid-transfer/.test(l.message)));
+    const paid = await second.retry(row.id);
+    assert.equal(paid.status, 'paid'); assert.equal(w.calls.length, 1); assert.equal(paid.attempts, 4);
+  } finally { second.stop(); }
+});
+
 // ---------------------------------------------------------------- HTTP: operator endpoints + public teacher reconciliation
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-payouts-test-'));
 const PORT = 34051;
@@ -177,6 +232,7 @@ test('local ledger: no chain wallet, settlement path writes no payouts for local
   assert.equal(r.json.wallet, false);
   assert.equal(r.json.max_attempts, 20); assert.equal(r.json.retry_ms, 60_000);
   assert.equal((await api('GET', '/api/me/payouts?status=bogus', undefined, op())).status, 400);
+  assert.equal((await api('GET', '/api/me/payouts?status=paying', undefined, op())).status, 200);
 });
 
 test('GET /api/teacher/:address reconciles owed (settle records) vs paid (payouts); /api/me/payouts list, filter and retry', async () => {
