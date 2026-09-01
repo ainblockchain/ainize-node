@@ -1325,48 +1325,41 @@ test.describe('operator: fourth node', () => {
     r = await runCli(['patch', 'get', id], A);
     expect(r.stdout).not.toContain('hash-only');
 
+    // Let the demo verifiers have the model back: they reach quorum on their own while node-d's serving port is still
+    // closed, so the scenario's "third attestation" really is the third one.
+    release();
+    const twoRows = (x: { stdout: string }) => / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '')
+      && x.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length === 2;
+    const quorum = await pollUntil(() => runCli(['patch', 'get', id], A), twoRows, 12 * 60_000, 5000);
+    expect(quorum.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+    expect(quorum.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+    expect(quorum.stdout, 'node-d wrote nothing while its serving API was down').not.toContain(`node-d ${shortAddr(addrD, 6)}`);
+    expect(quorum.stdout).not.toContain('hash-only');
+
+    // Step 4 — restore node-d's serving API and restart it
     r = await runCli(['config', 'set', 'runtime.api', VLLM], D);
     expect(r.stdout.trim()).toBe(`✓ runtime.api = ${JSON.stringify(VLLM)}  (restart the node to apply)`);
     r = await runCli(['stop'], D);
     expect(r.stdout.trim()).toMatch(/^✓ stopped node \(pid \d+\)$/);
     r = await startNodeD();
     expect(r.stdout).toMatch(/^✓ node started in the background/);
-    const restartedAt = Date.now();
     await waitForRuntime(request, NODE_D);
-    // node-d's runtime is back before any verifier could reach quorum — now let all three compete for the model again
-    release();
 
-    // Steps 5-6: node-d verifies the pending patch FOR REAL now that its runtime is back. Its background round picks the
-    // item up while it is still ANNOUNCED/VERIFYING; should node-b/node-c reach quorum first (a verifier skips a LISTED
-    // item), node-d is driven explicitly through the same code path so the executed attestation is asserted either way.
-    const outcome = await pollUntil(async () => {
-      const dlog = await runCli(['logs', '--limit', '80'], D);
-      const attested = dlog.stdout.includes(`attested ${id}: `);
-      const g = await runCli(['patch', 'get', id], A);
-      const listed = / {2}LISTED/.test(g.stdout.split('\n')[0] ?? '');
-      const idle = listed && !(await api<{ lock: unknown }>(request, '/api/chat/patches', { node: NODE_D })).body.lock
-        && !dlog.stdout.split('\n').some((l) => l.includes(`verifying ${id}`) && new Date(l.slice(0, 19)).getTime() > restartedAt)
-        && Date.now() - restartedAt > 90_000;
-      return { attested, idle, dlog: dlog.stdout, get: g.stdout };
-    }, (o) => o.attested || o.idle, 12 * 60_000, 10_000);
-    expect(outcome.get).not.toContain('hash-only');
-    expect(outcome.dlog).not.toContain('hash-only)');
-    if (!outcome.attested) {
-      // node-b + node-c completed the quorum first, so node-d's verifier skipped the LISTED item — ask it directly
-      test.info().annotations.push({ type: 'note', description: `node-b/node-c listed ${id} before node-d's background round reached it — node-d's executed attestation is driven explicitly (POST /api/patches/${id}/verify)` });
-      await waitForLockFree(request, NODE_D);
-      const tokenD = await operatorToken(request, NODE_D);
-      const v = await api<{ attestation: { verified_on: string; passed: boolean; verifier: string; score: Record<string, string> } }>(request, `/api/patches/${id}/verify`, { method: 'POST', token: tokenD, node: NODE_D });
-      expect(v.status, JSON.stringify(v.body)).toBe(200);
-      expect(v.body.attestation.verified_on).toBe(`vllm:${MODEL}`);
-      expect(v.body.attestation.passed).toBe(true);
-      expect(v.body.attestation.verifier).toBe(addrD);
-    }
+    // Step 5 — node-d verifies the patch FOR REAL now that its runtime is back. Its background round deliberately skips
+    // an item that is already LISTED (verifier.ts only picks up ANNOUNCED/VERIFYING/CHALLENGED), so the operator asks it
+    // directly — the same verifyOne() the round would have called, and the only deterministic way to get the third vote.
+    await waitForLockFree(request, NODE_D);
+    const tokenD = await operatorToken(request, NODE_D);
+    const v = await api<{ attestation: { verified_on: string; passed: boolean; verifier: string; score: Record<string, string> } }>(request, `/api/patches/${id}/verify`, { method: 'POST', token: tokenD, node: NODE_D });
+    expect(v.status, JSON.stringify(v.body)).toBe(200);
+    expect(v.body.attestation.verified_on).toBe(`vllm:${MODEL}`);
+    expect(v.body.attestation.passed).toBe(true);
+    expect(v.body.attestation.verifier).toBe(addrD);
     const dlog2 = await pollUntil(() => runCli(['logs', '--limit', '80'], D), (x) => x.stdout.includes(`attested ${id}: `), 3 * 60_000, 5000);
     expect(dlog2.stdout).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
     expect(dlog2.stdout).not.toContain('hash-only)');
 
-    // step 6: node-d's row is the third attestation, VERIFIED ON the real model, on a LISTED item
+    // Step 6 — node-d's row is the third attestation, VERIFIED ON the real model, on a LISTED item
     const listedWithD = (x: { stdout: string }) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`) && / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '');
     const g = await pollUntil(() => runCli(['patch', 'get', id], A), listedWithD, 12 * 60_000, 5000);
     expect(g.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
