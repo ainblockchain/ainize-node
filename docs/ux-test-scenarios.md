@@ -5161,7 +5161,7 @@ just prose, nothing else
 - Preview page: stepper 'Step 2 of 5 · Check'; H1 'Check your dataset'; subtitle '3 questions from az-facts.jsonl. Fix anything marked in red, then see which ones the model already knows.'
 - Bar: 'Fingerprint <12 hex>' (dataset.sha256 over the CANONICAL rows.jsonl, not the uploaded bytes) and 'Saved as az-facts.jsonl — you can train from it again any time.'
 - [data-testid=row-counts] reads '3 will train · 0 already known · 0 duplicates · 0 need a fix'. Three [data-testid=dataset-row] rows with lines 1,2,3, the alt_prompt shown only on row 1, status pill 'Will train' + help 'Not checked yet'.
-- Buttons present: 'Check what the model already knows', 'Add a question', 'Download this dataset (.jsonl)', 'Wrong columns or separator?' (the last only because dataset.status === 'staged'), and a sticky 'Continue to settings'.
+- Buttons present: 'Check (simulated on this node)' (node-u answers the check itself — policy.simulated_checks true; a node with a model server reads 'Check what the model already knows'), 'Add a question', 'Download this dataset (.jsonl)', 'Wrong columns or separator?' (the last only because dataset.status === 'staged'), and a sticky 'Continue to settings'.
 - Back on /teach/upload, [data-testid=key-note] reads "Your dataset was signed with this browser's teaching key (0x….…). Lose the key and you lose access to your datasets and lessons — back it up." followed by the link 'Back up the key' → /chat?mine=1; localStorage now holds 'ainize.teacher.key' and 'ainize.teach.datasets'.
 - /teach/mine lists one [data-testid=dataset-card] named az-facts.jsonl with '3 questions', 'Uploaded file', 'Not trained yet'.
 - After the delete the card is gone and GET /api/teach/datasets/<id> (signed) answers 404 'dataset_not_found: no such dataset on this node'.
@@ -6145,15 +6145,15 @@ not two columns
 {"prompt":"종목코드 087600은 픽셀플러스인가요?","answer":"픽셀플러스"}
 {"prompt":"Who founded Ainize?","answer":"Comcom","alt_prompt":"Which company is behind Ainize?"}
 {"prompt":"When did Ainize start?","answer":"2020"}
-2. Press 'Check what the model already knows' ([data-testid=run-check]) and wait for the verdicts
-3. Record every row's status pill, its 'It answered: …' help line, [data-testid=checked-note] and the counts pill
+2. Read the simulated-checks banner and the button, then press 'Check (simulated on this node)' ([data-testid=run-check]) and wait for the verdicts
+3. Record every row's status pill, its simulated-answer help line, [data-testid=checked-note] and the counts pill
 4. Press 'Edit' on row 2, change the answer to 'Comcom Inc.' and press 'Save'
 5. Re-read every row, the checked note and the pill
 6. Repeat the invalidation check for 'Remove' on row 3 and for 'Read it again' ([data-testid=open-reparse] → [data-testid=reparse-go])
 
 **Expected**
 
-- After the check: row 1 grey 'Already known — skipped' with 'It answered: 픽셀플러스'; rows 2 and 3 green 'Will train' with 'It answered: (stub model) I do not know: …'; [data-testid=checked-note] 'Checked: 2 of 3 are wrong today and will train.'; pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'
+- Before the check: [data-testid=checks-simulated] reads 'Demo node — these checks were simulated, not measured in a live model.' and the button reads 'Check (simulated on this node)'. After it: row 1 grey 'Already known — skipped' with 'Simulated answer (no model was asked): 픽셀플러스'; rows 2 and 3 green 'Will train' with 'Simulated answer (no model was asked): (stub model) I do not know: …' in the warning tone (#8a4b00); [data-testid=checked-note] 'Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.'; pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'
 - After the edit: EVERY row (not only the edited one) is back to 'Not checked yet', the checked-note is gone, the pill reads '3 will train · 0 already known · 0 duplicates · 0 need a fix', and dataset.revision is 2 with a new fingerprint
 - The same clearing happens after a Remove and after a re-read (reparse) — no verdict survives a revision change
 - No verdict is ever shown for a row that was not measured, and the model's own sentence is quoted verbatim under the pill
@@ -6317,16 +6317,16 @@ Who founded Ainize?,Comcom
 **Steps**
 
 1. Upload az157-sample.jsonl with 30 lines: rows 1, 5, 9 and 13 are self-answering ({"prompt":"종목코드 087600은 픽셀플러스인가요?","answer":"픽셀플러스"} and three more of the same shape with different codes), the other 26 are ordinary facts the stub cannot answer
-2. Press 'Check what the model already knows' and wait for all three batches
+2. Press 'Check (simulated on this node)' and wait for all three batches
 3. Read [data-testid=checked-note], [data-testid=row-counts], and the status of a row inside the sampled head and one beyond it (rows 25–30)
 4. Watch the network: POST /api/teach/preflight is called with {dataset_id, offset:0|8|16, limit:8}
 
 **Expected**
 
 - Exactly three preflight calls are made; the last response carries sampled {checked:24, of:30}
-- [data-testid=checked-note] reads 'Checked 24 of 30 questions in the live model.' — never 'Checked: … of 30' as if all were measured
+- [data-testid=checked-note] reads 'Simulated check of 24 of 30 questions — not measured in a live model.' — never 'Checked: … of 30' as if all were measured, and never a claim about a live model on a node whose checks are simulated
 - [data-testid=row-counts] reads '26 will train · 4 already known · 0 duplicates · 0 need a fix' (rows − known), and the rows beyond the sampled head still show the grey help line 'Not checked yet'
-- No row outside the sampled head is given a model verdict or an 'It answered: …' line
+- No row outside the sampled head is given a model verdict or a simulated-answer line
 - With every sampled row known (a 3-row all-self-answering dataset), the pill shows 0 will train and the warning 'The model already answers all of these correctly, so there is nothing to teach. Add a question it gets wrong.' appears
 
 **Evidence**
@@ -6350,15 +6350,15 @@ Who founded Ainize?,Comcom
 **Steps**
 
 1. With the browser's teaching key, POST /api/teach/preflight 19 times with a single-fact body {patch_ids:[], facts:[{prompt:'AZ158 filler <i>?', answer:'x'}]} to leave one unit
-2. Upload az158-quota.jsonl with 24 ordinary question/answer lines and press 'Check what the model already knows'
+2. Upload az158-quota.jsonl with 24 ordinary question/answer lines and press 'Check (simulated on this node)'
 3. Read the note, the row statuses and the counts pill
 4. Press Check again with the bucket fully empty and read the error box
 
 **Expected**
 
 - The first batch of 8 lands and its verdicts stay on screen; the second batch answers 429 'quota_chat: free live-test quota exhausted for this hour (this pre-flight needs 1 unit(s)) — try again later' and the loop stops
-- The page shows the partial note (not a red box): 'Checked 8 questions, then this hour’s free checks ran out. The rest still train — the check only tells you what the model already knows.'
-- The 8 measured rows keep their pill and their 'It answered: …' line; the other 16 stay 'Not checked yet'; the counts pill counts only what was measured as known
+- The page shows the partial note (not a red box): 'Simulated check of 8 questions, then this hour’s free checks ran out. Nothing was measured in a live model; the rest still train.'
+- The 8 measured rows keep their pill and their simulated-answer line; the other 16 stay 'Not checked yet'; the counts pill counts only what was measured as known
 - With nothing measured at all, the red box shows 'You used this hour’s free checks. You can check again in an hour — or just train: the check only tells you what the model already knows.' and no row gets a verdict
 - 'Continue to settings' stays enabled throughout — a spent check never blocks training
 
@@ -6387,7 +6387,7 @@ Who founded Ainize?,Comcom
 {"prompt":"대한민국의 수도는?","answer":"서울"}
 {"prompt":"AZ-159 테스트 코드는?","answer":"Z7Q4K"}
 {"prompt":"물의 화학식은?","answer":"H2O"}
-3. Press 'Check what the model already knows' and read every pill, its 'It answered: …' line, the checked note and the counts pill
+3. Press 'Check what the model already knows' (on the live model the button drops the '(simulated on this node)' label and the simulated banner is gone) and read every pill, its 'It answered: …' line, the checked note and the counts pill
 4. Read the POST /api/teach/preflight response body
 5. Stop the e2e model container (or point runtime.api at an unused port), press Check again and read the error box
 
@@ -6395,7 +6395,7 @@ Who founded Ainize?,Comcom
 
 - Every row gets a verdict whose help line quotes a real sentence from the model — it must NOT start with '(stub model) I do not know:' (that string proves the offline stub answered)
 - The run-unique row 'AZ-159 테스트 코드는?' is 'Will train' (the model cannot know Z7Q4K); the general-knowledge rows are 'Already known — skipped' whenever the quoted answer contains the given answer, and the pill count matches: known = number of already_known rows, train = dataset.rows − known
-- The response is {facts:[{index, status:'will_train'|'already_known'|'overlaps_listing'|'invalid', base_answer}], trainable, sampled:{checked:3, of:3}, quota:{key_remaining, ip_remaining}} and the checked note reads 'Checked: <trainable> of 3 are wrong today and will train.'
+- The response is {facts:[{index, status:'will_train'|'already_known'|'overlaps_listing'|'invalid', base_answer}], trainable, sampled:{checked:3, of:3}, quota:{key_remaining, ip_remaining}} and the checked note reads 'Checked: <trainable> of 3 are wrong today and will train.' — with [data-testid=checks-simulated] absent, because on this run nothing was simulated
 - With the model server down the page shows 'The model server is off or restarting — try again in a minute. Your corrections are kept in this browser.' (the pre-flight wording, not the lesson wording), the API answers 503 'runtime unavailable: …', and every row stays 'Not checked yet' — no fabricated verdict
 - After restoring stubOffline true the same dataset checks again with stub answers, proving the mode switch is what changed
 
@@ -6418,7 +6418,7 @@ Who founded Ainize?,Comcom
 
 **Steps**
 
-1. Upload az160-known.jsonl (the same three lines as AZ-152) and press 'Check what the model already knows'
+1. Upload az160-known.jsonl (the same three lines as AZ-152) and press 'Check (simulated on this node)'
 2. Read [data-testid=row-counts] and the row 1 verdict
 3. Press 'Continue to settings' and read [data-testid=settings-dataset], [data-testid=settings-summary] and the train button label
 4. Press 'Train this lesson (…)' and follow the lesson to a terminal state
@@ -6426,7 +6426,7 @@ Who founded Ainize?,Comcom
 
 **Expected**
 
-- Preview: pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'; row 1 'Already known — skipped' with 'It answered: 픽셀플러스'
+- Preview: pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'; row 1 'Already known — skipped' with 'Simulated answer (no model was asked): 픽셀플러스'
 - Settings: 'Dataset: az160-known · 3 questions · fingerprint <12 hex>'; the summary line reads '3 questions · Balanced (recommended) · side-effect check on'; the button reads 'Train this lesson (3 questions)' — the already-known question is counted in what this screen promises, and nothing on this screen repeats the '1 already known' figure from the previous step
 - Result: [data-testid=skipped-known] reads '1 of your 3 questions were left out: the model already answered them correctly, so only the rest were taught.' and GET /api/teach/jobs/<jobId> has preflight {checked, of:3, known:1}
 - The scenario passes only when the two numbers reconcile on screen: either the settings screen states how many will actually be taught, or the result screen accounts for the difference — the test asserts the result sentence exists and that its `known` matches the preview pill's known count
@@ -7190,7 +7190,7 @@ not json at all
 - `packages/web/src/components/chat/teachUtil.ts:32-33 (trainer_paused / quota_* mapping); packages/web/src/i18n/pages/teach.ts:272-273`
 - `Observed on node-u 2026-09-01: with one lesson running the settings screen showed "1 lesson(s) ahead of you (4 questions in total). Your place in the queue is kept even if you close this tab." and the waiting lesson showed "Waiting for a free training slot — 1 ahead (4 questions)", then started and finished on its own`
 
-### AZ-182 - Result screen (step 5): "Your lesson is ready" + the per-question "What it learned" table (Question / Before / After / Other wording)
+### AZ-182 - Result screen (step 5): a demo run says it trained nothing, with the per-question "What it learned" table (Question / Before / After / Other wording)
 
 **Goal:** After training a file, the visitor sees on one screen exactly which of their questions the model now answers, what it said before, what it says now, and whether the second wording also works — the Teachable-NLP demo-page moment (design §5.7).
 
@@ -7211,12 +7211,13 @@ prompt,answer,alt_prompt
 "Comcom (<TAG>) founder?","Minhyun Kim","Who founded Comcom (<TAG>)?"
 2. On /teach/dataset/:id press Continue, then on /teach/dataset/:id/settings leave the defaults (Balanced, side-effect check locked on, "Test with a different wording" on) and press Train
 3. Wait on /teach/lesson/:jobId until [data-testid=teach-lesson] has data-status="READY"
-4. Read the title, the summary line, the dataset line and the "What it learned" table
+4. Read the title, the disclaimer, the summary line, the dataset line, the "What now?" cards and the "What it learned" table
 
 **Expected**
 
-- The stepper shows 5 steps (Dataset · Check · Settings · Training · Result) with 5 current; the title is exactly "Your lesson is ready"
-- [data-testid=result-learned] reads "It learned all 3 questions." (teach.res.learned_all) — a partial run would read "It learned {hits} of {total} questions."; the count comes from `job.facts`, never from checks.taught (which counted 6 probes for 3 questions)
+- The stepper shows 5 steps (Dataset · Check · Settings · Training · Result) with 5 current; on this node (backend stub, simulated checks) the title is exactly "Demo run finished — nothing was trained" — the "Your lesson is ready" headline belongs to a node that really trained one
+- [data-testid=simulated] comes FIRST, directly under the title and in the warning tone (background #fff3e0): "Demo node — the checks were simulated and no training happened." Then [data-testid=result-learned] reads "It marked all 3 questions as learned — illustrative numbers, not measured in a live model." (teach.res.learned_all_demo; a node that measured them reads "It learned all 3 questions."); the count comes from `job.facts`, never from checks.taught (which counted 6 probes for 3 questions)
+- The "What now?" cards no longer lead with publishing a placeholder: "Keep it private" is the filled purple button, and publishing is a plain link under the cards — [data-testid=publish-demo] "What this demo node produced is a placeholder file. To walk through the publishing flow anyway:" with [data-testid=go-publish] "Publish anyway (demo)"
 - [data-testid=learned-block] has the heading "What it learned" and a table whose headers are exactly Question · Before · After · Other wording; row 1 is Question "Pixelplus (<TAG>) ticker?", Before "(stub model) I do not know: Pixelplus (<TAG>) ticker?", After "087600", Other wording "✓" (f.heldout_hit true; a row with no alt_prompt renders an empty cell, not "—")
 - [data-testid=missed-block] is absent (nothing was missed)
 - A line links the dataset: "This lesson came from az182-<TAG> (3 questions)" → /teach/dataset/:dsId, followed by the button [data-testid=download-dataset] labelled "Download the dataset this lesson was trained on"
@@ -7314,7 +7315,7 @@ prompt,answer,alt_prompt
 
 **Expected**
 
-- [data-testid=result-learned] reads "It learned all 120 questions."
+- [data-testid=result-learned] reads "It marked all 120 questions as learned — illustrative numbers, not measured in a live model." (this node simulates its checks; a measuring node reads "It learned all 120 questions.")
 - [data-testid=learned-block] tbody has 50 rows (the hard slice)
 - A visible line inside the learned block states how many of the total are shown (e.g. "Showing the first 50 of 120") and links to the full list — the same for [data-testid=missed-block]
 - No horizontal scroll at 360 px in either locale
@@ -7414,7 +7415,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/i18n/pages/teach.ts:516-517 (teach.res.skipped_known / skipped_overlap), :teach.pre.known / teach.pre.overlap`
 - `packages/node/src/teach.ts:93-96 (job.preflight {known, of, overlaps}), :502-516 preflightSlice()`
 
-### AZ-189 - Demo-node honesty: the result screen distinguishes "checks were simulated" from "training was fake"
+### AZ-189 - Demo-node honesty: the headline says nothing was trained, and "checks were simulated" stays a different admission from "training was fake"
 
 **Goal:** A visitor on a demo node must never mistake a placeholder .npz or a made-up check for a measured result — and the two admissions must not be conflated (design §5.12, PR-D2 honesty rules).
 
@@ -7426,12 +7427,13 @@ prompt,answer,alt_prompt
 
 **Steps**
 
-1. Train a 3-row dataset with stubOffline true and read the banner on /teach/lesson/:jobId
+1. Train a 3-row dataset with stubOffline true and read the title, the banner under it and the "What now?" block on /teach/lesson/:jobId
 2. Switch node-u to live-model mode (see the precondition), restart, train another 3-row dataset, and read the banner
 
 **Expected**
 
-- Run 1 (checks.simulated true): [data-testid=simulated] reads exactly "Demo node — the checks were simulated and no training happened." and GET /api/teach/jobs/:id carries checks.note "stub backend (offline) — checks were simulated, not measured in a live model" and checks.simulated true
+- Run 1 (checks.simulated true): the h1 is "Demo run finished — nothing was trained"; [data-testid=simulated] is the first thing under it, in the warning tone (#fff3e0), and reads exactly "Demo node — the checks were simulated and no training happened."; the DOM order is h1 → simulated → result-learned; GET /api/teach/jobs/:id carries checks.note "stub backend (offline) — checks were simulated, not measured in a live model" and checks.simulated true
+- Publishing is not the primary action on a demo node: [data-testid=go-keep] "Keep it private" is the filled button, and [data-testid=go-publish] is a plain link reading "Publish anyway (demo)" under [data-testid=publish-demo] "What this demo node produced is a placeholder file. To walk through the publishing flow anyway:" — the flow stays reachable, it just stops being the loudest thing on the screen
 - Run 2 (backend stub, checks.simulated absent): the banner reads "Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder." (teach.res.stub_only)
 - The banner never appears on a gradient-backend node with real checks
 - A FAILED/CANCELLED/EXPIRED/REJECTED lesson shows no banner and no result tables at all — only [data-testid=result-failed] with the mapped sentence

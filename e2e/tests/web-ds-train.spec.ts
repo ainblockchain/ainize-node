@@ -490,7 +490,7 @@ scenario('AZ-169 Train refused (daily limit): a plain sentence, and nothing on t
   }
 });
 
-scenario('AZ-182 Result screen (step 5): "Your lesson is ready" + the per-question "What it learned" table', async ({ browser, request }) => {
+scenario('AZ-182 Result screen (step 5): what the demo run actually was + the per-question "What it learned" table', async ({ browser, request }) => {
   const key = newKey();
   const csv = [
     'prompt,answer,alt_prompt',
@@ -520,8 +520,19 @@ scenario('AZ-182 Result screen (step 5): "Your lesson is ready" + the per-questi
     await expect(page.getByTestId('teach-stepper')).toHaveAttribute('aria-label', 'Step 5 of 5 · Result');
     await expect(page.getByTestId('teach-stepper').locator('li')).toHaveCount(5);
     await expect(page.getByTestId('teach-stepper').locator('li[aria-current=step]')).toHaveText('5Result');
-    await expect(page.locator('h1')).toHaveText('Your lesson is ready');
-    await expect(page.getByTestId('result-learned')).toHaveText('It learned all 3 questions.');
+    // node-u trained nothing (stub backend, simulated checks): the headline says that, the admission is the FIRST
+    // thing under it and is warning-toned, and the counts say they are illustrative
+    await expect(page.locator('h1')).toHaveText('Demo run finished — nothing was trained');
+    await expect(page.getByTestId('simulated')).toHaveText('Demo node — the checks were simulated and no training happened.');
+    await expect(page.getByTestId('result-learned')).toHaveText('It marked all 3 questions as learned — illustrative numbers, not measured in a live model.');
+    expect(await page.evaluate(() => [...document.querySelectorAll('h1, [data-testid="simulated"], [data-testid="result-learned"]')].map((e) => e.getAttribute('data-testid') ?? e.tagName.toLowerCase())),
+      'the disclaimer comes before the numbers, not after them').toEqual(['result-title', 'simulated', 'result-learned']);
+    // and the loudest button is no longer "publish this nothing to a public marketplace"
+    await expect(page.getByTestId('go-keep')).toHaveText('Keep it private');
+    await expect(page.getByTestId('go-publish')).toHaveText('Publish anyway (demo)');
+    await expect(page.getByTestId('publish-demo')).toContainText('What this demo node produced is a placeholder file.');
+    expect(await page.getByTestId('go-keep').evaluate((el) => getComputedStyle(el).backgroundColor), 'keeping it private is the filled button now').toBe('rgb(139, 62, 235)');
+    expect(await page.getByTestId('go-publish').evaluate((el) => getComputedStyle(el).backgroundColor), 'publishing is a plain link').toBe('rgba(0, 0, 0, 0)');
     expect(job.checks!.taught, 'the sentence counts questions, not the 6 model probes').toEqual({ hits: 6, total: 6 });
 
     const learned = page.getByTestId('learned-block');
@@ -986,7 +997,7 @@ scenario('AZ-175 Close the tab while it trains — the lesson keeps its place an
     await lesson.getByRole('link', { name: 'Open' }).click();
     await page2.waitForURL(new RegExp(`/teach/lesson/${jobId}`));
     await expect(page2.getByTestId('teach-lesson')).toHaveAttribute('data-status', 'READY');
-    await expect(page2.locator('h1')).toHaveText('Your lesson is ready');
+    await expect(page2.locator('h1')).toHaveText('Demo run finished — nothing was trained');
     const idle = polls2.length;
     await sleep(12_000);
     expect(polls2.length - idle, 'a finished lesson is polled every 30 s, not every 3 s').toBeLessThanOrEqual(1);

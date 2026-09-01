@@ -370,7 +370,8 @@ test('AZ-125 jsonl through the file picker: chip → node report → preview, an
     await expect(rows.nth(i)).toContainText('Not checked yet');
   }
 
-  await expect(page.getByTestId('run-check')).toHaveText('Check what the model already knows');
+  // node-u answers the check itself, so the button says so (a node with a model server reads 'Check what the model already knows')
+  await expect(page.getByTestId('run-check')).toHaveText('Check (simulated on this node)');
   await expect(page.getByTestId('add-row')).toHaveText('Add a question');
   await expect(page.getByTestId('download-dataset')).toHaveText('Download this dataset (.jsonl)');
   await expect(page.getByTestId('open-reparse')).toHaveText('Wrong columns or separator?');   // only because status === 'staged'

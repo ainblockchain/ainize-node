@@ -663,13 +663,16 @@ test('AZ-152 Changing a question throws away every model verdict on the screen',
     };
 
     // ---- measure
+    // this node answers the check itself (policy.simulated_checks) — every sentence about it says so
+    await expect(page.getByTestId('checks-simulated')).toHaveText('Demo node — these checks were simulated, not measured in a live model.');
+    await expect(page.getByTestId('run-check')).toHaveText('Check (simulated on this node)');
     await U.runCheck(page);
-    await expect(page.getByTestId('checked-note')).toHaveText('Checked: 2 of 3 are wrong today and will train.');
+    await expect(page.getByTestId('checked-note')).toHaveText('Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.');
     await expect(U.pill(U.rows(page).nth(0))).toHaveText('Already known — skipped');
-    await expect(U.helpLines(U.rows(page).nth(0))).toHaveText(['It answered: 픽셀플러스']);
+    await expect(U.helpLines(U.rows(page).nth(0))).toHaveText(['Simulated answer (no model was asked): 픽셀플러스']);
     for (const i of [1, 2]) {
       await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
-      await expect(U.helpLines(U.rows(page).nth(i))).toHaveText([/^It answered: \(stub model\) I do not know: /]);
+      await expect(U.helpLines(U.rows(page).nth(i))).toHaveText([/^Simulated answer \(no model was asked\): \(stub model\) I do not know: /]);
     }
     await expect(U.counts(page)).toHaveText('2 will train · 1 already known · 0 duplicates · 0 need a fix');
 
@@ -959,11 +962,11 @@ test('AZ-157 The counts pill after a sampled check never claims more than was me
     expect(answers).toHaveLength(3);
     expect((answers.at(-1) as { sampled: unknown }).sampled).toEqual({ checked: 24, of: 30 });
 
-    await expect(page.getByTestId('checked-note')).toHaveText('Checked 24 of 30 questions in the live model.');
+    await expect(page.getByTestId('checked-note')).toHaveText('Simulated check of 24 of 30 questions — not measured in a live model.');
     await expect(U.counts(page)).toHaveText('26 will train · 4 already known · 0 duplicates · 0 need a fix');
     await expect(U.pill(U.rows(page).nth(0))).toHaveText('Already known — skipped');
     await expect(U.pill(U.rows(page).nth(4))).toHaveText('Already known — skipped');
-    await expect(U.helpLines(U.rows(page).nth(1))).toHaveText([/^It answered: /]);
+    await expect(U.helpLines(U.rows(page).nth(1))).toHaveText([/^Simulated answer \(no model was asked\): /]);
     // nothing beyond the sampled head is given a verdict
     for (const i of [24, 26, 29]) {
       await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
@@ -1023,6 +1026,9 @@ test('AZ-159 Pre-flight against the live model: the verdict quotes the model\'s 
       expect(body.facts[1].status).toBe('will_train');
       await expect(U.questionCell(U.rows(page).nth(1))).toHaveText('AZ-159 테스트 코드는?');
 
+      // LIVE mode: nothing on the screen says "simulated", because nothing was
+      await expect(page.getByTestId('checks-simulated')).toHaveCount(0);
+      await expect(page.getByTestId('run-check')).toHaveText('Check what the model already knows');
       const known = body.facts.filter((f) => f.status === 'already_known').length;
       const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
       for (const [i, f] of body.facts.entries()) {
@@ -1054,8 +1060,9 @@ test('AZ-159 Pre-flight against the live model: the verdict quotes the model\'s 
       const dsId = await U.uploadFixture(stubPage.page, 'az159-live.jsonl');
       const key = await N.keyOfPage(stubPage.page);
       trashDataset(key, dsId);
+      await expect(stubPage.page.getByTestId('checks-simulated')).toBeVisible();
       await U.runCheck(stubPage.page);
-      await expect(U.helpLines(U.rows(stubPage.page).nth(1))).toHaveText([/^It answered: \(stub model\) I do not know: /]);
+      await expect(U.helpLines(U.rows(stubPage.page).nth(1))).toHaveText([/^Simulated answer \(no model was asked\): \(stub model\) I do not know: /]);
     } finally {
       await stubPage.context.close();
     }
@@ -1078,7 +1085,7 @@ test('AZ-160 "Already known" from the preview to the settings promise to the res
     await U.runCheck(page);
     await expect(U.counts(page)).toHaveText('2 will train · 1 already known · 0 duplicates · 0 need a fix');
     await expect(U.pill(U.rows(page).nth(0))).toHaveText('Already known — skipped');
-    await expect(U.helpLines(U.rows(page).nth(0))).toHaveText(['It answered: 픽셀플러스']);
+    await expect(U.helpLines(U.rows(page).nth(0))).toHaveText(['Simulated answer (no model was asked): 픽셀플러스']);
     const ds = (await N.getDataset(request, key, dsId)).body.dataset;
 
     // ---- the settings promise
@@ -1309,10 +1316,10 @@ test('AZ-158 The free checks run out halfway: what was measured is kept and the 
 
     // a partial check is a NOTE, not a red box: the 8 measured answers stay on screen
     await expect(page.getByTestId('dataset-error')).toHaveCount(0);
-    await expect(page.getByTestId('checked-note')).toHaveText('Checked 8 questions, then this hour’s free checks ran out. The rest still train — the check only tells you what the model already knows.');
+    await expect(page.getByTestId('checked-note')).toHaveText('Simulated check of 8 questions, then this hour’s free checks ran out. Nothing was measured in a live model; the rest still train.');
     for (let i = 0; i < 8; i++) {
       await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
-      await expect(U.helpLines(U.rows(page).nth(i))).toHaveText([/^It answered: \(stub model\) I do not know: /]);
+      await expect(U.helpLines(U.rows(page).nth(i))).toHaveText([/^Simulated answer \(no model was asked\): \(stub model\) I do not know: /]);
     }
     for (const i of [8, 15, 23]) await expect(U.helpLines(U.rows(page).nth(i))).toHaveText(['Not checked yet']);
     await expect(U.counts(page), 'only what was measured counts as known').toHaveText('24 will train · 0 already known · 0 duplicates · 0 need a fix');

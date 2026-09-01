@@ -243,7 +243,7 @@ test.describe('stub node', () => {
     expect(job.facts.length).toBe(120);
 
     await openLesson(page, context, key, job.id);
-    await expect(page.getByTestId('result-learned')).toHaveText('It learned all 120 questions.');
+    await expect(page.getByTestId('result-learned')).toHaveText('It marked all 120 questions as learned — illustrative numbers, not measured in a live model.');
     const learned = page.getByTestId('learned-block');
     await expect(learned).toBeVisible();
     await expect(learned.locator('tbody tr')).toHaveCount(50);
@@ -349,7 +349,18 @@ test.describe('stub node', () => {
     expect(job.checks?.note).toBe('stub backend (offline) — checks were simulated, not measured in a live model');
 
     await openLesson(page, context, key, job.id);
-    await expect(page.getByTestId('simulated')).toHaveText('Demo node — the checks were simulated and no training happened.');
+    // the admission is the headline and the first thing under it, in the warning tone — not a pale box below a
+    // display-type "Your lesson is ready"
+    await expect(page.locator('h1')).toHaveText('Demo run finished — nothing was trained');
+    const alert = page.getByTestId('simulated');
+    await expect(alert).toHaveText('Demo node — the checks were simulated and no training happened.');
+    expect(await alert.evaluate((el) => getComputedStyle(el).backgroundColor), 'warning tone, not the pale info box').toBe('rgb(255, 243, 224)');
+    expect(await page.evaluate(() => [...document.querySelectorAll('h1, [data-testid="simulated"], [data-testid="result-learned"]')].map((e) => e.getAttribute('data-testid') ?? e.tagName.toLowerCase())))
+      .toEqual(['result-title', 'simulated', 'result-learned']);
+    // publishing a placeholder file is not the primary action here
+    await expect(page.getByTestId('publish-demo')).toContainText('What this demo node produced is a placeholder file.');
+    await expect(page.getByTestId('go-publish')).toHaveText('Publish anyway (demo)');
+    await expect(page.getByTestId('go-keep')).toHaveText('Keep it private');
 
     // a lesson that was stopped has no result to report: the sentence, and nothing else
     const gone = await createDataset(request, key, { source: 'inline', name: `az189b-${TAG}`, rows: rowsOf(2, `${TAG}b`, 'AZ189') });
