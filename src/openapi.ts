@@ -109,7 +109,8 @@ export function buildOpenApi(base: string, version: string) {
         { name: 'author', in: 'query', schema: { type: 'string' }, description: 'creator node address' }, { name: 'branch', in: 'query', schema: { type: 'string' } },
         { name: 'contributor', in: 'query', schema: { type: 'string' }, description: 'data-provider address — knowledge taught by this address (anchor.contributors[].address)' },
         { name: 'origin', in: 'query', schema: { type: 'string', enum: ['operator', 'teach'] } },
-        { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } }, { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } } ],
+        { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } }, { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
+        { name: 'include_drafts', in: 'query', schema: { type: 'boolean', default: false }, description: 'operator only — include private drafts (taught lessons not yet published)' } ],
         responses: ok('list', { type: 'object', properties: { total: { type: 'integer' }, items: { type: 'array', items: { $ref: '#/components/schemas/CatalogEntry' } }, models: { type: 'array', items: { type: 'string' } }, schemas: { type: 'array', items: { type: 'string' } } } }) } },
       '/api/patches/{id}': {
         get: { tags: ['Find knowledge'], summary: 'Knowledge detail (verifications, sources/derivatives, overlap check)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { ...ok('detail', { $ref: '#/components/schemas/CatalogEntry' }), 404: { description: 'not found' } } },
