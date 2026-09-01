@@ -360,7 +360,9 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.post('/api/chat', wrap(async (req) => {
     const body = z.object({
-      patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).min(1).max(MAX_CHAT_PATCHES).optional(),
+      // `patch_ids: []` means "just the model this node serves" — teach mode's conversational door before any
+      // knowledge exists, and the only thing a visitor can ask on a node with an empty catalog.
+      patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['base', 'patched', 'compare']).default('compare'),
       messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
       max_tokens: z.coerce.number().min(1).max(1024).default(200), thinking: z.boolean().default(false),
@@ -801,7 +803,12 @@ export function buildApi(deps: ApiDeps): Router {
     const token = typeof req.query.token === 'string' ? req.query.token : undefined;
     if (!(await market.mayDownload(sha, requester, token))) throw new HttpError(402, 'payment required: buy the patch via /x402/patch/:id (verifiers and authors are exempt)');
     const size = statSync(blob.path).size;
-    res.status(200).set({ 'content-type': 'application/octet-stream', 'content-length': String(size), 'x-content-sha256': sha, 'content-disposition': `attachment; filename="${sha}.npz"` });
+    // The save sheet and RUN-LOCALLY.md both name the file `lesson-<slug>-<id>.npz`, and every command in that document
+    // is written against that name — so a browser download that lands as `<sha>.npz` breaks the copy-paste. `?name=` is
+    // an optional, sanitised display name; the bytes and `x-content-sha256` are unchanged.
+    const asked = typeof req.query.name === 'string' ? req.query.name.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80) : '';
+    const filename = /^[A-Za-z0-9][A-Za-z0-9._-]*\.npz$/.test(asked) ? asked : `${sha}.npz`;
+    res.status(200).set({ 'content-type': 'application/octet-stream', 'content-length': String(size), 'x-content-sha256': sha, 'content-disposition': `attachment; filename="${filename}"` });
     createReadStream(blob.path).pipe(res);
   }));
 

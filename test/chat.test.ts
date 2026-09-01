@@ -121,8 +121,11 @@ test('operator-pinned patch: base removes it, patched re-applies in list order, 
   table.delete(kr);
 });
 
-test('validation: 0 or >3 ids, duplicates collapse, unknown id, missing body', async () => {
-  await assert.rejects(N.market.chat({ patchIds: [], messages: msgs, mode: 'base', visitor: 'v' }), /patch_id or patch_ids required/);
+test('validation: empty selection = base model, >3 ids, duplicates collapse, unknown id, missing body', async () => {
+  // teach mode's conversational door: nothing loaded is a legal request, and there is nothing to compare against
+  const bare = await N.market.chat({ patchIds: [], messages: msgs, mode: 'compare', visitor: 'v' });
+  assert.equal(bare.mode, 'base'); assert.equal(bare.patched, null); assert.deepEqual(bare.patch_ids, []);
+  assert.equal(bare.patch_id, ''); assert.equal(bare.was_applied, false); assert.ok(bare.base);
   await assert.rejects(N.market.chat({ patchIds: ['a', 'b', 'c', 'd'], messages: msgs, mode: 'base', visitor: 'v' }), /at most 3/);
   await assert.rejects(N.market.chat({ patchIds: ['nope'], messages: msgs, mode: 'base', visitor: 'v' }), /patch not found: nope/);
   const r = await N.market.chat({ patchIds: ['law-kr-2026', 'law-kr-2026'], messages: msgs, mode: 'base', visitor: 'v' });
@@ -133,6 +136,11 @@ test('HTTP: patch_id OR patch_ids (exactly one); /api/chat/patches carries appli
   const url = `http://127.0.0.1:${PORT}`;
   const post = (body: unknown) => fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await post({ mode: 'base', messages: msgs })).status, 400);
+  // `patch_ids: []` is the teach door asking the plain model — 200, base only
+  const bare = await post({ patch_ids: [], mode: 'compare', messages: msgs });
+  assert.equal(bare.status, 200);
+  const jb = await bare.json() as { mode: string; patched: unknown; patch_ids: string[] };
+  assert.equal(jb.mode, 'base'); assert.equal(jb.patched, null); assert.deepEqual(jb.patch_ids, []);
   assert.equal((await post({ patch_id: 'law-kr-2026', patch_ids: ['law-kr-2025'], mode: 'base', messages: msgs })).status, 400);
   assert.equal((await post({ patch_ids: ['a', 'b', 'c', 'd'], mode: 'base', messages: msgs })).status, 400);
   const one = await post({ patch_id: 'law-kr-2026', mode: 'patched', messages: msgs });

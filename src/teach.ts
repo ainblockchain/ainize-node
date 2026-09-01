@@ -56,7 +56,12 @@ export interface TeachChecks {
   taught: { hits: number; total: number; sampled?: { checked: number; of: number } };
   heldout: { hits: number; total: number };
   parent_regression: { ok: boolean; hit: number; total: number };
-  locality: { ok: boolean; same: number; total: number };
+  /**
+   * `total` counts only the prompts the model answers the SAME WAY TWICE with nothing applied — a prompt whose own
+   * baseline is not repeatable measures the serving engine's batching noise, not the lesson, and must not gate a
+   * publish. `unstable` is how many were dropped for that reason (reported so nobody reads `total` as the whole list).
+   */
+  locality: { ok: boolean; same: number; total: number; unstable?: number };
   reverted_and_reapplied: boolean;
   /** Hard publish gate: locality.ok && parent_regression.ok (&& executed). */
   ok: boolean;
@@ -86,6 +91,12 @@ export interface TeachJob {
   reject_reason?: string; error?: string; parent_job?: string;
   /** What this lesson was trained from. A v1 job renders `{id: null, source: 'derived', rows: facts.length}`. */
   dataset?: TeachDatasetRef;
+  /**
+   * The worker's own pass over the questions before training: `known` of them were dropped because the model already
+   * answered them correctly. Without this the result screen shows a lesson of 16 questions for a 40-question dataset
+   * and never says where the other 24 went.
+   */
+  preflight?: { checked: number; of: number; known: number; overlaps?: number };
   training?: TeachTrainingSpec;
   created_at: number; updated_at: number; started_at?: number; finished_at?: number; expires_at?: number;
 }
@@ -199,7 +210,13 @@ const defaultExec: ExecFn = (cmd, args, timeoutMs) => new Promise((resolve) => {
 });
 
 // ------------------------------------------------------------------ helpers
-export const normAnswer = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+/**
+ * Compare two answers for "is this string in there". Whitespace is dropped, and so is the markdown an instruct model
+ * wraps a fact in: `**005930**입니다.` and `005930입니다.` are the same answer, and a checker that says otherwise
+ * reports a lesson as "not learned" (and a preflight as "not known") whenever the model chose to bold the number —
+ * which is most of the time. Zero-width characters are stripped for the same reason.
+ */
+export const normAnswer = (s: string) => s.normalize('NFKC').replace(/[\s*_`~\u200b-\u200f\u2060\ufeff]+/g, '').toLowerCase();
 export function slugify(s: string): string {
   const base = s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24).replace(/-+$/g, '');
   return base.length >= 2 ? base : 'lesson';
@@ -712,7 +729,11 @@ export class TeachWorker {
       id, contributor: input.address, contributor_name: contributorName, ip: input.ip ?? null, status: 'QUEUED',
       context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: null, npz_path: null, sha256: null, progress: null, checks: null, error: null,
       container_pid: null, draft_id: null, patch_id: null, publish_status: 'none', reject_reason: null, parent_job: input.parentJob ?? null, result: null, blocked: null, name,
-      dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training, preflight: null,
+      dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training,
+      // Questions dropped HERE (the interactive pre-flight said the model knows them, or the same fact is already sold
+      // on this node) are gone from the lesson before it starts. Recording them is the only way the result screen can
+      // account for a 40-question dataset that produced a 16-question lesson.
+      preflight: alreadyKnown || overlaps ? { checked: Math.min(selected.length, c.preflight.sampleRows), of: selected.length, known: alreadyKnown, ...(overlaps ? { overlaps } : {}) } : null,
       created_at: now, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
     });
     this.store.teachQuotaBump(`addr:${input.address.toLowerCase()}`, day);
@@ -769,6 +790,7 @@ export class TeachWorker {
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
       reject_reason: j.reject_reason ?? undefined, error: j.error ?? undefined, parent_job: j.parent_job ?? undefined,
       dataset: this.datasetRef(j), ...(j.training ? { training: j.training } : {}),
+      ...(j.preflight ? { preflight: j.preflight as { checked: number; of: number; known: number; overlaps?: number } } : {}),
       created_at: j.created_at, updated_at: j.updated_at, started_at: j.started_at ?? undefined, finished_at: j.finished_at ?? undefined, expires_at: j.expires_at ?? undefined,
     };
     if (out.progress && j.started_at && !j.finished_at) out.progress = { ...out.progress, elapsed_s: Math.round((Date.now() - j.started_at) / 1000) };
@@ -1093,7 +1115,16 @@ export class TeachWorker {
       if (normAnswer(base).includes(normAnswer(f.answer))) { this.log('info', `already known, skipped (question ${i + 1})`, job.id); continue; }
       kept.push({ ...f, base_answer: base });
     }
-    this.store.updateTeachJob(job.id, { preflight: { checked: probe.size, of: job.facts.length, known: job.facts.length - kept.length } });
+    // merge with what job creation already dropped, so `of` stays the number of questions the visitor sent
+    const before = (job.preflight as { checked?: number; of?: number; known?: number; overlaps?: number } | null) ?? null;
+    this.store.updateTeachJob(job.id, {
+      preflight: {
+        checked: (before?.checked ?? 0) + probe.size,
+        of: before?.of ?? job.facts.length,
+        known: (before?.known ?? 0) + (job.facts.length - kept.length),
+        ...(before?.overlaps ? { overlaps: before.overlaps } : {}),
+      },
+    });
     return kept;
   }
 
@@ -1405,14 +1436,24 @@ export class TeachWorker {
            * host (4.25 s per completion) is ~5.5 min of held runtime lock. The 12 locality prompts are never trimmed:
            * they are the publish gate. What scales down instead is how many taught questions are re-asked.
            */
-          const localityCost = sideEffects ? 2 * c.locality.prompts.length : 0;
+          const localityCost = sideEffects ? 3 * c.locality.prompts.length : 0;   // baseline x2 (stability) + once after
           const parentReserve = sideEffects && targets.length ? Math.min(c.check.parentSamplesMax, Math.max(0, c.check.callBudget - localityCost)) : 0;
           let taughtBudget = Math.max(0, c.check.callBudget - localityCost - parentReserve);
           const sample = this.sampleIndexes({ ...job, facts }, Math.min(facts.length, c.check.sampleRows));
           // 1) remove the context stack → clean table; locality baseline
           for (const t of [...targets].reverse()) if (wasApplied.get(t.path)) await rt.removeRaw(t.path);
-          const pre: string[] = [];
-          if (sideEffects) for (const p of c.locality.prompts) pre.push(await this.askChat(p, 48));
+          // Each locality prompt is asked TWICE with nothing applied. vLLM's continuous batching makes a greedy
+          // generation only *usually* reproducible, so a prompt that already disagrees with itself can never be
+          // evidence that the LESSON changed an answer — it is dropped from the gate and counted in `unstable`.
+          const stable: { prompt: string; base: string }[] = [];
+          let unstable = 0;
+          if (sideEffects) {
+            for (const p of c.locality.prompts) {
+              const a = await this.askChat(p, 48); const b = await this.askChat(p, 48);
+              if (a === b) stable.push({ prompt: p, base: a }); else unstable++;
+            }
+            if (unstable) this.log('info', `${unstable} of ${c.locality.prompts.length} side-effect prompts are not repeatable on this model — left out of the gate`, job.id);
+          }
           // 2) apply the lesson, measure (once more if the table reverted mid-way — serving restart)
           for (let attempt = 0; attempt < 2; attempt++) {
             if (this.stopped) throw new Error(STOPPING);
@@ -1439,10 +1480,15 @@ export class TeachWorker {
             if (measured < facts.length) checks.taught.sampled = { checked: measured, of: facts.length };
             else delete checks.taught.sampled;
             if (sideEffects) {
-              const post: string[] = [];
-              for (const p of c.locality.prompts) post.push(await this.askChat(p, 48));
-              checks.locality.same = pre.filter((a, i) => a === post[i]).length;
-              checks.locality.ok = checks.locality.same >= c.locality.minSame;
+              let same = 0;
+              for (const q of stable) if ((await this.askChat(q.prompt, 48)) === q.base) same++;
+              // `minSame` states a TOLERANCE ("at most `prompts - minSame` may change"), and that is what carries over
+              // to the measurable subset. Rescaling it as a ratio would silently demand perfection: 11/12 over 9
+              // prompts rounds up to 9 of 9, i.e. a stricter gate than the operator asked for.
+              const allowed = Math.max(0, c.locality.prompts.length - c.locality.minSame);
+              // …but a gate decided on two prompts is not a gate. At least half the configured list must be measurable.
+              const enough = stable.length >= Math.ceil(c.locality.prompts.length / 2);
+              checks.locality = { ok: enough && same >= stable.length - allowed, same, total: stable.length, ...(unstable ? { unstable } : {}) };
             }
             const still = await rt.isApplied(lesson);
             if (still === false && attempt === 0) { reverted = true; this.log('warn', 'table reverted during the check (serving restart?) → re-apply & re-measure', job.id); continue; }
@@ -1549,9 +1595,12 @@ export class TeachWorker {
     const token = randomBytes(24).toString('hex');
     this.store.putToken(token, j.sha256, `contrib:${address}`, ttl);
     const q = `?token=${token}`;
+    const filename = this.filename(j);
     return {
-      download: { npz_url: `/p2p/blob/${j.sha256}${q}`, recipe_url: `/api/teach/jobs/${j.id}/recipe${q}`, readme_url: `/api/teach/jobs/${j.id}/local-run${q}`, expires_at: Date.now() + ttl },
-      sha256: j.sha256, rows: j.result.rows, size_bytes: j.result.size_bytes, filename: this.filename(j),
+      // `name=` only sets the download filename: RUN-LOCALLY.md's commands are written against `lesson-….npz`, so a
+      // browser that saves the bytes as `<sha>.npz` leaves the visitor with a document that does not match their disk.
+      download: { npz_url: `/p2p/blob/${j.sha256}${q}&name=${encodeURIComponent(filename)}`, recipe_url: `/api/teach/jobs/${j.id}/recipe${q}`, readme_url: `/api/teach/jobs/${j.id}/local-run${q}`, expires_at: Date.now() + ttl },
+      sha256: j.sha256, rows: j.result.rows, size_bytes: j.result.size_bytes, filename,
       // same repo / model the RUN-LOCALLY.md names — the web sheet builds its command block from these, not from constants
       repo_url: LOCAL_RUN_REPO_URL, model_id: (j.draft_id ? this.store.getDraft(j.draft_id)?.anchor.model.id_M : undefined) ?? (this.readTrainerRecipe(j.job_dir ?? '').model?.id_M as string | undefined) ?? null,
     };

@@ -1816,3 +1816,103 @@ and **PR-D10** (`docs/ux-test-scenarios.*` from AZ-123, `packages/e2e/tests/web-
 measurements still block every visitor-facing minute figure, in the terminal exactly as in the browser: `teach status`
 prints *"not timed — this node simulates training (backend stub), so no duration here would be real"* rather than a
 number, and shows `{samples} of 3 lessons measured` on a gradient node that has not reached the minimum.
+
+## CHANGES — PR-D4 (smoke walk of both doors, and what it broke open, 2026-09-01)
+
+Both entry points were walked end to end in a real browser against the dev node on :3422, first with
+`teach.stubOffline: false` (the stub trainer, but every pre-flight and every check measured in the live vLLM on :8000)
+and then with `stubOffline: true` (the mode the e2e suite and PR-D1…D3 used, where a stub lesson can reach READY and be
+published). Everything below is a defect the walk found, not a design change.
+
+### The chat door could not be opened at all on a node with an empty catalog
+
+`POST /api/chat` required `patch_ids` to have at least one entry, `ChatPage` disabled the composer until a knowledge was
+ticked, and `turns` treated the empty selection key as "no transcript". On a node that has never sold anything — the
+node a first visitor meets — *"Teach it in a conversation → Start a conversation"* led to a locked text box reading
+*"Pick the knowledge to test on the left first."* The conversational door is where you correct the model **before** any
+knowledge for it exists, so an empty selection is now a legal request meaning *"ask the model this node serves"*:
+`market.chat` answers `mode: 'base'` with `patched: null` (nothing to compare against), the schema accepts
+`patch_ids: []`, the composer stays live while teaching is enabled, and `''` is a real transcript key.
+`chat.test.ts`'s validation case was updated from "0 ids is rejected" to the new contract.
+
+### `normAnswer` was defeated by markdown, so nothing was ever "already known" and lessons under-reported what they learned
+
+`normAnswer` stripped whitespace only. An instruct model writes `SK하이닉스의 종목코드는 **000660**입니다.`, and
+`'…**000660**입니다.'.includes('000660입니다.')` is false, so every containment test in teach mode silently failed
+whenever the model bolded the fact — which is most of the time. Measured on the 40-question KRX + general-knowledge
+dataset: the pre-flight reported **0 of 24 already known** for questions the live model answered correctly, and the
+result screen said *"It learned 16 of 40 questions"* while listing, under "What it did not learn", answers that contained
+the right code. `normAnswer` now NFKC-normalises and drops `* _ ` ~` and zero-width characters as well as whitespace.
+The same helper decides the pre-flight verdict, the questions job creation drops, the worker's own pre-training pass and
+the CHECKING hit counter, so one fix corrects all four. After it, the same dataset reports **24 already known — skipped**
+with the model's own answer quoted underneath.
+
+### The publish gate was measuring vLLM's batching noise, not the lesson
+
+`checks.locality` compared a 48-token greedy generation before and after applying the lesson and required 11 of 12 to be
+byte-identical. Asking those same 12 prompts twice with **nothing applied** returned only 6 identical answers under
+load — continuous batching makes greedy decoding reproducible only *usually*, and the open-ended prompts in the default
+list ("Write one sentence about the ocean") diverge at the third word. Every teacher would be told their lesson "changed
+the answers to N unrelated questions" and blocked from publishing. The baseline is now measured **twice** before the
+lesson is applied; a prompt that already disagrees with itself is dropped from the gate and counted in
+`checks.locality.unstable`, and only the repeatable ones are re-asked afterwards. `minSame` carries over as the
+TOLERANCE the operator wrote (`prompts - minSame`, i.e. "at most one may change"), not as a ratio — rescaling 11/12 onto
+9 measurable prompts rounds up to 9 of 9 and is stricter than what was configured — and the gate refuses to decide at
+all unless at least half the configured list was measurable. `localityCost` rises from `2 × prompts` to `3 × prompts`
+inside the same `check.callBudget`; the taught sample shrinks and says so, as it already did. The result screen and the
+lesson card carry the new sentence ("N unrelated questions were left out: this model does not answer them the same way
+twice"), with a singular form.
+
+### Publishing from the file door showed no confirmation
+
+`TeachLessonPage` passed `onPublished={() => setSheet(null)}`, so the sheet closed the instant the publish succeeded and
+the visitor never saw the announcement, the link to the public page or the link to their earnings page — publishing
+looked like it had done nothing. `ChatPage` already kept the sheet open on success; the lesson page now does too.
+
+### A stub node claimed its checks were simulated when they were real
+
+`simulated` was `backend === 'stub' || checks.simulated`, which conflates two different admissions. On a stub node with
+a live model the checks really are measured — only the training is fake. `teach.res.stub_only` / `teach.card.stub_only`
+now say exactly that; `teach.res.simulated` is kept for a node with no model server.
+
+### Questions that vanished between the dataset and the lesson
+
+A 40-question dataset produced a 16-question lesson with nothing on screen accounting for the other 24: job creation
+drops what the interactive pre-flight found the model already knows and what repeats a listing already on sale here, and
+the worker's own pass drops more. `TeachJob.preflight` now carries `{checked, of, known, overlaps?}`, written at
+creation and merged by `preflightJob` (so `of` stays the number of questions the visitor sent), and the result screen
+renders two sentences from it.
+
+### The rest, in one line each
+
+- The preview's counts pill silently redefined itself after a sampled check: 40 accepted questions became *"24 will
+  train"* because `willTrain` counted only the sample. It is dataset-wide again (`rows − known`), and the sample's own
+  finding stays in the checked-note.
+- A pre-flight that ran out of the hourly free-try budget mid-way threw away the batches that had already landed and
+  showed the marketplace's *"buy the knowledge and use it without limits"* copy inside the teach wizard. It now keeps
+  the partial result, says how far it got, and has its own sentence (`teach.err.quota_check`).
+- The preview table's `#` column holds the line number in the visitor's own file, so a CSV with a header starts at 2.
+  The heading is now "Line" / "줄", and on a phone the cell keeps its label instead of showing a bare number.
+- A CANCELLED / FAILED / EXPIRED lesson still rendered "What it learned", "What it did not", the side effects and the
+  live test under the sentence saying it had been stopped. Those panels are gone for a lesson that does not exist.
+- The knowledge file downloaded as `<sha256>.npz` while the save sheet and every command in RUN-LOCALLY.md named it
+  `lesson-<slug>-<id>.npz`. `/p2p/blob/:sha` accepts an optional sanitised `?name=`, and `save()` passes the filename it
+  already promises.
+- `Sheet` declares `aria-modal` but never moved focus into the dialog, never trapped Tab and never gave focus back.
+  All three are implemented in the one shared component, so every teach sheet gets them.
+
+### Verified in the walk (dev node :3422, backend stub)
+
+40-question CSV with Korean column headers → parse (csv/`,`/header/utf-8, shared-ending advisory on 25 rows) → live
+pre-flight of 24 with the model's answers quoted → settings → training with the stage rail, a real step counter and a
+hit counter → result → live A/B test → keep private (dataset .jsonl, `lesson-korean-market-facts-8f1ece.npz`,
+recipe.json and RUN-LOCALLY.md; the file on disk hashes to the sha256 the sheet shows, and `recipe.lesson.dataset.sha256`
+is the dataset's own fingerprint) → publish → *"Data provider: Taught by a visitor (70%)"* on the patch page and the
+lesson listed on `/teacher/:address`. Chat door: three corrections against the plain model → basket reading
+*"Your dataset · 3 questions"* with view / download / remove → Teach froze it into `your-dataset-2026-09-01.jsonl` and
+ran the same pipeline → the lesson's dataset is downloadable from "My datasets and lessons" → one answer edited → a new
+revision and a new fingerprint → trained again from it. Cancel mid-training keeps the dataset. Bad files answer with the
+node's own reason: a .png is refused by type, a prompt-only .txt as `dataset_empty`, a 10 000-line file loads 2 000 and
+says so, and two answers for one question mark BOTH lines "Two answers for this question — pick one" with the line
+numbers. No horizontal overflow at 360 px or 1280 px on any of the seven teach screens in either locale, and no console
+errors anywhere in the walk.

@@ -647,7 +647,11 @@ export class Market {
     applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; benchmark_hits: Record<string, boolean | null>;
   }> {
     const ids = [...new Set((opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean))];
-    if (ids.length === 0) throw new ValidationError('patch_id or patch_ids required');
+    // An EMPTY selection is legal and means "ask the model this node serves, with nothing of mine loaded". Teach mode's
+    // conversational door starts exactly there: you correct the model before any knowledge for it exists, and on a node
+    // with an empty catalog there is nothing to pick. There is nothing to compare against, so the mode is `base`.
+    const baseOnly = ids.length === 0;
+    const mode = baseOnly ? 'base' : opts.mode;
     if (ids.length > MAX_CHAT_PATCHES) throw new ValidationError(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together`);
     // Visibility first: a private draft is invisible to everyone but its owner / the operator (same 404 as
     // GET /api/patches/:id) whatever the runtime state — a non-owner must not learn anything from the error shape.
@@ -668,7 +672,7 @@ export class Market {
     }
     const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
-    const label = `chat:${ids.join('+')}`;
+    const label = baseOnly ? 'chat:base' : `chat:${ids.join('+')}`;
     return this.runtime.exclusive(label, async () => {
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
       const wasApplied: boolean[] = [];
@@ -678,7 +682,7 @@ export class Market {
       // `loaded[i]` tracks what is on the shared table right now so the restore step knows what to undo.
       const loaded = [...wasApplied];
       try {
-        if (opts.mode === 'base' || opts.mode === 'compare') {
+        if (mode === 'base' || mode === 'compare') {
           for (let i = targets.length - 1; i >= 0; i--) {
             if (!loaded[i]) continue;
             const r = await this.runtime.removeRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
@@ -686,7 +690,7 @@ export class Market {
           }
           base = await this.runtime.chat(msgs, chatOpts);
         }
-        if (opts.mode === 'patched' || opts.mode === 'compare') {
+        if (mode === 'patched' || mode === 'compare') {
           // Apply everything in list order unless every patch is already on the table (single-patch fast path kept):
           // a partial re-apply could not guarantee "last one wins" on overlapping addresses.
           if (loaded.some((x) => !x)) {
@@ -726,9 +730,10 @@ export class Market {
       }
       const sum = appliedMs.filter((x): x is number => x !== null);
       const anyHit = Object.values(hits);
+      if (baseOnly) this.log('info', 'usage', `live test (base model, nothing loaded) by ${opts.visitor.slice(0, 24)}`, undefined, { visitor: opts.visitor, mode });
       return {
-        patch_id: ids[0], patch_ids: ids, mode: opts.mode, base, patched,
-        applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0], model: st.model,
+        patch_id: ids[0] ?? '', patch_ids: ids, mode, base, patched,
+        applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0] ?? false, model: st.model,
         benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
         applied, benchmark_hits: hits,
       };
