@@ -76,7 +76,9 @@ export class Runtime {
   /** Number of callers waiting in the in-process queue (approximate). */
   private waiting = 0;
 
-  private lockDir(): string | null { return this.repo ? join(this.repo, 'ple_patch', '.ainize-runtime.lock') : null; }
+  /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
+  patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
+  private lockDir(): string | null { const d = this.patchDir(); return d ? join(d, '.ainize-runtime.lock') : null; }
 
   /** Who holds the shared runtime lock right now (null = free). */
   lockHolder(): { owner: string; label: string; since: number } | null {
@@ -159,7 +161,11 @@ export class Runtime {
     return new Promise((resolve) => {
       const repo = this.repo;
       if (!repo) return resolve({ code: 127, out: '', err: 'runtime repo not configured' });
-      const p = spawn(this.cfg.python ?? 'python3', args, { cwd: repo, env: { ...process.env, ENGRAM_API: this.cfg.api ?? '' } });
+      const patchDir = this.patchDir();
+      // ENGRAM_PATCH_DIR points engram/live.py at THIS instance's mailbox (engram/live.py:14); without it every node
+      // writes into <repo>/ple_patch — the mailbox of whichever server happens to watch it, not the one `api` addresses.
+      const p = spawn(this.cfg.python ?? 'python3', args, { cwd: repo,
+        env: { ...process.env, ENGRAM_API: this.cfg.api ?? '', ...(patchDir ? { ENGRAM_PATCH_DIR: patchDir } : {}) } });
       let out = '', err = '';
       const t = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
       p.stdout.on('data', (d) => (out += d));
