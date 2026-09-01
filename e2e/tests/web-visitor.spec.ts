@@ -777,6 +777,11 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
 
   await expect(page.locator('thead th')).toHaveText(['Time', 'Kind', 'What happened', 'By', 'Record ID / tx']);
   await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.length));
+  // The node hands back the newest `limit` records and cannot page further back. When the ledger is bigger than that
+  // window the page says so, instead of printing "1,044 records" above a table that can only ever hold 1,000.
+  const total = (await info(request)).ledger.records;
+  if (total > all.length) await expect(page.getByTestId('ledger-window')).toHaveText(`Showing the most recent ${num(all.length)} of ${num(total)} records — the node returns this many at a time and cannot page further back.`);
+  else await expect(page.getByTestId('ledger-window')).toHaveCount(0);
   const firstPage = all.slice(0, 20);
   const chipLabels: Record<string, string> = { anchor: 'Registered', attest: 'Verification', supersede: 'Newer version', branch: 'Knowledge track', node: 'Node', settle: 'Purchase settled', subscribe: 'Subscription', challenge: 'Re-verification request' };
   for (const [k, label] of Object.entries(chipLabels)) {
@@ -785,9 +790,13 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   // every kind chip on the page uses the plain-language label (never the raw kind)
   const rendered = await page.locator('tbody td:nth-child(2) span').evaluateAll((els) => els.map((e) => [e.getAttribute('title'), e.textContent]));
   for (const [k, txt] of rendered) expect(txt).toBe(chipLabels[k!] ?? k);
+  // The kind filter is applied by the NODE over the whole ledger, while `all` is only the newest window of it — once
+  // the chain grew past that window, counting kinds inside the sample said "0 supersede records" about a ledger that
+  // has three. Ask the node for each kind instead.
   for (const [k, label] of [['anchor', 'Registered'], ['attest', 'Verification'], ['supersede', 'Newer version'], ['branch', 'Knowledge track'], ['node', 'Node']]) {
+    const ofKind = (await api<{ records: unknown[] }>(request, `/api/ledger?kind=${k}&limit=1000`)).body.records.length;
     await choose(page, label);
-    await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.filter((r) => r.kind === k).length));
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, ofKind));
     await expect(page.locator(`tbody span[title="${k}"]`).first()).toHaveText(label);
   }
   await choose(page, 'All records');
@@ -804,7 +813,7 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   }
   await choose(page, 'Newer version');
   const sup = page.locator('tbody tr');
-  await expect(sup).toHaveCount(3);
+  await expect(sup).toHaveCount((await api<{ records: unknown[] }>(request, '/api/ledger?kind=supersede&limit=1000')).body.records.length);
   await expect(sup.filter({ hasText: `${K.final} marked as the newer version of ${K.ep6} (241,992 overlapping memory entries)` })).toHaveCount(1);
   await choose(page, 'All records');
   await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.length));

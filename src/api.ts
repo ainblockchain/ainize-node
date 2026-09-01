@@ -212,7 +212,10 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.get('/api/ledger', wrap(async (req) => {
-    const q = z.object({ since: z.coerce.number().optional(), kind: z.string().optional(), limit: z.coerce.number().max(1000).default(200) }).parse(req.query);
+    // The window is the NEWEST `limit` records. A ledger bigger than the window cannot be paged backwards, so the
+    // cap is high enough to export a demo chain in one call and every caller is expected to compare what it got
+    // with `info.records` and say when it is showing only part of the record (web: the "most recent N of M" line).
+    const q = z.object({ since: z.coerce.number().optional(), kind: z.string().optional(), limit: z.coerce.number().max(5000).default(200) }).parse(req.query);
     const recs = await market.ledger.list({ since: q.since, kind: q.kind as never, limit: q.limit });
     return { info: await market.ledger.info(), records: recs.reverse() };
   }));

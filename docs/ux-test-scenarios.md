@@ -411,7 +411,7 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 2. Read the info card and the developer row under it; click 'Open in explorer'
 3. Read the table headers and the first rows
 4. Open the select (default 'All records') and choose 'Purchase settled'
-5. Choose 'Newer version' and read the 3 rows
+5. Choose 'Newer version' and compare the rows with GET /api/ledger?kind=supersede
 6. Choose 'All records', scroll to 'Origin → derivative map', hover boxes and click the box 'krx-all-2761'
 
 **Expected**
@@ -419,9 +419,9 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 - Title 'Public record' with description 'A record anyone can check: who registered, verified and bought which knowledge.'; header badge next to the logo reads 'AI Network'
 - Info card: 'Record type' 'AIN blockchain'; 'Network' ain:local; 'Records' {n} (= ledger.records); 'Blocks recorded' (chain height, increasing); 'Connected AI Network node' http://localhost:8081; 'Integrity' 'valid · {n} checked' in green
 - Developer row: 'Stored at' 'NODE OPERATORS & DEVELOPERS /apps/knowledge — Recorded on the AI Network — registrations as knowledge entries; …'; 'Open in explorer' opens http://localhost:8081/get_value?ref=%2Fapps%2Fknowledge (URL-encoded href; visible text unencoded) in a new tab (JSON)
-- Table headers 'Time', 'Kind', 'What happened', 'By', 'Record ID / tx'; kind chips use 'Registered', 'Verification', 'Newer version', 'Knowledge track', 'Node'; pagination '1 / 1' (20 per page)
+- Table headers 'Time', 'Kind', 'What happened', 'By', 'Record ID / tx'; kind chips use 'Registered', 'Verification', 'Newer version', 'Knowledge track', 'Node'; 20 rows per page and a pager. GET /api/ledger returns the NEWEST `limit` records and cannot page further back, so when the ledger holds more than the page asked for (1,000) a line above the table reads 'Showing the most recent 1,000 of {n} records — the node returns this many at a time and cannot page further back.'; with a smaller ledger that line is absent
 - Select options: 'All records', 'Registered', 'Verification', 'Purchase settled', 'Knowledge track', 'Node', 'Newer version', 'Subscription', 'Re-verification request'; 'Purchase settled' → 'No "Purchase settled" records yet.' (until a purchase has been made)
-- 'Newer version' → 3 rows such as 'krx-all-2761 marked as the newer version of krx-all-2761-ep6 (241,992 overlapping memory entries)'
+- 'Newer version' → one row per supersede record on the WHOLE ledger (the node applies the filter, not the fetched window): e.g. 'krx-all-2761 marked as the newer version of krx-all-2761-ep6 (241,992 overlapping memory entries)'
 - Map: 4 boxes in three columns — left krx-all-2761-ep6 and pixelplus-087600, middle krx-all-2761-ep12, right krx-all-2761 (label 'For sale · Qwen3.8-Flash-N…' — the map prints the same listing state as the chips); two grey solid 'extends' arrows (krx-all-2761 → ep12, ep12 → ep6) and three orange dashed 'supersedes' arrows; legend 'derived from origin (creator revenue share)', 'replaced by a newer version (same subject, overlapping entries)', 'origins on the left, derivatives to the right'; clicking a box opens that knowledge's detail page
 
 **Evidence**
@@ -2558,7 +2558,7 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 2: attest rows read `krx-all-2761 · PASS · vllm:Qwen3.8-Flash-Next` (one per verifier per patch); supersede rows read `krx-all-2761 supersedes pixelplus-087600 (2170 rows)`, `krx-all-2761 supersedes krx-all-2761-ep6 (241992 rows)`, `krx-all-2761 supersedes krx-all-2761-ep12 (241992 rows)`
 - Step 3 prints `✓ ledger valid — <n> record(s) checked (hashes, signatures, imported chain linkage)`; the API returns `{"valid":true,"checked":<n>,"errors":[]}` with the same n
 - Step 4 prints `lineage (child → parent edges, royalties flow upward)` and the tree `krx-all-2761-ep6 [Qwen3.8-Flash-Next · krx-ticker-codes] SUPERSEDED` → `└─ krx-all-2761-ep12 … SUPERSEDED` → (indented one level further) `└─ krx-all-2761 … LISTED  supersedes krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600`, plus a separate root `pixelplus-087600 … SUPERSEDED`
-- Step 5 prints `✓ exported <n> record(s) to /tmp/ainize-ledger.jsonl`; `wc -l` equals n; each line is one JSON record whose keys are `author, body, hash, kind, parents, sig, ts` (sorted(r)[:6] → ['author','body','hash','kind','parents','sig']), oldest first
+- Step 5 prints `✓ exported <n> record(s) to /tmp/ainize-ledger.jsonl` where n is the node's whole `records` count — the CLI asks how big the ledger is and requests exactly that many (it used to ask for a fixed 1,000 and printed 'exported 1000 record(s)' once the chain grew past it). Past the node's per-request maximum (5,000) it says so instead: `exported the most recent 5000 of <n> record(s) … cannot page further back`. `wc -l` equals n; each line is one JSON record whose keys are `author, body, hash, kind, parents, sig, ts` (sorted(r)[:6] → ['author','body','hash','kind','parents','sig']), oldest first
 - Step 6: node-b reports the same `records` count and network `ain:local` — one shared chain, no divergence
 - Step 7 prints the header and `ledger is empty` (unknown kind matches nothing, no error)
 
