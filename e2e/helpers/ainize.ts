@@ -210,6 +210,8 @@ export interface ThrowawayOpts {
   ledger?: 'local' | 'ain';
   /** Serving API URL (default: a closed port, so the node never touches the shared vLLM). */
   runtimeApi?: string;
+  /** Patch-hook mailbox (default: the one the demo cluster's serving instance uses — see RUNTIME_PATCH_DIR). */
+  patchDir?: string;
   /** Extra `ainize config set <key> <value>` pairs applied before the first start (e.g. `{ 'verifier.auto': 'false' }`). */
   set?: Record<string, string>;
   /** Hard lifetime cap in seconds: a detached watchdog kills the process afterwards even if the test crashed (default 600). */
@@ -252,6 +254,13 @@ export async function startThrowawayNode(tag: string, opts: ThrowawayOpts = {}):
   if (ledger === 'ain') initArgs.push('--ain-provider', CHAIN);
   const init = await cli(initArgs, home, { timeoutMs: 60_000 });
   if (init.code !== 0) throw new Error(`throwaway node init failed: ${init.stderr || init.stdout}`);
+  // A throwaway that can reach a model must use the SAME patch-hook mailbox as the instance it talks to — the demo
+  // cluster's serving instance has its own (`ple_patch_e2e`), and a node applying through the default one would write
+  // into another instance's table and never change the answers it is being tested on.
+  {
+    const r = await cli(['config', 'set', 'runtime.patchDir', opts.patchDir ?? RUNTIME_PATCH_DIR], home, { timeoutMs: 30_000 });
+    if (r.code !== 0) throw new Error(`throwaway node config set runtime.patchDir failed: ${r.stderr || r.stdout}`);
+  }
   if (opts.stableId) {
     const keep = join(SCRATCH, 'ids', `${opts.stableId}.json`);
     mkdirSync(join(SCRATCH, 'ids'), { recursive: true });
