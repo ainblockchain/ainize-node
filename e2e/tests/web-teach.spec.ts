@@ -94,8 +94,9 @@ test('AZ-103 banner → "Teach the right answer" under a reply → drawer → ba
   await expect(page.getByTestId('teach-banner')).toContainText('Wrong answer? Click "Teach the right answer" under any reply and the model learns it. No account needed.');
   await expect(page.getByTestId('nav-teach')).toBeVisible();
   const basket = page.getByTestId('lesson-basket');
-  await expect(basket).toContainText('Your lesson (0 of 8)');
-  await expect(basket).toContainText('No corrections yet.');
+  // v2: the basket IS the dataset draft before Teach is pressed (teachable-dataset-design §5.9)
+  await expect(basket).toContainText('Your dataset · 0 questions');
+  await expect(basket).toContainText('Your dataset is empty.');
   await expect(page.getByTestId('teach-policy')).toContainText('Teaching on this node: open');
   await expect(page.getByTestId('train-lesson')).toBeDisabled();
 
@@ -118,7 +119,7 @@ test('AZ-103 banner → "Teach the right answer" under a reply → drawer → ba
   await drawer.getByTestId('teach-alt').fill(ALT);
   await drawer.getByTestId('teach-add').click();
   await expect(drawer).toBeHidden();
-  await expect(basket).toContainText('Your lesson (1 of 8)');
+  await expect(basket).toContainText('Your dataset · 1 question');
   await expect(basket.getByTestId('basket-item').first()).toContainText(PROMPT);
   await expect(basket.getByTestId('basket-item').first()).toContainText(ANSWER);
 
@@ -127,11 +128,11 @@ test('AZ-103 banner → "Teach the right answer" under a reply → drawer → ba
   await drawer.getByRole('textbox', { name: 'The question' }).fill(KNOWN_Q);
   await drawer.getByTestId('teach-answer').fill(KNOWN_A);
   await drawer.getByTestId('teach-add').click();
-  await expect(basket).toContainText('Your lesson (2 of 8)');
+  await expect(basket).toContainText('Your dataset · 2 questions');
   await expect(page.getByTestId('train-lesson')).toBeEnabled();
 
   await page.reload();
-  await expect(page.getByTestId('lesson-basket')).toContainText('Your lesson (2 of 8)', { timeout: 30_000 });
+  await expect(page.getByTestId('lesson-basket')).toContainText('Your dataset · 2 questions', { timeout: 30_000 });
   const stored = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('ainize.teach.basket.')));
   expect(stored.length).toBeGreaterThan(0);
   await page.screenshot({ path: 'results/az-101-basket.png', fullPage: true });
@@ -183,7 +184,7 @@ test('AZ-105 pre-flight: wrong fact will train, already-correct fact skipped, qu
   await expect(pf).toBeHidden({ timeout: 30_000 });
   await expect(page).toHaveURL(/[?&]lesson=[0-9a-f-]{36}/);
   jobId = new URL(page.url()).searchParams.get('lesson')!;
-  await expect(page.getByTestId('lesson-basket')).toContainText('Your lesson (0 of 8)');
+  await expect(page.getByTestId('lesson-basket')).toContainText('Your dataset · 0 questions');
   const mirror = await page.evaluate(() => JSON.parse(localStorage.getItem('ainize.teach.jobs') ?? '[]') as { id: string }[]);
   expect(mirror[0].id).toBe(jobId);
 });

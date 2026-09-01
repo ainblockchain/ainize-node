@@ -1601,3 +1601,114 @@ the model server is down, which is the designed behaviour).
 PR-D6 (trainer `facts_file` / `eval_sample` / scaled `max_contrast`) — until it lands the node keeps `rowsPerJob` at the
 floor and detects support by the absence of `sampled` on the `eval` event. PR-D7 / PR-D8 (web), PR-D9 (CLI verbs and the
 `teach status` dataset line), PR-D10 (AZ-123 onward + e2e).
+
+---
+
+## CHANGES — PR-D2 (web: the Teachable-NLP-style UI, 2026-09-01)
+
+Implements §5 in full (screens, copy, mobile, error mapping), the client half of §7 (dataset endpoints with polling),
+§10 (what a duration may say) and §11's entry points. Plan items PR-D7 and PR-D8 landed as one change: the wizard's five
+screens share a stepper, a status vocabulary and an error map, and splitting them would have left `/teach/upload` with
+nowhere to go. No node, core, trainer or CLI change (PR-D6 / PR-D9 are still owed).
+
+**Files.** New: `packages/web/src/pages/{TeachPage,TeachUploadPage,TeachDatasetPage,TeachSettingsPage,TeachLessonPage,TeachMinePage}.tsx` ·
+`packages/web/src/components/teach/{Stepper,DropZone,PasteTable,FormatHelp,DatasetTable,RowEditSheet,ReparseSheet,EffortCards,StageRail,LiveTestBox,DatasetCard,util}.ts(x)` ·
+`packages/web/src/lib/teachDataset.ts`. Changed: `api/{api,types}.ts` (dataset endpoints, multipart signing, the
+extended policy/job/progress/checks shapes) · `i18n/pages/teach.ts` (+286 keys) · `App.tsx` (the `/teach` routes replace
+the `/chat?mine=1` redirect) · `components/ui/Header.tsx` · `components/chat/{LessonBasket,LessonCard,PublishSheet,teachUtil}.tsx` ·
+`packages/e2e/tests/web-teach.spec.ts` (basket copy).
+
+### Deviations from §5
+
+1. **One editor, not two.** §5.4 implies inline cell editing on desktop and §5.13 requires a full-width sheet on a
+   phone. `RowEditSheet` is used at every width: one validation path, one place where "editing a question clears its
+   model-side status" is enforced, and no 40 px table-cell inputs. The mobile requirement is met exactly; the desktop
+   one is met by a modal instead of in-place cells.
+
+2. **The result screen counts QUESTIONS from `job.facts`, never from `checks.taught`.** `checks.taught` counts model
+   *probes* — the head of the sample is asked in two renderings (`check.chatFormRows`), so a 3-question lesson reports
+   `taught: {hits: 6, total: 6}`. Rendering §5.7's "It learned {hits} of {total} questions" from that field said
+   *"It learned all 6 questions"* about three questions, which is exactly the kind of claim §5.12 forbids. Question
+   counts now come from `facts` (index-aligned with the dataset): learned = `hit === true`, missed = `hit === false`,
+   and anything unmeasured is reported through `teach.res.checked_sample` rather than counted as learned. The same fix
+   is applied to the My-datasets lesson line and to `LessonCard`'s sampled note.
+
+3. **The side-effects sentence drops its second half when there is no context knowledge.** `teach.res.side_ok` ends
+   with "knowledge you had loaded still answers its own questions: {p}/{q}", which reads as "0/0" for a lesson that
+   loaded none. With `parent_regression.total === 0` the screen falls back to the v1 string
+   `teach.card.check_locality` — the same rule `LessonCard` already applies.
+
+4. **`teach.basket.title_one`** (new): "Your dataset · 1 question". The design's `{n} questions` renders "1 questions"
+   in the basket headline, which is the most-seen string of the chat door.
+
+5. **~30 keys the §5 tables did not have.** The screens need labels the copy tables skipped: `teach.rows.status.fixed`
+   and `status.over_cap` (the ninth row status PR-D1 added), the reparse form's own field labels, table pagination,
+   `teach.rows.add_save`, `teach.run.{log,log_empty,rows}`, `teach.res.title_partial`, `teach.set.{dataset,summary_short}`,
+   `teach.up.{sample_use,sample_rows,key_made,key_backup}`, `teach.data.{other_lessons,upload_cta,open}`,
+   `teach.basket.view_title` and `teach.pub.declaration`. All follow the §4 vocabulary; none of them names a limit.
+
+6. **The teaching key is created silently on the first upload**, with a sentence saying so and a link to back it up
+   (`teach.up.key_made`). A signature is required before the node will store any bytes, and an interstitial in front of
+   "Choose a file" would be the opposite of the Teachable-NLP shape. The v1 `CreditSheet` still opens on the chat
+   door's first *Train*, unchanged.
+
+7. **The chat door still trains through the v1 `{facts}` body.** §3 draws the conversational door as POSTing
+   `/api/teach/datasets` first; the client keeps the v1 pre-flight → `POST /api/teach/jobs {facts}` path (which the node
+   materialises into a `source: 'chat'` dataset) and renders the freeze receipt from `job.dataset` — the file really
+   exists, it is linked, and the v1 flow the e2e suite covers is untouched. `LessonBasket` shows the basket as a dataset
+   draft *before* Teach is pressed (title, view, download, per-question remove) exactly as §5.9 asks; the `.jsonl` it
+   downloads is written in the browser and is byte-identical to the node's canonical form.
+
+8. **Pre-flight pagination.** §7.3 caps a call at `preflight.perCall` but does not say how the client walks a dataset.
+   *Check what the model already knows* issues sequential calls at offsets 0/8/16 up to 24 questions, renders each
+   batch as it lands, and stops at the first quota error with whatever it has — the sampled sentence then names what
+   was actually checked.
+
+9. **The counts pill is dataset-wide.** `teach.rows.counts` shows accepted / known / duplicate / needs-a-fix for the
+   whole dataset (after a check, "will train" is the checked count); the per-lesson slice is the cap banner's and the
+   settings screen's job. The two never disagree because they answer different questions.
+
+10. **A revision change clears the selection as well as the model statuses.** Editing or removing a question renumbers
+    `rows.jsonl`, so a *Choose which N* pick made against the old revision would train the wrong questions. Undo
+    re-appends a removed question at the END of the file (the API has no insert-at); the toast promises it back, not
+    its old position.
+
+11. **The header's *Teach* now points at `/teach`** (the entry choice) instead of `/chat?teach=1`. The landing page's
+    `landing-nav-teach` still points at the chat door — two e2e specs assert that href, and the landing CTA is
+    deliberately the conversational one.
+
+12. **`packages/e2e/tests/web-teach.spec.ts`** basket assertions were updated to the v2 copy (5 lines). The suite must
+    be pointed at a node serving this branch's web build (`AINIZE_URL`); the rest of the e2e work is PR-D10.
+
+13. **One more error mapping than §5.11 lists.** A missing job answers the v1 shape — `404 {"error":"lesson not
+    found"}` with no machine code — so `mapTeachError` matches it explicitly (`teach.err.lesson_not_found`, new) rather
+    than showing the visitor "Something went wrong with the lesson: lesson not found". An expired draft is a normal
+    visitor state, not a fault.
+
+### Verified in a real browser against the dev node (`$HOME/.ngram-teachable/node-u`, :3422, `backend: 'stub'`)
+
+51 screenshots in `packages/e2e/results/teachable-*.png` (desktop 1280 and 360 px, English and Korean):
+entry · upload · preview (raw, checked, picking, dropped lines, edit sheet, undo toast, reparse sheet) · settings ·
+progress · result (learned table, side effects, live test, keep-private sheet, publish sheet, declaration gate) ·
+retrain · my datasets · the chat basket (empty, filled, view-all sheet, freeze receipt, lesson card).
+
+The walkthrough that produced them: a 25-question CSV with a duplicate, a contradiction, an over-long answer, a missing
+answer and a four-question shared-ending group → every one of those statuses rendered with its own sentence and line
+number → *Check what the model already knows* (20 of 20, each with the model's quoted answer) → over-cap banner and
+*Choose which 8* → edit a question (its model status cleared) → remove and undo → settings (no minutes anywhere: this
+node reports `timing.simulated`) → train → stage rail, `step/max_steps`, hit counter, elapsed → result → live test
+returning two answers side by side → keep-private and publish sheets → *Train it again* creating a second job from the
+same dataset → My datasets with an authenticated `.jsonl` download → the chat door: basket as "Your dataset · 2
+questions", *View all*, a browser-written `your-dataset-2026-09-01.jsonl`, then Teach → the freeze receipt naming that
+filename and linking to the dataset the node created. Error paths: a `.jsonl` with two unreadable lines (collapsed
+"lines that were left out" list) and an answer-less `.txt` (`dataset_empty`, the visitor sentence, no invented answers).
+
+`document.documentElement.scrollWidth === clientWidth` on all seven screens at 360 px in both locales (one real
+overflow was found and fixed: the sample-dataset chips), and the drop zone is reachable and activatable from the
+keyboard.
+
+**Dev-node settings used and then reset:** `rows_per_job: 8` (to exercise the over-cap flow the gradient floor will
+produce), `jobs_per_key_per_day: 20` / `jobs_per_ip_per_day: 50` (four full runs in one day) and
+`declaration_rows: 10` (to see the publish declaration gate refuse and then allow). All are back to their designed
+values (`rows_per_job` derived — 200 on stub, jobs 3/5, declaration 100). Fresh visitor buckets came from
+`x-forwarded-for` (the node runs with `server.trustProxy: true`), never from touching the shared demo cluster.
