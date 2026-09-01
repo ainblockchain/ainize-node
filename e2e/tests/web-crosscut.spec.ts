@@ -104,9 +104,14 @@ test.describe('runtime', () => {
     await expect(page.getByText('Topic', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'All', exact: true })).toHaveCount(2);
     await expect(page.getByPlaceholder('Search by name or description')).toBeVisible();
-    await expect(page.getByText(`${total} knowledge`)).toBeVisible();
+    await expect(page.getByText('Show', { exact: true })).toBeVisible();
+    const currentTotal = numLabel((await api<{ total: number }>(request, '/api/catalog?status=LISTED,ANNOUNCED,VERIFYING,CHALLENGED')).body.total);
+    await expect(page.getByText(`${currentTotal} knowledge`)).toBeVisible();   // Explore opens on "Current only"
     await expect(headerNav(page)).toHaveText(HEADER_NAV_EN);
     await expect(langButton(page)).toHaveText('한국어');
+    // the tab names the page, and <html lang> declares the language actually on screen
+    await expect(page).toHaveTitle('Explore knowledge · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
 
     // Step 2/3 — Korean
     await langButton(page).click();
@@ -116,9 +121,15 @@ test.describe('runtime', () => {
     await expect(page.getByText('주제', { exact: true }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: '전체', exact: true })).toHaveCount(2);
     await expect(page.getByPlaceholder('지식 이름·설명 검색')).toBeVisible();
-    await expect(page.getByText(`지식 ${total}개`)).toBeVisible();
+    await expect(page.getByText('표시', { exact: true })).toBeVisible();
+    await expect(page.getByText(`지식 ${currentTotal}개`)).toBeVisible();
     await expect(page.getByText('검증 완료', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('최신 버전 있음', { exact: true }).first()).toBeVisible();
+    await expect(page).toHaveTitle('지식 둘러보기 · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang), '<html lang> follows the toggle without a reload').toBe('ko');
+    // the retired versions and their Korean chip come back with '모든 버전'
+    await page.getByRole('button', { name: '모든 버전', exact: true }).click();
+    await expect(page.getByText(`지식 ${total}개`)).toBeVisible();
+    await expect(page.getByText(`최신 버전: ${K.final}`, { exact: true }).first()).toBeVisible();
     const krxItem = page.locator(`main a[href$="/${K.final}"]`);
     await expect(krxItem).toContainText('만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes');
     await expect(headerNav(page)).toHaveText(HEADER_NAV_KO);
@@ -132,14 +143,33 @@ test.describe('runtime', () => {
     await expect(h1(page)).toHaveText('지식 둘러보기');
     await page.goto(`${V}/`);
     await expect(h1(page)).toHaveText('지식을 AI에 끼우다');
+    // Hangul renders on the landing page even where the host has no system Korean face: the display stack ends in
+    // the webfont index.html downloads, so the headings and both hero pills are not blank boxes.
+    const hero = await h1(page).evaluate((el) => ({ font: getComputedStyle(el).fontFamily, w: el.getBoundingClientRect().width }));
+    expect(hero.font, 'display stack carries the Hangul fallback').toContain('Noto Sans KR');
+    expect(hero.w, 'the Korean h1 actually renders glyphs').toBeGreaterThan(100);
+    for (const label of ['지식 둘러보기', '라이브 테스트 해보기']) {
+      const w = await page.getByRole('link', { name: label }).first().evaluate((el) => el.getBoundingClientRect().width);
+      expect(w, `hero CTA "${label}" has a rendered label`).toBeGreaterThan(60);
+    }
+    await expect(page).toHaveTitle('지식을 AI에 끼우다 · Ainize');
     await langButton(page).click();
     await expect(h1(page)).toHaveText('Plug knowledge into your AI');
+    await expect(page).toHaveTitle('Plug knowledge into your AI · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
     await langButton(page).click();
     await expect(h1(page)).toHaveText('지식을 AI에 끼우다');
     await page.goto(`${V}/ledger`);
     await expect(h1(page)).toHaveText('공개 기록');
+    await expect(page).toHaveTitle('공개 기록 · Ainize');
+    await page.goto(`${V}/${await nodeAAddress(request)}/${K.final}`);
+    await expect(page).toHaveTitle(`${await h1(page).innerText()} · Ainize`);   // a knowledge page is named after the knowledge
+    await page.goto(`${V}/no-such-page-here`);
+    await expect(page).toHaveTitle('404. 페이지를 찾을 수 없습니다 · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('ko');
     await page.goto(`${V}/chat/${K.final}`);
     await expect(h1(page)).toHaveText('라이브 테스트');
+    await expect(page).toHaveTitle('라이브 테스트 · Ainize');
 
     // Step 5
     expect(await page.evaluate(() => localStorage.getItem('ainize.locale'))).toBe('ko');
@@ -529,6 +559,38 @@ test.describe('runtime', () => {
     await expect(page.locator('details summary code').first()).toBeVisible();
     overflow.docs = await noHorizontalScroll(page);
 
+    // Step 7 — the same header at desktop widths: the ledger badge used to be painted 65 px over the first nav link
+    // (Home was `flex: 1; min-width: 0` around a 121 px logo and a nowrap badge, neither of which can shrink).
+    const geom: Record<number, { intersects: boolean; headerH: number; sameRow: boolean; navNeed: number; navWidth: number }> = {};
+    for (const w of [1440, 1280, 1024, 960]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.goto(`${V}/explore`);
+      await expect(h1(page)).toHaveText('Explore knowledge');
+      // measure with the webfonts in place: while the fallback face is showing the nav is wider than the bar and
+      // wraps to a second row — graceful, but not the steady state this step is about
+      await page.evaluate(() => document.fonts.ready);
+      geom[w] = await page.evaluate(() => {
+        const box = (el: Element | null | undefined) => { const r = el!.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const badge = box([...document.querySelectorAll('header span')].find((x) => /^(AI Network|P2P)$/.test(x.textContent ?? '')));
+        const first = box(document.querySelector('header nav a'));
+        const home = box(document.querySelector('header a'));
+        const nav = document.querySelector('header nav')!;
+        return {
+          intersects: badge.l < first.r && first.l < badge.r && badge.t < first.b && first.t < badge.b,
+          headerH: Math.round(document.querySelector('header')!.getBoundingClientRect().height),
+          sameRow: home.t < first.b && first.t < home.b,
+          navNeed: Math.round([...nav.children].reduce((sum, el) => sum + el.getBoundingClientRect().width, 0)),
+          navWidth: Math.round(nav.getBoundingClientRect().width),
+        };
+      });
+      expect(geom[w].intersects, `ledger badge over the first nav link at ${w}px`).toBe(false);
+      expect(geom[w].sameRow, `logo and nav share one row at ${w}px`).toBe(true);
+      expect(geom[w].headerH, `header stays one 81px row at ${w}px`).toBe(81);
+      expect(geom[w].navNeed, `the nav fits the space left beside the logo at ${w}px`).toBeLessThanOrEqual(geom[w].navWidth);
+    }
+    test.info().annotations.push({ type: 'note', description: `desktop header geometry: ${JSON.stringify(geom)}` });
+    await page.setViewportSize({ width: 360, height: 740 });
+
     // Step 6 — no body-level horizontal scroll on any page
     const bad = Object.entries(overflow).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: scrollWidth ${v.scrollWidth} > innerWidth ${v.innerWidth}`);
     test.info().annotations.push({ type: 'note', description: `overflow per page: ${JSON.stringify(overflow)}; header items outside the 360px viewport: ${outside.join(', ') || 'none'}` });
@@ -838,8 +900,9 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   const [hit, tot] = score.split('/').map(Number);
   const pctText = `${Math.round((hit / tot) * 1000) / 10}%`;
 
-  // Step 1 — Explore meta lines and price column
+  // Step 1 — Explore meta lines and price column ("All versions": the superseded rows are hidden by default)
   await page.goto(`${NODE_A}/explore`);
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   const krxItem = page.locator(`main a[href$="/${K.final}"]`);
   await expect(krxItem).toContainText(`${numLabel(krx.anchor.benchmark.queries)} facts · ${numLabel(krx.anchor.rows)} memory entries · Size ${bytesLabel(krx.anchor.size_bytes)} · ${numLabel(krx.downloads)} downloads`);
   expect(numLabel(krx.anchor.rows)).toBe('270,053');
@@ -867,7 +930,8 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   await expect(stat('Facts')).toHaveText('2,761');
   await expect(stat('Size')).toHaveText('331.7 MB');
   await expect(stat('Price')).toHaveText('25 AIN');
-  await expect(page.getByText(`Accuracy ${pctText} (${score}) — over 2,761 benchmark questions`)).toBeVisible();
+  // the denominator under the bar is the attestation's own, not the anchor's 2,761 coverage claim
+  await expect(page.getByText(`Accuracy ${pctText} on ${tot} of 2,761 questions checked by verifiers`)).toBeVisible();
   // A zero revenue reads '0 AIN' (only prices render 'Free') — the scenario recorded the old 'Free' as a defect; fixed in recordText.ts revenueLabel.
   const zeroRevenue = (await Promise.all(cat.map(async (e) => (await api<PatchDetail>(request, `/api/patches/${e.anchor.id}`)).body))).find((d) => Number(d.revenue) === 0);
   if (zeroRevenue) {
@@ -967,12 +1031,15 @@ test('AZ-097 Show helpful empty states when a filter, search or section has noth
   await expect(page.getByRole('status', { name: 'loading' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'First', exact: true })).toHaveCount(0);
 
-  // Step 2 — chips bring the list back
+  // Step 2 — chips bring the list back (Explore opens on "Current only", so the count is the current ones)
+  const current = (await api<{ total: number }>(request, '/api/catalog?status=LISTED,ANNOUNCED,VERIFYING,CHALLENGED')).body.total;
   await search.fill('');
   await page.getByRole('button', { name: 'krx-ticker-codes', exact: true }).click();
   await page.getByRole('button', { name: 'Qwen3.8-Flash-Next', exact: true }).click();
-  await expect(page.getByText(`${numLabel(total)} knowledge`)).toBeVisible();
+  await expect(page.getByText(`${numLabel(current)} knowledge`)).toBeVisible();
   await expect(page.getByText('1 / 1')).toBeVisible();
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
+  await expect(page.getByText(`${numLabel(total)} knowledge`)).toBeVisible();
 
   // Step 3 — ledger kind without records
   await page.goto(`${NODE_A}/ledger`);
@@ -1142,8 +1209,9 @@ test('AZ-099 Verify what happens to scroll position and filters on browser Back 
   await expect(page.getByRole('alert')).toHaveCount(0);
   test.info().annotations.push({ type: 'note', description: 'Back resets the ledger to the top with "All records", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario.' });
 
-  // Step 5 — explore: last item, open, Back
+  // Step 5 — explore: last item, open, Back (the last "popular" item is superseded → show all versions first)
   await page.goto(`${NODE_A}/explore`);
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   const last = items[items.length - 1];
   const lastItem = page.locator(`main a[href$="/${last.anchor.id}"]`);
   await lastItem.scrollIntoViewIfNeeded();
@@ -1152,6 +1220,9 @@ test('AZ-099 Verify what happens to scroll position and filters on browser Back 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(last.anchor.name);
   await page.goBack();
   await expect(page).toHaveURL(`${NODE_A}/explore`);
+  // Back reopens Explore in its default view — the "Show" choice is component state, like the sort and the chips
+  await expect(page.getByRole('button', { name: 'Current only', exact: true })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   await expect(page.locator('main a', { hasText: 'node-a /' })).toHaveCount(items.length);
   await expect(page.getByRole('status', { name: 'loading' })).toHaveCount(0);
   await page.waitForTimeout(500);

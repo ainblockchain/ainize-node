@@ -36,6 +36,12 @@ const stat = (page: Page, name: string) => page.locator(`xpath=//div[normalize-s
 const rows = (page: Page) => page.locator('main a[href^="/0x"]');
 const idOf = (href: string | null) => decodeURIComponent((href ?? '').split('/').pop() ?? '');
 const selectButton = (page: Page) => page.locator('button[aria-haspopup="listbox"]');
+/** Explore opens on "Current only" (superseded/rejected hidden). Switch it to the full catalogue. */
+const showAllVersions = async (page: Page) => {
+  const req = page.waitForRequest((r) => r.url().includes('/api/catalog') && !r.url().includes('status='));
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
+  await req;
+};
 async function choose(page: Page, label: string) {
   const btn = selectButton(page);
   await btn.click();
@@ -98,7 +104,8 @@ test('AZ-002 Inspect the trending card for the only verified knowledge', async (
   await expect(card).toContainText(`Creator: node-a · ${MODEL}`);
   const line = (label: string) => card.locator('div', { hasText: new RegExp(`^${label}`) }).first();
   await expect(line('facts covered')).toContainText('2,761 facts');
-  await expect(line('accuracy')).toContainText('100% (26/26)');
+  // the denominator is the attestation's own 26 questions, named next to the 2,761 the knowledge covers
+  await expect(line('accuracy')).toContainText('100% on a 26-question sample of 2,761');
   await expect(line('Verified')).toContainText('Verified (2/2 independent verifiers)');
   await expect(line('Price')).toContainText('25 AIN');
   await expect(line('Price')).toContainText(AIN_NOTE);
@@ -130,8 +137,18 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Explore knowledge');
   await expect(page.getByText('Choose by verification status and accuracy. You can check any of it with a live test before buying.')).toBeVisible();
-  await expect(page.getByText(`${cat.total} knowledge`, { exact: true })).toBeVisible();
+
+  // Opens on "Current only": the three superseded versions are held back and the page says how many and offers them.
+  const current = cat.items.filter((e) => !['SUPERSEDED', 'REJECTED'].includes(e.status));
+  expect(current.length).toBe(1);
   expect(cat.total).toBe(4);
+  await expect(page.getByText(`${current.length} knowledge`, { exact: true })).toBeVisible();
+  await expect(page.getByTestId('explore-hidden')).toHaveText(`${cat.total - current.length} older versions hidden · show`);
+  await expect(page.getByTestId('explore-hidden')).toHaveAttribute('title', '"Current only" hides knowledge that a newer version replaced and knowledge that failed verification.');
+  await expect(rows(page)).toHaveCount(current.length);
+  await page.getByTestId('explore-hidden').getByRole('button', { name: 'show' }).click();
+  await expect(page.getByText(`${cat.total} knowledge`, { exact: true })).toBeVisible();
+  await expect(page.getByTestId('explore-hidden')).toHaveCount(0);
 
   const row = page.locator(`main a[href$="/${K.final}"]`);
   await expect(row).toContainText(FINAL_NAME);
@@ -140,12 +157,14 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
   await expect(row).toContainText(`node-a / ${K.final}`);
   await expect(row).toContainText(`Creator: node-a · Target model: ${MODEL} · Topic: krx-ticker-codes`);
   await expect(row).toContainText(`2,761 facts · 270,053 memory entries · Size 331.7 MB · ${num(final.downloads)} downloads`);
-  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% accuracy');
+  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% (26/26 checked)');
   await expect(row).toContainText('25 AIN');
   await expect(row).toContainText(AIN_NOTE);
 
   const prow = page.locator(`main a[href$="/${K.pixel}"]`);
-  await expect(prow).toContainText('Newer version available');
+  await expect(prow).toContainText(`Newer version: ${K.final}`);
+  // its own verifiers scored 4 questions, not the 8 facts the row also prints
+  await expect(prow).toContainText('Verified (2/2 independent verifiers) · 100% (4/4 checked)');
   await expect(prow).toContainText(`${num(pixel.anchor.benchmark.queries)} facts · ${num(pixel.anchor.rows)} memory entries`);
   expect(`${num(pixel.anchor.benchmark.queries)} facts · ${num(pixel.anchor.rows)} memory entries`).toBe('8 facts · 2,992 memory entries');
   await expect(prow).toContainText('0.1 AIN');
@@ -165,6 +184,7 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
 
 test('AZ-013 Re-order Explore by each sort option', async ({ page, request }) => {
   await page.goto(NODE_A + '/explore');
+  await showAllVersions(page);          // sorting is about the whole catalogue, not the default "Current only" view
   await expect(rows(page)).toHaveCount(4);
   const order = async () => (await rows(page).evaluateAll((as) => as.map((a) => a.getAttribute('href')))).map(idOf);
 
@@ -201,6 +221,14 @@ test('AZ-013 Re-order Explore by each sort option', async ({ page, request }) =>
   await expect(selectButton(page)).toHaveText('Most popular');
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   expect(await order()).toEqual(popular.items.map((e) => e.anchor.id));
+  // "Most popular" ranks tradeable before retired: the LISTED knowledge heads the list even though the superseded
+  // single-fact item has accumulated far more downloads.
+  expect(popular.items[0].status).toBe('LISTED');
+  expect(popular.items[0].anchor.id).toBe(K.final);
+  const pixel = popular.items.find((e) => e.anchor.id === K.pixel)!;
+  expect(pixel.status).toBe('SUPERSEDED');
+  expect(pixel.downloads, 'the retired item still has the most downloads').toBeGreaterThan(popular.items[0].downloads);
+  expect(popular.items.map((e) => e.status)).toEqual(['LISTED', 'SUPERSEDED', 'SUPERSEDED', 'SUPERSEDED']);
 });
 
 test('AZ-014 Filter Explore by model and topic and search, including the empty state', async ({ page, request }) => {
@@ -208,8 +236,14 @@ test('AZ-014 Filter Explore by model and topic and search, including the empty s
   const visibleTopics = [...new Set(cat.items.map((e) => (e.anchor as unknown as { benchmark: { schema: string } }).benchmark.schema))];
   expect(visibleTopics).toEqual(['krx-ticker-codes']);
   await page.goto(NODE_A + '/explore');
-  await expect(rows(page)).toHaveCount(4);
   const group = (label: string) => page.locator('div', { has: page.locator(`span.label:text-is("${label}")`) }).last();
+  // the third chip group: "Current only" is the default, "All versions" brings the retired ones back
+  await expect(group('Show').getByRole('button')).toHaveText(['Current only', 'All versions']);
+  await expect(group('Show').getByRole('button', { name: 'Current only' })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await expect(rows(page)).toHaveCount(1);
+  await showAllVersions(page);
+  await expect(group('Show').getByRole('button', { name: 'All versions' })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await expect(rows(page)).toHaveCount(4);
   await expect(group('Model').getByRole('button')).toHaveText(['All', MODEL]);
   // PRODUCT BUG candidate: /api/catalog builds `schemas`/`models` from the unfiltered catalog, so the topic of a
   // test-visibility knowledge (invisible in the list) can leak into the Topic chips. Soft so the rest is still checked.
@@ -419,7 +453,7 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
 
   await expect(page.getByRole('heading', { name: 'Description' })).toBeVisible();
-  await expect(page.getByText('Accuracy 100% (26/26) — over 2,761 benchmark questions')).toBeVisible();
+  await expect(page.getByText('Accuracy 100% on 26 of 2,761 questions checked by verifiers')).toBeVisible();
   await expect(page.getByText('This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.')).toBeVisible();
   await expect(dd(page, 'Model')).toHaveText(MODEL);
   await expect(dd(page, 'Checkpoint')).toHaveText('W4A16');
@@ -958,6 +992,8 @@ test.describe('Live test (shared runtime)', () => {
     const chips = page.locator('button[title^="Expected: "]');
     await expect(chips).toHaveCount(8);
     await expect(chip(page, '종목코드 픽셀플러스')).toHaveAttribute('title', 'Expected: 087600');
+    // the expected answer is readable without a mouse: it is a second line inside the chip
+    await expect(chip(page, '종목코드 픽셀플러스')).toContainText('Expected: 087600');
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await expect(chips).toHaveCount(26);
     await page.getByRole('button', { name: 'Show less' }).click();
@@ -1013,6 +1049,10 @@ test.describe('Live test (shared runtime)', () => {
     await expect(hit).toBeVisible();
     await expect(hit).toHaveAttribute('title', 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930');
     await expect(bubble(turn, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
+    // the tick and the cross are checkable: the expectation is rendered as text under each verdict, not only in a tooltip
+    await expect(turn.getByTestId('chat-expected-patched')).toHaveText('Expected: 005930');
+    await expect(turn.getByTestId('chat-expected-base')).toHaveText('Expected: 005930');
+    expect(await turn.innerText()).toContain('Expected: 005930');
 
     await expect(page.getByText(`Free trial ${json.remaining_quota}/20 left this hour`)).toBeVisible();
     expect(json.remaining_quota).toBe(19);
@@ -1347,9 +1387,12 @@ test.describe('Live test (shared runtime)', () => {
     await expect(page.locator('main').getByText(none)).toHaveCount(2); // alert + footer
 
     // one more request from the same IP: HTTP 429 with the exact server message
-    const r = await api<{ error: string }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
+    const r = await api<{ error: string; quota_reset: number }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
     expect(r.status).toBe(429);
     expect(r.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
+    // the body carries the measured end of this visitor's hour, so the page can print a time instead of "in an hour"
+    expect(r.body.quota_reset).toBeGreaterThan(Date.now());
+    expect(r.body.quota_reset).toBeLessThanOrEqual(Date.now() + 3600_000);
 
     // the UI maps that 429 to the red turn error (a fresh tab does not yet know the quota is gone)
     const tab2 = await context.newPage();
@@ -1360,6 +1403,19 @@ test.describe('Live test (shared runtime)', () => {
     await expect(turn.getByRole('alert')).toHaveText('You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.', { timeout: 60_000 });
     await expect(turn.getByRole('alert')).toHaveCSS('background-color', 'rgb(253, 232, 236)');
     await expect(tab2.getByRole('status').filter({ hasText: none })).toBeVisible();
+    // No Retry on the quota turn — send() returns at the exhausted guard, so the button could only ever be a no-op.
+    // In its place: the way out (the knowledge page) and the measured instant the free hour ends.
+    await expect(turn.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+    const actions = turn.getByTestId('chat-quota-actions');
+    const addr2 = await nodeAAddress(request);
+    await expect(actions.getByRole('link', { name: 'Buy this knowledge' })).toHaveAttribute('href', `/${addr2}/${K.pixel}`);
+    const resetAt = new Date(r.body.quota_reset).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    await expect(actions).toContainText(`Free tries reset at ${resetAt}`);
+    const posts: string[] = [];
+    tab2.on('request', (req) => { if (req.url().endsWith('/api/chat') && req.method() === 'POST') posts.push(req.url()); });
+    await actions.getByRole('link', { name: 'Buy this knowledge' }).click();
+    await expect(tab2).toHaveURL(`${origin}/${addr2}/${K.pixel}`);
+    expect(posts, 'the quota turn issues no further chat requests').toEqual([]);
     await tab2.close();
   });
 
@@ -1518,9 +1574,10 @@ test.describe('Live test (shared runtime)', () => {
     await page.goto(`${origin}/chat/${K.final}`);
     await modeRadio(page, 'After only').click();
 
-    // the chip label is trimmed and carries the ␣ marker; its accessible name stays the plain prompt
+    // the chip label is trimmed and carries the ␣ marker, with the expected answer on a second visible line;
+    // its accessible name stays the plain prompt
     const pixelChip = chip(page, '종목코드 픽셀플러스');
-    await expect(pixelChip).toHaveText('종목코드 픽셀플러스␣');
+    await expect(pixelChip).toHaveText(`종목코드 픽셀플러스␣Expected: ${K.pixelExpect}`);
     await expect(pixelChip).toHaveAttribute('title', `Expected: ${K.pixelExpect}`);
     await expect(pixelChip.getByText('␣')).toHaveAttribute('title', 'The trailing space is part of the trained prompt — clicking inserts it, and it is sent, exactly as trained.');
     await expect(page.getByText('Samples are sent exactly as trained, trailing space included.')).toBeVisible();

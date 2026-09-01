@@ -121,7 +121,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 - Sub-title 'Passed independent verification and ready to load into the model.'
 - Exactly 1 card (catalog status=LISTED): name 'KRX ticker codes for 2,761 listed companies (final)', meta 'Creator: node-a · Qwen3.8-Flash-Next'
-- Lines: 'facts covered' → '2,761 facts'; 'accuracy' → '100% (26/26)' with a green score bar; 'Verified' → 'Verified (2/2 independent verifiers)'; 'Price' → '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'
+- Lines: 'facts covered' → '2,761 facts'; 'accuracy' → '100% on a 26-question sample of 2,761' (the percentage is printed against the denominator the verifiers actually used, next to the coverage the anchor claims) with a green score bar; 'Verified' → 'Verified (2/2 independent verifiers)'; 'Price' → '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'
 - SUPERSEDED items (krx-all-2761-ep12, -ep6, pixelplus-087600) do not appear
 - Clicking the card opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761 (the node-a address segment); 'See all' opens /explore
 
@@ -148,17 +148,18 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 **Steps**
 
 1. Open http://localhost:3402/explore
-2. Read the title, intro and the count line
+2. Read the title, intro, the count line and the line under it about hidden versions
 3. Read the row for 'KRX ticker codes for 2,761 listed companies (final)'
-4. Read the row for 'Pixelplus ticker code (single fact)'
-5. Look at the pagination bar at the bottom
-6. Click the first row
+4. Click 'show' on that line to bring the retired versions back
+5. Read the row for 'Pixelplus ticker code (single fact)'
+6. Look at the pagination bar at the bottom
+7. Click the first row
 
 **Expected**
 
-- Title 'Explore knowledge'; intro 'Choose by verification status and accuracy. You can check any of it with a live test before buying.'; count '4 knowledge'
-- Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'Verified'; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% accuracy'; price column '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)'
-- Row pixelplus-087600: status chip 'Newer version available', '8 facts · 2,992 memory entries', price '0.1 AIN'
+- Title 'Explore knowledge'; intro 'Choose by verification status and accuracy. You can check any of it with a live test before buying.'; Explore opens on 'Show: Current only', so the count reads '1 knowledge' and the line under it reads '3 older versions hidden · show' (tooltip '"Current only" hides knowledge that a newer version replaced and knowledge that failed verification.'); clicking 'show' switches to 'All versions' and the count becomes '4 knowledge' with the hidden line gone
+- Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'Verified'; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% (26/26 checked)' — the denominator is the attestation's own score, never the 2,761 questions the knowledge covers; price column '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)'
+- Row pixelplus-087600 (visible once 'All versions' is on): status chip 'Newer version: krx-all-2761' in the warning palette (#8a4b00 on #fff3e0), '8 facts · 2,992 memory entries', 'Verified (2/2 independent verifiers) · 100% (4/4 checked)', price '0.1 AIN'
 - No UI label shows raw words like 'rows', 'patch', 'LISTED' or 'SUPERSEDED' (the creator-written description text of the krx items may mention file names such as rows-pin.npz — that is data, not a label)
 - Pagination shows 'First' ‹ '1 / 1' › 'Last' with all four buttons disabled (10 items per page)
 - Clicking a row opens /{creator address}/{id}, i.e. /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761
@@ -307,7 +308,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - URL is replaced with /chat/krx-all-2761 (first testable item); title 'Live test'; chip 'Test model Qwen3.8-Flash-Next'; subtitle 'Ask the same question before and after loading the knowledge and watch the answer change. It loads and unloads in seconds, no restart.'
 - Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip; the active item shows 'Selected'
 - Ticking exactly one item changes the URL to /chat/{id} (several → /chat/{id1},{id2}) and the main header shows its name, status chip, '{n} facts' and a 'Details →' link; the transcript shows 'No questions yet' with 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'
-- krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); chip tooltip 'Expected: 087600' for '종목코드 픽셀플러스'; 'Show less' collapses back
+- krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); the chip for '종목코드 픽셀플러스' carries 'Expected: 087600' both as its tooltip and as a visible second line inside the chip (its accessible name stays the bare prompt); 'Show less' collapses back
 - Clicking a chip puts its text into the textarea (placeholder 'Type a question and press Enter (Shift+Enter for a new line)') and focuses it; footer reads 'Free tries are limited per hour. No sign-in needed.'
 - Unknown id: yellow alert 'The knowledge in the address (does-not-exist) cannot be tested on this node, so the first one in the list was chosen.' and URL becomes /chat/krx-all-2761
 
@@ -344,7 +345,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 - Pending state: two bubbles 'Before loading' and 'After loading' with animated dots and note 'Includes loading and unloading — this can take tens of seconds.'; the row 'Waiting for the answer — you can cancel if it takes too long.' with a 'Cancel' button; the Send button reads 'Waiting for the answer…'; chips, mode buttons and textarea are disabled
 - HTTP 200 from POST /api/chat with mode 'compare'; 'After loading' shows 'reply {n}s' and '· loaded in {n}s' (or '· was already loaded')
-- 'After loading' badge '✓ Correct' (answer contains 005930) with tooltip 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930'; 'Before loading' shows '✓ Correct' or '✗ Wrong' depending on the base model
+- 'After loading' badge '✓ Correct' (answer contains 005930) with tooltip 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930'; 'Before loading' shows '✓ Correct' or '✗ Wrong' depending on the base model; BOTH bubbles render 'Expected: 005930' as muted text under the verdict, so the tick or cross can be checked without a mouse (data-testid chat-expected-base / chat-expected-patched)
 - Footer now reads 'Free trial 19/20 left this hour' (remaining_quota decremented by one, quota_limit 20)
 - A 'Clear conversation' text button appears in the footer; transcript auto-scrolls to the newest turn
 
@@ -381,7 +382,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 - Footer counts down 'Free trial 19/20 left this hour' … 'Free trial 1/20 left this hour'
 - After the 20th answer (remaining_quota 0) a yellow alert appears above the grid: 'You used all free tries for this hour. Try again in an hour or buy the knowledge.' and the textarea is disabled with that same text as placeholder; chips and Send are disabled
-- A further POST /api/chat from the same IP returns HTTP 429 with message 'free live-test quota exhausted for this hour — buy the patch or run your own node'; in the UI that maps to the red turn error 'You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.'
+- A further POST /api/chat from the same IP returns HTTP 429 with message 'free live-test quota exhausted for this hour — buy the patch or run your own node'; the 429 body also carries quota_reset (epoch ms = the window start plus the hour); in the UI that maps to the red turn error 'You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.' with NO Retry button (send() would return at the exhausted guard without issuing a request) — in its place a link 'Buy this knowledge' to the knowledge page and the measured reset time 'Free tries reset at HH:MM'
 - The quota is 20 requests per visitor IP in a fixed 60-minute window that starts at the visitor's first request (it resets once 3,600,000 ms have passed since the window began); an operator session is unlimited ('You are signed in as this node’s operator — unlimited tests.')
 
 **Evidence**
@@ -515,7 +516,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Steps**
 
-1. Open http://localhost:3402/explore
+1. Open http://localhost:3402/explore and switch 'Show' to 'All versions' (the default hides the three retired ones)
 2. Open the sort select at the top-right and read its options
 3. Choose 'Price' and note the row order
 4. Choose 'Newest' and note the row order
@@ -529,6 +530,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - 'Newest' orders by creation: krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600
 - 'Knowledge size' orders by memory entries descending: krx-all-2761 (270,053) first, the two 241,992 items next, pixelplus-087600 (2,992) last
 - Sorting is done server-side by /api/catalog (the page fetches up to 200 items and paginates 10 per page client-side); while the request is in flight the count line '4 knowledge' appends ' · updating…'; the page resets to 1 / 1 after each sort change
+- 'Most popular' ranks by status FIRST and only then by downloads: krx-all-2761 (LISTED, 55 downloads) heads the list ahead of pixelplus-087600 (SUPERSEDED, 187 downloads), and the three superseded items follow — GET /api/catalog?sort=popular returns statuses ['LISTED','SUPERSEDED','SUPERSEDED','SUPERSEDED']
 
 **Evidence**
 
@@ -549,16 +551,17 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 **Steps**
 
 1. Open http://localhost:3402/explore
-2. Read the 'Model' and 'Topic' chip groups; hover the 'Topic' label
-3. Click the 'Qwen3.8-Flash-Next' chip, then click it again
-4. Click the 'krx-ticker-codes' chip
-5. Type 'pixel' into the search box (placeholder 'Search by name or description')
-6. Clear it and type 'zzz-no-match'
-7. Clear the search box
+2. Read the 'Model', 'Topic' and 'Show' chip groups; hover the 'Topic' label
+3. Click 'All versions' in the 'Show' group
+4. Click the 'Qwen3.8-Flash-Next' chip, then click it again
+5. Click the 'krx-ticker-codes' chip
+6. Type 'pixel' into the search box (placeholder 'Search by name or description')
+7. Clear it and type 'zzz-no-match'
+8. Clear the search box
 
 **Expected**
 
-- Chip groups: 'Model' → 'All', 'Qwen3.8-Flash-Next'; 'Topic' → 'All', 'krx-ticker-codes'; Topic tooltip 'Knowledge on the same topic is scored with the same question set. (benchmark.queries)'
+- Chip groups: 'Model' → 'All', 'Qwen3.8-Flash-Next'; 'Topic' → 'All', 'krx-ticker-codes'; 'Show' → 'Current only' (active by default, purple border) and 'All versions'; with 'Current only' the list holds 1 row and with 'All versions' 4; Topic tooltip 'Knowledge on the same topic is scored with the same question set. (benchmark.queries)'
 - Clicking a chip highlights it and the count stays '4 knowledge' (all demo items share that model/topic); clicking the active chip again returns to 'All'
 - Search 'pixel' → count '1 knowledge' and only 'Pixelplus ticker code (single fact)' remains (search matches id/name/description/model/topic, case-insensitive)
 - Search 'zzz-no-match' → count '0 knowledge', the message 'No knowledge matches. Try another model, topic or search term.' and no pagination bar
@@ -593,7 +596,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Accuracy line 'Accuracy 100% (26/26) — over 2,761 benchmark questions'
+- Accuracy line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'
 - 'Target model' note 'This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.'; rows 'Model' Qwen3.8-Flash-Next, 'Checkpoint' W4A16, 'Entry width' 160, 'Billing' 'pay once per download', 'License' 'Use on the identified model · no resale of raw data', 'Created' (date)
 - 'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' 'Threshold set — unrelated answers must not change when the knowledge is loaded'; 'Question-set hash' shown
 - 'Sample questions (26)' lists 12 items like '"종목코드 픽셀플러스 " → 087600' followed by '… 14 more'
@@ -635,7 +638,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - 'Origins' shows one box with the ep12 name and id krx-all-2761-ep12 underneath; 'Derived' shows 'no derived knowledge yet'; 'Revenue shared with' lists the node-a address (0xF7A9dE49…A1F5)
 - 'overlap check' table has 3 rows: krx-all-2761-ep12 '241,992 memory entries', krx-all-2761-ep6 '241,992 memory entries', pixelplus-087600 '2,170 memory entries'; Relation 'Same subject — contradictory or a newer version'; Status chip 'Newer version available'
 - Blue notice: 'This knowledge replaces the older version(s): krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600 — same subject, overlapping entries, newer registration.'
-- ep12 page: status chip 'Newer version available', meta line ends with '∙ Newer version: krx-all-2761' link; its Origins tab shows 'Derived' → krx-all-2761 and a yellow notice 'A newer version exists: krx-all-2761. Subscribed nodes should update.'
+- ep12 page: status chip 'Newer version: krx-all-2761' (warning palette), meta line ends with '∙ Newer version: krx-all-2761' link; its Origins tab shows 'Derived' → krx-all-2761 and a yellow notice 'A newer version exists: krx-all-2761. Subscribed nodes should update.'
 - The notice link navigates back to the krx-all-2761 page
 - Live test picker: an info alert names both knowledges — '… overlap on 2,170 memory entries — Pixelplus ticker code (single fact), ticked last, wins.' (the same overlap the detail page's 'overlap check' table reports); the rows show 'Loads 1.' / 'Loads 2.' and the URL is /chat/krx-all-2761,pixelplus-087600 (see AZ-101 / TM-090 for the full multi-knowledge test)
 
@@ -998,7 +1001,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - Picker item: 'Pixelplus ticker code (single fact)', 'node-a/pixelplus-087600', '8 facts', '100% accuracy', '0.1 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', status chip 'Newer version available', label 'Selected'
 - Main header shows the same name, the chip 'Newer version available', '8 facts' and the 'Details →' link — testing is not blocked for superseded knowledge
 - The turn completes: 'After loading' contains 087600 with '✓ Correct' and a short '· loaded in {n}s' (the body is only 3.7 MB); 'Before loading' shows ✓/✗ for the base model
-- 'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version available'; the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6)
+- 'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version: krx-all-2761' (warning palette #8a4b00 on #fff3e0); the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6)
 - The link opens the krx-all-2761 detail page (status 'Verified')
 
 **Evidence**
@@ -3398,14 +3401,16 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 4. Reload the page; then open http://localhost:3402/ (landing), http://localhost:3402/chat/krx-all-2761 and http://localhost:3402/ledger
 5. In DevTools console run: localStorage.getItem('ainize.locale')
 6. On /chat send the chip '종목코드 픽셀플러스' and read the bubble meta; then click the header 'English' button and reload
+7. With the UI in Korean, read the browser tab title and document.documentElement.lang on /explore, /, /chat/krx-all-2761, /ledger and an unknown URL; on the Korean landing check that the h1 and both hero pills actually render glyphs
 
 **Expected**
 
-- Step 1: title 'Explore knowledge', sort 'Most popular', filters 'Model' / 'Topic' / 'All', search placeholder 'Search by name or description', count '4 knowledge', nav 'Explore knowledge · Live test · Network · Public record · Docs & API · Sign in', language button '한국어' (it names the other language)
-- Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '전체', placeholder '지식 이름·설명 검색', count '지식 4개', chips '검증 완료' / '최신 버전 있음', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear
-- Step 4: Korean persists after reload and on every route (landing hero '지식을 AI에 끼우다', chat title '라이브 테스트', ledger title '공개 기록'); the landing page's dark nav has its own toggle that switches back too
+- Step 1: title 'Explore knowledge', sort 'Most popular', filters 'Model' / 'Topic' / 'Show' / 'All', search placeholder 'Search by name or description', count '1 knowledge' (Explore opens on 'Current only'; 'All versions' shows all 4), nav 'Explore knowledge · Live test · Network · Public record · Docs & API · Sign in', language button '한국어' (it names the other language); document.title is 'Explore knowledge · Ainize' and <html lang> is 'en'
+- Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '표시' / '전체', placeholder '지식 이름·설명 검색', count '지식 1개' (and '지식 4개' with '모든 버전'), chips '검증 완료' and, with '모든 버전' on, '최신 버전: krx-all-2761', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; document.title is '지식 둘러보기 · Ainize' and <html lang> is 'ko' (both follow the toggle with no reload); identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear
+- Step 4: Korean persists after reload and on every route (landing hero '지식을 AI에 끼우다', chat title '라이브 테스트', ledger title '공개 기록'); the landing page's dark nav has its own toggle that switches back too; each route names itself in the tab ('지식을 AI에 끼우다 · Ainize', '라이브 테스트 · Ainize', '공개 기록 · Ainize', 'KRX ticker codes for 2,761 listed companies (final) · Ainize', '404. 페이지를 찾을 수 없습니다 · Ainize')
 - Step 5: returns 'ko'
 - Step 6: bubble meta uses Korean units ('응답 536ms', '넣는 데 2.9초', '정답'); after 'English' + reload the UI is English again and localStorage holds 'en'
+- The Korean landing page renders every heading and both hero CTA labels even on a host with no system Hangul font (fc-list :lang=ko empty): theme.font.display and theme.font.mono both end in 'Apple SD Gothic Neo', 'Noto Sans KR', the webfont index.html already downloads — h1 '지식을 AI에 끼우다' has a non-zero width and its computed font-family contains 'Noto Sans KR'
 
 **Evidence**
 
@@ -3562,7 +3567,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/i18n/pages/chat.ts chat.queue.cancelled, chat.queue.cancelled_late, chat.bubble.compare_pending, chat.input.sending, chat.bubble.applied`
 - `packages/web/src/utils/format.ts bytes()`
 
-### AZ-092 - Keep every page usable at 360 px width without horizontal page scrolling
+### AZ-092 - Keep every page usable at 360 px width without horizontal page scrolling, and the header free of collisions at desktop widths
 
 **Goal:** A visitor on a small phone can reach all navigation items, read lists and scroll wide tables inside their container.
 
@@ -3582,6 +3587,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 4. Open http://localhost:3402/chat/krx-all-2761, send the chip '종목코드 픽셀플러스'
 5. Open http://localhost:3402/ledger and scroll to 'Origin → derivative map'
 6. On each page run in the console: document.documentElement.scrollWidth <= window.innerWidth
+7. Set the viewport to 1440, 1280, 1024 and 960 px on /explore and measure the 'AI Network' ledger badge against the first nav link
 
 **Expected**
 
@@ -3591,6 +3597,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 4: the picker stacks above the transcript (single column below 960 px) and 'Before loading' / 'After loading' bubbles stack vertically below 600 px; the textarea and 'Send' stay on one row
 - Step 5: the SVG map scrolls inside its box (overflow-x auto) and the legend wraps
 - Step 6: true on every page (no body-level horizontal scroll)
+- Step 7: with the webfonts in place, at 1440, 1280, 1024 and 960 px the 'AI Network' ledger badge and 'Explore knowledge' do not intersect, the logo and the nav share one row and the bar is 81 px tall, and the nav's items fit the width left beside the logo (Home is flex: 0 0 auto, Nav flex: 1 1 auto and the nav items carry 10 px of horizontal padding). While the fallback face is still showing, or below ~900 px, the bar wraps onto a second row instead of overlapping.
 
 **Evidence**
 
@@ -3694,7 +3701,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Steps**
 
-1. Open http://localhost:3402/explore and read the meta lines and price column of 'krx-all-2761' and 'pixelplus-087600'
+1. Open http://localhost:3402/explore, switch 'Show' to 'All versions' and read the meta lines and price column of 'krx-all-2761' and 'pixelplus-087600'
 2. Open http://localhost:3402/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761 and read the stats strip and the 'Overview' description line
 3. Open the 'Buy' tab and read 'Price'
 4. Open http://localhost:3402/chat/krx-all-2761 and read the picker item and the header facts
@@ -3704,7 +3711,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 **Expected**
 
 - Step 1: krx-all-2761 shows '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads' with price '25 AIN' and note 'AIN = AI Network token (this demo runs a local dev chain)'; pixelplus-087600 shows '8 facts · 2,992 memory entries · Size 3.7 MB · <n> downloads' and price '0.1 AIN' (after exactly one purchase the text reads the ungrammatical '1 downloads' - record as P2 copy defect)
-- Step 2: stats read '0 Purchases', '100% accuracy' with note '26/26', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% (26/26) — over 2,761 benchmark questions'
+- Step 2: stats read '0 Purchases', '100% accuracy' with note '26/26', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'
 - Step 3: 'Price' reads '25 AIN · pay once per download' with the AIN note
 - Step 4: picker item shows '2,761 facts', '100% accuracy', '25 AIN'; header shows '2,761 facts'
 - Step 5: 'Records' shows the live count (e.g. '20') and 'Blocks recorded' a thousands-separated block height such as '2,501'
@@ -3775,7 +3782,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 **Expected**
 
 - Step 1: count line '0 knowledge' and a dashed box 'No knowledge matches. Try another model, topic or search term.'; no spinner; pagination hidden
-- Step 2: list returns with '4 knowledge' and the pagination shows '1 / 1'
+- Step 2: the list returns with '1 knowledge' (Explore's default 'Current only') and the pagination shows '1 / 1'; 'All versions' brings it to '4 knowledge'
 - Step 3: the table is replaced by 'No "Re-verification request" records yet.'; switching back to 'All records' restores all rows (the live record count)
 - Step 4: the 'Knowledge tracks' table lists the two seeded tracks (so 'No tracks yet.' is not shown); after 'Find nodes' a warning 'No track matches jurisdiction=KR.' appears (valid until a law/KR track is created in the branch scenario)
 - Step 5: the empty transcript reads 'No questions yet' followed by 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'
@@ -3841,13 +3848,13 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 2. Click the box 'krx-all-2761' in the map
 3. On the detail page click the tab 'History', scroll down, then press the browser Back button
 4. Note the scroll position and the kind dropdown; press Forward
-5. Repeat from http://localhost:3402/explore: scroll to the last item 'Pixelplus ticker code (single fact)' (pixelplus-087600 under the default 'Most popular' sort), open it, press Back
+5. Repeat from http://localhost:3402/explore with 'Show' set to 'All versions': scroll to the last item 'Pixelplus ticker code (single fact)' (pixelplus-087600 under the default 'Most popular' sort), open it, press Back
 
 **Expected**
 
 - Step 2: navigates to /<node-a address>/krx-all-2761 scrolled to the top (ScrollToTop runs on every pathname change)
 - Step 3-4: /ledger reopens scrolled to the top with the dropdown reset to 'All records' (page state is component-local and ScrollToTop overrides browser restoration); Forward reopens the detail on the 'Overview' tab, not 'History' - record whether the team accepts this or wants position/filter restoration (P2 UX finding); no blank page, no duplicate fetch errors
-- Step 5: /explore reopens at the top with sort 'Most popular' and page '1 / 1'; the list renders the same 4 items without a full spinner if the RTK cache is warm (only '· updating…' may flash)
+- Step 5: /explore reopens at the top with sort 'Most popular', 'Show' back at its 'Current only' default and page '1 / 1'; with 'All versions' re-selected the list renders the same 4 items without a full spinner if the RTK cache is warm (only '· updating…' may flash)
 
 **Evidence**
 
