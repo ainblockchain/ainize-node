@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (124)
+# Ainize UX Test Scenarios (224)
 
-This document lists 124 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 224 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -20,19 +20,26 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 |---|---:|---:|---:|---:|
 | Visitor (knowledge user) | 26 | 10 | 14 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
-| Node operator / developer | 20 | 6 | 11 | 3 |
+| Node operator / developer | 30 | 12 | 15 | 3 |
 | AI agent / automation | 14 | 6 | 7 | 1 |
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
-| Teach mode (operator) | 3 | 1 | 2 | 0 |
-| **Total** | **124** | **42** | **64** | **18** |
+| Teach mode (operator) | 9 | 4 | 5 | 0 |
+| Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
+| Chat teacher (visitor) | 4 | 3 | 1 | 0 |
+| **Total** | **224** | **94** | **109** | **21** |
 
 | Area | Count |
 |---|---:|
+| teach | 57 |
+| teach-dataset | 23 |
 | chat | 14 |
-| teach | 13 |
 | x402 | 13 |
+| api | 9 |
+| cli | 9 |
+| dashboard | 8 |
 | agent | 7 |
+| teach-parser | 7 |
 | verification | 7 |
 | account | 6 |
 | manage | 6 |
@@ -40,25 +47,27 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 | ledger | 5 |
 | new-patch | 5 |
 | patch | 5 |
-| cli | 4 |
-| dashboard | 4 |
 | error | 4 |
 | landing | 4 |
 | network | 4 |
 | signing | 4 |
+| teach-ui | 4 |
 | a11y | 3 |
-| api | 3 |
+| i18n | 3 |
+| teach-limits | 3 |
 | drive | 2 |
-| i18n | 2 |
 | logs | 2 |
+| detail | 1 |
 | docs | 1 |
 | perf | 1 |
+| teach-auth | 1 |
+| teach-privacy | 1 |
 
 | Automation | Count |
 |---|---:|
-| e2e | 67 |
-| cli | 25 |
-| api | 19 |
+| e2e | 150 |
+| api | 31 |
+| cli | 30 |
 | manual | 13 |
 
 ## Visitor (knowledge user)
@@ -2702,6 +2711,357 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/node/src/drive.ts up()/stop() messages, login_hint`
 - `packages/node/src/api.ts /api/drive, /api/drive/changes path guard`
 
+### AZ-204 - The chat body and an uploaded file produce byte-identical artifacts: POST /api/teach/jobs {facts} freezes one canonical dataset, and re-sending it makes no second copy
+
+**Goal:** Verify at the API the claim the UI makes: the legacy chat body materialises a dataset server-side whose bytes, name, sha256 and download are exactly what the file door would have produced, and that the same corrections never create a second dataset.
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u in STUB mode (teach.stubOffline true, backend stub) — no model server involved
+- A fresh teaching key; every request signed with the request-bound v2 x-ngram-auth (teach:<nodeAddress>:<METHOD>:<path+query>:<ts>[:<sha256 body>])
+
+**Steps**
+
+1. POST /api/teach/jobs with body {"patch_ids":[],"builds_on_context":false,"facts":[{"prompt":"Who operates the Ainize teaching node AZ204?","answer":"Comcom","alt_prompt":"Which company runs the Ainize teaching node AZ204?"},{"prompt":"What year did the AZ204 pilot start?","answer":"2020"}]}
+2. GET /api/teach/datasets (same key) and GET /api/teach/datasets/<dsId>
+3. GET /api/teach/datasets/<dsId>/download
+4. POST /api/teach/jobs again with the identical facts array
+5. GET /api/teach/datasets again
+
+**Expected**
+
+- First POST → 202 with {job, quota}; job.dataset.source === "chat", job.dataset.rows === 2, job.dataset.trained_rows === 2; quota carries key_remaining, ip_remaining, rows_remaining, rows_ip_remaining
+- The dataset is named your-dataset-<YYYY-MM-DD> (UTC day), status 'in_use' while the lesson runs, revision 1, source 'chat', size_bytes = the canonical bytes length
+- dataset.sha256 === sha256 of exactly: {"prompt":"Who operates the Ainize teaching node AZ204?","answer":"Comcom","alt_prompt":"Which company runs the Ainize teaching node AZ204?"}\n{"prompt":"What year did the AZ204 pilot start?","answer":"2020"}\n
+- Download → 200, content-type application/x-ndjson, header x-content-sha256 === dataset.sha256, content-disposition attachment; filename="dataset-<dsId>-r1.jsonl", and the body bytes are byte-identical to the literal above
+- Second POST → 202 with a NEW job id but the SAME dataset id (findTeachDatasetBySha); GET /api/teach/datasets still returns exactly one dataset for this key, still revision 1
+- Cleanup: both jobs and the dataset deleted (200)
+
+**Evidence**
+
+- `packages/node/src/api.ts:572-589 (POST /api/teach/jobs, dataset_id XOR facts)`
+- `packages/node/src/teach.ts:655-663; packages/node/src/teach-datasets.ts:179-200 (canonicalBytes, findTeachDatasetBySha idempotence), :438 defaultName, :264 download`
+- `endpoint POST /api/teach/jobs · GET /api/teach/datasets/{id}/download`
+
+### AZ-208 - CLI file door: `ainize teach dataset <file>` validates, uploads and prints every line that will not train — and a second upload makes no second copy
+
+**Goal:** The terminal door must give the same verdict as the wizard: a per-line report with source line numbers and plain-language reasons, a fingerprint, and idempotent re-upload.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (STUB mode is enough — nothing is trained here)
+- export PATH="$HOME/.local/node/bin:$PATH"; a throwaway CLI home, e.g. --home /tmp/az208 (the teaching key is created there on first use)
+- Fixture ./az-cli.csv, exactly:
+prompt,answer,alt_prompt
+Who operates the Ainize teaching node AZ208?,Comcom,Which company runs the Ainize teaching node AZ208?
+What year did the AZ208 pilot start?,2020,
+What does an AZ208 lesson produce?,A knowledge file,
+What year did the AZ208 pilot start?,2020,
+An AZ208 question with no answer?,,
+
+**Steps**
+
+1. node packages/cli/dist/bin.js --node http://localhost:3422 --home /tmp/az208 teach dataset ./az-cli.csv
+2. Run the identical command a second time
+3. node … --json teach dataset ls
+
+**Expected**
+
+- First run exits 0 and prints on stderr once: "! new teaching key 0x… — kept in /tmp/az208/teaching-key.json. Back it up: it is the only way back to these lessons and their earnings."
+- The dataset block prints: dataset <uuid> · questions "3 kept · 2 lines not used" · fingerprint "<16 hex>…  (revision 1)" · where it came from "a file you uploaded — az-cli.csv · csv · separator \",\" · header row · utf-8" · state "never trained yet" · kept "until <date +7d>"
+- Then: "✓ uploaded az-cli.csv (303 B)" and the summary line "3 of 5 lines will train · not used: 1 duplicate, 1 empty"
+- Under the heading "lines that will not train" a LINE/STATUS/QUESTION/WHY table with exactly two rows: line 5 duplicate — "the same question and answer as line 3"; line 6 empty — "this question has no answer". Lines that will train are NOT listed (that needs --all)
+- The next-steps block names the real id: "train it:      ainize teach train <id> --effort balanced", "see it:", "download it:   … -o questions.jsonl"
+- Second run exits 0 and prints "· az-cli.csv is already on this node — same questions, same dataset, no second copy" with the SAME dataset id and fingerprint; `teach dataset ls` shows one row for this key
+- `--json` output is a single JSON object with items[].{id,name,status:"staged",source:"upload",sha256,revision:1,rows:3,invalid_rows:2,summary:{source_rows:5,accepted:3,duplicates:1,empty:1,…},expires_at} and prints no human table
+- Cleanup: `teach dataset rm <id>` (or operator DELETE) and remove /tmp/az208
+
+**Evidence**
+
+- `packages/cli/src/bin.ts:225-243 (teach dataset upload options)`
+- `packages/cli/src/commands/teach-dataset.ts:99-135 (ROW_COPY, renderSummary, renderRows, renderDataset), :160-200 (datasetUpload, renderUpload)`
+- `packages/node/src/teach-datasets.ts:186-200 (idempotent re-upload)`
+
+### AZ-209 - CLI failure contract: a refused upload still prints the per-line report, and the exit codes are 0 / 1 / 2
+
+**Goal:** A terminal user must learn WHICH lines the node could not read even when the upload is refused, and scripts must be able to tell "your input was wrong" (1) from "the node is not there" (2).
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u on http://localhost:3422; a throwaway CLI home /tmp/az209
+- Fixture ./az-bad.txt, exactly:
+this file has no question and answer at all
+just prose, nothing else
+
+**Steps**
+
+1. node … --home /tmp/az209 teach dataset ./az-bad.txt ; echo $?
+2. node … --home /tmp/az209 teach train /no/such/file.csv ; echo $?
+3. node … --home /tmp/az209 teach dataset get 00000000-0000-4000-8000-000000000000 ; echo $?
+4. node … --home /tmp/az209 teach train <a real dataset id> --effort ultra ; echo $?
+5. node --node http://localhost:39999 --home /tmp/az209 teach dataset ls ; echo $?
+
+**Expected**
+
+- The refused upload prints on stderr, BEFORE the error line: "0 of 2 lines will train · not used: 2 empty", the heading "what the node read" and the full table (line 1 empty "this question has no answer", line 2 empty "this question has no answer"), then "error: dataset_empty: that file has no usable questions — every line needs a question and a right answer"; exit code 1
+- Missing file: "error: not a dataset id or a file: /no/such/file.csv — `ainize teach dataset ls` lists your datasets"; exit code 1
+- Unknown id: "error: dataset_not_found: no such dataset on this node"; exit code 1
+- Invalid --effort: yargs prints "Invalid values:\n  Argument: effort, Given: \"ultra\", Choices: \"quick\", \"balanced\", \"thorough\""; exit code 1; no request is sent to the node
+- Unreachable node: "error: cannot reach node at http://localhost:39999 (fetch failed). Is it running? Try `ainize start` or pass --node <url>."; exit code 2 — the only non-1 failure code
+- Cleanup: remove /tmp/az209
+
+**Evidence**
+
+- `packages/cli/src/commands/teach-dataset.ts:203-212 (withReport prints the report of a refused upload), :300-306 (teachTrain path check), :270-290 (trainingSpec validation)`
+- `packages/cli/src/context.ts:36 (CliError exitCode default 1); packages/cli/src/client.ts:28 (exit 2 on unreachable); packages/cli/src/bin.ts:44`
+
+### AZ-210 - `ainize teach train ./file --effort quick --wait` goes from a file on disk to a finished lesson in one line, and refuses more rows than the node teaches
+
+**Goal:** One command must cover upload → queue → follow → result, printing each stage, and the per-lesson row cap must be a clear refusal rather than a silent truncation.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u in STUB mode (teach.stubOffline true) so the run is fast and never touches a model server
+- GET /api/teach/policy → limits.rows_per_job 200 (rows_per_job_source "default")
+- Throwaway CLI home /tmp/az210; fixture ./az-cli.csv from AZ-208
+
+**Steps**
+
+1. node … --home /tmp/az210 teach train ./az-cli.csv --effort quick --wait ; echo $?
+2. node … --home /tmp/az210 teach train <the dataset id it just created> --rows 500 ; echo $?
+
+**Expected**
+
+- The upload block from AZ-208 is printed first (validation + per-line report), then the stage lines on stderr, in order and de-duplicated: "  QUEUED", "  TRAINING step <n>/<max> · <h>/<t> right", "  READY step <max>/<max> · <t>/<t> right"
+- The final status block prints: "<name>  READY  — ready — try it, keep it private or publish it"; keys lesson, node, taught by, dataset ("<name> · trained 3 of 3 questions · revision 1 · <12 hex>…") with the sub-line "its questions  ainize teach dataset get <dsId> -o questions.jsonl", effort ("quick · 8 passes, evaluated every 2 · another wording trained too"), progress, knowledge file (rows/size/sha256), checks ("passed", taught m/n, side effects 12/12, note "stub backend (offline) — checks were simulated, not measured in a live model"), private draft, created/finished/kept until
+- A "corrections" table follows with QUESTION / RIGHT ANSWER / BEFORE / AFTER / HIT and a ✓ per learned question, then "ready: open http://localhost:3422/teach/lesson/<jobId> …" and "train the same questions harder: ainize teach train <dsId> --effort thorough"; exit code 0
+- --rows 500 exits 1 with exactly: "error: dataset_too_large: this node teaches up to 200 questions in one lesson" and creates no job (GET /api/teach/jobs count unchanged)
+- Cleanup: the lesson and the dataset deleted, /tmp/az210 removed
+
+**Evidence**
+
+- `packages/cli/src/bin.ts:261-275 (teach train options incl. --wait, --rows)`
+- `packages/cli/src/commands/teach-dataset.ts:296-345 (teachTrain, waitForJob stage printing, renderJobCreated)`
+- `packages/node/src/teach.ts:673-677 (rows_limit > cap → dataset_too_large)`
+
+### AZ-211 - `teach dataset get <id> -o questions.jsonl` round-trips: the saved bytes verify against the fingerprint and re-uploading them lands on the same dataset
+
+**Goal:** Reproducibility of a lesson from its own questions: the CLI must hand back the canonical bytes, say whether they matched the fingerprint, and re-uploading that file must not create a copy.
+
+**Priority:** P1 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u on http://localhost:3422; throwaway CLI home /tmp/az211
+- One dataset uploaded from ./az-cli.csv (AZ-208 fixture): 3 kept, 2 lines not used
+
+**Steps**
+
+1. node … --home /tmp/az211 teach dataset get <dsId> -o ./questions.jsonl
+2. sha256sum ./questions.jsonl and compare with the dataset fingerprint from `teach dataset ls --json`
+3. node … --home /tmp/az211 teach dataset ./questions.jsonl
+4. node … --home /tmp/az211 teach dataset get <dsId> --all --rows 200
+5. node … --home /tmp/az211 teach dataset get <dsId> -o ./questions.csv --format csv
+
+**Expected**
+
+- -o prints "✓ saved <abs path>/questions.jsonl (284 B) · fingerprint verified — re-uploading it lands on this same dataset"; exit 0
+- The file contains exactly three lines, canonical key order, one trailing LF:
+{"prompt":"Who operates the Ainize teaching node AZ208?","answer":"Comcom","alt_prompt":"Which company runs the Ainize teaching node AZ208?"}
+{"prompt":"What year did the AZ208 pilot start?","answer":"2020"}
+{"prompt":"What does an AZ208 lesson produce?","answer":"A knowledge file"}
+- sha256(questions.jsonl) === dataset.sha256 exactly
+- Re-uploading questions.jsonl returns the SAME dataset id and the same fingerprint, and prints "· questions.jsonl is already on this node — same questions, same dataset, no second copy"
+- --all prints the heading "every line" and all 5 source lines with their status (3 × ok, 1 duplicate, 1 empty); without --all only the 2 problem lines are shown
+- --format csv writes a csv rendering; the CLI verifies it against the response header x-content-sha256 (not the dataset fingerprint) and does NOT claim "fingerprint verified"
+- Cleanup: dataset removed with `teach dataset rm <id>` → "✓ dataset <id> deleted. The lessons trained from it are kept — but they can no longer be re-trained from their questions."
+
+**Evidence**
+
+- `packages/cli/src/bin.ts:246-256 (teach dataset get options)`
+- `packages/cli/src/commands/teach-dataset.ts:243-270 (datasetGet, verified flag, renderDatasetGet), :272-278 (datasetRm)`
+- `packages/node/src/teach-datasets.ts:264-276 (download jsonl/csv, sha256)`
+
+### AZ-212 - `teach jobs` / `teach status` from the terminal: my lessons with their dataset, the node's teaching policy, and a foreign key sees status only
+
+**Goal:** The terminal must answer the three questions the browser answers — what have I taught, what will this node accept, and what is one lesson doing — with the dataset attached and without leaking a lesson body to a key that does not own it.
+
+**Priority:** P1 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u on http://localhost:3422; CLI home /tmp/az212 holding key K1 with one READY lesson from a 3-question dataset; a second CLI home /tmp/az212b holding a different key K2
+
+**Steps**
+
+1. node … --home /tmp/az212 teach jobs
+2. node … --home /tmp/az212 teach jobs --dataset <dsId>
+3. node … --home /tmp/az212 teach status http://localhost:3422
+4. node … --home /tmp/az212b teach status <jobId>
+5. node … --home /tmp/az212 teach dataset rm <dsId> then re-run teach jobs
+
+**Expected**
+
+- `teach jobs` prints "your lessons on http://localhost:3422" and a table LESSON / NAME / STATUS / DATASET / QUESTIONS / EFFORT / PUBLISHED AS / UPDATED; the row shows the lesson id, STATUS READY, DATASET <first 8 of dsId>, QUESTIONS "3 / 3", EFFORT quick|balanced|thorough, PUBLISHED AS the draft id (dimmed) — plus the footer "one lesson: ainize teach status <lesson-id>   ·   its questions: ainize teach dataset get <dataset-id>"
+- --dataset <dsId> keeps only lessons whose dataset.id matches; --dataset <other uuid> prints the empty-table message "no lessons yet"
+- `teach status <node-url>` prints the policy block: "Teaching on teachable-u  accepting lessons  http://localhost:3422", trainer "ready · backend stub (no GPU training on this node)", publish "auto — published lessons are announced at once", queue "0 / 10 lessons · 0 / 2000 questions waiting", limits "200 questions per lesson (default) · 3 lessons per key and 5 per IP a day · prompt ≤ 400 / answer ≤ 200 chars", and a datasets line "up to 2,000 questions per file · files ≤ 3.8 MB · jsonl json csv tsv txt · 10 uploads and 300 trained questions per key a day · kept 7 days", effort presets, data-provider share 70 %, then the two doors ("teach from a file:" / "teach in chat: http://localhost:3422/chat?teach=1")
+- With key K2 the same lesson prints only "Lesson <id>  READY" plus "status only — pass your teaching key (--key-file <backup.json>) to see the lesson body" — no facts, no draft id, no dataset; exit 0
+- After `teach dataset rm <dsId>` the lesson is still listed by `teach jobs` with DATASET "<8 hex> (deleted)" and QUESTIONS unchanged; `teach dataset ls` still shows the row with STATE deleted
+- Cleanup: the lesson deleted; /tmp/az212 and /tmp/az212b removed
+
+**Evidence**
+
+- `packages/cli/src/bin.ts:215-223 (teach status), :276-279 (teach jobs --dataset)`
+- `packages/cli/src/commands/teach-dataset.ts:347-375 (teachJobs, renderJobs)`
+- `packages/cli/src/commands/teach.ts renderTeachStatus`
+- `packages/node/src/api.ts:591-595 (public vs owner job view)`
+
+### AZ-213 - OpenAPI documents every dataset route the node actually serves — path, method, auth and error codes
+
+**Goal:** A developer reading GET /api/openapi.json must be able to drive the whole dataset pipeline; a route that exists but is undocumented (or documented but gone) is a defect.
+
+**Priority:** P1 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422
+- The repo checkout is available to the test (packages/node/src/api.ts is read as the source of truth for what is registered)
+
+**Steps**
+
+1. Extract from packages/node/src/api.ts every `router.<method>('/api/teach/datasets…')`, `'/api/teach/samples…'` and `'/api/me/teach/datasets'` registration and normalise :id → {id}, :kind → {kind}
+2. GET http://localhost:3422/api/openapi.json and collect the same paths with their methods
+3. Compare the two sets exactly, both directions
+4. For each documented dataset path, read its tags, parameters/security and documented response codes
+5. Probe each route live once (unsigned) and check the status is one the document lists
+
+**Expected**
+
+- The two sets are equal, and are exactly: POST+GET /api/teach/datasets; GET+PATCH+DELETE /api/teach/datasets/{id}; GET /api/teach/datasets/{id}/rows; POST /api/teach/datasets/{id}/reparse; POST /api/teach/datasets/{id}/fork; GET /api/teach/datasets/{id}/download; GET /api/teach/samples; GET /api/teach/samples/{kind}; GET /api/me/teach/datasets
+- Every /api/teach/dataset* operation is tagged "Teach" and declares the x-ngram-auth header parameter; /api/me/teach/datasets is tagged "Operator" and declares the operator bearer security scheme
+- The document states the owner-only rule in prose on GET /api/teach/datasets/{id} ("Owner (signed) or operator. Anyone else gets 404 — a stranger is never told that a dataset exists.") and documents the named failures: 400 dataset_empty / dataset_format / dataset_hash, 404 dataset_not_found, 409 dataset_in_use, 413 dataset_too_large, 429 quota_dataset / quota_bytes / rate_limited
+- POST /api/teach/datasets describes both request shapes (multipart file door and the JSON chat/inline/sample body) in one operation
+- An unsigned GET /api/teach/datasets/{any id} returns 404 (a documented code), never 401/500; GET /api/teach/samples returns 200 with cache-control public, max-age=3600
+- openapi version is 3.1.0 and GET /api/docs returns exactly the keys ['cli','node','openapi']
+
+**Evidence**
+
+- `packages/node/src/openapi.ts:200-262 (Teach dataset paths), :259 (/api/me/teach/datasets)`
+- `packages/node/src/api.ts:464-538, :693-700 (the registrations)`
+- `endpoint GET /api/openapi.json · GET /api/docs`
+
+### AZ-214 - Quotas are counted in QUESTIONS, not lessons: rows_per_key_per_day and rows_per_ip_per_day refuse the lesson with the numbers in the message
+
+**Goal:** GPU time is spent per question, so the node's daily budget must be enforced on rows, charged when the lesson is created, reported back on every job creation, and refused with a message a person can act on. complements the v1 AZ-115 (lessons per day) — this is the per-QUESTION budget.
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422, STUB mode
+- Operator bearer for node-u (password teachable-pass)
+- A fresh teaching key with no rows spent today
+- Record the current teach policy before changing it and restore it afterwards
+
+**Steps**
+
+1. PATCH /api/me/teach/policy {"rows_per_key_per_day": 3} (operator bearer) and read back GET /api/teach/policy
+2. Create a 2-question dataset with that key and POST /api/teach/jobs {dataset_id, patch_ids:[]}
+3. POST /api/teach/jobs again for the same dataset (2 more questions)
+4. PATCH /api/me/teach/policy {"rows_per_key_per_day": null, "rows_per_ip_per_day": 2} and repeat with a second fresh key from the same IP
+5. Restore the recorded policy and delete everything created
+
+**Expected**
+
+- GET /api/teach/policy reflects the change immediately: limits.rows_per_key_per_day === 3 (the visitor-facing policy is what the operator set; policy cache invalidated)
+- First POST → 202 and quota === { key_remaining, ip_remaining, rows_remaining: 1, rows_ip_remaining: … } — 2 of 3 questions charged at creation time
+- Second POST → 429 with body {"error":"quota_rows: you have 1 of 3 questions left to teach on this node today", rows_remaining:1, rows_ip_remaining:<n>, limit:3, asked:2} — no job row is created (GET /api/teach/jobs count unchanged) and no rows are charged
+- With rows_per_ip_per_day 2 exhausted, a DIFFERENT key from the same IP is refused too: 429 "quota_rows: this address has <n> of 2 questions left to teach on this node today" — the per-IP budget is independent of the key
+- The browser maps that error to the visitor sentence "You have used up the questions you can teach on this node today. Come back tomorrow, or run your own node — the instructions come with every lesson you download." (teach.err.quota_rows)
+- After restore, GET /api/teach/policy limits equal the recorded values (rows_per_key_per_day 300, rows_per_ip_per_day 500 on the dev node)
+
+**Evidence**
+
+- `packages/node/src/teach.ts:717-721 (quota_rows for key and IP, with details), :741 chargeRows`
+- `packages/node/src/teach-datasets.ts:118-133 (quota), :151-156 (chargeRows)`
+- `packages/node/src/api.ts:663-690 (PATCH /api/me/teach/policy rows_per_key_per_day / rows_per_ip_per_day)`
+- `packages/web/src/i18n/pages/teach.ts:575 (teach.err.quota_rows)`
+
+### AZ-215 - Owner-only reads: a stranger's key, an unsigned request and a replayed signature all get 404 — and the operator can read but cannot edit someone's dataset
+
+**Goal:** A dataset is private to the teaching key that created it. A stranger must not even learn that it exists, and the operator's moderation power must be read/delete, never a silent edit under the owner's name.
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422
+- Key K1 owns dataset D (2 questions) with one lesson; key K2 is a different, unbanned teaching key; operator bearer available
+
+**Steps**
+
+1. With K2, signed v2: GET /api/teach/datasets/D, GET /api/teach/datasets/D/rows, GET /api/teach/datasets/D/download, PATCH /api/teach/datasets/D {name:'stolen'}, DELETE /api/teach/datasets/D
+2. Unsigned (no x-ngram-auth): GET /api/teach/datasets/D and GET /api/teach/datasets
+3. Replay a valid K1 header for GET /api/teach/datasets/D a second time; and send a K1 header with ts = now - 10 min
+4. With the operator bearer only: GET /api/teach/datasets/D, then PATCH /api/teach/datasets/D {name:'operator rename'}
+5. With K1: GET /api/teach/datasets/D
+
+**Expected**
+
+- Every K2 request returns 404 {"error":"dataset_not_found: no such dataset on this node"} — the same body for read, rows, download, patch and delete, so existence is never disclosed; nothing about D changes
+- Unsigned GET of D → 404 dataset_not_found; unsigned GET /api/teach/datasets → 401 invalid_signature (the list route requires a key, the item route hides behind 404)
+- A replayed v2 header → 401 invalid_signature (single-use); a header 10 minutes old → 401 (±5 min skew)
+- Operator bearer GET /api/teach/datasets/D → 200 with the full dataset (moderation read)
+- Operator bearer PATCH /api/teach/datasets/D → 401 invalid_signature: the patch route requires the owner's teaching key; the dataset's name and revision are unchanged
+- K1 GET /api/teach/datasets/D → 200, name and revision exactly as before the whole sequence
+
+**Evidence**
+
+- `packages/node/src/api.ts:497-530 (owned(id, teacherOf(req), isOperator(req)); PATCH/fork/reparse use requireTeacher only)`
+- `packages/node/src/teach-auth.ts:40-80 (v2 request binding, single-use replay cache, TEACH_AUTH_SKEW_MS)`
+- `packages/node/src/openapi.ts:210 ("Anyone else gets 404 — a stranger is never told that a dataset exists.")`
+
+### AZ-216 - The rows report is the contract behind the preview table: /rows paging, status filter and summary must agree with the dataset and with the download
+
+**Goal:** The wizard, the CLI and any script read the same report; its shape, its counts and its relationship to the canonical bytes must be exact, or "it looked fine in the preview" bugs return.
+
+**Priority:** P1 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422
+- Upload (multipart, x-ngram-dataset-sha256 set) the AZ-208 fixture az-cli.csv with key K1 — 5 source lines, 3 accepted, 1 duplicate, 1 empty
+
+**Steps**
+
+1. GET /api/teach/datasets/<id>/rows (defaults)
+2. GET /api/teach/datasets/<id>/rows?status=ok and ?status=rejected
+3. GET /api/teach/datasets/<id>/rows?offset=1&limit=2
+4. GET /api/teach/datasets/<id>/download and ?format=csv
+
+**Expected**
+
+- The default page is {total, source_rows: 5, offset: 0, limit: 50, summary, items[]}; summary === {source_rows:5, accepted:3, fixed:0, rejected:2, duplicates:1, conflicts:0, blocked:0, too_long:0, empty:1, not_parsed:0, over_cap:0, shared_ending:0, langs:{…}}
+- Each item carries index (null for a rejected line), line (the SOURCE line number: 2..6 for a header csv), status, prompt/answer/alt_prompt or raw, and detail — line 5 status 'duplicate' detail "the same question and answer as line 3", line 6 status 'empty' detail "this question has no answer"
+- ?status=ok returns exactly the 3 trainable rows with contiguous index 0,1,2; ?status=rejected returns exactly the 2 problem rows; total reflects the filter
+- offset=1&limit=2 returns 2 items starting at the second row, with offset:1 and limit:2 echoed back
+- download (jsonl) → x-content-sha256 === dataset.sha256 === sha256(body); download?format=csv → content-type text/csv, a different x-content-sha256, and its body is NOT the fingerprint subject
+- Cleanup: dataset deleted
+
+**Evidence**
+
+- `packages/node/src/api.ts:501-507 (rows page shape), :470-495 (multipart create, declaredSha256)`
+- `packages/node/src/teach-datasets.ts:160-170 (dataset_hash), :264-276 (download jsonl/csv sha)`
+- `packages/node/src/teach-dataset.ts (parser statuses and detail copy)`
+
 ## AI agent / automation
 
 ### AZ-071 - Run the autonomous buyer end to end: detect the gap, pay 25 AIN via 402, verify the hash, load and restore
@@ -4474,3 +4834,3197 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/components/operator/TeachingTab.tsx (contrib-toggle-hidden, contrib-block-key, contrib-block-ip, contrib-unblock-key, teach-ban)`
 - `packages/node/src/api.ts /api/me/teach/contributors/:address, /api/me/teach/bans; hidden names stripped in catalog/detail/teacher`
 - `packages/e2e/tests/web-teach-operator.spec.ts 'AZ-116 …'`
+
+### AZ-217 - Operator dataset moderation: GET /api/me/teach/datasets shows who uploaded what, from which IP — and opening it is audited
+
+**Goal:** An operator hosting strangers' files must be able to see and remove them. The node does this through the operator API only; the scenario also pins the audit trail so the power cannot be used silently.
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with the operator password teachable-pass
+- At least one visitor dataset uploaded by a key that is not the operator (seed one with key K1 from a file named az217.csv, retention 'keep')
+
+**Steps**
+
+1. POST /api/auth/login {password} → bearer token
+2. GET /api/me/teach/datasets?limit=200 with the bearer
+3. GET /api/me/teach/datasets with NO bearer
+4. GET /api/events?kind=teach&limit=10 with the bearer
+5. DELETE /api/teach/datasets/<K1's dataset id> with the bearer (operator, not the owner)
+6. With K1: GET /api/teach/datasets/<id> and GET /api/teach/jobs
+
+**Expected**
+
+- 200 with {items:[…]}; the seeded row carries every field an operator needs: id, owner (= owner_address, K1's 0x address), ip "127.0.0.1", source "upload", source_name "az217.csv", size_bytes / source_bytes, rows, invalid_rows, status, retention, created_at, expires_at, sha256 — deleted datasets are included (includeDeleted) so nothing disappears from the moderation view
+- Without the bearer → 401 (requireOperator); a visitor teaching key alone never reaches this route
+- GET /api/events?kind=teach contains a fresh info event with message exactly "operator opened the uploaded-datasets moderation view" — one per call, so the moderation read is auditable
+- The operator DELETE returns 200; a following operator GET /api/me/teach/datasets shows the row with status 'deleted' and a deleted_at timestamp
+- K1's GET of the dataset → 404 "dataset_not_found: no such dataset on this node", but K1's lessons trained from it are still listed by GET /api/teach/jobs with dataset.deleted === true — deleting the questions never deletes the lesson
+- Cleanup: nothing to restore (the delete is the cleanup); the seeded lesson, if any, deleted
+
+**Evidence**
+
+- `packages/node/src/api.ts:693-700 (GET /api/me/teach/datasets, requireOperator, market.log audit line)`
+- `packages/node/src/teach-datasets.ts:112-114 (listAll with ip + owner), :remove(d,'operator')`
+- `packages/node/src/openapi.ts:259 ("An operator who hosts uploads must be able to see and delete them; opening this view writes an audit event.")`
+- `endpoint GET /api/me/teach/datasets · GET /api/events?kind=teach`
+
+### AZ-218 - Blocking a teaching key from the Teaching tab actually refuses that key's next upload and lesson
+
+**Goal:** The operator's block button must be enforcement, not decoration: the contributor row must show it, the block must appear in the list, and the blocked key must be refused at the node with a plain sentence. v1 twin AZ-116 (ban by address); this one blocks from the Teaching tab and proves the refusal reaches an upload as well as a lesson.
+
+**Priority:** P0 - **Area:** dashboard - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422; operator signed in through /signing (password teachable-pass)
+- A contributor key K2 that has trained at least one lesson on this node, so it appears in the Contributors table (record its 0x address)
+- Record the ban list before the run
+
+**Steps**
+
+1. Open http://localhost:3422/dashboard?tab=teaching and scroll to "Contributors"
+2. In the "Reason (optional, only you see it)" field type: AZ-218 walk
+3. On K2's row press "Block key" ([data-testid=contrib-block-key]) and accept the confirm dialog
+4. With K2, run: node packages/cli/dist/bin.js --node http://localhost:3422 --home <K2 home> teach dataset ./az-cli.csv ; echo $?
+5. With K2, POST /api/teach/jobs {dataset_id:<an earlier dataset of K2>}
+6. Press "Unblock" on the ban row ([data-testid=ban-remove]) and re-run the K2 upload
+
+**Expected**
+
+- The confirm dialog text is exactly: Block 0x…? New lessons from it will be refused with “This node is not accepting lessons from this key.”
+- K2's contributor row then carries a red chip "blocked" ([data-testid=contrib-blocked]) and the "Blocked keys and IPs" table ([data-testid=teach-bans]) gains a row: chip "key", the full 0x address in monospace, reason "AZ-218 walk", a relative timestamp and an "Unblock" button
+- The K2 upload exits 1 with "error: banned: this node is not accepting lessons from this key" and creates nothing (GET /api/me/teach/datasets count unchanged)
+- POST /api/teach/jobs with K2 → 403 {"error":"banned: this node is not accepting lessons from this key"}
+- After "Unblock" the ban row disappears, the "blocked" chip is gone, and the same K2 upload succeeds (exit 0, a dataset is created)
+- The IP button behaves the same way: with an IP recorded on K2's jobs the row offers "Block IP", otherwise it shows "Block IP: no IP recorded"
+- Cleanup: every ban created is removed (ban list identical to the recorded one); the dataset from the last upload deleted
+
+**Evidence**
+
+- `packages/web/src/components/operator/TeachingTab.tsx:262-286 (contrib-block-key/contrib-block-ip/contrib-unblock-key, op.teach.bans.confirm), :300-315 (teach-bans table)`
+- `packages/node/src/api.ts:706-722 (GET/POST /api/me/teach/bans, DELETE /api/me/teach/bans/:id)`
+- `packages/node/src/teach.ts:446-449 (assertNotBanned messages)`
+- `packages/web/src/i18n/pages/operator.ts:537-548`
+
+### AZ-219 - Publish review: "Review each one" holds a taught lesson at PENDING_REVIEW, and Approve / Decline reaches the teacher
+
+**Goal:** The operator's publish gate must work end to end: the visitor is told their lesson went for review, the operator sees a countable queue with a reason field, and the decision is visible on the teacher's own screen. v1 twin AZ-110 (review → approve); this one adds the decline path with its reason and what the teacher sees.
+
+**Priority:** P0 - **Area:** dashboard - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, STUB mode (teach.stubOffline true, simulated checks) so a lesson reaches READY quickly
+- Operator signed in; RECORD the current publish mode (dev node default is 'auto') to restore afterwards
+- A browser teaching key with one READY lesson whose checks passed (side-effect check on, so publishing is not gated)
+
+**Steps**
+
+1. On /dashboard?tab=teaching set "Publish lessons" to "Review each one" and press "Save settings"
+2. As the teacher, open /teach/lesson/<jobId>, press "Publish so others can use it", fill Name = AZ-219 review lesson, Price = 0, tick both consent boxes, press "Publish"
+3. Reload the operator Teaching tab
+4. Press "Decline" on that row, type the reason "AZ-219: the answer is wrong", press "Confirm decline"
+5. Reload the teacher's lesson page
+6. Repeat with a second READY lesson and press "Approve and announce" instead
+7. Restore "Publish lessons" to the recorded value and save
+
+**Expected**
+
+- Saving shows the success alert "Saved." ([data-testid=teach-notice]); GET /api/teach/policy then reports publish "review"
+- The publish sheet's success state reads "Sent to the node operator for review. You will see it in Your knowledge when it goes live." and offers "Your earnings →" (no public knowledge page link yet)
+- The operator queue heading shows the chip "1 waiting for review" ([data-testid=teach-review-count]) and the row's status chip reads "Waiting for review" with the actions "Approve and announce" and "Decline"
+- "Decline" opens the field labelled "Reason (shown to the contributor)" with placeholder "e.g. the answer is wrong"; Confirm decline is disabled until the reason is non-empty; after confirming, the row status chip reads "Declined" and the sub-line reads "Declined: AZ-219: the answer is wrong"
+- The teacher's /teach/lesson/<jobId> then shows the warning "The node operator declined to publish this lesson: AZ-219: the answer is wrong. Your file is still available to download." and the lesson status is REJECTED; "Keep it private" is still offered
+- "Approve and announce" flips the second lesson to "Announced", adds a "Knowledge page →" link to /<node address>/<patch id>, and the teacher's card reads "Announced — verifier nodes are checking it on the real model."
+- Cleanup: both lessons cancelled/deleted where still possible (an ANNOUNCED lesson is immutable — only do this leg on the local-ledger dev node), publish mode restored
+
+**Evidence**
+
+- `packages/web/src/components/operator/TeachingTab.tsx:196-233 (teach-review-count, teach-approve, teach-decline, teach-decline-reason, teach-decline-confirm)`
+- `packages/node/src/api.ts:702-706 (approve/reject/cancel)`
+- `packages/web/src/i18n/pages/teach.ts:159-161 (teach.pub.done_review, teach.pub.rejected), packages/web/src/i18n/pages/operator.ts:488-506`
+- `packages/web/src/components/chat/PublishSheet.tsx:72-77`
+
+### AZ-220 - Payouts to the data provider: the published anchor names the teacher with the node's share, and the operator's Payouts panel is honest about a node with no chain wallet
+
+**Goal:** The money path must be traceable from the published record to the operator's payout ledger and to the teacher's own earnings page — and where no transfer can happen, the UI must say why rather than show zeros without explanation.
+
+**Priority:** P1 - **Area:** dashboard - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, STUB mode, publish 'auto', local ledger (GET /api/me/payouts → wallet false)
+- One lesson published by teaching key K1 with the payout radio left on "This browser's teaching key (0x…)"
+- Operator signed in
+
+**Steps**
+
+1. Publish the lesson from /teach/lesson/<jobId> (Name = AZ-220 payout lesson, Price = 1, both consents ticked)
+2. Read the published anchor: GET /api/patches/<patchId> (or the knowledge page /<node address>/<patchId>)
+3. Open /dashboard?tab=teaching and scroll to "Payouts"
+4. Open /teacher/<K1 address>
+5. Cross-check GET /api/me/payouts?limit=100 and GET /api/teacher/<K1 address>
+
+**Expected**
+
+- The Payouts section description reads "Data-provider shares this node owes from sales of taught lessons. Transfers retry automatically every minute (up to 20 times); Retry sends one now." with three tiles labelled Owed / Paid / Failed
+- Because this node has no chain wallet, the info alert [data-testid=payouts-no-wallet] reads exactly "This node has no chain wallet (local record), so payouts to visitors are only recorded here and stay pending until it runs on the AI Network.", and with no sales yet the table shows "No payouts yet — they appear when a taught lesson sells."
+- /teacher/<K1 address> lists the lesson under "Lessons" with its status and the earnings tiles Owed / Paid / Pending / Sales; GET /api/teacher/<K1> returns lessons[] containing the patch id and earnings.{owed,paid,pending,failed,sales} that match the tiles digit for digit
+- No private draft id ever appears on the public teacher page (a PENDING_REVIEW lesson is referenced by JOB id only)
+- Cleanup: on the local-ledger dev node only — the announced lesson stays (immutable by design); note it in the run log rather than forcing a delete
+- The anchor contributor block and its share are asserted in AZ-198; here the anchor is only read to get the address the payout ledger must name.
+
+**Evidence**
+
+- `packages/web/src/components/operator/TeachingTab.tsx:317-360 (payouts tiles, payouts-no-wallet, teach-payout rows, payout-retry)`
+- `packages/node/src/api.ts:264-271 (GET /api/me/payouts, POST /api/me/payouts/:id/retry)`
+- `packages/node/src/teach.ts teacherProfile (owed from settle records, paid from payouts rows; credited address only)`
+- `packages/web/src/pages/TeacherPage.tsx:50-101; packages/web/src/i18n/pages/operator.ts:551-570`
+
+### AZ-221 - Teach settings on the Teaching tab: every visible knob saves, a pause reason reaches the visitor immediately, and a bad blocked-topics regex is refused
+
+**Goal:** The operator's settings form must be the real policy, applied at once and reflected in what visitors read — and must not be able to store a regular expression that would later throw inside the parser.
+
+**Priority:** P1 - **Area:** dashboard - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422; operator signed in
+- RECORD GET /api/me/teach/policy (policy + effective) before touching anything and restore it at the end
+
+**Steps**
+
+1. Open /dashboard?tab=teaching and read the Settings block
+2. Change: Corrections per lesson 8→6, Lessons per key per day 3→4, Queue size 10→12, Days an unsaved lesson is kept 7→5, Data-provider share slider 70→65; press "Save settings"
+3. Type into "Pause reason shown to visitors": AZ-221 GPU maintenance until Monday ; press "Save settings"
+4. In another context open http://localhost:3422/teach and http://localhost:3422/chat?teach=1
+5. Clear the pause reason, put `[` into "Blocked topics (regular expression, optional)" and press "Save settings"
+6. Restore every recorded value and save
+
+**Expected**
+
+- The form header shows "Trainer: ready · backend stub (demo — no real training)"; the fields present are exactly: Accept lessons from visitors (checkbox), Publish lessons (radios Review each one / Automatically / Never), Corrections per lesson, Lessons per key per day, Lessons per IP per day, Queue size, Days an unsaved lesson is kept, Data-provider share of each sale (slider, %) with helper "The rest stays with this node for GPU time and hosting.", Pause reason shown to visitors, Blocked topics (regular expression, optional)
+- "Save settings" is disabled until something changes; after saving, the alert "Saved." appears and GET /api/teach/policy shows limits.facts_per_job 6, limits.jobs_per_key_per_day 4, queue.max 12, draft_ttl_days 5, shares.contributor 0.65 — the visitor policy changed with no restart
+- With the pause reason set, /teach shows the warning "Teaching is paused on this node right now. AZ-221 GPU maintenance until Monday" and the chat basket's policy line shows the same sentence; "Teach from this dataset (n)" is disabled and POST /api/teach/jobs returns 503
+- The invalid regex is refused: the error alert shows "blocked_topics must be a valid regular expression" (HTTP 400), the stored policy is unchanged, and no visitor request starts failing
+- After restore, GET /api/me/teach/policy.effective equals the recorded object field for field
+
+**Evidence**
+
+- `packages/web/src/components/operator/TeachingTab.tsx:139-190 (teach-settings form, teach-save, teach-share, teach-paused, teach-blocked)`
+- `packages/node/src/api.ts:663-691 (PATCH /api/me/teach/policy, blocked_topics regex validation, invalidatePolicy)`
+- `packages/web/src/i18n/pages/teach.ts:42 (teach.basket.policy_paused); packages/web/src/i18n/pages/operator.ts:457-483`
+
+### AZ-222 - The dataset-era limits are operator-settable only through the API, and the visitor UI obeys them: file size, dataset cap, per-lesson cap and the publish declaration
+
+**Goal:** Every number the dataset wizard shows must come from the node's policy, not from the bundle — and the operator must be able to move each one, even though the Teaching tab form does not yet expose them.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, STUB mode; operator bearer
+- RECORD GET /api/me/teach/policy first and restore it at the end
+- A browser teaching key ready to upload
+
+**Steps**
+
+1. PATCH /api/me/teach/policy (operator bearer) {"dataset_max_bytes":1000000, "dataset_max_rows":4, "rows_per_job":2, "declaration_rows":2, "dataset_ttl_days":3}
+2. GET /api/teach/policy and compare limits
+3. Open /teach and /teach/upload as a visitor
+4. Upload this exact 5-question file (az222.jsonl):
+{"prompt":"AZ222 fact one?","answer":"one"}
+{"prompt":"AZ222 fact two?","answer":"two"}
+{"prompt":"AZ222 fact three?","answer":"three"}
+{"prompt":"AZ222 fact four?","answer":"four"}
+{"prompt":"AZ222 fact five?","answer":"five"}
+5. Continue to /teach/dataset/<id>/settings and start the lesson; when it is READY open the publish sheet
+6. Restore the recorded policy and delete everything created
+
+**Expected**
+
+- GET /api/teach/policy limits echo the patch exactly: dataset_max_bytes 1000000, dataset_max_rows 4, rows_per_job 2 with rows_per_job_source no longer "default" (an explicit override disables the measured derivation), declaration_rows 2, dataset_ttl_days 3
+- /teach/upload's drop zone reads "jsonl, csv, tsv or txt · up to 1 MB" and /teach's file door says "jsonl, csv, tsv or plain text · up to 4 questions" — both numbers come from the policy, none are hard-coded
+- The 5-question upload is accepted with a note: "That file has 5 questions; this node accepts up to 4 in one dataset. The first 4 were loaded." ([data-testid=over-cap-note]) and the dataset holds 4 rows
+- The dataset page shows the cap banner "This node teaches up to 2 questions in one lesson. The first 2 are selected; the rest stay in your dataset for the next lesson." with a "Choose which 2" button; the settings screen shows "This node teaches up to 2 questions in one lesson, so 2 of your 4 are in this one." and its button reads "Train this lesson (2 questions)"
+- With declaration_rows 2 the publish sheet shows a THIRD consent box: "You are publishing 4 questions. Confirm you have the right to share this data and that it contains no personal information — published lessons cannot be deleted." and "Publish" stays disabled until all three are ticked
+- The Teaching tab settings form does NOT contain any of these fields — they are reachable only through PATCH /api/me/teach/policy (recorded as a product gap, not a test failure)
+- After restore, GET /api/teach/policy limits equal the recorded ones (dataset_max_bytes 4000000, dataset_max_rows 2000, rows_per_job 200 source "default", declaration_rows 100, dataset_ttl_days 7)
+
+**Evidence**
+
+- `packages/node/src/api.ts:672-690 (dataset_max_bytes / dataset_max_rows / rows_per_job / declaration_rows / dataset_ttl_days on PATCH /api/me/teach/policy)`
+- `packages/node/src/teach.ts:405-415 (policy limits, declaration_rows)`
+- `packages/web/src/pages/TeachUploadPage.tsx:60-64 (maxBytes/maxMb from policy), packages/web/src/pages/TeachDatasetPage.tsx:205 (over-cap-note), :216-220 (cap-banner)`
+- `packages/web/src/components/chat/PublishSheet.tsx:51-53 + :124-127 (declarationRows → consent-declaration)`
+
+## Dataset uploader (visitor)
+
+### AZ-123 - /teach entry choice: two doors, one pipeline — the file card leads and the five-step strip is the same for both
+
+**Goal:** A stranger landing on /teach can see immediately that a file is a first-class way in (the Teachable-NLP shape the owner asked for), that a conversation is the other, and that both meet in the same five steps (design §5.2).
+
+**Priority:** P0 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 in its current publish-leg mode: teach.enabled true, backend 'stub', teach.stubOffline true. No step in this scenario calls the model server.
+- Fresh browser context, locale en-US, no localStorage (no teaching key).
+
+**Steps**
+
+1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
+2. Read the two door cards, the policy alert, the step strip and the footer link.
+3. Read the small print under the file CTA.
+4. Operator-only variant: PATCH /api/me/teach/policy {enabled:false} with the operator bearer token, reload /teach, then restore {enabled:true}.
+
+**Expected**
+
+- Title 'Teach the model something new'; subtitle 'Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.'; second line 'No account, no server of your own, no code.'
+- Left card: 'Teach it in a conversation' with button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card (primary border): 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.
+- Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).
+- [data-testid=teach-policy] renders the node's own sentence — on node-u today: 'Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes'.
+- Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; footer link [data-testid=link-mine] 'My datasets and lessons →' goes to /teach/mine.
+- With teach.enabled false both door-chat and door-file are disabled and the alert switches to warning tone with 'This node does not accept lessons. Try another node or run your own.'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachPage.tsx:54,59,60,65,70 (door-chat / door-file / entry.file.formats / teach-policy / StepStrip)`
+- `packages/web/src/i18n/pages/teach.ts:290-301 (teach.entry.*), :304-309 (teach.step.*)`
+- `GET http://localhost:3422/api/teach/policy → limits.dataset_max_rows 2000`
+- `packages/web/src/components/chat/teachUtil.ts policyLine()`
+
+### AZ-124 - /teach/upload first look: three ways in are all present at once, and the privacy sentence is above the fold before any file is chosen
+
+**Goal:** Step 1 offers drop + a native file input + a paste box simultaneously (dropping is impossible on a phone), and tells a stranger what happens to their file BEFORE they hand it over (design §5.3, §12.2).
+
+**Priority:** P0 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US, empty localStorage.
+
+**Steps**
+
+1. Open /teach/upload; wait for [data-testid=teach-upload].
+2. Assert the stepper says step 1, then inspect [data-testid=drop-zone], the nested [data-testid=file-input], [data-testid=paste-table], [data-testid=retention], [data-testid=privacy], [data-testid=format-help], [data-testid=samples].
+3. Read the accept attribute of the file input and the DOM order of privacy vs. the intake controls.
+4. Assert [data-testid=key-note] is absent and localStorage has no 'ainize.teacher.key'.
+
+**Expected**
+
+- Stepper aria-label 'Step 1 of 5 · Dataset'; H1 'Upload your dataset'; subtitle 'One question and one right answer per line. The model is taught the answers exactly as you write them.'
+- Drop zone is role=button, tabIndex=0, aria-label 'Drop a file here'; it contains a visible 'or' and a real <input type=file aria-label='Choose a file'> with accept='.jsonl,.json,.csv,.tsv,.txt'; the footer line reads 'jsonl, csv, tsv or txt · up to 4 MB' (4 = limits.dataset_max_bytes / 1e6, rounded).
+- <details data-testid=paste-table> is present and collapsed on a 1280 px viewport with summary 'Paste a table instead'; on a 360 px viewport it is open by default.
+- Checkbox [data-testid=retention] labelled 'Delete my file as soon as training finishes' is unchecked.
+- [data-testid=privacy] reads exactly 'Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.' and appears in the DOM before the format help and the sample list — i.e. it is visible without scrolling past the intake controls.
+- Format help section 'What the file should look like' renders four boxes headed .JSONL / .CSV / .TSV / .TXT with runnable example bodies, closed by the aliases line 'Other names work too: "question" / "q" / "질문" for the question, "completion" / "output" / "a" / "정답" for the answer, "alt" / "paraphrase" / "다른표현" for another way to ask.'
+- No key note is rendered and localStorage contains no key — a visitor who has not yet chosen a file has no identity on this node.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:107-140 (order: DropZone → PasteTable → retention → privacy → key-note → FormatHelp → samples)`
+- `packages/web/src/components/teach/DropZone.tsx:40-52; packages/web/src/lib/teachDataset.ts:41-42 (ACCEPT_ATTR)`
+- `packages/web/src/components/teach/PasteTable.tsx:24; TeachUploadPage.tsx:44 narrow() (<480 px opens it)`
+- `packages/web/src/i18n/pages/teach.ts:313-336 (teach.up.*)`
+
+### AZ-125 - jsonl through the file picker: chip → node report → preview, and a teaching key is created silently with a backup link
+
+**Goal:** The golden path of the file door: pick a .jsonl, the node parses it, the preview shows the node's numbers (not the browser's guess), and the visitor is told a key now exists and must be backed up (design §5.3, §5.4, §D2, §D14).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US, empty localStorage.
+
+**Steps**
+
+1. Create az-facts.jsonl with exactly:
+{"prompt":"Who founded Ainize?","answer":"Comcom","alt_prompt":"Which company is behind Ainize?"}
+{"prompt":"When did Ainize start?","answer":"2020"}
+{"prompt":"What does a lesson produce?","answer":"A knowledge file"}
+2. Open /teach/upload and setInputFiles([data-testid=file-input], az-facts.jsonl).
+3. Wait for the URL to become /teach/dataset/<uuid> and [data-testid=teach-dataset] to render.
+4. Go back to /teach/upload and read [data-testid=key-note]; then open /teach/mine.
+5. Cleanup: /teach/mine → 'Delete dataset' on the card, accept the confirm.
+
+**Expected**
+
+- Between pick and navigation [data-testid=file-chip] appears with 'Reading your file…' and then 'az-facts.jsonl · 200 B · 3 questions found' (browser-side, display only).
+- The browser navigates to /teach/dataset/<uuid>; POST /api/teach/datasets answered 201 with {dataset, report, created:true} and carried headers x-ngram-auth (v2) + x-ngram-dataset-sha256 = sha256 of the raw file bytes.
+- Preview page: stepper 'Step 2 of 5 · Check'; H1 'Check your dataset'; subtitle '3 questions from az-facts.jsonl. Fix anything marked in red, then see which ones the model already knows.'
+- Bar: 'Fingerprint <12 hex>' (dataset.sha256 over the CANONICAL rows.jsonl, not the uploaded bytes) and 'Saved as az-facts.jsonl — you can train from it again any time.'
+- [data-testid=row-counts] reads '3 will train · 0 already known · 0 duplicates · 0 need a fix'. Three [data-testid=dataset-row] rows with lines 1,2,3, the alt_prompt shown only on row 1, status pill 'Will train' + help 'Not checked yet'.
+- Buttons present: 'Check what the model already knows', 'Add a question', 'Download this dataset (.jsonl)', 'Wrong columns or separator?' (the last only because dataset.status === 'staged'), and a sticky 'Continue to settings'.
+- Back on /teach/upload, [data-testid=key-note] reads "Your dataset was signed with this browser's teaching key (0x….…). Lose the key and you lose access to your datasets and lessons — back it up." followed by the link 'Back up the key' → /chat?mine=1; localStorage now holds 'ainize.teacher.key' and 'ainize.teach.datasets'.
+- /teach/mine lists one [data-testid=dataset-card] named az-facts.jsonl with '3 questions', 'Uploaded file', 'Not trained yet'.
+- After the delete the card is gone and GET /api/teach/datasets/<id> (signed) answers 404 'dataset_not_found: no such dataset on this node'.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:69-87 (send: acceptedFile → size → ensureKey → sha256Hex → upload → rememberDataset → navigate)`
+- `packages/node/src/api.ts:470-495 (POST /api/teach/datasets, x-ngram-dataset-sha256)`
+- `packages/node/src/teach-datasets.ts:160-215 (create: declared sha check, canonical bytes, 201/created)`
+- `packages/web/src/pages/TeachDatasetPage.tsx:194-232; packages/web/src/i18n/pages/teach.ts:339-340 (teach.up.key_made / key_backup)`
+
+### AZ-126 - Drag-and-drop onto the zone, and the same zone opened from the keyboard
+
+**Goal:** Dropping a file is a real path, not decoration, and the zone is operable without a mouse (design §5.3).
+
+**Priority:** P1 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Open /teach/upload.
+2. Build a DataTransfer in the page containing a File named az-dragdrop.jsonl with the AZ-125 three-line body, dispatch DragEvent('dragover') then DragEvent('drop') on [data-testid=drop-zone].
+3. Separately (fresh page): focus [data-testid=drop-zone] and press Enter; assert the native picker was requested (spy on HTMLInputElement.prototype.click) — the same for Space.
+4. Cleanup: delete the dataset the drop created.
+
+**Expected**
+
+- On dragover the zone's border switches to the primary colour and its background to PALE_GREY (the $over state); on dragleave it reverts.
+- The drop uploads without any click on the file input: URL becomes /teach/dataset/<uuid>, subtitle '3 questions from az-dragdrop.jsonl…', counts '3 will train · 0 already known · 0 duplicates · 0 need a fix'.
+- Enter and Space on the focused zone each call input.click() exactly once and do not scroll the page (the handler calls preventDefault).
+- A drop while an upload is in flight (disabled) is ignored — no second POST /api/teach/datasets.
+
+**Evidence**
+
+- `packages/web/src/components/teach/DropZone.tsx:29-46 (onDrop reads e.dataTransfer.files[0]; onKey handles Enter/Space; disabled guards)`
+- `packages/web/src/pages/TeachUploadPage.tsx:110 (DropZone onFile → send)`
+- `Verified in a real browser against :3422 — a synthetic DataTransfer drop produced dataset 'az-dragdrop.jsonl', 3 questions`
+
+### AZ-127 - Paste a table instead: two spreadsheet columns become a .tsv the NODE parses
+
+**Goal:** A visitor with no file can paste two columns and get the identical pipeline — and the browser never becomes a second parser that can disagree with the node (design §5.3, §D2).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Open /teach/upload, click the [data-testid=paste-table] summary 'Paste a table instead'.
+2. Assert the hint and the placeholder, then fill [data-testid=paste-box] with two tab-separated lines:
+AZ paste question one?\tAnswer One
+AZ paste question two?\tAnswer Two
+3. Click [data-testid=paste-use] 'Use this text'.
+4. Repeat in a second context with newline-separated 'Q:'/'A:' text instead of tabs and observe the filename extension.
+5. Cleanup: delete both datasets.
+
+**Expected**
+
+- Hint: 'Copy two columns from a spreadsheet and paste them here — the question in the first column, the right answer in the second.'; placeholder is the literal 'Who founded Ainize?\tComcom'.
+- 'Use this text' is disabled while the box is empty or whitespace-only.
+- Tabbed text is uploaded as a File named pasted-<YYYY-MM-DD>.tsv (today's ISO day); non-tabbed text is uploaded as pasted-<YYYY-MM-DD>.txt. Nothing is parsed in the browser — the multipart POST carries the raw text.
+- Preview: '2 questions from pasted-<YYYY-MM-DD>.tsv…', 'Saved as pasted-<YYYY-MM-DD>.tsv (today’s UTC day) — you can train from it again any time.', counts '2 will train · 0 already known · 0 duplicates · 0 need a fix', rows at lines 1 and 2 with the exact pasted strings (no header row was consumed — the first line is data).
+- GET /api/teach/datasets/<id> reports format 'tsv', delimiter '\t', has_header false, source 'upload', source_name 'pasted-<YYYY-MM-DD>.tsv (today’s UTC day)'.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:88-91 (sendPaste: looksTabbed ? .tsv : .txt, new File([text], `pasted-${isoDay()}…`))`
+- `packages/web/src/components/teach/PasteTable.tsx:22-31`
+- `packages/node/src/teach-dataset.ts:334-346 sniffTxtLayout (tsv when ≥60 % of lines contain a tab); :290 planDelimited/looksLikeHeader`
+- `Verified on :3422 — dataset 'pasted-2026-09-01.tsv', 2 questions, lines 1 and 2`
+
+### AZ-128 - Format help and the three sample datasets: download one, or start from it in one click
+
+**Goal:** A visitor who has nothing to upload can still get to step 2, and the downloadable sample round-trips to the same fingerprint (design §5.3, PR-D1 deviation 3).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US, acceptDownloads: true.
+
+**Steps**
+
+1. Open /teach/upload and read [data-testid=samples].
+2. Click the 'Download a sample dataset' link on 'Five English facts' and capture the download.
+3. Click [data-testid=sample-en-facts] 'Start from this sample'.
+4. Re-upload the downloaded bytes through the file input in the SAME browser and compare the resulting dataset id and fingerprint.
+5. Cleanup: delete the dataset(s) created.
+
+**Expected**
+
+- The hint line reads 'A handful of questions in jsonl — open it, replace the text with yours, upload it back.' and three rows are listed: '한국어 사실 5개 / 5 questions', 'Five English facts / 5 questions', 'Mixed Korean and English / 6 questions'.
+- The download comes from GET /api/teach/samples/en-facts with content-type 'application/x-ndjson; charset=utf-8' and content-disposition filename="sample-en-facts.jsonl"; the file is canonical rows.jsonl (5 lines, LF, no BOM, one trailing LF) whose sha256 is ed73eb39ab65e1ec19326f731ffd54e44a58dafe3022918395e98fb94c1b2fe4 — the same value GET /api/teach/samples reports for that kind. The endpoint needs no teaching key (public, cache-control public max-age=3600).
+- 'Start from this sample' POSTs {source:'sample', sample:'en-facts'} and lands on /teach/dataset/<id>: subtitle '5 questions from a sample dataset.', 'Fingerprint ed73eb39ab65', 'Saved as Five English facts.jsonl — you can train from it again any time.', counts '5 will train · 0 already known · 0 duplicates · 0 need a fix'.
+- Rows 1–5 are exactly the en-facts questions, with 'Which company is behind Ainize?' on row 1 and 'What exactly does a patch modify?' on row 3 in the 'Another way to ask (optional)' column.
+- No 'Wrong columns or separator?' button on this page — a sample dataset is created with status 'ready', not 'staged', and there are no original bytes to re-read.
+- Re-uploading the downloaded sample returns HTTP 200 with created:false and lands on the SAME dataset id and fingerprint (idempotent by canonical sha256; no dataset-count quota charged).
+
+**Evidence**
+
+- `packages/node/src/api.ts:463-468 (GET /api/teach/samples, /api/teach/samples/:kind)`
+- `packages/node/src/teach-samples.ts:14-54 (TEACH_SAMPLES)`
+- `packages/node/src/teach-datasets.ts:225-234 (findTeachDatasetBySha → created:false), :273-284 (samples/sampleBytes)`
+- `packages/web/src/pages/TeachUploadPage.tsx:93-101,134-144; packages/web/src/components/teach/FormatHelp.tsx`
+
+### AZ-129 - CSV with a header and values containing commas inside quotes
+
+**Goal:** RFC 4180 quoting survives the upload: a comma inside a quoted cell is data, not a column break, and the header row is not trained as a question (design §8.2).
+
+**Priority:** P0 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Create az-quoted.csv with exactly:
+prompt,answer,alt_prompt
+"Which cities, in order, are on the AZ line?","Seoul, Busan, Daegu",""
+Who founded Ainize?,Comcom,Which company is behind Ainize?
+2. Upload it through [data-testid=file-input] and read the preview table.
+3. GET /api/teach/datasets/<id> and /rows (signed with the browser key) and check the parse plan.
+4. Cleanup: delete the dataset.
+
+**Expected**
+
+- Preview subtitle '2 questions from az-quoted.csv…'; counts '2 will train · 0 already known · 0 duplicates · 0 need a fix'.
+- Row 1 is LINE 2 (not 1 — the header was consumed): question 'Which cities, in order, are on the AZ line?' and answer 'Seoul, Busan, Daegu' — both commas preserved, no stray extra row. Row 2 is line 3 with 'Who founded Ainize?' / 'Comcom' / alt 'Which company is behind Ainize?'.
+- The empty quoted alt_prompt on line 2 renders as an empty cell, not the literal '""'.
+- GET /api/teach/datasets/<id> → format 'csv', delimiter ',', has_header true, columns {prompt:0, answer:1, alt_prompt:2}, encoding 'utf-8', rows 2, invalid_rows 0.
+- GET …/rows → summary.source_rows 3, summary.accepted 2, summary.not_parsed 0, and items[0].line === 2.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:125-155 parseDelimited ("" escape, embedded delimiters/newlines inside quotes)`
+- `packages/node/src/teach-dataset.ts:177-191 looksLikeHeader; :286-314 planDelimited; :316-329 recordsFromDelimited (header row skipped)`
+- `packages/node/src/api.ts:501-507 (GET …/rows paginated report)`
+- `Verified on :3422 — rows rendered at lines 2 and 3 with both commas intact`
+
+### AZ-130 - Header detection both ways: Korean column names are recognised, a headerless TSV keeps its first line as data
+
+**Goal:** The parser must not eat a real question as a header, and must map 질문/정답/다른표현 as readily as prompt/answer/alt_prompt (design §8.2, FIELD_ALIASES).
+
+**Priority:** P1 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Upload az-korean-header.csv:
+질문,정답,다른표현
+Ainize를 만든 곳은?,Comcom,Ainize는 어느 회사인가요?
+AIN 토큰 이름은?,AIN,
+2. Read the preview, then GET the dataset JSON.
+3. Upload az-noheader.tsv (tab separated, no header row):
+Ainize를 만든 곳은?\tComcom
+AIN 토큰 이름은?\tAIN
+4. Read the preview and the dataset JSON.
+5. Cleanup: delete both datasets.
+
+**Expected**
+
+- Korean-header CSV: preview shows 2 questions at LINES 2 and 3 — the 질문,정답,다른표현 line was recognised as a header and never became a question. Row 1 carries alt 'Ainize는 어느 회사인가요?'.
+- Its dataset JSON: format 'csv', delimiter ',', has_header true, columns {prompt:0, answer:1, alt_prompt:2} (mapped through the aliases 질문 → prompt, 정답 → answer, 다른표현 → alt_prompt).
+- Headerless TSV: preview shows 2 questions at LINES 1 and 2 — nothing was consumed as a header. Counts '2 will train · 0 already known · 0 duplicates · 0 need a fix'.
+- Its dataset JSON: format 'tsv', delimiter '\t', has_header false, columns {prompt:0, answer:1, alt_prompt:2, note:3} (the positional fallback that only applies when there is no header).
+- The English equivalents (prompt,answer,alt_prompt) and the mixed aliases question/completion/output/q/a produce the same mapping — the alias table is casefolded and whitespace/underscore-insensitive.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:76-85 FIELD_ALIASES + aliasKey/ALIAS_TO_FIELD`
+- `packages/node/src/teach-dataset.ts:177-191 looksLikeHeader (every cell non-numeric, ≤64 chars, unique, at least one known alias)`
+- `packages/node/src/teach-dataset.ts:286-314 planDelimited (positional fallback only when !hasHeader)`
+- `Verified on :3422 — korean-header.csv rows at lines 2/3; noheader.tsv rows at lines 1/2`
+
+### AZ-131 - Plain text: the Q:/A: layout the format help promises
+
+**Goal:** The .txt example printed on the upload page is the file the parser actually reads, and the line numbers point back into the visitor's file (design §8.4).
+
+**Priority:** P1 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Copy the .TXT block shown in [data-testid=format-help] verbatim into az-qa.txt:
+Q: Who founded Ainize?
+A: Comcom
+
+Q: When did Ainize start?
+A: 2020
+2. Upload it and read the preview.
+3. Also upload az-korean-qa.txt using the Korean markers:
+질문: Ainize를 만든 곳은?
+답: Comcom
+4. Cleanup: delete both datasets.
+
+**Expected**
+
+- az-qa.txt: '2 questions from az-qa.txt…'; counts '2 will train · 0 already known · 0 duplicates · 0 need a fix'. The two rows are reported at LINES 1 and 4 — the line of the Q: that opened each pair, with the blank line counted, so the number matches the visitor's editor.
+- Questions are stored without the 'Q: ' / 'A: ' markers: 'Who founded Ainize?' → 'Comcom'.
+- Dataset JSON: format 'txt', layout 'qa', encoding 'utf-8'.
+- az-korean-qa.txt parses the same way — 질문:/문제: open a question and 답:/답변:/정답: close it; layout is still 'qa'.
+- An A: line with no Q: before it is reported as not_parsed with detail 'an answer line with no question before it' and appears under 'N line(s) could not be read and were left out.' — never silently dropped.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:330-331 Q_RE/A_RE (Q|질문|문제 and A|답변|정답|답)`
+- `packages/node/src/teach-dataset.ts:348-380 recordsFromTxt layout 'qa' (pending prompt keeps the Q line number)`
+- `packages/web/src/components/teach/FormatHelp.tsx (the .txt block is generated from the same rows shown)`
+- `Verified on :3422 — qa.txt produced rows at lines 1 and 4`
+
+### AZ-132 - Alpaca and ChatML: the two shapes people already have on disk are read without an export step
+
+**Goal:** A visitor who downloaded an instruction-tuning set from elsewhere can upload it as-is: Alpaca's input joins the instruction (it is never used as the answer) and a ChatML system message is ignored, not trained (design §8.3).
+
+**Priority:** P1 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Upload az-alpaca.json:
+[{"instruction":"Who founded Ainize?","input":"","output":"Comcom"},{"instruction":"Name the token","input":"AIN blockchain","output":"AIN"}]
+2. Read the preview and [data-testid=fixed-note].
+3. Upload az-chatml.jsonl:
+{"messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"Who founded Ainize?"},{"role":"assistant","content":"Comcom"}]}
+{"messages":[{"role":"user","content":"What token does AIN use?"},{"role":"assistant","content":"AIN"}]}
+4. Read the preview and the report notes.
+5. Cleanup: delete both datasets.
+
+**Expected**
+
+- Alpaca: '2 questions from az-alpaca.json…', format 'json', counts '2 will train · 0 already known · 0 duplicates · 0 need a fix'. Row 1 = 'Who founded Ainize?' / 'Comcom'. Row 2's question is 'Name the token AIN blockchain' — instruction + '\n' + input, then whitespace-collapsed — and its answer is 'AIN'; the input is NEVER used as the answer.
+- Row 2's status pill reads 'Will train — tidied up' and [data-testid=fixed-note] says '1 question(s) were tidied up (extra spaces and line breaks removed).' (summary.fixed = 1, fixes include 'whitespace_collapsed').
+- ChatML: '2 questions from az-chatml.jsonl…', format 'jsonl', 2 rows at lines 1 and 2 — last user message → question, last assistant message → answer.
+- The system message is neither trained nor dropped in silence: report.json notes contains 'system_messages_ignored'.
+- A jsonl line that is valid JSON but carries none of the known keys is reported not_parsed with 'no question/answer keys in this object' and its raw text is shown under 'See the lines that were left out'.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:217-245 fieldsFromObject (ChatML branch counts system messages; Alpaca instruction+input join)`
+- `packages/node/src/teach-dataset.ts:247-272 recordsFromJsonl; :274-292 recordsFromJsonArray`
+- `packages/node/src/teach-dataset.ts:661 notes 'system_messages' → 'system_messages_ignored'`
+- `Verified on :3422 — alpaca.json row 2 rendered 'Name the token AIN blockchain' with 'Will train — tidied up'`
+
+### AZ-133 - Encodings: UTF-8 BOM + CRLF is silent, EUC-KR/cp949 and UTF-16 are read and SAID so
+
+**Goal:** A file saved by Excel on a Korean Windows machine works, and the node names the encoding it guessed — a short CP949 file that decodes as valid UTF-8 is the most likely silent corruption in the pipeline (design §8.1).
+
+**Priority:** P0 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+- Three fixtures written with explicit bytes (not by a text editor).
+
+**Steps**
+
+1. Upload az-bom-crlf.csv = UTF-8 bytes with a leading EF BB BF and CRLF line endings:
+prompt,answer\r\nAinize를 만든 곳은?,Comcom\r\nAIN 토큰 이름은?,AIN\r\n
+2. Upload az-euckr.csv = the same text encoded cp949 with LF endings and a Korean header (질문,정답).
+3. Upload az-utf16.csv = UTF-16LE bytes with a FF FE BOM.
+4. On each preview read [data-testid=encoding-note] and the row text.
+5. Cleanup: delete the datasets.
+
+**Expected**
+
+- UTF-8 + BOM + CRLF: 2 questions, rows at lines 2 and 3, Korean text intact, NO encoding note is rendered (dataset.encoding === 'utf-8' — the BOM is stripped and the CRLFs are one row each, not two).
+- EUC-KR: 2 questions with correct Hangul, and [data-testid=encoding-note] reads 'Read as euc-kr. If the text looks wrong, save the file as UTF-8 and upload it again.'; dataset.encoding === 'euc-kr'.
+- UTF-16LE with BOM: 2 questions with correct Hangul, note 'Read as utf-16le. If the text looks wrong, save the file as UTF-8 and upload it again.'; dataset.encoding === 'utf-16le'. A FE FF (UTF-16BE) file gives 'utf-16be' the same way.
+- The canonical rows.jsonl written for all three is UTF-8 without BOM with LF endings — so the same questions in a different encoding produce the SAME fingerprint. Uploading az-utf16.csv after az-bom-crlf.csv in the same browser returns HTTP 200 created:false and lands on the first dataset (its source_name stays 'az-bom-crlf.csv'). Use distinct question text per encoding if the scenario needs three distinct datasets.
+- A file that is neither valid UTF-8 nor CP949 falls back to latin1 and says so, rather than failing.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:96-114 decodeBuffer (BOM → hint → strict utf-8 → euc-kr → shift_jis → latin1)`
+- `packages/node/src/teach-dataset.ts:125-155 parseDelimited (\r\n / \r / \n all end one logical row)`
+- `packages/web/src/pages/TeachDatasetPage.tsx:204 (note shown only when encoding !== 'utf-8'); i18n teach.ts:338 teach.up.encoding`
+- `packages/node/src/teach-datasets.ts:225-234 (idempotent by canonical sha256 — the UTF-16 twin lands on the earlier dataset)`
+- `Verified on :3422 — euckr.csv and utf16u.csv both rendered their note; bom-crlf.csv rendered none`
+
+### AZ-134 - 'Wrong columns or separator?' re-reads the bytes the node already has — no re-upload, new revision, new fingerprint
+
+**Goal:** When the guess is wrong (mojibake, wrong separator, a header eaten or missed) the visitor fixes it from the preview instead of going back to their file manager (design §5.4).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- A staged dataset from an UPLOADED file (status 'staged' — the reparse button is absent for chat/sample datasets).
+
+**Steps**
+
+1. Upload az-euckr.csv (cp949 bytes) and note the fingerprint on the preview.
+2. Click [data-testid=open-reparse]; read the sheet.
+3. Select Text encoding = 'latin1' and click [data-testid=reparse-go] 'Read it again'; observe the table and the fingerprint.
+4. Reopen the sheet, select 'euc-kr', apply again.
+5. Cleanup: delete the dataset.
+
+**Expected**
+
+- The sheet [data-testid=reparse-sheet] is titled 'Wrong columns or separator?' with the note 'Tell this node how to read your file and it will try again. Nothing is re-uploaded.' and four controls: File format (Decide automatically | jsonl | json | csv | tsv | txt), Separator (Decide automatically | , | tab | ; | |), Text encoding (Decide automatically | utf-8 | euc-kr | utf-16le | utf-16be | latin1) and the checkbox 'The first line is a header'.
+- 'Read it again' POSTs /api/teach/datasets/<id>/reparse — no multipart, no bytes re-sent (the node reads source.<ext> it kept because status is 'staged').
+- Forced latin1: the same two rows now read as mojibake ('Ainize¸¦ ¸¸µç °÷Àº?' / 'ÇÈ¼¿ÇÃ·¯½º Á¾¸ñÄÚµå´Â?'), the encoding note switches to 'Read as latin1. …', and the Fingerprint changes (revision 2) — the sha256 follows the bytes it now produces.
+- Any pre-flight result on the page is discarded when the revision changes — no green 'already known' tick survives next to text that just changed.
+- Forcing 'euc-kr' restores the Hangul and the ORIGINAL fingerprint of the first parse.
+- A reparse that yields zero usable questions is refused with 400 'dataset_empty: read that way, the file has no usable questions' and the previous revision is left intact.
+
+**Evidence**
+
+- `packages/web/src/components/teach/ReparseSheet.tsx:12-16,30-50; packages/web/src/pages/TeachDatasetPage.tsx:229 (button only when dataset.status === 'staged'), :92 (revision change clears preflight)`
+- `packages/node/src/api.ts:508-512 (POST …/reparse)`
+- `packages/node/src/teach-datasets.ts:296-307 (re-reads source bytes; 409 if gone; 400 dataset_empty)`
+- `Verified on :3422 — latin1 reparse produced mojibake and fingerprint d20259989da3 → e2cfe94732aa`
+
+### AZ-135 - Size cap: a 5.1 MB file is refused in the browser before a byte is uploaded, and the node refuses it independently
+
+**Goal:** The 4 MB ceiling is enforced twice — once so the visitor is not made to wait for an upload that cannot succeed, once so the node cannot be filled by a client that skips the check (design §7.1, §12.5).
+
+**Priority:** P0 - **Area:** teach-limits - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true; policy limits.dataset_max_bytes = 4000000.
+- Fresh browser context, locale en-US.
+- az-huge.jsonl ≈ 5.1 MB (e.g. 45 000 lines of {"prompt":"Huge Q%06d padded pppp…?","answer":"%06d"}).
+
+**Steps**
+
+1. Open /teach/upload and setInputFiles az-huge.jsonl; capture network requests.
+2. Read [data-testid=upload-error].
+3. Independently: POST the same file to /api/teach/datasets with a valid v2 teaching-key signature and inspect the status and body.
+4. Also POST a 4 MB-under file with a deliberately wrong x-ngram-dataset-sha256.
+
+**Expected**
+
+- No POST /api/teach/datasets is made at all — the guard runs before file.arrayBuffer().
+- [data-testid=upload-error] (role=alert) reads exactly 'That file is 5.1 MB, over the 4 MB limit. Split it, or upload fewer questions.' — the size string comes from the browser (MB above 1e6, kB below) and the limit from policy limits.dataset_max_bytes / 1e6.
+- No file chip appears and the page stays on /teach/upload; no teaching key is created by a refused file (ensureKey runs only after the two guards pass).
+- The direct POST is refused by the node with HTTP 413 'dataset_too_large: this node accepts files up to 4 MB' and details {bytes, max_bytes} — refused by datasetGate on content-length, BEFORE multer writes anything to <dataDir>/teach/incoming.
+- The wrong-sha256 POST is refused with 400 'dataset_hash: the file changed while it was being uploaded — try again'; the web maps it to 'The file changed while it was being uploaded. Try again.'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:58-59,72 (maxBytes / err_big before any fetch)`
+- `packages/web/src/lib/teachDataset.ts fileSize() (MB / kB / B)`
+- `packages/node/src/api.ts:429-444 datasetGate (registered BEFORE datasetUpload; content-length checked first)`
+- `packages/node/src/teach-datasets.ts:137-150 gate(); :163-168 (declaredSha256 mismatch → dataset_hash)`
+- `Verified on :3422 — 'That file is 5.1 MB, over the 4 MB limit. Split it, or upload fewer questions.'`
+
+### AZ-136 - Row caps: the 'Choose which 200' lesson banner, and the over-2000 dataset note that says nothing was hidden
+
+**Goal:** Two different caps must not be confused: how many questions fit in ONE lesson (rows_per_job, 200 here) and how many the node keeps in one DATASET (dataset_max_rows, 2000). Neither may drop a line in silence (design §5.4, §9, PR-D1 deviation 1).
+
+**Priority:** P0 - **Area:** teach-limits - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true; policy limits.rows_per_job = 200, limits.dataset_max_rows = 2000.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Upload az-big250.jsonl — 250 distinct lines of the shape {"prompt":"Q%03d what is the AZ code number %03d?","answer":"%03d"} for i in 0..249.
+2. Read [data-testid=row-counts], [data-testid=cap-banner], the pager, and confirm [data-testid=over-cap-note] is absent.
+3. Click [data-testid=cap-pick]; tick three row checkboxes; read [data-testid=cap-selected].
+4. Upload az-big2005.jsonl — 2005 distinct lines; read the counts, the over-cap note and the cap banner; page to the tail of the report.
+5. Cleanup: delete both datasets.
+
+**Expected**
+
+- 250 rows: counts '250 will train · 0 already known · 0 duplicates · 0 need a fix' — the DATASET keeps all 250. [data-testid=cap-banner] (info tone) reads 'This node teaches up to 200 questions in one lesson. The first 200 are selected; the rest stay in your dataset for the next lesson.' with the button 'Choose which 200'. No over-cap note (summary.over_cap = 0).
+- Pager reads '1–50 of 250' with Previous disabled and Next enabled (the report is read paginated, never inlined).
+- After 'Choose which 200' a checkbox column appears and the banner grows ' · 0 of 200 selected', becoming ' · 3 of 200 selected' after three ticks; a 201st tick is ignored (the Set stops at cap). 'Continue to settings' carries the chosen indexes in sessionStorage under ainize.teach.selection.<dsId>.
+- 2005 rows: counts '2000 will train · …' and [data-testid=over-cap-note] reads 'That file has 2005 questions; this node accepts up to 2000 in one dataset. The first 2000 were loaded.' — the 5 refused lines are NOT invisible: they appear in report.json with status 'over_cap' and render as the pill "Over this node's dataset limit — not loaded".
+- GET /api/teach/datasets/<id> for the 2005-row file → rows 2000, invalid_rows 5, summary.over_cap 5, summary.accepted 2000.
+- The cap banner also shows on the 2005-row dataset (2000 > 200) — both messages are true at once and neither replaces the other.
+- GET /api/teach/datasets/<id>/rows?status=over_cap on the 2005-row dataset returns exactly the 5 refused lines (2001..2005) with detail "this node keeps up to 2000 questions in one dataset"; they are reachable only by paging to the end of the report (50 rows a page) because the web table has no status filter.
+- An over-the-limit line is never sold as something to fix: it is counted in invalid_rows and summary.over_cap but NOT in the "need a fix" figure of [data-testid=row-counts].
+
+**Evidence**
+
+- `packages/web/src/pages/TeachDatasetPage.tsx:202,205,216-220 (row-counts / over-cap-note / cap-banner / cap-pick / cap-selected), :153-158 toggle(), :167-170 goSettings/saveSelection`
+- `packages/web/src/components/teach/util.ts rowsPerJob() (policy.limits.rows_per_job)`
+- `packages/node/src/teach-dataset.ts:627-631 (over_cap status + summary)`
+- `packages/web/src/i18n/pages/teach.ts:376,392-394 (status.over_cap, rows.cap, cap_pick, cap_selected), :344 (up.err_many)`
+- `Verified on :3422 — 250-row and 2005-row uploads produced exactly these strings`
+
+### AZ-137 - Nothing usable in the file: 0 bytes, binary rubbish, a wrong file type, and a header with no data rows
+
+**Goal:** Four different kinds of nothing must each produce a sentence a stranger can act on, and none of them may create a dataset or a teaching key (design §5.11, §9).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context per case, locale en-US, empty localStorage.
+
+**Steps**
+
+1. Upload az-empty.csv — a 0-byte file.
+2. Upload az-blob.txt — 2048 bytes of every byte value 0x00–0xFF repeated, named .txt.
+3. Upload az-pic.png — a PNG.
+4. Upload az-headeronly.csv — the single line 'prompt,answer\n' and nothing else.
+5. After each, read [data-testid=upload-error], confirm the URL is still /teach/upload and check whether a dataset appeared under /teach/mine.
+
+**Expected**
+
+- az-pic.png is refused in the BROWSER before any request: 'This node reads jsonl, csv, tsv and plain text. "az-pic.png" is none of those.' (the accept attribute already filters the picker; a drop of the same file hits the same guard).
+- az-empty.csv → the node answers 400 dataset_format and the page shows 'This node could not read that file as a dataset. See the format examples.'
+- az-blob.txt → the node answers 400 dataset_empty and the page shows 'That file has no usable questions. Every line needs a question and a right answer.' (the bytes decoded to something, the lines produced report entries, none of them a question and an answer).
+- az-headeronly.csv → the node answers 400 and the page shows one of the two sentences above. TODAY it is the dataset_format one ('could not read that file as a dataset'), because the header row is consumed and the report ends up empty — see notes: dataset_empty is the honest sentence for a file that WAS read and simply had no rows.
+- In every case the URL stays /teach/upload, no dataset is created (GET /api/teach/datasets signed with that browser's key returns an empty items list), and /teach/mine still shows 'Nothing here yet. …'.
+- The error box has role='alert'; no console error is logged.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:71 (err_type before any request), :112 (upload-error alert)`
+- `packages/node/src/teach-datasets.ts:180-184 (parsed.report.length ? dataset_empty : dataset_format)`
+- `packages/web/src/components/chat/teachUtil.ts:49-50 (dataset_empty / dataset_format mapping); i18n teach.ts:569-570`
+- `Verified on :3422 — empty.csv → dataset_format, blob.txt → dataset_empty, headeronly.csv → dataset_format, pic.png → client-side err_type`
+
+### AZ-138 - A file that is all duplicates: one question kept, every later copy shown with the line it repeats
+
+**Goal:** Deduplication is visible arithmetic, not a disappearance — the visitor sees which line each dropped copy repeats (design §8.5).
+
+**Priority:** P1 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Upload az-dupes.jsonl — the SAME line five times:
+{"prompt":"Who founded Ainize?","answer":"Comcom"} (×5, one per line).
+2. Read the subtitle, [data-testid=row-counts] and each [data-testid=dataset-row].
+3. GET /api/teach/datasets/<id> and …/rows?status=duplicate.
+4. Also upload a variant where the five lines share a prompt but give two DIFFERENT answers, and compare.
+5. Cleanup: delete the datasets.
+6. Repeat with az-dupes2.jsonl — two pairs (lines 1 and 2 identical, lines 3 and 4 identical) — and download the dataset to count the lines.
+
+**Expected**
+
+- Subtitle '1 questions from az-dupes.jsonl…' and counts '1 will train · 0 already known · 4 duplicates · 0 need a fix'.
+- Line 1 keeps the pill 'Will train' with 'Not checked yet' and the Remove action. Lines 2–5 each show the muted pill 'Same as line 1 — skipped' and expose only 'Edit' (no Remove — they have no dataset index).
+- Dataset JSON: rows 1, invalid_rows 4, summary.accepted 1, summary.duplicates 4, summary.rejected 4, summary.source_rows 5. …/rows?status=duplicate returns exactly the four entries, each with detail 'the same question and answer as line 1'.
+- 'Continue to settings' is enabled — a dataset of one question is a legal dataset (the button is disabled only at dataset.rows === 0).
+- The different-answers variant is NOT deduplicated: those rows come back as 'conflict' (see AZ-139) with the bad tone and a 'Keep this answer' action, because the model can only learn one of them.
+- Duplicates are decided on the NORMALISED prompt+answer, so two lines differing only by trailing spaces still collapse to one.
+- The canonical file holds only what trains: "Download this dataset (.jsonl)" saves exactly 1 line, and a fixture of two duplicate PAIRS (lines 1=2, 3=4) saves 2 lines with the report reading "the same question and answer as line 1" and "… as line 3" — the later copies never reach rows.jsonl.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:620-626 (dupKey = `${prompt} ${answer}`, detail 'the same question and answer as line N')`
+- `packages/web/src/components/teach/util.ts fileStatus case 'duplicate' → teach.rows.status.dupe`
+- `packages/web/src/components/teach/DatasetTable.tsx:130-138 (Remove only when row.index !== null)`
+- `Verified on :3422 — '1 will train · 0 already known · 4 duplicates · 0 need a fix', rows 2–5 'Same as line 1 — skipped'`
+
+### AZ-139 - A messy real-world file: contradictions, over-length, a missing answer, an unreadable line — all counted, none hidden
+
+**Goal:** G3, the rule the whole preview exists for: every source row that did not become a trained question is reported with a status, a reason and its line number (design §8.5, §5.4).
+
+**Priority:** P0 - **Area:** teach-parser - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Upload az-messy.jsonl with exactly seven lines:
+1 {"prompt":"Who founded Ainize?","answer":"Comcom"}
+2 {"prompt":"Who founded Ainize?","answer":"Anthropic"}
+3 {"prompt":"What is the AZ long answer?","answer":"<205 × x>"}
+4 {"prompt":"<405 × y>","answer":"short"}
+5 {"prompt":"No answer here?","answer":""}
+6 not json at all
+7 {"prompt":"  Spaced   question   here?  ","answer":"  tidy  me  "}
+2. Read [data-testid=row-counts], [data-testid=fixed-note], every row's pill and help text, and expand [data-testid=dropped].
+3. Cleanup: delete the dataset.
+
+**Expected**
+
+- Counts: '1 will train · 0 already known · 0 duplicates · 6 need a fix' (6 = 2 conflicts + 2 too_long + 1 empty + 1 not_parsed); [data-testid=fixed-note] '1 question(s) were tidied up (extra spaces and line breaks removed).'
+- Lines 1 and 2: bad-tone pill 'Two answers for this question — pick one' with help 'Lines 1 and 2 ask the same question but give different answers. The model can only learn one.' (and the mirrored 'Lines 2 and 1 …'); both offer [data-testid=row-keep] 'Keep this answer'.
+- Line 3: 'The answer is 205 characters; keep it under 200. Teach a long explanation as several short facts.' Line 4: 'The question is 405 characters; keep it under 400.' (limits from policy.limits.answer_max 200 / prompt_max 400).
+- Line 5: 'No answer — type the right answer', with an em dash in the answer cell.
+- Line 6 is NOT in the table; it is counted in the summary and listed under the collapsed '1 line(s) could not be read and were left out. — See the lines that were left out', whose entry reads 'Line 6 could not be read as a question and an answer.' followed by the raw text 'not json at all' in a <code> block.
+- Line 7 is the one accepted question: 'Spaced question here?' / 'tidy me' with the pill 'Will train — tidied up' — whitespace collapsed, never rejected for it.
+- Every status pill is rendered from the machine-readable row.status, not from the server's English detail sentence — switching to 한국어 changes the pill text and keeps the same statuses.
+- This scenario owns the ARITHMETIC — every source row is in exactly one bucket and the four counts plus the dropped-lines count add back up to the 7 source lines. The per-status copy and the repair actions are each asserted once in their own scenario (conflict, too long, empty, unreadable, duplicate, tidied-up).
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:589-631 (not_parsed / empty / too_long / blocked / conflict / duplicate / over_cap, each with a detail and a line)`
+- `packages/web/src/components/teach/util.ts fileStatus(); packages/web/src/components/teach/DatasetTable.tsx:112-125`
+- `packages/web/src/pages/TeachDatasetPage.tsx:203,246-253 (fixed-note, dropped details), :161-165 keepAnswer`
+- `Verified on :3422 — exactly these strings, counts '1 will train · 0 already known · 0 duplicates · 6 need a fix'`
+
+### AZ-140 - Privacy notice and retention: 'Delete my file as soon as training finishes' is offered before the upload and honoured in the record
+
+**Goal:** A stranger is told the operator can read their file, and is given the one control that limits it — before the file leaves their machine, not after (design §5.3, §12.2, §6.2).
+
+**Priority:** P1 - **Area:** teach-privacy - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true; policy limits.dataset_ttl_days = 7.
+- Fresh browser context, locale en-US.
+
+**Steps**
+
+1. Open /teach/upload; assert [data-testid=privacy] is rendered while no file has been chosen and sits above the format help.
+2. Leave [data-testid=retention] unchecked and upload az-keep.jsonl (3 lines); GET /api/teach/datasets/<id>.
+3. In a second context, TICK [data-testid=retention] first, then upload az-drop.jsonl (3 lines); GET the dataset.
+4. Open /teach/mine for each and read the retention line on [data-testid=dataset-card].
+5. Cleanup: delete both datasets.
+
+**Expected**
+
+- [data-testid=privacy] is a standing warning-coloured block reading 'Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.' It is present on first paint — not revealed after a file is chosen.
+- Unchecked → the multipart body carries retention='keep'; dataset.retention === 'keep' and dataset.expires_at ≈ created_at + 7 days. The card shows 'Kept on this node until <date>.' and the page-level line 'Datasets you have not trained are deleted after 7 days.'
+- Checked → the body carries retention='delete_after_training'; dataset.retention === 'delete_after_training' and the card shows 'Deleted as soon as training finishes.'
+- The checkbox label is exactly 'Delete my file as soon as training finishes'.
+- The uploaded original is on disk as <dataDir>/teach/datasets/<id>/source.<format> alongside rows.jsonl and report.json, with 0600 file mode and 0700 directory mode; the operator moderation view GET /api/me/teach/datasets lists the dataset (which is what the privacy sentence is warning about).
+- No question or answer text appears in /api/events or the node log for either upload — the log line carries only counts and the dataset id.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachUploadPage.tsx:60,116-120 (retention state, Checkbox, Privacy block position)`
+- `packages/node/src/teach-datasets.ts:196-215 (source.<format>, FILE_MODE 0600 / DIR_MODE 0700, retention default 'keep', expires_at), :376-382 (delete_after_training)`
+- `packages/node/src/api.ts:472-479 (retention parsed from the multipart fields); :693 GET /api/me/teach/datasets`
+- `packages/web/src/i18n/pages/teach.ts:336 (up.privacy), :546-548 (data.retention / retention_delete / retention_set)`
+
+### AZ-141 - A visitor with no teaching key: nothing is owned, nothing is 401-ing in their face, and the key is created at the exact moment it is needed
+
+**Goal:** 'No account needed' has to be literally true: browsing costs nothing and reveals nothing, and the identity appears at the first act that stores data — with a backup route offered in the same breath (design §5.3, §7.7, §D14).
+
+**Priority:** P0 - **Area:** teach-auth - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US, empty localStorage.
+
+**Steps**
+
+1. Open /teach, /teach/upload and /teach/mine in order without uploading anything; watch the network panel.
+2. Assert localStorage has no 'ainize.teacher.key' and [data-testid=key-note] is absent on /teach/upload.
+3. From a terminal: GET /api/teach/policy, GET /api/teach/samples, GET /api/teach/samples/en-facts, GET /api/teach/datasets and POST /api/teach/datasets — all with NO x-ngram-auth header.
+4. Back in the browser, upload a 3-line jsonl; re-check localStorage and [data-testid=key-note].
+5. Open /teach/dataset/<id> in a THIRD, empty browser context.
+6. Cleanup: delete the dataset with the first browser's key (or the operator token).
+
+**Expected**
+
+- /teach and /teach/upload render fully with no key: the policy line, both doors, the drop zone, the format help and the three samples are all present, and no request 401s (the pages only call the public GET /api/teach/policy and GET /api/teach/samples).
+- /teach/mine shows [data-testid=mine-empty] 'Nothing here yet. Teach in a conversation, or upload a dataset file to start.' and issues NO /api/teach/datasets request at all — the query is skipped while there is no key (a stranger never sees a 401).
+- Unsigned API: /api/teach/policy 200 (cache-control public, max-age=10), /api/teach/samples 200, /api/teach/samples/en-facts 200 with the .jsonl attachment; GET and POST /api/teach/datasets both 401 'invalid_signature: x-ngram-auth header missing, expired, replayed or invalid …'.
+- The first upload creates the key inline (no modal, no interruption): localStorage gains 'ainize.teacher.key' and 'ainize.teach.datasets', and [data-testid=key-note] appears reading "Your dataset was signed with this browser's teaching key (0x….…). Lose the key and you lose access to your datasets and lessons — back it up." with the link 'Back up the key' → /chat?mine=1.
+- A refused file (wrong type, over 4 MB) creates NO key — ensureKey runs only after both guards pass.
+- The third, keyless context opening /teach/dataset/<id> gets 404 'dataset_not_found' from the node (a stranger's dataset is never confirmed to exist) and the page shows the mapped sentence 'That dataset is no longer on this node. Upload it again — you can also download it from My datasets.'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachMinePage.tsx:33-36,76-77 (skip: !hasKey; mine-empty)`
+- `packages/web/src/pages/TeachUploadPage.tsx:56,63-67,73,121-127 (keyShort state, ensureKey after the guards, key-note + backup link)`
+- `packages/node/src/api.ts:395-400 requireTeacher (401 invalid_signature), :463-468 (public samples), :539 (public policy)`
+- `packages/node/src/teach-datasets.ts:104-111 owned() — a stranger gets the same 404 as a missing id`
+- `Verified on :3422 — /teach/mine with no key showed the empty state and localStorage []; unsigned GET/POST /api/teach/datasets → 401`
+
+### AZ-142 - 한국어 toggle: the file door, the format examples and the error copy all switch, and the pipeline does not
+
+**Goal:** English-first with a working Korean translation across the whole file door — including the code examples in the format help, which are the part most likely to be left in English (design §5.12, i18n rule).
+
+**Priority:** P1 - **Area:** i18n - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true.
+- Fresh browser context, locale en-US (the app defaults to 'en' regardless of the browser locale).
+
+**Steps**
+
+1. Open /teach/upload; click the header button[aria-label=language] labelled '한국어'.
+2. Re-read the whole [data-testid=teach-upload] page.
+3. Try to upload az-pic.png and read the error in Korean; then upload az-messy.jsonl and read the preview pills in Korean.
+4. Reload the page and confirm the choice stuck; click the button (now labelled 'English') to switch back.
+5. Cleanup: delete the dataset.
+
+**Expected**
+
+- Toggle flips localStorage 'ainize.locale' to 'ko' and survives a reload; the button label swaps between '한국어' and 'English'.
+- Korean upload page: stepper '1 데이터셋 · 2 확인 · 3 설정 · 4 학습 · 5 결과'; H1 '데이터셋 올리기'; subtitle '한 줄에 질문 하나, 정답 하나. 적어 준 그대로 모델이 배웁니다.'; drop zone '여기에 파일을 놓으세요' / '또는' / 'jsonl, csv, tsv, txt · 최대 4 MB'; paste '표를 붙여넣기'; checkbox '학습이 끝나면 내 파일 삭제하기'.
+- Privacy in Korean: '학습하는 동안 파일이 이 노드에 저장되고 노드 운영자가 볼 수 있습니다. 개인정보나 공유할 수 없는 내용은 올리지 마세요.'
+- The format help EXAMPLES themselves switch language — the .jsonl block becomes {"prompt":"Ainize를 만든 곳은?","answer":"Comcom","alt_prompt":"Ainize는 어느 회사가 만들었나요?"} and the .txt block becomes 'Q: Ainize를 만든 곳은?' / 'A: Comcom' — the box headings stay .JSONL/.CSV/.TSV/.TXT and the aliases line becomes '다른 이름도 됩니다: 질문은 question / q / 질문, …'.
+- Sample rows read '질문 5개' / '예시 데이터셋 내려받기' / '이 예시로 시작하기'.
+- Wrong file type in Korean: '이 노드는 jsonl, csv, tsv, 일반 텍스트를 읽습니다. "az-pic.png"은(는) 해당하지 않습니다.'
+- Preview pills in Korean for az-messy.jsonl: '학습 1개 · 이미 알고 있음 0개 · 중복 0개 · 고칠 것 6개', '이 질문에 정답이 둘입니다 — 하나를 고르세요', '정답 없음 — 정답을 적어 주세요', '학습합니다 — 다듬음' — the same statuses, only the words change.
+- No key, dataset id, fingerprint, format, encoding or line number changes with the locale.
+
+**Evidence**
+
+- `packages/web/src/i18n/index.ts:14-23 (LocaleProvider, default 'en', localStorage 'ainize.locale')`
+- `packages/web/src/components/ui/Header.tsx:78,121 (button[aria-label=language], t('common.locale'))`
+- `packages/web/src/components/teach/FormatHelp.tsx:8-21,38-47 (EXAMPLES.ko drives the code blocks)`
+- `packages/web/src/components/teach/util.ts fileStatus() — pills come from row.status, never the server's English detail`
+- `Verified on :3422 — the full Korean upload page rendered exactly these strings`
+
+### AZ-143 - The whole file door on a 360 px phone: nothing scrolls sideways and the question table becomes cards
+
+**Goal:** The owner's file door has to work where dragging a file is impossible. At phone width every one of the five steps must fit: the stepper collapses to one line, the paste box opens by itself, the preview table turns into one card per question with its column names inline, and no page ever scrolls horizontally (design §5.3, §5.12).
+
+**Priority:** P1 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 as it stands: teach.enabled true, backend 'stub', teach.stubOffline true, publish auto. No model call.
+- Playwright `mobile` project — viewport 360 × 740, deviceScaleFactor 2, hasTouch true; locale en-US, empty localStorage. Tag the test @mobile.
+- The run deletes the dataset and the lesson it creates.
+
+**Steps**
+
+1. Open /teach, then /teach/upload, and at each page evaluate `document.documentElement.scrollWidth <= window.innerWidth + 1`.
+2. Read [data-testid=teach-stepper] and [data-testid=teach-step-small]; read the open/closed state of <details data-testid=paste-table>.
+3. Upload az-mob-<TAG>.jsonl (3 lines: a long Korean question with an alt_prompt, one plain fact, and one line whose answer is empty) through [data-testid=file-input].
+4. On /teach/dataset/<id> read one [data-testid=dataset-row]: whether <thead> is in the accessibility tree, what each cell renders, and where the line number sits; check the sticky bar and the horizontal-scroll assertion again.
+5. Continue to settings, press Train, and repeat the horizontal-scroll check on /teach/dataset/<id>/settings, /teach/lesson/<jobId> (while TRAINING and after it finishes) and /teach/mine.
+6. Switch the header language button to 한국어 and repeat the scroll check on all five pages.
+7. Cleanup: delete the lesson and the dataset.
+
+**Expected**
+
+- On all five pages, in both locales, `document.documentElement.scrollWidth` is at most `window.innerWidth + 1` — the page body never scrolls sideways; any wide element (the question table, the log, the run-locally commands) scrolls inside its own box.
+- Below 600 px the Stepper renders only [data-testid=teach-step-small] — "Step 1 of 5 · Dataset", "Step 2 of 5 · Check", … — plus a five-segment bar; the five spelled-out labels are not rendered at this width, and [data-testid=teach-stepper] keeps its aria-label so the step is still announced.
+- On /teach/upload the <details data-testid=paste-table> is OPEN on arrival (the page opens it under 480 px, because a phone cannot drop a file), while the drop zone still renders its real <input type=file> — the two intake paths are both usable with a thumb.
+- On the preview, below 720 px [data-testid=dataset-table] drops its header row from view (thead is clipped to 1 px) and every row becomes one bordered card: each cell prints its own column name from `td::before content: attr(data-label)` — "Right answer: Comcom", "Another way to ask (optional): …", "Status: Will train" — while the question cell prints no label and the line number sits inline in front of it. An empty cell is not rendered at all (`td:empty { display: none }`), so the empty-answer row shows its red pill instead of a blank labelled box.
+- The sticky bars stay on screen at the bottom of the viewport and are pressable without any sideways scrolling: "Continue to settings" on step 2 and "Train this lesson (3 questions)" on step 3.
+- On the result screen the "What it learned" table stacks the same way (thead clipped, one card per question, Before/After/Other wording labelled inline), and the counters and the stage rail wrap instead of overflowing.
+- No text is clipped or truncated mid-word in either locale — the cells break on `word-break: break-word`, and the long Korean question wraps inside its card.
+
+**Evidence**
+
+- `packages/web/src/components/teach/DatasetTable.tsx:27-38 (@media max-width 720px: thead clipped, tr as a card, td::before data-label, td:empty hidden, td.n inline)`
+- `packages/web/src/pages/TeachUploadPage.tsx:43 narrow() (< 480 px) → :114 <PasteTable open={narrow()}>`
+- `packages/web/src/components/teach/Stepper.tsx:6,41,49 (below 600 px only teach-step-small + the bar)`
+- `packages/web/src/pages/TeachDatasetPage.tsx:54 and packages/web/src/pages/TeachSettingsPage.tsx:34 (position: sticky action bars)`
+- `packages/web/src/pages/TeachLessonPage.tsx:44-55 (FactTable stacks below 720 px), :40-43 (Counters wrap)`
+
+### AZ-144 - Preview table: ok vs tidied-up rows, the tidy-up receipt and the same verdicts in Korean
+
+**Goal:** A row that trains says so, and a row the node changed says what it changed — in both locales, from the machine-readable status, never from the server's English detail sentence (design §8.5, §D2).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u http://localhost:3422 (home ~/.ngram-teachable/node-u, teach enabled, backend stub, teach.stubOffline true, publish auto) — no model call is needed for this scenario
+- Fresh browser context (a new teaching key; datasets_per_key_per_day is 10)
+- Test deletes the dataset it creates (ds-delete on /teach/mine, or DELETE /api/teach/datasets/:id)
+
+**Steps**
+
+1. Open /teach/upload and drop az144-fixes.jsonl with exactly these four lines:
+{"prompt":"  Who   founded\tAinize?  ","answer":"Comcom\nof Seoul"}
+{"prompt":"Q: What is 2+2?","answer":"4"}
+{"prompt":"Zero​width?","answer":"yes"}
+{"prompt":"When did Ainize start?","answer":"2020"}
+2. On /teach/dataset/<id> read the counts pill ([data-testid=row-counts]), the tidy-up note ([data-testid=fixed-note]) and every row of [data-testid=dataset-table]
+3. GET /api/teach/datasets/<id>/rows?limit=50 with the teaching key and read each item's status + fixes
+4. Click the header language button (aria-label="language", label 한국어) and re-read the pill and the first three status pills
+5. Click 'Download this dataset (.jsonl)' and inspect the saved bytes
+
+**Expected**
+
+- Four rows, Line 1–4; rows 1–3 show the green pill 'Will train — tidied up', row 4 shows 'Will train'; every row also shows the grey help line 'Not checked yet'
+- [data-testid=fixed-note] reads '3 question(s) were tidied up (extra spaces and line breaks removed).'
+- [data-testid=row-counts] reads '4 will train · 0 already known · 0 duplicates · 0 need a fix'
+- API report: line 1 status 'fixed' fixes ['answer_flattened','whitespace_collapsed']; line 2 'fixed' ['qa_prefix_stripped']; line 3 'fixed' ['controls_stripped']; line 4 'ok' with no fixes
+- Downloaded rows.jsonl holds the normalised text and nothing else: {"prompt":"Who founded Ainize?","answer":"Comcom of Seoul"} / {"prompt":"What is 2+2?","answer":"4"} / {"prompt":"Zerowidth?","answer":"yes"} / {"prompt":"When did Ainize start?","answer":"2020"}
+- In Korean the same rows read '학습합니다 — 다듬음' / '학습합니다' and the pill reads '학습 4개 · 이미 알고 있음 0개 · 중복 0개 · 고칠 것 0개' — no English leaks into the table
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:408 normalizeRow (controls_stripped / whitespace_collapsed / answer_flattened / qa_prefix_stripped)`
+- `packages/web/src/components/teach/util.ts:59 fileStatus (ok/fixed)`
+- `packages/web/src/i18n/pages/teach.ts:370-371,391 teach.rows.status.new / .fixed / teach.rows.fixed`
+- `packages/web/src/pages/TeachDatasetPage.tsx:187 fixed-note, :186 row-counts`
+
+### AZ-145 - Two answers for one question block both copies, and 'Keep this answer' resolves the contradiction
+
+**Goal:** A contradiction is never guessed away: every copy is refused with the lines that disagree, and the visitor picks the answer to learn (design §8.5, §5.4).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub, teach.stubOffline true
+- Fresh browser context; the dataset is deleted at the end
+- A file made only of contradicting rows is refused at upload (dataset_empty), so the fixture carries one usable question
+
+**Steps**
+
+1. Upload az145-conflict.csv:
+prompt,answer
+Who founded Ainize?,Comcom
+Who founded Ainize?,Comcom
+Who founded Ainize?,ComcomAI
+When did Ainize start?,2020
+2. Read the three conflict rows, their help lines and the counts pill
+3. Click 'Keep this answer' on the Line 4 row (answer ComcomAI)
+4. Re-read the table, the pill, the dataset revision and fingerprint (GET /api/teach/datasets/<id>)
+
+**Expected**
+
+- Lines 2, 3 and 4 all carry the red pill 'Two answers for this question — pick one' and sit on the pink row background (tr[data-bad='1']); each shows the help line 'Lines 2 and 3 ask the same question but give different answers. The model can only learn one.' (each row names the OTHER lines, e.g. line 3 → 'Lines 3 and 2 …')
+- Each conflict row offers 'Edit' and 'Keep this answer' and no 'Remove'
+- Before the click: [data-testid=row-counts] = '1 will train · 0 already known · 0 duplicates · 3 need a fix'; the dataset holds 1 question
+- After 'Keep this answer': dataset revision 1 → 2, a new fingerprint, 2 questions; the table shows Line 1 'When did Ainize start? / 2020' and Line 2 'Who founded Ainize? / ComcomAI', both 'Will train'; the pill reads '2 will train · 0 already known · 0 duplicates · 0 need a fix'
+- API report: summary.conflicts = 3 before, 0 after; the chosen pair is the last line of rows.jsonl
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:613-617 conflict branch (conflictOf built over the whole file)`
+- `packages/web/src/components/teach/DatasetTable.tsx:123 row-keep button; packages/web/src/pages/TeachDatasetPage.tsx:151 keepAnswer → rows_op append`
+- `packages/web/src/i18n/pages/teach.ts:377,386,387 status.conflict / bad.conflict / conflict_keep`
+
+### AZ-146 - Too long: the pill names the real length and the node's limit, and the edit sheet refuses the same text
+
+**Goal:** Length limits are the node's (policy), stated in characters with the over-shoot, and the same rule is enforced before a new question is sent (design §8.5, §5.4).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422 (policy limits prompt_max 400, answer_max 200 — read from GET /api/teach/policy, never hard-coded in the test)
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az146-long.jsonl with three lines: {"prompt":"Explain the whole history of the Korean peninsula in one line","answer":"<210 × 'x'>"}, {"prompt":"<431 × 'Q'>","answer":"x"}, {"prompt":"Who founded Ainize?","answer":"Comcom"}
+2. Read the two red rows and the counts pill
+3. GET /api/teach/datasets/<id>/rows?status=too_long
+4. Click 'Add a question', type 'Q?' as the question and a 230-character answer, press 'Add this question'
+
+**Expected**
+
+- Line 1 pill: 'The answer is 210 characters; keep it under 200. Teach a long explanation as several short facts.'; Line 2 pill: 'The question is 431 characters; keep it under 400.' — both red, both offering only 'Edit'
+- [data-testid=row-counts] = '1 will train · 0 already known · 0 duplicates · 2 need a fix'
+- API details: 'the answer is 210 characters, 10 over the 200 limit' and 'the question is 431 characters, 31 over the 400 limit'; summary.too_long = 2
+- In the sheet the answer counter reads '230/200' in the error colour and the alert says 'The answer is 230 characters; keep it under 200. Teach a long explanation as several short facts.'; no PATCH is sent (dataset revision and fingerprint unchanged)
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:599-606 too_long branch`
+- `packages/web/src/components/teach/util.ts:70-75 fileStatus too_long (renders from the row's own lengths + policy limits)`
+- `packages/web/src/components/teach/RowEditSheet.tsx:33-37 submit() length guards`
+- `packages/web/src/i18n/pages/teach.ts:383-384 bad.answer_long / bad.question_long`
+
+### AZ-147 - A half-filled line says which half is missing
+
+**Goal:** An empty question and an empty answer are different problems and must not share one sentence (design §8.5).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az147-empty.csv:
+prompt,answer
+,Comcom
+Who founded Ainize?,
+Where is Comcom?,Seoul
+2. Read the two red rows, the Question/Right answer cells and the counts pill
+3. GET /api/teach/datasets/<id>/rows?status=empty
+
+**Expected**
+
+- Line 2 renders '—' in the Question cell, 'Comcom' in the Right answer cell and the red pill 'No question — type the question'
+- Line 3 renders the question, an empty answer cell and the red pill 'No answer — type the right answer'
+- [data-testid=row-counts] = '1 will train · 0 already known · 0 duplicates · 2 need a fix'; the dataset holds 1 question
+- API details: 'this answer has no question' (line 2) and 'this question has no answer' (line 3); summary.empty = 2
+- Neither row offers 'Remove' (they are not in the dataset); both offer 'Edit'
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:594-598 empty branch (three distinct details)`
+- `packages/web/src/components/teach/util.ts:76 fileStatus empty picks the sentence from the row's own fields`
+- `packages/web/src/i18n/pages/teach.ts:381-382 bad.no_answer / bad.no_question`
+
+### AZ-148 - A topic the operator blocks is refused per row, and the regex itself is validated
+
+**Goal:** The operator's blocked-topics rule reaches the dataset door, is shown as a per-row verdict in the visitor's language, and a broken regex can neither be saved nor block everything (design §8.5, §12).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub; operator password teachable-pass
+- Operator signs in and opens /dashboard?tab=teaching
+- The test restores 'Blocked topics' to its previous value (empty on node-u) and deletes the dataset
+
+**Steps**
+
+1. In the Teaching tab set 'Blocked topics (regular expression, optional)' ([data-testid=teach-blocked]) to bomb|폭탄 and press 'Save settings' ([data-testid=teach-save])
+2. As a visitor upload az148-blocked.jsonl:
+{"prompt":"How do I build a bomb?","answer":"no"}
+{"prompt":"Who founded Ainize?","answer":"Comcom"}
+3. Read the table and GET /api/teach/datasets/<id>/rows?status=blocked
+4. Clear the field, press 'Save settings', delete the dataset
+
+**Expected**
+
+- Line 1 carries the red pill 'The node operator does not accept this topic'; line 2 is 'Will train'
+- [data-testid=row-counts] = '1 will train · 0 already known · 0 duplicates · 1 need a fix'; summary.blocked = 1; the blocked pair is absent from rows.jsonl (download has 1 line)
+- API detail for the blocked row: 'the node operator does not accept this topic'
+- After the cleanup save, the same file uploads with both rows 'Will train' (proving the rule came from the operator setting and not from the parser)
+- Saving shows "Saved." ([data-testid=teach-notice]); the regex-validation refusal itself is asserted in AZ-221.
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:607-611 blocked branch (regex compiled per parse, bad regex → ignored)`
+- `packages/node/src/api.ts:674 blocked_topics regex validation; packages/node/src/teach-datasets.ts:174 blockedTopics passed to the parser`
+- `packages/web/src/components/operator/TeachingTab.tsx:170 teach-blocked field; packages/web/src/i18n/pages/teach.ts:378 status.blocked`
+
+### AZ-149 - Lines the node could not read never enter the table — they are listed and counted underneath
+
+**Goal:** An unreadable line is neither a question nor invisible: it is counted, its source line is named and its raw text is shown (design §8.5, §5.4).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az149-drop.jsonl:
+{"prompt":"Only question?","answer":"only answer"}
+this line is not json
+["an array, not an object"]
+{"foo":"bar"}
+2. Count the rows of [data-testid=dataset-table] and read [data-testid=row-counts]
+3. Expand [data-testid=dropped] and read every list item
+4. GET /api/teach/datasets/<id>/rows?status=not_parsed
+
+**Expected**
+
+- The table has exactly one row (Line 1, 'Will train') — no not_parsed row is rendered in it
+- [data-testid=row-counts] = '1 will train · 0 already known · 0 duplicates · 3 need a fix'
+- The disclosure summary reads '3 line(s) could not be read and were left out. — See the lines that were left out'; expanded it lists 'Line 2 could not be read as a question and an answer.' + <code>this line is not json</code>, 'Line 3 …' + ["an array, not an object"], 'Line 4 …' + {"foo":"bar"}
+- API: three items with status 'not_parsed', line 2/3/4, details 'line is not valid JSON', 'line is not a JSON object', 'no question/answer keys in this object', each with `raw` (capped at 200 characters); summary.not_parsed = 3
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:588-591 not_parsed branch; :247-262 recordsFromJsonl error texts`
+- `packages/web/src/pages/TeachDatasetPage.tsx:236-244 droppedRows are excluded from the table and rendered in the disclosure`
+- `packages/web/src/i18n/pages/teach.ts:385,389,390 bad.parse / dropped / dropped_show`
+
+### AZ-150 - The Line column is the line of the uploaded file: header, blank lines and a quoted newline all counted the node's way
+
+**Goal:** 'Line N' must point at something the visitor can find in their own file — one logical row per line, a header that is not a question, blank lines that keep their place (design §8.2, §8.5, docs line 334).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az150-lines.csv with exactly this content (line 3 is blank, the B row's quoted value spans two physical lines):
+prompt,answer
+A one?,1
+
+"B, two?
+continued","2"
+C three?,3
+2. Read the Line cells and the status pills of the three rows
+3. GET /api/teach/datasets/<id>/rows?limit=50 and read report notes + each item's line
+4. Download the dataset
+
+**Expected**
+
+- Three rows with Line 2, Line 4 and Line 5 — the header is line 1 and is never a question, the blank line 3 consumes a number and appears nowhere
+- The B row is ONE row (the quoted newline does not split it) and is marked 'Will train — tidied up' — the embedded newline was collapsed into a space, so the question reads 'B, two? continued'
+- report.json notes contain 'blank_rows:2' (the blank line and the trailing newline); has_header = true, delimiter = ',', columns {prompt:0, answer:1}
+- Downloaded rows.jsonl holds 3 lines in file order
+- Documented consequence the test asserts explicitly: the number is the LOGICAL row, so after a quoted embedded newline the physical text line of 'C three?' is 6 while the column says 5
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:125 parseDelimited (logical rows, blank rows kept as []), :311-320 recordsFromDelimited (header row skipped, line = i + 1)`
+- `packages/web/src/components/teach/DatasetTable.tsx:107 <td class="n">{row.line}</td>`
+- `docs/teachable-dataset-design.md:334 'line N — the position in the uploaded file'`
+
+### AZ-151 - After the first edit the report is rebuilt: rejected lines disappear and the numbers stop being file lines
+
+**Goal:** An edit rewrites the canonical file, so the screen must not keep claiming that the numbers and the counts still describe the uploaded file (design §7.2 rewrite, §5.4).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az151-mix.csv:
+prompt,answer
+Who founded Ainize?,Comcom
+Who founded Ainize?,ComcomAI
+,Nothing
+not two columns
+픽셀플러스 종목코드는?,087600
+삼성전자 종목코드는?,005930
+2. Record the table (lines, statuses), the counts pill and the dropped disclosure
+3. Press 'Remove' on the last row and wait for the table to refresh
+4. Re-read the table, the pill, the disclosure, the fingerprint and the revision (GET /api/teach/datasets/<id>)
+
+**Expected**
+
+- Before: rows on Line 2 and 3 are conflicts, Line 4 is 'No question — type the question', Line 5 is listed under '1 line(s) could not be read and were left out.', Lines 6 and 7 are 'Will train'; pill '2 will train · 0 already known · 0 duplicates · 3 need a fix'
+- After the Remove: the table holds ONLY the kept question, numbered from 1; every conflict / empty / unreadable row is gone from the table AND from the API report (GET …/rows?status=rejected returns 0 items); the dropped disclosure is gone; the pill reads '1 will train · 0 already known · 0 duplicates · 0 need a fix'
+- dataset.revision 1 → 2 with a new sha256; the download is named dataset-<id>-r2.jsonl
+- Honesty requirement the scenario asserts: after the rewrite the screen no longer presents these numbers as lines of the uploaded file — the column heading / subtitle must say the position in the dataset (today the heading still reads 'Line' and the page still says 'Saved as az151-mix.csv', which is the product fix this scenario forces)
+
+**Evidence**
+
+- `packages/node/src/teach-datasets.ts:318-323 patch() re-parses canonicalBytes(next); :336-350 rewrite() overwrites report.json`
+- `packages/web/src/pages/TeachDatasetPage.tsx:105-112 removeRow, :226 DatasetTable, :236 dropped`
+- `packages/web/src/i18n/pages/teach.ts:355 teach.rows.h.n = 'Line', :402 saved_note`
+
+### AZ-152 - Changing a question throws away every model verdict on the screen
+
+**Goal:** A green 'already known' tick must never sit next to text the visitor just changed — the model-side status is measured against bytes, and the bytes changed (design §5.4).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422 with backend stub and teach.stubOffline true (the offline stub answers a question whose prompt contains its answer, so 'already known' is deterministic without any GPU)
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az152-check.jsonl:
+{"prompt":"종목코드 087600은 픽셀플러스인가요?","answer":"픽셀플러스"}
+{"prompt":"Who founded Ainize?","answer":"Comcom","alt_prompt":"Which company is behind Ainize?"}
+{"prompt":"When did Ainize start?","answer":"2020"}
+2. Press 'Check what the model already knows' ([data-testid=run-check]) and wait for the verdicts
+3. Record every row's status pill, its 'It answered: …' help line, [data-testid=checked-note] and the counts pill
+4. Press 'Edit' on row 2, change the answer to 'Comcom Inc.' and press 'Save'
+5. Re-read every row, the checked note and the pill
+6. Repeat the invalidation check for 'Remove' on row 3 and for 'Read it again' ([data-testid=open-reparse] → [data-testid=reparse-go])
+
+**Expected**
+
+- After the check: row 1 grey 'Already known — skipped' with 'It answered: 픽셀플러스'; rows 2 and 3 green 'Will train' with 'It answered: (stub model) I do not know: …'; [data-testid=checked-note] 'Checked: 2 of 3 are wrong today and will train.'; pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'
+- After the edit: EVERY row (not only the edited one) is back to 'Not checked yet', the checked-note is gone, the pill reads '3 will train · 0 already known · 0 duplicates · 0 need a fix', and dataset.revision is 2 with a new fingerprint
+- The same clearing happens after a Remove and after a re-read (reparse) — no verdict survives a revision change
+- No verdict is ever shown for a row that was not measured, and the model's own sentence is quoted verbatim under the pill
+
+**Evidence**
+
+- `packages/web/src/pages/TeachDatasetPage.tsx:92-93 useEffect on [revision] clears flight/sampled/partial/selection; :115-124 saveRow, :105-112 removeRow`
+- `packages/web/src/components/teach/DatasetTable.tsx:90-92 model status wins only for trainable rows; packages/web/src/components/teach/util.ts:92 modelStatus`
+- `packages/node/src/teach.ts:453 stubAnswer, :540-544 already_known / will_train`
+
+### AZ-153 - Editing a refused row adds the corrected question instead of pretending to repair the file
+
+**Goal:** A rejected source line is not part of the dataset, so 'Edit' on it must produce a new, valid question and say so honestly (design §7.2 rows_op, §5.4).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az153-long.jsonl:
+{"prompt":"Explain the whole history of the Korean peninsula in one line","answer":"<210 × 'x'>"}
+{"prompt":"Who founded Ainize?","answer":"Comcom"}
+2. Press 'Edit' on the too-long row, read the sheet title, replace the answer with 'It is long.' and press 'Save'
+3. Watch the request the page sends and re-read the table, the pill and GET /api/teach/datasets/<id>
+
+**Expected**
+
+- The sheet opens titled 'Question, line 1' with the refused text prefilled and the counters '61/400' and '210/200'
+- Saving sends PATCH /api/teach/datasets/<id> with rows_op {op:'append', rows:[{prompt:…, answer:'It is long.'}]} — never {op:'replace'}, because a refused row has no index in the dataset
+- After saving: dataset.rows 1 → 2, revision 1 → 2, new fingerprint; the corrected question is the LAST row of the table and of rows.jsonl
+- No too_long row remains anywhere (the report was rebuilt from the canonical rows) and the pill reads '2 will train · 0 already known · 0 duplicates · 0 need a fix'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachDatasetPage.tsx:115-124 saveRow (replace only when target.index !== null, else append)`
+- `packages/node/src/teach-datasets.ts:426 applyRowsOp append; :318 patch() revalidates the whole set`
+- `packages/web/src/components/teach/RowEditSheet.tsx:57 title teach.rows.edit_cell '{field}, line {n}'`
+
+### AZ-154 - Remove a question, undo it, and see exactly what changed each time
+
+**Goal:** Removing is reversible for as long as the toast is on screen, and every change to the questions is a new revision with a new fingerprint (design §5.4, §7.2).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az154-krx.csv:
+prompt,answer
+픽셀플러스 종목코드는?,087600
+삼성전자 종목코드는?,005930
+카카오 종목코드는?,035720
+2. Note the fingerprint and revision, press 'Remove' on the 카카오 row
+3. Read [data-testid=undo-toast], the table and the pill; re-read GET /api/teach/datasets/<id>
+4. Press 'Undo' inside the toast and re-read the table, the pill and the dataset
+5. Repeat the removal and let the toast time out without clicking
+
+**Expected**
+
+- The toast reads 'Removed "카카오 종목코드는?".' next to an 'Undo' button
+- After the removal: 2 rows, numbered 1 and 2, pill '2 will train · 0 already known · 0 duplicates · 0 need a fix', dataset.rows 2, revision 2, a different sha256
+- After Undo: 3 rows again, revision 3, another new sha256, and the restored question is the LAST row (it is appended, not put back in place) — the test asserts the order explicitly rather than assuming it returns to position 3
+- The toast disappears on its own after ~8 s and the removal stays; a second Remove after the toast is gone offers no way back except 'Add a question'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachDatasetPage.tsx:96-103 toast + 8 s timer, :105-112 removeRow, :263-272 undo toast (append)`
+- `packages/node/src/teach-datasets.ts:336-350 rewrite (revision++, new sha256)`
+- `packages/web/src/i18n/pages/teach.ts:363-365 remove / removed / undo`
+
+### AZ-155 - The last question cannot be removed, and the refusal must be about the removal
+
+**Goal:** A dataset needs at least one question; refusing that is right, but the sentence the visitor reads must match what they just did (design §7.2, §5.11 error copy).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az155-one.jsonl:
+{"prompt":"Only question?","answer":"only answer"}
+this line is not json
+2. Press 'Remove' on the only row
+3. Read [data-testid=dataset-error], the table, the pill, and GET /api/teach/datasets/<id>
+
+**Expected**
+
+- PATCH /api/teach/datasets/<id> answers 400 'dataset_empty: a dataset needs at least one question'
+- The row is still there, no undo toast appears, dataset.rows stays 1 and the revision does not change
+- The page shows the refusal in the red box above the table; the sentence must describe the removal ('a dataset needs at least one question — add another one first' or equivalent, in both locales). Today it renders the upload-time copy 'That file has no usable questions. Every line needs a question and a right answer.', which does not describe the action — the scenario fails until the mapping has a removal-specific sentence
+
+**Evidence**
+
+- `packages/node/src/teach-datasets.ts:320 patch() → 'dataset_empty: a dataset needs at least one question'`
+- `packages/web/src/components/chat/teachUtil.ts:52 mapTeachError case 'dataset_empty' → teach.err.dataset_empty`
+- `packages/web/src/i18n/pages/teach.ts:569 teach.err.dataset_empty (file-time wording)`
+
+### AZ-156 - Questions that end the same way get an advisory that never blocks and disappears when it stops being true
+
+**Goal:** The one failure the measurement predicts — questions the model learns as one because their endings are identical — is reported per row without refusing anything (design §8.5 advisory).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. Upload az156-endings.csv:
+prompt,answer
+픽셀플러스 종목코드는?,087600
+삼성전자 종목코드는?,005930
+카카오 종목코드는?,035720
+Who founded Ainize?,Comcom
+2. Read the four rows: pills, help lines and [data-testid=advisory]
+3. GET /api/teach/datasets/<id>/rows and read advisory / detail / summary.shared_ending
+4. Press 'Remove' on one of the three KRX rows and re-read the remaining rows
+5. Switch the header language to Korean and re-read the advisory line
+6. Run `ainize --home ~/.ngram-teachable/cli teach dataset ./az156-endings.csv` against :3422 and read the heads-up line
+
+**Expected**
+
+- All three KRX rows keep the green pill 'Will train' — the advisory changes no status and no count (the pill stays '4 will train · 0 already known · 0 duplicates · 0 need a fix')
+- Each of the three shows an advisory help line naming how many OTHER questions share the ending: for a group of three that is 'Ends the same way as 2 others'. (Today the build renders 'Ends the same way as 3 others' because it prints the group size — the off-by-one is the product fix this scenario forces.) The fourth question has no advisory line
+- API: the three rows carry advisory:['shared_ending'] and detail '3 questions in this dataset end the same way'; summary.shared_ending = 3
+- After removing one KRX row the advisory is gone from the remaining two (a group of two is not reported) — it is recomputed on every revision, never cached
+- Korean renders '다른 {n}개와 끝이 같습니다' with the same number as English
+- The CLI prints the dataset heads-up line '3 questions end the same way — the model may answer them all alike'
+
+**Evidence**
+
+- `packages/node/src/teach-dataset.ts:467 endingKey (last up to 3 tokens, never the whole prompt), :643-650 advisory pass (groups of ≥ 3)`
+- `packages/web/src/components/teach/util.ts:85-90 sharedEnding (firstNumber(detail) = group size)`
+- `packages/web/src/i18n/pages/teach.ts:379 status.shared_end; packages/cli/src/commands/teach-dataset.ts:139 'heads-up' line`
+
+### AZ-157 - The counts pill after a sampled check never claims more than was measured
+
+**Goal:** The check probes only the head of a big dataset; the pill and the note must let the visitor tell a measured 'will train' from an unmeasured one (design §5.4, §6.2 preflight.sampleRows).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422 with backend stub and teach.stubOffline true (deterministic verdicts, no GPU); policy preflight sampleRows 24, perCall 8
+- Fresh browser context; the dataset is deleted at the end; the check spends 3 of the hourly free live-test units for this IP and key
+
+**Steps**
+
+1. Upload az157-sample.jsonl with 30 lines: rows 1, 5, 9 and 13 are self-answering ({"prompt":"종목코드 087600은 픽셀플러스인가요?","answer":"픽셀플러스"} and three more of the same shape with different codes), the other 26 are ordinary facts the stub cannot answer
+2. Press 'Check what the model already knows' and wait for all three batches
+3. Read [data-testid=checked-note], [data-testid=row-counts], and the status of a row inside the sampled head and one beyond it (rows 25–30)
+4. Watch the network: POST /api/teach/preflight is called with {dataset_id, offset:0|8|16, limit:8}
+
+**Expected**
+
+- Exactly three preflight calls are made; the last response carries sampled {checked:24, of:30}
+- [data-testid=checked-note] reads 'Checked 24 of 30 questions in the live model.' — never 'Checked: … of 30' as if all were measured
+- [data-testid=row-counts] reads '26 will train · 4 already known · 0 duplicates · 0 need a fix' (rows − known), and the rows beyond the sampled head still show the grey help line 'Not checked yet'
+- No row outside the sampled head is given a model verdict or an 'It answered: …' line
+- With every sampled row known (a 3-row all-self-answering dataset), the pill shows 0 will train and the warning 'The model already answers all of these correctly, so there is nothing to teach. Add a question it gets wrong.' appears
+
+**Evidence**
+
+- `packages/node/src/teach.ts:505-512 preflightSlice (perCall 8, sampleRows 24, sampled{checked,of})`
+- `packages/web/src/pages/TeachDatasetPage.tsx:132-159 check() batching, :186 row-counts (train = rows − known), :199-206 checked notes`
+- `packages/web/src/i18n/pages/teach.ts:354,397-400 counts / checked / checked_sample / none`
+
+### AZ-158 - The free checks run out halfway: what was measured is kept and the visitor is told the rest still trains
+
+**Goal:** Losing 8 measured answers to a red box would be the worse outcome — a partial check is a note, not an error (design §5.4, §6.2 quota).
+
+**Priority:** P2 - **Area:** teach-dataset - **Automation:** api
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub, teach.stubOffline true
+- The hourly free live-test budget is 20 units per IP and per teaching key; this scenario deliberately exhausts it, so it runs LAST in a suite (the bucket is shared by every visitor on this IP for the rest of the hour)
+- Fresh browser context; the dataset is deleted at the end
+
+**Steps**
+
+1. With the browser's teaching key, POST /api/teach/preflight 19 times with a single-fact body {patch_ids:[], facts:[{prompt:'AZ158 filler <i>?', answer:'x'}]} to leave one unit
+2. Upload az158-quota.jsonl with 24 ordinary question/answer lines and press 'Check what the model already knows'
+3. Read the note, the row statuses and the counts pill
+4. Press Check again with the bucket fully empty and read the error box
+
+**Expected**
+
+- The first batch of 8 lands and its verdicts stay on screen; the second batch answers 429 'quota_chat: free live-test quota exhausted for this hour (this pre-flight needs 1 unit(s)) — try again later' and the loop stops
+- The page shows the partial note (not a red box): 'Checked 8 questions, then this hour’s free checks ran out. The rest still train — the check only tells you what the model already knows.'
+- The 8 measured rows keep their pill and their 'It answered: …' line; the other 16 stay 'Not checked yet'; the counts pill counts only what was measured as known
+- With nothing measured at all, the red box shows 'You used this hour’s free checks. You can check again in an hour — or just train: the check only tells you what the model already knows.' and no row gets a verdict
+- 'Continue to settings' stays enabled throughout — a spent check never blocks training
+
+**Evidence**
+
+- `packages/node/src/api.ts:560-566 preflight quota units charged to ip: and key: buckets`
+- `packages/web/src/pages/TeachDatasetPage.tsx:141-155 partial handling (isQuotaError && done > 0 → keep, set partial)`
+- `packages/web/src/i18n/pages/teach.ts:399 checked_partial, :274 err.quota_check`
+
+### AZ-159 - Pre-flight against the live model: the verdict quotes the model's own answer, and an unreachable model says so
+
+**Goal:** 'Already known' is only believable because the model's current answer is shown next to it — and when the model cannot be asked, no row may be given a verdict (design §5.4, §6.2).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- NEVER http://localhost:8000 or :8001, and no work on GPUs 0–3
+- Restore teach.stubOffline true and runtime.api afterwards, restart, and delete the dataset
+
+**Steps**
+
+1. Confirm GET /api/teach/policy reports the node is not simulating and GET /api/runtime (or the node's status log) shows the model available with the hook up
+2. Upload az159-live.jsonl:
+{"prompt":"대한민국의 수도는?","answer":"서울"}
+{"prompt":"AZ-159 테스트 코드는?","answer":"Z7Q4K"}
+{"prompt":"물의 화학식은?","answer":"H2O"}
+3. Press 'Check what the model already knows' and read every pill, its 'It answered: …' line, the checked note and the counts pill
+4. Read the POST /api/teach/preflight response body
+5. Stop the e2e model container (or point runtime.api at an unused port), press Check again and read the error box
+
+**Expected**
+
+- Every row gets a verdict whose help line quotes a real sentence from the model — it must NOT start with '(stub model) I do not know:' (that string proves the offline stub answered)
+- The run-unique row 'AZ-159 테스트 코드는?' is 'Will train' (the model cannot know Z7Q4K); the general-knowledge rows are 'Already known — skipped' whenever the quoted answer contains the given answer, and the pill count matches: known = number of already_known rows, train = dataset.rows − known
+- The response is {facts:[{index, status:'will_train'|'already_known'|'overlaps_listing'|'invalid', base_answer}], trainable, sampled:{checked:3, of:3}, quota:{key_remaining, ip_remaining}} and the checked note reads 'Checked: <trainable> of 3 are wrong today and will train.'
+- With the model server down the page shows 'The model server is off or restarting — try again in a minute. Your corrections are kept in this browser.' (the pre-flight wording, not the lesson wording), the API answers 503 'runtime unavailable: …', and every row stays 'Not checked yet' — no fabricated verdict
+- After restoring stubOffline true the same dataset checks again with stub answers, proving the mode switch is what changed
+
+**Evidence**
+
+- `packages/node/src/teach.ts:514-547 preflight (runtime.status → 503, askChat per fact, known = normAnswer(base).includes(normAnswer(answer)))`
+- `packages/node/src/runtime.ts:162 spawn env (only ENGRAM_API forwarded), :181-198 hookAvailable/status`
+- `packages/web/src/components/chat/teachUtil.ts:28 preflight stage → teach.pre.err_runtime; packages/web/src/i18n/pages/teach.ts:77,380`
+
+### AZ-160 - 'Already known' from the preview to the settings promise to the result
+
+**Goal:** A question the model already answers is skipped by training; the number the settings screen promises and the number the result screen reports must be reconcilable on screen (design §5.5, §12.6).
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub, teach.stubOffline true, publish auto (the stub trains without a GPU; jobs_per_key_per_day is 3)
+- Fresh browser context; the test cancels/deletes the lesson and the dataset afterwards
+
+**Steps**
+
+1. Upload az160-known.jsonl (the same three lines as AZ-152) and press 'Check what the model already knows'
+2. Read [data-testid=row-counts] and the row 1 verdict
+3. Press 'Continue to settings' and read [data-testid=settings-dataset], [data-testid=settings-summary] and the train button label
+4. Press 'Train this lesson (…)' and follow the lesson to a terminal state
+5. Read [data-testid=skipped-known] on /teach/lesson/<jobId> and GET /api/teach/jobs/<jobId>
+
+**Expected**
+
+- Preview: pill '2 will train · 1 already known · 0 duplicates · 0 need a fix'; row 1 'Already known — skipped' with 'It answered: 픽셀플러스'
+- Settings: 'Dataset: az160-known · 3 questions · fingerprint <12 hex>'; the summary line reads '3 questions · Balanced (recommended) · side-effect check on'; the button reads 'Train this lesson (3 questions)' — the already-known question is counted in what this screen promises, and nothing on this screen repeats the '1 already known' figure from the previous step
+- Result: [data-testid=skipped-known] reads '1 of your 3 questions were left out: the model already answered them correctly, so only the rest were taught.' and GET /api/teach/jobs/<jobId> has preflight {checked, of:3, known:1}
+- The scenario passes only when the two numbers reconcile on screen: either the settings screen states how many will actually be taught, or the result screen accounts for the difference — the test asserts the result sentence exists and that its `known` matches the preview pill's known count
+- A dataset where every question is already known is refused at job creation with 409 'already_known: …', which the settings screen shows as 'The model already answers this correctly, so there is nothing to train.'
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:48 trained = min(selection ?? dataset.rows, cap); :162 train button teach.set.train`
+- `packages/node/src/teach.ts:697-712 job creation drops known facts only when `facts` carry base_answer; :1100-1128 preflightJob writes {checked, of, known}`
+- `packages/web/src/pages/TeachLessonPage.tsx:233-235 skipped-known; packages/web/src/i18n/pages/teach.ts:516`
+
+### AZ-161 - Taking it home: the dataset download is the fingerprinted file, and the per-line report is read through the API/CLI
+
+**Goal:** What the visitor downloads is byte-for-byte what the lesson trains on, and everything the node decided about their file can be got out of the node (design §6.1, §6.7, §8.7).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** e2e
+
+**Preconditions**
+
+- Dev node-u :3422, backend stub
+- Fresh browser context with a teaching key; a CLI teaching key file exported from that browser (or the CLI's own key at ~/.ngram-teachable/cli/teaching-key.json)
+- The dataset is deleted at the end
+
+**Steps**
+
+1. Upload az161-mix.jsonl:
+{"prompt":"Who founded Ainize?","answer":"Comcom","alt_prompt":"Which company is behind Ainize?"}
+{"prompt":"When did Ainize start?","answer":"2020"}
+not json at all
+2. Note the 'Fingerprint <12 hex>' line, press 'Download this dataset (.jsonl)' and inspect the saved file and the response headers
+3. Re-upload the downloaded file in the same browser
+
+**Expected**
+
+- The download is a signed request (x-ngram-auth on GET /api/teach/datasets/<id>/download); the file is named dataset-<id>-r1.jsonl and its Content-Type is application/x-ndjson; charset=utf-8
+- Its bytes are the canonical form: keys in the order prompt, answer, alt_prompt, note (absent when empty), LF endings, no BOM, exactly one trailing LF; sha256(bytes) equals the response header x-content-sha256 and begins with the 12 hex shown as 'Fingerprint …'
+- Re-uploading that file answers HTTP 200 with created:false and the SAME dataset id (no second copy, no dataset quota spent)
+- ?format=csv returns the same questions with the header prompt,answer,alt_prompt,note and the same x-content-sha256 — the csv is a rendering, not the fingerprint subject
+- There is no control anywhere in the web UI that saves report.json — the test asserts that the only download button on the screen is 'Download this dataset (.jsonl)' (see notes)
+- The per-line report itself is not tested here — the API contract is AZ-216 and the CLI round-trip is AZ-211; this scenario ends at the fingerprinted bytes.
+
+**Evidence**
+
+- `packages/node/src/api.ts:531-538 download route (x-content-sha256, content-disposition), :501-507 rows route`
+- `packages/node/src/teach-datasets.ts:246 download() jsonl/csv; :191-196 idempotent re-upload by sha256; packages/node/src/teach-dataset.ts:480 canonicalJsonl`
+- `packages/web/src/lib/teachDataset.ts signedDownload; packages/cli/src/commands/teach-dataset.ts:247-280 datasetGet/renderDatasetGet`
+
+### AZ-162 - Three effort cards, no numbers: pick how hard it should try
+
+**Goal:** Step 3 offers exactly three choices a non-expert can judge — Quick / Balanced (recommended) / Thorough — as one radio group whose only visible difference is words, plus one honest duration line per card; the choice reaches the node as `training.effort`.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (home $HOME/.ngram-teachable/node-u), teach enabled, publish auto, backend stub, teach.stubOffline true
+- Fresh browser context, en-US locale (the teaching key is created by the first upload and lives in that context's localStorage)
+
+**Steps**
+
+1. Upload az162-<TAG>.jsonl at /teach/upload (drop zone / file input) with exactly these three lines (<TAG> = run-unique 5 chars, as web-teach.spec.ts does):
+{"prompt":"AZ162 <TAG> 사내 와이파이 비밀번호는?","answer":"pw-<TAG>-01","alt_prompt":"AZ162 <TAG> 와이파이 암호 알려줘"}
+{"prompt":"AZ162 <TAG> 본사 우편번호는?","answer":"06236"}
+{"prompt":"AZ162 <TAG> What is the support email?","answer":"help-<TAG>@example.com"}
+2. On /teach/dataset/<dsId> click "Continue to settings" ([data-testid=to-settings]) → /teach/dataset/<dsId>/settings
+3. Read [data-testid=effort-cards] and each of effort-quick / effort-balanced / effort-thorough; read [data-testid=settings-summary]
+4. Select "Thorough", read the summary again, then select "Balanced (recommended)" and press "Train this lesson (3 questions)"
+5. Read the created job with GET /api/teach/jobs/<jobId> (teaching key)
+6. Clean up: DELETE /api/teach/jobs/<jobId> then DELETE /api/teach/datasets/<dsId>
+
+**Expected**
+
+- [data-testid=effort-cards] has role=radiogroup with aria-label "How hard should it try?" and exactly three radios named `effort`; "Balanced (recommended)" is checked on arrival
+- Card texts, verbatim: "Quick" / "A few passes over your questions. Good for one or two easy facts."; "Balanced (recommended)" / "Keeps going until the model answers your questions, up to a sensible limit."; "Thorough" / "Tries the longest. Use it for numbers, codes and facts that keep slipping."
+- Every card's [data-testid=effort-time-*] shows one duration sentence — on this node all three read "this node has not timed a lesson yet" (see AZ-172); no card shows a step, epoch or pass count
+- Summary line changes with the choice: "3 questions · Balanced (recommended) · side-effect check on" → "3 questions · Thorough · side-effect check on" (each followed by " · " and the same duration sentence)
+- GET /api/teach/jobs/<jobId> → job.training = {effort:"balanced", max_steps:20, eval_every:2, lr:0.002, check_side_effects:true, use_alt:true, selected_indexes:[0,1,2]}
+
+**Evidence**
+
+- `packages/web/src/components/teach/EffortCards.tsx:23-40 (radiogroup, effort-time-<id>); packages/web/src/components/teach/util.ts:17-22 (EFFORTS, label/body keys)`
+- `packages/web/src/pages/TeachSettingsPage.tsx:58 (default 'balanced'), :117-121, :154-164`
+- `packages/web/src/i18n/pages/teach.ts:422-432, 441-445`
+- `POST /api/teach/jobs (packages/node/src/api.ts:566-588 trainingSchema); packages/node/src/teach.ts:670-694`
+- `Observed on node-u 2026-09-01: settings page rendered all three cards, summary flipped to "3 questions · Thorough · side-effect check on", job training.effort=balanced max_steps=20`
+
+### AZ-163 - No raw "epoch" anywhere; the trainer numbers live only in "For developers"
+
+**Goal:** The settings screen never shows a training knob in machine words: the word "epoch" appears nowhere, and the only numbers (steps, eval interval, learning rate) sit inside the collapsed "For developers" disclosure and equal what GET /api/teach/policy reports for the selected effort.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach enabled, backend stub, stubOffline true
+- A dataset on the node (reuse AZ-162's az162-<TAG>.jsonl)
+
+**Steps**
+
+1. Open /teach/dataset/<dsId>/settings
+2. Assert the full rendered text of [data-testid=teach-settings] contains no case-insensitive "epoch" while [data-testid=advanced] is collapsed, and also after opening it
+3. Assert [data-testid=advanced] collapsed text is exactly "For developers" (the <summary>); open the <summary> and read the body
+4. Select each effort in turn and re-read the disclosure body
+5. GET /api/teach/policy and compare `effort[]`
+6. Switch the header language button (button[aria-label="language"], label "한국어") to Korean and re-read the disclosure
+
+**Expected**
+
+- "epoch" occurs nowhere on the screen in either language (grep of the page text) — the word does not exist in packages/web/src at all
+- Collapsed, the developer section shows only the summary "For developers"; opened it reads: "\"Balanced (recommended)\" means up to 20 training steps, a check every 2 steps and learning rate 2e-3. These are the values sent to the trainer."
+- Quick → "up to 8 training steps, a check every 2 steps"; Thorough → "up to 40 training steps, a check every 4 steps"; the numbers equal policy.effort = [{quick,8,2},{balanced,20,2},{thorough,40,4}] — nothing is hard-coded in the bundle
+- Korean renders the same disclosure: "개발자용" / "\"보통 (권장)\"는 학습 단계 최대 20회, 2단계마다 확인, 학습률 2e-3을 뜻합니다. 학습기에 그대로 전달되는 값입니다."
+- No number from the disclosure leaks into the three cards or the summary line
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:142-145 (Advanced details, advanced_body vars from presetOf)`
+- `packages/web/src/components/teach/util.ts:22-27 (presetOf reads policy.effort, DEFAULT_STEPS only as fallback)`
+- `packages/web/src/i18n/pages/teach.ts:439-440 (en + ko)`
+- `GET /api/teach/policy → effort[] (packages/node/src/teach.ts:420)`
+- `Observed on node-u 2026-09-01: page text had no "epoch"; disclosure printed 20/2 for Balanced, 40/4 for Thorough; ko variant identical in structure`
+
+### AZ-164 - The side-effect check is locked on wherever publishing is possible
+
+**Goal:** On a node that can publish (publish = auto | review) the "Check it does not break other answers" box is checked, disabled and explained as the publish gate, and the job is created with check_side_effects: true whatever the visitor clicks.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422 with publish = auto (its normal setting), backend stub, stubOffline true
+- A dataset on the node (az164-<TAG>.jsonl, 3 lines, same shape as AZ-162)
+
+**Steps**
+
+1. Open /teach/dataset/<dsId>/settings
+2. Read [data-testid=check-side]: checked state, disabled state, its label and the hint paragraph under it, and the helper line
+3. Try to click the checkbox and re-read its state
+4. Read [data-testid=settings-summary]
+5. Press "Train this lesson (3 questions)" and read the job over GET /api/teach/jobs/<jobId>
+6. Clean up the job and the dataset
+
+**Expected**
+
+- The checkbox is checked AND disabled; label "Check it does not break other answers"
+- Hint, verbatim: "Before and after training, the model is asked a fixed set of unrelated questions, plus the questions the knowledge you loaded answers. Anything that changed is shown on the result screen."
+- Helper under it, verbatim: "Required if you want to publish this lesson." (rendered only while the node can publish)
+- Clicking it changes nothing; the summary keeps "· side-effect check on"
+- The created job has training.check_side_effects = true, and the result screen later shows the Side effects panel with a measured locality line (on the stub: "Unrelated questions unchanged: 12/12")
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:63-65 (publishable → sideLocked → sideOn), :123-131`
+- `packages/web/src/i18n/pages/teach.ts:433-435, 443`
+- `packages/node/src/teach.ts:692 (check_side_effects defaults true), :1519-1526 (skipped path)`
+- `Observed on node-u 2026-09-01: check-side isChecked=true isDisabled=true, helper present, job training.check_side_effects=true`
+
+### AZ-165 - Where publishing is off the visitor may switch the check off — and the result says so and offers to run it
+
+**Goal:** When the node cannot publish (publish = never) the side-effect box becomes editable; switching it off sends check_side_effects: false, and the result screen must admit nothing was measured and offer "Run the check now" instead of printing a locality score.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- Operator sets publish=never for the run: PATCH /api/me/teach/policy {"publish":"never"} — the test MUST restore {"publish":"auto"} in its teardown
+- Dataset az165-<TAG>.jsonl:
+{"prompt":"AZ165 <TAG> 사내 헬프데스크 내선번호는?","answer":"4180"}
+{"prompt":"AZ165 <TAG> Which room is the design review in?","answer":"Room <TAG>-2"}
+{"prompt":"AZ165 <TAG> 백업 서버 이름은?","answer":"bak-<TAG>"}
+
+**Steps**
+
+1. Wait out the node's 10 s policy cache, reload /teach/dataset/<dsId>/settings
+2. Read [data-testid=check-side] state and check whether the helper "Required if you want to publish this lesson." is gone
+3. Uncheck it, read [data-testid=settings-summary], press Train
+4. Wait for the lesson to leave the active statuses on /teach/lesson/<jobId>; read [data-testid=side-effects] and the state of [data-testid=go-publish]
+5. GET /api/teach/jobs/<jobId> and read training.check_side_effects and checks
+6. Press "Run the check now" ([data-testid=run-check-now]), watch POST /api/teach/jobs/<jobId>/recheck and re-read the panel and the publish button
+7. Clean up the job + dataset and restore publish=auto
+
+**Expected**
+
+- With publish=never the checkbox is checked but NOT disabled, and the "Required if you want to publish this lesson." helper is absent
+- After unchecking, the summary reads "3 questions · Balanced (recommended) · side-effect check off" and the POST body carries training.check_side_effects=false
+- GET job → training.check_side_effects=false and checks.skipped=true, checks.locality={ok:false,same:0,total:<n prompts>}, checks.note="the side-effect check was turned off for this lesson — nothing was measured about unrelated answers"
+- The Side effects panel says exactly "You switched the side-effect check off, so this lesson has not been measured and cannot be published yet." and shows the button "Run the check now" — it must NOT print an "Unrelated questions unchanged: m/n" score
+- "Publish so others can use it" stays disabled; after "Run the check now" succeeds the panel shows the measured locality line and checks.skipped is gone
+- This scenario owns the whole check-off path end to end (settings box → job flag → checks.skipped → the panel sentence → recheck). It has to run in live-model mode because the OFFLINE STUB IGNORES the flag: packages/node/src/teach.ts:1396-1409 returns executed:true with locality 12/12 whatever check_side_effects says, so on a stub node the screen would claim a measurement the visitor switched off — a defect this scenario also pins.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:63-66, :123-131`
+- `packages/web/src/pages/TeachLessonPage.tsx:277-295 (side_off / run-check-now), :312 (publish gate: gated = !c.ok || !c.executed || c.skipped)`
+- `packages/node/src/teach.ts:1396 (sideEffects), :1519-1526 (checks.skipped, live path only), :1643 (publish refused with checks_failed)`
+- `packages/web/src/i18n/pages/teach.ts:496-497`
+- `DEFECT observed on node-u 2026-09-01 (stub + stubOffline true, publish=never): the box was editable and the POST carried check_side_effects=false, but the offline stub branch (packages/node/src/teach.ts:1397-1409) ignores the flag and returned executed:true, locality 12/12 — the screen claimed a measurement the visitor had switched off`
+
+### AZ-166 - "Test with a different wording" counts the rows that have one, and off means off
+
+**Goal:** The alt-wording toggle reflects the dataset (count of rows with an "Another way to ask" value, disabled when none), is held out of training when on, and reaches the node as `use_alt`.
+
+**Priority:** P2 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- Two datasets: az167a-<TAG>.jsonl with alt_prompt on exactly one of three rows (AZ-162's file works), and az167b-<TAG>.jsonl with no alt_prompt at all:
+{"prompt":"AZ166 <TAG> 사무실 도어락 번호는?","answer":"<TAG>#41"}
+{"prompt":"AZ166 <TAG> Who signs expense reports?","answer":"Team lead <TAG>"}
+
+**Steps**
+
+1. Open the settings page for az167a: read [data-testid=check-alt] state and the hint under it
+2. Uncheck it, press Train, and read the job over the API
+3. Open the settings page for az167b: read [data-testid=check-alt] state and the hint
+4. Clean up both jobs and datasets
+
+**Expected**
+
+- az167a: the box is checked and enabled; hint reads "The \"Another way to ask\" column is kept out of training and used only to check the model learned the fact, not the sentence. 1 of your questions have one." (the count is the number of picked rows with alt_prompt, capped at the per-lesson question cap)
+- With it unchecked the job has training.use_alt=false and job.facts[].alt_prompt is absent for every question; with it checked the row that had one keeps alt_prompt and the result screen's "Other wording" column shows ✓/— for it
+- az167b: the box is disabled and the hint reads "None of your questions have another wording yet. Add one on the previous step to switch this on."; the job is created with training.use_alt=false
+- Turning it off never removes the alt wording from the DATASET — GET /api/teach/datasets/<dsId>/rows still returns alt_prompt on that row
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:51-54 (altCount over picked rows), :66, :133-140`
+- `packages/node/src/teach.ts:686-694 (use_alt), :704-711 (alt_prompt copied into facts only when useAlt)`
+- `packages/web/src/i18n/pages/teach.ts:436-438`
+- `packages/web/src/pages/TeachLessonPage.tsx:248-258 ("Other wording" column)`
+- `Observed on node-u 2026-09-01: with 1 alt row the hint said "1 of your questions have one."; a dataset with none rendered the disabled box and the alt_none hint`
+
+### AZ-167 - Lesson name, dataset fingerprint and the per-lesson question cap on the settings screen
+
+**Goal:** Step 3 restates what is about to be trained — name, question count, dataset fingerprint — and, over the node's cap, says honestly how many of the file's questions are in THIS lesson and why the cap is conservative; a hand-picked selection drives the same numbers.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422 (limits.rows_per_job = 200, rows_per_job_source = "default"; limits.dataset_max_rows = 2000), backend stub
+- A 250-question dataset az167-<TAG>.jsonl, generated: line i (1..250) = {"prompt":"AZ167 <TAG> handbook rule <i>?","answer":"rule-<TAG>-<i>"}
+
+**Steps**
+
+1. Upload it, land on /teach/dataset/<dsId>, then Continue to settings
+2. Read [data-testid=settings-dataset], [data-testid=rows-cap], [data-testid=settings-summary] and the Train button label
+3. Type "AZ167 handbook <TAG>" into [data-testid=lesson-name]
+4. Go back to /teach/dataset/<dsId>, open the cap banner's "Pick the 200 to teach" ([data-testid=cap-pick]), tick 5 rows, Continue to settings and re-read the same four places
+5. Press Train and read GET /api/teach/jobs/<jobId>
+6. Clean up job + dataset
+
+**Expected**
+
+- [data-testid=settings-dataset] reads "Dataset: az167-<TAG> · 250 questions · fingerprint <first 12 hex of sha256>" and that fingerprint equals GET /api/teach/datasets/<dsId> dataset.sha256.slice(0,12)
+- [data-testid=rows-cap] reads "This node teaches up to 200 questions in one lesson, so 200 of your 250 are in this one." followed by "This node has not timed a real training run yet, so the limit is set conservatively." (the second sentence only while limits.rows_per_job_source === "default")
+- Summary reads "200 questions · …" and the button reads "Train this lesson (200 questions)"
+- After picking 5 rows the summary and button say 5 questions, and the POST body carries selected_indexes with exactly those 5 zero-based dataset indexes
+- The job has name "AZ167 handbook <TAG>", dataset.rows = 250, dataset.trained_rows = the trained count, and training.selected_indexes matching the pick; the untrained rows stay in the dataset (GET rows still returns 250)
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:46-54 (cap, selection, trained), :99-108, :110-115, :155-163`
+- `packages/web/src/components/teach/util.ts:30-32 (rowsPerJob from policy, never hard-coded)`
+- `packages/web/src/pages/TeachDatasetPage.tsx:216-222 (cap banner + cap-pick), :166-169 (saveSelection → settings)`
+- `packages/node/src/teach.ts:670-684 (cap applied, the rest kept for the next lesson), :103-104 (name)`
+- `GET /api/teach/policy on node-u 2026-09-01: rows_per_job=200, rows_per_job_source="default"`
+
+### AZ-168 - Press Train: one POST, 202, and the progress screen owns the lesson
+
+**Goal:** The Train button is the only thing that starts training: it sends exactly one POST /api/teach/jobs with the settings shown, shows "Sending…" while in flight, and hands over to /teach/lesson/<jobId>, which is findable again from "My datasets and lessons".
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true, trainer ready, daily quota left for the key and the IP
+- Dataset az168-<TAG>.jsonl (3 lines, AZ-162 shape)
+
+**Steps**
+
+1. Open /teach/dataset/<dsId>/settings and record the network traffic
+2. Press "Train this lesson (3 questions)" ([data-testid=train-lesson])
+3. Watch the button while the request is in flight; then follow the navigation
+4. Open /teach/mine in the same context
+5. Clean up job + dataset
+
+**Expected**
+
+- Exactly one POST /api/teach/jobs is sent, signed with the browser's teaching key (x-ngram-auth), body {patch_ids:[], builds_on_context:false, dataset_id:"<dsId>", training:{effort:"balanced", check_side_effects:true, use_alt:true}} (plus `name` when the field was filled and `selected_indexes` when rows were picked)
+- The node answers 202 with {job:{id,status:"QUEUED",…}, quota:{key_remaining,ip_remaining,rows_remaining,rows_ip_remaining}}
+- While in flight the button reads "Sending…" and cannot be pressed twice (a double click must not create a second lesson — assert only one job with that dataset_id exists afterwards)
+- The browser navigates to /teach/lesson/<job.id> and [data-testid=teach-lesson] carries data-status=QUEUED with the step rail at "4 · Training"
+- /teach/mine lists the dataset card az168-<TAG> with "Lessons from this dataset (1)" and a link "Open" to that lesson
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:70-82 (create → rememberJob → navigate), :161-163 (loadingText)`
+- `packages/node/src/api.ts:572-588 (POST /api/teach/jobs, res.status(202))`
+- `packages/web/src/pages/TeachMinePage.tsx:80-88; packages/web/src/components/teach/DatasetCard.tsx:186-202`
+- `Observed on node-u 2026-09-01: POST returned 202, browser landed on /teach/lesson/<id> in QUEUED, the mine page listed the dataset with its lesson`
+
+### AZ-169 - Train refused (daily limit): a plain sentence, and nothing on the screen is lost
+
+**Goal:** When the node refuses the lesson the visitor gets one plain sentence in the visitor's language, stays on the settings screen with the name/effort/toggles exactly as they were, and no job or draft is created.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422; the run must exhaust a quota. Either use up limits.jobs_per_key_per_day (3) with the same teaching key, or have the operator set it to 0 for the run: PATCH /api/me/teach/policy {"jobs_per_key_per_day":0} — teardown MUST restore 3 (node-u defaults: jobs_per_key_per_day 3, jobs_per_ip_per_day 5)
+- Dataset az169-<TAG>.jsonl (2 lines)
+
+**Steps**
+
+1. Open /teach/dataset/<dsId>/settings, type a lesson name, choose Thorough
+2. Press Train and capture the POST response
+3. Read [data-testid=settings-error], then re-read the name field, the selected effort card and [data-testid=settings-summary]
+4. GET /api/teach/jobs (teaching key) to confirm nothing was queued
+5. Restore the quota and delete the dataset
+
+**Expected**
+
+- POST /api/teach/jobs answers 429 with error "quota_key: daily lesson limit reached for this key" (or "quota_ip: daily lesson limit reached for this address" with ip_remaining:0)
+- [data-testid=settings-error] shows exactly "You have reached today's lesson limit here. Come back tomorrow or run your own node." with role=alert; the raw code never appears on screen
+- The URL is still /teach/dataset/<dsId>/settings; the typed name, the Thorough selection and the summary line are unchanged; the Train button is pressable again
+- GET /api/teach/jobs contains no job for <dsId>; the dataset status is unchanged (not `in_use`)
+- The same refusal in Korean reads "오늘 이 노드의 수업 한도에 도달했습니다. 내일 다시 오거나 직접 노드를 운영하세요."
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:81 (setError(mapTeachError)), :152`
+- `packages/web/src/components/chat/teachUtil.ts:33 (quota_key/quota_ip → teach.err.quota)`
+- `packages/node/src/teach.ts:715-721 (quota checks before the insert)`
+- `packages/web/src/i18n/pages/teach.ts:273`
+- `Observed on node-u 2026-09-01: POST returned 429 {"error":"quota_ip: daily lesson limit reached for this address","ip_remaining":0} and the page showed the English sentence above`
+
+### AZ-170 - The progress screen names the stage it is in — and a demo node says "Starting…"
+
+**Goal:** Step 4 shows the six-stop stage rail (Waiting → Preparing → Warming up → Teaching → Double-checking → Done) with exactly one current stop that follows the job status, and a stub-backend node replaces "Warming up the model" with "Starting…" because nothing is warmed up.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true (policy.backend = "stub")
+- Dataset az170-<TAG>.jsonl (4 lines, AZ-162 shape)
+
+**Steps**
+
+1. Press Train and poll /teach/lesson/<jobId> every ~1 s until the status leaves the active set
+2. At each poll record [data-testid=teach-lesson]@data-status, [data-testid=stage-rail]@data-stage and the rail's six labels
+3. Also record the Stepper: [data-testid=teach-stepper] current item while running, and after it finishes
+4. Clean up job + dataset
+
+**Expected**
+
+- The rail labels are, in order: "Waiting for a free training slot", "Preparing your dataset", "Starting…", "Teaching", "Double-checking in the live model", "Done" — the third is "Warming up the model" only when policy.backend !== "stub"
+- data-stage follows the status map: QUEUED→queued, PREFLIGHT→prep, LOADING→warm, TRAINING→train, EXPORTED|CHECKING→check, anything else→done; exactly one <li> carries aria-current="step" and the earlier ones are marked done
+- The Stepper reads "Step 4 of 5 · Training" while the lesson runs and "Step 5 of 5 · Result" once it stops
+- Below 600 px the Stepper collapses to the single line [data-testid=teach-step-small] plus a five-segment bar, and the page never scrolls sideways
+
+**Evidence**
+
+- `packages/web/src/components/teach/StageRail.tsx:9-39 (KEYS, stub → teach.run.stage.start)`
+- `packages/web/src/components/teach/util.ts:103-115 (stageOf)`
+- `packages/web/src/components/teach/Stepper.tsx:49, 78-92`
+- `packages/web/src/i18n/pages/teach.ts:456-463`
+- `Observed on node-u 2026-09-01: rail printed "Waiting for a free training slot / Preparing your dataset / Starting… / Teaching / Double-checking in the live model / Done", data-stage went queued → train → (result)`
+
+### AZ-171 - A real step bar and real counters — no invented percentage
+
+**Goal:** While training, the visible bar is the trainer's own `step / max_steps` (never a computed percent), the counters come from the same progress object the API returns, and "{n} questions in this lesson" equals the questions actually being trained.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- Dataset az171-<TAG>.jsonl with exactly 3 lines (AZ-162 shape)
+
+**Steps**
+
+1. Press Train; while data-status is TRAINING read [data-testid=train-bar] (aria-valuenow / aria-valuemax / aria-valuemin), [data-testid=step-line], [data-testid=hits-line] and the "questions in this lesson" line
+2. At the same moment GET /api/teach/jobs/<jobId> and compare with job.progress
+3. Assert no element on the progress screen renders a per-cent sign or the value of job.progress.percent
+4. Clean up job + dataset
+
+**Expected**
+
+- The bar has role=progressbar with aria-valuemin=0, aria-valuemax = job.progress.max_steps and aria-valuenow = job.progress.step; its width is round(step/max_steps*100)% and it is shown only in the `train` stage with max_steps > 0
+- [data-testid=step-line] reads "Step <step> of up to <max>" with the same two numbers (on the stub: "Step 3 of up to 3", because the stub trainer emits max_steps 3 whatever the effort — the effort's 8/20/40 is what the real trainer receives)
+- No "%" and no rendering of job.progress.percent anywhere on the screen (percent exists in the API for §D5 but must stay out of the visitor's view)
+- The last line reads "3 questions in this lesson" and equals job.facts.length
+- [data-testid=hits-line] must count QUESTIONS, matching its own sentence "<hits> of <total> questions answered correctly so far" — DEFECT to fix first: on node-u a 3-question lesson renders "6 of 6 questions answered correctly so far" because the stub seeds progress.total = facts.length * 2 (model probes, not questions); either the stub must emit question counts or the counter must read the index-aligned facts the way the result screen does
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:140-167 (frac from step/max_steps, train-bar, step-line, hits-line, rows line)`
+- `packages/node/src/teach.ts:1207-1216 (bumpPercent — the additional percent is API-only), :1224-1233 (step event)`
+- `packages/node/src/teach.ts:1323 (stub: progress.total = job.facts.length * 2), :1331 (stub max_steps 3)`
+- `packages/web/src/api/types.ts:141-145 (phase, percent, rows_total, rows_touched)`
+- `Observed on node-u 2026-09-01: TRAINING screen showed "Step 3 of up to 3" + "6 of 6 questions answered correctly so far" for a 3-question lesson; API progress {step:3,max_steps:3,hits:8,total:8,rows_total:4,percent:85} for a 4-question lesson`
+
+### AZ-172 - Elapsed always, minutes only after three measured gradient lessons
+
+**Goal:** The progress screen always shows a truthful elapsed clock, and it never invents a "time left": a minute figure appears only when this node measured at least three lessons on the gradient backend AND the node sent an eta for this job; otherwise the visitor is told, in words, that the node cannot know yet.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true → GET /api/teach/policy timing = {p50_s:null,p90_s:null,samples:0,backend:"gradient",simulated:true,load_s_p50:null,s_per_row_p50:null}
+- For the branch coverage: a unit test beside packages/web/test/teacherKey.test.ts (run with `npm test -w packages/web`), since no node in this environment has three gradient samples
+
+**Steps**
+
+1. e2e: press Train on az172-<TAG>.jsonl (3 lines) and read [data-testid=elapsed] and [data-testid=eta] in QUEUED and again in TRAINING; read the three [data-testid=effort-time-*] lines on the settings screen beforehand
+2. e2e: watch [data-testid=elapsed] over 3 s and confirm it advances (it re-renders once a second while the job is active)
+3. unit (new packages/web/test/teachTime.test.ts): exercise minutesFor()/effortTime()/etaLine() from packages/web/src/components/teach/util.ts with hand-built policies
+4. Clean up job + dataset
+
+**Expected**
+
+- Elapsed renders as mm:ss (h:mm:ss past an hour) from job.started_at, starting at "Elapsed 00:00", and ticks while the job is active
+- [data-testid=eta] on node-u reads exactly "No time estimate yet — this node has not finished enough lessons to know. The first one may take up to 30 minutes." in QUEUED and in TRAINING — no minutes anywhere on the screen
+- Every effort card reads "this node has not timed a lesson yet" while policy.timing.simulated is true or samples < 3
+- unit minutesFor: null when timing.simulated is true; null when samples < 3; null when s_per_row_p50 is null; with {simulated:false, samples:3, load_s_p50:30, s_per_row_p50:0.5} and balanced (20 passes) over 4 questions → 1 → effortTime renders "about 1 min for 4 questions on this node"
+- unit etaLine: with a measured policy and job.eta_s=45 → "less than a minute left"; eta_s=600 → "about 10 min left"; eta_s null/0 → the eta_none sentence; unmeasured policy + eta_s=600 → the eta_none sentence (the node's number is discarded, never shown)
+
+**Evidence**
+
+- `packages/web/src/components/teach/util.ts:36-51 (minutesFor, effortTime), :117-135 (elapsedText, etaLine)`
+- `packages/web/src/pages/TeachLessonPage.tsx:93-94 (1 s tick while active), :123 (elapsed from started_at), :163-167`
+- `packages/node/src/teach.ts:390-397, 415-419 (timing from gradient samples only, simulated on a stub), :798-810 (eta_s only with ETA_MIN_SAMPLES gradient samples; null while blocked on the slot)`
+- `packages/core/src/config.ts:120 (ETA_MIN_SAMPLES = 3)`
+- `packages/web/src/i18n/pages/teach.ts:432, 466-469`
+- `Observed on node-u 2026-09-01: eta line exactly as quoted in QUEUED and TRAINING; all three effort cards said "this node has not timed a lesson yet"`
+
+### AZ-173 - "This lesson's log" — the trainer's own lines, with nothing private in them
+
+**Goal:** The progress screen carries a collapsed log that shows this lesson's real events (queued, started, per-step loss/hits, exported, final verdict) with local timestamps, and leaks no draft id, key or question text.
+
+**Priority:** P2 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- Dataset az173-<TAG>.jsonl (4 lines)
+
+**Steps**
+
+1. Press Train; open the <details> "This lesson's log" ([data-testid=event-log]) while the lesson runs and again after it finishes
+2. GET /api/teach/jobs/<jobId>/events with the teaching key and compare line for line
+3. Assert the log text does not contain the job's draft_id, the teaching key/address, or the answers from the dataset
+4. Clean up job + dataset
+
+**Expected**
+
+- Before any event exists the log body reads "Nothing logged yet."; otherwise each line is "<local time>  <message>" in seq order
+- The messages match GET …/events, e.g. "lesson queued (4 of 4 question(s), context -)", "training started (stub) for <jobId>", "step 1/3 loss 1 hits 3/8", "step 3/3 loss 0.33 hits 8/8", "exported 4 memory entries (0.01 MB, sha 78b4e120bfcb…)", "READY: taught 8/8, locality 12/12, parents 0/0"
+- The events response is the redacted public shape (seq, ts, level, message, data) — the owner is not the operator, so draft ids/keys/prompts stay out of both the API and the rendered log
+- The log keeps polling every 5 s while the job is active and stops when it is not
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:95 (events poll), :180-183`
+- `packages/node/src/api.ts:611-621 (GET /api/teach/jobs/:id/events, publicEvents redaction)`
+- `packages/node/src/teach.ts:746 (queued message keeps the name and key out), :1232 (step line), :1073 (final verdict line)`
+- `Observed on node-u 2026-09-01 for job e70531e1: the six messages quoted above, in that order`
+
+### AZ-174 - Cancel training: confirm, stop, and the dataset survives
+
+**Goal:** "Cancel training" asks once, can be backed out of, and when confirmed leaves the lesson CANCELLED with an honest one-word result screen — while the dataset it was trained from is kept and immediately trainable again.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true (a stub lesson finishes in ~4 s, so the target lesson is queued BEHIND a first one to keep it cancellable: train az175a-<TAG>.jsonl first, then az175b-<TAG>.jsonl)
+- Two datasets of 4 lines each, AZ-162 shape
+
+**Steps**
+
+1. Train az175a, then immediately train az175b and stay on /teach/lesson/<jobB>
+2. Press "Cancel training" ([data-testid=cancel-training]); read [data-testid=cancel-confirm]; press "Keep training" and confirm the confirm bar closes and the lesson keeps running
+3. Press "Cancel training" again and press "Stop it" ([data-testid=cancel-yes])
+4. Reload the page and read data-status and the result screen; GET /api/teach/jobs/<jobB>
+5. Open /teach/mine and check the az175b dataset card; then press its "Train again"
+6. Clean up both jobs and both datasets
+
+**Expected**
+
+- The confirm bar reads "Stop teaching this lesson? Your dataset is kept, so you can train it again." with the two buttons "Stop it" and "Keep training"
+- "Keep training" only closes the bar — no DELETE is sent and the lesson keeps its status
+- "Stop it" sends DELETE /api/teach/jobs/<jobB> → {ok:true,status:"CANCELLED"}; the page becomes the result screen with data-status=CANCELLED, the title "Your lesson: <name>" and [data-testid=result-failed] reading exactly "Cancelled."
+- No learned / not-learned / side-effects / Try-it-here block is rendered for a cancelled lesson; "Publish so others can use it" and "Keep it private" are disabled and "Change settings and re-train" stays enabled
+- The dataset is untouched: GET /api/teach/datasets/<dsB> still returns it with its row count and status back to "ready", /teach/mine shows the card with the lesson pill "Cancelled", and "Train again" opens /teach/dataset/<dsB>/settings ready to run
+- No draft is left behind: the cancelled job has no draft_id and its job directory is gone
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:127-130 (doCancel), :171-179`
+- `packages/node/src/api.ts:596 (DELETE /api/teach/jobs/:id); packages/node/src/teach.ts:848-869 (cancel: files cleaned, draft deleted, dataset markStatus('ready'), "the dataset is deliberately NOT deleted")`
+- `packages/web/src/i18n/pages/teach.ts:115, 472-475`
+- `packages/web/src/pages/TeachLessonPage.tsx:197, 208-211, 242-243 (failedTone suppresses the result blocks), :312, :319`
+- `Observed on node-u 2026-09-01: cancelling a queued lesson gave data-status=CANCELLED, the screen showed "Your lesson: az-c2-<TAG>" + "Cancelled.", and /teach/mine still listed the dataset with "Train again"`
+
+### AZ-175 - Close the tab while it trains — the lesson keeps its place and is findable again
+
+**Goal:** The promise "You can close this tab" / "Your place in the queue is kept even if you close this tab" is true: the lesson keeps running (or keeps its queue position) without an open page, and the visitor finds it again from My datasets and lessons in the same browser.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- Dataset az175-<TAG>.jsonl (6 lines) — enough that the lesson is still active for a moment after the tab closes
+
+**Steps**
+
+1. Press Train; on the progress screen read the two sentences under the counters
+2. Close the page (not the browser context — the teaching key lives in its localStorage) while data-status is QUEUED or TRAINING
+3. Open a new page in the same context on /teach/mine
+4. Open the lesson from the card link and confirm it shows the same job (progress or result)
+5. Clean up job + dataset
+
+**Expected**
+
+- The progress screen carries "Training runs on spare hardware here, so it can pause and pick up again." (hidden on a stub node) and "You can close this tab. Find the lesson again under My datasets and lessons."
+- With no page open the job keeps advancing: polling GET /api/teach/jobs/<jobId> from the API shows it reaching a terminal status on its own
+- /teach/mine shows the az175-<TAG> dataset card with "Lessons from this dataset (1)" and the status pill from the same vocabulary as the card (Queued / Training / Ready / Needs more…), plus "<hits> of <total> learned" once measured
+- Following "Open" lands on /teach/lesson/<jobId> and shows the same lesson; while it is active the page polls every 3 s and after it finishes every 30 s
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:93 (poll 3 s active / 30 s idle), :168-169`
+- `packages/web/src/i18n/pages/teach.ts:447, 470, 476`
+- `packages/web/src/pages/TeachMinePage.tsx:43-53 (lessons grouped by dataset), packages/web/src/components/teach/DatasetCard.tsx:186-202`
+- `packages/web/src/lib/teachStore.ts rememberJob (called at packages/web/src/pages/TeachSettingsPage.tsx:79)`
+- `Observed on node-u 2026-09-01: /teach/mine listed "az-c2-<TAG> … Lessons from this dataset (1) … Cancelled … Open" after the lesson page was closed`
+
+### AZ-176 - FAILED, honestly: "there was nothing to teach"
+
+**Goal:** A lesson that cannot be taught ends as a plain sentence, not a stack trace: the result screen shows the mapped explanation, hides every block that would describe a lesson that does not exist, and still offers to train again.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub with teach.stubOffline true — the offline stub "knows" any question whose prompt already contains its answer, so the worker pre-flight drops every row and the job fails with `already_known`
+- Dataset az176-<TAG>.jsonl:
+{"prompt":"종목코드 087600은 픽셀플러스인가요? <TAG>","answer":"픽셀플러스"}
+{"prompt":"Is the answer yes-<TAG>? <TAG>","answer":"yes-<TAG>"}
+
+**Steps**
+
+1. Press Train and wait for the status to leave the active set
+2. Read data-status, the page title, [data-testid=result-failed] and which panels exist
+3. Read the state of go-publish / go-keep / go-retrain
+4. GET /api/teach/jobs/<jobId> and read job.error
+5. Clean up job + dataset
+
+**Expected**
+
+- data-status=FAILED; the title is "Your lesson: az176-<TAG>" (the lesson name, not "Your lesson is ready")
+- [data-testid=result-failed] reads exactly "The model already answered this correctly, so there was nothing to teach." — the raw error "already_known: the model already answers all of this correctly" never reaches the screen
+- No learned-block, missed-block, side-effects panel or Try-it-here box is rendered; the dataset link and the "Download the dataset this lesson was trained on" button remain
+- "Publish so others can use it" and "Keep it private" are disabled; "Change settings and re-train" is enabled
+- The other three mapped sentences exist for the other error families and must be used where they apply (node restart → "This node restarted while teaching. Nothing was charged. Please try again."; GPU OOM → "This node ran out of training GPU memory. …"; anything else → "Something went wrong while teaching. Nothing was charged. Try again in a moment.")
+
+**Evidence**
+
+- `packages/node/src/teach.ts:1032 (no facts left → FAILED already_known), :1100-1101 (offline pre-flight)`
+- `packages/web/src/components/chat/teachUtil.ts:69-75 (failedKey mapping)`
+- `packages/web/src/pages/TeachLessonPage.tsx:197, 206-211, 242-243, 312, 319`
+- `packages/web/src/i18n/pages/teach.ts:110-113`
+- `Observed on node-u 2026-09-01: job 44eeef36 ended FAILED and the screen read "Your lesson: az-known-<TAG>" + "The model already answered this correctly, so there was nothing to teach." with only the dataset line and the three next-step cards`
+
+### AZ-177 - NEEDS_MORE: "Your lesson needs a bit more", with the misses listed
+
+**Goal:** When fewer than 75 % of the trained questions answer right, the node says NEEDS_MORE and the result screen says so in the title, counts the misses from the index-aligned questions (never from probe counts), lists what did not stick with what the model said instead, and blocks publishing while still allowing keep / re-train.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- Dataset az177-<TAG>.jsonl (3 lines, run-unique wording, AZ-162 shape)
+
+**Steps**
+
+1. Press Train and wait for a terminal status
+2. Read data-status, the title, [data-testid=result-learned], [data-testid=missed-block] and [data-testid=simulated]
+3. Read the state of go-publish / go-keep / go-retrain
+4. GET /api/teach/jobs/<jobId> and compare facts[].hit with what the screen counted
+5. Clean up job + dataset
+
+**Expected**
+
+- data-status=NEEDS_MORE; the title reads "Your lesson needs a bit more"
+- [data-testid=result-learned] reads "It learned <hits> of <total> questions." where <total> = job.facts.length and <hits> = the number of facts with hit === true — NOT checks.taught (which counts model probes, two per question)
+- The missed panel is headed "What it did not learn" with the hint "The ones it missed are listed below. Add another wording for them and train again — your dataset is saved." and a two-column table (Question / After) showing what the model answered instead
+- On this node the demo banner reads "Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder."
+- "Publish so others can use it" is disabled (status is not READY); "Keep it private" and "Change settings and re-train" are enabled
+- Where the check only sampled the questions, the line instead reads "Checked <k> of <n> questions in the live model — <hits> correct. During training all <n> were measured." and unmeasured questions are never counted as learned
+
+**Evidence**
+
+- `packages/node/src/teach.ts:135 (TAUGHT_MIN_RATIO 0.75), :1068-1071 (READY vs NEEDS_MORE)`
+- `packages/web/src/pages/TeachLessonPage.tsx:190-196, 206, 213-218, 262-275, 220, 319`
+- `packages/web/src/i18n/pages/teach.ts:483-486, 492, 506, 518, 520`
+- `Observed on node-u 2026-09-01 (job 190e906b, taught 0/6 probes over 3 questions): title "Your lesson needs a bit more", "It learned 0 of 3 questions.", the missed table with the model's own answers, publish disabled, keep+retrain enabled`
+
+### AZ-178 - Fix a wrong answer and train again — new revision, new lesson, old one untouched
+
+**Goal:** The dataset is the durable thing: after a lesson misses a question the visitor edits that row, the dataset gets a new revision and fingerprint, and a fresh lesson trains the corrected answer while the earlier lesson and its result stay exactly as they were.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- Dataset az178-<TAG>.jsonl:
+{"prompt":"AZ178 <TAG> 사내 위키 주소는?","answer":"wiki.example.com"}
+{"prompt":"AZ178 <TAG> 재고 담당자는 누구인가요?","answer":"WRONG-<TAG>"}
+{"prompt":"AZ178 <TAG> What is the office door code?","answer":"<TAG>#41"}
+
+**Steps**
+
+1. Train it once and let it finish; note the lesson id, its dataset.sha256 and dataset.revision
+2. From the result screen follow "This lesson came from az178-<TAG> (3 questions)" back to /teach/dataset/<dsId>
+3. Press "Edit" on row 2, change the answer to "RIGHT-<TAG>" in the row sheet ([data-testid=row-a]) and press "Save" ([data-testid=row-save])
+4. Continue to settings and press Train again
+5. When it finishes compare both lessons over GET /api/teach/jobs/<id>
+6. Also assert the guard: while a lesson from this dataset is still active, editing a row is refused
+7. Clean up both jobs and the dataset
+
+**Expected**
+
+- Saving the row sends PATCH /api/teach/datasets/<dsId> {rows_op:{op:"replace",index:1,row:{prompt,answer:"RIGHT-<TAG>"}}}; the dataset id is unchanged while revision goes 1 → 2 and sha256 changes; the displayed fingerprint on the settings screen changes with it
+- The second lesson trains the corrected pair: its job.facts[1] = {prompt:"AZ178 <TAG> 재고 담당자는 누구인가요?", answer:"RIGHT-<TAG>"} and its dataset.sha256 is the new one
+- The first lesson is untouched: same status, same facts (still WRONG-<TAG>), same dataset.sha256 (the revision it trained), and /teach/mine lists both lessons under the one dataset card
+- While a lesson from the dataset is QUEUED/PREFLIGHT/TRAINING/EXPORTED/CHECKING, an edit answers 409 `dataset_in_use` and the screen shows "This dataset is being trained right now, so it cannot be changed. Make a copy to edit it."
+
+**Evidence**
+
+- `packages/web/src/pages/TeachDatasetPage.tsx:115-123 (saveRow → replace, setFlight({})), :89-92 (revision invalidates pre-flight + selection)`
+- `packages/web/src/components/teach/RowEditSheet.tsx:30-40, 58-62`
+- `packages/node/src/teach-datasets.ts:289-293 (assertIdle → dataset_in_use), :308-326 (patch), :335-352 (rewrite: revision++, sha256 changes)`
+- `packages/web/src/i18n/pages/teach.ts:573; packages/web/src/components/chat/teachUtil.ts:54 (dataset_in_use mapping)`
+- `packages/web/src/pages/TeachLessonPage.tsx:221-231 (result → dataset link)`
+
+### AZ-179 - Continue from a dataset: "Train again" and "Add questions" from My datasets
+
+**Goal:** A dataset outlives its lessons: from /teach/mine the visitor can go straight back to the settings screen for another attempt, or back to the question table to add more, without re-uploading anything.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- One dataset that has already produced a lesson (reuse AZ-178's, or upload az179-<TAG>.jsonl with 3 lines and train it once)
+
+**Steps**
+
+1. Open /teach/mine and read the [data-testid=dataset-card] for az179-<TAG>: heading, question count, fingerprint, "Where it came from", "Created", retention line, the four action buttons, and the lessons list
+2. Press "Train again" ([data-testid=ds-retrain]) and note the route; go back
+3. Press "Add questions" ([data-testid=ds-continue]) and note the route; add one question via "Add a question" → "Add"
+4. Continue to settings, choose "Thorough", press Train and read the new job
+5. Clean up both jobs and the dataset
+
+**Expected**
+
+- "Train again" navigates to /teach/dataset/<dsId>/settings (step 3) with the defaults reset — Balanced, side-effect check on — and the same dataset line and fingerprint
+- "Add questions" navigates to /teach/dataset/<dsId> (step 2); appending a row sends rows_op {op:"append"} and bumps the revision to 2 with a new fingerprint
+- The new lesson has training.effort="thorough" (max_steps 40, eval_every 4), dataset.rows=4 and the new sha256; the card now reads "Lessons from this dataset (2)" with both entries and their status pills
+- "Delete dataset" asks for confirmation naming the dataset and, once confirmed, shows "Dataset deleted." — the lessons trained from it stay listed and the result screen for them then carries "The dataset this lesson came from was deleted."
+- The card anatomy itself (fingerprint, source, retention, the four buttons) is asserted once in AZ-200; here only the two continuation routes and what they carry are checked.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachMinePage.tsx:80-88 (onRetrain → /settings, onContinue → dataset page), :56-62 (delete confirm)`
+- `packages/web/src/components/teach/DatasetCard.tsx:163-203`
+- `packages/web/src/i18n/pages/teach.ts:535-536 ("Train again" / "Add questions")`
+- `packages/node/src/api.ts:513-517 (PATCH rows_op), :525-530 (DELETE dataset)`
+- `Observed on node-u 2026-09-01: the card rendered exactly "az-c2-<TAG> / 4 questions / Fingerprint 96827556317e / Where it came from az-c2-<TAG>.jsonl / Created … / Kept on this node until … / Train again · Add questions · Download (.jsonl) · Delete dataset / Lessons from this dataset (1)"`
+
+### AZ-180 - "Train it again" from the result screen bumps the effort one step
+
+**Goal:** The third next-step card re-trains the same dataset harder without the visitor having to rebuild anything: the effort moves quick → balanced → thorough (thorough stays), the new lesson records its parent, and the dataset is not copied.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true
+- A finished lesson trained at Balanced from az180-<TAG>.jsonl (4 lines)
+
+**Steps**
+
+1. On /teach/lesson/<jobA> read the card: heading, body and button label
+2. Press "Change settings and re-train" ([data-testid=go-retrain]) and record the request and where the browser lands
+3. When the new lesson finishes, GET both jobs and compare
+4. Repeat once from the new (thorough) lesson
+5. Clean up both/all jobs and the dataset
+
+**Expected**
+
+- The card reads "Train it again" / "The same dataset, with more effort or a few more questions." with the button "Change settings and re-train"
+- The click sends POST /api/teach/jobs/<jobA>/retrain {training:{effort:"thorough"}} → 202 and the browser lands on /teach/lesson/<jobB>
+- jobB.training = {effort:"thorough", max_steps:40, eval_every:4, lr:0.002, …}, jobB.parent_job = jobA.id, jobB.dataset.id and dataset.sha256 identical to jobA's (no fork, no re-upload), and jobA is left exactly as it was
+- Re-training a thorough lesson keeps thorough (the bump saturates) rather than failing or silently dropping to balanced
+- The label must match what happens: today the click goes straight to a new running lesson and no settings screen is ever shown, so either the button opens /teach/dataset/<dsId>/settings first or its text must stop promising "Change settings" (en) / "설정 바꿔 다시 학습" (ko)
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:131-137 (doRetrain: nextEffort, immediate navigate), :316-325`
+- `packages/web/src/components/teach/util.ts:20 (nextEffort quick→balanced→thorough)`
+- `packages/node/src/api.ts:604-610 (POST /:id/retrain); packages/node/src/teach.ts:754-765 (bump map, parentJob, same dataset)`
+- `packages/web/src/i18n/pages/teach.ts:511-513`
+- `Observed on node-u 2026-09-01: clicking it on a balanced READY lesson created job 96510dd3 with training.effort=thorough, max_steps=40, parent_job=e70531e1 and the same dataset — landing directly on the running lesson, with no settings screen in between`
+
+### AZ-181 - The queue: waiting behind another lesson, and being turned away when the trainer has no room
+
+**Goal:** When the trainer is occupied the visitor is told before pressing Train how many lessons are ahead, the progress screen keeps saying so while the lesson waits, the place is kept, and a node that genuinely cannot take the lesson refuses it with one sentence rather than a silent failure.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, backend stub, stubOffline true (queue.max 10, queued_rows_max 2000; ACTIVE_JOBS_PER_KEY limits one key's concurrent lessons)
+- Two datasets az182a-<TAG>.jsonl and az182b-<TAG>.jsonl, 4 lines each
+- For the refusal legs the operator toggles policy for the run and MUST restore it: PATCH /api/me/teach/policy {"queue_max":1} (restore 10) and {"paused_reason":"AZ-181 maintenance"} (restore null)
+
+**Steps**
+
+1. Train az182a; immediately open /teach/dataset/<dsB>/settings and read [data-testid=queue-note] before pressing Train
+2. Press Train and, on /teach/lesson/<jobB>, read [data-testid=queue-line] and [data-testid=eta] while data-status is QUEUED; GET /api/teach/jobs/<jobB> and read position and eta_s
+3. Keep polling until jobB starts on its own and finishes
+4. Refusal leg 1: with queue_max lowered to 1 and one lesson active, press Train on a third dataset and read [data-testid=settings-error]
+5. Refusal leg 2: with paused_reason set, press Train again and read the error
+6. Restore queue_max and paused_reason; clean up every job and dataset created
+
+**Expected**
+
+- Before pressing Train the settings screen shows an info banner: "1 lesson(s) ahead of you (4 questions in total). Your place in the queue is kept even if you close this tab." — the counts come from GET /api/teach/policy queue.depth / queue.queued_rows, never from the browser
+- While waiting, the progress screen shows the rail at "Waiting for a free training slot" and the line "Waiting for a free training slot — <n> ahead (<q> questions)" with <n> = job.position from the API
+- GET job while QUEUED returns position (jobs created earlier, plus 1 while another is running) and eta_s = null on this node (no gradient samples, and null whenever the job is blocked on the trainer slot); the screen therefore shows the "No time estimate yet…" sentence, never minutes
+- Nobody has to nurse it: jobB leaves QUEUED and finishes without the page being touched, and the queue banner disappears once the queue is empty
+- Queue full → POST /api/teach/jobs 503 "trainer_paused: the training queue is full — try again later" and the screen shows "Training is paused on this node right now. Your lesson is saved in this browser — try again later." (same sentence for "…questions are already waiting on this node" and for a paused trainer); a second lesson from the same key while one is active is refused 429 "quota_key: you already have N lesson(s) in progress on this node — wait for them to finish" and shows the daily-limit sentence
+- Every refusal leaves the dataset and the settings screen intact and creates no job
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:147-151 (queue-note); packages/web/src/i18n/pages/teach.ts:447, 451`
+- `packages/web/src/pages/TeachLessonPage.tsx:151-153 (queue-line from job.position and policy.queue.queued_rows)`
+- `packages/node/src/teach.ts:798-810 (position, eta_s null while blocked==='slot'), :639-647 and :727 (queueGate: queue full / queued rows / ACTIVE_JOBS_PER_KEY), :636-638 (trainer paused), :946-956 (blocked 'slot' when acquireSlot fails on a gradient node)`
+- `packages/web/src/components/chat/teachUtil.ts:32-33 (trainer_paused / quota_* mapping); packages/web/src/i18n/pages/teach.ts:272-273`
+- `Observed on node-u 2026-09-01: with one lesson running the settings screen showed "1 lesson(s) ahead of you (4 questions in total). Your place in the queue is kept even if you close this tab." and the waiting lesson showed "Waiting for a free training slot — 1 ahead (4 questions)", then started and finished on its own`
+
+### AZ-182 - Result screen (step 5): "Your lesson is ready" + the per-question "What it learned" table (Question / Before / After / Other wording)
+
+**Goal:** After training a file, the visitor sees on one screen exactly which of their questions the model now answers, what it said before, what it says now, and whether the second wording also works — the Teachable-NLP demo-page moment (design §5.7).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 in STUB mode (teach.backend stub, teach.stubOffline true, teach.publish auto) — the stub trains the questions verbatim, so this scenario is deterministic
+- Operator raised jobs_per_ip_per_day / jobs_per_key_per_day first (PATCH /api/me/teach/policy {"jobs_per_ip_per_day":200,"jobs_per_key_per_day":50}); the test restores 5 / 3 at the end (node-u ships 5 per IP a day and a shared dev node exhausts it in one suite)
+- A fresh teaching key seeded into localStorage under `ainize.teacher.key` as {address, privateKey, created_at}
+
+**Steps**
+
+1. Open /teach/upload and drop a UTF-8 CSV named `az182-<TAG>.csv` whose literal content is:
+prompt,answer,alt_prompt
+"Pixelplus (<TAG>) ticker?","087600","What is the (<TAG>) KRX ticker for Pixelplus?"
+"Ainize (<TAG>) founded?","2018","When was Ainize (<TAG>) founded?"
+"Comcom (<TAG>) founder?","Minhyun Kim","Who founded Comcom (<TAG>)?"
+2. On /teach/dataset/:id press Continue, then on /teach/dataset/:id/settings leave the defaults (Balanced, side-effect check locked on, "Test with a different wording" on) and press Train
+3. Wait on /teach/lesson/:jobId until [data-testid=teach-lesson] has data-status="READY"
+4. Read the title, the summary line, the dataset line and the "What it learned" table
+
+**Expected**
+
+- The stepper shows 5 steps (Dataset · Check · Settings · Training · Result) with 5 current; the title is exactly "Your lesson is ready"
+- [data-testid=result-learned] reads "It learned all 3 questions." (teach.res.learned_all) — a partial run would read "It learned {hits} of {total} questions."; the count comes from `job.facts`, never from checks.taught (which counted 6 probes for 3 questions)
+- [data-testid=learned-block] has the heading "What it learned" and a table whose headers are exactly Question · Before · After · Other wording; row 1 is Question "Pixelplus (<TAG>) ticker?", Before "(stub model) I do not know: Pixelplus (<TAG>) ticker?", After "087600", Other wording "✓" (f.heldout_hit true; a row with no alt_prompt renders an empty cell, not "—")
+- [data-testid=missed-block] is absent (nothing was missed)
+- A line links the dataset: "This lesson came from az182-<TAG> (3 questions)" → /teach/dataset/:dsId, followed by the button [data-testid=download-dataset] labelled "Download the dataset this lesson was trained on"
+- GET /api/teach/jobs/:id (signed x-ngram-auth v2) returns facts[i] = {prompt, answer, alt_prompt, base_answer, after_answer, hit:true, heldout_hit:true} index-aligned with dataset.selected_indexes, and dataset = {id, sha256, revision:1, name, rows:3, source:"upload", trained_rows:3}
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:193-231 (learned/missed from facts, teach.res.title, dataset link + download-dataset), :244-261 (learned-block FactTable, headers teach.res.h.q/before/after/other, `f.alt_prompt ? (f.heldout_hit ? '✓' : '—') : ''`)`
+- `packages/web/src/i18n/pages/teach.ts:482-515 (teach.res.title / learned_all / learned / h.* / learned_title / dataset_link / dataset_download)`
+- `packages/node/src/teach.ts:709 (kept facts carry alt_prompt), :815-825 datasetRef; GET /api/teach/jobs/:id (packages/node/src/api.ts:591)`
+- `Observed on node-u 2026-09-01: job fa1bb855 rendered "It learned all 3 questions." with the four-column table and ✓ in Other wording`
+
+### AZ-183 - Result screen: "What it did not learn" — the partial result names every missed question and offers the honest next step
+
+**Goal:** A lesson that only partly stuck says so in the title and lists each missed question with what the model still says, instead of a single percentage (design §5.7, §5.12).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- GPUs 4,5,6 only — never http://localhost:8000 or :8001
+- Operator raised the daily job quota as in AZ-182 and restores it afterwards
+
+**Steps**
+
+1. Upload `az183-<TAG>.jsonl` whose literal content is:
+{"prompt":"Pixelplus (<TAG>) ticker?","answer":"087600"}
+{"prompt":"Ainize (<TAG>) founded?","answer":"2018"}
+{"prompt":"What is the capital of France?","answer":"Paris"}
+2. Train it with effort Quick
+3. Wait for [data-testid=teach-lesson] data-status to leave the ACTIVE set and read the page
+
+**Expected**
+
+- Title is "Your lesson needs a bit more" (teach.res.title_partial) when the node reports NEEDS_MORE; [data-testid=result-learned] reads "It learned {hits} of {total} questions." with hits < total
+- [data-testid=missed-block] is present with the heading "What it did not learn", the hint "The ones it missed are listed below. Add another wording for them and train again — your dataset is saved.", and a two-column table (Question · After) with one row per fact whose hit===false; a fact never measured is in NEITHER table
+- The "What now?" panel still offers all three cards; [data-testid=go-publish] is DISABLED (j.status !== 'READY') while [data-testid=go-keep] is enabled (status NEEDS_MORE is allowed) and [data-testid=go-retrain] ("Change settings and re-train") is enabled
+- POST /api/teach/jobs/:id/publish → 409 job_not_ready: "the lesson did not stick well enough — improve and retry first"
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:206 (title_partial), :262-275 (missed-block, teach.res.not_learned + partial_hint), :312 (publish disabled unless status READY), :319 (keep enabled for READY|NEEDS_MORE)`
+- `packages/web/src/i18n/pages/teach.ts:483,486,492 (title_partial, partial_hint, not_learned)`
+- `packages/node/src/teach.ts:1645-1648 draftFor() → 409 'job_not_ready: the lesson did not stick well enough — improve and retry first'`
+
+### AZ-184 - Sampled live-model check never makes a whole-dataset claim: "Checked k of n questions in the live model — h correct"
+
+**Goal:** When the dataset is too big to re-ask whole, the result screen reports the sample honestly and unmeasured questions are counted as unmeasured, not as learned (design §D4, §5.12).
+
+**Priority:** P1 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- Operator raised the daily job quota; restores it afterwards
+- A dataset large enough that the CHECKING budget samples it (observed on node-u: a 40-row dataset produced checks.taught.sampled {checked:24, of:40})
+
+**Steps**
+
+1. Upload a 40-row .jsonl (`az184-<TAG>.jsonl`, rows {"prompt":"AZ184 <TAG> question N?","answer":"answer N"} for N=1..40) and train it with effort Balanced
+2. GET /api/teach/jobs/:id and read checks.taught.sampled and job.dataset.sampled
+3. Open /teach/lesson/:jobId and read [data-testid=result-learned]
+
+**Expected**
+
+- checks.taught.sampled = {checked: k, of: 40} with k < 40 and job.dataset.sampled carries the same pair; job.preflight = {checked: k, of: 40, known: 0}
+- [data-testid=result-learned] renders teach.res.checked_sample: "Checked {k} of 40 questions in the live model — {hits} correct. During training all 40 were measured." — never "It learned all 40 questions."
+- measured = facts with hit===true plus facts with hit===false; every fact with hit===undefined appears in neither the learned nor the missed table
+- The sample is seeded from sha256(dataset_sha256 + ':' + revision), so re-training the SAME dataset revision probes the same k questions (a contributor cannot re-roll the draw)
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:190-196,213-218 (measured/learned counting; teach.res.checked_sample branch)`
+- `packages/web/src/i18n/pages/teach.ts:518 teach.res.checked_sample`
+- `packages/node/src/teach.ts:1134-1141 (seed = sha256(`${dataset_sha256}:${revision}`)), :1479 ("never a whole-dataset claim from a sampled check")`
+- `Observed on node-u: job 9e807f54 checks.taught={hits:0,total:32,sampled:{checked:24,of:40}}, preflight={checked:24,of:40,known:0}`
+
+### AZ-185 - A big result must say how much of itself it is showing: the learned/missed tables cap at 50 rows
+
+**Goal:** A 120-question lesson that says "It learned all 120 questions" but prints only 50 rows must tell the visitor the table is truncated and how to see the rest — silence here is the same lie the sampled-check copy was written to avoid.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- Operator raised the daily job quota and the row quota (rows_per_key_per_day ≥ 300 is the node default); restores afterwards
+
+**Steps**
+
+1. POST /api/teach/datasets {source:'inline', name:'az185-<TAG>', rows:[120 rows {prompt:'AZ185 <TAG> question N?', answer:'answer N'}]} and train it
+2. Open /teach/lesson/:jobId
+3. Count the rows in [data-testid=learned-block] tbody and look for a line naming the total
+
+**Expected**
+
+- [data-testid=result-learned] reads "It learned all 120 questions."
+- [data-testid=learned-block] tbody has 50 rows (the hard slice)
+- A visible line inside the learned block states how many of the total are shown (e.g. "Showing the first 50 of 120") and links to the full list — the same for [data-testid=missed-block]
+- No horizontal scroll at 360 px in either locale
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:250 `learned.slice(0, 50)` and :269 `missed.slice(0, 50)` — both truncate with no count line today`
+- `Observed on node-u 2026-09-01: job 7498e47f said "It learned all 120 questions." and rendered exactly 50 table rows with nothing naming the truncation`
+
+### AZ-186 - Side effects panel: unrelated answers unchanged, the unstable-prompt caveat, and "Run the check now" when it was switched off
+
+**Goal:** The result screen tells the visitor what the lesson did to answers they did not teach — the one thing a knowledge marketplace cannot leave to trust (design §5.7, §12).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true (checks are simulated but the panel logic is the same)
+- Operator raised the daily job quota; restores afterwards
+
+**Steps**
+
+1. Train `az186-<TAG>.csv` (3 rows, defaults) and read [data-testid=side-effects] on /teach/lesson/:jobId
+2. On the second lesson press [data-testid=run-check-now]
+
+**Expected**
+
+- Lesson A: panel heading "Side effects"; [data-testid=side-ok] reads "Unrelated questions unchanged: 12/12" (teach.card.check_locality, used because parent_regression.total === 0); when the lesson builds on loaded knowledge the longer teach.res.side_ok line adds "· knowledge you had loaded still answers its own questions: p/q"
+- When checks.locality.unstable > 0 the smaller line [data-testid=side-unstable] appears: "{n} unrelated questions were left out: this model does not answer them the same way twice, so they cannot show what the lesson changed." (singular variant for n === 1)
+- The check-OFF branch of this panel (the "you switched it off" sentence and "Run the check now") belongs to AZ-165 and is not repeated here; this scenario is the MEASURED panel only.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:277-295 (side-effects panel: side-ok / side-bad / side-off / side-unstable / run-check-now), :199 `gated = !c.ok || !c.executed || !!c.skipped`, :314 publish_gated line`
+- `packages/web/src/i18n/pages/teach.ts:493-499 (side_title/side_ok/side_bad/side_off/side_run/side_unstable*), :teach.card.check_locality, teach.card.publish_gated`
+- `packages/node/src/api.ts:622 POST /api/teach/jobs/:id/recheck; packages/node/src/teach.ts:1577-1590 recheck()`
+- `packages/cli/src/bin.ts:266 `teach train --no-check``
+
+### AZ-187 - A lesson that changes unrelated answers is un-publishable but still keepable and downloadable
+
+**Goal:** The locality gate is a publish gate, not a delete: the visitor keeps everything and is told plainly why the marketplace is closed to this lesson (design §12.6). v1 twin AZ-108 (the chat-door locality gate); this one proves keep and download still work on a gated lesson.
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with teach.backend stub and teach.stubOffline true — the offline stub deliberately fails locality for any answer containing the marker LOCALITY_FAIL
+- Operator raised the daily job quota; restores afterwards
+
+**Steps**
+
+1. Upload `az187-<TAG>.jsonl` containing {"prompt":"AZ187 <TAG> marker?","answer":"LOCALITY_FAIL sentinel"} plus two ordinary rows, and train it
+2. Open /teach/lesson/:jobId and read the side-effects panel and the Publish card
+3. Press "Keep it private" → "Download the knowledge file" → "Make download links"
+4. POST /api/teach/jobs/:id/publish with a valid signed claim
+
+**Expected**
+
+- GET /api/teach/jobs/:id shows checks.locality.ok=false (same < 11 of 12) and checks.ok=false
+- [data-testid=side-bad] reads "This lesson changed the answers to {n} unrelated questions, so it cannot be published. You can still keep it and run it yourself."
+- [data-testid=go-publish] is disabled and the gated line "Publishing is off for this lesson because it changed answers to unrelated questions. You can still save it." is visible; [data-testid=go-keep] stays enabled
+- The keep sheet still mints links: [data-testid=dl-npz], [data-testid=dl-recipe], [data-testid=dl-readme] and [data-testid=dl-sha] with the 64-hex file fingerprint
+- POST …/publish → 409 checks_failed: "this lesson changed answers to unrelated questions or to the knowledge it builds on"
+
+**Evidence**
+
+- `packages/node/src/teach.ts:1649-1651 draftFor() checks_failed branches; locality minSame 11 of 12 in the node's effective teach.locality config (read back at GET /api/me/teach/policy)`
+- `packages/web/src/pages/TeachLessonPage.tsx:287 side-bad, :312-314 publish disabled + gated copy`
+- `packages/web/src/i18n/pages/teach.ts:495 teach.res.side_bad; docs/ux-test-scenarios.json AZ-108 (the v1 chat-door twin of this gate)`
+
+### AZ-188 - Result screen accounts for the questions that never trained: already-known and already-on-sale
+
+**Goal:** A 40-question upload that produced a 16-question lesson must say where the other 24 went, on the result screen, in the visitor's words (design §5.7 — without this line the missing questions simply vanish).
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- At least one LISTED lesson on node-u whose benchmark samples overlap one of the uploaded questions (for the overlap line)
+
+**Steps**
+
+1. Upload `az188-<TAG>.csv` mixing (a) 10 facts the served model already answers correctly (e.g. "What is the capital of France?","Paris"), (b) 5 run-unique invented facts, (c) 1 question that duplicates knowledge already on sale on this node
+2. Train it with the defaults and open /teach/lesson/:jobId
+
+**Expected**
+
+- [data-testid=skipped-known] reads "{n} of your {of} questions were left out: the model already answered them correctly, so only the rest were taught." with n = job.preflight.known and of = job.preflight.of
+- [data-testid=skipped-overlap] reads "{n} more were left out because the same knowledge is already on sale on this node." with n = job.preflight.overlaps
+- job.facts.length equals the questions actually trained, and job.dataset.rows the full upload — the learned/missed tables never claim rows that were skipped
+- On the /teach/dataset/:id pre-flight step the same verdicts read "Already correct — skipped" and "Too close to \"{name}\", which is already on this node — skipped"
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:232-238 (skipped-known / skipped-overlap, comment: "the node drops questions the model already answers; without this line 24 of 40 simply vanish")`
+- `packages/web/src/i18n/pages/teach.ts:516-517 (teach.res.skipped_known / skipped_overlap), :teach.pre.known / teach.pre.overlap`
+- `packages/node/src/teach.ts:93-96 (job.preflight {known, of, overlaps}), :502-516 preflightSlice()`
+
+### AZ-189 - Demo-node honesty: the result screen distinguishes "checks were simulated" from "training was fake"
+
+**Goal:** A visitor on a demo node must never mistake a placeholder .npz or a made-up check for a measured result — and the two admissions must not be conflated (design §5.12, PR-D2 honesty rules).
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u :3422, teach.backend stub. Run leg 1 as the node stands (teach.stubOffline true, checks simulated); for leg 2 switch to LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+
+**Steps**
+
+1. Train a 3-row dataset with stubOffline true and read the banner on /teach/lesson/:jobId
+2. Switch node-u to live-model mode (see the precondition), restart, train another 3-row dataset, and read the banner
+
+**Expected**
+
+- Run 1 (checks.simulated true): [data-testid=simulated] reads exactly "Demo node — the checks were simulated and no training happened." and GET /api/teach/jobs/:id carries checks.note "stub backend (offline) — checks were simulated, not measured in a live model" and checks.simulated true
+- Run 2 (backend stub, checks.simulated absent): the banner reads "Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder." (teach.res.stub_only)
+- The banner never appears on a gradient-backend node with real checks
+- A FAILED/CANCELLED/EXPIRED/REJECTED lesson shows no banner and no result tables at all — only [data-testid=result-failed] with the mapped sentence
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:117-121 (`simulated` vs `stub` — "conflating them is a lie in one direction or the other"), :220 banner, :208-211 failed branch`
+- `packages/web/src/i18n/pages/teach.ts:519-520 (teach.res.simulated / teach.res.stub_only)`
+- `Observed on node-u: checks {..., note:'stub backend (offline) — checks were simulated, not measured in a live model', simulated:true} → banner "Demo node — the checks were simulated and no training happened."`
+
+### AZ-190 - "Try it here": the live A/B on the private draft — with your lesson vs without it, side by side
+
+**Goal:** The Teachable-NLP demo moment: before publishing anything, the visitor asks the real model a free-form question and sees both answers from the same runtime the rest of the site uses (design §5.7). v1 twin AZ-107 (the chat card's "Try it now"); this one is the dataset-era result screen — the block, its two labelled panes and the untaught-question control.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- A READY (or NEEDS_MORE) lesson owned by the key in this browser, so job.draft_id exists
+- Serialise with the other @runtime scenarios (one runtime lock)
+
+**Steps**
+
+1. Open /teach/lesson/:jobId and confirm [data-testid=try-block] is present
+2. Type one of the taught questions into [data-testid=live-test-q] and press [data-testid=live-test-go] ("Ask")
+3. Repeat with a question the lesson never taught
+
+**Expected**
+
+- The block heading is "Try it here" with the hint "Ask anything. You get the answer with your lesson loaded and without it, side by side." and the placeholder "Ask a question…"
+- Pressing Ask sends POST /api/chat {patch_ids: [job.draft_id], mode: 'compare', messages:[{role:'user',content:…}]} signed with the teaching key's request-bound x-ngram-auth v2
+- Two panes render: [data-testid=answer-with] labelled "With your lesson" (primary border) and [data-testid=answer-without] labelled "Without it"; for a taught question the with-pane contains the taught answer and the two panes differ; an empty completion renders "—" rather than a blank box
+- For an untaught question the two panes are effectively the same answer — the visitor can see for themselves that the lesson is local
+- The Ask button is disabled while the field is empty and shows its loading state while the request is in flight
+
+**Evidence**
+
+- `packages/web/src/components/teach/LiveTestBox.tsx:26-57 (useChatMutation, patch_ids:[draftId], mode 'compare', data-testid live-test / live-test-q / live-test-go / answer-with / answer-without)`
+- `packages/web/src/pages/TeachLessonPage.tsx:297-302 (try-block rendered only when j.draft_id and the lesson did not fail)`
+- `packages/web/src/i18n/pages/teach.ts:500-505 (try_title/try_hint/try_ph/try_go/try_with/try_without)`
+- `packages/node/src/api.ts:363-376 POST /api/chat (patch_ids, caller.address = verified teaching key)`
+
+### AZ-191 - "Try it here" fails loudly, not silently: quota, model outage and a draft that is not yours
+
+**Goal:** The live A/B spends the ordinary live-test quota and shares the runtime with everyone, so every refusal must reach the visitor as a readable sentence instead of an empty pane (design §5.7).
+
+**Priority:** P1 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u :3422. Outage leg: point runtime.api at an unreachable port (http://localhost:8099) and restart. Live leg: LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- A READY lesson with a draft_id owned by key K1, and a second empty browser context holding a different key K2
+
+**Steps**
+
+1. With the runtime unreachable, ask a question in [data-testid=live-test-q]
+2. Exhaust the visitor live-test quota (repeat asks until the node answers 429) and ask once more
+3. From the K2 context, POST /api/chat {patch_ids:[<K1 draft id>], mode:'compare', …} signed with K2
+
+**Expected**
+
+- Outage: an Alert with role="alert" renders inside [data-testid=live-test]; the copy is the mapped runtime message "The model server is off or restarting. The lesson will continue automatically." (teach.err.runtime) — no empty answer panes and no console error
+- Quota: the alert reads the mapped rate-limit sentence "Too many requests. Try again in a moment." (teach.err.rate_limited) and the previous answers are cleared rather than shown as stale
+- K2 → the node answers 404 (not 500 and not the draft's content): a private draft is invisible to another teaching key even while the runtime is down
+- No response body ever exposes another visitor's draft id in /api/events (teach lines are redacted to "a private draft")
+
+**Evidence**
+
+- `packages/web/src/components/teach/LiveTestBox.tsx:33-40 (setOut(null) + mapTeachError on failure), :49 Alert role=alert`
+- `packages/web/src/components/chat/teachUtil.ts mapTeachError → teach.err.runtime / teach.err.rate_limited / teach.err.busy`
+- `packages/node/src/api.ts:64-84 (teach event redaction: 'a private draft', 'a teaching key'); Market.chat draft-visibility check before the runtime (commit 116b524: "404 not 500 for non-owners while vLLM is down")`
+
+### AZ-192 - Keep it private → Make download links: the .npz, recipe.json, RUN-LOCALLY.md, the sha256 and the 7-day expiry
+
+**Goal:** A visitor who publishes nothing still leaves with everything: the knowledge file, its recipe, the instructions and a fingerprint they can verify — on links that expire (design §5.10). v1 twin AZ-109 (token downloads); this one adds the keep sheet itself and the recipe's dataset block.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true; teach.draftTtlDays = 7
+- A READY lesson owned by the key in this browser
+- Operator raised the daily job quota; the test deletes the lesson and dataset it created and restores 5 / 3
+
+**Steps**
+
+1. On /teach/lesson/:jobId press [data-testid=go-keep]
+2. In the sheet select the radio [data-testid=keep-download] ("Download the knowledge file")
+3. Read the three links, the fingerprint and the expiry note; fetch each link
+4. Fetch the recipe link again with the token replaced by `deadbeef`
+
+**Expected**
+
+- The sheet title is "Keep it private" with the sub "Nothing is published. Pick how you want to keep it."; the default radio is "Keep it on this node for 7 days"; the download option's body reads "{size} MB · {rows} memory entries · link valid for 7 days; make a new one any time from Your knowledge."
+- Selecting the radio is itself the request for links: POST /api/teach/jobs/:id/save fires without a second click and returns {download:{npz_url, recipe_url, readme_url, expires_at}, sha256, rows, size_bytes, filename, repo_url, model_id}
+- Three links render: [data-testid=dl-npz] "Download the knowledge file (lesson-<draft-slug>.npz)" → /p2p/blob/<sha256>?token=<48 hex>&name=lesson-….npz; [data-testid=dl-recipe] "Download recipe.json" → /api/teach/jobs/:id/recipe?token=…; [data-testid=dl-readme] "Download RUN-LOCALLY.md" → /api/teach/jobs/:id/local-run?token=…
+- [data-testid=dl-sha] shows the 64-hex fingerprint labelled "File fingerprint (sha256)" with a Copy button, and it equals job.result.sha256; a note reads "Links expire: <localised date>" ≈ now + 7 days (matches save().download.expires_at)
+- GET on the npz link returns 200 with content-disposition attachment; filename="lesson-….npz" and the downloaded bytes hash to the shown sha256; GET on the recipe link returns application/json whose recipe carries facts[], sentences[], benchmark_samples[], heldout[] and the dataset block {sha256, rows, revision, source, trained_rows}
+- Recipe link with a wrong token → 401 "invalid_signature: download token missing, wrong or expired — make a new link from Your knowledge"; the blob link with a wrong token → 402 payment required (the p2p blob route falls through to x402), never the bytes
+
+**Evidence**
+
+- `packages/web/src/components/chat/KeepPrivateSheet.tsx:69-72 (pick('download') mints links), :102-122 (dl-npz / dl-recipe / dl-readme / dl-sha / dl_expires)`
+- `packages/web/src/i18n/pages/teach.ts:172-197 (teach.keep.*)`
+- `packages/node/src/teach.ts:1593-1612 save() (24-byte token, ttl = draftTtlDays·86 400 000, npz_url/recipe_url/readme_url, filename lesson-<slug>.npz)`
+- `packages/node/src/api.ts:637-648 (save / recipe / local-run; 401 on a bad token); observed on node-u: bad blob token → 402 {"error":"payment required: …"}`
+
+### AZ-193 - "Run it on my own machine": the hardware truth first, then the node's own RUN-LOCALLY.md
+
+**Goal:** The third keep option never pretends a 168 GB model runs on a laptop, and the commands it shows are the node's real document rather than a copy kept in the web app (design §5.10).
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- A READY lesson owned by the key in this browser
+
+**Steps**
+
+1. Open the keep sheet and select [data-testid=keep-run]
+2. Read [data-testid=run-hw] before ticking anything
+3. Tick [data-testid=run-toggle] ("I have this hardware — show me the commands")
+4. Read [data-testid=run-commands] and press "Copy commands"
+
+**Expected**
+
+- Before the tick, the only thing shown is the hardware sentence "This knowledge only works inside the exact model this node serves (Qwen3.8-Flash-Next, 168 GB). Running it yourself needs two 40 GB GPUs (or one 80 GB GPU) and about 110 GB of RAM. There is no laptop version yet." plus the note "Showing the commands first creates the download links (valid for 7 days)." — no commands and no POST /save yet
+- Ticking the box calls POST /api/teach/jobs/:id/save, then GETs download.readme_url and renders the markdown verbatim in [data-testid=run-commands], under the line "Shown exactly as this node wrote RUN-LOCALLY.md — the same file you can download."
+- The document starts "# Run this knowledge yourself", names the file `lesson-<slug>.npz` with its sha256, has "## Option A — live switch (recommended, reversible)" and a curl of /p2p/blob/<sha256>?token=… followed by `sha256sum` against the same hash; the closing note reads "The full guide (options A/B/C, watchdog) is in RUN-LOCALLY.md."
+- "Copy commands" puts only the fenced bash blocks on the clipboard (commandsOf), and [data-testid=run-readme] downloads the same file as RUN-LOCALLY.md
+- The command box scrolls in both directions; the sheet itself never scrolls horizontally at 360 px in en or ko
+
+**Evidence**
+
+- `packages/web/src/components/chat/KeepPrivateSheet.tsx:40-47 commandsOf(), :80-92 (fetch readme_url once the box is ticked), :123-146 (run-hw / run-toggle / run-commands / Copy commands / run-readme)`
+- `packages/web/src/i18n/pages/teach.ts:183-191 (run_title/run_hw/run_toggle/run_from_node/run_note/copy/readme)`
+- `packages/node/src/teach.ts:1630-1640 runLocallyMd() → renderRunLocally({model_id, sha256, filename, download_url, recipe_url, …}); api.ts:644-648 serves it as text/markdown`
+- `Observed on node-u: the rendered box contained the real RUN-LOCALLY.md including `ENGRAM_HOOK=1 … ./serve.sh` and `sha256sum lesson-….npz``
+
+### AZ-194 - Keeping a lesson private end to end: keep it on this node for 7 days, then delete it
+
+**Goal:** Everything a private visitor can do with a finished lesson without touching the marketplace: leave it on the node for its 7 days, or erase it — and the dataset survives the lesson either way (design §5.10, §5.7). The dataset download from the result screen is AZ-207.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- A READY lesson trained from an uploaded dataset, owned by the key in this browser
+
+**Steps**
+
+1. Open the keep sheet, leave the default radio "Keep it on this node for 7 days" and press [data-testid=keep-done] ("Done")
+2. Re-open the keep sheet and press [data-testid=keep-delete] ("Delete from this node"), accepting the confirm
+
+**Expected**
+
+- Pressing Done on the default option shows [data-testid=keep-kept]: "Kept on this node for 7 days. Try, download or publish it any time from Your knowledge." and posts nothing to /save
+- "Delete from this node" first raises the browser confirm "This removes the lesson and its file from this node. It cannot be undone. Continue?"; confirming calls DELETE /api/teach/jobs/:id → {ok:true,status:'CANCELLED'} and the page navigates to /teach/mine
+- The DATASET survives the lesson deletion (that is what makes "Train again" honest): it is still listed by GET /api/teach/datasets
+- Deleting an ANNOUNCED lesson instead → 409 published_immutable: "published knowledge cannot be deleted"
+- The dataset download from the result screen is asserted in AZ-207; this scenario is the lesson-side lifecycle only (keep on the node, delete it, and what survives).
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:224-229 (signedDownload of /api/teach/datasets/:id/download); packages/web/src/lib/teachDataset.ts:94-110 signedDownload()`
+- `packages/web/src/components/chat/KeepPrivateSheet.tsx:73-78 (del() + confirm, done() → kept), :96 keep-kept, :151 keep-delete`
+- `packages/node/src/api.ts:531-537 (dataset download, x-content-sha256), :596 DELETE /api/teach/jobs/:id`
+- `packages/node/src/teach.ts:862-864 cancel() — "the dataset is deliberately NOT deleted"; observed on node-u: operator DELETE of an ANNOUNCED job → {"error":"published_immutable: published knowledge cannot be deleted"}`
+
+### AZ-195 - Publish: name, price, licence, payout and the two consents → signed claim → ANNOUNCED with links to the page and the earnings
+
+**Goal:** Publishing is a deliberate, signed, validated act with the revenue split stated before the button — and the sheet keeps the confirmation instead of closing on success (design §5.9).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with teach.publish = 'auto' (PATCH /api/me/teach/policy {"publish":"auto"}; node-u was left at 'never' by a concurrent session on 2026-09-01 — read it back before running)
+- stub backend, teach.stubOffline true; a READY lesson (checks.ok, checks.executed, !checks.skipped) trained from a dataset of fewer than 100 rows, owned by the key in this browser
+- Operator raised the daily job quota; restores afterwards
+
+**Steps**
+
+1. On /teach/lesson/:jobId press [data-testid=go-publish]
+2. Clear the Name field, then type a 1-character name; type `abc` into Price
+3. Set Name to "AZ195 <TAG>", Price to "0.5", License to CC-BY-SA-4.0, payout "This browser's teaching key"
+4. Try to submit with only one consent ticked, then tick both and press [data-testid=pub-submit] ("Publish")
+
+**Expected**
+
+- The sheet title is "Publish your knowledge", sub "It goes on the public record through this node, credited to you."; the fields are Name, Description (optional), Shown as, "Price per download (CREDIT) — 0 = free" and License with exactly CC-BY-4.0 · CC-BY-SA-4.0 · CC0-1.0 · ODC-By-1.0 · Proprietary
+- Validation: a 1-char name shows "The name must be 2–80 characters." and `abc` shows "The price must be a number, 0 or more."; "Get paid to" offers "This browser's teaching key (0x…)", "My own wallet address" (a non-0x-40 value shows the invalid-address helper) and "No payment, just credit me"
+- The split line reads "You receive 70% of every sale. teachable-u keeps the rest for training, hosting and verification. If you ticked \"builds on\", the creators of that knowledge receive the network's creator share (30%) first." and matches GET /api/teach/policy shares {contributor:0.7, lineage:0.3}
+- [data-testid=pub-submit] stays disabled until BOTH [data-testid=consent-permanent] and [data-testid=consent-rights] are ticked; the footer note reads "Your teaching key signs a summary of the content, and the node writes that signature into the public record next to your name."
+- Submitting does GET /api/teach/jobs/:id/publish-challenge → signMessage(claim) in the browser → POST …/publish; the response is {status:'ANNOUNCED', patch_id:'taught-<slug>-<hex>', url:'/<node address>/<patch_id>'}
+- The sheet REPLACES itself with [data-testid=publish-done]: "Announced. Independent verifier nodes are now checking it on the real model; it goes on sale when 2 agree." plus [data-testid=publish-page-link] "Your knowledge page →" and [data-testid=publish-earnings-link] "Your earnings →" (/teacher/<address>) — closing is a separate click
+- The review-mode variant of this sheet is asserted in AZ-219.
+
+**Evidence**
+
+- `packages/web/src/components/chat/PublishSheet.tsx:33-55 (validation, LICENSES, payout modes, consentBad), :57-67 (challenge → signMessage → publish), :69-80 (success state keeps the sheet, page/earnings links), :119 split line`
+- `packages/web/src/i18n/pages/teach.ts:140-169 (teach.pub.*)`
+- `packages/node/src/teach.ts:1653-1679 publishChallenge()/publish(); packages/node/src/api.ts:623-635`
+- `Observed on node-u: POST …/publish → {"status":"ANNOUNCED","patch_id":"taught-walk2-lesson-7znyh-6e4ae8","url":"/0xf6FF…/taught-walk2-lesson-7znyh-6e4ae8"}`
+
+### AZ-196 - Rights declaration: publishing 100 questions or more needs the third, dataset-specific consent
+
+**Goal:** A large uploaded dataset is plausibly someone else's database, so the marketplace makes the uploader declare their right to it — with the real count in the sentence (design §12.2).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, teach.publish 'auto', GET /api/teach/policy limits.declaration_rows = 100
+- stub backend, teach.stubOffline true; the daily job and row quotas raised by the operator and restored afterwards
+
+**Steps**
+
+1. Create a 120-row dataset (POST /api/teach/datasets {source:'inline', name:'az196-<TAG>', rows:[120 × {prompt:'AZ196 <TAG> question N?', answer:'answer N'}]}) and train it to READY
+2. Open /teach/lesson/:jobId → [data-testid=go-publish]
+3. Tick only the two standard consents and try to submit; then tick the third and submit
+4. Repeat the whole flow with a 3-row dataset
+
+**Expected**
+
+- With 120 rows a third checkbox [data-testid=consent-declaration] is rendered, labelled exactly "You are publishing 120 questions. Confirm you have the right to share this data and that it contains no personal information — published lessons cannot be deleted."
+- [data-testid=pub-submit] is still disabled with only the two standard consents ticked, and becomes enabled only when all three are ticked
+- The count in the sentence is job.dataset.rows (the whole dataset), not job.facts.length — a 120-row dataset trained down to 100 questions still says 120
+- With a 3-row dataset the third checkbox is absent and two consents are enough
+- The published anchor carries no copy of the questions beyond the benchmark samples the visitor consented to; the dataset content itself is never published (only anchor.dataset = {sha256, rows, source})
+
+**Evidence**
+
+- `packages/web/src/components/chat/PublishSheet.tsx:52-54 (declarationRows from policy.limits.declaration_rows, needsDeclaration = (job.dataset?.rows ?? job.facts.length) >= declarationRows), :123-128 consent-declaration`
+- `packages/web/src/i18n/pages/teach.ts:154 teach.pub.declaration`
+- `packages/node/src/teach.ts:409-413 policy() → limits.declaration_rows = c.dataset.declarationRows (100 on node-u), :1571 anchor dataset is hash-only`
+- `Observed on node-u: a 120-row lesson rendered the declaration checkbox and Publish stayed disabled at 2/3 consents`
+
+### AZ-197 - Credit: the display name shown in "Shown as" must be the name the public record carries (file door)
+
+**Goal:** A visitor who names themselves in the teaching-key sheet and sees that name under "Shown as" must appear under it on the published knowledge page — otherwise the product promises credit and delivers anonymity (design §5.9, §5.12).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, teach.publish 'auto', stub backend, teach.stubOffline true
+- A teaching key whose `name` is set to "AZ197 Teacher" (via the credit sheet, or seeded into localStorage `ainize.teacher.key`)
+- Operator raised the daily job quota; the test deletes the dataset it created afterwards (an ANNOUNCED lesson cannot be deleted — run this on the disposable local-ledger node only)
+
+**Steps**
+
+1. Upload `az197-<TAG>.csv` (3 rows) through /teach/upload and train it from /teach/dataset/:id/settings — i.e. the FILE door, not the chat door
+2. On /teach/lesson/:jobId open the publish sheet and read the "Shown as" field
+3. Publish with both consents and the default payout
+4. GET /api/patches/<patch_id> and open /<node address>/<patch_id>
+
+**Expected**
+
+- The publish sheet's "Shown as" reads "AZ197 Teacher · 0x…"
+- GET /api/teach/jobs/:id shows contributor = {address, name: "AZ197 Teacher"}
+- The published anchor's contributors[0] carries name: "AZ197 Teacher" together with {share: 0.7, role: 'data_provider', proof: 'signed', sig}
+- The knowledge page's [data-testid=taught-by] reads "Creator node: teachable-u · Data provider: AZ197 Teacher (70%)" and the catalog card [data-testid=taught-chip] reads "Taught by AZ197 Teacher" — not "Taught by a visitor"
+- The same is true when the name is set only after the job was created, or the sheet must say plainly that the lesson will be published anonymously
+
+**Evidence**
+
+- `packages/web/src/pages/TeachSettingsPage.tsx:71-80 start() — the file door's POST /api/teach/jobs body has patch_ids / dataset_id / selected_indexes / training / name and NO `contributor` field`
+- `packages/web/src/components/chat/PreflightList.tsx:78 — the chat door does send `contributor: {name: contributorName}``
+- `packages/node/src/api.ts:579-583 (contributorName ← body.contributor?.name) → packages/node/src/teach.ts:726-729 (contributor_name) → :1667 (anchor contributor gets `name` only when j.contributor_name is set)`
+- `packages/web/src/components/chat/PublishSheet.tsx:97 shows `job.contributor.name ?? teacherKey.name` — the browser-side fallback is what hides the gap; packages/web/src/pages/PatchPage.tsx:142-166 renders provider.name ?? 'Taught by a visitor'`
+
+### AZ-198 - The data-provider share: pay my key, pay my wallet, or credit me with no payment (share 0)
+
+**Goal:** The 70 % contributor share is bound to a signed claim over a specific payout address, and refusing payment must really record share 0 rather than quietly paying the key (design §5.9, §7.2, §9.2).
+
+**Priority:** P1 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422, teach.publish 'auto', stub backend, teach.stubOffline true
+- Three READY lessons owned by the same teaching key (or one lesson re-run three times); the local-ledger node only
+
+**Steps**
+
+1. Lesson 1: GET /api/teach/jobs/:id/publish-challenge with no payout_address; sign the claim and publish
+2. Lesson 2: GET the challenge with payout_address = a different valid 0x-40 wallet; sign and publish
+3. Lesson 3: GET the challenge with payout_address = null; sign and publish
+4. Also try payout_address = the node's own address, and publishing lesson 1's claim signature on lesson 2
+
+**Expected**
+
+- Lesson 1: challenge = {patch_sha256, benchmark_hash, address: <teaching key>, signer: <teaching key>, share: 0.7, claim}; the anchor's contributors[0] = {address: key, share: 0.7, role:'data_provider', proof:'signed', sig} with NO `signer` field
+- Lesson 2: challenge.address = the wallet, challenge.signer = the teaching key, share 0.7; contributors[0] = {address: wallet, signer: key, share: 0.7, proof:'declared', sig}; /teacher/<wallet> does NOT list the lesson (a payout wallet never consented to be shown as the teacher) while /teacher/<key> does
+- Lesson 3 ("No payment, just credit me"): challenge.share = 0 and contributors[0].share = 0; the publish sheet's split line shows 0 % for the contributor
+- payout_address = the node's own address → 400 "invalid: payout_address cannot be this node's own address"; a malformed address → 400 "invalid: payout_address must be an AIN address"
+- Re-using another lesson's claim signature → 401 invalid_signature: the claim signature does not verify for this teaching key; announceJob refuses any draft with no verified claim by the owner's key (409 job_not_ready)
+- verifyMessage(hashCanonical({patch_sha256, benchmark_hash, address, share}), sig, signer ?? address) is true for every published anchor
+
+**Evidence**
+
+- `packages/node/src/teach.ts:1653-1658 publishChallenge() (share = payoutAddress === null ? 0 : contributorShare; node-address and format guards), :1666-1670 contributor construction (signer / proof signed|declared), :1686-1690 announceJob claim verification, :1738-1740 teacherProfile credits the SIGNER only`
+- `packages/web/src/components/chat/PublishSheet.tsx:37,61,110-119 (payoutMode key|wallet|none → payout_address undefined|address|null; split line uses pct(policy.shares.contributor))`
+- `Observed on node-u: challenge {address: 0x360E…, signer: 0x360E…, share: 0.7}; anchor contributors[0] = {address:0xBA26…, share:0.7, role:'data_provider', proof:'signed', sig:'0x14b4…'}`
+
+### AZ-199 - The published knowledge page: Taught-lesson chip, the data provider and their share, and the dataset provenance
+
+**Goal:** A buyer looking at taught knowledge must see who taught it, what share they get, and hash-only evidence of the dataset it was trained from — enough to verify a re-train used the same input without ever seeing the file (design §5.12, §D12). v1 twin AZ-111 (the "Taught by" chip); this one adds the data-provider share and the dataset provenance a buyer can verify.
+
+**Priority:** P0 - **Area:** detail - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with an ANNOUNCED lesson published from an uploaded dataset (see AZ-195), e.g. taught-<slug>-<hex>
+- No login needed — this is the public page
+
+**Steps**
+
+1. Open /<node address>/<patch_id>
+2. Read the header band and [data-testid=taught-by]
+3. Open /explore and find the same item's card
+4. Compare against GET /api/patches/<patch_id>
+
+**Expected**
+
+- The header shows the chip "Taught lesson" followed by "Creator node: teachable-u · Data provider: {name or 'Taught by a visitor'} (70%)", the link "This data provider's page →" (→ /teacher/<signer address>) and the button "Use it yourself →" (switches to the Buy tab)
+- The catalog card [data-testid=taught-chip] shows the same chip plus "Taught by {name}" / "Taught by a visitor" and its own "Use it yourself →" (→ /chat/<id>)
+- The page shows the dataset provenance the anchor carries — dataset fingerprint (sha256), question count and where it came from (uploaded file / a conversation / a sample) — labelled so a buyer understands the dataset content itself was never published
+- GET /api/patches/<patch_id> confirms anchor.origin = 'teach', anchor.dataset = {sha256, rows, source} and anchor.recipe.dataset = {sha256, rows, revision, source, name}; the two sha256 values are identical, and neither carries any question text beyond the benchmark samples
+- Clicking "This data provider's page →" lands on /teacher/<address>, which lists the lesson with its status and earnings (Earned / Paid / Pending) from GET /api/teacher/:address
+
+**Evidence**
+
+- `packages/web/src/pages/PatchPage.tsx:141-167 (provider = contributors.find(role==='data_provider'); TaughtChip t('detail.taught_badge'); detail.people / detail.published_by; detail.teacher_page; detail.use_yourself) — NOTE: nothing on this page reads `a.dataset``
+- `packages/web/src/components/public/PatchListItem.tsx:128-146 (taught-chip on the catalog card)`
+- `packages/web/src/i18n/pages/teach.ts:229-236 (detail.taught_by / taught_by_anon / people / taught_badge / use_yourself / published_by / teacher_page)`
+- `packages/core/src/types.ts:112-119 PatchAnchor.dataset (hash-only provenance) and :136-137 PatchRecipe.dataset; packages/node/src/teach.ts:1556-1571 sets both at draft creation`
+- `Observed on node-u: /0xf6FF…/taught-walk2-lesson-7znyh-6e4ae8 rendered "Taught lesson / Creator node: teachable-u · Data provider: Taught by a visitor (70%)" while GET /api/patches/… returned dataset {sha256:'093d1f4d…', rows:40, source:'upload'} that appears nowhere in the page text`
+
+### AZ-200 - "My datasets and lessons": dataset-first cards with fingerprint, source, retention and the four actions
+
+**Goal:** /teach/mine is organised around the durable object — the dataset — so "train it again", "add questions", "download" and "delete" are honest offers, and no lesson ever disappears (design §5.8, G5).
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- A teaching key in localStorage owning: one uploaded dataset with one READY lesson, and one v1-style lesson with no dataset of its own (POST /api/teach/jobs with a legacy `facts` body from the same key)
+- The test deletes what it created and restores the operator quota
+
+**Steps**
+
+1. Open /teach/mine
+2. Read the header lines and the dataset card
+3. Press [data-testid=ds-download], then [data-testid=ds-delete] and read the confirm dialog
+4. Cancel the confirm; press [data-testid=ds-retrain] and then, from the card again, [data-testid=ds-continue]
+5. Open the page in a browser with no teaching key
+
+**Expected**
+
+- Title "My datasets and lessons", sub "Everything you have taught from this browser. The dataset is the file; a lesson is what the model learned from it.", a retention line "Datasets you have not trained are deleted after 7 days." and the primary button "Upload a dataset" ([data-testid=mine-upload] → /teach/upload)
+- Each [data-testid=dataset-card] shows the name, "{n} questions", "Fingerprint {first 12 hex of sha256}", and a definition list: "Where it came from" = the file name for an upload / "your conversation" for a chat dataset / "a sample dataset"; "Created" = a localised date-time; and the retention cell = "Kept on this node until <date>." (or "Deleted as soon as training finishes." for retention delete_after_training)
+- Four actions: "Train again" ([data-testid=ds-retrain] → /teach/dataset/:id/settings), "Add questions" ([data-testid=ds-continue] → /teach/dataset/:id), "Download (.jsonl)" ([data-testid=ds-download] → signed GET /api/teach/datasets/:id/download, saved as dataset-<id>-r<rev>.jsonl), "Delete dataset" ([data-testid=ds-delete])
+- Under the card, "Lessons from this dataset (1)" lists the lesson as name · "Ready · private" · "learned 3/3" (from the index-aligned facts, never checks.taught) · "Open" → /teach/lesson/:jobId
+- Delete raises the confirm 'Delete "<name>"? Lessons already trained from it are kept.'; confirming calls DELETE /api/teach/datasets/:id → {ok:true,status:'deleted'}, shows the success alert "Dataset deleted.", and the lesson stays reachable (its result page then shows "The dataset for this lesson was deleted by its owner. The lesson itself is unchanged.")
+- The v1 lesson with no dataset appears under [data-testid=legacy-lessons] "Lessons made without a dataset" — never hidden
+
+**Evidence**
+
+- `packages/web/src/pages/TeachMinePage.tsx:114-120 (drop + confirm), :122-163 (title/sub/expires/mine-upload, DatasetCard wiring, legacy-lessons, mine-empty)`
+- `packages/web/src/components/teach/DatasetCard.tsx:56-96 (fingerprint, Meta dl, ds-retrain/ds-continue/ds-download/ds-delete, lessons list with teach.data.learned)`
+- `packages/web/src/i18n/pages/teach.ts:523-552 (teach.data.*), :teach.rows.source_chat 'your conversation'`
+- `packages/node/src/api.ts:525-537 (DELETE dataset, download); packages/node/src/teach-datasets.ts remove() — "the lessons trained from it are kept"`
+- `Observed on node-u: the card rendered "Fingerprint 8e6150fda8c5 · Where it came from ui-82hdt.csv · Kept on this node until Sep 8, 2026, 5:24 AM" and the dialog 'Delete "declaration 88hla"? Lessons already trained from it are kept.'`
+
+### AZ-201 - Fork a dataset, and honour "delete my file as soon as training finishes"
+
+**Goal:** A dataset is forkable (unchanged forks de-duplicate, a changed fork is a new dataset with a parent), and a visitor who asked the node to forget their file must not be offered actions that silently break (design §5.8, §11). Re-training the same dataset is asserted in AZ-180.
+
+**Priority:** P1 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422, stub backend, teach.stubOffline true
+- Operator raised jobs_per_ip_per_day / jobs_per_key_per_day; restores 5 / 3 afterwards
+- The test deletes every dataset and lesson it creates
+
+**Steps**
+
+1. Fork unchanged: POST /api/teach/datasets/<dsId>/fork {name:'az202 copy'}
+2. Fork with a change: POST /api/teach/datasets/<dsId>/fork {name:'az202 plus', rows_op:{op:'append', rows:[{prompt:'AZ201 <TAG> extra?', answer:'extra'}]}}
+3. Retention: upload a 2-row dataset from /teach/upload with [data-testid=retention] ("Delete my file as soon as training finishes") ticked, train it, then GET the dataset, GET its /download, and open its card on /teach/mine
+
+**Expected**
+
+- Fork unchanged → 200 with created:false and the SAME dataset id (identical canonical bytes for the same owner de-duplicate) — the caller is told nothing new was created
+- Fork with rows_op → 201, created:true, a new id, rows = original + 1, parent_dataset = the source id, source 'derived', name 'az202 plus'
+- Retention: after the lesson finishes, GET /api/teach/datasets/:id shows size_bytes 0 (status still 'ready') and GET …/download → 404 "dataset_not_found: the questions of this dataset are no longer on this node"
+- The /teach/mine card for that dataset states the file is gone and does NOT offer "Download (.jsonl)", "Train again" or "Add questions" as live buttons — today deleted_at is unset so all four actions render and Download errors, Train again fails with dataset_empty, and a fork of it silently produces a dataset containing only the appended rows
+- Every failing call answers with a JSON body carrying an `error` string (a 400 with an empty `{}` body was observed from POST /api/teach/jobs/:id/retrain when the dataset had no rows left)
+
+**Evidence**
+
+- `packages/node/src/api.ts:604-610 POST /api/teach/jobs/:id/retrain, :518-524 POST /api/teach/datasets/:id/fork, :531-537 download`
+- `packages/node/src/teach.ts:751-766 retrain() (parent_job, same dataset, quota re-charged); packages/node/src/teach-datasets.ts fork() → create(… parentDataset: d.id, source upload→derived) and afterTraining() (removeFiles(keepReport=true), size_bytes 0)`
+- `packages/web/src/pages/TeachUploadPage.tsx:60,117-118 ([data-testid=retention] → retention 'delete_after_training'); packages/web/src/components/teach/DatasetCard.tsx:70 (`deleted = !!dataset.deleted_at` — never true after a retention sweep)`
+- `Observed on node-u 2026-09-01: retrain → 202 QUEUED with parent_job set; fork with no rows_op → 200 same id; fork with append → 201 rows 4 parent set; retention dataset → size_bytes 0 and download 404; fork of that dataset → 201 with rows 1`
+
+### AZ-207 - The lesson carries its dataset: a signed download of exactly what it trained on, and an honest screen once the owner deletes it
+
+**Goal:** Every lesson must be able to hand back the questions it was trained on (owner-signed, fingerprint-verifiable), and once the dataset is deleted the result screen must say so instead of offering a download that cannot work.
+
+**Priority:** P1 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u in STUB mode
+- One READY lesson owned by this browser, trained from a 2-question dataset (chat or upload source)
+
+**Steps**
+
+1. Open /teach/lesson/<jobId> (step 5, the result screen)
+2. Press "Download the dataset this lesson was trained on" ([data-testid=download-dataset]) and keep the saved file
+3. Compute sha256 of the saved bytes and compare with GET /api/teach/datasets/<dsId>.sha256
+4. Go to /teach/mine, press "Delete dataset" on that dataset and accept the confirm dialog
+5. Reload /teach/lesson/<jobId>
+
+**Expected**
+
+- The result screen shows the line "This lesson came from <dataset name> (2 questions)" as a link to /teach/dataset/<dsId>, next to the button "Download the dataset this lesson was trained on"
+- The download is made with a signed request (x-ngram-auth on GET /api/teach/datasets/<dsId>/download); it saves dataset-<dsId>-r1.jsonl and its sha256 equals the dataset fingerprint exactly
+- The confirm dialog text is: Delete "<dataset name>"? Lessons already trained from it are kept. — after accepting, the success alert reads "Dataset deleted."
+- After the reload the lesson still renders with its status unchanged (READY) and its learned/side-effect tables intact, and shows: "The dataset for this lesson was deleted by its owner. The lesson itself is unchanged." ([data-testid=dataset-gone])
+- No download control for the deleted dataset is offered any more (neither the "came from" link nor "Download the dataset this lesson was trained on"): a control that can only produce dataset_not_found must not be shown
+- Cleanup: the lesson deleted via the operator bearer
+
+**Evidence**
+
+- `packages/web/src/pages/TeachLessonPage.tsx:221-240 (dataset link, download-dataset, dataset-gone)`
+- `packages/web/src/lib/teachDataset.ts signedDownload`
+- `packages/node/src/teach.ts:814-828 (datasetRef sets deleted:true but keeps id)`
+- `packages/node/src/api.ts:531-538 (GET /api/teach/datasets/:id/download)`
+
+## Chat teacher (visitor)
+
+### AZ-202 - The chat basket IS a dataset: "Your dataset · 2 questions", the file door's preview table, and a canonical .jsonl download
+
+**Goal:** Prove the chat door is the file door's front stage before anything is trained: the corrections collected in /chat render as a named dataset with a question count, open in the SAME preview table the upload wizard uses, and download as byte-identical canonical jsonl.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts.
+- GET /api/teach/policy → enabled true, publish 'auto', backend 'stub'
+- Fresh browser context (empty localStorage) so ainize.teach.basket.* starts empty
+
+**Steps**
+
+1. Open http://localhost:3422/chat?teach=1 — the info banner [data-testid=teach-banner] reads: Wrong answer? Click "Teach the right answer" under any reply and the model learns it. No account needed.
+2. Send: Who operates the Ainize teaching node AZ202? ; under the reply click the button "Teach the right answer" ([data-testid=teach-base] or teach-patched)
+3. In the drawer (title "Teach the right answer", sub "Tell it what it should have said. Short, exact answers work best.") fill "The right answer" = Comcom and "Ask it another way (optional)" = Which company runs the Ainize teaching node AZ202? ; press "Add to lesson"
+4. Send: What year did the AZ202 pilot start? ; teach the right answer 2020 with no other phrasing
+5. In the basket panel [data-testid=lesson-basket] press "View all", then close the sheet and press "Download (.jsonl)"
+6. Press the link "Or upload a file instead"
+
+**Expected**
+
+- The basket heading is exactly "Your dataset · 2 questions" (one correction would read "Your dataset · 1 question"), with the sub line "Every correction you make in the chat is added here."
+- Each item shows "1. Who operates the Ainize teaching node AZ202?" / "Answer: Comcom" / "Other phrasing: Which company runs the Ainize teaching node AZ202?" and a "Remove ×" control
+- "View all" opens a sheet [data-testid=basket-sheet] titled "Your dataset" whose table has the file door's own headers: Line · Question · Right answer · Another way to ask (optional) · Status (the shared components/teach/DatasetTable)
+- "Download (.jsonl)" saves your-dataset-<YYYY-MM-DD>.jsonl whose bytes are exactly: {"prompt":"Who operates the Ainize teaching node AZ202?","answer":"Comcom","alt_prompt":"Which company runs the Ainize teaching node AZ202?"}\n{"prompt":"What year did the AZ202 pilot start?","answer":"2020"}\n — key order prompt,answer,alt_prompt, one trailing LF, no BOM
+- "Or upload a file instead" navigates to /teach/upload (step 1 of the same 5-step Stepper: Dataset · Check · Settings · Training · Result)
+- The primary button reads "Teach from this dataset (2)" and is enabled (teaching is open on this node)
+- No console errors on /chat?teach=1
+
+**Evidence**
+
+- `packages/web/src/components/chat/LessonBasket.tsx:70-120 (title_ds/title_one, basket-view, basket-download, basket-upload-link, train-lesson)`
+- `packages/web/src/i18n/pages/teach.ts:554-565 (teach.basket.title_ds/sub_ds/view/download/train_ds/upload_link)`
+- `packages/web/src/lib/teachDataset.ts:17-40 (canonicalJsonl, basketFilename)`
+- `packages/web/src/components/teach/DatasetTable.tsx`
+
+### AZ-203 - Freeze receipt: pressing Teach turns the basket into a file — named .jsonl, fingerprint on the dataset page, sha256 equal to the downloaded bytes
+
+**Goal:** The owner's "대화형은 파일형의 전단계" must be visible, not internal: after Teach the visitor is told the corrections became a file, is given its name and a link to it, and the node's stored sha256 equals the sha256 of the .jsonl the basket downloaded a moment earlier.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- AZ-202 has just run in the same browser context (basket holds the 2 corrections and its .jsonl download is on disk)
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts. The stub trainer teaches nothing, so the lesson may honestly end NEEDS_MORE — no assertion below depends on READY.
+
+**Steps**
+
+1. Press "Teach from this dataset (2)"; in the sheet that opens press the queue button (the pre-flight list runs POST /api/teach/preflight first)
+2. Wait for the lesson card [data-testid=lesson-card] to appear in the transcript
+3. Read [data-testid=freeze-note] and follow its "View all" link
+4. On /teach/dataset/<dsId> read the top bar
+5. Call GET /api/teach/jobs/<jobId> signed with this browser's teaching key (x-ngram-auth v2)
+
+**Expected**
+
+- The lesson card carries a receipt reading exactly: Your 2 corrections were saved as your-dataset-<YYYY-MM-DD>.jsonl. From here the steps are the same as for an uploaded file. — followed by a "View all" link
+- That link opens /teach/dataset/<dsId>, titled "Check your dataset", subtitled "2 questions from your-dataset-<YYYY-MM-DD>.jsonl. Fix anything marked in red, then see which ones the model already knows."
+- The bar shows "Fingerprint <first 12 hex of sha256>" and "Saved as your-dataset-<YYYY-MM-DD>.jsonl — you can train from it again any time."
+- GET /api/teach/jobs/<jobId> → job.dataset = { id: <dsId>, source: "chat", rows: 2, trained_rows: 2, revision: 1, name: "your-dataset-<YYYY-MM-DD>", sha256: <64 hex> } and that sha256 equals sha256 of the file AZ-202 downloaded, and its first 12 chars equal the fingerprint on screen
+- The basket is emptied: heading back to "Your dataset · 0 questions" with "Your dataset is empty. When an answer is wrong, click "Teach the right answer" under it."
+- Cleanup: DELETE /api/teach/jobs/<jobId> and DELETE /api/teach/datasets/<dsId> (operator bearer) both return 200
+
+**Evidence**
+
+- `packages/web/src/components/chat/LessonCard.tsx:188-192 (freeze-note + basketFilename(j.created_at))`
+- `packages/web/src/i18n/pages/teach.ts:563 (teach.basket.freeze_note)`
+- `packages/node/src/teach.ts:655-663 (chat basket frozen to canonical bytes on createJob)`
+- `packages/web/src/pages/TeachDatasetPage.tsx:192-200 (teach.data.fingerprint, teach.rows.saved_note)`
+
+### AZ-205 - The frozen chat dataset appears in My datasets and can be re-trained from there (en + 한국어)
+
+**Goal:** A dataset born in chat is the same durable object as an uploaded one: it is listed under /teach/mine as "From a conversation", it can be trained again without re-typing anything, and the second lesson attaches to the same dataset id.
+
+**Priority:** P0 - **Area:** teach - **Automation:** e2e
+
+**Preconditions**
+
+- node-u in STUB mode (teach.stubOffline true)
+- The browser holds a teaching key that owns one chat-source dataset with 2 questions and one finished lesson (seed with POST /api/teach/jobs {facts:[…]} signed with that key, as in AZ-204, and wait for READY)
+
+**Steps**
+
+1. Open http://localhost:3422/teach/mine
+2. Read the dataset card [data-testid=dataset-card]
+3. Press "Train again" ([data-testid=ds-retrain])
+4. On /teach/dataset/<dsId>/settings press "Train this lesson (2 questions)"
+5. Wait for the lesson to leave the active statuses, return to /teach/mine
+6. Click the header language button (aria-label="language", label 한국어) and re-read the card
+
+**Expected**
+
+- The page is titled "My datasets and lessons" with "Everything you have taught from this browser. The dataset is the file; a lesson is what the model learned from it." and the line "Datasets you have not trained are deleted after 7 days."
+- The card shows: your-dataset-<YYYY-MM-DD> · "2 questions" · "Fingerprint <12 hex>" · Where it came from: "From a conversation" · Kept on this node until <date> · buttons Train again / Add questions / Download (.jsonl) / Delete dataset
+- Before the retrain the card lists "Lessons from this dataset (1)" with the status "Ready · private" and "learned 2/2" plus an "Open" link to /teach/lesson/<jobId>
+- /teach/dataset/<dsId>/settings shows "Dataset: your-dataset-<YYYY-MM-DD> · 2 questions · fingerprint <12 hex>" and the submit button "Train this lesson (2 questions)"
+- After the second run the card reads "Lessons from this dataset (2)" and GET /api/teach/jobs shows two jobs whose dataset.id is the same <dsId>
+- After the toggle the same card reads: 내 데이터셋과 수업 / 질문 2개 / 지문 <12 hex> / 출처: 대화에서 / 다시 학습 / 질문 추가 / 내려받기 (.jsonl) / 데이터셋 삭제 / 이 데이터셋의 수업 (2개)
+- Cleanup: both jobs and the dataset deleted; locale set back to en
+
+**Evidence**
+
+- `packages/web/src/pages/TeachMinePage.tsx:30-108 (byDataset grouping, DatasetCard wiring)`
+- `packages/web/src/components/teach/DatasetCard.tsx:56-92 (ds-retrain/ds-continue/ds-download/ds-delete, teach.data.lessons)`
+- `packages/web/src/pages/TeachSettingsPage.tsx:110-113 (teach.set.dataset), :162-166 (teach.set.train)`
+- `packages/web/src/i18n/pages/teach.ts:432-455 (teach.data.*), packages/web/src/i18n/pages/common.ts:42 (common.locale)`
+
+### AZ-206 - The chat basket stops at 8 corrections — a number the browser holds, not the node
+
+**Goal:** The chat door's per-lesson cap must be the node's "Corrections per lesson" setting. Today the browser hard-codes 8 (MAX_FACTS, and the literal 8 inside the sentence), so an operator who lowers the limit gets a basket that keeps accepting corrections and a lesson the node then refuses — the gap this scenario pins (design §5.5, §11).
+
+**Priority:** P1 - **Area:** teach-limits - **Automation:** e2e
+
+**Preconditions**
+
+- LIVE-MODEL MODE on node-u :3422 — set config runtime.api=http://localhost:8002 (container flashnext-e2e, GPUs 4+5, patch hook on) and teach.stubOffline=false, then restart the node WITH ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e in its environment (`kill` the pid from `ss -ltnp | grep 3422`, then `ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e nohup node packages/cli/dist/bin.js --home $HOME/.ngram-teachable/node-u start &`). There is NO runtime.patchDir config key — the hook reads that env var. node-u ships runtime.api=http://localhost:8000, which the owner forbids: never :8000 or :8001, and no work on GPUs 0-3. Teardown restores runtime.api and teach.stubOffline=true and restarts. A correction can only be made under a real model reply, so the chat door needs the live model even though training stays stubbed.
+- Operator password teachable-pass; RECORD GET /api/me/teach/policy before the run and restore it at the end (node-u ships facts_per_job 8).
+- Fresh browser context, locale en-US, empty localStorage (the basket lives in localStorage under ainize.teach.basket.*).
+
+**Steps**
+
+1. Open /chat?teach=1 and make eight corrections: ask eight run-unique questions and, under each reply, use "Teach the right answer" → "Add to lesson".
+2. Read the basket heading and the primary button; open the drawer for a ninth correction and read the alert and the state of [data-testid=teach-add].
+3. As the operator, set "Corrections per lesson" to 6 on /dashboard?tab=teaching and press "Save settings"; confirm GET /api/teach/policy limits.facts_per_job is 6.
+4. Back in the visitor context (reload /chat?teach=1 so the policy is re-fetched), try to add a seventh and an eighth correction to a fresh basket.
+5. Press "Teach from this dataset (8)" and read what the node answers and what the screen shows.
+6. Restore facts_per_job and delete anything created.
+
+**Expected**
+
+- With eight corrections the basket heading reads "Your dataset · 8 questions" and the button reads "Teach from this dataset (8)"; an info alert inside the basket reads "A lesson holds up to 8 corrections. Train this lesson first."
+- In the drawer for a ninth correction the same sentence appears as a warning alert and [data-testid=teach-add] is disabled — the ninth correction is never added, and the eight already collected are not touched.
+- The Korean sentence carries the same hard-coded number: "한 수업에는 바로잡기 8개까지 넣을 수 있습니다. 먼저 이 수업을 학습시키세요."
+- After the operator lowers the limit to 6, GET /api/teach/policy reports limits.facts_per_job 6 — but the browser still accepts a seventh and an eighth correction and still writes "up to 8", because the cap comes from MAX_FACTS = 8 in the bundle and from the literal 8 inside the i18n string, not from the policy.
+- Pressing Teach with 8 corrections against a node set to 6 is then refused by the node with 400 "invalid: 1..6 corrections per lesson", which the chat screen shows as its generic mapped sentence — the visitor is stopped after typing eight answers instead of at the seventh.
+- The scenario passes only once the cap is the node's: the drawer and the basket must read policy.limits.facts_per_job (falling back to 8 when the policy has not loaded) and the sentence must take the number as a parameter in both locales — after that fix, with facts_per_job 6 the seventh correction is refused in the browser and the node is never asked.
+
+**Evidence**
+
+- `packages/web/src/lib/teachStore.ts:11 (MAX_FACTS = 8) and :28 (the basket is sliced to it on load)`
+- `packages/web/src/pages/ChatPage.tsx:289 (a correction is dropped when facts.length >= MAX_FACTS), :434 (full={…} passed to the drawer)`
+- `packages/web/src/components/chat/TeachDrawer.tsx:43,78,82 (v_full alert, Add disabled) and packages/web/src/components/chat/LessonBasket.tsx:112 (the same string in the basket)`
+- `packages/web/src/i18n/pages/teach.ts:29 teach.drawer.v_full — the number 8 is inside the sentence, en and ko`
+- `packages/node/src/teach.ts:656 (`invalid: 1..${c.factsPerJob} corrections per lesson`), :408 (facts_per_job published in the policy); packages/web/src/components/operator/TeachingTab.tsx:98 (the operator knob)`
