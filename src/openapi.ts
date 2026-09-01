@@ -143,7 +143,7 @@ export function buildOpenApi(base: string, version: string) {
     tags: [
       { name: 'Find knowledge', description: 'catalog, detail, same-subject listings (no auth)' },
       { name: 'Live test', description: 'compare the model\'s answer before vs after the knowledge is loaded (trial quota)' },
-      { name: 'Teach', description: 'visitors correct the model in Live test; this node trains a lesson, checks it in the live model and lets the visitor keep it private or publish it as a credited data provider (no sign-in — requests are signed with a browser-held teaching key)' },
+      { name: 'Teach', description: 'one pipeline, two doors: a dataset file (uploaded here, or with `ainize teach dataset`) and corrections collected in Live test are both frozen into the same canonical dataset → validated → trained → checked on the live model → a lesson its teacher can keep private or publish as a credited data provider (no sign-in — every request is signed with a teaching key held by the browser or the CLI)' },
       { name: 'Automatic payment & download', description: 'the x402 flow and blob download' },
       { name: 'Register & sell knowledge', description: 'operator: register → announce → verified → sold' },
       { name: 'Public record', description: 'ledger, provenance graph, network' },
@@ -324,7 +324,7 @@ export const CLI_REFERENCE = {
     publish: { ko: '지식 올리기 (한 줄)', en: 'Publish knowledge (one line)', cmd: 'ainize publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25' },
     use: { ko: '지식 쓰기 (한 줄)', en: 'Use knowledge (one line)', cmd: 'ainize use krx-all-2761        # check verification → pay automatically → download → load into your model' },
     test: { ko: '사기 전에 라이브 테스트', en: 'Try before you buy', cmd: 'ainize chat krx-all-2761 "픽셀플러스 종목코드 알려줘. 숫자만."   # the knowledge is Korean stock data, so ask in the trained phrasing' },
-    teach: { ko: '모델 가르치기 (브라우저)', en: 'Teach the model (browser)', cmd: 'ainize teach status http://localhost:3402        # is this node accepting lessons? then teach in the browser: /chat?teach=1' },
+    teach: { ko: '모델 가르치기 (파일 한 개)', en: 'Teach the model (one file)', cmd: 'ainize teach dataset ./questions.csv --train        # question,answer rows → a checked lesson (or teach in the browser: /teach)' },
   },
   groups: [
     { name: 'Getting started', commands: [
@@ -348,11 +348,19 @@ export const CLI_REFERENCE = {
       { cmd: 'ainize wallet', desc: 'balance, sales, creator revenue share, pending royalty payouts' },
       { cmd: 'ainize payouts ls [--status failed] | retry <id>', desc: 'royalty transfers this node owes creators and data providers (AIN ledger); retry a failed one' },
     ] },
-    { name: 'Teach mode (lessons taught by visitors)', commands: [
-      { cmd: '<node>/chat?teach=1', desc: 'the teaching itself is a browser flow (no account: a teaching key is generated in the browser — download its backup); try / keep private / publish a ready lesson there' },
-      { cmd: 'ainize teach status <node-url>', desc: 'is the node accepting lessons? publish mode (review/auto/never), trainer state, queue and typical duration, quotas, data-provider share' },
-      { cmd: 'ainize teach status <lesson-url | job-id> [--key-file <backup.json>]', desc: 'status of one lesson; with your teaching key: progress, side-effect checks, before/after answers, draft / published id' },
+    { name: 'Teach mode (turn your own questions and answers into knowledge)', commands: [
+      { cmd: 'ainize teach dataset <file.jsonl|.json|.csv|.tsv|.txt>', desc: 'validate and upload a dataset. Nothing is trained yet: the node prints every source line it will NOT train, with its line number and the reason (duplicate, two answers for one question, no answer, too long, unreadable)' },
+      { cmd: 'ainize teach dataset <file> --train [--effort quick|balanced|thorough]', desc: 'file → lesson in one line — the same pipeline the browser runs: dataset → validate → train → side-effect check on the live model → a knowledge file you can test, keep private or publish' },
+      { cmd: 'ainize teach train <dataset-id | file> [--effort --rows N --name … --wait]', desc: 'teach a lesson from a dataset you already uploaded (or from a file, which is uploaded first). --wait follows it stage by stage; --no-check skips the side-effect check, and publishing then stays blocked until it is measured' },
+      { cmd: 'ainize teach dataset ls', desc: 'your datasets on this node: questions, fingerprint, revision, which lessons came from each, when they are swept' },
+      { cmd: 'ainize teach dataset get <id> [-o questions.jsonl] [--all] [--status rejected]', desc: 'one dataset with its per-line report; -o downloads exactly what a lesson was trained on (re-uploading that file lands on the same dataset)' },
+      { cmd: 'ainize teach dataset rm <id>', desc: 'delete a dataset (the lessons trained from it are kept, but can no longer be re-trained from their questions)' },
+      { cmd: 'ainize teach jobs', desc: 'your lessons on this node and the dataset each came from' },
+      { cmd: 'ainize teach status <node-url>', desc: 'is the node accepting lessons? publish mode (review/auto/never), trainer state, queue, dataset and daily limits, measured duration, data-provider share' },
+      { cmd: 'ainize teach status <lesson-url | job-id> [--key-file <backup.json>]', desc: 'status of one lesson; with your teaching key: the dataset it came from, effort, progress, side-effect checks, before/after answers, draft / published id' },
       { cmd: 'ainize teach status <node>/teacher/<address>', desc: 'a data provider\'s public page: lessons, sales, earned / paid / pending' },
+      { cmd: '<node>/teach', desc: 'the same two doors in the browser: upload a dataset file, or collect corrections in Live test (<node>/chat?teach=1) and press Teach — the basket is frozen into the same canonical dataset file and runs the same pipeline' },
+      { cmd: '--key-file <backup.json>   ·   NGRAM_TEACH_KEY', desc: 'the teaching key every teach request is signed with — there is no account, the key IS the identity. Without one the CLI keeps its own at <NGRAM_HOME>/teaching-key.json (created on first use, mode 0600): back it up, it is the only way back to your lessons and their earnings' },
       { cmd: 'ainize patch import <lesson.npz> --recipe recipe.json', desc: 'run a downloaded lesson on YOUR node: private DRAFT (file kept in place, benchmark from the recipe), no announce, no ledger record — then `patch apply` / `chat`' },
     ] },
     { name: 'Records & network', commands: [

@@ -972,3 +972,28 @@ Files: `packages/web/src/lib/teacherKey.ts`, `packages/web/src/api/api.ts`, `pac
 - **Lesson card scrolls into view on every status change** (`LessonCard.tsx`, found in the browser walk: `verify-07-ready.png` showed the READY card scrolled out of the transcript, which auto-scrolls to the newest reply). On a status transition the card calls `scrollIntoView({ block: 'nearest' })` when its rect is outside the viewport — the transcript container and the page both scroll as needed; nothing moves while the status is unchanged.
 - **OpenAPI.** `/api/chat/patches` and `/api/chat` descriptions mention the v2 header and the owner-only rule for private drafts.
 - **Verification (node-t :3412, rebuilt + restarted, stub backend, vLLM :8000 up for the runtime steps).** core 16/16; node payouts 10 + teach 22 + chat 5 + cluster 7 = 44/44; CLI 15/15; web `teacherKey.test.ts` 6/6 (new v2 test); `tsc --noEmit` + `vite build` clean. Playwright (`AINIZE_URL=http://localhost:3412 AINIZE_PASS=teach-pass … --project=web`): `web-teach-operator.spec.ts` 7/7; `web-teach.spec.ts` 9/9 — AZ-120 is flaky (its first attempt fails with `apiRequestContext.fetch: read ECONNRESET` on the stranger's first API call right after a second browser context is closed, 3 of 4 first attempts across two full runs; the retry and an isolated `--repeat-each 6` pass, and no server code touches sockets — harness flake, not a product bug; no `@mobile` tests in the teach specs). Browser walk (`packages/e2e/results/verify-walk.mjs` → `verify-01…15.png`): landing creator card → `/chat?teach=1` → drawer → basket → key sheet → pre-flight → READY (`Ready · private`, "It learned it — 2 of 2 answers correct.", simulated note) → Try it now (`POST /api/chat` carries `…:v2`, answers "After loading 2") → Keep it private (npz 3.85 MB sha256 matches, recipe.json with the prompt, RUN-LOCALLY.md with sha + `ainize patch import`, run commands from the node) → Publish (announced, card `Being verified`) → `/teacher/<address>` → `/explore` "Taught by Verify Teacher" chip → knowledge page "Data provider: Verify Teacher (70%)" → operator Teaching tab (trainer ready · backend stub, the lesson in the queue table, contributor row, payouts 0/0/0). Security re-check with curl/fetch (20/20): rotating `X-Forwarded-For` still hits `429` at the 31st `/api/teach/policy` call; approve on a READY job → `409 job_not_ready`; another key / anonymous reading a job → `{id,status}` only, cancel/publish → `403 not_owner`; v2 header replayed on another path/method, with a tampered body, for another node, or a second time → `401`; legacy exact replay → `401`; anonymous / other key `POST /api/chat` on a private draft → `404`; `/api/patches/<draft>/events` → `404`; public `/api/events?kind=teach` → 0 leaking rows; negative price → `400`. Known: the legacy `teach:<ts>` header is still accepted on a different route than it was first used on (transition gap, documented above); the stub lesson's "After" answer is still wrong on the real model (the stub npz is a fixture copy — expected on a demo node).
+
+---
+
+## CHANGES — teach mode v2 (the dataset pipeline) lives in `docs/teachable-dataset-design.md`
+
+Everything in this document still holds: the teaching key and its signature, the pre-flight `already_known` gate, the
+job state machine, the side-effect / parent-regression publish gates, quotas and bans, review vs auto publishing, the
+7-day private draft with `recipe.json` + `RUN-LOCALLY.md`, and the payout split. Teach mode **v2** does not replace any
+of it — it puts a first-class **dataset** in front of the same pipeline and adds a second door into it:
+
+- **One pipeline, two doors** — `dataset → validate → pre-flight → train → check → lesson`. The chat door of this
+  document is the file door's front half: pressing *Teach* freezes the correction basket into a canonical `.jsonl`
+  file with a sha256, and everything after that is byte-identical to an upload.
+- A lesson taught by either door records `dataset` (id, sha256, revision, source, `trained_rows`), so it can be
+  downloaded, re-trained and continued from its own questions. A **v1 lesson keeps working untouched**: it renders,
+  publishes and pays out with `dataset.id: null`, and a dataset is written from its questions only when its owner first
+  asks to download or re-train it.
+- New surfaces: `/teach` (upload → preview → settings → progress → result → my datasets) in the browser and
+  `ainize teach dataset` / `teach train` / `teach jobs` in the terminal, plus `POST /api/teach/datasets` and friends.
+- The per-lesson question cap is no longer `factsPerJob: 8`: it is derived from the trainer's measured seconds per
+  question (`rows_per_job`, floor 8 on gradient / 200 on stub, ceiling 1000), and the daily quotas count **questions
+  and bytes** as well as lessons.
+
+Read `docs/teachable-dataset-design.md` for the design, and its CHANGES sections (PR-D1 core + node, PR-D2 web,
+PR-D3 CLI + docs) for what was actually built and where it deviates.

@@ -1712,3 +1712,107 @@ produce), `jobs_per_key_per_day: 20` / `jobs_per_ip_per_day: 50` (four full runs
 `declaration_rows: 10` (to see the publish declaration gate refuse and then allow). All are back to their designed
 values (`rows_per_job` derived — 200 on stub, jobs 3/5, declaration 100). Fresh visitor buckets came from
 `x-forwarded-for` (the node runs with `server.trustProxy: true`), never from touching the shared demo cluster.
+
+---
+
+## CHANGES — PR-D3 (CLI + docs, 2026-09-01)
+
+Implements §7.4 (CLI parity) and the documentation half of the plan's **PR-D9**: the file door from the terminal, the
+`/docs` CLI reference the node serves, and the README's two-door description. No core, node-behaviour, trainer or web
+component change — the only node file touched is `openapi.ts` (the CLI reference block, the `Teach` tag description and
+the teach one-liner), and the only web file is `DocsPage.tsx` plus its two i18n strings.
+
+**Files.** `packages/cli/src/commands/teach-dataset.ts` (new) · `packages/cli/src/commands/teach.ts` (v2 fields on the
+response types, the dataset / effort / progress / sampled lines, the read-only key fallback) · `packages/cli/src/bin.ts`
+(the `teach dataset` / `teach train` / `teach jobs` commands) · `packages/cli/src/client.ts` + `context.ts`
+(`CliError.details`) · `packages/cli/test/cli.test.ts` (five new tests) · `packages/node/src/openapi.ts` ·
+`packages/web/src/pages/DocsPage.tsx` · `packages/web/src/i18n/pages/docs.ts` · `README.md` ·
+`docs/teach-mode-design.md` (a pointer section) · this file.
+
+**What shipped**
+
+```
+ainize teach dataset <file> [--name --format --delimiter --no-header --columns --encoding --retention]
+                            [--train [--effort quick|balanced|thorough] [--no-check] [--rows N]]
+ainize teach dataset ls
+ainize teach dataset get <id> [-o out.jsonl] [--format jsonl|csv] [--all] [--status rejected] [--rows --offset]
+ainize teach dataset rm <id>
+ainize teach train <dataset-id | file> [--effort --rows N --name --patch a,b --no-check --no-alt --wait]
+ainize teach jobs [--dataset <id>]
+ainize teach status [target]        # unchanged targets; now prints the dataset, the effort and the check sample
+```
+
+Every one of them signs with a teaching key and prints the node's own report — the CLI parses nothing about a dataset
+itself, so there is exactly one parser (design §8) and the terminal cannot disagree with the browser.
+
+### Deviations from §7.4
+
+1. **`teach train <dataset-id | file>` is a positional, not `--dataset <id>`.** §7.4 spells `teach train --dataset <id>`.
+   A positional accepts a **path** too and uploads it first, which is what makes `ainize teach dataset ./q.csv --train`
+   and `ainize teach train ./q.csv` — the one-line file door, the whole point of the Teachable-NLP shape — expressible
+   without a second flag. A dataset id is a uuid, so the two forms can never be confused.
+2. **`get` is the primary name; `download` is an alias.** §7.4 lists `download <id> [-o out.jsonl]`. `get` matches
+   `patch get` (the rest of the CLI) and, unlike a bare download, also prints the per-line report — which is the only
+   terminal surface for the G3 promise ("every line that did not train is named, with its source line and the reason").
+   `-o` still writes the canonical bytes and verifies them against the dataset fingerprint before saying so.
+3. **`ainize teach jobs` is new** (not in §7.4). Without it there is no way from the terminal to see which lesson came
+   from which dataset; `teach status <node>` lists lessons but not their datasets, and widening that table would have
+   changed a v1 surface.
+4. **The teaching key is created by the CLI when none is given** — `<NGRAM_HOME>/teaching-key.json`, mode 0600, the same
+   JSON the browser downloads as a backup, with a one-line warning on the run that creates it. §7.4 does not say where a
+   terminal user's key comes from, and requiring `--key-file` would make `ainize teach dataset ./q.csv` impossible as a
+   first command (the browser mints one silently in exactly the same situation). `teach status` **reads** that file but
+   never creates one: a read-only command must not mint an identity.
+5. **`CliError` gained an optional `details`** (the node's JSON error body, filled in `client.ts`). A refused upload
+   (`400 dataset_empty` / `dataset_format`) carries the report, and the CLI now prints it before the error line — so
+   "that file has no usable questions" is followed by the lines it read and why each failed, instead of a dead end.
+   Additive: every existing call site is unchanged.
+6. **`teach status <lesson>` grew more than "a dataset line".** It also prints the effort preset (`quick · 8 passes,
+   evaluated every 2`), the training phase and elapsed time, the check's **sample size** when the dataset was too big to
+   check whole, and `checks.simulated` / `checks.skipped` as their own notes. Each is a promise made elsewhere in this
+   document that had no terminal surface.
+7. **v1 copy fix, terminal side:** `checks.taught` counts trained **sentences** (a question is rendered more than one
+   way), so the line reads `20/20 trained sentences answer right` instead of v1's `20 answers now right`, which claimed
+   more questions than a 10-question lesson had. Same bug and same fix as PR-D2's result screen (§CHANGES PR-D2, D2).
+8. **`--rows N` is `training.rows_limit`**, not a client-side slice: the node picks the deterministic sample
+   (`seed = sha256(dataset_sha256:revision)`), so `--rows 10` twice trains the same ten questions.
+9. **No `reparse` / `fork` / `add questions` verbs.** §7.4 lists none, and §11's editing flows are built around a
+   preview table; `--format` / `--delimiter` / `--no-header` / `--columns` / `--encoding` on the **upload** cover the
+   "wrong columns?" case for a terminal user (the same bytes, read another way, before anything is stored).
+10. **Docs entry point moved.** The `/docs` teach one-liner is now `ainize teach dataset ./questions.csv --train`
+    (was `teach status`), its card links to `/teach` (was `/chat?teach=1`), and `docs.oneline.teach.help` was rewritten
+    in both locales to describe one pipeline with two doors. The `Teach` OpenAPI tag description says the same.
+
+### Verified on the dev node (`$HOME/.ngram-teachable/node-u`, port 3422, `backend: 'stub'`, rebuilt and restarted)
+
+- A 28-line Korean CSV (25 tickers + a duplicate + a contradiction + a line with no answer) → `teach dataset`:
+  201, `csv` / `,` / header / `utf-8` detected, `24 of 28 lines will train · not used: 1 duplicate, 2 contradicting,
+  1 empty`, the four bad lines listed with their **source line numbers** (3, 27, 28, 29) and the node's reason, the
+  shared-ending advisory, the fingerprint, and the next-step commands.
+- `teach train <id> --effort balanced --rows 10 --wait` → stage lines to READY, then the lesson view: `dataset KRX 25 ·
+  trained 10 of 24 questions · revision 1 · 617cbe78dd9a…`, `effort balanced · 20 passes`, `20/20 trained sentences
+  answer right`, `12/12 unrelated answers unchanged ✓`, the simulated-checks note, the private draft id, and the
+  before/after table.
+- `teach dataset get <id> -o questions.jsonl` → fingerprint verified; re-uploading that file returned **200, the same
+  dataset id** ("already on this node — same questions, same dataset, no second copy").
+- `teach dataset get <id> --status rejected` (only the unused lines), `--all` (every line), `teach dataset ls`,
+  `teach jobs` (the DATASET / QUESTIONS / EFFORT columns), `teach status <node>` (the new `datasets`, `effort` and
+  queued-questions lines, and both doors in the footer), `--json` on each.
+- Error paths: an unknown dataset id (`dataset_not_found`), a path that is neither a uuid nor a file, a missing file, a
+  prompt-only `.txt` (`dataset_empty` **with the per-line report printed first**), and a deleted dataset (the tombstone
+  still explains itself; the lesson still renders and says the questions were deleted by their owner).
+- `GET /api/docs` on the node serves the new CLI reference; `/docs` renders it at 1280 px in English and Korean with no
+  horizontal overflow (`packages/e2e/results/teachable-d3-docs-{en,ko}.png`).
+
+**Dev-node settings used and then reset:** `jobs_per_key_per_day` / `jobs_per_ip_per_day` raised to 50 for the
+walkthrough (the node still carried the previous session's lessons) and put back to the configured 3 / 5. Nothing else
+was changed; `rows_per_job` is derived (200 on stub), `declaration_rows` 100, `stubOffline` still true. The node was
+rebuilt and restarted after the `openapi.ts` change (pid in `$HOME/.ngram-teachable/node-u.pid`).
+
+### Still owed
+
+Unchanged from §14: **PR-D6** (trainer `teach.py`: `facts_file`, `eval_sample`, `probe_kinds`, scaled `max_contrast`)
+and **PR-D10** (`docs/ux-test-scenarios.*` from AZ-123, `packages/e2e/tests/web-teach-dataset.spec.ts`). §15.7's
+measurements still block every visitor-facing minute figure, in the terminal exactly as in the browser: `teach status`
+prints *"not timed — this node simulates training (backend stub), so no duration here would be real"* rather than a
+number, and shows `{samples} of 3 lessons measured` on a gradient node that has not reached the minimum.
