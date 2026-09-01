@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { detectDegenerate, guardAnswer, cycleScore, longestAlnumRun, longestIdenticalLineRun, asksForRepetition } from '../src/degenerate.js';
+import { detectDegenerate, guardAnswer, cycleScore, longestAlnumRun, longestRun, longestIdenticalLineRun, asksForRepetition } from '../src/degenerate.js';
 
 interface Row { set: 'tuning' | 'holdout'; label: 'degen' | 'legit'; prompt: string; finish_reason: string | null; kind: string | null; text: string }
 const corpus: Row[] = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/degenerate-corpus.json', import.meta.url)), 'utf8'));
@@ -76,8 +76,14 @@ test('a visitor who asks for repetition still gets their list — but tier 1 sta
   assert.equal(detectDegenerate(list, 'length', '항목 40개를 나열해줘'), null);
   // …and the same answer IS flagged when nobody asked for a list
   assert.ok(detectDegenerate(list, 'length', '픽셀플러스 종목코드는?'));
-  // tier 1 is never gated: a 12-character run of one letter is a fault whatever the question was
-  assert.ok(detectDegenerate('the answer is aaaaaaaaaaaaaaaaaaaa', 'length', '100개를 나열해줘'));
+  // tier 1 is never gated: a long run of one letter is a fault whatever the question was.
+  // NOTE (2026-09-01): this used to assert a run of 20. The non-digit threshold was raised from 12 to 24 after
+  // the adversarial pass — at 12 the guard cut "ㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋ" and "so looooo…ong"
+  // when the visitor had asked for exactly those. It costs nothing measurable: across the 293 captured answers
+  // no legitimate answer has a run over 7, and every real non-digit runaway runs to 100 characters or more.
+  // Digit runs stay at 12, because two real runaways in the corpus are exactly 12 and 13 zeros long.
+  assert.ok(detectDegenerate('the answer is ' + 'a'.repeat(30), 'length', '100개를 나열해줘'));
+  assert.ok(detectDegenerate('the answer is 087600' + '0'.repeat(12), 'length', '100개를 나열해줘'));
 });
 
 test('legitimately repetition-shaped answers (구구단 table, JSON, markdown) are left alone', () => {
@@ -142,7 +148,16 @@ test('the primitives behave as documented', () => {
   assert.equal(longestIdenticalLineRun(''), 1);
   const c = cycleScore('abab'.repeat(20));
   assert.ok(c.score > 0.98 && c.period === 2, JSON.stringify(c));
-  assert.equal(cycleScore('087600').score, 0, 'windows under 16 characters are never scored');
+  assert.equal(cycleScore('087600').score, 0, 'windows under 32 characters are never scored');
+  assert.equal(cycleScore('1000000000000000').score, 0, 'a 16-character answer is under the window floor');
+  // the window floor moved 16 → 32 in the adversarial pass; these are all complete, correct answers
+  for (const short of ['087600', '1000000000000000', 'ㅋ'.repeat(20), '-'.repeat(30)])
+    assert.equal(cycleScore(short).score, 0, short);
+  const run = longestRun('10^15 = 1000000000000000.');
+  assert.equal(run.len, 15);
+  assert.ok(run.digit && run.numericLiteral, JSON.stringify(run));
+  assert.equal(longestRun('0000000000000o').numericLiteral, false, 'a leading-zero flood is not a number');
+  assert.equal(longestRun('1' + '0'.repeat(40)).numericLiteral, false, 'past 20 digits it is a flood, not a number');
 });
 
 test('cost stays under a millisecond per answer', () => {
@@ -150,4 +165,70 @@ test('cost stays under a millisecond per answer', () => {
   for (const r of corpus) detectDegenerate(r.text, r.finish_reason, r.prompt);
   const per = (performance.now() - t0) / corpus.length;
   assert.ok(per < 2, `${per.toFixed(3)} ms/answer`);
+});
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ * Adversarial pass, 2026-09-01. 57 answers generated on the shared instance from prompts written to make a
+ * LEGITIMATE answer look like a runaway: markdown tables, numbered lists, code blocks, CSV/JSON dumps, dot
+ * leaders, horizontal rules, big round numbers, requested repetition. Against the shipped rule eleven of them
+ * were cut — one of which ("10^15") turned a right answer into a wrong one. Every text below is what the model
+ * actually returned; none of them may ever be truncated as a repetition.
+ * ──────────────────────────────────────────────────────────────────────────────────────────────────────────── */
+type AdvRow = { source: string; prompt: string; text: string; finish_reason: string | null };
+const adversarial: AdvRow[] = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/degenerate-legit-adversarial.json', import.meta.url)), 'utf8'));
+
+test('57 legitimate answers built to trip the guard are all left alone', () => {
+  assert.equal(adversarial.length, 57);
+  const cut = adversarial.filter((r) => guardAnswer(r.text, r.finish_reason, r.prompt).truncated === 'repetition');
+  assert.deepEqual(cut.map((r) => r.source), [], cut.map((r) => `${r.source} :: ${JSON.stringify(r.text.slice(0, 90))}`).join('\n'));
+});
+
+test('an answer that ran out of budget is labelled, never shortened', () => {
+  for (const r of adversarial) {
+    const g = guardAnswer(r.text, r.finish_reason, r.prompt);
+    if (g.truncated === 'length') { assert.equal(g.text, r.text, r.source); assert.equal(g.shown_chars, g.raw_chars, r.source); }
+  }
+  assert.ok(adversarial.some((r) => guardAnswer(r.text, r.finish_reason, r.prompt).truncated === 'length'), 'expected some answers to hit the budget');
+});
+
+test('a big round number is a number, not a loop', () => {
+  // the guard used to cut 10^15 down to 10^12 — a correct answer replaced by a wrong one
+  for (const n of ['1000000000000000', '1000000000000', '10000000000000000000'])
+    assert.equal(guardAnswer(n, 'stop', 'What is 10 to the power of 15?').truncated, null, n);
+  assert.equal(detectDegenerate('1조는 1000000000000 원입니다.', 'stop', '1조를 숫자로 써줘'), null);
+  // …but a ticker followed by a flood of zeros still is one, and so is a flood past any real number
+  assert.equal(detectDegenerate('0000000000000o', 'stop', '드')?.reason, 'char_run');
+  assert.equal(detectDegenerate('087600' + '0'.repeat(60), 'length', '드')?.reason, 'char_run');
+  assert.ok(detectDegenerate('1' + '0'.repeat(120), 'length', '드'));
+});
+
+test('markdown furniture — a rule, a dot leader, a table separator — is layout, not repetition', () => {
+  const cases: [string, string][] = [
+    ['-'.repeat(60), 'Print a horizontal rule of 60 dashes and nothing else.'],
+    ['hello\n' + '='.repeat(50), 'End your answer with a separator line of 50 equals signs.'],
+    ['Chapter 1' + '.'.repeat(40) + '7', 'Write "Chapter 1" then a dot leader of 40 periods then "7".'],
+    ['| A | B | C | D | E | F | G | H |\n|---|---|---|---|---|---|---|---|', 'Output a markdown table header and its separator row.'],
+  ];
+  for (const [text, prompt] of cases) assert.equal(guardAnswer(text, 'stop', prompt).truncated, null, JSON.stringify(text.slice(0, 40)));
+  // punctuation that fills the token budget, or runs on across lines, is still a runaway
+  assert.ok(detectDegenerate('='.repeat(129), 'length', '드'));
+  assert.ok(detectDegenerate('\n[\n[\n]'.repeat(10), 'stop', '드'));
+});
+
+test('a table repeats its layout, a loop repeats its content', () => {
+  // real answer to "한국의 시도별 인구를 마크다운 표로 정리해줘", cut off by the token budget: the pipes and the
+  // digit groups line up (cycle 0.74) while the province names — the meaning — are all different
+  const table = '| 순위 | 시도명 | 인구 (명) |\n|------|--------|-----------|\n| 1    | 경기도 | 13,600,000 |\n| 2    | 서울특별시 | 9,400,000 |\n'
+    + '| 3    | 부산광역시 | 3,300,000 |\n| 4    | 인천광역시 | 3,000,000 |\n| 5    | 경상남도 | 3,300,000 |\n| 6    | 경상북도 | 2,600,000 |\n| 7    | 전라';
+  assert.equal(detectDegenerate(table, 'length', '한국의 시도별 인구를 마크다운 표로 정리해줘.'), null);
+  // the same shape with the CONTENT repeating is a loop
+  assert.ok(detectDegenerate('| 1 | 경기도 | 13,600,000 |\n'.repeat(8), 'length', '한국의 시도별 인구를 마크다운 표로 정리해줘.'));
+});
+
+test('a visitor who asks for N identical lines gets N identical lines', () => {
+  assert.ok(asksForRepetition('Show 8 identical lines of example log output: INFO ready'));
+  assert.ok(asksForRepetition('List the same reminder "- drink water" 8 times, one per line.'));
+  assert.equal(detectDegenerate('INFO ready\n'.repeat(8).trim(), 'stop', 'Show 8 identical lines of example log output: INFO ready'), null);
+  // nobody asked → still a loop
+  assert.ok(detectDegenerate('INFO ready\n'.repeat(8).trim(), 'stop', '픽셀플러스 종목코드는?'));
 });

@@ -1051,7 +1051,10 @@ test.describe('Live test (shared runtime)', () => {
     await page.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click();
 
     const alert = turn.getByRole('alert');
-    await expect(alert).toHaveText('Request cancelled.');
+    // D3: which of the two the visitor is told depends on whether the node had already taken the shared lock when
+    // the button was pressed, and that is a genuine race — the scenario documents BOTH and requires the message to
+    // say which happened. ("Request cancelled." is the pre-D3 wording and must no longer appear.)
+    await expect(alert).toHaveText(/^You stopped waiting\. The node had not started this test yet, so no free try was used\.$|^You stopped waiting, but the test had already started on the shared model, so it still counts as one free try\.$/);
     await expect(turn.getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(textarea(page)).toBeEnabled();
     await expect(sendButton(page)).toHaveText('Send');

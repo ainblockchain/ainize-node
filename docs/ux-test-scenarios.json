@@ -4293,23 +4293,27 @@
   ],
   "steps": [
    "Open http://localhost:3402/chat/krx-all-2761, choose 'After only'",
-   "Send the one-character prompt '드'",
-   "Read the answer bubble",
-   "Click 'Show the raw answer (all {n} characters)'"
+   "Send the one-character prompt '드' — with the shipped stop sequences the chat path answers normally; confirm the answer does NOT run away and is NOT auto-scored",
+   "As the operator, POST /api/runtime/complete {\"prompt\":\"드\",\"max_tokens\":200} — the completion path still degenerates and is where the guard is observable end to end",
+   "Repeat that call with {\"raw\": true} to see the same request without the stop sequences and without the guard",
+   "Back in the UI, on a bubble that carries the note, click 'Show the raw answer (all {n} characters)'"
   ],
   "expected": [
    "The answer is cut at the point the repetition starts; underneath it a yellow note reads 'The model started repeating itself, so the answer is cut off here — that usually means the question is outside what this knowledge covers.' with 'showing {shown} of {raw} characters'",
    "'Show the raw answer' reveals the model's full output unchanged — nothing is ever deleted, only truncated",
    "POST /api/chat returns patched.truncated = 'repetition' with shown_chars < raw_chars and raw_content carrying the full text",
+   "On /api/runtime/complete the guarded call returns truncated='repetition' while the same call with raw:true returns the whole loop, unflagged",
+   "The chat path is the quiet one: over PROBE A's 73 prompts re-run through this node, 0 of 73 chat answers ran away while the completion path caught and cut 8. '드' answering normally in the UI is the expected result of this scenario, not a failure of it",
    "A short correct answer (e.g. '087600') is never flagged: truncated is null and no note is shown",
-   "An answer that merely ran out of budget shows 'The answer stopped at the length limit before it was finished.' (truncated = 'length', shown_chars = raw_chars)",
+   "Nor is any other complete short answer: a big round number ('1000000000000000'), a 60-dash rule, a dot leader, a markdown table separator row, or a run of ㅋ the visitor asked for",
+   "A markdown table, CSV, JSON dump or numbered list that runs out of budget is labelled 'The answer stopped at the length limit before it was finished.' (truncated = 'length', shown_chars = raw_chars) — never 'repetition', and never shortened",
    "The prompt is no longer auto-scored against an unrelated benchmark sample: '드' shows 'Free question — not auto-scored' instead of '✗ Wrong'"
   ],
   "priority": "P1",
   "area": "chat",
   "automation": "e2e",
   "evidence": [
-   "packages/node/src/degenerate.ts detectDegenerate()/guardAnswer(); packages/node/test/degenerate.test.ts + fixtures/degenerate-corpus.json (293 real answers)",
+   "packages/node/src/degenerate.ts detectDegenerate()/guardAnswer(); packages/node/test/degenerate.test.ts + fixtures/degenerate-corpus.json (293 real answers) + fixtures/degenerate-legit-adversarial.json (57 legitimate answers written to trip the guard)",
    "packages/node/src/runtime.ts chat()/completeDetailed() sampling + guard; DEFAULT_CHAT_SAMPLING stop ['\\n\\n\\n\\n','<think>']",
    "packages/web/src/components/chat/TurnView.tsx Truncation; packages/web/src/i18n/pages/chat.ts chat.trunc.*"
   ]
