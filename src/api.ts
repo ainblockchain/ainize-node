@@ -27,7 +27,7 @@ import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
 export interface ApiDeps { market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void; }
 
-class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
+class HttpError extends Error { constructor(public status: number, message: string, /** extra fields merged into the JSON body — e.g. quota_reset on a 429 */ public body?: Record<string, unknown>) { super(message); } }
 const bad = (msg: string) => new HttpError(400, msg);
 const notFound = (msg = 'not found') => new HttpError(404, msg);
 
@@ -387,7 +387,7 @@ export function buildApi(deps: ApiDeps): Router {
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
-    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
+    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node', { quota_reset: market.chatQuotaResetsAt(visitor) });
     // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
     const out = await market.chat({ ...body, requestId: body.request_id, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
@@ -655,7 +655,8 @@ export function buildApi(deps: ApiDeps): Router {
     // A live test that waited out the shared lock is temporarily unavailable, not broken: say so as 503 + Retry-After
     // instead of the generic 500 the "shared runtime busy" throw used to fall through to.
     if (err instanceof Error && /shared runtime busy/.test(err.message)) { res.set('retry-after', '30'); return res.status(503).json({ error: err.message, busy: true }); }
-    if (err instanceof HttpError || err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, ...err.body });
+    if (err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     // typed domain errors from Market / core validation: caller mistakes are 4xx, never 500
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message });
