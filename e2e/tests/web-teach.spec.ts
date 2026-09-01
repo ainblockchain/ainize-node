@@ -33,7 +33,7 @@ const KNOWN_Q = '종목코드 087600은 픽셀플러스인가요?';
 const KNOWN_A = '픽셀플러스';
 const TEACHER_NAME = 'AZ Teacher';
 
-interface Policy { enabled: boolean; publish: 'review' | 'auto' | 'never'; backend: string; limits: { jobs_per_key_per_day: number }; shares: { contributor: number } }
+interface Policy { enabled: boolean; publish: 'review' | 'auto' | 'never'; backend: string; simulated_checks?: boolean; limits: { jobs_per_key_per_day: number }; shares: { contributor: number } }
 interface Job { id: string; status: string; facts?: { prompt: string; answer: string }[]; draft_id?: string; patch_id?: string; checks?: { ok: boolean; executed: boolean; taught: { hits: number; total: number } } }
 interface Contributor { address: string; signer?: string; name?: string; share: number; role: string; proof: string; sig?: string }
 interface Detail { anchor: { id: string; name: string; price: string; origin?: string; patch_sha256: string; benchmark_hash: string; contributors?: Contributor[]; author: string } }
@@ -51,6 +51,16 @@ let patchId = '';
 let lessonName = '';
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const teachHeader = (id: { address: string; privateKey: string }) => { const ts = Date.now(); return { 'x-ngram-auth': `${id.address}:${ts}:${signMessage(`teach:${ts}`, id.privateKey)}` }; };
+
+/**
+ * The `stub` trainer does not train: it copies the 픽셀플러스 fixture. A node that measures its lessons against a real
+ * serving model (teach.stubOffline false) therefore scores the run-unique phrasing as not learned and honestly reports
+ * NEEDS_MORE — and the pre-flight verdicts follow whatever the live model happens to know. The lesson LIFECYCLE is
+ * exercised where the trainer and the checks agree: a node with simulated checks (the dev node :3412 / a throwaway
+ * teaching node) or a real `gradient` trainer. Everything before the queue (banner, drawer, basket, key) runs anywhere.
+ */
+const MEASURED_STUB = 'stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the run-unique phrasing, so the node reports NEEDS_MORE — the lifecycle runs on a node with simulated checks or a real trainer';
+const measuredStub = () => policy.backend === 'stub' && policy.simulated_checks === false;
 
 test.beforeAll(async ({ browser, request }) => {
   const p = await api<Policy>(request, '/api/teach/policy');
@@ -155,6 +165,7 @@ test('AZ-104 first "Train this lesson" → Who gets the credit? → key in local
 
 test('AZ-105 pre-flight: wrong fact will train, already-correct fact skipped, quota line → Queue training', async () => {
   test.skip(!keyAddress, 'no key (earlier step skipped)');
+  test.skip(measuredStub(), MEASURED_STUB);
   const pf = page.getByTestId('preflight-sheet');
   await expect(pf).toContainText('Checking what the model already knows');
   const rows = pf.getByTestId('preflight-list').locator('li');

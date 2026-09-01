@@ -23,7 +23,7 @@ const PASS = process.env.AINIZE_PASS ?? passwordFor(NODE);
 const TAG = Date.now().toString(36).slice(-5);
 const TEACHER = `Op Teacher ${TAG}`;
 
-interface Policy { enabled: boolean; publish: 'review' | 'auto' | 'never'; backend: string; shares: { contributor: number } }
+interface Policy { enabled: boolean; publish: 'review' | 'auto' | 'never'; backend: string; simulated_checks?: boolean; shares: { contributor: number } }
 interface Job { id: string; status: string; reject_reason?: string; patch_id?: string; facts?: unknown[] }
 type Identity = { address: string; privateKey: string };
 
@@ -49,6 +49,15 @@ async function signIn(page: Page) {
   await page.getByRole('button', { name: /^(sign in|confirm)$/i }).first().click();
   await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
 }
+
+/**
+ * A lesson only reaches PENDING_REVIEW when its checks pass, and the `stub` trainer copies a fixture instead of
+ * training: on a node that measures against a real serving model (teach.stubOffline false) the node correctly reports
+ * NEEDS_MORE and publication stays gated. The review queue is therefore exercised on a node with simulated checks
+ * (the dev node :3412 / a throwaway teaching node) or a real trainer.
+ */
+const MEASURED_STUB = 'stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the lesson, so it never reaches PENDING_REVIEW — the review queue runs on a node with simulated checks or a real trainer';
+const measuredStub = () => policy.backend === 'stub' && policy.simulated_checks === false;
 
 /** Train one stub lesson for `id` and submit it for publication (review mode → PENDING_REVIEW). */
 async function lessonPendingReview(request: APIRequestContext, id: Identity, name: string): Promise<string> {
@@ -91,9 +100,12 @@ test.afterAll(async ({ request }) => {
   // and make sure the test key is not left blocked
   const bans = await api<{ items: { id: number; value: string }[] }>(request, '/api/me/teach/bans', { token });
   for (const b of bans.body.items ?? []) if (b.value.toLowerCase() === teacher.address.toLowerCase()) await api(request, `/api/me/teach/bans/${b.id}`, { method: 'DELETE', token });
-  // and leave no test lessons behind: operator cancel deletes a declined lesson's files; an announced one is
-  // immutable (409, ignored) — announcing only happens on local-ledger nodes whose homes are disposable.
-  for (const id of [declinedJob, approvedJob]) if (id) await api(request, `/api/teach/jobs/${id}`, { method: 'DELETE', token });
+  // and leave no test lessons behind: operator cancel deletes the lesson's files and private draft. Every job this
+  // run created carries TAG in its name (including ones that failed before their id reached `declinedJob`); an
+  // announced lesson is immutable (409, ignored) — announcing only happens on disposable local-ledger nodes.
+  const mine = await api<{ items: { id: string; name?: string }[] }>(request, '/api/me/teach/jobs', { token });
+  const ids = new Set([...(mine.body.items ?? []).filter((j) => j.name?.includes(TAG)).map((j) => j.id), declinedJob, approvedJob]);
+  for (const id of ids) if (id) await api(request, `/api/teach/jobs/${id}`, { method: 'DELETE', token });
 });
 
 /* ======================================================================================= landing / sign-in / pre-screen */
@@ -231,6 +243,7 @@ test('Teaching tab settings: trainer line, publish → "Review each one", share 
 });
 
 test('AZ-110 review queue: PENDING_REVIEW lesson → Decline with a reason (contributor sees it)', async ({ page, request }) => {
+  test.skip(measuredStub(), MEASURED_STUB);
   await signIn(page);
   declinedJob = await lessonPendingReview(request, teacher, `Op decline ${TAG}`);
   await page.goto(`${NODE}/dashboard?tab=teaching`);
@@ -258,6 +271,7 @@ test('AZ-110 review queue: Approve and announce → ANNOUNCED, contributor on th
   // add a test lesson to the public catalog forever, so the announce half runs on a local-ledger node (node-t /
   // a private throwaway cluster) only; the decline half above still runs everywhere.
   test.skip(ledgerKind === 'ain' && process.env.AINIZE_TEACH_ANNOUNCE !== '1', 'shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage');
+  test.skip(measuredStub(), MEASURED_STUB);
   await signIn(page);
   const tab = page.getByTestId('teaching-tab');
   approvedJob = await lessonPendingReview(request, teacher, `Op approve ${TAG}`);
