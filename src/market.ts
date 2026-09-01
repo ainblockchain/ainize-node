@@ -649,6 +649,15 @@ export class Market {
   readonly chatQueue = new ChatQueue();
 
   /** Per-visitor trial quota for public live tests (operator is unlimited). Returns remaining or -1 when exhausted. */
+  chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true, units = 1): number {
+    const now = Date.now();
+    const u = this.chatUsage.get(visitor);
+    const cur = u && now - u.window < windowMs ? u : { count: 0, window: now };
+    if (cur.count + units > limit) return -1;
+    if (consume) { cur.count += units; this.chatUsage.set(visitor, cur); }
+    return limit - cur.count;
+  }
+
   /**
    * When the caller's current free-try hour ends (epoch ms), or null if no window is open. The client shows this in
    * place of a Retry button that cannot work — a measured instant, not "try again in an hour".
@@ -658,15 +667,6 @@ export class Market {
     if (!u) return null;
     const end = u.window + windowMs;
     return end > Date.now() ? end : null;
-  }
-
-  chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true, units = 1): number {
-    const now = Date.now();
-    const u = this.chatUsage.get(visitor);
-    const cur = u && now - u.window < windowMs ? u : { count: 0, window: now };
-    if (cur.count + units > limit) return -1;
-    if (consume) { cur.count += units; this.chatUsage.set(visitor, cur); }
-    return limit - cur.count;
   }
 
   /**
