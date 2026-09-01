@@ -3,7 +3,7 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, CHAIN, K, VLLM, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { PIXEL_NPZ } from '../helpers/operator-cli';
 import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, visitorHeaders, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
@@ -771,7 +771,7 @@ test('AZ-022 Explore the Network page and try the gateway router demo', async ({
 
   await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live');
   await expect(dd(page, 'Model')).toHaveText(MODEL);
-  await expect(dd(page, 'API')).toHaveText('http://localhost:8000');
+  await expect(dd(page, 'API')).toHaveText(VLLM);
   await expect(dd(page, 'Live connection')).toHaveText('connected — load and unload without restart');
 
   const peersTable = page.locator('table').first();

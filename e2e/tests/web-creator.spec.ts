@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect, type Page, type Request as PwRequest } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, api, operatorToken, loginViaUi, startThrowawayNode, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, VLLM, api, operatorToken, loginViaUi, startThrowawayNode, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
 import {
   NPZ_NAME, NPZ_PATH, PIXEL_SAMPLE, SAMSUNG_SAMPLE, authMe, benchmarkJson, createDraftViaApi, deleteDraftIfAny, delayRoute, ensureDraft, esc, fmtBytes, fmtMoney, fmtNum,
   kv, manageUrl, nodeInfo, patchDetail, pickFreeId, readState, saveState, shortAddr, shortHash, testDraftSpec, titleChip, uploadDraftSpec, type PatchDetail,
@@ -1426,7 +1426,7 @@ test.describe('runtime', () => {
     test.setTimeout(20 * 60_000);
     expect(await waitForRuntime(request), 'node-a runtime').toBe(true);
     const rt = (await api<{ available: boolean; api: string; model: string; hook: boolean; applied: { patch_id: string; reason: string }[] }>(request, '/api/runtime')).body;
-    expect(rt).toMatchObject({ available: true, api: 'http://localhost:8000', model: MODEL, hook: true });
+    expect(rt).toMatchObject({ available: true, api: VLLM, model: MODEL, hook: true });
 
     await login(page);
     await page.goto(`${NODE_A}/account`);
@@ -1434,7 +1434,7 @@ test.describe('runtime', () => {
     await expect(page.getByText('The real model this node can load knowledge into and out of. Verification scoring and live tests use it too.', { exact: true })).toBeVisible();
     await expect(kv(page, 'Status')).toHaveText('available');
     expect(await color(kv(page, 'Status'))).toBe(GREEN);
-    await expect(kv(page, 'Model server')).toHaveText('http://localhost:8000');
+    await expect(kv(page, 'Model server')).toHaveText(VLLM);
     await expect(kv(page, 'Model')).toHaveText(MODEL);
     await expect(kv(page, 'Load/unload hook')).toHaveText('connected');
     if (rt.applied.length === 0) await expect(kv(page, 'Knowledge loaded now')).toHaveText('none');
