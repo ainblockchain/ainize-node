@@ -726,7 +726,9 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
 test('AZ-022 Explore the Network page and try the gateway router demo', async ({ page, request }) => {
   // The peer rows mirror what each peer advertised in the last gossip round, so all three nodes must see the shared
   // model before the page is read (during a vLLM hang a peer advertises no model and its Model cell shows "—").
-  for (const n of [NODE_A, NODE_B, NODE_C]) expect(await waitForRuntime(request, n), `${n} runtime`).toBe(true);
+  // The three nodes share one vLLM, so they recover together: the budget covers one hang (~5 min) plus the gossip.
+  test.setTimeout(20 * 60_000);
+  for (const n of [NODE_A, NODE_B, NODE_C]) expect(await waitForRuntime(request, n, 8 * 60_000), `${n} runtime`).toBe(true);
   await expect.poll(
     async () => (await api<{ peers: { endpoint: string; info?: { model?: string } }[] }>(request, '/api/nodes')).body.peers.filter((p) => p.info?.model === MODEL).length,
     { message: 'both peers advertise the serving model', timeout: 120_000, intervals: [3_000] },

@@ -87,7 +87,34 @@ test.afterAll(async ({ request }) => {
   }
 });
 
+/**
+ * Wait for the reply the "Teach the right answer" button hangs under. The shared vLLM stalls about once an hour and
+ * restarts in ~5 min; a turn caught by that shows the red "model server is off" alert instead of an answer, so the
+ * model is waited for and the same turn is retried (up to twice) — a stalled engine is not a teach-mode failure.
+ */
+async function waitForAnswer(request: Parameters<typeof waitForRuntime>[0], answered: ReturnType<Page['getByTestId']>, retries = 2): Promise<void> {
+  const deadline = Date.now() + 15 * 60_000;   // one stall (~5 min) + a queued turn behind another test
+  let used = 0;
+  while (Date.now() < deadline) {
+    if (await answered.isVisible().catch(() => false)) return;
+    const turn = page.locator('article').last();
+    const alert = turn.getByRole('alert');
+    if (await alert.count() > 0) {
+      const msg = (await alert.innerText()).trim();
+      expect(used, `the reply failed and cannot be retried again: ${msg}`).toBeLessThan(retries);
+      used++;
+      expect(await waitForRuntime(request, NODE, 8 * 60_000), `model back after: ${msg}`).toBe(true);
+      await waitForLockFree(request, NODE, 5 * 60_000);
+      await turn.getByRole('button', { name: /^(Retry|다시 시도)$/ }).click();
+      test.info().annotations.push({ type: 'note', description: `serving model hiccup during the turn (${msg}) — waited for the restart and pressed Retry` });
+    }
+    await page.waitForTimeout(1_000);
+  }
+  expect(await answered.isVisible(), 'the reply arrived within 15 min').toBe(true);
+}
+
 test('AZ-103 banner → "Teach the right answer" under a reply → drawer → basket persists across reload @runtime', async ({ request }) => {
+  test.setTimeout(25 * 60_000);   // room for the model to stall and come back twice (waitForAnswer retries the turn)
   test.skip(!(await waitForRuntime(request, NODE, 8 * 60_000)), 'serving model unavailable (vLLM restart takes ~5 min)');
   await waitForLockFree(request, NODE, 5 * 60_000);
   await page.goto(`${NODE}/chat/${K.pixel}?teach=1`);
@@ -105,7 +132,7 @@ test('AZ-103 banner → "Teach the right answer" under a reply → drawer → ba
   await box.fill(PROMPT);
   await box.press('Enter');
   const teachBtn = page.getByTestId('teach-base');
-  await expect(teachBtn).toBeVisible({ timeout: 4 * 60_000 });
+  await waitForAnswer(request, teachBtn);
   await teachBtn.click();
   const drawer = page.getByTestId('teach-drawer');
   await expect(drawer).toContainText('Teach the right answer');
