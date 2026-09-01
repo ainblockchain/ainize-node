@@ -8,639 +8,639 @@
   "text": "104 passed / 0 failed / 0 blocked of 104"
  },
  "environment": {
-  "Date": "2026-09-01 (wave 1 of the UX critique — the honesty pass: findings 1, 6, 7, 24, 28, 29, 55 and 56 of docs/ux-critique.json; the whole suite re-measured afterwards)",
-  "Build": "`a676836` — the wave-1 fixes on top of the wave-0 build `96f202f`. core/node/cli/agent and the web dist were rebuilt and the cluster restarted before the run (the node contract changed: POST /api/chat gained `messages_base` / `messages_patched`, and GET /api/ledger's window cap went 1,000 → 5,000)",
+  "Date": "2026-09-01 (adversarial re-verification of the 17 findings fixed in waves 0 and 1 — items 1, 2, 6, 7, 12, 20, 22, 24, 26, 27, 28, 29, 55, 56, 84, 85, 97 of docs/ux-critique.json; each original problem statement was reproduced on the running product before the suite was re-measured)",
+  "Build": "`fe0dba7` — unchanged product code. This pass verified the wave-0 and wave-1 fixes rather than adding to them, so nothing was rebuilt; the cluster restarted twice (never `--fresh`) only to route the node→model calls through a logging proxy for the finding-1 wire capture, and was put back on http://localhost:8002 before the run",
   "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
   "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133/134) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/results.json and full-run-wave1.log — 114 passed / 11 skipped / 0 failed, 1 flake (AZ-044, ECONNRESET on the settings save, green on retry) in 27.5 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-1 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave1/",
+  "Raw results": "packages/e2e/results/results.json and results/wave-run.log — 115 passed / 11 skipped / 0 failed / 0 flaky in 26.9 min, one uninterrupted run of every project (web, mobile, cli-api). A first full run of the same build (results/wave-run-pass1.log, 27.0 min) was 113 passed / 11 skipped / 0 failed with 2 flakes green on retry (AZ-091, AZ-052 — both timing, neither reproduced). Verification probes and screenshots for this pass: packages/e2e/verify-*.mjs, packages/e2e/model-tap.mjs, packages/e2e/results/verify/",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "items": [
   {
    "id": "AZ-001",
    "status": "passed",
-   "duration_ms": 2015,
+   "duration_ms": 1923,
    "note": ""
   },
   {
    "id": "AZ-002",
    "status": "passed",
-   "duration_ms": 1325,
+   "duration_ms": 1305,
    "note": ""
   },
   {
    "id": "AZ-003",
    "status": "passed",
-   "duration_ms": 1276,
+   "duration_ms": 3897,
    "note": ""
   },
   {
    "id": "AZ-004",
    "status": "passed",
-   "duration_ms": 6965,
+   "duration_ms": 7675,
    "note": ""
   },
   {
    "id": "AZ-005",
    "status": "passed",
-   "duration_ms": 7014,
+   "duration_ms": 7509,
    "note": ""
   },
   {
    "id": "AZ-006",
    "status": "passed",
-   "duration_ms": 7615,
+   "duration_ms": 7042,
    "note": ""
   },
   {
    "id": "AZ-007",
    "status": "passed",
-   "duration_ms": 3406,
+   "duration_ms": 3334,
    "note": ""
   },
   {
    "id": "AZ-008",
    "status": "passed",
-   "duration_ms": 13342,
+   "duration_ms": 13324,
    "note": ""
   },
   {
    "id": "AZ-009",
    "status": "passed",
-   "duration_ms": 33047,
+   "duration_ms": 32726,
    "note": ""
   },
   {
    "id": "AZ-010",
    "status": "passed",
-   "duration_ms": 6087,
+   "duration_ms": 5451,
    "note": ""
   },
   {
    "id": "AZ-011",
    "status": "passed",
-   "duration_ms": 9603,
+   "duration_ms": 10152,
    "note": ""
   },
   {
    "id": "AZ-012",
    "status": "passed",
-   "duration_ms": 3637,
+   "duration_ms": 3612,
    "note": ""
   },
   {
    "id": "AZ-013",
    "status": "passed",
-   "duration_ms": 9524,
+   "duration_ms": 9733,
    "note": ""
   },
   {
    "id": "AZ-014",
    "status": "passed",
-   "duration_ms": 2236,
+   "duration_ms": 2443,
    "note": ""
   },
   {
    "id": "AZ-015",
    "status": "passed",
-   "duration_ms": 6982,
+   "duration_ms": 7288,
    "note": ""
   },
   {
    "id": "AZ-016",
    "status": "passed",
-   "duration_ms": 9615,
+   "duration_ms": 9895,
    "note": ""
   },
   {
    "id": "AZ-017",
    "status": "passed",
-   "duration_ms": 2156,
+   "duration_ms": 2455,
    "note": ""
   },
   {
    "id": "AZ-018",
    "status": "passed",
-   "duration_ms": 15284,
+   "duration_ms": 14488,
    "note": ""
   },
   {
    "id": "AZ-019",
    "status": "passed",
-   "duration_ms": 23374,
+   "duration_ms": 22118,
    "note": ""
   },
   {
    "id": "AZ-020",
    "status": "passed",
-   "duration_ms": 27810,
+   "duration_ms": 22528,
    "note": "turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding)"
   },
   {
    "id": "AZ-021",
    "status": "passed",
-   "duration_ms": 52480,
+   "duration_ms": 52580,
    "note": ""
   },
   {
    "id": "AZ-022",
    "status": "passed",
-   "duration_ms": 6792,
+   "duration_ms": 6873,
    "note": ""
   },
   {
    "id": "AZ-023",
    "status": "passed",
-   "duration_ms": 5072,
+   "duration_ms": 5184,
    "note": ""
   },
   {
    "id": "AZ-024",
    "status": "passed",
-   "duration_ms": 23954,
+   "duration_ms": 24463,
    "note": ""
   },
   {
    "id": "AZ-025",
    "status": "passed",
-   "duration_ms": 17143,
+   "duration_ms": 16892,
    "note": ""
   },
   {
    "id": "AZ-026",
    "status": "passed",
-   "duration_ms": 9312,
+   "duration_ms": 9689,
    "note": ""
   },
   {
    "id": "AZ-027",
    "status": "passed",
-   "duration_ms": 5021,
+   "duration_ms": 5070,
    "note": ""
   },
   {
    "id": "AZ-028",
    "status": "passed",
-   "duration_ms": 5862,
+   "duration_ms": 7029,
    "note": ""
   },
   {
    "id": "AZ-029",
    "status": "passed",
-   "duration_ms": 7703,
+   "duration_ms": 6297,
    "note": ""
   },
   {
    "id": "AZ-030",
    "status": "passed",
-   "duration_ms": 10085,
-   "note": "pixelplus-test-1 was already published by an earlier run — using pixelplus-test-25"
+   "duration_ms": 9665,
+   "note": "pixelplus-test-1 was already published by an earlier run — using pixelplus-test-27"
   },
   {
    "id": "AZ-031",
    "status": "passed",
-   "duration_ms": 15755,
-   "note": "draft pixelplus-test-25 re-created with visibility:test (identical fields) before publishing · both attestations landed within 3535 ms — the intermediate Verifying state was not observable in the 5 s UI poll"
+   "duration_ms": 21111,
+   "note": "draft pixelplus-test-27 re-created with visibility:test (identical fields) before publishing · both attestations landed within 3520 ms — the intermediate Verifying state was not observable in the 5 s UI poll"
   },
   {
    "id": "AZ-032",
    "status": "passed",
-   "duration_ms": 22214,
+   "duration_ms": 23546,
    "note": ""
   },
   {
    "id": "AZ-033",
    "status": "passed",
-   "duration_ms": 3631,
+   "duration_ms": 3220,
    "note": ""
   },
   {
    "id": "AZ-034",
    "status": "passed",
-   "duration_ms": 9470,
+   "duration_ms": 8876,
    "note": "buyer node-b (http://localhost:3403), knowledge pixelplus-087600 at 0.1 AIN, already purchased before: true"
   },
   {
    "id": "AZ-035",
    "status": "passed",
-   "duration_ms": 5699,
+   "duration_ms": 5710,
    "note": "no cluster node still needed setup — the client-side half runs against a private node with a real needsSetup:true (node-az035)"
   },
   {
    "id": "AZ-036",
    "status": "passed",
-   "duration_ms": 1876,
+   "duration_ms": 1875,
    "note": ""
   },
   {
    "id": "AZ-037",
    "status": "passed",
-   "duration_ms": 2544,
+   "duration_ms": 2575,
    "note": ""
   },
   {
    "id": "AZ-038",
    "status": "passed",
-   "duration_ms": 4146,
+   "duration_ms": 4123,
    "note": ""
   },
   {
    "id": "AZ-039",
    "status": "passed",
-   "duration_ms": 6660,
+   "duration_ms": 5984,
    "note": ""
   },
   {
    "id": "AZ-040",
    "status": "passed",
-   "duration_ms": 10760,
+   "duration_ms": 13939,
    "note": ""
   },
   {
    "id": "AZ-041",
    "status": "passed",
-   "duration_ms": 7386,
+   "duration_ms": 7681,
    "note": "the timeline renders \"accuracy <free_generation>\" only — the pre_apply score (\"1/8\" in the scenario text) is not shown"
   },
   {
    "id": "AZ-042",
    "status": "passed",
-   "duration_ms": 8162,
+   "duration_ms": 7727,
    "note": "bin.ts has no `patch forget` subcommand — the manage page advertises `ainize patch forget <id>` (docs/CLI gap)"
   },
   {
    "id": "AZ-043",
    "status": "passed",
-   "duration_ms": 6530,
+   "duration_ms": 7346,
    "note": ""
   },
   {
    "id": "AZ-044",
    "status": "passed",
-   "duration_ms": 8918,
-   "note": "flaky: passed on retry (web)"
+   "duration_ms": 8712,
+   "note": ""
   },
   {
    "id": "AZ-045",
    "status": "passed",
-   "duration_ms": 2825,
+   "duration_ms": 2799,
    "note": ""
   },
   {
    "id": "AZ-046",
    "status": "passed",
-   "duration_ms": 29602,
+   "duration_ms": 29628,
    "note": ""
   },
   {
    "id": "AZ-047",
    "status": "passed",
-   "duration_ms": 3756,
+   "duration_ms": 3882,
    "note": ""
   },
   {
    "id": "AZ-048",
    "status": "passed",
-   "duration_ms": 3872,
+   "duration_ms": 3797,
    "note": ""
   },
   {
    "id": "AZ-049",
    "status": "passed",
-   "duration_ms": 8036,
+   "duration_ms": 7967,
    "note": ""
   },
   {
    "id": "AZ-050",
    "status": "passed",
-   "duration_ms": 3133,
+   "duration_ms": 3123,
    "note": ""
   },
   {
    "id": "AZ-051",
    "status": "passed",
-   "duration_ms": 4730,
+   "duration_ms": 4525,
    "note": ""
   },
   {
    "id": "AZ-052",
    "status": "passed",
-   "duration_ms": 42156,
-   "note": "announce pre-check reported conflicts: 144 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 141, because private drafts are redacted from public overlap answers"
+   "duration_ms": 41787,
+   "note": "announce pre-check reported conflicts: 155 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 152, because private drafts are redacted from public overlap answers"
   },
   {
    "id": "AZ-053",
    "status": "passed",
-   "duration_ms": 43999,
+   "duration_ms": 40164,
    "note": ""
   },
   {
    "id": "AZ-054",
    "status": "passed",
-   "duration_ms": 46616,
+   "duration_ms": 45225,
    "note": ""
   },
   {
    "id": "AZ-055",
    "status": "passed",
-   "duration_ms": 3402,
+   "duration_ms": 541,
    "note": ""
   },
   {
    "id": "AZ-056",
    "status": "passed",
-   "duration_ms": 2576,
+   "duration_ms": 2297,
    "note": ""
   },
   {
    "id": "AZ-057",
    "status": "passed",
-   "duration_ms": 13851,
+   "duration_ms": 13289,
    "note": ""
   },
   {
    "id": "AZ-058",
    "status": "passed",
-   "duration_ms": 10009,
+   "duration_ms": 9779,
    "note": ""
   },
   {
    "id": "AZ-059",
    "status": "passed",
-   "duration_ms": 25598,
+   "duration_ms": 24486,
    "note": ""
   },
   {
    "id": "AZ-060",
    "status": "passed",
-   "duration_ms": 12107,
+   "duration_ms": 6925,
    "note": ""
   },
   {
    "id": "AZ-061",
    "status": "passed",
-   "duration_ms": 7627,
+   "duration_ms": 7041,
    "note": ""
   },
   {
    "id": "AZ-062",
    "status": "passed",
-   "duration_ms": 6721,
+   "duration_ms": 5953,
    "note": ""
   },
   {
    "id": "AZ-063",
    "status": "passed",
-   "duration_ms": 5530,
+   "duration_ms": 5509,
    "note": ""
   },
   {
    "id": "AZ-064",
    "status": "passed",
-   "duration_ms": 14235,
+   "duration_ms": 14503,
    "note": ""
   },
   {
    "id": "AZ-065",
    "status": "passed",
-   "duration_ms": 8954,
+   "duration_ms": 8401,
    "note": ""
   },
   {
    "id": "AZ-066",
    "status": "passed",
-   "duration_ms": 18442,
+   "duration_ms": 18274,
    "note": ""
   },
   {
    "id": "AZ-067",
    "status": "passed",
-   "duration_ms": 38136,
+   "duration_ms": 37497,
    "note": ""
   },
   {
    "id": "AZ-068",
    "status": "passed",
-   "duration_ms": 17214,
+   "duration_ms": 16617,
    "note": ""
   },
   {
    "id": "AZ-069",
    "status": "passed",
-   "duration_ms": 111634,
+   "duration_ms": 105589,
    "note": ""
   },
   {
    "id": "AZ-070",
    "status": "passed",
-   "duration_ms": 12919,
+   "duration_ms": 13008,
    "note": ""
   },
   {
    "id": "AZ-071",
    "status": "passed",
-   "duration_ms": 12619,
+   "duration_ms": 12357,
    "note": ""
   },
   {
    "id": "AZ-072",
    "status": "passed",
-   "duration_ms": 3875,
+   "duration_ms": 3682,
    "note": ""
   },
   {
    "id": "AZ-073",
    "status": "passed",
-   "duration_ms": 622,
+   "duration_ms": 535,
    "note": ""
   },
   {
    "id": "AZ-074",
    "status": "passed",
-   "duration_ms": 11484,
+   "duration_ms": 10893,
    "note": ""
   },
   {
    "id": "AZ-075",
    "status": "passed",
-   "duration_ms": 13979,
+   "duration_ms": 14000,
    "note": ""
   },
   {
    "id": "AZ-076",
    "status": "passed",
-   "duration_ms": 6435,
+   "duration_ms": 777,
    "note": ""
   },
   {
    "id": "AZ-077",
    "status": "passed",
-   "duration_ms": 23421,
+   "duration_ms": 20462,
    "note": ""
   },
   {
    "id": "AZ-078",
    "status": "passed",
-   "duration_ms": 13416,
+   "duration_ms": 12816,
    "note": ""
   },
   {
    "id": "AZ-079",
    "status": "passed",
-   "duration_ms": 7769,
+   "duration_ms": 7649,
    "note": ""
   },
   {
    "id": "AZ-080",
    "status": "passed",
-   "duration_ms": 7533,
+   "duration_ms": 7482,
    "note": ""
   },
   {
    "id": "AZ-081",
    "status": "passed",
-   "duration_ms": 14721,
+   "duration_ms": 14266,
    "note": ""
   },
   {
    "id": "AZ-082",
    "status": "passed",
-   "duration_ms": 35466,
+   "duration_ms": 35725,
    "note": ""
   },
   {
    "id": "AZ-083",
    "status": "passed",
-   "duration_ms": 36903,
+   "duration_ms": 36330,
    "note": ""
   },
   {
    "id": "AZ-084",
    "status": "passed",
-   "duration_ms": 5889,
+   "duration_ms": 5625,
    "note": ""
   },
   {
    "id": "AZ-085",
    "status": "passed",
-   "duration_ms": 12257,
+   "duration_ms": 11919,
    "note": "LedgerPage / NetworkPage have no error branch: offline they show \"No records yet.\" and the cached node cards + a spinner, never an explicit error (matches the scenario text; flagged as a UX gap)."
   },
   {
    "id": "AZ-086",
    "status": "passed",
-   "duration_ms": 14287,
+   "duration_ms": 14238,
    "note": ""
   },
   {
    "id": "AZ-087",
    "status": "passed",
-   "duration_ms": 23348,
+   "duration_ms": 23260,
    "note": ""
   },
   {
    "id": "AZ-088",
    "status": "passed",
-   "duration_ms": 7834,
+   "duration_ms": 8268,
    "note": "after Log out the browser landed on http://localhost:3402/"
   },
   {
    "id": "AZ-089",
    "status": "passed",
-   "duration_ms": 30923,
+   "duration_ms": 31069,
    "note": ""
   },
   {
    "id": "AZ-090",
    "status": "passed",
-   "duration_ms": 13285,
+   "duration_ms": 13944,
    "note": ""
   },
   {
    "id": "AZ-091",
    "status": "passed",
-   "duration_ms": 26525,
-   "note": "AZ-091 applied time: · loaded in 3.1s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour."
+   "duration_ms": 26182,
+   "note": "AZ-091 applied time: · loaded in 3.0s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour."
   },
   {
    "id": "AZ-092",
    "status": "passed",
-   "duration_ms": 20912,
+   "duration_ms": 20746,
    "note": "desktop header geometry: {\"960\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1024\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1280\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1440\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738}} · overflow per page: {\"landing\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"explore\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"detail\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"chat\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"ledger\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"docs\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360}}; header items outside the 360px viewport: none · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project"
   },
   {
    "id": "AZ-093",
    "status": "passed",
-   "duration_ms": 12254,
+   "duration_ms": 12772,
    "note": "Shift+Tab from the (now disabled) textarea landed on: button \"Show 18 more\""
   },
   {
    "id": "AZ-094",
    "status": "passed",
-   "duration_ms": 11234,
+   "duration_ms": 11342,
    "note": "axe serious/critical: /explore: color-contrast (serious) x21 → .sc-gSQHZB | .sc-fFelbd | p || /chat: color-contrast (serious) x33 → .sc-gSQHZB | .sc-eCIkAO | aside > p || /<addr>/krx-all-2761: color-contrast (serious) x44 → .sc-gSQHZB | .sc-bXTeWK > span:nth-child(1) | .sc-bXTeWK > span:nth-child(2) || /ledger: color-contrast (serious) x27 → .sc-gSQHZB | .sc-fFelbd | p:nth-child(2) || /ledger: nested-interactive (serious) x1 → svg[width=\"700\"] · Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario."
   },
   {
    "id": "AZ-095",
    "status": "passed",
-   "duration_ms": 21492,
+   "duration_ms": 25723,
    "note": ""
   },
   {
    "id": "AZ-096",
    "status": "passed",
-   "duration_ms": 2053,
+   "duration_ms": 2046,
    "note": ""
   },
   {
    "id": "AZ-097",
    "status": "passed",
-   "duration_ms": 4833,
+   "duration_ms": 4440,
    "note": ""
   },
   {
    "id": "AZ-098",
    "status": "passed",
-   "duration_ms": 100782,
+   "duration_ms": 101463,
    "note": ""
   },
   {
    "id": "AZ-099",
    "status": "passed",
-   "duration_ms": 9534,
+   "duration_ms": 9619,
    "note": "scrollY after Back on /ledger: 0 · Back resets the ledger to the top with \"All records\", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /explore: 0"
   },
   {
    "id": "AZ-100",
    "status": "passed",
-   "duration_ms": 21143,
+   "duration_ms": 21960,
    "note": "CopyButton swallows clipboard failures silently (label stays \"Copy\", no feedback) — P2 UX finding, as described in the scenario."
   },
   {
    "id": "AZ-131",
    "status": "passed",
-   "duration_ms": 43165,
-   "note": "'드': 3/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents"
+   "duration_ms": 38446,
+   "note": "'드': 2/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents"
   },
   {
    "id": "AZ-132",
    "status": "passed",
-   "duration_ms": 20545,
+   "duration_ms": 19769,
    "note": ""
   },
   {
    "id": "AZ-133",
    "status": "passed",
-   "duration_ms": 41469,
-   "note": "the queued state appeared 127 ms after the question was sent"
+   "duration_ms": 41204,
+   "note": "the queued state appeared 91 ms after the question was sent"
   },
   {
    "id": "AZ-134",
    "status": "passed",
-   "duration_ms": 19148,
+   "duration_ms": 19501,
    "note": ""
   }
  ],
@@ -648,13 +648,13 @@
   {
    "id": "AZ-103",
    "status": "passed",
-   "duration_ms": 6230,
+   "duration_ms": 6082,
    "note": ""
   },
   {
    "id": "AZ-104",
    "status": "passed",
-   "duration_ms": 369,
+   "duration_ms": 372,
    "note": "skipped [web]: no backup (earlier step skipped)"
   },
   {
@@ -684,19 +684,19 @@
   {
    "id": "AZ-110",
    "status": "skipped",
-   "duration_ms": 188,
+   "duration_ms": 172,
    "note": "skipped [web]: stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the lesson, so it never reaches PENDING_REVIEW — the review queue runs on a node with simulated checks or a real trainer · skipped [web]: shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage · skipped [web]: no job (earlier step skipped)"
   },
   {
    "id": "AZ-113",
    "status": "passed",
-   "duration_ms": 3398,
+   "duration_ms": 3386,
    "note": ""
   },
   {
    "id": "AZ-116",
    "status": "skipped",
-   "duration_ms": 90,
+   "duration_ms": 86,
    "note": "skipped [web]: no announced lesson (earlier step skipped)"
   },
   {
@@ -708,13 +708,13 @@
   {
    "id": "TM-090",
    "status": "passed",
-   "duration_ms": 11299,
+   "duration_ms": 10728,
    "note": ""
   },
   {
    "id": "TM-091",
    "status": "passed",
-   "duration_ms": 4926,
+   "duration_ms": 5129,
    "note": ""
   }
  ],
@@ -729,6 +729,7 @@
   }
  ],
  "product_fixes": [
+  "fe0dba7 docs: UX scenario results re-measured on the wave-1 build — 104/104 in one run",
   "a676836 ledger: say which part of the record you are looking at (the chain grew past 1,000)",
   "2dcb1b1 benchmarks: the file docstring said the old, untrue thing about the page",
   "dc753b6 e2e: three expectations the wave-1 build changed, and one that was measuring the wrong page",
@@ -746,63 +747,7 @@
   "2dfb21d web: print accuracy against the denominator the verifiers actually used (finding 2)",
   "46d8afa web: SUPERSEDED gets the warning palette and names its successor (finding 97)",
   "5fde838 web: Hangul in every font stack, and a title and lang that follow the language (findings 84, 85)",
-  "a194a5d web: stop the ledger badge painting over the first nav link (finding 12)",
-  "89844ca docs: critical UX review of the Ainize frontend — 100 findings",
-  "07a7502 docs: UX scenario results re-measured on the merged runtime-guard build",
-  "7dbc6a2 chat: name the real holder of the shared model, and prove the three reported defects on the live cluster",
-  "a736403 Merge branch 'main' into runtime-guard",
-  "5ddd8dd chat: stop the loop guard from cutting correct answers, and unblock the composer at 360 px",
-  "9f9f371 docs: complete the commit list in the results document",
-  "31396f6 test(node): the AIN ledger test drives its own verifier when the shared dev chain beat it to the quorum",
-  "04f85a9 docs: UX scenario results re-measured after the audit pass — 100/100, and what is still not covered",
-  "b517cae chat: guard runaway answers, send the trained prompt, and make the queue visible",
-  "9c88fcb e2e: AZ-069 authenticates against node-d with node-d's own operator password",
-  "6492240 e2e: AZ-069's third attestation is the third one by construction, not by luck",
-  "e3c7304 runtime: address the patch mailbox and lock of the instance `api` points at",
-  "7ccf5c0 e2e: AZ-063 reads the whole attest history instead of the newest 200",
-  "7e84b68 e2e: AZ-092 measures the Docs page too — the one that used to overflow at 360 px",
-  "b45347e e2e: a throwaway node applies through the mailbox of the instance it talks to",
-  "1915af4 e2e: follow the cluster's serving instance instead of hardcoding :8000/ple_patch",
-  "ee8ce1b e2e: assert what the scenarios actually claim — no branch that quietly asserts less",
-  "097464b fix(web/node): stop claiming a lesson was faked, unblock Docs at 360 px, English plurals, named select listboxes",
-  "9538908 docs: UX scenario results re-measured on the merged teach-mode build",
-  "fd9be87 e2e: per-scenario free-try buckets and a lock banner that may re-appear",
-  "53b4918 node: runtime.patchDir — one patch-hook mailbox and lock per serving instance; demo cluster defaults to the e2e server on GPUs 4,5 (:8002)",
-  "b01aab0 e2e: two layout/timing races in AZ-092 and AZ-046",
-  "f633ae9 e2e: keep the one shared model table clean between scenarios",
-  "7deaecf e2e: ride out a vLLM stall in AZ-022 and the teach-mode turn",
-  "11506ff e2e/agent: restore the \"nothing loaded\" precondition instead of failing behind it",
-  "5df396d e2e/teach: run on the live teaching node, skip only what a fake trainer cannot do",
-  "9a2e0ae e2e: teach-era API/CLI snapshots, peer-gossip wait, visitor IP without CORS noise",
-  "ae8e2b1 fix: a model outage must not destroy a lesson or log a console error",
-  "9a12395 e2e: adapt the 100 UX scenarios to the teach-era UI",
-  "0a5723e merge main (AZ-067 real restart, private throwaway clusters, verifier.auto) into teach-mode",
-  "8b64bb0 e2e: AZ-067 runs the cluster restart for real on a private throwaway cluster — 100/100 green",
-  "7d68b24 docs: UX scenario results — 99 passed / 0 failed / 1 blocked of 100",
-  "a5a8194 e2e/final: all 100 scenarios green — real outage/restart coverage on private nodes, visitor quota isolation, lock peek after send",
-  "250a36b scripts: skip unreadable /proc entries when scoping the cluster stop",
-  "046c96f scripts: private throwaway clusters (NGRAM_PORT_BASE / NGRAM_SEED=0), home-scoped stop and --stop for cluster-restart.sh",
-  "dddd9b2 merge main (scenario round-2 fixes) into teach-mode",
-  "116b524 teach fix(verify): web signs the request-bound v2 x-ngram-auth (fetchFn over the real Request: method, path+query, sha256 body; node address from /api/info; legacy only as fallback) and signs POST /api/chat so Try it now works on a private draft; Market.chat checks draft visibility before the runtime (404 not 500 for non-owners while vLLM is down); lesson card scrolls into view on status change (READY was hidden above an auto-scrolled transcript); OpenAPI v2/owner-only text; web v2 cross-builder test; spec CHANGES verification pass (unit/e2e/security/browser-walk results)",
-  "e9b76b1 teach fix(security/spec): payouts claim+serialised retry, trust proxy off by default, owner-only announce, private-draft redaction, request-bound visitor auth, crash-safe lesson restore",
-  "87c048c teach fix(web): review-2 UX / copy / i18n fixes — header wraps at 360 px (no horizontal scroll on /chat, /signing, /new-patch, /explore, /teacher, dashboard; en + ko), lesson basket heads the picker column when the node teaches and scrolls into view on ?teach=1 / Add to lesson, lesson-card status pill via i18n (cardStatusKey → teach.mine.status.*, new \"Checking\"), §8.4 durations (no \"1–1 min\": \"under a minute\" / \"about N min\" / range, card ETA only with ≥ 3 samples, stub says \"Starting…\", pre-flight copy drops \"under 30 seconds\" and maps a runtime outage to teach.pre.err_runtime), KeepPrivateSheet (minmax(0,1fr) grid so the hardware notice is readable on phones, commands = the node's RUN-LOCALLY.md fetched via readme_url and shown in its own scrolling box, \"Run it on my own machine\" radio no longer POSTs /save — links are minted when the hardware box is ticked, model falls back to runtime.model / info.node.model), FAILED card = friendly sentence (restart / OOM mapped) + collapsed technical details, localized elapsed()/dates (utils/useFormat: useElapsed + useDateTime; Your knowledge, teacher page, link expiry), stub honesty (\"It learned it — n of m answers correct.\" + \"Demo node — these checks were simulated, not measured in a live model.\"), \"Teaching anonymously · 0x…\" chip, teacher \"Sales\" tile label, earnings scheme fallback copy, grammatical Korean suggest-phrasing templates, lesson card inside the transcript so it never overlaps the empty state; e2e: passwordFor() honours AINIZE_PASS / AINIZE_PASS_T and knows node-t, AZ-106 accepts the stub wording; verification script results/review/review2.mjs + review2-*.png (1280/360, en/ko); spec CHANGES \"Review fixes — web\".",
-  "e90bb31 teach PR-8: CLI parity + docs + demo config — `ainize teach status <node-url | lesson-url | job-id | teacher-page | address> [--key --key-file]` (policy / owner vs status-only lesson view / data-provider page, signs x-ngram-auth like the web key), `ainize patch import <lesson.npz> --recipe recipe.json` (private DRAFT via createDraft keepInPlace, benchmark + model + id + credit-only contributor from the recipe, sha256 check, origin teach, no announce / no ledger record), `publish --contributor addr:name:share` (declared data providers, ≤ 4, Σ ≤ 1); node: PATCH /api/patches/:id no longer wipes contributors on unrelated updates; openapi CLI_REFERENCE teach one-liner + \"Teach mode\" group + DocsPage fourth card (en+ko); deploy/README docker-group + GPU-allocation section; scripts/cluster.mjs node-a teach.enabled/publish auto with a marked TEACH_BACKEND stub→gradient switch; README terminal lines; AZ-121 scenario rewritten (md/html re-rendered); CLI tests +3 (import, teach status, --contributor) against an in-process stub node; spec PR-8 CHANGES note incl. the node-t → node-u round-trip",
-  "eb160df e2e: fix brittle scenarios (AZ-007/022/027/030/036/048/060/064/069/071/083) and stop serial-block cascades",
-  "41d928e teach PR-7: landing creator card (teach copy, CTA → /chat?teach=1, operator register link), landing/header Teach item, sign-in visitor notice + subtitle, /new-patch two-way pre-screen when signed out (NewPatchGate), Register under the operator menu, My knowledge Teaching tab (settings → PATCH /api/me/teach/policy, review queue approve/decline/cancel, contributors hide/block key/IP + bans, payouts owed/paid/failed + retry), Account → Teaching link, operator RTK endpoints + types, i18n en+ko; node: updateTeachPolicy no longer wipes untouched kv overrides (+ test); e2e web-teach-operator.spec.ts (AZ-011/028/030, settings, AZ-110/116/113) green on the stub dev node, web-teach.spec.ts titles renumbered; docs: ux-test-scenarios.json AZ-011/028/030/016/040 (+007/066/083 wording) updated and AZ-101…AZ-122 appended, render script now generates the .md too, spec PR-7 CHANGES note, README visitor teach section + local-run link",
-  "822b840 core/node/cli: dated supersede/subscribe records, hidden-anchor lineage, 4xx/503 statuses, patch forget, fresh cross-node reads",
-  "67eb1d8 teach PR-6: web teach flow — browser teaching key (@noble secp256k1 + keccak, byte-identical to ain-util; cross-lib test vs core verifyMessage / node verifyAuthHeader), TeachDrawer / LessonBasket / CreditSheet / PreflightList / LessonCard (5 s polling) / PublishSheet (signed claim) / KeepPrivateSheet (token downloads + RUN-LOCALLY.md) / MyKnowledgePanel, TeacherPage /teacher/:address, ChatPage ?teach=1 / ?lesson= / ?mine=1 + sticky card, Taught-by chips on PatchPage + list items, header Teach item, routes, i18n teach.ts (en+ko); node teach.stubOffline (simulated preflight/CHECKING for stub nodes without a model server) + unit test; Playwright web-teach.spec.ts AZ-101…AZ-109 green against the stub dev node",
-  "8fa3554 web: visitor never sees Manage, Back lands at the top, exact field labels, revenue/receipt/score copy, account peers poll",
-  "92001a6 teach PR-2: node payouts table + earnings — settlePayment writes a payouts row per non-self royalty address before the AIN transfer (pending → paid tx_hash / failed last_error), 60-s retry timer (max 20 attempts) in server.ts, GET /api/me/payouts?status= + POST /api/me/payouts/:id/retry, /api/teacher/:address reconciles owed vs paid, wallet + CLI payouts, openapi, unit tests with a fake wallet",
-  "d339098 teach PR-5: node TeachWorker (state machine, trainer-slot lease, docker-exec stdout protocol, stub backend, CHECKING gates), Runtime.exclusiveTry, teach store tables, visitor /api/teach/* + /api/teacher/:address + operator /api/me/teach/*, recipe.json + RUN-LOCALLY.md, openapi, unit tests with fake spawn",
-  "d843751 e2e: align AZ-055/068/082 assertions with the fixed behaviour (draft-free counts, hidden-id resolution)",
-  "08e6052 e2e: executable specs for all 100 UX scenarios (visitor/creator/operator/agent/cross-cutting) + teach-mode design spec",
-  "5dce9e6 web: logout rests on / even on a cold cache (AZ-088)",
-  "4530834 web: sign-out aware route guards so Log out rests on the landing page (AZ-088)",
-  "76d106d fix: draft/test-anchor leaks, agent budget/follow-latest flags, drive --no-open, 0 AIN message, mobile header, logout landing",
-  "64a72fc teach PR-3: ChatMode multi-knowledge (patch_ids 1..3) + contamination banner",
-  "3db1098 teach PR-1: core contributors + two-pass royalty, teach config, catalog contributor filter",
-  "75388d0 teach PR-4: trainer train/teach.py in the qwen3.8 repo (job.json -> lesson.npz + recipe.json), teach_contrast.json, patch.py English status line, spec copy with PR-4 CHANGES note",
-  "144a1be web: load Noto Sans KR so Korean text renders on systems without CJK fonts"
+  "a194a5d web: stop the ledger badge painting over the first nav link (finding 12)"
  ],
  "not_covered": [
   "aindrive pairing end to end (needs a human Google login; only the unpaired state, the hint, sync, file tree and history are asserted)",

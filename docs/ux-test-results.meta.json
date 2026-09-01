@@ -1,15 +1,15 @@
 {
  "date": "2026-09-01",
- "fix_range": "665e469..HEAD",
+ "fix_range": "89844ca..HEAD",
  "environment": {
-  "Date": "2026-09-01 (wave 1 of the UX critique — the honesty pass: findings 1, 6, 7, 24, 28, 29, 55 and 56 of docs/ux-critique.json; the whole suite re-measured afterwards)",
-  "Build": "`a676836` — the wave-1 fixes on top of the wave-0 build `96f202f`. core/node/cli/agent and the web dist were rebuilt and the cluster restarted before the run (the node contract changed: POST /api/chat gained `messages_base` / `messages_patched`, and GET /api/ledger's window cap went 1,000 → 5,000)",
+  "Date": "2026-09-01 (adversarial re-verification of the 17 findings fixed in waves 0 and 1 — items 1, 2, 6, 7, 12, 20, 22, 24, 26, 27, 28, 29, 55, 56, 84, 85, 97 of docs/ux-critique.json; each original problem statement was reproduced on the running product before the suite was re-measured)",
+  "Build": "`fe0dba7` — unchanged product code. This pass verified the wave-0 and wave-1 fixes rather than adding to them, so nothing was rebuilt; the cluster restarted twice (never `--fresh`) only to route the node→model calls through a logging proxy for the finding-1 wire capture, and was put back on http://localhost:8002 before the run",
   "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
   "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133/134) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/results.json and full-run-wave1.log — 114 passed / 11 skipped / 0 failed, 1 flake (AZ-044, ECONNRESET on the settings save, green on retry) in 27.5 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-1 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave1/",
+  "Raw results": "packages/e2e/results/results.json and results/wave-run.log — 115 passed / 11 skipped / 0 failed / 0 flaky in 26.9 min, one uninterrupted run of every project (web, mobile, cli-api). A first full run of the same build (results/wave-run-pass1.log, 27.0 min) was 113 passed / 11 skipped / 0 failed with 2 flakes green on retry (AZ-091, AZ-052 — both timing, neither reproduced). Verification probes and screenshots for this pass: packages/e2e/verify-*.mjs, packages/e2e/model-tap.mjs, packages/e2e/results/verify/",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "teach_runs": [
