@@ -807,3 +807,39 @@ test('check_side_effects:false is honoured by the offline stub, and a re-check m
     await api('DELETE', `/api/teach/jobs/${id}`, undefined, hdr());
   } finally { N.cfg.teach!.backend = backend; N.cfg.teach!.stubOffline = stubOffline; N.teach!.invalidatePolicy(); }
 });
+
+/**
+ * §6.4 — the operator's Teaching tab says "Every lesson visitors trained on this node, newest first" and its review
+ * queue IS the newest end of that table. `listTeachJobs` caps a page at 500 rows, so a node that has run more lessons
+ * than that must page from the NEW end: an ASC scan with a LIMIT silently hid every lesson after the 500th oldest —
+ * which is exactly the set an operator still has to decide about (found by AZ-218/AZ-219 on a dev node with 607 rows).
+ */
+test('the operator lesson list pages from the newest end, and never drops a lesson waiting for review', () => {
+  const db = new Store(':memory:');
+  try {
+    const base = 1_700_000_000_000;
+    const row = (n: number, status: string) => ({
+      id: `job-${String(n).padStart(4, '0')}`, contributor: '0xabc', contributor_name: null, ip: '127.0.0.1', status,
+      context: [], builds_on: false, facts: [], job_dir: null, npz_path: null, sha256: null, progress: null, checks: null,
+      error: null, container_pid: null, draft_id: null, patch_id: null, publish_status: 'private', reject_reason: null,
+      parent_job: null, result: null, blocked: null, name: `lesson ${n}`, dataset_id: null, dataset_sha256: null,
+      dataset_rows: null, dataset_source: null, training: null, preflight: null,
+      created_at: base + n * 1000, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
+    });
+    // the oldest row is the one an operator never decided about; 12 rows, a page of 5
+    db.insertTeachJob(row(0, 'PENDING_REVIEW'));
+    for (let n = 1; n < 12; n++) db.insertTeachJob(row(n, 'READY'));
+
+    const page = db.listTeachJobs({ order: 'desc', limit: 5 });
+    assert.deepEqual(page.map((j) => j.id), ['job-0011', 'job-0010', 'job-0009', 'job-0008', 'job-0007'],
+      'a capped page must be the newest rows, newest first');
+    assert.deepEqual(db.listTeachJobs({ limit: 5 }).map((j) => j.id), ['job-0000', 'job-0001', 'job-0002', 'job-0003', 'job-0004'],
+      'the default order is unchanged for every other caller');
+    // what Teach.listAll() does with that page: the undecided lesson is merged back in, still newest-first
+    const seen = new Set(page.map((j) => j.id));
+    const merged = [...page, ...db.listTeachJobs({ status: ['PENDING_REVIEW'] }).filter((j) => !seen.has(j.id))]
+      .sort((a, b) => b.created_at - a.created_at);
+    assert.ok(merged.some((j) => j.id === 'job-0000'), 'a PENDING_REVIEW lesson is never paged out of the operator view');
+    assert.deepEqual(merged.map((j) => j.created_at), [...merged.map((j) => j.created_at)].sort((a, b) => b - a));
+  } finally { db.close(); }
+});

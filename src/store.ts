@@ -292,13 +292,20 @@ export class Store {
     const r = this.db.prepare('SELECT * FROM teach_jobs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return r ? this.rowToTeachJob(r) : null;
   }
-  listTeachJobs(opts: { contributor?: string; status?: string[]; draft_id?: string; dataset_id?: string; limit?: number } = {}): TeachJobRow[] {
+  /**
+   * `order` is what keeps a capped list honest: the default LIMIT is 500, and a node that has run more lessons than
+   * that must still be able to list the NEWEST ones (the operator's review queue is the newest end of the table).
+   * An ASC scan with a LIMIT silently hides everything after the 500th oldest row.
+   */
+  listTeachJobs(opts: { contributor?: string; status?: string[]; draft_id?: string; dataset_id?: string; limit?: number; order?: 'asc' | 'desc'; lessonApplied?: boolean } = {}): TeachJobRow[] {
     const where: string[] = []; const args: (string | number)[] = [];
     if (opts.contributor) { where.push('lower(contributor) = ?'); args.push(opts.contributor.toLowerCase()); }
     if (opts.status?.length) { where.push(`status IN (${opts.status.map(() => '?').join(',')})`); args.push(...opts.status); }
     if (opts.draft_id) { where.push('draft_id = ?'); args.push(opts.draft_id); }
     if (opts.dataset_id) { where.push('dataset_id = ?'); args.push(opts.dataset_id); }
-    const sql = `SELECT * FROM teach_jobs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at ASC LIMIT ${Number(opts.limit ?? 500)}`;
+    // the boot-time "is a lesson still on the shared table?" scan: filtered in SQL, so the LIMIT can never hide one
+    if (opts.lessonApplied !== undefined) { where.push('lesson_applied = ?'); args.push(opts.lessonApplied ? 1 : 0); }
+    const sql = `SELECT * FROM teach_jobs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at ${opts.order === 'desc' ? 'DESC' : 'ASC'} LIMIT ${Number(opts.limit ?? 500)}`;
     return (this.db.prepare(sql).all(...args) as Record<string, unknown>[]).map((r) => this.rowToTeachJob(r));
   }
   deleteTeachJob(id: string) { this.db.prepare('DELETE FROM teach_jobs WHERE id = ?').run(id); }

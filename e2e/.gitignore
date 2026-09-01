@@ -1,3 +1,10 @@
 results/
 report/
 test-results/
+
+# Fixtures the upload suite writes for itself on every run (helpers/ds-upload-fixtures.ts `ensureFixtures`) — the
+# generator is the reviewable source of truth, and one of them is 4.9 MB. The three static files the other suites
+# read from disk are kept.
+fixtures/az-*
+!fixtures/az-bad.txt
+!fixtures/az-cli.csv

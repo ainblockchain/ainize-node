@@ -323,7 +323,7 @@ export class TeachWorker {
       this.log('warn', `job ${j.id} was ${j.status} when the node restarted → requeued once`, j.id);
     }
     // any other row still flagged (crash after the status flip, or a stop() that timed out)
-    for (const j of this.store.listTeachJobs()) if (j.lesson_applied && !this.pendingRestore.has(j.id)) this.pendingRestore.add(j.id);
+    for (const j of this.store.listTeachJobs({ lessonApplied: true })) if (!this.pendingRestore.has(j.id)) this.pendingRestore.add(j.id);
   }
 
   /**
@@ -836,8 +836,18 @@ export class TeachWorker {
   publicView(j: TeachJobRow): TeachJobPublic { const v = this.view(j); return { id: v.id, status: v.status, ...(v.position !== undefined ? { position: v.position } : {}), ...(v.eta_s !== undefined ? { eta_s: v.eta_s } : {}) }; }
   get(id: string): TeachJobRow | null { return this.store.getTeachJob(id); }
   isOwner(j: TeachJobRow, address: string | null): boolean { return !!address && j.contributor.toLowerCase() === address.toLowerCase(); }
-  listMine(address: string): TeachJob[] { return this.store.listTeachJobs({ contributor: address }).map((j) => this.view(j)).reverse(); }
-  listAll(): (TeachJob & { ip: string | null })[] { return this.store.listTeachJobs().map((j) => ({ ...this.view(j), ip: j.ip })).reverse(); }
+  // Both lists are newest-first, and both ask the store for the newest rows: reversing an ASC page would put the
+  // newest lesson out of reach on a node that has run more than `limit` of them (the operator's review queue is
+  // exactly the newest end of the table).
+  listMine(address: string): TeachJob[] { return this.store.listTeachJobs({ contributor: address, order: 'desc' }).map((j) => this.view(j)); }
+  listAll(): (TeachJob & { ip: string | null })[] {
+    const rows = this.store.listTeachJobs({ order: 'desc' });
+    // …and a lesson the operator never decided about must never fall off the end of the page, however old it is
+    const seen = new Set(rows.map((j) => j.id));
+    for (const j of this.store.listTeachJobs({ status: ['PENDING_REVIEW'] })) if (!seen.has(j.id)) rows.push(j);
+    rows.sort((a, b) => b.created_at - a.created_at);
+    return rows.map((j) => ({ ...this.view(j), ip: j.ip }));
+  }
 
   /** The caller's private lessons as catalog entries (drafts resolve through `entry()`), for `GET /api/chat/patches.lessons`. */
   async lessonsFor(address: string): Promise<CatalogEntry[]> {

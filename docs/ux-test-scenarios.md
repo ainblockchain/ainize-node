@@ -4861,7 +4861,7 @@ just prose, nothing else
 - Without the bearer → 401 (requireOperator); a visitor teaching key alone never reaches this route
 - GET /api/events?kind=teach contains a fresh info event with message exactly "operator opened the uploaded-datasets moderation view" — one per call, so the moderation read is auditable
 - The operator DELETE returns 200; a following operator GET /api/me/teach/datasets shows the row with status 'deleted' and a deleted_at timestamp
-- K1's GET of the dataset → 404 "dataset_not_found: no such dataset on this node", but K1's lessons trained from it are still listed by GET /api/teach/jobs with dataset.deleted === true — deleting the questions never deletes the lesson
+- K1's GET of the dataset → 200 with status 'deleted' and a deleted_at timestamp (the documented tombstone: the row stays so a lesson can say "the dataset for this lesson was deleted"), and the questions are gone — GET /api/teach/datasets/:id/download → 404; a STRANGER still gets 404 for the item route. K1's lessons trained from it are still listed by GET /api/teach/jobs with dataset.deleted === true — deleting the questions never deletes the lesson
 - Cleanup: nothing to restore (the delete is the cleanup); the seeded lesson, if any, deleted
 
 **Evidence**
@@ -6889,7 +6889,7 @@ not json at all
 **Expected**
 
 - Before any event exists the log body reads "Nothing logged yet."; otherwise each line is "<local time>  <message>" in seq order
-- The messages match GET …/events, e.g. "lesson queued (4 of 4 question(s), context -)", "training started (stub) for <jobId>", "step 1/3 loss 1 hits 3/8", "step 3/3 loss 0.33 hits 8/8", "exported 4 memory entries (0.01 MB, sha 78b4e120bfcb…)", "READY: taught 8/8, locality 12/12, parents 0/0"
+- The messages match GET …/events, e.g. "lesson queued (4 of 4 question(s), context -)", "training started (stub) for <jobId>", "step 1/3 loss 1 hits 1/4", "step 3/3 loss 0.33 hits 4/4" (the step lines count QUESTIONS after the AZ-171 fix; the closing line keeps the check’s own probe count), "exported 4 memory entries (0.01 MB, sha 78b4e120bfcb…)", "READY: taught 8/8, locality 12/12, parents 0/0"
 - The events response is the redacted public shape (seq, ts, level, message, data) — the owner is not the operator, so draft ids/keys/prompts stay out of both the API and the rendered log
 - The log keeps polling every 5 s while the job is active and stops when it is not
 
@@ -7139,10 +7139,10 @@ not json at all
 **Expected**
 
 - The card reads "Train it again" / "The same dataset, with more effort or a few more questions." with the button "Change settings and re-train"
-- The click sends POST /api/teach/jobs/<jobA>/retrain {training:{effort:"thorough"}} → 202 and the browser lands on /teach/lesson/<jobB>
+- The click opens /teach/dataset/<dsId>/settings?retrain=<jobA>&effort=thorough with the bumped effort pre-selected; pressing "Train this lesson (N questions)" there sends POST /api/teach/jobs/<jobA>/retrain {training:{effort:"thorough"}} → 202 and the browser lands on /teach/lesson/<jobB>
 - jobB.training = {effort:"thorough", max_steps:40, eval_every:4, lr:0.002, …}, jobB.parent_job = jobA.id, jobB.dataset.id and dataset.sha256 identical to jobA's (no fork, no re-upload), and jobA is left exactly as it was
 - Re-training a thorough lesson keeps thorough (the bump saturates) rather than failing or silently dropping to balanced
-- The label must match what happens: today the click goes straight to a new running lesson and no settings screen is ever shown, so either the button opens /teach/dataset/<dsId>/settings first or its text must stop promising "Change settings" (en) / "설정 바꿔 다시 학습" (ko)
+- The label matches what happens: "Change settings and re-train" / "설정 바꿔 다시 학습" shows the settings screen before anything runs (a lesson with no dataset of its own has no settings screen and re-trains directly)
 
 **Evidence**
 
@@ -7150,7 +7150,7 @@ not json at all
 - `packages/web/src/components/teach/util.ts:20 (nextEffort quick→balanced→thorough)`
 - `packages/node/src/api.ts:604-610 (POST /:id/retrain); packages/node/src/teach.ts:754-765 (bump map, parentJob, same dataset)`
 - `packages/web/src/i18n/pages/teach.ts:511-513`
-- `Observed on node-u 2026-09-01: clicking it on a balanced READY lesson created job 96510dd3 with training.effort=thorough, max_steps=40, parent_job=e70531e1 and the same dataset — landing directly on the running lesson, with no settings screen in between`
+- `Observed on node-u 2026-09-01 after the fix: clicking it on a balanced READY lesson opens /teach/dataset/<ds>/settings?retrain=<jobA>&effort=thorough with Thorough pre-selected and nothing sent yet; pressing Train there POSTs /api/teach/jobs/<jobA>/retrain and creates a job with training.effort=thorough, max_steps=40, parent_job=<jobA> and the same dataset id + sha256`
 
 ### AZ-181 - The queue: waiting behind another lesson, and being turned away when the trainer has no room
 
@@ -7474,6 +7474,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/pages/TeachLessonPage.tsx:297-302 (try-block rendered only when j.draft_id and the lesson did not fail)`
 - `packages/web/src/i18n/pages/teach.ts:500-505 (try_title/try_hint/try_ph/try_go/try_with/try_without)`
 - `packages/node/src/api.ts:363-376 POST /api/chat (patch_ids, caller.address = verified teaching key)`
+- `Observed on node-u 2026-09-01 (live model :8002, stub backend): the A/B has to be asked with a question the NODE measured as taught — `job.facts.find(f => f.hit && !f.base_answer.includes(f.answer))`. Qwen3.8-Flash-Next answers the bare "픽셀플러스의 종목코드는?" with 087600 on its own, so both panes then agree for reasons that have nothing to do with the draft; a tag-decorated phrasing is answered with a different, wrong code even with the fixture applied. Which phrasing the fixture .npz moves is the model's business — that the lesson's own measurement and "Try it here" agree is the product's.`
 
 ### AZ-191 - "Try it here" fails loudly, not silently: quota, model outage and a draft that is not yours
 
@@ -7495,7 +7496,7 @@ prompt,answer,alt_prompt
 **Expected**
 
 - Outage: an Alert with role="alert" renders inside [data-testid=live-test]; the copy is the mapped runtime message "The model server is off or restarting. The lesson will continue automatically." (teach.err.runtime) — no empty answer panes and no console error
-- Quota: the alert reads the mapped rate-limit sentence "Too many requests. Try again in a moment." (teach.err.rate_limited) and the previous answers are cleared rather than shown as stale
+- Quota: the alert reads the hourly live-test sentence "You used this hour’s free live tries on this node. Try again in an hour, or download the lesson and run it yourself." (teach.err.quota_try, mapped from the node's `quota_chat:` code) and the previous answers are cleared rather than shown as stale — never teach.err.quota ("today’s lesson limit … come back tomorrow"), which is a different, daily budget
 - K2 → the node answers 404 (not 500 and not the draft's content): a private draft is invisible to another teaching key even while the runtime is down
 - No response body ever exposes another visitor's draft id in /api/events (teach lines are redacted to "a private draft")
 
@@ -7768,11 +7769,11 @@ prompt,answer,alt_prompt
 
 **Evidence**
 
-- `packages/web/src/pages/PatchPage.tsx:141-167 (provider = contributors.find(role==='data_provider'); TaughtChip t('detail.taught_badge'); detail.people / detail.published_by; detail.teacher_page; detail.use_yourself) — NOTE: nothing on this page reads `a.dataset``
+- `packages/web/src/pages/PatchPage.tsx:141-167 (provider = contributors.find(role==='data_provider'); TaughtChip t('detail.taught_badge'); detail.people / detail.published_by; detail.teacher_page; detail.use_yourself); PatchPage.tsx Overview() [data-testid=dataset-provenance] renders a.dataset (fingerprint / question count / source) with detail.ov.dataset_note`
 - `packages/web/src/components/public/PatchListItem.tsx:128-146 (taught-chip on the catalog card)`
 - `packages/web/src/i18n/pages/teach.ts:229-236 (detail.taught_by / taught_by_anon / people / taught_badge / use_yourself / published_by / teacher_page)`
 - `packages/core/src/types.ts:112-119 PatchAnchor.dataset (hash-only provenance) and :136-137 PatchRecipe.dataset; packages/node/src/teach.ts:1556-1571 sets both at draft creation`
-- `Observed on node-u: /0xf6FF…/taught-walk2-lesson-7znyh-6e4ae8 rendered "Taught lesson / Creator node: teachable-u · Data provider: Taught by a visitor (70%)" while GET /api/patches/… returned dataset {sha256:'093d1f4d…', rows:40, source:'upload'} that appears nowhere in the page text`
+- `Observed on node-u 2026-09-01 after the fix: the Overview tab renders “The data it was taught from” with Dataset fingerprint <12 hex>, “3 questions” and “Uploaded file”, above the note “The questions and answers themselves were never published — only the sample questions below are on the record.”`
 
 ### AZ-200 - "My datasets and lessons": dataset-first cards with fingerprint, source, retention and the four actions
 
@@ -7797,11 +7798,11 @@ prompt,answer,alt_prompt
 **Expected**
 
 - Title "My datasets and lessons", sub "Everything you have taught from this browser. The dataset is the file; a lesson is what the model learned from it.", a retention line "Datasets you have not trained are deleted after 7 days." and the primary button "Upload a dataset" ([data-testid=mine-upload] → /teach/upload)
-- Each [data-testid=dataset-card] shows the name, "{n} questions", "Fingerprint {first 12 hex of sha256}", and a definition list: "Where it came from" = the file name for an upload / "your conversation" for a chat dataset / "a sample dataset"; "Created" = a localised date-time; and the retention cell = "Kept on this node until <date>." (or "Deleted as soon as training finishes." for retention delete_after_training)
+- Each [data-testid=dataset-card] shows the name, "{n} questions", "Fingerprint {first 12 hex of sha256}", and a definition list: "Where it came from" = the CATEGORY, not the file name ("Uploaded file" / "From a conversation" / "Sample dataset" / "Copied from a lesson"; the card is already headed by the dataset name, which for an upload is the file name minus its extension); "Created" = a localised date-time; and the retention cell = "Kept on this node until <date>." (or "Deleted as soon as training finishes." for retention delete_after_training)
 - Four actions: "Train again" ([data-testid=ds-retrain] → /teach/dataset/:id/settings), "Add questions" ([data-testid=ds-continue] → /teach/dataset/:id), "Download (.jsonl)" ([data-testid=ds-download] → signed GET /api/teach/datasets/:id/download, saved as dataset-<id>-r<rev>.jsonl), "Delete dataset" ([data-testid=ds-delete])
 - Under the card, "Lessons from this dataset (1)" lists the lesson as name · "Ready · private" · "learned 3/3" (from the index-aligned facts, never checks.taught) · "Open" → /teach/lesson/:jobId
 - Delete raises the confirm 'Delete "<name>"? Lessons already trained from it are kept.'; confirming calls DELETE /api/teach/datasets/:id → {ok:true,status:'deleted'}, shows the success alert "Dataset deleted.", and the lesson stays reachable (its result page then shows "The dataset for this lesson was deleted by its owner. The lesson itself is unchanged.")
-- The v1 lesson with no dataset appears under [data-testid=legacy-lessons] "Lessons made without a dataset" — never hidden
+- A lesson created from a legacy `facts` body appears under the dataset the node materialised for it (packages/node/src/teach.ts createJob freezes the basket into a dataset), so [data-testid=legacy-lessons] "Lessons made without a dataset" is reachable only for rows migrated from a pre-PR-D1 database — G5 still holds: no v1 lesson may disappear from the visitor's view
 
 **Evidence**
 
@@ -7809,7 +7810,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/components/teach/DatasetCard.tsx:56-96 (fingerprint, Meta dl, ds-retrain/ds-continue/ds-download/ds-delete, lessons list with teach.data.learned)`
 - `packages/web/src/i18n/pages/teach.ts:523-552 (teach.data.*), :teach.rows.source_chat 'your conversation'`
 - `packages/node/src/api.ts:525-537 (DELETE dataset, download); packages/node/src/teach-datasets.ts remove() — "the lessons trained from it are kept"`
-- `Observed on node-u: the card rendered "Fingerprint 8e6150fda8c5 · Where it came from ui-82hdt.csv · Kept on this node until Sep 8, 2026, 5:24 AM" and the dialog 'Delete "declaration 88hla"? Lessons already trained from it are kept.'`
+- `Observed on node-u 2026-09-01 after the fix: the card rendered “az200-g11wl · 3 questions · Fingerprint 7b04550a4aeb · Where it came from Uploaded file · Kept until Kept on this node until Sep 8, 2026” for the upload az200-g11wl.csv`
 
 ### AZ-201 - Fork a dataset, and honour "delete my file as soon as training finishes"
 
@@ -7834,8 +7835,8 @@ prompt,answer,alt_prompt
 - Fork unchanged → 200 with created:false and the SAME dataset id (identical canonical bytes for the same owner de-duplicate) — the caller is told nothing new was created
 - Fork with rows_op → 201, created:true, a new id, rows = original + 1, parent_dataset = the source id, source 'derived', name 'az202 plus'
 - Retention: after the lesson finishes, GET /api/teach/datasets/:id shows size_bytes 0 (status still 'ready') and GET …/download → 404 "dataset_not_found: the questions of this dataset are no longer on this node"
-- The /teach/mine card for that dataset states the file is gone and does NOT offer "Download (.jsonl)", "Train again" or "Add questions" as live buttons — today deleted_at is unset so all four actions render and Download errors, Train again fails with dataset_empty, and a fork of it silently produces a dataset containing only the appended rows
-- Every failing call answers with a JSON body carrying an `error` string (a 400 with an empty `{}` body was observed from POST /api/teach/jobs/:id/retrain when the dataset had no rows left)
+- The /teach/mine card for that dataset states the file is gone in its own words — [data-testid=dataset-file-gone] "Your questions were deleted as soon as training finished, as you asked. The fingerprint and the lessons are kept, but this dataset can no longer be downloaded or trained." (never the deleted-by-its-owner sentence, which is a different thing) — and offers only "Delete dataset": no "Download (.jsonl)", "Train again" or "Add questions"
+- Every failing call answers with a JSON body carrying an `error` string, and one that says the questions are GONE rather than that the dataset is empty: POST /api/teach/jobs/:id/retrain and POST /api/teach/datasets/:id/fork both answer 404 "dataset_not_found: the questions of this dataset are no longer on this node" and create nothing (a 400 with an empty `{}` body, and a fork that silently became the appended rows alone, were what this scenario first found)
 
 **Evidence**
 
