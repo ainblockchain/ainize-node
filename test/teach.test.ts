@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ngram/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
-import { Runtime } from '../src/runtime.js';
+import { Runtime, RuntimeUnavailableError } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
@@ -115,6 +115,7 @@ let localityBreak = 0;          // how many locality prompts change while a less
 let stick = true;               // does the lesson make the model answer?
 let revertOnce = false;         // simulate a serving restart during the check
 let runtimeDown = false;        // model server off (status.available false)
+let crashOnceInCheck = false;   // the engine dies mid-check: the next locality prompt throws RuntimeUnavailableError
 function knows(text: string): string | null {
   const t = text.replace(/^Q:\s*/, '').replace(/\nA:\s*$/, '').trim();
   if (t === 'known question') return 'KNOWN';
@@ -133,6 +134,7 @@ function installFakeRuntime(node: RunningNode = N) {
     chat: async (m: ChatMessage[]): Promise<ChatResult> => {
       const q = [...m].reverse().find((x) => x.role === 'user')?.content ?? '';
       const li = LOC.indexOf(q);
+      if (li === 0 && crashOnceInCheck) { crashOnceInCheck = false; throw new RuntimeUnavailableError('engine crashed while generating'); }
       if (li >= 0) return { content: lessonLoaded() && li < localityBreak ? `changed ${li}` : `L${li}`, latency_ms: 1, model: 'demo-ngram-1b' };
       return { content: knows(q) ?? 'I do not know.', latency_ms: 1, model: 'demo-ngram-1b' };
     },
@@ -584,6 +586,16 @@ test('expiry sweep: an unsaved READY draft past draftTtlDays becomes EXPIRED —
   assert.equal(after.status, 'EXPIRED'); assert.equal(after.draft_id, null);
   assert.equal(N.store.getDraft(j.draft_id!), null); assert.ok(!existsSync(join(repo, '.teach', j.id)));
   assert.equal(N.store.checkToken(s.download.npz_url.split('token=')[1], s.sha256), false);
+});
+
+test('a model crash mid-check retries the whole check instead of failing the lesson (RuntimeUnavailableError is an outage, not a broken lesson)', async () => {
+  crashOnceInCheck = true;
+  const r = await createJob([{ prompt: 'Q2 Crash', answer: 'Crash' }]);
+  const j = await waitFor(r.json.job!.id, ['READY'], 10_000);   // FAILED would throw here
+  assert.equal(crashOnceInCheck, false, 'the outage was really injected into the check');
+  assert.equal(j.checks!.executed, true, 'the check ran again once the model answered');
+  assert.equal(j.checks!.ok, true);
+  assert.equal(table.size, 0, 'the shared table is clean again');
 });
 
 test('model server down for the whole grace → READY unchecked (publish gated); recheck when it is back re-measures onto the same draft', async () => {

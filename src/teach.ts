@@ -21,6 +21,7 @@ import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { hashCanonical, readNpzMember, validateContributors, verifyMessage, writeNpz, type CatalogEntry, type Contributor, type TeachConfig } from '@ngram/core';
 import { sha256File } from './blobs.js';
+import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import type { Caller, Market } from './market.js';
 import type { Store, TeachFactRow, TeachJobRow } from './store.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
@@ -478,7 +479,12 @@ export class TeachWorker {
   }
   /** Errors that mean "the model server is stalled / restarting" rather than "this lesson is broken". */
   private static isRuntimeOutage(e: unknown): boolean {
-    return /timeout|timed out|aborted|unreachable|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|not responding|chat failed: 5\d\d|completion failed: 5\d\d/i.test((e as Error)?.message ?? String(e));
+    // The runtime maps every engine crash / restart / overload to RuntimeUnavailableError (MODEL_UNAVAILABLE); the
+    // message is matched too because the error loses its class when it crosses an await boundary from a wrapped call.
+    if (e instanceof RuntimeUnavailableError) return true;
+    const msg = (e as Error)?.message ?? String(e);
+    if (msg.includes(MODEL_UNAVAILABLE)) return true;
+    return /timeout|timed out|aborted|unreachable|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|not responding|chat failed: 5\d\d|completion failed: 5\d\d/i.test(msg);
   }
 
   // ------------------------------------------------------------ job creation (spec §6.2 POST /api/teach/jobs)
