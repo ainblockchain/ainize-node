@@ -3,9 +3,9 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { PIXEL_NPZ } from '../helpers/operator-cli';
-import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
+import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, visitorHeaders, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
 const AIN_NOTE = 'AIN = AI Network token (this demo runs a local dev chain)';
 const FINAL_NAME = 'KRX ticker codes for 2,761 listed companies (final)';
@@ -724,7 +724,13 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
 });
 
 test('AZ-022 Explore the Network page and try the gateway router demo', async ({ page, request }) => {
-  await waitForRuntime(request);
+  // The peer rows mirror what each peer advertised in the last gossip round, so all three nodes must see the shared
+  // model before the page is read (during a vLLM hang a peer advertises no model and its Model cell shows "—").
+  for (const n of [NODE_A, NODE_B, NODE_C]) expect(await waitForRuntime(request, n), `${n} runtime`).toBe(true);
+  await expect.poll(
+    async () => (await api<{ peers: { endpoint: string; info?: { model?: string } }[] }>(request, '/api/nodes')).body.peers.filter((p) => p.info?.model === MODEL).length,
+    { message: 'both peers advertise the serving model', timeout: 120_000, intervals: [3_000] },
+  ).toBe(2);
   const i = await info(request);
   const nodes = (await api<{ nodes: { address: string; name: string; blobs: string[] }[]; peers: { endpoint: string; info: { name: string; roles: string[]; blobs: string[] } }[] }>(request, '/api/nodes')).body;
   await page.goto(NODE_A + '/network');
@@ -828,7 +834,7 @@ test('AZ-023 Use the Docs page: copy one-liners, browse the CLI table and the AP
   await expect(page.getByText("Like the 2019 ainize-cli turned repos into AI services, today's ainize puts knowledge into models. Every command supports --help and --json.")).toBeVisible();
   await expect(page.locator('table').first().locator('th')).toHaveText(['Command', 'What it does']);
   const groups = docs.cli.groups.map((g) => g.name);
-  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
+  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (lessons taught by visitors)', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
   for (const g of groups) await expect(page.getByRole('heading', { name: g, exact: true }).last()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Benchmark file (bench.json) example' })).toBeVisible();
 
@@ -1088,7 +1094,7 @@ test.describe('Live test (shared runtime)', () => {
     const banner = tabB.getByRole('status').filter({ hasText: 'Another test is running — try again in a moment.' });
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(new RegExp(`Another test in progress \\(node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
-    await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
+    await expect(banner).toContainText('The shared model runs one test at a time, so tests queue up one after another.');
 
     await modeRadio(tabB, 'Before only').click();
     const turnB = await sendPrompt(tabB, '종목코드 HMM');
@@ -1288,7 +1294,7 @@ test.describe('Live test (shared runtime)', () => {
     await expect(page.locator('main').getByText(none)).toHaveCount(2); // alert + footer
 
     // one more request from the same IP: HTTP 429 with the exact server message
-    const r = await api<{ error: string }>(page.request, '/api/chat', { node: origin, method: 'POST', data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
+    const r = await api<{ error: string }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
     expect(r.status).toBe(429);
     expect(r.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
 

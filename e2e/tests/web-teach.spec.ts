@@ -22,7 +22,7 @@ import { createIdentity, hashCanonical, signMessage, verifyMessage } from '../..
 test.describe.configure({ mode: 'serial' });
 
 const NODE = NODE_A;
-const PASS = process.env.AINIZE_PASS ?? 'teach-pass';
+const PASS = process.env.AINIZE_PASS ?? passwordFor(NODE);
 /** Every published lesson becomes a listing whose benchmark samples make the same fact "too close to knowledge already on this node" (spec §12) — so each run teaches a run-unique phrasing (the tag sits mid-sentence so no earlier sample is a substring). The prompt still mentions 픽셀플러스, which makes the stub copy the real fixture. */
 const TAG = Date.now().toString(36).slice(-5);
 const PROMPT = `픽셀플러스 (${TAG}) 종목코드는?`;

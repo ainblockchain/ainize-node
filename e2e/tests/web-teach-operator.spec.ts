@@ -13,13 +13,13 @@
  * The lessons are created through the API with a fresh teaching key (the browser flow itself is web-teach.spec.ts).
  */
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { NODE_A, api } from '../helpers/ainize';
+import { NODE_A, api, passwordFor } from '../helpers/ainize';
 import { createIdentity, signMessage } from '../../core/dist/index.js';
 
 test.describe.configure({ mode: 'serial' });
 
 const NODE = NODE_A;
-const PASS = process.env.AINIZE_PASS ?? 'teach-pass';
+const PASS = process.env.AINIZE_PASS ?? passwordFor(NODE);
 const TAG = Date.now().toString(36).slice(-5);
 const TEACHER = `Op Teacher ${TAG}`;
 
@@ -230,10 +230,7 @@ test('Teaching tab settings: trainer line, publish → "Review each one", share 
   await page.screenshot({ path: 'results/teach-tab-settings.png', fullPage: true });
 });
 
-test('AZ-110 review queue: PENDING_REVIEW lesson → Decline with a reason (contributor sees it) → second lesson → Approve and announce → ANNOUNCED', async ({ page, request }) => {
-  // Approve announces a permanent anchor on the ledger. On the shared AIN chain (live demo cluster) that would
-  // pollute the public catalog forever — run this on a local-ledger node (node-t / throwaway cluster) instead.
-  test.skip(ledgerKind === 'ain' && process.env.AINIZE_TEACH_ANNOUNCE !== '1', 'shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage');
+test('AZ-110 review queue: PENDING_REVIEW lesson → Decline with a reason (contributor sees it)', async ({ page, request }) => {
   await signIn(page);
   declinedJob = await lessonPendingReview(request, teacher, `Op decline ${TAG}`);
   await page.goto(`${NODE}/dashboard?tab=teaching`);
@@ -254,9 +251,17 @@ test('AZ-110 review queue: PENDING_REVIEW lesson → Decline with a reason (cont
   const seen = await api<{ job: Job }>(request, `/api/teach/jobs/${declinedJob}`, { headers: teachHeader(teacher) });
   expect(seen.body.job.status).toBe('REJECTED');
   expect(seen.body.job.reject_reason).toBe('The answer is not verifiable');
+});
 
+test('AZ-110 review queue: Approve and announce → ANNOUNCED, contributor on the anchor', async ({ page, request }) => {
+  // Approving announces a permanent anchor on the ledger. On the shared AIN chain (the live demo cluster) that would
+  // add a test lesson to the public catalog forever, so the announce half runs on a local-ledger node (node-t /
+  // a private throwaway cluster) only; the decline half above still runs everywhere.
+  test.skip(ledgerKind === 'ain' && process.env.AINIZE_TEACH_ANNOUNCE !== '1', 'shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage');
+  await signIn(page);
+  const tab = page.getByTestId('teaching-tab');
   approvedJob = await lessonPendingReview(request, teacher, `Op approve ${TAG}`);
-  await page.reload();
+  await page.goto(`${NODE}/dashboard?tab=teaching`);
   const row2 = tab.locator(`[data-testid="teach-job"][data-job-id="${approvedJob}"]`);
   await expect(row2).toHaveAttribute('data-status', 'PENDING_REVIEW', { timeout: 30_000 });
   await page.screenshot({ path: 'results/teach-tab-queue.png', fullPage: true });

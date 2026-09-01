@@ -100,7 +100,12 @@ test.describe('operator: account / API / inspection', () => {
     expect(oa.openapi).toBe('3.1.0');
     expect(oa.info.title).toBe('Ainize node API');
     expect(oa.servers).toEqual([{ url: NODE_A }]);
-    expect(Object.keys(oa.paths).length).toBe(51);   // 50 in the scenario snapshot + POST /api/patches/{id}/forget (ainize patch forget)
+    // 50 in the scenario snapshot + POST /api/patches/{id}/forget (ainize patch forget); teach mode adds its own group
+    const paths = Object.keys(oa.paths);
+    const teachPaths = paths.filter((p) => /\/teach|\/teacher\/|\/payouts/.test(p));
+    expect(teachPaths.length, 'teach-mode paths (lessons, review queue, contributors, payouts)').toBe(23);
+    expect(paths.length - teachPaths.length, 'marketplace paths').toBe(51);
+    expect(paths.length).toBe(74);
     expect(oa.paths).toHaveProperty('/api/patches/{id}/forget');
     expect(oa.paths).toHaveProperty('/x402/patch/{id}');
     expect(oa.paths).toHaveProperty('/api/chat');
@@ -152,7 +157,9 @@ test.describe('operator: account / API / inspection', () => {
     const token = (await login.json() as { token: string }).token;
     const wallet = await api<Record<string, unknown>>(request, '/api/me/wallet', { node: NODE_B, token });
     expect(wallet.status).toBe(200);
-    expect(Object.keys(wallet.body).sort()).toEqual(['address', 'app', 'balance', 'height', 'kind', 'network', 'provider', 'purchases', 'records', 'royalties', 'sales', 'valid']);
+    // teach mode adds `payouts` (what this node owes the visitors who taught its knowledge) to the wallet view
+    expect(Object.keys(wallet.body).sort()).toEqual(['address', 'app', 'balance', 'height', 'kind', 'network', 'payouts', 'provider', 'purchases', 'records', 'royalties', 'sales', 'valid']);
+    expect(Object.keys(wallet.body.payouts as Record<string, unknown>).sort()).toEqual(['failed', 'items', 'paid', 'pending']);
     // 11 setup again → 409
     const setup = await api<{ error: string }>(request, '/api/auth/setup', { method: 'POST', node: NODE_B, data: { password: 'another-1234' } });
     expect([setup.status, setup.body.error]).toEqual([409, 'operator password already set']);
@@ -592,7 +599,9 @@ test.describe('operator: runtime', () => {
     r = await withRuntime(request, () => runCli(['--json', 'chat', K.pixel, Q], A));
     expect(r.code, r.stderr || r.stdout).toBe(0);
     const j = JSON.parse(r.stdout) as Record<string, unknown>;   // the whole stdout must be one JSON document
-    expect(Object.keys(j).sort()).toEqual(['applied_ms', 'base', 'benchmark_hit', 'mode', 'model', 'patch_id', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']);
+    // multi-knowledge chat adds the plural fields (patch_ids / benchmark_hits / applied) next to the single-knowledge ones
+    expect(Object.keys(j).sort()).toEqual(['applied', 'applied_ms', 'base', 'benchmark_hit', 'benchmark_hits', 'mode', 'model', 'patch_id', 'patch_ids', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']);
+    expect(j.patch_ids).toEqual([K.pixel]);
 
     // anonymous visitor (empty home, --node) → quota footer; another suite may already have used up this IP's hour
     r = await withRuntime(request, () => runCli(['chat', K.pixel, '--mode', 'base', Q], { home: tmpHome('anon'), node: NODE_A }));
@@ -654,7 +663,7 @@ test.describe('operator: runtime', () => {
     expect(Array.isArray(r.body.issues)).toBe(true);
 
     r = await chatApi(request, { patch_id: 'no-such-patch', messages: [{ role: 'user', content: 'hi' }] }, { ip });
-    expect(r.body.error).toBe('patch not found');
+    expect(r.body.error).toBe('patch not found: no-such-patch');   // multi-knowledge chat names the id that is missing
     expect(r.status).toBe(404);   // was 500 (a thrown market error) when the scenario was written; MarketError now maps not-found to 404
 
     const remaining: number[] = [];
@@ -1412,7 +1421,7 @@ test.describe('operator: fourth node', () => {
         (l) => ['node-a', 'node-b', 'node-c'].every((n) => l.includes(`[${n}] ngram node "${n}" listening`)) && l.includes('[cluster] web UI'),
         30_000, 1000,
       );
-      expect(log).toContain(`[cluster] web UI → http://localhost:${base}   (B: ${base + 1}, C: ${base + 2}; homes under ${pHome}; ledger=local)`);
+      expect(log).toContain(`[cluster] web UI → http://localhost:${base}   (B: ${base + 1}, C: ${base + 2}; homes under ${pHome}; ledger=local; teach backend=stub)`);
       expect(log).not.toContain('seeded node-a');   // NGRAM_SEED=0: nothing was re-seeded
 
       // step 4: identities, counts and the catalog survived (the ledger only gained the boot announcements)

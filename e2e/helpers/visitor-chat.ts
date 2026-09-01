@@ -4,8 +4,9 @@
  * Quota isolation: the node meters free live tests per client IP (20 / hour, `ip:${req.ip}`) and trusts proxy headers
  * (`app.set('trust proxy', true)`). A random 127.x.y.z origin alone is NOT enough — Linux sends every loopback
  * connection from 127.0.0.1, so all such visitors would share one bucket. `freshVisitor(page)` therefore also stamps a
- * unique `X-Forwarded-For` on the browser context (every tab and `page.request` of that context is the same visitor),
+ * unique `X-Forwarded-For` on every browser request that goes to the node (all tabs of that context are one visitor),
  * which gives each scenario (and each retry) a fresh, deterministic quota window without touching product code.
+ * Direct API calls made with `page.request` are not routed by the browser, so they take `visitorHeaders(page)`.
  */
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { api, waitForRuntime } from './ainize';
@@ -18,11 +19,24 @@ export function freshOrigin(): string {
   return `http://127.${o()}.${o()}.${o()}:${PORT}`;
 }
 
+const visitorIp = new WeakMap<Page, string>();
+
 /** A never-used client IP for this browser context → its own 20/hour live-test quota. Returns a fresh origin to open. */
 export async function freshVisitor(page: Page): Promise<string> {
   const o = () => 1 + Math.floor(Math.random() * 253);
-  await page.context().setExtraHTTPHeaders({ 'x-forwarded-for': `10.${o()}.${o()}.${o()}` });
+  const ip = `10.${o()}.${o()}.${o()}`;
+  visitorIp.set(page, ip);
+  // Stamped per request instead of with setExtraHTTPHeaders(), which would also put the header on the cross-origin
+  // Google-Fonts faces the page loads: their CORS preflight rejects the unknown header and logs a console error —
+  // harness noise that the "leaving the page aborts without console errors" step of AZ-019 would report as a fault.
+  await page.context().route((u) => u.port === PORT, (route) => route.continue({ headers: { ...route.request().headers(), 'x-forwarded-for': ip } }));
   return freshOrigin();
+}
+
+/** The visitor IP of `page` as a header bag — for direct `page.request` calls, which the browser does not route. */
+export function visitorHeaders(page: Page): Record<string, string> {
+  const ip = visitorIp.get(page);
+  return ip ? { 'x-forwarded-for': ip } : {};
 }
 
 export async function nodeAAddress(request: APIRequestContext): Promise<string> {
