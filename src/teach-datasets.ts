@@ -232,6 +232,16 @@ export class TeachDatasets {
     if (!existsSync(p)) return [];
     return readCanonicalJsonl(readFileSync(p, 'utf8'));
   }
+  /**
+   * The rows, or a refusal — for every caller that would otherwise build a NEW dataset out of nothing. A dataset whose
+   * file was removed (retention, or a tombstone) still reports `rows > 0`, so an edit or a fork of it would silently
+   * produce a dataset holding only the appended rows (design §11).
+   */
+  rowsOrThrow(d: TeachDatasetRecord): CanonicalRow[] {
+    const rows = this.rows(d);
+    if (!rows.length && d.rows > 0) throw new TeachError(404, 'dataset_not_found: the questions of this dataset are no longer on this node');
+    return rows;
+  }
   canonicalBytesOf(d: TeachDatasetRecord): Buffer {
     const p = join(d.dir, 'rows.jsonl');
     if (!existsSync(p)) throw new TeachError(404, 'dataset_not_found: the questions of this dataset are no longer on this node');
@@ -317,7 +327,7 @@ export class TeachDatasets {
       const fresh = this.store.getTeachDataset(d.id)!;
       return { dataset: this.view(fresh), report: this.reportPage(fresh, { limit: 50 }), created: false };
     }
-    const next = applyRowsOp(this.rows(d), body.rows_op);
+    const next = applyRowsOp(this.rowsOrThrow(d), body.rows_op);
     if (!next.length) throw new TeachError(400, 'dataset_empty: a dataset needs at least one question');
     const limits = this.cfg.dataset;
     const parsed = parseDataset(canonicalBytes(next), { format: 'jsonl', maxSourceLines: limits.maxSourceLines, maxRows: limits.maxRows, blockedTopics: this.cfg.blockedTopics });
@@ -327,7 +337,7 @@ export class TeachDatasets {
 
   /** A copy with `parent_dataset` set and `revision = 1` — how a dataset is edited while a lesson is training. */
   fork(d: TeachDatasetRecord, input: { owner: string; ip?: string; name?: string; rows_op?: RowsOp }, now = Date.now()): CreateResult {
-    const rows = input.rows_op ? applyRowsOp(this.rows(d), input.rows_op) : this.rows(d);
+    const rows = input.rows_op ? applyRowsOp(this.rowsOrThrow(d), input.rows_op) : this.rowsOrThrow(d);
     if (!rows.length) throw new TeachError(400, 'dataset_empty: a dataset needs at least one question');
     return this.create({ owner: input.owner, ip: input.ip, name: input.name ?? `${d.name} (copy)`, source: d.source === 'upload' ? 'derived' : d.source, rows, retention: d.retention, parentDataset: d.id }, now);
   }

@@ -370,7 +370,9 @@ export function buildApi(deps: ApiDeps): Router {
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
-    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
+    // the machine-readable code matters: without it the browser cannot tell this HOURLY budget from the DAILY lesson
+    // limit, and told the visitor to "come back tomorrow" for a quota that refills within the hour
+    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node');
     // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
     const out = await market.chat({ ...body, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
@@ -576,13 +578,15 @@ export function buildApi(deps: ApiDeps): Router {
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
       facts: z.array(factSchema).min(1).max(8).optional(),
       dataset_id: z.string().min(1).optional(), selected_indexes: z.array(z.number().int().min(0)).max(2000).optional(),
+      // what an interactive pre-flight measured on those rows; the node re-checks each claim against the row's answer
+      known: z.array(z.object({ index: z.number().int().min(0), base_answer: z.string().max(4000) })).max(2000).optional(),
       training: trainingSchema.optional(),
       contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
     }).parse(req.body);
     if (!body.dataset_id && !body.facts?.length) throw bad('send either `dataset_id` or `facts`');
     const job = await t.createJob({
       address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context,
-      facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, training: body.training,
+      facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, known: body.known, training: body.training,
     });
     res.status(202);
     return { job, quota: t.jobQuota(address, req.ip) };
@@ -631,6 +635,8 @@ export function buildApi(deps: ApiDeps): Router {
     const body = z.object({
       name: z.string().min(2).max(80), description: z.string().max(2000).optional(), price: z.string().max(32).optional(), license: z.string().max(80).optional(),
       payout_address: z.string().nullable().optional(), claim_sig: z.string().min(1), consent: z.object({ permanent: z.boolean(), rights: z.boolean() }),
+      // a teaching key named after the lesson was queued — the sheet shows that name, so the record must carry it
+      contributor: z.object({ name: z.string().max(80).optional() }).optional(),
     }).parse(req.body);
     return t.publish(j, address!, body);
   }));

@@ -756,3 +756,54 @@ test('graceful stop during TRAINING requeues the lesson (not FAILED), terminates
     assert.ok(N3.store.events({ kind: 'teach', limit: 50 }).some((e) => /table restored/.test(e.message)));
   } finally { await N3.stop(); }
 });
+
+/**
+ * §D4 / §5.12 — a sampled check must not leave the TRAINER's optimistic verdict on the questions it never re-asked:
+ * the result screen counts `hit === true|false` as measured, so an unmeasured question has to come back with no hit.
+ */
+test('a sampled check clears the trainer verdict on every question it did not re-ask (no whole-dataset claim)', async () => {
+  const chk = N.cfg.teach!.check;
+  const { sampleRows, chatFormRows } = chk;
+  chk.sampleRows = 2; chk.chatFormRows = 1;
+  try {
+    const facts = [1, 2, 3, 4].map((n) => ({ prompt: `Q2 Sampled-${n}`, answer: `Sampled-${n}` }));
+    const r = await createJob(facts);
+    assert.equal(r.status, 202, r.text);
+    const id = r.json.job!.id;
+    const j = await waitFor(id, ['READY', 'NEEDS_MORE']);
+    assert.deepEqual(j.checks!.taught.sampled, { checked: 2, of: 4 }, 'the check says how much of the dataset it looked at');
+    const measured = j.facts.filter((f) => f.hit !== undefined);
+    assert.equal(measured.length, 2, `only the sampled questions carry a verdict (got ${JSON.stringify(j.facts.map((f) => f.hit))})`);
+    for (const f of j.facts) if (f.hit === undefined) assert.equal(f.after_answer, undefined, 'an unmeasured question quotes no answer either');
+    await api('DELETE', `/api/teach/jobs/${id}`, undefined, hdr());
+  } finally { chk.sampleRows = sampleRows; chk.chatFormRows = chatFormRows; }
+});
+
+/**
+ * §12.6 — the visitor may switch the side-effect check off where publishing is off. Whatever the backend, the result
+ * must then say nothing was measured (a simulated 12/12 is a measurement claim too), and "Run the check now" has to
+ * actually measure it — otherwise the publish gate can never open.
+ */
+test('check_side_effects:false is honoured by the offline stub, and a re-check measures what was skipped', async () => {
+  const { backend, stubOffline } = N.cfg.teach!;
+  N.cfg.teach!.backend = 'stub'; N.cfg.teach!.stubOffline = true; N.teach!.invalidatePolicy();
+  try {
+    // the offline stub already "knows" any prompt that contains its own answer, so this one must not
+    const r = await createJob([{ prompt: 'Which switch does this lesson test?', answer: 'side-effects-42' }], { training: { check_side_effects: false } });
+    assert.equal(r.status, 202, r.text);
+    const id = r.json.job!.id;
+    let j = await waitFor(id, ['READY', 'NEEDS_MORE']);
+    assert.equal(j.training!.check_side_effects, false);
+    assert.equal(j.checks!.skipped, true, 'the stub honours the flag instead of inventing a locality score');
+    assert.deepEqual({ ok: j.checks!.locality.ok, same: j.checks!.locality.same }, { ok: false, same: 0 });
+    assert.match(j.checks!.note ?? '', /side-effect check was turned off/);
+
+    const again = await api('POST', `/api/teach/jobs/${id}/recheck`, undefined, hdr());
+    assert.equal(again.status, 200, again.text);
+    j = await waitFor(id, ['READY', 'NEEDS_MORE']);
+    assert.equal(j.checks!.skipped, undefined, '"Run the check now" measures what was skipped');
+    assert.ok(j.checks!.locality.total > 0 && j.checks!.locality.same === j.checks!.locality.total, `locality measured (${JSON.stringify(j.checks!.locality)})`);
+    assert.equal(N.teach!.get(id)!.training!.check_side_effects, true, 'the lesson records that the check was asked for');
+    await api('DELETE', `/api/teach/jobs/${id}`, undefined, hdr());
+  } finally { N.cfg.teach!.backend = backend; N.cfg.teach!.stubOffline = stubOffline; N.teach!.invalidatePolicy(); }
+});

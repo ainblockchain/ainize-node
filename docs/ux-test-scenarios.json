@@ -6191,10 +6191,10 @@
   ],
   "expected": [
    "The card reads \"Train it again\" / \"The same dataset, with more effort or a few more questions.\" with the button \"Change settings and re-train\"",
-   "The click sends POST /api/teach/jobs/<jobA>/retrain {training:{effort:\"thorough\"}} → 202 and the browser lands on /teach/lesson/<jobB>",
+   "The click opens /teach/dataset/<dsId>/settings?retrain=<jobA>&effort=thorough with the bumped effort pre-selected; pressing \"Train this lesson (N questions)\" there sends POST /api/teach/jobs/<jobA>/retrain {training:{effort:\"thorough\"}} → 202 and the browser lands on /teach/lesson/<jobB>",
    "jobB.training = {effort:\"thorough\", max_steps:40, eval_every:4, lr:0.002, …}, jobB.parent_job = jobA.id, jobB.dataset.id and dataset.sha256 identical to jobA's (no fork, no re-upload), and jobA is left exactly as it was",
    "Re-training a thorough lesson keeps thorough (the bump saturates) rather than failing or silently dropping to balanced",
-   "The label must match what happens: today the click goes straight to a new running lesson and no settings screen is ever shown, so either the button opens /teach/dataset/<dsId>/settings first or its text must stop promising \"Change settings\" (en) / \"설정 바꿔 다시 학습\" (ko)"
+   "The label matches what happens: \"Change settings and re-train\" / \"설정 바꿔 다시 학습\" shows the settings screen before anything runs (a lesson with no dataset of its own has no settings screen and re-trains directly)"
   ],
   "priority": "P1",
   "area": "teach",
@@ -6529,7 +6529,7 @@
   ],
   "expected": [
    "Outage: an Alert with role=\"alert\" renders inside [data-testid=live-test]; the copy is the mapped runtime message \"The model server is off or restarting. The lesson will continue automatically.\" (teach.err.runtime) — no empty answer panes and no console error",
-   "Quota: the alert reads the mapped rate-limit sentence \"Too many requests. Try again in a moment.\" (teach.err.rate_limited) and the previous answers are cleared rather than shown as stale",
+   "Quota: the alert reads the hourly live-test sentence \"You used this hour’s free live tries on this node. Try again in an hour, or download the lesson and run it yourself.\" (teach.err.quota_try, mapped from the node's `quota_chat:` code) and the previous answers are cleared rather than shown as stale — never teach.err.quota (\"today’s lesson limit … come back tomorrow\"), which is a different, daily budget",
    "K2 → the node answers 404 (not 500 and not the draft's content): a private draft is invisible to another teaching key even while the runtime is down",
    "No response body ever exposes another visitor's draft id in /api/events (teach lines are redacted to \"a private draft\")"
   ],
@@ -6822,11 +6822,11 @@
   ],
   "expected": [
    "Title \"My datasets and lessons\", sub \"Everything you have taught from this browser. The dataset is the file; a lesson is what the model learned from it.\", a retention line \"Datasets you have not trained are deleted after 7 days.\" and the primary button \"Upload a dataset\" ([data-testid=mine-upload] → /teach/upload)",
-   "Each [data-testid=dataset-card] shows the name, \"{n} questions\", \"Fingerprint {first 12 hex of sha256}\", and a definition list: \"Where it came from\" = the file name for an upload / \"your conversation\" for a chat dataset / \"a sample dataset\"; \"Created\" = a localised date-time; and the retention cell = \"Kept on this node until <date>.\" (or \"Deleted as soon as training finishes.\" for retention delete_after_training)",
+   "Each [data-testid=dataset-card] shows the name, \"{n} questions\", \"Fingerprint {first 12 hex of sha256}\", and a definition list: \"Where it came from\" = the CATEGORY, not the file name (\"Uploaded file\" / \"From a conversation\" / \"Sample dataset\" / \"Copied from a lesson\"; the file name already heads the card); \"Created\" = a localised date-time; and the retention cell = \"Kept on this node until <date>.\" (or \"Deleted as soon as training finishes.\" for retention delete_after_training)",
    "Four actions: \"Train again\" ([data-testid=ds-retrain] → /teach/dataset/:id/settings), \"Add questions\" ([data-testid=ds-continue] → /teach/dataset/:id), \"Download (.jsonl)\" ([data-testid=ds-download] → signed GET /api/teach/datasets/:id/download, saved as dataset-<id>-r<rev>.jsonl), \"Delete dataset\" ([data-testid=ds-delete])",
    "Under the card, \"Lessons from this dataset (1)\" lists the lesson as name · \"Ready · private\" · \"learned 3/3\" (from the index-aligned facts, never checks.taught) · \"Open\" → /teach/lesson/:jobId",
    "Delete raises the confirm 'Delete \"<name>\"? Lessons already trained from it are kept.'; confirming calls DELETE /api/teach/datasets/:id → {ok:true,status:'deleted'}, shows the success alert \"Dataset deleted.\", and the lesson stays reachable (its result page then shows \"The dataset for this lesson was deleted by its owner. The lesson itself is unchanged.\")",
-   "The v1 lesson with no dataset appears under [data-testid=legacy-lessons] \"Lessons made without a dataset\" — never hidden"
+   "A lesson created from a legacy `facts` body appears under the dataset the node materialised for it (packages/node/src/teach.ts createJob freezes the basket into a dataset), so [data-testid=legacy-lessons] \"Lessons made without a dataset\" is reachable only for rows migrated from a pre-PR-D1 database — G5 still holds: no v1 lesson may disappear from the visitor's view"
   ],
   "priority": "P0",
   "area": "teach",
@@ -7401,7 +7401,7 @@
    "Without the bearer → 401 (requireOperator); a visitor teaching key alone never reaches this route",
    "GET /api/events?kind=teach contains a fresh info event with message exactly \"operator opened the uploaded-datasets moderation view\" — one per call, so the moderation read is auditable",
    "The operator DELETE returns 200; a following operator GET /api/me/teach/datasets shows the row with status 'deleted' and a deleted_at timestamp",
-   "K1's GET of the dataset → 404 \"dataset_not_found: no such dataset on this node\", but K1's lessons trained from it are still listed by GET /api/teach/jobs with dataset.deleted === true — deleting the questions never deletes the lesson",
+   "K1's GET of the dataset → 200 with status 'deleted' and a deleted_at timestamp (the documented tombstone: the row stays so a lesson can say \"the dataset for this lesson was deleted\"), and the questions are gone — GET /api/teach/datasets/:id/download → 404; a STRANGER still gets 404 for the item route. K1's lessons trained from it are still listed by GET /api/teach/jobs with dataset.deleted === true — deleting the questions never deletes the lesson",
    "Cleanup: nothing to restore (the delete is the cleanup); the seeded lesson, if any, deleted"
   ],
   "priority": "P0",

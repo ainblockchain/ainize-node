@@ -626,6 +626,8 @@ export class TeachWorker {
     facts?: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string }[];
     datasetId?: string;
     selectedIndexes?: number[];
+    /** What an interactive pre-flight measured on THESE dataset rows: `{index, base_answer}` (design §5.5). */
+    known?: { index: number; base_answer: string }[];
     training?: { effort?: TeachEffort; max_steps?: number; eval_every?: number; rows_limit?: number; row_offset?: number; check_side_effects?: boolean; use_alt?: boolean };
     parentJob?: string;
   }): Promise<TeachJob> {
@@ -663,7 +665,8 @@ export class TeachWorker {
         name: input.name,
       }).dataset.id)!;
     }
-    const all = this.datasets.rows(dataset);
+    // `rowsOrThrow`: a dataset whose file was removed answers dataset_not_found, not "empty" — the questions existed
+    const all = this.datasets.rowsOrThrow(dataset);
     if (!all.length) throw new TeachError(400, 'dataset_empty: this dataset has no questions left on this node');
 
     // ---- 2) the training settings and the slice they select
@@ -697,11 +700,15 @@ export class TeachWorker {
     // ---- 3) drop what the model already answers (interactive preflight result) or what repeats a listing
     const known = new Map<string, string>();
     for (const f of input.facts ?? []) if (f.base_answer) known.set(`${f.prompt.trim()}\u0000${f.answer.trim()}`, f.base_answer);
+    // The file door has no `facts` to hang a base answer on, so the preview sends the row INDEXES it measured. The
+    // claim is still verified below against the row's own answer — a client cannot skip a question by asserting it.
+    const knownAt = new Map<number, string>();
+    for (const k of input.known ?? []) if (k.base_answer) knownAt.set(k.index, k.base_answer);
     const kept: TeachFactRow[] = []; const keptIndexes: number[] = [];
     let overlaps = 0; let alreadyKnown = 0;
     for (const [n, i] of selected.entries()) {
       const r = all[i];
-      const base = known.get(`${r.prompt}\u0000${r.answer}`);
+      const base = knownAt.get(i) ?? known.get(`${r.prompt}\u0000${r.answer}`);
       if (base && normAnswer(base).includes(normAnswer(r.answer))) { alreadyKnown++; continue; }
       // the catalog scan is O(listings x samples) per question — bounded to the sampled head; the worker preflight
       // re-checks the rest against the live model anyway
@@ -733,7 +740,7 @@ export class TeachWorker {
       // Questions dropped HERE (the interactive pre-flight said the model knows them, or the same fact is already sold
       // on this node) are gone from the lesson before it starts. Recording them is the only way the result screen can
       // account for a 40-question dataset that produced a 16-question lesson.
-      preflight: alreadyKnown || overlaps ? { checked: Math.min(selected.length, c.preflight.sampleRows), of: selected.length, known: alreadyKnown, ...(overlaps ? { overlaps } : {}) } : null,
+      preflight: alreadyKnown || overlaps ? { checked: Math.min(selected.length, Math.max(knownAt.size, c.preflight.sampleRows)), of: selected.length, known: alreadyKnown, ...(overlaps ? { overlaps } : {}) } : null,
       created_at: now, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
     });
     this.store.teachQuotaBump(`addr:${input.address.toLowerCase()}`, day);
@@ -1098,7 +1105,15 @@ export class TeachWorker {
    * dataset's own bytes, so re-training the same file always probes the same questions and nobody can re-roll.
    */
   private async preflightJob(job: TeachJobRow): Promise<TeachFactRow[]> {
-    if (this.offline) return job.facts.filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer))).map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
+    if (this.offline) {
+      const kept = job.facts
+        .filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer)))
+        .map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
+      // the same accounting the live branch writes: a question dropped here must be visible on the result screen,
+      // whatever backend dropped it (design §5.12) — without this a stub node silently teaches fewer than it promised
+      this.recordPreflight(job, job.facts.length, job.facts.length - kept.length);
+      return kept;
+    }
     const st = await this.market.runtime.status();
     if (!st.available) { this.log('warn', 'model server unavailable during preflight — keeping the interactive result', job.id); return job.facts; }
     const probe = new Set(this.sampleIndexes(job, this.cfg.preflight.sampleRows));
@@ -1115,17 +1130,24 @@ export class TeachWorker {
       if (normAnswer(base).includes(normAnswer(f.answer))) { this.log('info', `already known, skipped (question ${i + 1})`, job.id); continue; }
       kept.push({ ...f, base_answer: base });
     }
-    // merge with what job creation already dropped, so `of` stays the number of questions the visitor sent
+    this.recordPreflight(job, probe.size, job.facts.length - kept.length);
+    return kept;
+  }
+
+  /** Merge with what job creation already dropped, so `of` stays the number of questions the visitor sent. */
+  private recordPreflight(job: TeachJobRow, checked: number, known: number) {
     const before = (job.preflight as { checked?: number; of?: number; known?: number; overlaps?: number } | null) ?? null;
+    const of = before?.of ?? job.facts.length;
     this.store.updateTeachJob(job.id, {
       preflight: {
-        checked: (before?.checked ?? 0) + probe.size,
-        of: before?.of ?? job.facts.length,
-        known: (before?.known ?? 0) + (job.facts.length - kept.length),
+        // the worker re-probes questions the interactive pre-flight already measured, so the two counts overlap:
+        // "checked 5 of 3" is not a number a visitor can read
+        checked: Math.min(of, (before?.checked ?? 0) + checked),
+        of,
+        known: (before?.known ?? 0) + known,
         ...(before?.overlaps ? { overlaps: before.overlaps } : {}),
       },
     });
-    return kept;
   }
 
   /**
@@ -1320,7 +1342,9 @@ export class TeachWorker {
   private async runStub(job: TeachJobRow, dir: string, modelId: string): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const delay = this.hooks.stubDelayMs ?? 400;
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const state = { facts: job.facts.map((f) => ({ ...f })), progress: { step: 0, max_steps: 3, hits: 0, total: job.facts.length * 2 }, done: null as DoneEvent | null, error: null as string | null };
+    // `hits`/`total` are QUESTIONS, the unit the progress screen names ("{hits} of {total} questions answered
+    // correctly so far") — a stub that reported its two probes per question made a 3-question lesson read "6 of 6".
+    const state = { facts: job.facts.map((f) => ({ ...f })), progress: { step: 0, max_steps: 3, hits: 0, total: job.facts.length }, done: null as DoneEvent | null, error: null as string | null };
     const t0 = Date.now();
     const emit = (ev: Record<string, unknown>) => this.handleEvent(job, ev, state);
     emit({ event: 'load', secs: 0.1 });
@@ -1406,6 +1430,15 @@ export class TeachWorker {
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
         reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model', simulated: true,
       };
+      // A visitor who switched the side-effect check off must not be shown a locality score, simulated or not: on this
+      // backend the number would be invented twice over. Same shape as the live branch, so the screen says the same thing.
+      if (!sideEffects) {
+        checks.skipped = true;
+        checks.locality = { ok: false, same: 0, total: c.locality.prompts.length };
+        checks.parent_regression = { ok: false, hit: 0, total: 0 };
+        checks.ok = false;
+        checks.note = 'the side-effect check was turned off for this lesson — nothing was measured about unrelated answers';
+      }
       return { checks, facts };
     }
     const st = await rt.status(true);
@@ -1476,7 +1509,14 @@ export class TeachWorker {
               checks.taught.total += chatForm ? 2 : 1; checks.taught.hits += (rawHit ? 1 : 0) + (chatHit ? 1 : 0);
               if (wantAlt) { const alt = await this.askChat(f.alt_prompt!, 48); f.heldout_hit = normAnswer(alt).includes(normAnswer(f.answer)); checks.heldout.total++; if (f.heldout_hit) checks.heldout.hits++; }
             }
-            // never a whole-dataset claim from a sampled check
+            // Never a whole-dataset claim from a sampled check — and never a per-question one either: every question
+            // this loop did not re-ask keeps the TRAINER's optimistic verdict, so it is cleared here and counted as
+            // unmeasured by the result screen (design §5.12).
+            const asked = new Set(sample.slice(0, measured));
+            for (const [i, f] of facts.entries()) {
+              if (asked.has(i)) continue;
+              delete f.hit; delete f.after_answer; delete f.heldout_hit;
+            }
             if (measured < facts.length) checks.taught.sampled = { checked: measured, of: facts.length };
             else delete checks.taught.sampled;
             if (sideEffects) {
@@ -1581,7 +1621,11 @@ export class TeachWorker {
     if (checks?.executed && !checks.skipped) throw new TeachError(409, 'job_not_ready: this lesson was already checked in the live model');
     if (!j.npz_path || !existsSync(j.npz_path)) throw new TeachError(409, 'job_not_ready: knowledge file is missing');
     this.checkWaitSince.delete(j.id);
-    this.store.updateTeachJob(j.id, { status: 'EXPORTED', blocked: null, finished_at: null });
+    // "Run the check now" means MEASURE what was skipped: without turning the flag on, the re-check would read the
+    // lesson's stored `check_side_effects: false` and skip it again, leaving the publish gate shut for ever.
+    const training = j.training as TeachTrainingSpec | null;
+    const retrain = checks?.skipped && training && training.check_side_effects === false ? { training: { ...training, check_side_effects: true } } : {};
+    this.store.updateTeachJob(j.id, { status: 'EXPORTED', blocked: null, finished_at: null, ...retrain });
     this.log('info', `lesson ${j.id} queued for a re-check`, j.id);
     this.invalidatePolicy();
     return { ok: true, status: 'EXPORTED' };
@@ -1656,13 +1700,24 @@ export class TeachWorker {
     const address = payoutAddress || signer;
     return { patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share, claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }) };
   }
-  async publish(j: TeachJobRow, signer: string, body: { name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string; consent: { permanent: boolean; rights: boolean } }): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
+  async publish(j: TeachJobRow, signer: string, body: { name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string; consent: { permanent: boolean; rights: boolean }; contributor?: { name?: string } }): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
     this.assertEnabled();
     const ch = this.publishChallenge(j, signer, body.payout_address);
     if (!body.consent?.permanent || !body.consent?.rights) throw new TeachError(400, 'consent missing: both consent boxes are required');
     if (!verifyMessage(ch.claim, body.claim_sig, signer)) throw new TeachError(401, 'invalid_signature: the claim signature does not verify for this teaching key');
     const price = body.price === undefined || body.price === '' ? '0' : String(body.price);
     if (!/^\d+(\.\d+)?$/.test(price)) throw new TeachError(400, 'invalid: price must be a non-negative number');
+    // A key that was named AFTER the lesson was queued still gets its credit: the sheet shows that name, so the record
+    // has to carry it (a display name is never taken from anywhere but the owner's own request).
+    if (body.contributor?.name && !j.contributor_name) {
+      const badName = checkDisplayName(body.contributor.name); if (badName) throw new TeachError(400, `invalid: ${badName}`);
+      const askedName = normalizeDisplayName(body.contributor.name)?.slice(0, 40) ?? null;
+      if (askedName) {
+        this.store.updateTeachJob(j.id, { contributor_name: askedName });
+        this.store.touchContributor(signer, { name: askedName });
+        j = { ...j, contributor_name: askedName };
+      }
+    }
     const contributor: Contributor = {
       address: ch.address, ...(ch.address.toLowerCase() !== signer.toLowerCase() ? { signer } : {}), ...(j.contributor_name ? { name: j.contributor_name } : {}),
       share: ch.share, role: 'data_provider', proof: ch.address.toLowerCase() === signer.toLowerCase() ? 'signed' : 'declared', sig: body.claim_sig,
