@@ -88,8 +88,9 @@
   ],
   "expected": [
    "Title 'Explore knowledge'; intro 'Choose by verification status and accuracy. You can check any of it with a live test before buying.'; Explore opens on 'Show: Current only', so the count reads '1 knowledge' and the line under it reads '3 older versions hidden · show' (tooltip '\"Current only\" hides knowledge that a newer version replaced and knowledge that failed verification.'); clicking 'show' switches to 'All versions' and the count becomes '4 knowledge' with the hidden line gone",
-   "Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'Verified'; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% (26/26 checked)' — the denominator is the attestation's own score, never the 2,761 questions the knowledge covers; price column '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)'",
-   "Row pixelplus-087600 (visible once 'All versions' is on): status chip 'Newer version: krx-all-2761' in the warning palette (#8a4b00 on #fff3e0), '8 facts · 2,992 memory entries', 'Verified (2/2 independent verifiers) · 100% (4/4 checked)', price '0.1 AIN'",
+   "Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'For sale' (tooltip 'On sale as the current version for this topic. Whether it passed verification is what the \"Verified\" badge beside it says.') — one word no longer means two things on the same row; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% (26/26 checked) · asked as template + chat' — the denominator is the attestation's own score and the form is the one its verifiers used",
+   "Row pixelplus-087600 (visible once 'All versions' is on): status chip 'Newer version: krx-all-2761' in the warning palette (#8a4b00 on #fff3e0), '8 facts · 2,992 memory entries', 'Verified (2/2 independent verifiers) · 100% (4/4 checked) · asked as template + natural', price '0.1 AIN'",
+   "The 56 px seal on each card carries information: full colour ([data-testid=seal-sealed], filter none) only on the verified current version, greyed ([data-testid=seal-retired], grayscale(1), opacity .45) on a superseded one, and absent on anything that never reached quorum — not the same purple seal on all four rows",
    "No UI label shows raw words like 'rows', 'patch', 'LISTED' or 'SUPERSEDED' (the creator-written description text of the krx items may mention file names such as rows-pin.npz — that is data, not a label)",
    "Pagination shows 'First' ‹ '1 / 1' › 'Last' with all four buttons disabled (10 items per page)",
    "Clicking a row opens /{creator address}/{id}, i.e. /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761"
@@ -127,9 +128,9 @@
   "expected": [
    "Header: title 'KRX ticker codes for 2,761 listed companies (final)', 'ID krx-all-2761', 'Creator: node-a', 'Track finance/KRX-latest · topic finance/krx'",
    "Right side: purple button 'Live test' with sub-text 'Compare answers before and after'; link 'Other knowledge on this subject ›'",
-   "Status chip 'Verified' followed by 'Verified on the real model 2/2 · Verified'; no 'Manage' link for a visitor",
+   "Status chip 'For sale' followed by 'Verified on the real model 2/2 · Verified' — the chip is the listing state, the sentence is the verification",
    "Meta: 'By node-a · target model Qwen3.8-Flash-Next · verified {n}m ago' (or '{n}h ago' depending on age)",
-   "Stats: 'Purchases' 0; 'accuracy' (lowercase glossary term) 100% with note '26/26'; 'Memory entries' 270,053; 'Facts' 2,761; 'Size' 331.7 MB; 'Price' '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'; 'Revenue' renders 'Free' for the zero amount (shared price formatter) — flag as a copy issue if judged confusing",
+   "Stats: 'Purchases' 0; 'accuracy' (lowercase glossary term) reads the measured pair '1/8 → 26/26' (tooltip 'The same verification run scored 1/8 before the knowledge was loaded and 26/26 after.') with the note '100% after loading' — the percentage alone could not say whether the model already knew the answers; 'Memory entries' 270,053; 'Facts' 2,761; 'Size' 331.7 MB; 'Price' '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'; 'Revenue' renders 'Free' for the zero amount (shared price formatter) — flag as a copy issue if judged confusing",
    "Tab bar: 'Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History'",
    "Subject link opens /benchmarks/krx-ticker-codes; 'Live test' opens /chat/krx-all-2761"
   ],
@@ -160,10 +161,11 @@
    "Read the three explanatory notes under the table"
   ],
   "expected": [
-   "Summary: 'Run on the real model' 2/2; 'Integrity only' 0; 'Status' chip 'Verified'",
-   "Table headers: 'Verifier node', 'Method', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time'",
-   "Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Deposit '5 AIN'; Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip",
+   "Summary: 'Run on the real model' 2/2; 'Integrity only' 0; 'Status' chip 'For sale'",
+   "Table headers: 'Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time' — 'Before' is score.pre_apply, which every attestation carries and which used to reach the DOM only inside a title= attribute",
+   "Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Before '1/8' (the same run's pre_apply, tooltip 'What the same verifier scored on the same questions BEFORE the knowledge was loaded (pre_apply) …'); Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Deposit '5 AIN'; Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip",
    "Note 1 starts 'Verified — Only verifications run on the real model count toward Verified (currently 2/2). The 0 integrity-only checks are shown separately…'",
+   "A note under the table explains the pair: '\"Before\" and \"Accuracy\" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.'",
    "Note 2 starts 'Restarts detected: if the model server restarted mid-run…'; Note 3 starts 'Deposit: what a verifier loses if its verification turns out wrong…'"
   ],
   "priority": "P0",
@@ -232,7 +234,7 @@
   ],
   "expected": [
    "URL is replaced with /chat/krx-all-2761 (first testable item); title 'Live test'; chip 'Test model Qwen3.8-Flash-Next'; subtitle 'Ask the same question before and after loading the knowledge and watch the answer change. It loads and unloads in seconds, no restart.'",
-   "Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip; the active item shows 'Selected'",
+   "Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip ('For sale' for the current version, 'Newer version available' for a retired one); the active item shows 'Selected'",
    "Ticking exactly one item changes the URL to /chat/{id} (several → /chat/{id1},{id2}) and the main header shows its name, status chip, '{n} facts' and a 'Details →' link; the transcript shows 'No questions yet' with 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'",
    "krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); the chip for '종목코드 픽셀플러스' carries 'Expected: 087600' both as its tooltip and as a visible second line inside the chip (its accessible name stays the bare prompt); 'Show less' collapses back",
    "Clicking a chip puts its text into the textarea (placeholder 'Type a question and press Enter (Shift+Enter for a new line)') and focuses it; footer reads 'Free tries are limited per hour. No sign-in needed.'",
@@ -343,7 +345,7 @@
    "Table headers 'Time', 'Kind', 'What happened', 'By', 'Record ID / tx'; kind chips use 'Registered', 'Verification', 'Newer version', 'Knowledge track', 'Node'; pagination '1 / 1' (20 per page)",
    "Select options: 'All records', 'Registered', 'Verification', 'Purchase settled', 'Knowledge track', 'Node', 'Newer version', 'Subscription', 'Re-verification request'; 'Purchase settled' → 'No \"Purchase settled\" records yet.' (until a purchase has been made)",
    "'Newer version' → 3 rows such as 'krx-all-2761 marked as the newer version of krx-all-2761-ep6 (241,992 overlapping memory entries)'",
-   "Map: 4 boxes in three columns — left krx-all-2761-ep6 and pixelplus-087600, middle krx-all-2761-ep12, right krx-all-2761 (label 'Verified · Qwen3.8-Flash-N…'); two grey solid 'extends' arrows (krx-all-2761 → ep12, ep12 → ep6) and three orange dashed 'supersedes' arrows; legend 'derived from origin (creator revenue share)', 'replaced by a newer version (same subject, overlapping entries)', 'origins on the left, derivatives to the right'; clicking a box opens that knowledge's detail page"
+   "Map: 4 boxes in three columns — left krx-all-2761-ep6 and pixelplus-087600, middle krx-all-2761-ep12, right krx-all-2761 (label 'For sale · Qwen3.8-Flash-N…' — the map prints the same listing state as the chips); two grey solid 'extends' arrows (krx-all-2761 → ep12, ep12 → ep6) and three orange dashed 'supersedes' arrows; legend 'derived from origin (creator revenue share)', 'replaced by a newer version (same subject, overlapping entries)', 'origins on the left, derivatives to the right'; clicking a box opens that knowledge's detail page"
   ],
   "priority": "P0",
   "area": "ledger",
@@ -514,9 +516,9 @@
    "Read 'Knowledge tracks'"
   ],
   "expected": [
-   "Accuracy line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'",
+   "Accuracy line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers', and under it the baseline from the same run: 'The same run scored 1/8 before the knowledge was loaded → 26/26 after'",
    "'Target model' note 'This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.'; rows 'Model' Qwen3.8-Flash-Next, 'Checkpoint' W4A16, 'Entry width' 160, 'Billing' 'pay once per download', 'License' 'Use on the identified model · no resale of raw data', 'Created' (date)",
-   "'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' 'Threshold set — unrelated answers must not change when the knowledge is loaded'; 'Question-set hash' shown",
+   "'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' — since no attestation carries collateral_nat — reads 'Limit declared (≤ 0.08 nat) — not yet measured by any verifier' in the warning tone (#8a4b00) with a 'See the verification tab →' button that opens the tab where the same fact reads 'not reported'; once a verifier does report one the row reads 'Threshold set — measured by {n} of {of} verifiers'; 'Question-set hash' shown",
    "'Sample questions (26)' lists 12 items like '\"종목코드 픽셀플러스 \" → 087600' followed by '… 14 more'",
    "Recipe details show JSON with corpus_template and hyperparams",
    "'Integrity' note 'A downloaded file is genuine only if its content hash matches the value below.'; 'Content hash' 57c93463… (stable: sha256 of rows-pin.npz); 'Copy' turns into 'Copied' and the clipboard holds the 64-hex sha256; 'Public record ID' equals record_hash from GET /api/patches/krx-all-2761 (chain-specific, do not hardcode); 'File stored on this node' 'yes'",
@@ -588,10 +590,12 @@
    "Open http://localhost:3402/benchmarks/no-such-topic"
   ],
   "expected": [
-   "Title 'Knowledge on this topic krx-ticker-codes'; stats '4 knowledge · 1 verified · models: Qwen3.8-Flash-Next'",
-   "Explanation 'Knowledge on the same topic is scored with the same question set, so it can be compared. When contents overlap, the newer verified knowledge replaces the older one (\"Newer version available\").' followed by the link 'Back to Explore'",
-   "Sort options are 'Most popular', 'Newest', 'Knowledge size' (no 'Price' here); 'Knowledge size' puts krx-all-2761 first and pixelplus-087600 last",
-   "4 rows rendered with the same row layout as Explore; pagination '1 / 1'",
+   "Title 'Knowledge on this topic krx-ticker-codes'; stats '4 knowledge · 1 current version(s) · 3 question set(s) · models: Qwen3.8-Flash-Next' — 'current version(s)' counts LISTED items; it never says '1 verified' above four cards that all passed verification",
+   "Explanation 'Scores are comparable only within one question set. The list below is grouped by the question set the verifiers used — a different set is a different exam, and those numbers cannot be lined up against each other. When contents overlap, the newer verified knowledge replaces the older one (\"Newer version available\").' followed by the link 'Back to Explore'",
+   "The list is grouped by benchmark_hash, newest set first, with a heading per set naming the form and the question count and showing the hash: 'Question set · template + chat · 2,761 questions' (b6beb92f, krx-all-2761 alone), 'Question set · template · 2,761 questions' (7b126cec, ep12 + ep6), 'Question set · template + natural · 8 questions' (8f1017b4, pixelplus-087600). A group of one says 'The only knowledge scored on this question set — nothing here to compare it with.'; a group of several says 'These {n} were scored on this same question set, so they can be compared with each other.'",
+   "Each card names the form its questions were asked in next to the accuracy ('asked as template + chat'), so two scores from different sets can never be read as one ranking",
+   "Sort options are 'Most popular', 'Newest', 'Knowledge size' (no 'Price' here)",
+   "Sorting by 'Knowledge size' reorders the cards INSIDE each question set (the sets stay newest-first): krx-all-2761, then the two epoch snapshots, then pixelplus-087600; the pager reads '1 / 1'",
    "'Back to Explore' → /explore",
    "Unknown topic: API returns 404 and the page shows '404. Page not found' with 'No knowledge is registered under the topic \"no-such-topic\".' and the link 'Go to Explore →'"
   ],
@@ -909,7 +913,7 @@
    "Main header shows the same name, the chip 'Newer version available', '8 facts' and the 'Details →' link — testing is not blocked for superseded knowledge",
    "The turn completes: 'After loading' contains 087600 with '✓ Correct' and a short '· loaded in {n}s' (the body is only 3.7 MB); 'Before loading' shows ✓/✗ for the base model",
    "'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version: krx-all-2761' (warning palette #8a4b00 on #fff3e0); the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6)",
-   "The link opens the krx-all-2761 detail page (status 'Verified')"
+   "The link opens the krx-all-2761 detail page (status chip 'For sale')"
   ],
   "priority": "P2",
   "area": "chat",
@@ -1008,7 +1012,7 @@
   "expected": [
    "Headers are \"Name\", \"Status\", \"Verification\", \"Sales\", \"Logs\", \"Auto-pay address\", \"Live test\", \"Manage\"",
    "Tooltips explain Verification (\"Several independent verifier nodes actually loaded it into the model…\") and Auto-pay address (\"A person or AI agent requests this address, is quoted a price, pays automatically and downloads. No sign-up.\")",
-   "krx-all-2761 row: sub-line \"krx-all-2761 · Qwen3.8-Flash-Next · 2,761 facts\"; Status chip \"Verified\"; Verification \"executed verification 2/2\" with sub-line \"integrity check 0\"; Sales \"0 · Free\" (the money formatter renders a zero revenue as \"Free\" — flag as a copy issue if judged confusing)",
+   "krx-all-2761 row: sub-line \"krx-all-2761 · Qwen3.8-Flash-Next · 2,761 facts\"; Status chip \"For sale\" (status.LISTED — the listing state; the verification is the column beside it); Verification \"executed verification 2/2\" with sub-line \"integrity check 0\"; Sales \"0 · Free\" (the money formatter renders a zero revenue as \"Free\" — flag as a copy issue if judged confusing)",
    "krx-all-2761-ep6 row: Status chip \"Newer version available\", no spinner",
    "Manage icon navigates to /project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761; Logs icon to /project/…/krx-all-2761/logs; Live test icon to /chat/krx-all-2761; Auto-pay icon opens http://localhost:3402/x402/patch/krx-all-2761 in a new tab (HTTP 402 payment-required JSON)",
    "The name link navigates to the public page /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761"
@@ -1071,7 +1075,7 @@
  {
   "id": "AZ-031",
   "persona": "Knowledge creator (operator)",
-  "title": "Publish a draft after the checklist and follow verification until Verified",
+  "title": "Publish a draft after the checklist and follow verification until the knowledge is on sale",
   "goal": "A creator announces knowledge to the network and watches independent verifiers score it on the real model.",
   "preconditions": [
    "Signed in on http://localhost:3402",
@@ -1092,7 +1096,7 @@
    "Note reads \"After publishing, name, price and benchmark are sealed. The file stays only on this node until it is bought.\"",
    "Button reads \"Publishing…\" then green alert \"Published — it is on the public record and verifiers were notified.\"; POST /api/patches/pixelplus-test-1/announce returns 200 with an anchor record",
    "Status chip becomes \"Registered · awaiting verification\", then \"Verifying\" with a spinner once the first attestation arrives (page polls GET /api/patches/pixelplus-test-1 every 5 s); the line reads \"executed 1/2 passed · integrity 0 · 1 result(s)\"",
-   "When two executed attestations have passed the chip reads \"Verified\", the line \"executed 2/2 passed · integrity 0 · 2 result(s)\", a \"Verified on\" date appears and the \"Auto-pay address\" link http://localhost:3402/x402/patch/pixelplus-test-1 becomes active",
+   "When two executed attestations have passed the chip reads \"For sale\" (status.LISTED), the line \"executed 2/2 passed · integrity 0 · 2 result(s)\", a \"Verified on\" date appears and the \"Auto-pay address\" link http://localhost:3402/x402/patch/pixelplus-test-1 becomes active",
    "\"Verification results\" table lists node-b and node-c with Result \"PASS\", How \"executed (vllm:Qwen3.8-Flash-Next)\" and a Deposit in AIN",
    "Fields under \"Description & price\" are disabled with the note \"Published knowledge is fixed on the public record — these fields can no longer change.\"; the checklist and publish button are gone"
   ],
@@ -3141,7 +3145,7 @@
   ],
   "expected": [
    "Step 1: title 'Explore knowledge', sort 'Most popular', filters 'Model' / 'Topic' / 'Show' / 'All', search placeholder 'Search by name or description', count '1 knowledge' (Explore opens on 'Current only'; 'All versions' shows all 4), nav 'Explore knowledge · Live test · Network · Public record · Docs & API · Sign in', language button '한국어' (it names the other language); document.title is 'Explore knowledge · Ainize' and <html lang> is 'en'",
-   "Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '표시' / '전체', placeholder '지식 이름·설명 검색', count '지식 1개' (and '지식 4개' with '모든 버전'), chips '검증 완료' and, with '모든 버전' on, '최신 버전: krx-all-2761', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; document.title is '지식 둘러보기 · Ainize' and <html lang> is 'ko' (both follow the toggle with no reload); identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear",
+   "Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '표시' / '전체', placeholder '지식 이름·설명 검색', count '지식 1개' (and '지식 4개' with '모든 버전'), chips '검증 완료' (검증 배지) and '판매 중' (목록 상태, status.LISTED) and, with '모든 버전' on, '최신 버전: krx-all-2761', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; document.title is '지식 둘러보기 · Ainize' and <html lang> is 'ko' (both follow the toggle with no reload); identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear",
    "Step 4: Korean persists after reload and on every route (landing hero '지식을 AI에 끼우다', chat title '라이브 테스트', ledger title '공개 기록'); the landing page's dark nav has its own toggle that switches back too; each route names itself in the tab ('지식을 AI에 끼우다 · Ainize', '라이브 테스트 · Ainize', '공개 기록 · Ainize', 'KRX ticker codes for 2,761 listed companies (final) · Ainize', '404. 페이지를 찾을 수 없습니다 · Ainize')",
    "Step 5: returns 'ko'",
    "Step 6: bubble meta uses Korean units ('응답 536ms', '넣는 데 2.9초', '정답'); after 'English' + reload the UI is English again and localStorage holds 'en'",
@@ -3402,7 +3406,7 @@
   "expected": [
    "Step 1: logo link name 'Ainize home' (img alt 'Ainize'); language button aria-label 'language' with visible text '한국어'; sort button aria-haspopup='listbox' with role=listbox options carrying aria-selected; operator button 'node-a ▾' has aria-haspopup='menu' and aria-expanded toggling, popup role=menu with role=menuitem 'Account settings', 'Files & changes', 'Log out'",
    "Step 2: <aside aria-label='Knowledge to test'>; items are buttons with aria-pressed; radiogroup aria-label 'View' with role=radio aria-checked; textarea aria-label 'Type a question and press Enter (Shift+Enter for a new line)'; the transcript <section> has aria-live='polite'; the spinner has role=status aria-label 'loading'; the error alert has role=alert and reads 'Could not reach the node. Check your connection and try again.'; the runtime/lock/quota boxes use role=status",
-   "Step 3: role=tablist with five role=tab ('Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History') exposing aria-selected; the status chip 'Verified' has a title tooltip 'Several independent verifier nodes actually loaded it into the model and checked accuracy and side effects.' (note: tabs have no arrow-key navigation - record as P2 gap)",
+   "Step 3: role=tablist with five role=tab ('Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History') exposing aria-selected; the status chip 'For sale' has a title tooltip 'On sale as the current version for this topic. Whether it passed verification is what the \"Verified\" badge beside it says.' (note: tabs have no arrow-key navigation - record as P2 gap)",
    "Step 4: svg role=img aria-label 'knowledge origin and derivative map'; pagination arrows have aria-label 'previous' / 'next' and text buttons 'First' / 'Last'",
    "Step 5: no critical axe violations; document any 'button-name' or 'color-contrast' findings with element and page"
   ],

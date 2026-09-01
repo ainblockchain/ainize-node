@@ -123,7 +123,8 @@ test.describe('runtime', () => {
     await expect(page.getByPlaceholder('지식 이름·설명 검색')).toBeVisible();
     await expect(page.getByText('표시', { exact: true })).toBeVisible();
     await expect(page.getByText(`지식 ${currentTotal}개`)).toBeVisible();
-    await expect(page.getByText('검증 완료', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('검증 완료', { exact: true }).first()).toBeVisible();   // 검증 배지
+    await expect(page.getByText('판매 중', { exact: true }).first()).toBeVisible();      // 목록 상태 칩 (status.LISTED)
     await expect(page).toHaveTitle('지식 둘러보기 · Ainize');
     expect(await page.evaluate(() => document.documentElement.lang), '<html lang> follows the toggle without a reload').toBe('ko');
     // the retired versions and their Korean chip come back with '모든 버전'
@@ -871,8 +872,9 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   await tablist.getByRole('tab', { name: 'Buy' }).click();
   await expect(tablist.getByRole('tab', { name: 'Buy' })).toHaveAttribute('aria-selected', 'true');
   await tablist.getByRole('tab', { name: 'Overview' }).click();
-  const chip = page.locator('main').getByText('Verified', { exact: true }).first().locator('xpath=ancestor-or-self::span[@title][1]');
-  await expect(chip).toHaveAttribute('title', 'Several independent verifier nodes actually loaded it into the model and checked accuracy and side effects.');
+  // the LISTED chip explains itself as a listing state; "Verified" is the attestation badge and keeps the glossary help
+  const chip = page.locator('main').getByText('For sale', { exact: true }).first().locator('xpath=ancestor-or-self::span[@title][1]');
+  await expect(chip).toHaveAttribute('title', 'On sale as the current version for this topic. Whether it passed verification is what the "Verified" badge beside it says.');
   await audit(page, '/<addr>/krx-all-2761');
 
   // Step 4 — ledger map + pagination

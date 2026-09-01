@@ -203,7 +203,8 @@ test('AZ-029 Review the My knowledge table for a verified and a superseded item'
   const row = table.getByRole('row').filter({ has: page.getByRole('link', { name: KRX_NAME, exact: true }) });
   const cells = row.getByRole('cell');
   await expect(cells.nth(0)).toContainText(`krx-all-2761 · ${MODEL} · 2,761 facts`);
-  await expect(cells.nth(1)).toHaveText('Verified');
+  // the LISTED chip is a listing state ("For sale"); "Verified" is reserved for the verification column beside it
+  await expect(cells.nth(1)).toHaveText('For sale');
   await expect(cells.nth(2)).toContainText(`executed verification ${krx.passed}/${krx.quorum}`);
   await expect(cells.nth(2)).toContainText(`integrity check ${krx.integrity_checks}`);
   // earned amounts never read "Free": a zero revenue is "0 AIN" (the scenario flagged "0 · Free" as a copy issue; fixed)
@@ -1084,7 +1085,7 @@ test.describe('runtime', () => {
   // Not serial on purpose: the tests wait for the shared runtime themselves, so a vLLM hiccup in one of them must not
   // skip the rest of the block (workers=1 keeps them in file order; AZ-041 checks its AZ-031 precondition explicitly).
 
-  test('AZ-031 Publish a draft after the checklist and follow verification until Verified', async ({ page, request }) => {
+  test('AZ-031 Publish a draft after the checklist and follow verification until the knowledge is on sale', async ({ page, request }) => {
     test.setTimeout(30 * 60_000);
     const token = await operatorToken(request);
     const info = await nodeInfo(request);
@@ -1164,12 +1165,12 @@ test.describe('runtime', () => {
       if (passed >= 1 && firstAt === null) firstAt = Date.now();
       if (passed >= 2 && secondAt === null) secondAt = Date.now();
       if (cur?.status === 'REJECTED') throw new Error(`verification rejected: ${JSON.stringify(cur.attestations.map((a) => a.score))}`);
-      if (cur?.status === 'LISTED' && c === 'Verified') break;
+      if (cur?.status === 'LISTED' && c === 'For sale') break;
       await sleep(1000);
     }
     expect(cur?.status, `final status after ${Math.round((Date.now() - t0) / 1000)}s`).toBe('LISTED');
     expect([...chips]).toContain('Registered · awaiting verification');
-    expect([...chips]).toContain('Verified');
+    expect([...chips]).toContain('For sale');
     const window = firstAt !== null && secondAt !== null ? secondAt - firstAt : 0;
     if (window > 7000) {
       expect([...chips], 'intermediate "Verifying" chip').toContain('Verifying');

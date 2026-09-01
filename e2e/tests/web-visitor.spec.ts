@@ -23,7 +23,7 @@ function executedAccuracyPct(e: CatalogEntry): number | null {
   const m = /^(\d+)\s*\/\s*(\d+)$/.exec(String(raw ?? ''));
   return m && Number(m[2]) ? Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10 : null;
 }
-interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number }[] }
+interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number; score: Record<string, string | number>; collateral_nat?: number | null }[] }
 /** POST /api/chat (the fields D1/D2 added: the guard verdict and the honest score). */
 interface ChatAnswer { content: string; truncated: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string; finish_reason: string | null }
 interface ChatResponse { patched: ChatAnswer; base: ChatAnswer | null; benchmark_hit: boolean | null; benchmark_hits: Record<string, boolean | null>; remaining_quota: number | null; quota_limit: number | null }
@@ -152,17 +152,30 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
 
   const row = page.locator(`main a[href$="/${K.final}"]`);
   await expect(row).toContainText(FINAL_NAME);
-  await expect(row.locator('span', { hasText: /^Verified$/ })).toHaveCount(2); // certified label + status chip
-  await expect(row.locator('span', { hasText: /^Verified$/ }).last()).toHaveCSS('color', 'rgb(68, 164, 95)');
+  // "Verified" is the attestation badge; the chip beside it is the LISTING state. One word for two things read as a
+  // rendering bug, so the chip now says what it means: "Verified ✓ · For sale".
+  await expect(row.locator('span', { hasText: /^Verified$/ })).toHaveCount(1);   // the certified label, once
+  const saleChip = row.locator('span', { hasText: /^For sale$/ });
+  await expect(saleChip).toHaveCount(1);
+  await expect(saleChip).toHaveCSS('color', 'rgb(68, 164, 95)');
+  await expect(saleChip).toHaveAttribute('title', 'On sale as the current version for this topic. Whether it passed verification is what the "Verified" badge beside it says.');
+  // the seal means something: full colour for the current verified version…
+  const seal = row.getByTestId('seal-sealed');
+  await expect(seal).toHaveCount(1);
+  await expect(seal).toHaveCSS('filter', 'none');
   await expect(row).toContainText(`node-a / ${K.final}`);
   await expect(row).toContainText(`Creator: node-a · Target model: ${MODEL} · Topic: krx-ticker-codes`);
   await expect(row).toContainText(`2,761 facts · 270,053 memory entries · Size 331.7 MB · ${num(final.downloads)} downloads`);
-  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% (26/26 checked)');
+  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% (26/26 checked) · asked as template + chat');
   await expect(row).toContainText('25 AIN');
   await expect(row).toContainText(AIN_NOTE);
 
   const prow = page.locator(`main a[href$="/${K.pixel}"]`);
   await expect(prow).toContainText(`Newer version: ${K.final}`);
+  // …and a greyed-out one for a retired version, instead of the same purple seal on every card
+  await expect(prow.getByTestId('seal-retired')).toHaveCount(1);
+  await expect(prow.getByTestId('seal-retired')).toHaveCSS('filter', 'grayscale(1)');
+  await expect(prow.getByTestId('seal-sealed')).toHaveCount(0);
   // its own verifiers scored 4 questions, not the 8 facts the row also prints
   await expect(prow).toContainText('Verified (2/2 independent verifiers) · 100% (4/4 checked)');
   await expect(prow).toContainText(`${num(pixel.anchor.benchmark.queries)} facts · ${num(pixel.anchor.rows)} memory entries`);
@@ -293,17 +306,40 @@ test('AZ-014 Filter Explore by model and topic and search, including the empty s
 test('AZ-017 Compare all knowledge on the same subject and hit the unknown-topic 404', async ({ page, request }) => {
   await page.goto(NODE_A + '/benchmarks/krx-ticker-codes');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Knowledge on this topic krx-ticker-codes');
-  await expect(page.getByText(`4 knowledge · 1 verified · models: ${MODEL}`)).toBeVisible();
-  await expect(page.getByText('Knowledge on the same topic is scored with the same question set, so it can be compared. When contents overlap, the newer verified knowledge replaces the older one ("Newer version available").')).toBeVisible();
+  await expect(page.getByText(`4 knowledge · 1 current version(s) · 3 question set(s) · models: ${MODEL}`)).toBeVisible();
+  await expect(page.getByText('Scores are comparable only within one question set. The list below is grouped by the question set the verifiers used — a different set is a different exam, and those numbers cannot be lined up against each other. When contents overlap, the newer verified knowledge replaces the older one ("Newer version available").')).toBeVisible();
   const back = page.getByRole('link', { name: 'Back to Explore' });
   await expect(back).toBeVisible();
+
+  // Finding 24: these four items carry THREE benchmark hashes, so they are three different exams. The page groups
+  // them and names each set — the API is the source of the grouping.
+  const bench = (await api<{ items: { anchor: { id: string; benchmark_hash: string; benchmark: { format: string[]; queries: number } } }[] }>(request, '/api/benchmarks/krx-ticker-codes')).body.items;
+  const sets = new Map(bench.map((e) => [e.anchor.benchmark_hash, e.anchor]));
+  expect(sets.size, 'the demo catalogue really does span three question sets').toBe(3);
+  const heads = page.getByTestId('bench-group-head');
+  await expect(heads).toHaveCount(3);
+  await expect(heads.nth(0)).toContainText('Question set · template + chat · 2,761 questions');
+  await expect(heads.nth(1)).toContainText('Question set · template · 2,761 questions');
+  await expect(heads.nth(2)).toContainText('Question set · template + natural · 8 questions');
+  for (const [hash] of sets) await expect(page.getByTestId('bench-group-head').filter({ hasText: hash.slice(0, 8) })).toHaveCount(1);
+  // the final's group holds it alone; the two epoch snapshots share one set and say they are comparable with each other
+  const groups = page.getByTestId('bench-group');
+  await expect(groups.nth(0)).toContainText('The only knowledge scored on this question set — nothing here to compare it with.');
+  await expect(groups.nth(1)).toContainText('These 2 were scored on this same question set, so they can be compared with each other.');
+  await expect(groups.nth(0).locator('a[href^="/0x"]')).toHaveCount(1);
+  await expect(groups.nth(1).locator('a[href^="/0x"]')).toHaveCount(2);
+  // and each card carries the form its questions were asked in, next to the accuracy
+  await expect(groups.nth(0).getByTestId('item-format')).toHaveText('asked as template + chat');
+  await expect(groups.nth(2).getByTestId('item-format')).toHaveText('asked as template + natural');
 
   await selectButton(page).click();
   await expect(page.getByRole('option')).toHaveText(['Most popular', 'Newest', 'Knowledge size']);
   await page.getByRole('option', { name: 'Knowledge size' }).click();
   await expect(rows(page)).toHaveCount(4);
+  // the sort orders the cards INSIDE each question set; the sets themselves stay newest-first
   const order = (await rows(page).evaluateAll((as) => as.map((a) => a.getAttribute('href')))).map(idOf);
   expect(order[0]).toBe(K.final);
+  expect(order.slice(1, 3).sort()).toEqual([K.ep12, K.ep6].sort());
   expect(order[3]).toBe(K.pixel);
   await expect(rows(page).first()).toContainText(`Creator: node-a · Target model: ${MODEL} · Topic: krx-ticker-codes`);
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
@@ -338,15 +374,18 @@ test('AZ-004 Read the knowledge detail header and stat strip', async ({ page, re
   await expect(subject).toBeVisible();
 
   await expect(page.getByText('Verified on the real model 2/2 · Verified')).toBeVisible();
-  await expect(page.locator('span', { hasText: /^Verified$/ }).first()).toBeVisible();
+  await expect(page.locator('span', { hasText: /^For sale$/ }).first()).toBeVisible();
   // PRODUCT BUG candidate: PatchPage renders the "Manage" link from `data.owned` (server-side author === node address),
   // not from the operator session, so a signed-out visitor sees it too. Soft assertion so the rest of the page is still checked.
   await expect.soft(page.getByRole('link', { name: /^Manage/ }), 'no Manage link for a visitor').toHaveCount(0);
   await expect(page.getByText(new RegExp(`By node-a · target model ${MODEL.replace('.', '\\.')} · verified \\d+(s|m|h|d) ago`))).toBeVisible();
 
   await expect(stat(page, 'Purchases')).toHaveText(num(d.downloads));
-  await expect(stat(page, 'accuracy')).toHaveText('100%');
-  await expect(page.locator('xpath=//div[normalize-space()="accuracy"]/following-sibling::div[1]')).toHaveText('26/26');
+  // Finding 28: the hero stat is the PAIR the verifiers measured — "1 of 8 right before, 26 of 26 after" — with the
+  // percentage as its note. "100%" alone could not tell a buyer whether the model already knew the answers.
+  await expect(stat(page, 'accuracy')).toHaveText('1/8 → 26/26');
+  await expect(stat(page, 'accuracy')).toHaveAttribute('title', 'The same verification run scored 1/8 before the knowledge was loaded and 26/26 after.');
+  await expect(page.locator('xpath=//div[normalize-space()="accuracy"]/following-sibling::div[1]')).toHaveText('100% after loading');
   await expect(stat(page, 'Memory entries')).toHaveText('270,053');
   await expect(stat(page, 'Facts')).toHaveText('2,761');
   await expect(stat(page, 'Size')).toHaveText('331.7 MB');
@@ -374,9 +413,10 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
   const summary = (k: string) => page.locator('div', { has: page.locator(`span.k:text-is("${k}")`) }).last().locator('span.v');
   await expect(summary('Run on the real model')).toHaveText('2/2');
   await expect(summary('Integrity only')).toHaveText('0');
-  await expect(summary('Status')).toHaveText('Verified');
+  await expect(summary('Status')).toHaveText('For sale');
 
-  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time']);
+  // Finding 28: both verifiers recorded pre_apply "1/8" and it was rendered nowhere. It is a column now.
+  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time']);
   const body = page.locator('tbody tr');
   await expect(body).toHaveCount(d.attestations.length);
   expect(d.attestations.length).toBe(2);
@@ -387,17 +427,22 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
     const cells = row.locator('td');
     await expect(cells.nth(0)).toContainText(`${address.slice(0, 10)}…${address.slice(-4)}`);
     await expect(cells.nth(1)).toHaveText('run on the real model');
-    await expect(cells.nth(2)).toHaveText('26/26');
-    await expect(cells.nth(3)).toHaveText('not reported');
-    await expect(cells.nth(3)).toHaveAttribute('title', /side-effect|Checks that adding the knowledge/);
-    await expect(cells.nth(4)).toHaveText('none');
-    await expect(cells.nth(5)).toHaveText('5 AIN');
-    await expect(cells.nth(5)).toHaveAttribute('title', /A deposit a verifier loses if its verification turns out wrong/);
-    await expect(cells.nth(6)).toHaveText('Passed');
-    await expect(cells.nth(6)).toHaveCSS('color', 'rgb(68, 164, 95)');
-    await expect(cells.nth(7)).toHaveText(/^\d+(s|m|h|d) ago$/);
-    await expect(cells.nth(7)).toHaveAttribute('title', /^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/);
+    const att = d.attestations.find((x) => x.verifier_name === name)!;
+    expect(att.score.pre_apply, 'the attestation carries the baseline').toBe('1/8');
+    await expect(cells.nth(2)).toHaveText(String(att.score.pre_apply));
+    await expect(cells.nth(2)).toHaveAttribute('title', /BEFORE the knowledge was loaded \(pre_apply\)/);
+    await expect(cells.nth(3)).toHaveText('26/26');
+    await expect(cells.nth(4)).toHaveText('not reported');
+    await expect(cells.nth(4)).toHaveAttribute('title', /side-effect|Checks that adding the knowledge/);
+    await expect(cells.nth(5)).toHaveText('none');
+    await expect(cells.nth(6)).toHaveText('5 AIN');
+    await expect(cells.nth(6)).toHaveAttribute('title', /A deposit a verifier loses if its verification turns out wrong/);
+    await expect(cells.nth(7)).toHaveText('Passed');
+    await expect(cells.nth(7)).toHaveCSS('color', 'rgb(68, 164, 95)');
+    await expect(cells.nth(8)).toHaveText(/^\d+(s|m|h|d) ago$/);
+    await expect(cells.nth(8)).toHaveAttribute('title', /^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/);
   }
+  await expect(page.getByText('"Before" and "Accuracy" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.')).toBeVisible();
   await expect(page.getByText(/^Verified — Only verifications run on the real model count toward Verified \(currently 2\/2\)\. The 0 integrity-only checks are shown separately/)).toBeVisible();
   await expect(page.getByText(/^Restarts detected: if the model server restarted mid-run/)).toBeVisible();
   await expect(page.getByText(/^Deposit: what a verifier loses if its verification turns out wrong/)).toBeVisible();
@@ -454,6 +499,9 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
 
   await expect(page.getByRole('heading', { name: 'Description' })).toBeVisible();
   await expect(page.getByText('Accuracy 100% on 26 of 2,761 questions checked by verifiers')).toBeVisible();
+  // finding 28 — the baseline the same run measured before the knowledge was loaded
+  await expect(page.getByTestId('ov-before-after')).toHaveText('The same run scored 1/8 before the knowledge was loaded → 26/26 after');
+  expect(d.attestations.every((x) => x.score.pre_apply === '1/8'), 'both verifiers recorded the same baseline').toBe(true);
   await expect(page.getByText('This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.')).toBeVisible();
   await expect(dd(page, 'Model')).toHaveText(MODEL);
   await expect(dd(page, 'Checkpoint')).toHaveText('W4A16');
@@ -466,7 +514,15 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
   await expect(dd(page, 'Subject').getByRole('link')).toHaveAttribute('href', '/benchmarks/krx-ticker-codes');
   await expect(dd(page, 'facts covered')).toHaveText('2,761 facts');
   await expect(dd(page, 'Question formats')).toHaveText('template, chat');
-  await expect(dd(page, 'Side-effect limit')).toHaveText('Threshold set — unrelated answers must not change when the knowledge is loaded');
+  // finding 55 — no attestation carries collateral_nat, so the row says the limit was declared and NOT measured,
+  // in the warning tone, with a way to the evidence instead of a promise the Verification tab contradicts
+  expect(d.attestations.some((x) => x.collateral_nat !== undefined && x.collateral_nat !== null), 'no verifier reported a side-effect measurement').toBe(false);
+  await expect(page.getByTestId('ov-side-effect')).toContainText('Limit declared (≤ 0.08 nat) — not yet measured by any verifier');
+  await expect(page.getByTestId('ov-side-effect').locator('span')).toHaveCSS('color', 'rgb(138, 75, 0)');
+  await page.getByTestId('ov-side-effect').getByRole('button', { name: 'See the verification tab →' }).click();
+  await expect(page.getByRole('tab', { name: 'Verification' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('tbody tr').first().locator('td').nth(4)).toHaveText('not reported');
+  await page.getByRole('tab', { name: 'Overview' }).click();
   await expect(dd(page, 'Question-set hash')).toHaveText(d.anchor.benchmark_hash);
   await expect(page.getByRole('heading', { name: 'Sample questions (26)' })).toBeVisible();
   const samples = page.locator('ul li');
@@ -765,7 +821,7 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   expect(col(K.pixel)).toBe(0);
   expect(col(K.ep12)).toBe(1);
   expect(col(K.final)).toBe(2);
-  expect(boxes.find((b) => b.id === K.final)!.sub).toBe('Verified · Qwen3.8-Flash-N…');
+  expect(boxes.find((b) => b.id === K.final)!.sub).toBe('For sale · Qwen3.8-Flash-N…');
   await expect(svg.locator('path[marker-end]')).toHaveCount(5);
   await expect(svg.locator('path[stroke-dasharray]')).toHaveCount(3);
   await expect(svg.locator('path[marker-end]:not([stroke-dasharray])')).toHaveCount(2);
@@ -964,7 +1020,7 @@ test.describe('Live test (shared runtime)', () => {
       await expect(it).toContainText(`${acc}% accuracy`);
       await expect(it).toContainText(`${e.anchor.price} AIN`);
       await expect(it).toContainText(AIN_NOTE);
-      await expect(it).toContainText(e.status === 'LISTED' ? 'Verified' : 'Newer version available');
+      await expect(it).toContainText(e.status === 'LISTED' ? 'For sale' : 'Newer version available');
     }
     await expect(itemFor(K.final).getByRole('checkbox')).toBeChecked();
     await expect(itemFor(K.pixel).getByRole('checkbox')).not.toBeChecked();
@@ -1317,7 +1373,7 @@ test.describe('Live test (shared runtime)', () => {
     await meta.getByRole('link', { name: `Newer version: ${K.final}` }).click();
     await expect(page).toHaveURL(`${origin}/${addr}/${K.final}`);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(FINAL_NAME);
-    await expect(page.locator('span', { hasText: /^Verified$/ }).first()).toBeVisible();
+    await expect(page.locator('span', { hasText: /^For sale$/ }).first()).toBeVisible();
   });
 
   test('AZ-021 Handle the model-server-off state on Live test and Network', async ({ page, request }) => {
