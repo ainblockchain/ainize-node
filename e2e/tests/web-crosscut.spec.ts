@@ -148,9 +148,15 @@ test.describe('runtime', () => {
     const hero = await h1(page).evaluate((el) => ({ font: getComputedStyle(el).fontFamily, w: el.getBoundingClientRect().width }));
     expect(hero.font, 'display stack carries the Hangul fallback').toContain('Noto Sans KR');
     expect(hero.w, 'the Korean h1 actually renders glyphs').toBeGreaterThan(100);
+    // Every Korean label on the page renders glyphs: the defect made the hero pills (and the headings) blank runs
+    // inside their padding, so measure the CONTENT width of every link carrying one of the hero labels.
     for (const label of ['지식 둘러보기', '라이브 테스트 해보기']) {
-      const w = await page.getByRole('link', { name: label }).first().evaluate((el) => el.getBoundingClientRect().width);
-      expect(w, `hero CTA "${label}" has a rendered label`).toBeGreaterThan(60);
+      const widths = await page.getByRole('link', { name: label, exact: true }).evaluateAll((els) => els.map((el) => {
+        const cs = getComputedStyle(el);
+        return el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      }));
+      expect(widths.length, `"${label}" is on the Korean landing page`).toBeGreaterThan(0);
+      for (const w of widths) expect(w, `"${label}" renders glyphs, not blanks`).toBeGreaterThan(40);
     }
     await expect(page).toHaveTitle('지식을 AI에 끼우다 · Ainize');
     await langButton(page).click();

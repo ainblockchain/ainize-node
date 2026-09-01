@@ -711,7 +711,11 @@ test.describe('autonomous buyer (runtime)', () => {
     const seqBefore429 = await latestSeq(request, 'usage');
     const r429 = await post({ patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }], max_tokens: 4 });
     expect(r429.status).toBe(429);
-    expect(r429.body).toEqual({ error: 'free live-test quota exhausted for this hour — buy the patch or run your own node' });
+    // the body also names the measured end of this visitor's hour, so a client can print a time instead of "in an hour"
+    expect(Object.keys(r429.body).sort()).toEqual(['error', 'quota_reset']);
+    expect(r429.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
+    expect(r429.body.quota_reset).toBeGreaterThan(Date.now());
+    expect(r429.body.quota_reset).toBeLessThanOrEqual(Date.now() + 3600_000);
     await sleep(1500);
     expect(await latestSeq(request, 'usage')).toBe(seqBefore429);
 

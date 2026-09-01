@@ -106,8 +106,10 @@ test.describe('operator: account / API / inspection', () => {
     const paths = Object.keys(oa.paths);
     const teachPaths = paths.filter((p) => /\/teach|\/teacher\/|\/payouts/.test(p));
     expect(teachPaths.length, 'teach-mode paths (lessons, review queue, contributors, payouts)').toBe(23);
-    expect(paths.length - teachPaths.length, 'marketplace paths').toBe(51);
-    expect(paths.length).toBe(74);
+    // 53 = 51 + the two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel), documented since b517cae
+    expect(paths.length - teachPaths.length, 'marketplace paths').toBe(53);
+    expect(paths.length).toBe(76);
+    for (const p of ['/api/chat/status', '/api/chat/cancel']) expect(oa.paths).toHaveProperty(p);
     expect(oa.paths).toHaveProperty('/api/patches/{id}/forget');
     expect(oa.paths).toHaveProperty('/x402/patch/{id}');
     expect(oa.paths).toHaveProperty('/api/chat');
@@ -807,10 +809,15 @@ test.describe('operator: runtime', () => {
     // The scenario's literal "conflicts: 4" is the count on a node that holds exactly the four demo bodies; what the line
     // must actually report is every knowledge on this node whose address set overlaps the new body. Asserted against the
     // node's own overlap check (the demo bodies plus the pixel copies earlier runs announced).
-    const overlaps = (await api<{ conflicts: { patch_id: string }[] }>(request, `/api/patches/${id}/conflicts`)).body.conflicts;
-    expect(Number(pub![1]), 'the announce pre-check counts the same overlaps GET /api/patches/:id/conflicts reports').toBe(overlaps.length);
+    // The pre-check runs inside the node and sees everything it holds, including private drafts (taught lessons), so it
+    // is compared with the OPERATOR's view of the same endpoint; an anonymous caller is deliberately shown fewer,
+    // because private drafts are redacted from public lineage/overlap answers.
+    const opTok = await operatorToken(request, NODE_A);
+    const overlaps = (await api<{ conflicts: { patch_id: string; status: string }[] }>(request, `/api/patches/${id}/conflicts`, { token: opTok })).body.conflicts;
+    expect(Number(pub![1]), 'the announce pre-check counts the same overlaps GET /api/patches/:id/conflicts reports to the operator').toBe(overlaps.length);
     expect(overlaps.map((c) => c.patch_id)).toEqual(expect.arrayContaining([K.final, K.pixel]));
-    test.info().annotations.push({ type: 'note', description: `announce pre-check reported conflicts: ${pub![1]} (the 4 demo bodies + the pixel copies earlier runs announced)` });
+    const drafts = overlaps.filter((c) => c.status === 'DRAFT').length;
+    test.info().annotations.push({ type: 'note', description: `announce pre-check reported conflicts: ${pub![1]} (the 4 demo bodies + the pixel copies earlier runs announced), of which ${drafts} are this node's private drafts — a visitor is shown ${overlaps.length - drafts}, because private drafts are redacted from public overlap answers` });
 
     // 4 — poll status on node-a until LISTED, remembering the transitions
     const seen: string[] = [];

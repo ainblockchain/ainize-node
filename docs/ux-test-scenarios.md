@@ -2059,7 +2059,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 prints `✓ draft created: o08-pixel-copy  (2,992 rows, sha256 …)` and `✓ announced o08-pixel-copy → ledger record <hash> (verifiers will now attest; quorum lists it)`; `$A logs --kind publish --limit 2` shows `announced o08-pixel-copy (conflicts: 4)`
+- Step 1 prints `✓ draft created: o08-pixel-copy  (2,992 rows, sha256 …)` and `✓ announced o08-pixel-copy → ledger record <hash> (verifiers will now attest; quorum lists it)`; `$A logs --kind publish --limit 2` shows `announced o08-pixel-copy (conflicts: N)`. N is every knowledge on this node whose address set overlaps the new body — 4 on a node holding only the demo bodies, and one more for each pixel copy earlier runs announced. The pre-check runs inside the node and counts private drafts (taught lessons) too, so it equals what GET /api/patches/:id/conflicts reports TO THE OPERATOR; a visitor is shown fewer, because private drafts are redacted from public overlap answers.
 - Step 2 returns `HTTP/1.1 423 Locked` with body `{"error":"patch not listed yet (verification 0/2)"}` (or 1/2 if one verifier already finished)
 - Step 3 shows on node-b, in order: `verifier` lines `verifying o08-pixel-copy ([o08 test] Pixelplus ticker copy)` and `benchmark o08-pixel-copy: 1/1 restarts=0`, then a `verify` line `attested o08-pixel-copy: PASS (vllm:Qwen3.8-Flash-Next)`; node-c logs the same (they run sequentially because they share the runtime lock)
 - Step 4: status goes ANNOUNCED → VERIFYING (after the first attestation) → LISTED with `verification 2/2 passed ✓ quorum`; the attestations table has exactly two rows, verifiers node-b and node-c, `PASS  free_generation=1/1 pre_apply=…  vllm:Qwen3.8-Flash-Next`; node-a (the author) never appears as a verifier
@@ -2190,7 +2190,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 50 True True`
+- Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 76 True True` — 76 documented paths, 53 marketplace + 23 teach-mode. The two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel) are part of the 53; a build without them documents 74.
 - Step 2 prints `['cli', 'node', 'openapi'] Use knowledge (one line)`
 - Step 3 prints `4 pixelplus-087600 False ['Qwen3.8-Flash-Next'] ['krx-ticker-codes']` (attestation signatures are stripped from the catalog)
 - Step 4: both return 400 with body `{"error":"invalid request","issues":[…]}`
@@ -3259,7 +3259,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 1: HTTP 200 JSON with patch_id='krx-all-2761', mode='compare', base.content (pre-patch answer), patched.content containing '087600', benchmark_hit=true (prompt matches a benchmark sample; expected 087600), applied_ms > 0, was_applied=false, model='Qwen3.8-Flash-Next', quota_limit=20 and remaining_quota one less than before
 - Step 2: newest event has kind='usage', patch_id='krx-all-2761', message 'live test krx-all-2761 (compare) by ip:<addr>: patched hit=true', data {visitor:'ip:<addr>', mode:'compare', hit:true, base_ms, patched_ms, applied_ms}; the same event appears under /api/patches/krx-all-2761/events
 - Step 3: mode 'base' returns patched=null and benchmark_hit=null; the usage event message ends with 'base only' (no hit is metered when no patched answer was served); a free-form question in compare mode yields hit=null ('not auto-scored')
-- Step 4: when the 20-per-hour window is exhausted the request answers HTTP 429 {"error":"free live-test quota exhausted for this hour — buy the patch or run your own node"} and no usage event is written for it (the quota is checked before the runtime runs)
+- Step 4: when the 20-per-hour window is exhausted the request answers HTTP 429 {"error":"free live-test quota exhausted for this hour — buy the patch or run your own node","quota_reset":<epoch ms>} — quota_reset is the measured end of this visitor's window (window start + 3,600,000 ms), which is what the live-test page prints in place of a Retry button that could do nothing — and no usage event is written for it (the quota is checked before the runtime runs)
 - Step 5: HTTP 400 {"error":"invalid request","issues":[…]} (messages must have 1–24 items); no usage event
 - `patch_id` stays valid for a single knowledge; POST /api/chat also accepts `patch_ids` (1–3 ids, exactly one of the two fields) and then returns `patch_ids`, `applied[]` and one usage event per knowledge — see AZ-101
 
