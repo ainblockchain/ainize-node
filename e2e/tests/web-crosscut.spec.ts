@@ -509,6 +509,14 @@ test.describe('runtime', () => {
     expect(await gbox.locator('xpath=following-sibling::div[1]').evaluate((el) => getComputedStyle(el).flexWrap)).toBe('wrap');
     overflow.ledger = await noHorizontalScroll(page);
 
+    // Step 6 says "true on every page": Docs → REST API is the one that used to break it (85 operation rows whose
+    // unbreakable <code> path plus a nowrap auth tag pushed the body to 528 px), so it is measured with the tab open.
+    await page.goto(`${V}/docs`);
+    await expect(h1(page)).toHaveText('Docs · API · CLI');
+    await page.getByRole('tab', { name: 'REST API' }).dispatchEvent('click');
+    await expect(page.locator('details summary code').first()).toBeVisible();
+    overflow.docs = await noHorizontalScroll(page);
+
     // Step 6 — no body-level horizontal scroll on any page
     const bad = Object.entries(overflow).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: scrollWidth ${v.scrollWidth} > innerWidth ${v.innerWidth}`);
     test.info().annotations.push({ type: 'note', description: `overflow per page: ${JSON.stringify(overflow)}; header items outside the 360px viewport: ${outside.join(', ') || 'none'}` });
