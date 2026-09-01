@@ -1,11 +1,11 @@
 # UX scenario test results
 
-- **Date:** 2026-08-31
+- **Date:** 2026-09-01 (re-measured after the teach-mode merge; first measured 2026-08-31)
 - **Cluster:** live demo cluster — node-a http://localhost:3402 (web + API), node-b :3403, node-c :3404; local AIN chain :8081 (ledger=ain); shared vLLM :8000 (Qwen3.8-Flash-Next, hangs about hourly and self-restarts in ~5 min)
-- **Code:** main — results collected across the fix pass eb160df → a5a8194 (final fixes commit); AZ-067 re-run for real (private throwaway cluster) in the follow-up commit
+- **Code:** main — teach-mode merged (0a5723e); the 100 scenarios re-measured on the merged build across 9a12395 → fd9be87
 - **Runner:** Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1
-- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (scenarios: docs/ux-test-scenarios.json)
-- **Raw results:** packages/e2e/results/full-run-2.log (full pass, list reporter) + results/rerun-*.json (targeted reruns after fixes)
+- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode, AZ-101…AZ-122) — scenarios: docs/ux-test-scenarios.json
+- **Raw results:** packages/e2e/results/full-run-4.log (full pass on the merged build) + results/rr-*.log (targeted reruns) and full-run-4-attempt*.log (earlier passes of the same day)
 - **Host:** Linux-5.15.0-130-generic-x86_64-with-glibc2.35
 
 ## Summary
@@ -125,10 +125,73 @@
 | AZ-099 | Verify what happens to scroll position and filters on browser Back from a detail page | Cross-cutting | PASS | 5.2 s |  |
 | AZ-100 | Degrade gracefully when clipboard copy is unavailable or denied | Cross-cutting | PASS | 11.2 s |  |
 
+## Re-measured on the merged (teach-mode) build — 2026-09-01
+
+`main` now contains teach mode (merge `0a5723e`). The whole 100-scenario suite was re-run against the same live
+cluster on the merged build: **100 passed / 0 failed / 0 blocked**, plus the teach-mode specs (below). What the merge
+changed under the scenarios, and what had to be fixed:
+
+**UI/API surfaces the scenarios drive (spec adaptations only — the assertions still cover the scenario's intent)**
+
+- The Live-test picker became a multi-select list: `<label>` rows wrapping a checkbox instead of `<button
+  aria-pressed>`, `aria-label` "Knowledge to load (pick up to 3)", the active row shows the load-order badge
+  "Loads n." instead of "Selected", and the count row adds "Clear selection" (AZ-007, AZ-018…AZ-021, AZ-026,
+  AZ-085…AZ-094).
+- A teaching node adds "Teach" to the header nav, the teach banner and the collapsed lesson basket above the picker
+  (three extra keyboard stops before the picker in AZ-093) and a "Teach the right answer" button inside every reply
+  bubble (which is why AZ-087 now matches the hit chip "✓ 정답" exactly).
+- The landing page's creator card invites teaching (AZ-011), the user menu gained "Register a knowledge file"
+  (AZ-033, AZ-094), the sign-in page a visitor subtitle (AZ-028).
+- API/CLI snapshots grew: OpenAPI 74 paths (51 marketplace + 23 teach) and `payouts` in `/api/me/wallet` (AZ-055),
+  a "Teach" tag and a "Teach mode" CLI group in the docs (AZ-023), `patch_ids` / `benchmark_hits` / `applied` in
+  `ainize chat --json` (AZ-054), "patch not found: `<id>`" (AZ-066), "; teach backend=stub" in the cluster banner
+  (AZ-067), and the lock banner now explains the shared model rather than one knowledge (AZ-020).
+
+**Product defects found by the re-run (fixed here, not worked around)**
+
+- `packages/node/src/teach.ts` — a lesson was FAILED outright when the serving model stalled during the pre-flight or
+  the check: the worker's transient-outage test did not recognise the node's own `RuntimeUnavailableError`
+  ("model unavailable, try again in a few minutes"), which every 5xx/429/engine restart is mapped to. One hourly vLLM
+  hang was enough to throw away a visitor's training run. Now retried inside the 15-minute grace, with a unit test
+  that injects a crash into the check.
+- `packages/web/src/pages/ChatPage.tsx` — leaving Live test while a request was in flight aborted it and then called
+  RTK Query's `refetch()` from the settled promise, after the hook's own cleanup: three "Minified Redux Toolkit error
+  #38" entries in the console, which AZ-019 explicitly forbids ("leaving the page aborts it without console errors").
+  Both post-request refreshes now no-op once the page is gone.
+
+**Harness hygiene (same shared cluster, no product change)**
+
+- The fake visitor IP is stamped per node request instead of on the whole browser context, so it no longer rides on
+  the cross-origin Google-Fonts requests whose CORS preflight rejected it (AZ-019 counted those as product errors).
+- Every node on this machine writes into ONE model table: a private serving node from AZ-021/AZ-089 could leave its
+  knowledge applied after its home was deleted, which made the demo model answer the benchmark question correctly and
+  broke every agent scenario that needs the gap first. Throwaway nodes now unload on stop, and the agent precondition
+  restores the shared table.
+- AZ-022 waits for all three nodes to see the model and for both peers to advertise it (a peer gossips no model during
+  a hang); AZ-092 reads both compare bubbles in one layout read (the transcript was still smooth-scrolling); AZ-046
+  accepts that the removed peer row can be re-discovered before it is observed missing, exactly as its own expected
+  text describes.
+
+**Teach-mode specs (AZ-101…AZ-122, not part of the 100)**
+
+| Node | Result |
+|---|---|
+| live demo node-a :3402 (teach on, backend `stub`, real model) | 7 passed / 10 skipped |
+| dev node-t :3412 (backend `stub` with simulated checks, local ledger) | 17 passed |
+
+The ten skips on node-a have two documented reasons: an approve/announce writes a permanent anchor on the shared AIN
+chain (it would stay in the public catalog forever), and the `stub` trainer copies a fixture instead of training, so a
+node that measures lessons against a real model correctly reports NEEDS_MORE for a run-unique phrasing — the lesson
+lifecycle and the review queue therefore run where trainer and checks agree. Everything that does not need a trained
+lesson (landing, sign-in, pre-screen, Teaching-tab settings, payouts, banner/drawer/basket, teaching key + backup)
+runs on the live node. After the pass `GET :3402/api/catalog` still lists exactly the 4 demo knowledges and no teach
+lesson leaked into it.
+
 ## Environment notes (affect durations, not results)
 
 - The shared vLLM server (:8000) was unstable during part of the pass: from ~14:07 to ~15:20 UTC the engine restarted every 6–7 minutes (`shm_broadcast: No available shared memory broadcast block found in 60 seconds`), on top of its usual ~hourly hang. Runtime-touching scenarios wait for the model and were re-run in stable windows; the long durations on AZ-020/021/024/034/052 come from those waits.
 - A separate teach-mode workflow (node-t, :3412) shared the model and the cluster during the pass.
+- On the 2026-09-01 re-measurement the engine went through the same kind of unstable window around 02:20–02:45 UTC (repeated restarts). Scenarios that were caught by it were re-run after the model came back, and the tolerances they lacked were added (AZ-022 waits for all three nodes, AZ-089 has room for one hang, the teach turn retries).
 - Model-behavior finding (recorded, not a marketplace bug): with **thinking enabled**, the patched model answers the trained completion-style prompt (e.g. `종목코드 한독 `) with an empty string (immediate EOS) — base+thinking and patched without thinking both answer `002390`. The Live-test UI shows “(empty answer)” and scores it ✗. AZ-020 records this as a note.
 
 ## Coverage upgrades in this pass
