@@ -243,7 +243,7 @@ test.describe('runtime', () => {
     await expect(sending.locator('span[aria-hidden]')).toHaveCount(1);   // spinner
     const strip = page.getByRole('status').filter({ hasText: CANCEL_STRIP });
     await expect(strip).toBeVisible();
-    await expect(strip.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(strip.getByRole('button', { name: /^(Cancel|Stop waiting)$/ })).toBeVisible();
     for (const r of ['Compare', 'After only', 'Before only']) await expect(page.getByRole('radio', { name: r })).toBeDisabled();
     await expect(page.getByRole('checkbox', { name: 'Enable thinking' })).toBeDisabled();
     await expect(chatTextarea(page)).toBeDisabled();
@@ -265,7 +265,7 @@ test.describe('runtime', () => {
     const quotaBefore = await readQuota(page);
     expect(quotaBefore).not.toBeNull();
     await sendPrompt(page, K.pixelPrompt.trim());
-    await strip.getByRole('button', { name: 'Cancel' }).click({ timeout: 2000 });
+    await strip.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click({ timeout: 2000 });
     await expect(lastTurn(page).getByRole('alert')).toHaveText('Request cancelled.');
     await expect(lastTurn(page).getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(chatTextarea(page)).toBeEnabled({ timeout: 2000 });
@@ -376,8 +376,8 @@ test.describe('runtime', () => {
     await expect(page.getByRole('button', { name: 'Waiting for the answer…' })).toBeDisabled();
     await page.keyboard.press('Shift+Tab');
     const afterShiftTab = await focusInfo(page);
-    let cancel = afterShiftTab.name === 'Cancel' ? afterShiftTab : null;
-    if (!cancel) cancel = await tabUntil(page, (f) => f.tag === 'button' && f.name === 'Cancel', 80, 'Shift+Tab');
+    let cancel = afterShiftTab.name === 'Cancel' || afterShiftTab.name === 'Stop waiting' ? afterShiftTab : null;
+    if (!cancel) cancel = await tabUntil(page, (f) => f.tag === 'button' && (f.name === 'Cancel' || f.name === 'Stop waiting'), 80, 'Shift+Tab');
     expect(cancel, 'Cancel is reachable from the keyboard').not.toBeNull();
     expect(await page.evaluate(() => {
       const strip = document.querySelector('[role="status"] button');

@@ -92,7 +92,8 @@ export function lastTurn(page: Page): Locator { return page.locator('article').l
 export function bubble(page: Page, kind: 'base' | 'patched'): Locator {
   return lastTurn(page).locator('[aria-busy]').filter({ hasText: kind === 'base' ? /Before loading|지식 넣기 전/ : /After loading|지식 넣은 후/ });
 }
-export const CANCEL_STRIP = /Waiting for the answer — you can cancel if it takes too long\.|답을 기다리는 중입니다/;
+// D3: while the request is queued behind the shared model the same strip says so and the button reads "Stop waiting".
+export const CANCEL_STRIP = /Waiting for the answer — you can cancel if it takes too long\.|답을 기다리는 중입니다|Queued behind another test|순서를 기다리는 중입니다/;
 
 export async function waitForPicker(page: Page, count = 4): Promise<void> {
   const items = pickerItems(page);
@@ -127,7 +128,7 @@ export async function waitForTurn(page: Page, timeoutMs = 5 * 60_000): Promise<'
 }
 
 /** Errors that mean "the shared model hiccuped" (vLLM hang / restart, lock contention) rather than a UI defect. */
-export const TRANSIENT_CHAT_ERROR = /model server is off|fetch failed|Something went wrong during the test|Timed out waiting|Another test was running|모델 서버가|테스트 중 문제가|시간이 초과|다른 테스트가/;
+export const TRANSIENT_CHAT_ERROR = /model server is off|fetch failed|Something went wrong during the test|Timed out waiting|stayed busy for too long|모델 서버가|테스트 중 문제가|시간이 초과|다른 테스트가/;
 
 /**
  * Wait for the in-flight turn. When it fails for a runtime hiccup, wait for the model to come back and press Retry

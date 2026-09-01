@@ -940,7 +940,9 @@ test.describe('Live test (shared runtime)', () => {
     await expect(chips).toHaveCount(8);
 
     await chip(page, '종목코드 삼성전자').click();
-    await expect(textarea(page)).toHaveValue('종목코드 삼성전자');
+    // D2: the chip inserts the trained prompt verbatim — the trailing space is what the knowledge was trained on
+    // (the chip LABEL stays trimmed and carries a ␣ marker, which is why the locator above is unchanged).
+    await expect(textarea(page)).toHaveValue('종목코드 삼성전자 ');
     await expect(textarea(page)).toBeFocused();
     await expect(textarea(page)).toHaveAttribute('placeholder', 'Type a question and press Enter (Shift+Enter for a new line)');
     await expect(page.getByText('Free tries are limited per hour. No sign-in needed.')).toBeVisible();
@@ -964,8 +966,8 @@ test.describe('Live test (shared runtime)', () => {
     await expect(bubble(turn, 'Before loading')).toHaveAttribute('aria-busy', 'true');
     await expect(bubble(turn, 'After loading')).toHaveAttribute('aria-busy', 'true');
     await expect(turn.getByText('Includes loading and unloading — this can take tens of seconds.').first()).toBeVisible();
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Cancel|Stop waiting)$/ })).toBeVisible();
     await expect(sendButton(page)).toHaveText('Waiting for the answer…');
     await expect(chip(page, '종목코드 삼성전자')).toBeDisabled();
     await expect(modeRadio(page, 'After only')).toBeDisabled();
@@ -1045,8 +1047,8 @@ test.describe('Live test (shared runtime)', () => {
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await chip(page, '종목코드 유라클').click();
     const turn = await sendPrompt(page);
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
+    await page.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click();
 
     const alert = turn.getByRole('alert');
     await expect(alert).toHaveText('Request cancelled.');
@@ -1060,7 +1062,7 @@ test.describe('Live test (shared runtime)', () => {
     await turn.getByRole('button', { name: 'Retry' }).click();
     await waitTurnDone(page, request, turn);
     expect(payloads.length).toBeGreaterThanOrEqual(1);
-    expect(payloads[0].messages).toEqual([{ role: 'user', content: '종목코드 유라클' }]); // the cancelled turn is not replayed as history
+    expect(payloads[0].messages).toEqual([{ role: 'user', content: '종목코드 유라클 ' }]); // verbatim (D2); the cancelled turn is not replayed as history
     await expect(turns(page)).toHaveCount(1);
     const after = bubble(turn, 'After loading');
     await expect(after.getByText('✓ Correct')).toHaveAttribute('title', /Expected: 088340$/);
@@ -1069,7 +1071,7 @@ test.describe('Live test (shared runtime)', () => {
     // leaving the page during a pending request aborts it without console errors
     await modeRadio(page, 'Before only').click();
     await sendPrompt(page, '종목코드 HMM');
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
     await page.locator('header').getByRole('link', { name: 'Explore knowledge' }).click();
     await expect(page).toHaveURL(/\/explore$/);
     await page.waitForTimeout(1_500);
@@ -1088,18 +1090,22 @@ test.describe('Live test (shared runtime)', () => {
     const lock = await waitForLock(request, origin, (l) => !!l && l.label === `chat:${K.final}`);
     expect(lock!.owner).toMatch(/^pid:\d+$/);
     expect(typeof lock!.since).toBe('number');
-    // tab A shows the same box while its own request holds the lock (the page peeks at the lock right after sending)
-    await expect(page.getByRole('status').filter({ hasText: 'Another test is running' })).toBeVisible();
+    // D3: while it is tab A's OWN request that holds the lock, tab A is told exactly that — it used to be shown
+    // the "another test is running, try again in a moment" box about itself.
+    await expect(page.getByTestId('chat-lock-mine')).toContainText('Your test has the shared model');
 
     const tabB = await context.newPage();
     await tabB.goto(`${origin}/chat/${K.final}`);
-    const banner = tabB.getByRole('status').filter({ hasText: 'Another test is running — try again in a moment.' });
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText(new RegExp(`Another test in progress \\(node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
-    await expect(banner).toContainText('The shared model runs one test at a time, so tests queue up one after another.');
+    const banner = tabB.getByTestId('chat-lock');
+    await expect(banner).toContainText('Someone else is testing on the shared model right now.');
+    await expect(banner).toContainText(new RegExp(`Another test in progress \\(chat:${K.final}, node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
+    await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
 
     await modeRadio(tabB, 'Before only').click();
     const turnB = await sendPrompt(tabB, '종목코드 HMM');
+    // D3: tab B's own transcript says it is queued (not silently pending) while tab A holds the shared model
+    await expect(tabB.getByTestId('chat-queued').first()).toContainText('Queued behind another test');
+    await expect(tabB.getByRole('button', { name: 'Stop waiting' })).toBeVisible();
     await waitTurnDone(page, request, turnA);
     await waitTurnDone(tabB, request, turnB);
     // Tab A finished; the scenario asserts the correct result on tab B (bullet 3). Tab A's patched answer is auto-scored
@@ -1110,18 +1116,18 @@ test.describe('Live test (shared runtime)', () => {
     const hitA = await bubble(turnA, 'After loading').getByText('✓ Correct').count();
     if (!hitA) test.info().annotations.push({ type: 'note', description: 'turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding)' });
     await expect(bubble(turnB, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
-    await expect(tabB.getByText('Another test was running so this request could not be handled.')).toHaveCount(0);
+    await expect(tabB.getByText('The shared model stayed busy for too long, so this request gave up waiting.')).toHaveCount(0);
 
     await waitForLock(request, origin, (l) => l === null);
     await tabB.reload();
     await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
-    await expect(tabB.getByRole('status').filter({ hasText: 'Another test is running' })).toHaveCount(0);
+    await expect(tabB.getByTestId('chat-lock')).toHaveCount(0);
     await tabB.close();
   });
 
   test('AZ-024 Ask a follow-up question and confirm the conversation history is sent with it', async ({ page, request }) => {
     const origin = await freshVisitor(page);
-    const payloads: { patch_id: string; mode: string; thinking: boolean; messages: { role: string; content: string }[] }[] = [];
+    const payloads: { patch_id: string; mode: string; thinking: boolean; request_id?: string; messages: { role: string; content: string }[] }[] = [];
     page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') payloads.push(r.postDataJSON()); });
     await page.goto(`${origin}/chat/${K.final}`);
     await modeRadio(page, 'After only').click();
@@ -1140,7 +1146,11 @@ test.describe('Live test (shared runtime)', () => {
     await waitTurnDone(page, request, t2);
     await expect(bubble(t2, 'After loading')).toContainText('Free question — not auto-scored');
     expect(payloads.length).toBe(2);
-    expect(payloads[1]).toEqual({ patch_id: K.final, mode: 'patched', thinking: false, messages: [{ role: 'user', content: '종목코드 삼성전자' }, { role: 'assistant', content: answer1 }, { role: 'user', content: FOLLOW }] });
+    // D2: the sample is sent verbatim, trailing space included (that space is what the knowledge was trained on).
+    // D3: every request carries a request_id so it can be asked about and cancelled while queued.
+    const { request_id: rid, ...body } = payloads[1];
+    expect(rid).toBeTruthy();
+    expect(body).toEqual({ patch_id: K.final, mode: 'patched', thinking: false, messages: [{ role: 'user', content: '종목코드 삼성전자 ' }, { role: 'assistant', content: answer1 }, { role: 'user', content: FOLLOW }] });
 
     await page.getByRole('button', { name: 'Clear conversation' }).click();
     await expect(turns(page)).toHaveCount(0);
@@ -1148,7 +1158,7 @@ test.describe('Live test (shared runtime)', () => {
     const t3 = await sendPrompt(page);
     await waitTurnDone(page, request, t3);
     expect(payloads.length).toBe(3);
-    expect(payloads[2].messages).toEqual([{ role: 'user', content: '종목코드 삼성전자' }]);
+    expect(payloads[2].messages).toEqual([{ role: 'user', content: '종목코드 삼성전자 ' }]);
     await expect(quotaFooter(page)).toHaveText('Free trial 17/20 left this hour');
   });
 

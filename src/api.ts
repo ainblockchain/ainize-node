@@ -17,6 +17,7 @@ import {
 import { verifyAuthHeader } from './p2p.js';
 import { TeachAuth } from './teach-auth.js';
 import { ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
+import { ChatCancelledError } from './chat-queue.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
 import { ANSWER_MAX, creditedAddress, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
@@ -333,8 +334,18 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => { await market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe'); return { ok: true }; }));
 
   router.post('/api/runtime/complete', requireOperator, wrap(async (req) => {
-    const { prompt, max_tokens } = z.object({ prompt: z.string().min(1).max(2000), max_tokens: z.coerce.number().min(1).max(256).default(16) }).parse(req.body);
-    return { text: await market.runtime.complete(prompt, max_tokens) };
+    const { prompt, max_tokens, raw } = z.object({
+      prompt: z.string().min(1).max(2000), max_tokens: z.coerce.number().min(1).max(256).default(16),
+      /** `raw: true` = no stop sequences and no degeneracy guard — exactly what this endpoint sent before D1. */
+      raw: z.boolean().default(false),
+    }).parse(req.body);
+    const out = await market.runtime.completeDetailed(prompt, { maxTokens: max_tokens, ...(raw ? { sampling: null } : {}) });
+    // `text` stays the shown (guarded) answer for existing callers; raw_text is only present when it was cut.
+    return {
+      text: out.content, finish_reason: out.finish_reason ?? null,
+      truncated: out.truncated ?? null, shown_chars: out.shown_chars ?? out.content.length, raw_chars: out.raw_chars ?? out.content.length,
+      ...(out.raw_content !== undefined ? { raw_text: out.raw_content } : {}),
+    };
   }));
   router.get('/api/runtime', wrap(async () => ({ ...(await market.runtime.status(true)), applied: market.store.listApplied() })));
 
@@ -351,8 +362,12 @@ export function buildApi(deps: ApiDeps): Router {
     const items = (await market.testablePatches()).map(redactContributors);
     // `lessons`: the caller's private drafts (teach mode), only with a verified teaching-key signature
     const teacher = teachAuth.verify(req);
+    const q = market.runtime.queueState();
     return {
-      items, runtime: await market.runtime.status(), lock: market.runtime.lockHolder(),
+      items, runtime: await market.runtime.status(), lock: q.lock,
+      // D3: `now` is the node's clock — the client measures "held for 40s" against it instead of the browser's,
+      // and `queue` says how many live tests of this node are waiting behind the shared model.
+      now: Date.now(), queue: { running: q.running, waiting: market.chatQueue.waiting() },
       applied: market.pinnedPatchIds(), overlaps: market.chatOverlaps(items),
       ...(teacher ? { lessons: deps.teach ? await deps.teach.lessonsFor(teacher) : ([] as CatalogEntry[]), teacher } : {}),
     };
@@ -363,15 +378,39 @@ export function buildApi(deps: ApiDeps): Router {
       mode: z.enum(['base', 'patched', 'compare']).default('compare'),
       messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
       max_tokens: z.coerce.number().min(1).max(1024).default(200), thinking: z.boolean().default(false),
+      /** D3: the client's own id for this live test — lets it ask GET /api/chat/status and cancel while queued. */
+      request_id: z.string().min(1).max(64).optional(),
     }).refine((b) => (b.patch_id ? 1 : 0) + (b.patch_ids ? 1 : 0) === 1, { message: 'exactly one of patch_id / patch_ids is required', path: ['patch_ids'] }).parse(req.body);
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
     if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node');
     // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
-    const out = await market.chat({ ...body, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
+    const out = await market.chat({ ...body, requestId: body.request_id, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
+  }));
+  /**
+   * D3 — "is my request still queued?". Public, free (no quota), and answers about the caller's own request only:
+   * an unknown or foreign request_id is reported as 'gone', never as someone else's state.
+   */
+  router.get('/api/chat/status', wrap(async (req) => {
+    const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.query);
+    const operator = isOperator(req);
+    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    const q = market.runtime.queueState();
+    return { ...market.chatQueue.status(request_id, visitor), lock: q.lock, running: q.running, waiting: market.chatQueue.waiting(), now: Date.now() };
+  }));
+  /**
+   * D3 — give up waiting. While the request is still queued nothing has been sent to the model, so the runner
+   * returns without touching the shared table and no free try is consumed; once it is running the work (and the
+   * charge) stands and the caller is told exactly that instead of being left to guess.
+   */
+  router.post('/api/chat/cancel', wrap(async (req) => {
+    const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.body);
+    const operator = isOperator(req);
+    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    return market.chatQueue.cancel(request_id, visitor);
   }));
   router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));
   router.patch('/api/me/settings', requireOperator, wrap(async (req) => {
@@ -608,6 +647,11 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ errors
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    // D3: giving up while queued is not a failure — it is an outcome the client asked for, and nothing was charged.
+    if (err instanceof ChatCancelledError) return res.status(499).json({ error: err.message, cancelled: true, charged: false });
+    // A live test that waited out the shared lock is temporarily unavailable, not broken: say so as 503 + Retry-After
+    // instead of the generic 500 the "shared runtime busy" throw used to fall through to.
+    if (err instanceof Error && /shared runtime busy/.test(err.message)) { res.set('retry-after', '30'); return res.status(503).json({ error: err.message, busy: true }); }
     if (err instanceof HttpError || err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     // typed domain errors from Market / core validation: caller mistakes are 4xx, never 500

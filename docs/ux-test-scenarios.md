@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (124)
+# Ainize UX Test Scenarios (126)
 
-This document lists 124 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 126 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -18,18 +18,18 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Persona | Count | P0 | P1 | P2 |
 |---|---:|---:|---:|---:|
-| Visitor (knowledge user) | 26 | 10 | 14 | 2 |
+| Visitor (knowledge user) | 28 | 10 | 16 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
 | Node operator / developer | 20 | 6 | 11 | 3 |
 | AI agent / automation | 14 | 6 | 7 | 1 |
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 3 | 1 | 2 | 0 |
-| **Total** | **124** | **42** | **64** | **18** |
+| **Total** | **126** | **42** | **66** | **18** |
 
 | Area | Count |
 |---|---:|
-| chat | 14 |
+| chat | 16 |
 | teach | 13 |
 | x402 | 13 |
 | agent | 7 |
@@ -56,10 +56,10 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 67 |
+| e2e | 70 |
 | cli | 25 |
 | api | 19 |
-| manual | 13 |
+| manual | 12 |
 
 ## Visitor (knowledge user)
 
@@ -717,7 +717,7 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/i18n/pages/chat.ts: chat.mode.*_help, chat.hit.unknown, chat.thinking.*, chat.input.clear`
 - `packages/node/src/api.ts POST /api/chat mode enum base|patched|compare`
 
-### AZ-019 - Cancel a slow live test and retry it
+### AZ-019 - Stop a slow live test — and be told whether it cost a free try
 
 **Goal:** A visitor is never stuck waiting: an in-flight test can be cancelled and re-sent from the transcript.
 
@@ -732,15 +732,16 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 
 1. Open http://localhost:3402/chat/krx-all-2761 with 'Compare' selected
 2. Click 'Show 18 more', click the chip '종목코드 유라클' and press Enter
-3. Within the first seconds click 'Cancel' in the row 'Waiting for the answer — you can cancel if it takes too long.'
+3. Within the first seconds click 'Cancel' (or 'Stop waiting' while the turn is queued) in the row under the transcript
 4. Read the turn in the transcript
 5. Click 'Retry' on that turn and wait for completion
 
 **Expected**
 
-- After 'Cancel' the pending bubbles are replaced by a red alert 'Request cancelled.' and a 'Retry' button; the composer is enabled again immediately
+- After 'Cancel' the pending bubbles are replaced by a red alert and a 'Retry' button; the composer is enabled again immediately
+- The alert says which of the two happened: cancelled while still QUEUED → 'You stopped waiting. The node had not started this test yet, so no free try was used.' (POST /api/chat/cancel answers {cancelled:true, reason:'queued', charged:false} and the node returns 499 without touching the model); cancelled while RUNNING → 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.'
 - No duplicate turn is created; the cancelled turn is not sent back as history to the model
-- 'Retry' re-sends the same prompt with the same view/thinking settings, replaces the errored turn in place, and finishes with '✓ Correct' (expected 088340) in 'After loading' — note the node keeps processing the cancelled request, so Retry is queued behind it and both are charged to the quota once they complete
+- 'Retry' re-sends the same prompt with the same view/thinking settings, replaces the errored turn in place, and finishes with '✓ Correct' (expected 088340) in 'After loading' — a request cancelled while it was already running is still processed and charged, so Retry queues behind it
 - Leaving the page (e.g. clicking 'Explore knowledge' in the header) during a pending request aborts it without console errors
 
 **Evidence**
@@ -748,12 +749,14 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/pages/ChatPage.tsx cancel(), retry(), inflight abort on unmount, mapChatError AbortError → chat.err.cancelled`
 - `packages/web/src/components/chat/TurnView.tsx error row with 'Retry'`
 - `packages/web/src/i18n/pages/chat.ts: chat.input.cancel, chat.err.cancelled, chat.turn.retry`
+- `packages/node/src/chat-queue.ts cancel() (queued = free, running = charged); packages/node/src/api.ts POST /api/chat/cancel`
+- `packages/web/src/i18n/pages/chat.ts: chat.queue.stop_waiting, chat.queue.cancelled, chat.queue.cancelled_late`
 
-### AZ-020 - See the 'another test in progress' banner while someone else is testing
+### AZ-020 - See who holds the shared model, and that your own test is queued behind it
 
-**Goal:** A visitor understands why their test is queued when the shared model lock is held by another request.
+**Goal:** A visitor whose test is waiting behind the shared model can see that it is queued (not failed), who holds the model and for how long, and can stop waiting.
 
-**Priority:** P1 - **Area:** chat - **Automation:** manual
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
 
 **Preconditions**
 
@@ -771,18 +774,22 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Tab B shows a blue status box: 'Another test is running — try again in a moment.' with 'Another test in progress (node process {pid}) — started {n}s ago' and 'The model loads and unloads one knowledge at a time, so tests run one after another.' (tab A shows the same box while its own request holds the lock)
-- GET /api/chat/patches returns a non-null lock {owner:'pid:<node pid>', label:'chat:krx-all-2761', since} while tab A's request holds the runtime lock
-- Tab B's request is serialized (queued in-process behind A): it completes after tab A's answer with the correct result; the 'Another test was running so this request could not be handled. Try again in a moment.' error only appears if the lock wait exceeds 20 minutes
+- While tab A's OWN request holds the lock, tab A shows 'Your test has the shared model — started {n}s ago' (D3: it used to show the 'another test is running, try again in a moment' box about itself)
+- Tab B shows a blue status box: 'Someone else is testing on the shared model right now.' with 'Another test in progress (chat:krx-all-2761, node process {pid}) — started {n}s ago' and 'The model loads and unloads one knowledge at a time, so tests run one after another.'; the elapsed time ticks every second instead of freezing until the next 20 s poll
+- GET /api/chat/patches returns a non-null lock {owner:'pid:<node pid>', label:'chat:krx-all-2761', since, alive:true, stale:false, mine:true} plus `now` (the node clock) and `queue` while tab A's request holds the runtime lock
+- Tab B's own pending turn says so in the transcript: 'Queued behind another test — your question has not been lost.', the holder line, a ticking 'waiting {n}s', and a 'Stop waiting' button (GET /api/chat/status?request_id= reports state 'queued' with position 1 within ~1.5 s)
+- Tab B's request is serialized (queued in-process behind A): it completes after tab A's answer with the correct result; the 'The shared model stayed busy for too long, so this request gave up waiting.' error only appears if the lock wait exceeds 20 minutes (HTTP 503 + Retry-After, no longer a 500)
 - Once tab A finishes, the lock banner disappears from tab B on the next poll (≤ 20 s) and lock is null again
+- A lock file left behind by a node that was killed is NOT shown as a live test: lock.alive is false and the picker shows 'A previous test left the shared model marked as busy; the next test clears it automatically.'
 
 **Evidence**
 
-- `packages/node/src/runtime.ts lockHolder(), acquireLock() (waitMs 20 min), exclusive()/serial()`
-- `packages/node/src/api.ts GET /api/chat/patches (lock), POST /api/chat`
-- `packages/web/src/components/chat/KnowledgePicker.tsx lock alert, useSince()`
-- `packages/web/src/components/chat/util.ts lockOwnerLabel; ChatComposer INITIAL_CHIPS=8 / chat.samples.more`
-- `packages/web/src/i18n/pages/chat.ts: chat.lock.busy, chat.lock.holder, chat.lock.help, chat.time.s, chat.err.busy`
+- `packages/node/src/runtime.ts lockHolder() (alive/stale/mine), queueState(), serial() onEnter, acquireLock()`
+- `packages/node/src/chat-queue.ts ChatQueue (queued → running → gone, per-visitor tickets)`
+- `packages/node/src/api.ts GET /api/chat/patches (lock, now, queue), GET /api/chat/status, POST /api/chat/cancel`
+- `packages/web/src/pages/ChatPage.tsx useChatStatusQuery(1.5 s poll), queue view, cancel()`
+- `packages/web/src/components/chat/TurnView.tsx QueuePending; KnowledgePicker.tsx lock banner variants; util.ts lockKind/useSince/useTicker`
+- `packages/web/src/i18n/pages/chat.ts: chat.lock.busy, chat.lock.holder, chat.lock.mine, chat.lock.stale, chat.lock.help, chat.queue.*, chat.err.busy`
 
 ### AZ-021 - Handle the model-server-off state on Live test and Network
 
@@ -1001,6 +1008,69 @@ This document lists 124 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/pages/PatchPage.tsx Info superseded_by link (detail.patch.newer_version)`
 - `packages/web/src/i18n/pages/common.ts status.SUPERSEDED='Newer version available'`
 - `GET /api/chat/patches (4 testable items incl. SUPERSEDED)`
+
+### AZ-131 - A runaway answer is cut off with a plain explanation, not shown as an endless loop
+
+**Goal:** When the model gets stuck repeating itself, the visitor sees the useful part of the answer, one sentence explaining what happened, and can still open the raw text.
+
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- Model server available; krx-all-2761 testable on the node
+- No operator session needed
+
+**Steps**
+
+1. Open http://localhost:3402/chat/krx-all-2761, choose 'After only'
+2. Send the one-character prompt '드'
+3. Read the answer bubble
+4. Click 'Show the raw answer (all {n} characters)'
+
+**Expected**
+
+- The answer is cut at the point the repetition starts; underneath it a yellow note reads 'The model started repeating itself, so the answer is cut off here — that usually means the question is outside what this knowledge covers.' with 'showing {shown} of {raw} characters'
+- 'Show the raw answer' reveals the model's full output unchanged — nothing is ever deleted, only truncated
+- POST /api/chat returns patched.truncated = 'repetition' with shown_chars < raw_chars and raw_content carrying the full text
+- A short correct answer (e.g. '087600') is never flagged: truncated is null and no note is shown
+- An answer that merely ran out of budget shows 'The answer stopped at the length limit before it was finished.' (truncated = 'length', shown_chars = raw_chars)
+- The prompt is no longer auto-scored against an unrelated benchmark sample: '드' shows 'Free question — not auto-scored' instead of '✗ Wrong'
+
+**Evidence**
+
+- `packages/node/src/degenerate.ts detectDegenerate()/guardAnswer(); packages/node/test/degenerate.test.ts + fixtures/degenerate-corpus.json (293 real answers)`
+- `packages/node/src/runtime.ts chat()/completeDetailed() sampling + guard; DEFAULT_CHAT_SAMPLING stop ['\n\n\n\n','<think>']`
+- `packages/web/src/components/chat/TurnView.tsx Truncation; packages/web/src/i18n/pages/chat.ts chat.trunc.*`
+
+### AZ-132 - A sample question is sent exactly as the knowledge was trained, trailing space included
+
+**Goal:** Clicking a sample chip asks the model the prompt the knowledge was actually trained on — the marketplace never silently rewrites it.
+
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- Model server available; krx-all-2761 testable on the node
+
+**Steps**
+
+1. Open http://localhost:3402/chat/krx-all-2761
+2. Click the chip '종목코드 삼성전자' and look at the input box
+3. Send it
+
+**Expected**
+
+- The chip label stays trimmed ('종목코드 삼성전자') and carries a small ␣ marker whose tooltip reads 'The trailing space is part of the trained prompt — clicking inserts it, and it is sent, exactly as trained.'
+- The textarea contains '종목코드 삼성전자 ' with the trailing space, and POST /api/chat sends exactly that string
+- The turn is auto-scored against its own benchmark sample ('✓ Correct', expected 005930)
+- Sample chips of a knowledge whose benchmark format has no chat form show 'This knowledge was trained and verified in the completion form … the answer can differ from its verified score.' above the transcript (krx-all-2761-ep6 / -ep12)
+- Benchmark verification is unaffected: it still sends BenchmarkSpec.samples verbatim through /v1/completions with no stop sequences and no guard
+
+**Evidence**
+
+- `packages/web/src/components/chat/ChatComposer.tsx insert()/submit() (no trim), ␣ marker with aria-label unchanged`
+- `packages/node/src/market.ts matchBenchmarkSample() (trimmed equality first, containment only ≥ 8 chars); packages/web/src/components/chat/util.ts matchSample mirror`
+- `packages/node/src/runtime.ts verify() — sampling: null on every generation`
 
 ## Knowledge creator (operator)
 
