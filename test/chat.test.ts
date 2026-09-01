@@ -23,6 +23,8 @@ let seq = 0;
 const calls: string[] = [];
 const labels: string[] = [];
 const pathToId = new Map<string, string>();
+/** Every conversation the fake model was handed, in call order (base call first in compare mode). */
+const seen: ChatMessage[][] = [];
 const idOf = (path: string) => pathToId.get(path) ?? path;
 
 before(async () => {
@@ -42,9 +44,10 @@ before(async () => {
     isApplied: async (p: string) => table.has(p),
     applyRaw: async (p: string) => { calls.push(`apply:${idOf(p)}`); table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { calls.push(`remove:${idOf(p)}`); table.delete(p); return { code: 0, out: 'ok', err: '' }; },
-    chat: async (_m: ChatMessage[]): Promise<ChatResult> => {
+    chat: async (m: ChatMessage[]): Promise<ChatResult> => {
       const loaded = [...table.entries()].sort((a, b) => a[1] - b[1]).map(([p]) => idOf(p));
       calls.push(`chat[${loaded.join(',')}]`);
+      seen.push(m.map((x) => ({ role: x.role, content: x.content })));
       return { content: loaded.length ? `loaded=${loaded.join('+')}` : 'base', latency_ms: 1, model: 'demo-ngram-1b' };
     },
     exclusive: (label: string, fn: () => Promise<unknown>) => { labels.push(label); return realExclusive(label, fn); },
@@ -161,4 +164,36 @@ test('HTTP: patch_id OR patch_ids (exactly one); /api/chat/patches carries appli
   assert.equal(p3.teacher, id.address);
   const p4 = await (await fetch(`${url}/api/chat/patches`, { headers: { 'x-ngram-auth': authHeader(id, 'blob:x') } })).json() as typeof p;
   assert.equal(p4.lessons, undefined, 'a signature for another purpose is ignored');
+});
+
+/**
+ * Finding 1 — compare mode must not feed the patched answer back to the un-patched model. Each column replays its
+ * OWN earlier answers; both end with the same new question, and the node reports what it replayed.
+ */
+test('compare mode: messages_base and messages_patched are two conversations, one question', async () => {
+  const q = { role: 'user' as const, content: '2026 개정?' };
+  const basePast: ChatMessage[] = [{ role: 'user', content: '2025 개정?' }, { role: 'assistant', content: 'I do not know.' }, q];
+  const patchedPast: ChatMessage[] = [{ role: 'user', content: '2025 개정?' }, { role: 'assistant', content: 'Article 12 was amended.' }, q];
+  seen.length = 0;
+  const r = await N.market.chat({ patchIds: ['law-kr-2026'], messages: patchedPast, messagesBase: basePast, messagesPatched: patchedPast, mode: 'compare', visitor: 'ip:test' });
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0], basePast, 'the base column replays the base answer');
+  assert.deepEqual(seen[1], patchedPast, 'the patched column replays the patched answer');
+  assert.deepEqual(r.history, { base: 3, patched: 3, split: true });
+  // no split sent → both columns get `messages` (old clients keep working)
+  seen.length = 0;
+  const r2 = await N.market.chat({ patchIds: ['law-kr-2026'], messages: patchedPast, mode: 'compare', visitor: 'ip:test' });
+  assert.deepEqual(seen[0], patchedPast);
+  assert.deepEqual(seen[1], patchedPast);
+  assert.equal(r2.history.split, false);
+
+  // HTTP: the two arrays must end with the same question, or it is not a comparison
+  const url = `http://127.0.0.1:${PORT}`;
+  const post = (body: unknown) => fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const ok = await post({ patch_id: 'law-kr-2026', mode: 'compare', messages: patchedPast, messages_base: basePast, messages_patched: patchedPast });
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await ok.json() as { history: unknown }).history, { base: 3, patched: 3, split: true });
+  const bad = await post({ patch_id: 'law-kr-2026', mode: 'compare', messages: patchedPast, messages_base: [{ role: 'user', content: 'a different question' }] });
+  assert.equal(bad.status, 400);
+  assert.match(JSON.stringify(await bad.json()), /messages_base must end with the same message/);
 });

@@ -1243,6 +1243,50 @@ test.describe('Live test (shared runtime)', () => {
     await expect(quotaFooter(page)).toHaveText('Free trial 17/20 left this hour');
   });
 
+  test('AZ-134 Ask a follow-up in Compare mode and confirm each column replays only its own earlier answers', async ({ page, request }) => {
+    const origin = await freshVisitor(page);
+    const payloads: { messages: { role: string; content: string }[]; messages_base?: { role: string; content: string }[]; messages_patched?: { role: string; content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') payloads.push(r.postDataJSON()); });
+    await page.goto(`${origin}/chat/${K.final}`);
+    await expect(modeRadio(page, 'Compare')).toHaveAttribute('aria-checked', 'true');
+
+    // Turn 1 — the sample question: the base model gets it wrong, the knowledge gets it right.
+    await chip(page, '종목코드 픽셀플러스').click();
+    const first = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST' && r.status() === 200, { timeout: 10 * 60_000 });
+    const t1 = await sendPrompt(page);
+    await waitTurnDone(page, request, t1);
+    const r1 = await (await first).json() as { base: { content: string }; patched: { content: string }; history: { base: number; patched: number; split: boolean } };
+    await expect(bubble(t1, 'After loading')).toContainText('087600');
+    await expect(bubble(t1, 'After loading').getByText('✓ Correct')).toBeVisible();
+    expect(r1.history, 'one message, no history to split yet').toEqual({ base: 1, patched: 1, split: false });
+
+    // Turn 2 — a follow-up that only makes sense against the previous answer.
+    const FOLLOW = '방금 말한 종목코드를 숫자만 다시 알려줘';
+    const second = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST' && r.status() === 200, { timeout: 10 * 60_000 });
+    const t2 = await sendPrompt(page, FOLLOW);
+    await waitTurnDone(page, request, t2);
+    const r2 = await (await second).json() as { base: { content: string }; patched: { content: string }; history: { base: number; patched: number; split: boolean } };
+
+    // The wire: two conversations, one question. The base column replays what the BASE model said, never the
+    // patched answer — feeding it back is what used to make the "before" column repeat the knowledge's answer.
+    const ask = { role: 'user', content: FOLLOW };
+    expect(payloads[1].messages_base).toEqual([{ role: 'user', content: K.pixelPrompt }, { role: 'assistant', content: r1.base.content }, ask]);
+    expect(payloads[1].messages_patched).toEqual([{ role: 'user', content: K.pixelPrompt }, { role: 'assistant', content: r1.patched.content }, ask]);
+    expect(payloads[1].messages, 'messages stays the patched conversation, so a client that ignores the split is unchanged').toEqual(payloads[1].messages_patched);
+    expect(r2.history).toEqual({ base: 3, patched: 3, split: true });
+
+    // What the visitor sees: the un-patched column repeats its OWN (wrong) ticker; the patched one still answers 087600.
+    expect(r1.base.content, 'the base model does not know this ticker').not.toContain('087600');
+    await expect(bubble(t2, 'After loading')).toContainText('087600');
+    expect(await bubble(t2, 'Before loading').innerText(), 'the knowledge answer never reached the base column').not.toContain('087600');
+    await expect(page.getByTestId('chat-split-history')).toHaveText('On follow-up questions each column replays only its own earlier answers — the "Before loading" model is never shown what the knowledge answered.');
+
+    // The node refuses a pair that is not asking one question — a "comparison" of two different prompts is not one.
+    const bad = await api(request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.final, mode: 'compare', messages: [ask], messages_base: [{ role: 'user', content: 'a different question' }] } });
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toContain('messages_base must end with the same message');
+  });
+
   test('AZ-026 Live-test an older (superseded) version and jump to its detail page', async ({ page, request }) => {
     const origin = await freshVisitor(page);
     const addr = await nodeAAddress(request);

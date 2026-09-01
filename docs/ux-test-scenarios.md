@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (127)
+# Ainize UX Test Scenarios (128)
 
-This document lists 127 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 128 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -18,18 +18,18 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Persona | Count | P0 | P1 | P2 |
 |---|---:|---:|---:|---:|
-| Visitor (knowledge user) | 29 | 10 | 17 | 2 |
+| Visitor (knowledge user) | 30 | 11 | 17 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
 | Node operator / developer | 20 | 6 | 11 | 3 |
 | AI agent / automation | 14 | 6 | 7 | 1 |
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 3 | 1 | 2 | 0 |
-| **Total** | **127** | **42** | **67** | **18** |
+| **Total** | **128** | **43** | **67** | **18** |
 
 | Area | Count |
 |---|---:|
-| chat | 17 |
+| chat | 18 |
 | teach | 13 |
 | x402 | 13 |
 | agent | 7 |
@@ -56,7 +56,7 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 71 |
+| e2e | 72 |
 | cli | 25 |
 | api | 19 |
 | manual | 12 |
@@ -1114,6 +1114,42 @@ This document lists 127 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/node/src/chat-queue.ts (ticket registry: queued/running/gone, per-visitor, free cancel while queued); packages/node/src/runtime.ts lockHolder()/queueState()/serial() onEnter`
 - `packages/node/src/api.ts GET /api/chat/status, POST /api/chat/cancel, quota consumed only after a successful chat`
 - `packages/web/src/pages/ChatPage.tsx lockIsMine={queue?.state === 'running'} (RTK Query keeps `data` after a query is skipped, so reading `qs` directly made every later holder read as 'your test'); packages/web/src/components/chat/TurnView.tsx QueuePending; packages/web/src/components/chat/util.ts lockKind()`
+
+### AZ-134 - Ask a follow-up in Compare mode and confirm each column replays only its own earlier answers
+
+**Goal:** The comparison stays a comparison past turn 1: the un-patched column is never told it produced the knowledge's answer, so the 'Before loading' column keeps being wrong and the visitor sees the real difference the knowledge makes.
+
+**Priority:** P0 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- No operator session; quota not exhausted
+- Model server available; krx-all-2761 testable on node-a
+- Browser DevTools open on the Network panel
+
+**Steps**
+
+1. Open http://localhost:3402/chat/krx-all-2761 in the default 'Compare' view
+2. Click the chip '종목코드 픽셀플러스', press Enter and wait for both columns
+3. Type '방금 말한 종목코드를 숫자만 다시 알려줘' and press Enter
+4. Read both columns of the second turn and the line under the transcript
+5. In DevTools open the second POST http://localhost:3402/api/chat request and read its JSON payload
+
+**Expected**
+
+- Turn 1: 'Before loading' answers with a wrong ticker (✗ Wrong, Expected: 087600) and 'After loading' with 087600 (✓ Correct)
+- Turn 2's payload carries three arrays: `messages` and `messages_patched` replay the PATCHED answer of turn 1, `messages_base` replays the BASE answer of turn 1, and all three end with the same new question — POST /api/chat rejects (400) a `messages_base`/`messages_patched` whose last message differs from `messages`
+- The response reports what was replayed: history {base: 3, patched: 3, split: true}
+- Turn 2's 'Before loading' column repeats its OWN wrong ticker and does not contain 087600 — the un-patched model was never shown the knowledge's answer
+- Turn 2's 'After loading' column still answers 087600
+- A line under the transcript says 'On follow-up questions each column replays only its own earlier answers — the "Before loading" model is never shown what the knowledge answered.' (ko: '이어지는 질문에서 각 열은 자기가 한 답만 다시 보게 됩니다 …'), shown in Compare mode once a turn has finished
+
+**Evidence**
+
+- `packages/web/src/pages/ChatPage.tsx buildHistory(prior, text, column) + the compare-mode split sent as messages_base / messages_patched`
+- `packages/node/src/api.ts POST /api/chat (messages_base / messages_patched, both refined to end with the same message as messages); packages/node/src/market.ts chatInner() msgsBase / msgsPatched and the reported `history``
+- `packages/cli/src/commands/chat.ts chatRepl(): one transcript per column (state.transcript / state.baseTranscript)`
+- `packages/web/src/i18n/pages/chat.ts: chat.history.split`
 
 ## Knowledge creator (operator)
 

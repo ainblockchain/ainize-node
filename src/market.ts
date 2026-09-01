@@ -82,7 +82,16 @@ export interface Caller { address?: string | null; operator?: boolean }
 /** One live test: what to load, what to ask, and (D3) the client's id for it. */
 export interface ChatOpts {
   patchIds?: string[]; patchId?: string;
+  /** The conversation, ending with the question to answer. Used for both columns unless one is overridden below. */
   messages: ChatMessage[];
+  /**
+   * Compare mode with a history: each column must replay ITS OWN earlier answers. Feeding the patched answer back
+   * to the un-patched model teaches it the knowledge inside the very test meant to show it does not have it — from
+   * turn 2 the "before" column just repeats what the knowledge said. Both arrays end with the same question
+   * (enforced in POST /api/chat); when absent the column falls back to `messages`.
+   */
+  messagesBase?: ChatMessage[];
+  messagesPatched?: ChatMessage[];
   mode: 'base' | 'patched' | 'compare';
   maxTokens?: number; thinking?: boolean;
   visitor: string; caller?: Caller;
@@ -96,6 +105,8 @@ export interface ChatOutcome {
   applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
   applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[];
   benchmark_hits: Record<string, boolean | null>;
+  /** How many messages each column was actually sent, and whether the two conversations differed. */
+  history: { base: number; patched: number; split: boolean };
 }
 
 /** Shortest visitor question that may be matched to a benchmark sample by containment (D2). */
@@ -715,7 +726,12 @@ export class Market {
       if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw conflict(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
       targets.push({ id, entry, path: blob.path });
     }
-    const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
+    const clamp = (m: ChatMessage[]) => m.slice(-24).map((x) => ({ role: x.role, content: String(x.content).slice(0, 4000) }));
+    const msgs = clamp(opts.messages);
+    // One question, two conversations: the base call replays what the BASE model said before, the patched call what
+    // the patched model said. Same last question either way (POST /api/chat rejects a pair that disagrees on it).
+    const msgsBase = opts.messagesBase ? clamp(opts.messagesBase) : msgs;
+    const msgsPatched = opts.messagesPatched ? clamp(opts.messagesPatched) : msgs;
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
     const label = `chat:${ids.join('+')}`;
     // `onEnter` fires the instant the shared lock is ours, before any model call: that is both when the client's
@@ -738,7 +754,7 @@ export class Market {
             const r = await this.runtime.removeRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
             loaded[i] = false;
           }
-          base = await this.runtime.chat(msgs, chatOpts);
+          base = await this.runtime.chat(msgsBase, chatOpts);
         }
         if (opts.mode === 'patched' || opts.mode === 'compare') {
           // Apply everything in list order unless every patch is already on the table (single-patch fast path kept):
@@ -749,7 +765,7 @@ export class Market {
               appliedMs[i] = Date.now() - t0; loaded[i] = true;
             }
           }
-          patched = await this.runtime.chat(msgs, chatOpts);
+          patched = await this.runtime.chat(msgsPatched, chatOpts);
         }
       } finally {
         // Always leave the shared table the way we found it: drop what we added (reverse order), then put back what
@@ -788,6 +804,7 @@ export class Market {
         applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0], model: st.model,
         benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
         applied, benchmark_hits: hits,
+        history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
     }, { onEnter });
   }

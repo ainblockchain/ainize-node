@@ -376,20 +376,33 @@ export function buildApi(deps: ApiDeps): Router {
     };
   }));
   router.post('/api/chat', wrap(async (req) => {
+    const history = z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24);
+    /** The question both columns must answer: the last message of the array (compared verbatim across the three). */
+    const tail = (m?: { role: string; content: string }[]) => (m ? JSON.stringify(m[m.length - 1]) : null);
     const body = z.object({
       patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).min(1).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['base', 'patched', 'compare']).default('compare'),
-      messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
+      messages: history,
+      /**
+       * Compare mode with a history: the per-column conversations. `messages_base` replays what the BASE model
+       * answered, `messages_patched` what the patched model answered; a column without its own array falls back to
+       * `messages`. Replaying the patched answer to the un-patched model would teach it the knowledge mid-test.
+       */
+      messages_base: history.optional(), messages_patched: history.optional(),
       max_tokens: z.coerce.number().min(1).max(1024).default(200), thinking: z.boolean().default(false),
       /** D3: the client's own id for this live test — lets it ask GET /api/chat/status and cancel while queued. */
       request_id: z.string().min(1).max(64).optional(),
-    }).refine((b) => (b.patch_id ? 1 : 0) + (b.patch_ids ? 1 : 0) === 1, { message: 'exactly one of patch_id / patch_ids is required', path: ['patch_ids'] }).parse(req.body);
+    }).refine((b) => (b.patch_id ? 1 : 0) + (b.patch_ids ? 1 : 0) === 1, { message: 'exactly one of patch_id / patch_ids is required', path: ['patch_ids'] })
+      // A comparison is only a comparison if both columns are asked the same thing.
+      .refine((b) => !b.messages_base || tail(b.messages_base) === tail(b.messages), { message: 'messages_base must end with the same message as messages — both columns answer one question', path: ['messages_base'] })
+      .refine((b) => !b.messages_patched || tail(b.messages_patched) === tail(b.messages), { message: 'messages_patched must end with the same message as messages — both columns answer one question', path: ['messages_patched'] })
+      .parse(req.body);
     const operator = isOperator(req);
     const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
     // check (without consuming) first; a failed/hung request must not burn a free try
     if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'free live-test quota exhausted for this hour — buy the patch or run your own node', { quota_reset: market.chatQuotaResetsAt(visitor) });
     // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
-    const out = await market.chat({ ...body, requestId: body.request_id, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
+    const out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
     const remaining = operator ? Infinity : market.chatQuota(visitor);
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
   }));
