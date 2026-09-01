@@ -204,7 +204,7 @@ test('AZ-105 pre-flight: wrong fact will train, already-correct fact skipped, qu
   await expect(rows.nth(1)).toContainText('Already correct — skipped');
   await expect(pf.getByTestId('preflight-quota')).toContainText(new RegExp(`\\d+ of ${policy.limits.jobs_per_key_per_day} lessons left today for this key`));
   const queue = pf.getByTestId('queue-training');
-  await expect(queue).toHaveText('Queue training (1 corrections)');
+  await expect(queue).toHaveText('Queue training (1 correction)');   // English singular: the dictionary carries a _one variant
   await page.screenshot({ path: 'results/az-103-preflight.png', fullPage: true });
   await queue.click();
   await expect(pf).toBeHidden({ timeout: 30_000 });
@@ -221,9 +221,11 @@ test('AZ-106 stub lifecycle → READY: card copy, check lines, per-correction ta
   await expect(card).toBeVisible();
   await expect(card).toContainText('Your lesson:');
   await expect(card).toHaveAttribute('data-status', 'READY', { timeout: 3 * 60_000 });
-  // stub backend → "checks were simulated" (no "in the live model" claim); a gradient node says "…correct in the live model."
-  await expect(card.getByTestId('lesson-body')).toContainText(/It learned it — 2 of 2 answers correct( in the live model)?\./);
-  if (policy.backend === 'stub') await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — these checks were simulated, not measured in a live model.');
+  // Only an OFFLINE stub simulates the checks; a stub trainer on a node with a live model still measures, and must claim so.
+  const sim = policy.simulated_checks === true;
+  await expect(card.getByTestId('lesson-body')).toContainText(sim ? 'It learned it — 2 of 2 answers correct.' : 'It learned it — 2 of 2 answers correct in the live model.');
+  if (sim) await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — these checks were simulated, not measured in a live model.');
+  else await expect(card.getByTestId('lesson-simulated')).toHaveCount(0);
   await expect(card.getByTestId('lesson-status')).toHaveText('Ready · private');
   await expect(card).toContainText(/Unrelated questions unchanged: \d+\/\d+/);
   await expect(card).toContainText('Other phrasing answered correctly: 1/1');
@@ -287,7 +289,7 @@ test('AZ-109 Keep it private: 7-day token links, sha256 matches, recipe.json, RU
   await keep.getByTestId('keep-download').check();
   const npz = keep.getByTestId('dl-npz');
   await expect(npz).toBeVisible({ timeout: 30_000 });
-  await expect(keep).toContainText(/[\d.]+ MB · [\d,]+ memory entries · link valid for 7 days/);
+  await expect(keep).toContainText(/[\d.]+ MB · [\d,]+ memory (?:entry|entries) · link valid for 7 days/);
   const sha = (await keep.getByTestId('dl-sha').textContent())!.trim();
   expect(sha).toMatch(/^[0-9a-f]{64}$/);
   const npzHref = (await npz.getAttribute('href'))!;

@@ -78,7 +78,9 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
   const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'LISTED', 90000);
   const e = cat.find((x) => x.anchor.id === childId)!;
   assert.equal(e.status, 'LISTED', JSON.stringify(e.attestations));
-  assert.equal(e.attestations[0].verifier, B.cfg.identity.address);
+  // the dev chain is shared with whatever else runs on this machine (the demo cluster's verifiers watch the same app),
+  // so assert that B attested — not that it happened to be first
+  assert.ok(e.attestations.some((a) => a.verifier === B.cfg.identity.address), `B attested: ${JSON.stringify(e.attestations.map((a) => a.verifier))}`);
   // B cannot forge an attestation as A: rule rejects
   const r = await (B.ledger as AinLedger).ain.db.ref(`/apps/knowledge/market/attestations/${childId}/${A.cfg.identity.address}`).setValue({ value: { passed: true }, nonce: -1 });
   assert.ok(r?.result?.code !== 0 || /rule/i.test(r?.result?.message ?? ''), 'rule engine rejected forged attestation');

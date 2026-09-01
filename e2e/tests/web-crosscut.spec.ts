@@ -166,7 +166,7 @@ test.describe('runtime', () => {
     await ensureRuntime(request);
     // The demo node-a is never killed. The SIGTERM + restart happen for real on a private serving node built from the
     // same binary + web UI (name node-a, same public record, same shared model) that holds the pixelplus body.
-    const node = await startThrowawayNode('az089', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 1_320 });
+    const node = await startThrowawayNode('az089', { name: 'node-az089', stableId: 'az089', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 1_320 });
     try {
       await node.seed(PIXEL_NPZ, 'az089-seed');
       expect(await waitForRuntime(request, node.url), 'private node sees the shared model').toBe(true);
@@ -195,7 +195,7 @@ test.describe('runtime', () => {
       expect((await poll).ok()).toBe(true);
       const info = await api<{ node: { name: string } }>(request, '/api/info', { node: node.url });
       expect(info.status).toBe(200);
-      expect(info.body.node.name).toBe('node-a');
+      expect(info.body.node.name).toBe('node-az089');
       await expect(pickerItems(page)).toHaveCount(nItems);
       await expect(page.locator('header').getByText('AI Network', { exact: true })).toBeVisible();
 
@@ -536,7 +536,7 @@ test('AZ-086 Refuse to downgrade to an integrity-only attestation during the 15-
   // record) whose serving API is a closed port and that already holds the krx-all-2761 body; background verification is
   // off (verifier.auto=false), so the node cannot attest anything on its own — the shared vLLM is never paused.
   const attestsBefore = (await api<PatchDetail>(request, `/api/patches/${K.final}`)).body.attestations.length;
-  const vnode = await startThrowawayNode('az086', { name: 'node-a', roles: 'verifier', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 480 });
+  const vnode = await startThrowawayNode('az086', { name: 'node-az086', stableId: 'az086', roles: 'verifier', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 480 });
   try {
     const vtoken = await vnode.seed(KRX_NPZ, 'az086-seed', { schema: 'krx-ticker-codes', queries: 1, samples: [{ prompt: K.pixelPrompt, expect: K.pixelExpect }] });
     const verify = await api<{ error: string }>(request, `/api/patches/${K.final}/verify`, { method: 'POST', token: vtoken, node: vnode.url });
@@ -647,7 +647,7 @@ test('AZ-090 Reflect the model-server outage consistently on Network, Manage and
 
   // Steps 1–3 — the outage, for real, on a private node built from the same binary + web UI (name node-a) whose serving
   // API is a closed port; it owns one draft (body present) so its manage page has the load/unload section.
-  const off = await startThrowawayNode('az090', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', maxLifeS: 480 });
+  const off = await startThrowawayNode('az090', { name: 'node-az090', stableId: 'az090', roles: 'seller,serving', ledger: 'ain', maxLifeS: 480 });
   try {
     await off.seed(PIXEL_NPZ, 'az090-draft');
     const offAddr = (await api<{ node: { address: string } }>(request, '/api/info', { node: off.url })).body.node.address;
@@ -685,6 +685,22 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   const axe = await loadAxe(request);
   const axeReport: string[] = [];
   const critical: string[] = [];
+  /**
+   * Frozen backlog of SERIOUS violations the scenario asks to document rather than fix (`<page>: <rule>`). A serious
+   * violation on a page/rule pair that is not listed here fails the test, so the debt cannot grow silently while the
+   * critical gate stays green. Counts move with the catalog, so only the pair is pinned; the exact numbers are recorded
+   * in the annotation below.
+   *   color-contrast : the grey-on-white body/meta text of the ainize palette (documented in the scenario itself)
+   *   nested-interactive : the /ledger origin map is <svg role="img"> (asserted by step 4) holding <a> node boxes
+   */
+  const A11Y_BASELINE = new Set([
+    '/explore: color-contrast',
+    '/chat: color-contrast',
+    '/<addr>/krx-all-2761: color-contrast',
+    '/ledger: color-contrast',
+    '/ledger: nested-interactive',
+  ]);
+  const newSerious: string[] = [];
   const audit = async (p: Page, name: string) => {
     if (!axe) return;
     const v = await runAxe(p, axe);
@@ -692,6 +708,7 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
       const line = `${name}: ${x.id} (${x.impact}) x${x.nodes} → ${x.targets.join(' | ')}`;
       if (x.impact === 'critical') critical.push(line);
       if (x.impact === 'critical' || x.impact === 'serious') axeReport.push(line);
+      if (x.impact === 'serious' && !A11Y_BASELINE.has(`${name}: ${x.id}`)) newSerious.push(line);
     }
   };
 
@@ -785,6 +802,7 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   test.info().annotations.push({ type: 'note', description: 'Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario.' });
   expect(axe, 'axe-core available').toBeTruthy();
   expect(critical, 'no critical axe violations').toEqual([]);
+  expect(newSerious, 'no serious axe violation outside the documented backlog (A11Y_BASELINE)').toEqual([]);
 });
 
 test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entries, 331.7 MB, 25 AIN)', async ({ page, request }) => {

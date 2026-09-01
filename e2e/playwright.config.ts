@@ -14,6 +14,9 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests',
+  // snapshot the live cluster before the run and verify it is unchanged afterwards (packages/e2e/global-state.ts)
+  globalSetup: './global-state.ts',
+  globalTeardown: './global-teardown.ts',
   timeout: 10 * 60_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,
