@@ -1122,7 +1122,11 @@ test.describe('live model', () => {
     expect(learned.length).toBeLessThan(job.facts.length);
 
     await openLesson(page, context, key, job.id);
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Your lesson needs a bit more');
+    // node-u's trainer is a stub whatever the checks are measured against, so the headline is what the run WAS
+    // ("Demo run finished — nothing was trained"); a node that really trains keeps "Your lesson needs a bit more".
+    // The counts stay the measured ones here — only the training was fake, the checks ran against the live model.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Demo run finished — nothing was trained');
+    await expect(page.getByTestId('simulated')).toHaveText('Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder.');
     await expect(page.getByTestId('result-learned')).toHaveText(`It learned ${learned.length} of ${job.facts.length} questions.`);
 
     const block = page.getByTestId('missed-block');

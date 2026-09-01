@@ -7008,7 +7008,7 @@ not json at all
 - `packages/web/src/i18n/pages/teach.ts:110-113`
 - `Observed on node-u 2026-09-01: job 44eeef36 ended FAILED and the screen read "Your lesson: az-known-<TAG>" + "The model already answered this correctly, so there was nothing to teach." with only the dataset line and the three next-step cards`
 
-### AZ-177 - NEEDS_MORE: "Your lesson needs a bit more", with the misses listed
+### AZ-177 - NEEDS_MORE: the misses are listed and publishing stays shut
 
 **Goal:** When fewer than 75 % of the trained questions answer right, the node says NEEDS_MORE and the result screen says so in the title, counts the misses from the index-aligned questions (never from probe counts), lists what did not stick with what the model said instead, and blocks publishing while still allowing keep / re-train.
 
@@ -7029,11 +7029,11 @@ not json at all
 
 **Expected**
 
-- data-status=NEEDS_MORE; the title reads "Your lesson needs a bit more"
+- data-status=NEEDS_MORE; on this node (stub trainer) the title reads "Demo run finished — nothing was trained" — a node that really trains shows "Your lesson needs a bit more" for the same status
 - [data-testid=result-learned] reads "It learned <hits> of <total> questions." where <total> = job.facts.length and <hits> = the number of facts with hit === true — NOT checks.taught (which counts model probes, two per question)
 - The missed panel is headed "What it did not learn" with the hint "The ones it missed are listed below. Add another wording for them and train again — your dataset is saved." and a two-column table (Question / After) showing what the model answered instead
 - On this node the demo banner reads "Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder."
-- "Publish so others can use it" is disabled (status is not READY); "Keep it private" and "Change settings and re-train" are enabled
+- Publishing is disabled (status is not READY): on a demo node it is the [data-testid=publish-demo] "Publish anyway (demo)" link and it is disabled; "Keep it private" and "Change settings and re-train" are enabled
 - Where the check only sampled the questions, the line instead reads "Checked <k> of <n> questions in the live model — <hits> correct. During training all <n> were measured." and unmeasured questions are never counted as learned
 
 **Evidence**
@@ -7253,9 +7253,9 @@ prompt,answer,alt_prompt
 
 **Expected**
 
-- Title is "Your lesson needs a bit more" (teach.res.title_partial) when the node reports NEEDS_MORE; [data-testid=result-learned] reads "It learned {hits} of {total} questions." with hits < total
+- Title is "Demo run finished — nothing was trained" — node-u's trainer is a stub, so no run of it produced a trained lesson, whatever the checks were measured against (a node that really trains shows "Your lesson needs a bit more" for NEEDS_MORE); [data-testid=simulated] under it reads "Demo node — no real training happened. The answers below were measured in the live model, but the knowledge file itself is a placeholder." and [data-testid=result-learned] reads "It learned {hits} of {total} questions." with hits < total — these counts WERE measured, so they are not marked illustrative
 - [data-testid=missed-block] is present with the heading "What it did not learn", the hint "The ones it missed are listed below. Add another wording for them and train again — your dataset is saved.", and a two-column table (Question · After) with one row per fact whose hit===false; a fact never measured is in NEITHER table
-- The "What now?" panel still offers all three cards; [data-testid=go-publish] is DISABLED (j.status !== 'READY') while [data-testid=go-keep] is enabled (status NEEDS_MORE is allowed) and [data-testid=go-retrain] ("Change settings and re-train") is enabled
+- The "What now?" panel offers "Keep it private" (the filled button on a demo node) and "Train it again", with publishing demoted to the [data-testid=publish-demo] line under them; [data-testid=go-publish] is DISABLED (j.status !== 'READY') while [data-testid=go-keep] is enabled (status NEEDS_MORE is allowed) and [data-testid=go-retrain] ("Change settings and re-train") is enabled
 - POST /api/teach/jobs/:id/publish → 409 job_not_ready: "the lesson did not stick well enough — improve and retry first"
 
 **Evidence**

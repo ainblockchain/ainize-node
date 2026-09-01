@@ -1455,7 +1455,7 @@ test.describe('AZ-165+AZ-177 live model', () => {
     expect((await policy(api)).simulated_checks, 'the node has to be measuring against the live model').toBe(false);
   };
 
-  test('AZ-177 NEEDS_MORE: "Your lesson needs a bit more", with the misses listed', async ({ browser, request }) => {
+  test('AZ-177 NEEDS_MORE: the misses are listed and publishing stays shut', async ({ browser, request }) => {
     test.setTimeout(15 * 60_000);
     const key = newKey();
     const ds = await createDataset(request, key, az162Rows('AZ177'), `az177-${TAG}`);
@@ -1471,7 +1471,10 @@ test.describe('AZ-165+AZ-177 live model', () => {
       expect(job.status, 'the stub trainer teaches nothing, so a real check reports NEEDS_MORE').toBe('NEEDS_MORE');
 
       await expect(page.getByTestId('teach-lesson')).toHaveAttribute('data-status', 'NEEDS_MORE', { timeout: 60_000 });
-      await expect(page.locator('h1')).toHaveText('Your lesson needs a bit more');
+      // the trainer on this node is a stub even when the checks are measured for real, so the headline says what the
+      // run was; the NEEDS_MORE detail is the misses table below and data-status on the container
+      await expect(page.getByTestId('teach-lesson')).toHaveAttribute('data-status', 'NEEDS_MORE');
+      await expect(page.locator('h1')).toHaveText('Demo run finished — nothing was trained');
       const hits = job.facts.filter((f) => f.hit === true).length;
       const measured = job.facts.filter((f) => f.hit !== undefined).length;
       expect(measured, 'every question was measured, so the sentence is not the sampled one').toBe(job.facts.length);
