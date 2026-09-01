@@ -5,7 +5,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { PatchAnchor, PeerInfo, PatchManifest } from '@ngram/core';
+import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDatasetStatus, TeachDatasetSummary, TeachTrainingSpec } from '@ngram/core';
 
 export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; }
 export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string; manifest: PatchManifest | null; path: string | null; created_at: number; }
@@ -20,11 +20,30 @@ export interface TeachJobRow {
   progress: Record<string, unknown> | null; checks: Record<string, unknown> | null; error: string | null; container_pid: number | null;
   draft_id: string | null; patch_id: string | null; publish_status: string; reject_reason: string | null; parent_job: string | null;
   result: { sha256: string; rows: number; size_bytes: number } | null; blocked: string | null; name: string | null;
+  /** Teach mode v2: the dataset this job trained a slice of. NULL on v1 rows — they render as `source: 'derived'`. */
+  dataset_id: string | null; dataset_sha256: string | null; dataset_rows: number | null; dataset_source: string | null;
+  /** Effort preset + the resolved trainer knobs (v2); NULL on v1 rows. */
+  training: TeachTrainingSpec | null;
+  /** Sampled preflight accounting `{checked, of, known}` (v2). */
+  preflight: Record<string, unknown> | null;
   created_at: number; started_at: number | null; finished_at: number | null; updated_at: number; expires_at: number | null; cancel_requested: boolean;
   /** true while the lesson npz is (or may still be) applied to the shared serving model (set before applyRaw in CHECKING, cleared after removeRaw). */
   lesson_applied: boolean;
 }
 export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string }
+
+/** One dataset as persisted (teach mode v2). `dir` holds `source.<ext>`, `rows.jsonl` and `report.json`. */
+export interface TeachDatasetRecord {
+  id: string; owner: string; ip: string | null; name: string;
+  status: TeachDatasetStatus; source: TeachDatasetSource;
+  format: string | null; encoding: string | null; layout: string | null; delimiter: string | null;
+  has_header: boolean | null; columns: Record<string, string | number> | null;
+  sha256: string; revision: number; rows: number; invalid_rows: number; size_bytes: number;
+  source_bytes: number | null; source_name: string | null; source_sha256: string | null;
+  dir: string; summary: TeachDatasetSummary | null; parent_dataset: string | null;
+  retention: 'keep' | 'delete_after_training';
+  created_at: number; updated_at: number; expires_at: number | null; deleted_at: number | null;
+}
 export interface ContributorRow { address: string; name: string | null; payout_address: string | null; first_seen: number; last_seen: number; jobs: number; published: number; hidden: boolean; note: string | null }
 export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; reason: string | null; ts: number }
 /** `paying` = a transfer is in flight right now (claimed atomically by the payout runner); a row found `paying` at boot was interrupted mid-transfer. */
@@ -59,6 +78,18 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_teach_jobs_status ON teach_jobs(status);
       CREATE TABLE IF NOT EXISTS teach_quota (key TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key, day));
       CREATE TABLE IF NOT EXISTS teach_stats (job_id TEXT PRIMARY KEY, load_s REAL, steps INTEGER, step_s REAL, total_s REAL, rows INTEGER, ts REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS teach_datasets (
+        id TEXT PRIMARY KEY, owner TEXT NOT NULL, ip TEXT, name TEXT,
+        status TEXT NOT NULL, source TEXT NOT NULL,
+        format TEXT, encoding TEXT, layout TEXT, delimiter TEXT, has_header INTEGER, columns TEXT,
+        sha256 TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+        rows INTEGER NOT NULL, invalid_rows INTEGER NOT NULL DEFAULT 0,
+        size_bytes INTEGER NOT NULL, source_bytes INTEGER, source_name TEXT, source_sha256 TEXT,
+        dir TEXT NOT NULL, summary TEXT, parent_dataset TEXT,
+        retention TEXT NOT NULL DEFAULT 'keep',
+        created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL, deleted_at REAL);
+      CREATE INDEX IF NOT EXISTS idx_teach_datasets_owner ON teach_datasets(owner);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_teach_datasets_sha ON teach_datasets(owner, sha256, revision) WHERE deleted_at IS NULL;
       CREATE TABLE IF NOT EXISTS contributors (address TEXT PRIMARY KEY, name TEXT, payout_address TEXT, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
         jobs INTEGER NOT NULL DEFAULT 0, published INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, note TEXT);
       CREATE TABLE IF NOT EXISTS bans (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, reason TEXT, ts REAL NOT NULL);
@@ -67,9 +98,20 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_payouts_settle ON payouts(settle_hash);
       CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
     `);
-    // additive migrations (SQLite has no ADD COLUMN IF NOT EXISTS)
-    const cols = new Set((this.db.prepare('PRAGMA table_info(teach_jobs)').all() as { name: string }[]).map((c) => c.name));
-    if (!cols.has('lesson_applied')) this.db.exec('ALTER TABLE teach_jobs ADD COLUMN lesson_applied INTEGER NOT NULL DEFAULT 0');
+    // additive migrations (SQLite has no ADD COLUMN IF NOT EXISTS) — a v1 database opens unchanged and gains the columns
+    const add = (table: string, defs: Record<string, string>) => {
+      const have = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name));
+      for (const [name, decl] of Object.entries(defs)) if (!have.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`);
+    };
+    add('teach_jobs', {
+      lesson_applied: 'INTEGER NOT NULL DEFAULT 0',
+      // teach mode v2: which dataset (and which slice of it) this lesson trained
+      dataset_id: 'TEXT', dataset_sha256: 'TEXT', dataset_rows: 'INTEGER', dataset_source: 'TEXT',
+      training: 'TEXT', preflight: 'TEXT',
+    });
+    // teach mode v2 (design §D7): every visitor-facing p50/p90 filters on `backend`, so a stub node's 3-second jobs
+    // can never be presented as measured gradient training. `sentences` = rows x renderings, what actually drives cost.
+    add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
   }
 
   private closed = false;
@@ -214,24 +256,30 @@ export class Store {
       progress: j(r.progress), checks: j(r.checks), error: (r.error as string) ?? null, container_pid: (r.container_pid as number) ?? null,
       draft_id: (r.draft_id as string) ?? null, patch_id: (r.patch_id as string) ?? null, publish_status: (r.publish_status as string) ?? 'none', reject_reason: (r.reject_reason as string) ?? null,
       parent_job: (r.parent_job as string) ?? null, result: j(r.result), blocked: (r.blocked as string) ?? null, name: (r.name as string) ?? null,
+      dataset_id: (r.dataset_id as string) ?? null, dataset_sha256: (r.dataset_sha256 as string) ?? null,
+      dataset_rows: (r.dataset_rows as number) ?? null, dataset_source: (r.dataset_source as string) ?? null,
+      training: j(r.training), preflight: j(r.preflight),
       created_at: r.created_at as number, started_at: (r.started_at as number) ?? null, finished_at: (r.finished_at as number) ?? null, updated_at: r.updated_at as number,
       expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested, lesson_applied: !!r.lesson_applied,
     };
   }
   insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied'>) {
     this.db.prepare(`INSERT INTO teach_jobs (id, contributor, contributor_name, ip, status, context, builds_on, facts, job_dir, npz_path, sha256, progress, checks, error, container_pid,
-      draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested,
+      dataset_id, dataset_sha256, dataset_rows, dataset_source, training, preflight)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(j.id, j.contributor, j.contributor_name, j.ip, j.status, JSON.stringify(j.context), j.builds_on ? 1 : 0, JSON.stringify(j.facts), j.job_dir, j.npz_path, j.sha256,
         j.progress ? JSON.stringify(j.progress) : null, j.checks ? JSON.stringify(j.checks) : null, j.error, j.container_pid, j.draft_id, j.patch_id, j.publish_status, j.reject_reason,
-        j.parent_job, j.result ? JSON.stringify(j.result) : null, j.blocked, j.name, j.created_at, j.started_at, j.finished_at, Date.now(), j.expires_at, j.cancel_requested ? 1 : 0);
+        j.parent_job, j.result ? JSON.stringify(j.result) : null, j.blocked, j.name, j.created_at, j.started_at, j.finished_at, Date.now(), j.expires_at, j.cancel_requested ? 1 : 0,
+        j.dataset_id ?? null, j.dataset_sha256 ?? null, j.dataset_rows ?? null, j.dataset_source ?? null,
+        j.training ? JSON.stringify(j.training) : null, j.preflight ? JSON.stringify(j.preflight) : null);
   }
   /** Partial update; JSON columns are re-encoded, `updated_at` is always bumped. */
   updateTeachJob(id: string, patch: Partial<Omit<TeachJobRow, 'id' | 'updated_at'>>) {
     const cols: string[] = []; const args: (string | number | null)[] = [];
     const enc = (k: string, v: unknown): string | number | null => {
       if (v === undefined || v === null) return null;
-      if (['context', 'facts', 'progress', 'checks', 'result'].includes(k)) return JSON.stringify(v);
+      if (['context', 'facts', 'progress', 'checks', 'result', 'training', 'preflight'].includes(k)) return JSON.stringify(v);
       if (typeof v === 'boolean') return v ? 1 : 0;
       return v as string | number;
     };
@@ -244,11 +292,12 @@ export class Store {
     const r = this.db.prepare('SELECT * FROM teach_jobs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return r ? this.rowToTeachJob(r) : null;
   }
-  listTeachJobs(opts: { contributor?: string; status?: string[]; draft_id?: string; limit?: number } = {}): TeachJobRow[] {
+  listTeachJobs(opts: { contributor?: string; status?: string[]; draft_id?: string; dataset_id?: string; limit?: number } = {}): TeachJobRow[] {
     const where: string[] = []; const args: (string | number)[] = [];
     if (opts.contributor) { where.push('lower(contributor) = ?'); args.push(opts.contributor.toLowerCase()); }
     if (opts.status?.length) { where.push(`status IN (${opts.status.map(() => '?').join(',')})`); args.push(...opts.status); }
     if (opts.draft_id) { where.push('draft_id = ?'); args.push(opts.draft_id); }
+    if (opts.dataset_id) { where.push('dataset_id = ?'); args.push(opts.dataset_id); }
     const sql = `SELECT * FROM teach_jobs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at ASC LIMIT ${Number(opts.limit ?? 500)}`;
     return (this.db.prepare(sql).all(...args) as Record<string, unknown>[]).map((r) => this.rowToTeachJob(r));
   }
@@ -258,15 +307,84 @@ export class Store {
     const r = this.db.prepare('SELECT count FROM teach_quota WHERE key = ? AND day = ?').get(key, day) as { count: number } | undefined;
     return r?.count ?? 0;
   }
-  teachQuotaBump(key: string, day: string) {
-    this.db.prepare('INSERT INTO teach_quota (key, day, count) VALUES (?, ?, 1) ON CONFLICT(key, day) DO UPDATE SET count = count + 1').run(key, day);
+  /** `n` defaults to 1 so every v1 call site is unchanged; rows/bytes quotas bump by the amount actually spent. */
+  teachQuotaBump(key: string, day: string, n = 1) {
+    this.db.prepare('INSERT INTO teach_quota (key, day, count) VALUES (?, ?, ?) ON CONFLICT(key, day) DO UPDATE SET count = count + ?').run(key, day, n, n);
   }
 
-  putTeachStat(s: { job_id: string; load_s: number | null; steps: number | null; step_s: number | null; total_s: number | null; rows: number | null }) {
-    this.db.prepare('INSERT OR REPLACE INTO teach_stats (job_id, load_s, steps, step_s, total_s, rows, ts) VALUES (?, ?, ?, ?, ?, ?, ?)').run(s.job_id, s.load_s, s.steps, s.step_s, s.total_s, s.rows, Date.now());
+  putTeachStat(s: { job_id: string; load_s: number | null; steps: number | null; step_s: number | null; total_s: number | null; rows: number | null; backend?: string | null; rows_trained?: number | null; sentences?: number | null }) {
+    this.db.prepare('INSERT OR REPLACE INTO teach_stats (job_id, load_s, steps, step_s, total_s, rows, backend, rows_trained, sentences, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(s.job_id, s.load_s, s.steps, s.step_s, s.total_s, s.rows, s.backend ?? null, s.rows_trained ?? null, s.sentences ?? null, Date.now());
   }
-  teachStats(limit = 50): { total_s: number }[] {
-    return this.db.prepare('SELECT total_s FROM teach_stats WHERE total_s IS NOT NULL ORDER BY ts DESC LIMIT ?').all(limit) as { total_s: number }[];
+  /**
+   * Measured lessons, newest first. `backend` filters what a visitor may be shown (design §D7): rows written before the
+   * migration have `backend IS NULL` and are treated as 'gradient' — a stub node has no legitimate gradient history, so
+   * asking for 'gradient' there returns nothing rather than three-second jobs dressed up as training.
+   */
+  teachStats(limit = 50, backend: 'gradient' | 'stub' | 'any' = 'gradient'): { total_s: number; load_s: number | null; steps: number | null; rows_trained: number | null; sentences: number | null }[] {
+    const where = backend === 'any' ? '' : backend === 'gradient' ? "AND (backend = 'gradient' OR backend IS NULL)" : "AND backend = 'stub'";
+    return this.db.prepare(`SELECT total_s, load_s, steps, rows_trained, sentences FROM teach_stats WHERE total_s IS NOT NULL ${where} ORDER BY ts DESC LIMIT ?`).all(limit) as { total_s: number; load_s: number | null; steps: number | null; rows_trained: number | null; sentences: number | null }[];
+  }
+
+  // ------------------------------------------------------------ teach datasets (teach mode v2)
+  private rowToTeachDataset(r: Record<string, unknown>): TeachDatasetRecord {
+    const j = (v: unknown) => (typeof v === 'string' && v ? JSON.parse(v) : null);
+    return {
+      id: r.id as string, owner: r.owner as string, ip: (r.ip as string) ?? null, name: (r.name as string) ?? '',
+      status: r.status as TeachDatasetStatus, source: r.source as TeachDatasetSource,
+      format: (r.format as string) ?? null, encoding: (r.encoding as string) ?? null, layout: (r.layout as string) ?? null, delimiter: (r.delimiter as string) ?? null,
+      has_header: r.has_header === null || r.has_header === undefined ? null : !!r.has_header, columns: j(r.columns),
+      sha256: r.sha256 as string, revision: r.revision as number, rows: r.rows as number, invalid_rows: (r.invalid_rows as number) ?? 0, size_bytes: (r.size_bytes as number) ?? 0,
+      source_bytes: (r.source_bytes as number) ?? null, source_name: (r.source_name as string) ?? null, source_sha256: (r.source_sha256 as string) ?? null,
+      dir: r.dir as string, summary: j(r.summary), parent_dataset: (r.parent_dataset as string) ?? null,
+      retention: ((r.retention as string) ?? 'keep') as 'keep' | 'delete_after_training',
+      created_at: r.created_at as number, updated_at: r.updated_at as number, expires_at: (r.expires_at as number) ?? null, deleted_at: (r.deleted_at as number) ?? null,
+    };
+  }
+  insertTeachDataset(d: Omit<TeachDatasetRecord, 'updated_at'> & { updated_at?: number }) {
+    this.db.prepare(`INSERT INTO teach_datasets (id, owner, ip, name, status, source, format, encoding, layout, delimiter, has_header, columns, sha256, revision, rows, invalid_rows,
+      size_bytes, source_bytes, source_name, source_sha256, dir, summary, parent_dataset, retention, created_at, updated_at, expires_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(d.id, d.owner, d.ip, d.name, d.status, d.source, d.format, d.encoding, d.layout, d.delimiter,
+        d.has_header === null ? null : d.has_header ? 1 : 0, d.columns ? JSON.stringify(d.columns) : null,
+        d.sha256, d.revision, d.rows, d.invalid_rows, d.size_bytes, d.source_bytes, d.source_name, d.source_sha256,
+        d.dir, d.summary ? JSON.stringify(d.summary) : null, d.parent_dataset, d.retention, d.created_at, d.updated_at ?? Date.now(), d.expires_at, d.deleted_at);
+  }
+  updateTeachDataset(id: string, patch: Partial<Omit<TeachDatasetRecord, 'id' | 'updated_at'>>) {
+    const cols: string[] = []; const args: (string | number | null)[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      args.push(v === undefined || v === null ? null : ['columns', 'summary'].includes(k) ? JSON.stringify(v) : typeof v === 'boolean' ? (v ? 1 : 0) : (v as string | number));
+    }
+    if (!cols.length) return;
+    cols.push('updated_at = ?'); args.push(Date.now());
+    args.push(id);
+    this.db.prepare(`UPDATE teach_datasets SET ${cols.join(', ')} WHERE id = ?`).run(...args);
+  }
+  getTeachDataset(id: string): TeachDatasetRecord | null {
+    const r = this.db.prepare('SELECT * FROM teach_datasets WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToTeachDataset(r) : null;
+  }
+  listTeachDatasets(opts: { owner?: string; status?: string[]; includeDeleted?: boolean; limit?: number } = {}): TeachDatasetRecord[] {
+    const where: string[] = []; const args: (string | number)[] = [];
+    if (opts.owner) { where.push('lower(owner) = ?'); args.push(opts.owner.toLowerCase()); }
+    if (opts.status?.length) { where.push(`status IN (${opts.status.map(() => '?').join(',')})`); args.push(...opts.status); }
+    else if (!opts.includeDeleted) where.push("status != 'deleted'");
+    const sql = `SELECT * FROM teach_datasets ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT ${Number(opts.limit ?? 500)}`;
+    return (this.db.prepare(sql).all(...args) as Record<string, unknown>[]).map((r) => this.rowToTeachDataset(r));
+  }
+  /** Owner-scoped dedup (design §D3): re-uploading identical bytes returns the caller's OWN dataset, never a stranger's. */
+  findTeachDatasetBySha(owner: string, sha256: string): TeachDatasetRecord | null {
+    const r = this.db.prepare("SELECT * FROM teach_datasets WHERE lower(owner) = ? AND sha256 = ? AND status != 'deleted' ORDER BY revision DESC LIMIT 1").get(owner.toLowerCase(), sha256) as Record<string, unknown> | undefined;
+    return r ? this.rowToTeachDataset(r) : null;
+  }
+  /** Tombstone: the files are removed by the caller, the row stays so a lesson can say "the dataset was deleted by its owner". */
+  deleteTeachDataset(id: string, now = Date.now()) {
+    this.db.prepare("UPDATE teach_datasets SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+  }
+  countTeachDatasets(owner: string): number {
+    const r = this.db.prepare("SELECT COUNT(*) AS n FROM teach_datasets WHERE lower(owner) = ? AND status != 'deleted'").get(owner.toLowerCase()) as { n: number } | undefined;
+    return r?.n ?? 0;
   }
 
   private rowToContributor(r: Record<string, unknown>): ContributorRow {

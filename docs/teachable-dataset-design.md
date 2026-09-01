@@ -1499,3 +1499,105 @@ support by the presence of `sampled` on the `eval` event and fall back.
    v1 dictionary (합니다체 throughout, no jargon). Please skim before they are frozen into e2e assertions.
 5. **Publish default on stub nodes.** This design suggests `publish: 'never'` unless a node is explicitly a demo node,
    which would change the current teachable dev-node config (`publish: 'auto'`).
+
+---
+
+## CHANGES — PR-D1 (core + node: the dataset pipeline, 2026-09-01)
+
+Implements §6, §7.1–§7.3, §8, §9 (limits), §10 (progress/ETA), §11 (re-train, retention, sweep) and §12 (gate ordering,
+sampling, quotas) — the plan's PR-D1 through PR-D5 landed as one change because the store, the service, the API and the
+worker cannot be split without leaving the tree red. No UI, no trainer change (PR-D6), no CLI verbs (PR-D9).
+
+**Files.** `packages/core/src/{types,config}.ts` · `packages/core/test/config.test.ts` (new) ·
+`packages/node/src/teach-dataset.ts` (new, pure parser) · `teach-datasets.ts` (new, service) · `teach-error.ts` (new) ·
+`teach-samples.ts` (new) · `store.ts` · `market.ts` · `teach.ts` · `teach-recipe.ts` · `teach-auth.ts` · `api.ts` ·
+`openapi.ts` · `index.ts` · `packages/node/test/{teach-dataset,teach-datasets}.test.ts` (new) · `teach.test.ts` (two
+expectations updated, see D7 below).
+
+### Deviations from the sections above
+
+1. **`TeachRowStatus` gains `over_cap`, `TeachDatasetSummary` gains `over_cap`.** §8.5 lists eight statuses and §9 has
+   visitor copy for a dataset over `dataset.maxRows` ("the first {max} were loaded"), but no status could carry it.
+   Without a ninth status those questions would have been dropped in silence, which G3 forbids.
+
+2. **`endingKey` drops the subject rather than always taking three tokens.** §8.5 says "last three whitespace tokens,
+   falling back to the last 8 characters for scripts without spaces". Taken literally, `{name} 종목코드는?` is two
+   tokens, so the key would be the whole question and the KRX group — the measurement this advisory exists to report —
+   would never fire. The implementation takes the last `min(3, tokens − 1)` tokens (always dropping the first, which is
+   the subject) and falls back to the last 8 characters only when there is no space at all.
+
+3. **Sample datasets are embedded in `teach-samples.ts`, not `src/samples/*.jsonl`.** The node runs from `dist/` and the
+   TypeScript build copies no assets; a sample that exists in the repo but not in production is worse than one that
+   lives in the module that defines it. The bytes served are still canonical `rows.jsonl`, so a downloaded sample
+   re-uploads to the same sha256.
+
+4. **`GET /api/teach/datasets/:id/download` is owner-or-operator only.** §7.2 also lists a save-token; nothing issues a
+   token for a dataset (save tokens are keyed on the `.npz` sha256), so accepting one would have meant inventing a
+   second token kind with no caller. Left out until a caller exists.
+
+5. **Bytes are charged on an idempotent re-upload; the dataset count is not.** §7.1 says a duplicate upload charges no
+   quota and §12.5 says bytes are charged before parsing. They cannot both hold for the same request — the bytes really
+   crossed the wire, and the byte quota is the denial-of-disk control. `ds:addr:` (datasets per day) and `keptPerKey`
+   are unchanged by a duplicate, which is what the idempotency promise is about.
+
+6. **The rows quota is charged at job creation, never at dataset creation.** §7.2 says a `PATCH … {rows_op}` charges
+   "only newly added questions", but `rowsPerKeyPerDay` is documented everywhere else as *questions trained per day*
+   ("questions left to teach on this node today"), and GPU-seconds are what it protects. Editing a dataset therefore
+   costs nothing; training it costs `selected.length`.
+
+7. **A dataset materialised from a legacy `{facts}` body skips the byte / dataset-count gate.** The chat door's own
+   `POST /api/teach/datasets` is gated normally, but a v1 client that only knows `POST /api/teach/jobs {facts}` cannot
+   see or react to `quota_dataset`, and G5 forbids a v1 regression. `jobsPerKeyPerDay` and the new `rowsPerKeyPerDay`
+   still bound that path.
+
+8. **The unique index is partial: `UNIQUE(owner, sha256, revision) WHERE deleted_at IS NULL`.** §6.5 has it
+   unconditional, which would make a tombstone permanently block re-uploading the same file — the opposite of what
+   "delete it and upload it again" promises.
+
+9. **`teach-auth.ts` gains one optional argument** (`verify(req, purpose, bodyOverride)`), used only by the multipart
+   upload route to sign `x-ngram-dataset-sha256` as the body (D14). §13 lists auth as untouched; this is additive and
+   every existing call site behaves exactly as before.
+
+10. **A lesson trained from an uploaded dataset takes the dataset's name; one frozen from a chat basket keeps the v1
+    `Lesson: {first prompt}` naming.** A file name is meaningful, `your-dataset-2026-09-01` is not, and the draft id is
+    derived from the lesson name.
+
+11. **Two `teach.test.ts` expectations were updated, as §D7 predicted.** `policy.limits` and `policy.timing` are no
+    longer exact-shape assertions (both blocks grew), and the `POST /api/teach/jobs` quota body now carries
+    `rows_remaining` / `rows_ip_remaining`. No behaviour those tests covered changed.
+
+### Called-out behaviour changes
+
+- **`timing` is filtered to `backend = 'gradient'`.** A stub node now reports `timing.samples: 0`,
+  `p50_s: null`, `position_eta_s: null` and `simulated: true`. Stub runs are still written to `teach_stats` (with
+  `backend`, `rows_trained`, `sentences`), so a node switched from stub to gradient can tell the two eras apart.
+- **`rowsPerJob` is derived, and stays at the floor** (8 gradient / 200 stub) until three gradient samples exist **and**
+  the trainer has answered with a `sampled` eval event — PR-D6 is what unblocks it. An operator `rows_per_job` override
+  disables the derivation and reports `rows_per_job_source: "operator"`.
+- **CHECKING is now sampled and budgeted** (`check.callBudget` 68, locality never trimmed). At 8 questions the call
+  sequence is identical to v1; above ~11 questions the taught check reports `sampled: {checked, of}` and no surface may
+  make a whole-dataset claim.
+- **The stub `.npz` now has one placeholder row per question** (it still copies the 픽셀플러스 fixture whole when a
+  question mentions it), so `result.rows` describes the file that was written.
+- **`checks.skipped`** is a new publish gate: turning the side-effect check off leaves the lesson usable and private but
+  refuses `publish-challenge` with `checks_failed` until `POST /:id/recheck` measures it.
+
+### Verified on the dev node (`$HOME/.ngram-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`)
+
+`curl` walkthrough: upload a 25-question CSV (`;`-free, header detected, `utf-8`, 3 questions flagged
+`shared_ending`) → 201 with the per-question report → paginated `/rows` → `POST /api/teach/jobs {dataset_id}` → 202 with
+`dataset` + `training` + `quota.rows_remaining` → stub training → READY → `/download` (round-trips: re-uploading the
+downloaded bytes returns **200** and the same id) → `/save` → `lesson.npz` (3.85 MB) and `recipe.json` carrying
+`lesson.dataset {sha256, rows, revision, source, trained_rows}` → `/retrain` (effort bumped to `thorough`, same dataset)
+→ operator `/api/me/teach/datasets` moderation view → v2 policy knobs set and cleared.
+
+**Dev-node note:** the shared vLLM on :8000 was unreachable during this session, so the node is configured with
+`stubOffline: true` — checks are simulated and every surface says so (`checks.simulated`, `note`). Remove that flag when
+:8000 is back if the dev node should exercise the real CHECKING path (it will then wait out the 15-minute grace whenever
+the model server is down, which is the designed behaviour).
+
+### Still owed (unchanged from §14)
+
+PR-D6 (trainer `facts_file` / `eval_sample` / scaled `max_contrast`) — until it lands the node keeps `rowsPerJob` at the
+floor and detects support by the absence of `sampled` on the `eval` event. PR-D7 / PR-D8 (web), PR-D9 (CLI verbs and the
+`teach status` dataset line), PR-D10 (AZ-123 onward + e2e).

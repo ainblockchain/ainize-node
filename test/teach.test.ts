@@ -222,8 +222,18 @@ test('policy: public, reports trainer/queue/limits/timing; visitor routes need a
   const p = await api('GET', '/api/teach/policy');
   assert.equal(p.status, 200);
   assert.equal(p.json.enabled, true); assert.equal(p.json.publish, 'review'); assert.equal(p.json.backend, 'gradient'); assert.equal(p.json.trainer, 'ready');
-  assert.deepEqual(p.json.limits, { facts_per_job: 8, jobs_per_key_per_day: 50, jobs_per_ip_per_day: 100, prompt_max: 400, answer_max: 200 });
-  assert.deepEqual(p.json.timing, { p50_s: null, p90_s: null, samples: 0 });
+  const limits = p.json.limits as Record<string, unknown>;
+  assert.equal(limits.facts_per_job, 8); assert.equal(limits.jobs_per_key_per_day, 50); assert.equal(limits.jobs_per_ip_per_day, 100);
+  assert.equal(limits.prompt_max, 400); assert.equal(limits.answer_max, 200);
+  // v2 limits are served, never hard-coded in a client; rows_per_job stays at the conservative floor until real runs were timed
+  assert.equal(limits.dataset_max_bytes, 4_000_000); assert.equal(limits.dataset_max_rows, 2000); assert.equal(limits.dataset_max_source_lines, 50_000);
+  assert.equal(limits.rows_per_job, 8); assert.equal(limits.rows_per_job_source, 'default');
+  assert.equal(limits.rows_per_key_per_day, 300); assert.equal(limits.rows_per_ip_per_day, 500); assert.equal(limits.datasets_per_key_per_day, 10);
+  assert.deepEqual(limits.formats, ['jsonl', 'json', 'csv', 'tsv', 'txt']); assert.equal(limits.declaration_rows, 100);
+  assert.deepEqual(p.json.timing, { p50_s: null, p90_s: null, samples: 0, backend: 'gradient', simulated: false, load_s_p50: null, s_per_row_p50: null, s_per_row_p90: null });
+  assert.deepEqual(p.json.effort, [{ id: 'quick', max_steps: 8, eval_every: 2 }, { id: 'balanced', max_steps: 20, eval_every: 2 }, { id: 'thorough', max_steps: 40, eval_every: 4 }]);
+  assert.deepEqual((p.json.queue as Record<string, unknown>).queued_rows, 0);
+  assert.equal((p.json.samples as { kind: string }[]).length, 3);
   assert.deepEqual(p.json.shares, { contributor: 0.7, lineage: 0.3 });
   assert.equal((await api('POST', '/api/teach/jobs', { facts: FACTS })).status, 401);
   assert.match((await api('POST', '/api/teach/jobs', { facts: FACTS })).json.error!, /^invalid_signature/);
@@ -261,7 +271,7 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   const r = await createJob(FACTS, {}, teacher, { 'x-forwarded-for': '203.0.113.77' });
   assert.equal(r.status, 202, r.text);
   assert.equal(r.json.job!.status, 'QUEUED'); assert.equal(r.json.job!.position, 0); assert.equal(r.json.job!.eta_s, null);
-  assert.deepEqual(r.json.quota, { key_remaining: 49, ip_remaining: 99 });
+  assert.deepEqual(r.json.quota, { key_remaining: 49, ip_remaining: 99, rows_remaining: 299, rows_ip_remaining: 499 });
   job1 = await waitFor(r.json.job!.id, ['READY']);
   const sp = spawns[spawns.length - 1];
   assert.deepEqual(sp.args.slice(0, 4), ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True']);

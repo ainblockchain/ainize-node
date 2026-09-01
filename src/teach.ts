@@ -14,16 +14,20 @@
  * `Runtime.exclusiveTry` (≤ 2 min wait, requeue instead of joining the long queue).
  */
 import { spawn as nodeSpawn, execFile } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { hashCanonical, readNpzMember, validateContributors, verifyMessage, writeNpz, type CatalogEntry, type Contributor, type TeachConfig } from '@ngram/core';
+import { deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, percentileOf, readNpzMember, validateContributors, verifyMessage, writeNpz,
+  type CatalogEntry, type Contributor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
 import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import type { Caller, Market } from './market.js';
-import type { Store, TeachFactRow, TeachJobRow } from './store.js';
+import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
+import { TeachError } from './teach-error.js';
+import { TeachDatasets } from './teach-datasets.js';
+import { canonicalBytes, endingKey, type CanonicalRow } from './teach-dataset.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
@@ -31,11 +35,25 @@ export type TeachStatus = 'QUEUED' | 'PREFLIGHT' | 'LOADING' | 'TRAINING' | 'EXP
   | 'FAILED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'ANNOUNCED' | 'EXPIRED';
 
 export interface TeachFact { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean }
-export interface TeachProgress { step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; started_at?: number }
+export interface TeachProgress {
+  step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; started_at?: number;
+  /** Which stage the rail is on. The big bar is always the real `step / max_steps` inside `train` — never a computed percent. */
+  phase?: 'load' | 'train' | 'check';
+  /**
+   * Stage-weighted (load 10 % / train 75 % / check 15 %) and clamped monotonic, for compact surfaces only. It is NOT a
+   * time estimate and no surface may label it as one.
+   */
+  percent?: number;
+  rows_total?: number; rows_touched?: number;
+  /** How many questions the trainer actually probed at the last evaluation, of how many trained. */
+  eval_sample?: { n: number; of: number };
+  elapsed_s?: number;
+}
 export interface TeachChecks {
   /** false when the serving model stayed unavailable for the whole grace period — nothing was measured, publish stays gated. */
   executed: boolean;
-  taught: { hits: number; total: number };
+  /** `sampled` is present when the dataset was too big to check whole — the copy must never make a whole-dataset claim. */
+  taught: { hits: number; total: number; sampled?: { checked: number; of: number } };
   heldout: { hits: number; total: number };
   parent_regression: { ok: boolean; hit: number; total: number };
   locality: { ok: boolean; same: number; total: number };
@@ -45,6 +63,8 @@ export interface TeachChecks {
   note?: string;
   /** true on a stub node without a model server: the numbers above were simulated, nothing was measured (UI: "Demo node — checks are simulated"). */
   simulated?: boolean;
+  /** The visitor turned the side-effect check off. Publish stays gated until `POST /:id/recheck` measures it. */
+  skipped?: true;
 }
 export interface TeachJob {
   id: string;
@@ -64,6 +84,9 @@ export interface TeachJob {
   draft_id?: string; patch_id?: string;
   publish_status: 'none' | 'pending_review' | 'rejected' | 'announced' | 'listed';
   reject_reason?: string; error?: string; parent_job?: string;
+  /** What this lesson was trained from. A v1 job renders `{id: null, source: 'derived', rows: facts.length}`. */
+  dataset?: TeachDatasetRef;
+  training?: TeachTrainingSpec;
   created_at: number; updated_at: number; started_at?: number; finished_at?: number; expires_at?: number;
 }
 export type TeachJobPublic = Pick<TeachJob, 'id' | 'status' | 'position' | 'eta_s'>;
@@ -74,9 +97,18 @@ export interface TeachPolicyView {
   trainer: 'ready' | 'busy' | 'paused';
   paused_reason?: string;
   backend: 'gradient' | 'stub';
-  queue: { depth: number; max: number; position_eta_s?: number | null };
-  limits: { facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; prompt_max: number; answer_max: number };
-  timing: { p50_s: number | null; p90_s: number | null; samples: number };
+  queue: { depth: number; max: number; position_eta_s?: number | null; queued_rows: number; queued_rows_max: number };
+  limits: {
+    facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; prompt_max: number; answer_max: number;
+    dataset_max_bytes: number; dataset_max_rows: number; dataset_max_source_lines: number;
+    rows_per_job: number; rows_per_job_source: 'default' | 'measured' | 'operator';
+    rows_per_key_per_day: number; rows_per_ip_per_day: number; datasets_per_key_per_day: number; dataset_ttl_days: number;
+    formats: string[]; declaration_rows: number;
+  };
+  /** Every field is null until ≥ 3 lessons were measured with `backend: 'gradient'`; a stub node reports `simulated`. */
+  timing: { p50_s: number | null; p90_s: number | null; samples: number; backend: 'gradient' | 'stub'; simulated: boolean; load_s_p50: number | null; s_per_row_p50: number | null; s_per_row_p90: number | null };
+  effort: { id: TeachEffort; max_steps: number; eval_every: number }[];
+  samples: { kind: string; name: string; rows: number }[];
   shares: { contributor: number; lineage: number };
   model: { id_M: string | null };
   applied: string[];
@@ -85,8 +117,7 @@ export interface TeachPolicyView {
   simulated_checks: boolean;
 }
 
-/** Visitor-facing error: `message` starts with the machine-readable code of spec §5.14. */
-export class TeachError extends Error { constructor(public status: number, message: string) { super(message); } }
+export { TeachError };
 
 export const PROMPT_MAX = 400;
 export const ANSWER_MAX = 200;
@@ -104,7 +135,13 @@ export const ACTIVE_JOBS_PER_KEY = 2;
 /** Model calls one interactive preflight may spend per live-test quota unit (8 facts + 3 context blobs used to cost one unit). */
 const PREFLIGHT_CALLS_PER_UNIT = 3;
 /** Minimum measured lessons before any duration is projected to visitors (spec §8.4). */
-export const ETA_MIN_SAMPLES = 3;
+export const ETA_MIN_SAMPLES = CORE_ETA_MIN_SAMPLES;
+/** Statuses that mean a lesson is in flight — a dataset they read must not be edited or deleted under them. */
+export const ACTIVE_JOB_STATUSES = ['QUEUED', 'PREFLIGHT', 'LOADING', 'TRAINING', 'EXPORTED', 'CHECKING'];
+/** kv flag: the trainer answered with a `sampled` eval, so it understands `eval_sample` and `facts_file` (design §16). */
+const TRAINER_SAMPLING_KEY = 'teach:trainer:eval_sample';
+/** Stage weights for the additional `progress.percent` (design §D5). */
+const PHASE_WEIGHT = { load: 0.10, train: 0.75, check: 0.15 };
 /**
  * Display names are public ("Taught by …"): no links/markup, no ASCII or Unicode control / bidi / zero-width characters
  * (an RTL override would render "Op‮erator" on chips, teacher pages and the immutable public record) and a minimal slur
@@ -168,7 +205,13 @@ export function slugify(s: string): string {
   return base.length >= 2 ? base : 'lesson';
 }
 const dayKey = (now: number) => new Date(now).toISOString().slice(0, 10);
-const percentile = (xs: number[], p: number) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1)))]; };
+const clampInt = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(v)));
+/** Deterministic 32-bit hash — the sampling order must be identical for the same `(dataset sha256, revision)`. */
+function seededOrder(seed: string, n: number): number[] {
+  const idx = [...Array(n).keys()];
+  const score = idx.map((i) => { const h = createHash('sha256').update(`${seed}:${i}`).digest(); return h.readUInt32BE(0); });
+  return idx.sort((a, b) => score[a] - score[b] || a - b);
+}
 
 interface PreflightFactResult { index: number; status: 'will_train' | 'already_known' | 'overlaps_listing' | 'invalid'; base_answer?: string; detail?: string }
 
@@ -189,12 +232,21 @@ export class TeachWorker {
   /** Jobs whose lesson may still be on the shared table (crash mid-CHECKING); restored at start or as soon as the model server answers. */
   private pendingRestore = new Set<string>();
   private lastReconcile = 0;
+  private lastDatasetSweep = 0;
   private readonly spawnFn: SpawnFn;
   private readonly execFn: ExecFn;
+
+  /** Datasets: the durable artifact every lesson is trained from (teach mode v2). */
+  readonly datasets: TeachDatasets;
 
   constructor(readonly market: Market, private readonly hooks: TeachHooks = {}) {
     this.spawnFn = hooks.spawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as ChildLike);
     this.execFn = hooks.exec ?? defaultExec;
+    this.datasets = new TeachDatasets({
+      store: market.store, dataDir: market.cfg.dataDir, cfg: () => this.cfg,
+      log: (level, message, data) => this.log(level, message, (data?.job_id as string) ?? null, data),
+      activeJobStatuses: ACTIVE_JOB_STATUSES,
+    });
   }
 
   get store(): Store { return this.market.store; }
@@ -317,20 +369,58 @@ export class TeachWorker {
     if (this.policyCache && Date.now() - this.policyCache.at < 10_000) return this.policyCache.value;
     const c = this.cfg;
     const tr = await this.trainerState();
-    const queued = this.store.listTeachJobs({ status: ['QUEUED', 'PREFLIGHT', 'TRAINING', 'EXPORTED', 'CHECKING'] });
-    const stats = this.store.teachStats(50).map((s) => s.total_s);
-    const p50 = percentile(stats, 0.5);
+    const queued = this.store.listTeachJobs({ status: ACTIVE_JOB_STATUSES });
+    // design §D7: only `backend = 'gradient'` samples may drive a visitor-facing number. On a stub node this list is
+    // empty by construction, so `timing` is all-null and `simulated` is true — three-second stub jobs never become an ETA.
+    const gradient = this.store.teachStats(50, 'gradient');
+    const stats = gradient.map((s) => s.total_s);
+    const p50 = percentileOf(stats, 0.5);
+    const enough = stats.length >= ETA_MIN_SAMPLES;
+    const rows = this.rowsPerJob();
     const st = await this.market.runtime.status();
+    const queuedRows = queued.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
     const value: TeachPolicyView = {
       enabled: c.enabled, publish: c.publish, trainer: tr.state, ...(tr.reason ? { paused_reason: tr.reason } : {}), backend: c.backend,
-      queue: { depth: queued.length, max: c.queueMax, position_eta_s: p50 !== null && stats.length >= ETA_MIN_SAMPLES ? Math.round((queued.length + 1) * p50) : null },
-      limits: { facts_per_job: c.factsPerJob, jobs_per_key_per_day: c.jobsPerKeyPerDay, jobs_per_ip_per_day: c.jobsPerIpPerDay, prompt_max: PROMPT_MAX, answer_max: ANSWER_MAX },
-      timing: { p50_s: p50, p90_s: percentile(stats, 0.9), samples: stats.length },
+      queue: {
+        depth: queued.length, max: c.queueMax,
+        // rows-weighted, not position-weighted: an 8-question job behind a 1000-question job is not "one lesson away"
+        position_eta_s: enough && p50 !== null ? Math.round((queued.length + 1) * p50) : null,
+        queued_rows: queuedRows, queued_rows_max: c.queuedRowsMax,
+      },
+      limits: {
+        facts_per_job: c.factsPerJob, jobs_per_key_per_day: c.jobsPerKeyPerDay, jobs_per_ip_per_day: c.jobsPerIpPerDay, prompt_max: PROMPT_MAX, answer_max: ANSWER_MAX,
+        dataset_max_bytes: c.dataset.maxBytes, dataset_max_rows: c.dataset.maxRows, dataset_max_source_lines: c.dataset.maxSourceLines,
+        rows_per_job: rows.rows, rows_per_job_source: rows.source,
+        rows_per_key_per_day: c.dataset.rowsPerKeyPerDay, rows_per_ip_per_day: c.dataset.rowsPerIpPerDay,
+        datasets_per_key_per_day: c.dataset.perKeyPerDay, dataset_ttl_days: c.dataset.ttlDays,
+        formats: ['jsonl', 'json', 'csv', 'tsv', 'txt'], declaration_rows: c.dataset.declarationRows,
+      },
+      timing: {
+        p50_s: enough ? p50 : null, p90_s: enough ? percentileOf(stats, 0.9) : null, samples: stats.length,
+        backend: 'gradient', simulated: c.backend === 'stub',
+        load_s_p50: enough ? rows.load_s_p50 : null, s_per_row_p50: enough ? rows.s_per_row_p50 : null, s_per_row_p90: enough ? rows.s_per_row_p90 : null,
+      },
+      effort: (['quick', 'balanced', 'thorough'] as TeachEffort[]).map((id) => ({ id, max_steps: c.effort[id].maxSteps, eval_every: c.effort[id].evalEvery })),
+      samples: this.datasets.samples().map((x) => ({ kind: x.kind, name: x.name, rows: x.rows })),
       shares: { contributor: c.contributorShare, lineage: this.market.cfg.market.royaltyShare },
       model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline,
     };
     this.policyCache = { at: Date.now(), value };
     return value;
+  }
+
+  /**
+   * How many questions one lesson may train here (design §D1). Derived from measured gradient runs and bounded by
+   * `trainer.timeoutMs`, so a legal dataset can never become a job that is always killed at the timeout; the floor is
+   * used until the fit exists AND the trainer has shown it evaluates a sample (design §16).
+   */
+  rowsPerJob(effort: TeachEffort = 'balanced') {
+    const c = this.cfg;
+    return deriveRowsPerJob(c, this.store.teachStats(50, 'gradient'), {
+      effort,
+      override: (c as { rowsPerJobOverride?: number }).rowsPerJobOverride ?? null,
+      trainerSupportsSampling: this.store.get(TRAINER_SAMPLING_KEY) === '1',
+    });
   }
   invalidatePolicy() { this.policyCache = null; this.trainerCache = null; }
 
@@ -352,6 +442,11 @@ export class TeachWorker {
       key_remaining: Math.max(0, c.jobsPerKeyPerDay - this.store.teachQuotaCount(`addr:${address.toLowerCase()}`, day)),
       ip_remaining: ip ? Math.max(0, c.jobsPerIpPerDay - this.store.teachQuotaCount(`ip:${ip}`, day)) : c.jobsPerIpPerDay,
     };
+  }
+  /** What a lesson costs: the v1 job caps plus the v2 question caps (a big dataset must exhaust rows before jobs). */
+  jobQuota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number; rows_remaining: number; rows_ip_remaining: number } {
+    const dq = this.datasets.quota(address, ip, now);
+    return { ...this.quota(address, ip, now), rows_remaining: dq.rows_remaining, rows_ip_remaining: dq.rows_ip_remaining };
   }
 
   // ------------------------------------------------------------ fact validation / overlap
@@ -386,7 +481,20 @@ export class TeachWorker {
     return Math.max(1, Math.ceil((input.facts.length + new Set(input.patchIds).size) / PREFLIGHT_CALLS_PER_UNIT));
   }
 
-  async preflight(input: { address: string; ip?: string; patchIds: string[]; facts: { prompt: string; answer: string; alt_prompt?: string }[] }): Promise<{ facts: PreflightFactResult[]; trainable: number; quota: { key_remaining: number; ip_remaining: number } }> {
+  /**
+   * Resolve `{dataset_id, offset?, limit?}` to the questions a preflight call should probe: at most `preflight.perCall`
+   * per call, and never more than `preflight.sampleRows` of a dataset per job (the visitor is told what was sampled).
+   */
+  preflightSlice(dataset: TeachDatasetRecord, offset = 0, limit?: number): { facts: { prompt: string; answer: string; alt_prompt?: string }[]; sampled: { checked: number; of: number }; offset: number } {
+    const rows = this.datasets.rows(dataset);
+    const c = this.cfg.preflight;
+    const start = Math.max(0, Math.min(offset, Math.max(0, rows.length - 1)));
+    const take = Math.min(limit ?? c.perCall, c.perCall, Math.max(0, c.sampleRows - start));
+    const slice = rows.slice(start, start + take);
+    return { facts: slice.map((r) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}) })), sampled: { checked: Math.min(rows.length, start + slice.length), of: rows.length }, offset: start };
+  }
+
+  async preflight(input: { address: string; ip?: string; patchIds: string[]; facts: { prompt: string; answer: string; alt_prompt?: string }[]; sampled?: { checked: number; of: number } }): Promise<{ facts: PreflightFactResult[]; trainable: number; quota: { key_remaining: number; ip_remaining: number }; sampled?: { checked: number; of: number } }> {
     const caller: Caller = { address: input.address };
     const out: PreflightFactResult[] = [];
     const todo: number[] = [];
@@ -419,7 +527,7 @@ export class TeachWorker {
       }
       out.sort((a, b) => a.index - b.index);
     }
-    return { facts: out, trainable: out.filter((f) => f.status === 'will_train').length, quota: this.quota(input.address, input.ip) };
+    return { facts: out, trainable: out.filter((f) => f.status === 'will_train').length, quota: this.quota(input.address, input.ip), ...(input.sampled ? { sampled: input.sampled } : {}) };
   }
 
   /**
@@ -487,58 +595,169 @@ export class TeachWorker {
     return /timeout|timed out|aborted|unreachable|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|not responding|chat failed: 5\d\d|completion failed: 5\d\d/i.test(msg);
   }
 
-  // ------------------------------------------------------------ job creation (spec §6.2 POST /api/teach/jobs)
+  // ------------------------------------------------------------ job creation (spec §6.2 POST /api/teach/jobs; design §7.3)
+  /**
+   * ONE path to a lesson, two doors. The body is `{dataset_id}` XOR the legacy `{facts}`; the legacy form materialises a
+   * dataset with `source: 'chat'` server-side, so there is no second code path to keep alive and a v1 client's lesson is
+   * just as re-trainable as an uploaded one.
+   *
+   * `job.facts[i]` stays the derived view of `dataset.rows[selected_indexes[i]]`, in order — that invariant is what
+   * lets every v1 consumer (the trainer's job.json, the checks, recipe.json, the CLI, the payout path) stay untouched.
+   */
   async createJob(input: {
     address: string; contributorName?: string; name?: string; ip?: string; patchIds: string[]; buildsOn: boolean;
-    facts: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string }[]; parentJob?: string;
+    facts?: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string }[];
+    datasetId?: string;
+    selectedIndexes?: number[];
+    training?: { effort?: TeachEffort; max_steps?: number; eval_every?: number; rows_limit?: number; row_offset?: number; check_side_effects?: boolean; use_alt?: boolean };
+    parentJob?: string;
   }): Promise<TeachJob> {
     const c = this.cfg;
     this.assertEnabled();
     this.assertNotBanned(input.address, input.ip);
-    if (!input.facts.length || input.facts.length > c.factsPerJob) throw new TeachError(400, `invalid: 1..${c.factsPerJob} corrections per lesson`);
-    for (const f of input.facts) { const bad = this.staticFactCheck(f); if (bad) throw new TeachError(400, `invalid: ${bad}`); }
     if (input.patchIds.length > 3) throw new TeachError(400, 'invalid: at most 3 context knowledges');
     const badName = checkDisplayName(input.contributorName); if (badName) throw new TeachError(400, `invalid: ${badName}`);
     const tr = await this.trainerState();
     if (tr.state === 'paused') throw new TeachError(503, `trainer_paused: ${tr.reason ?? 'training is paused'}`);
-    const ACTIVE = ['QUEUED', 'PREFLIGHT', 'TRAINING', 'EXPORTED', 'CHECKING'];
     const queueGate = () => {
-      const active = this.store.listTeachJobs({ status: ACTIVE });
+      const active = this.store.listTeachJobs({ status: ACTIVE_JOB_STATUSES });
       if (active.length >= c.queueMax) throw new TeachError(503, 'trainer_paused: the training queue is full — try again later');
+      const rowsWaiting = active.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
+      if (rowsWaiting >= c.queuedRowsMax) throw new TeachError(503, `trainer_paused: ${rowsWaiting} questions are already waiting on this node — try again later`);
       const mineActive = active.filter((j) => j.contributor.toLowerCase() === input.address.toLowerCase()).length;
       if (mineActive >= ACTIVE_JOBS_PER_KEY) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — wait for them to finish`);
     };
     queueGate();
-    // facts the model already answers (interactive preflight result) or that repeat a listing are dropped here
-    const kept: TeachFactRow[] = []; let overlaps = 0; let known = 0;
-    for (const f of input.facts) {
-      if (f.base_answer && normAnswer(f.base_answer).includes(normAnswer(f.answer))) { known++; continue; }
-      if (await this.overlapsListing(f)) { overlaps++; continue; }
-      kept.push({ prompt: f.prompt.trim(), answer: f.answer.trim(), ...(f.alt_prompt?.trim() ? { alt_prompt: f.alt_prompt.trim() } : {}), ...(f.base_answer ? { base_answer: f.base_answer } : {}) });
+
+    // ---- 1) resolve the input to a dataset and its questions
+    let dataset: TeachDatasetRecord;
+    if (input.datasetId) {
+      dataset = this.datasets.owned(input.datasetId, input.address);
+      if (dataset.status === 'deleted') throw new TeachError(404, 'dataset_not_found: that dataset was deleted');
+    } else {
+      const facts = input.facts ?? [];
+      if (!facts.length || facts.length > c.factsPerJob) throw new TeachError(400, `invalid: 1..${c.factsPerJob} corrections per lesson`);
+      for (const f of facts) { const bad = this.staticFactCheck(f); if (bad) throw new TeachError(400, `invalid: ${bad}`); }
+      // The chat basket IS the dataset (the owner's "대화형은 파일형의 전단계"): frozen here to canonical bytes, and from
+      // this line on an inline body and an uploaded file are byte-identical artifacts.
+      dataset = this.datasets.get(this.datasets.create({
+        owner: input.address, ip: input.ip, source: 'chat',
+        rows: facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) })),
+        name: input.name,
+      }).dataset.id)!;
     }
-    if (!kept.length) throw new TeachError(409, known >= overlaps ? 'already_known: the model already answers this correctly' : 'overlaps_listing: this knowledge is already sold on this node');
+    const all = this.datasets.rows(dataset);
+    if (!all.length) throw new TeachError(400, 'dataset_empty: this dataset has no questions left on this node');
+
+    // ---- 2) the training settings and the slice they select
+    const effort: TeachEffort = input.training?.effort ?? 'balanced';
+    const preset = c.effort[effort];
+    const cap = this.rowsPerJob(effort).rows;
+    const rowsLimit = input.training?.rows_limit;
+    if (rowsLimit !== undefined && rowsLimit > cap) {
+      throw new TeachError(400, `dataset_too_large: this node teaches up to ${cap} questions in one lesson`, { rows_limit: rowsLimit, max_rows: cap });
+    }
+    const offset = Math.max(0, input.training?.row_offset ?? 0);
+    const asked = input.selectedIndexes?.length
+      ? [...new Set(input.selectedIndexes)].filter((i) => Number.isInteger(i) && i >= 0 && i < all.length).sort((a, b) => a - b)
+      : all.map((_, i) => i).slice(offset, rowsLimit === undefined ? undefined : offset + rowsLimit);
+    if (!asked.length) throw new TeachError(400, 'invalid: none of the selected questions exist in this dataset');
+    // over the cap is an honest banner, not a rejection: the rest stay in the dataset for the next lesson
+    const selected = asked.slice(0, cap);
+    const useAlt = input.training?.use_alt !== false;
+    const training: TeachTrainingSpec = {
+      effort,
+      max_steps: clampInt(input.training?.max_steps ?? preset.maxSteps, 1, c.effort.thorough.maxSteps),
+      eval_every: clampInt(input.training?.eval_every ?? preset.evalEvery, 1, 100),
+      lr: c.effort.lr,                                   // never accepted from the client — an unmeasured knob is worse than no knob
+      ...(rowsLimit !== undefined ? { rows_limit: rowsLimit } : {}),
+      ...(offset ? { row_offset: offset } : {}),
+      check_side_effects: input.training?.check_side_effects !== false,
+      use_alt: useAlt,
+      selected_indexes: selected,
+    };
+
+    // ---- 3) drop what the model already answers (interactive preflight result) or what repeats a listing
+    const known = new Map<string, string>();
+    for (const f of input.facts ?? []) if (f.base_answer) known.set(`${f.prompt.trim()}\u0000${f.answer.trim()}`, f.base_answer);
+    const kept: TeachFactRow[] = []; const keptIndexes: number[] = [];
+    let overlaps = 0; let alreadyKnown = 0;
+    for (const [n, i] of selected.entries()) {
+      const r = all[i];
+      const base = known.get(`${r.prompt}\u0000${r.answer}`);
+      if (base && normAnswer(base).includes(normAnswer(r.answer))) { alreadyKnown++; continue; }
+      // the catalog scan is O(listings x samples) per question — bounded to the sampled head; the worker preflight
+      // re-checks the rest against the live model anyway
+      if (n < c.preflight.sampleRows && await this.overlapsListing(r)) { overlaps++; continue; }
+      kept.push({ prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(base ? { base_answer: base } : {}) });
+      keptIndexes.push(i);
+    }
+    if (!kept.length) throw new TeachError(409, alreadyKnown >= overlaps ? 'already_known: the model already answers this correctly' : 'overlaps_listing: this knowledge is already sold on this node');
+    training.selected_indexes = keptIndexes;
+
+    // ---- 4) quotas, then insert
     const targets = await this.contextTargets(input.patchIds, { address: input.address });
-    const q = this.quota(input.address, input.ip);
-    if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key');
-    if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address');
+    const q = this.jobQuota(input.address, input.ip);
+    if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
+    if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
+    if (kept.length > q.rows_remaining) throw new TeachError(429, `quota_rows: you have ${q.rows_remaining} of ${c.dataset.rowsPerKeyPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, rows_ip_remaining: q.rows_ip_remaining, limit: c.dataset.rowsPerKeyPerDay, asked: kept.length });
+    if (kept.length > q.rows_ip_remaining) throw new TeachError(429, `quota_rows: this address has ${q.rows_ip_remaining} of ${c.dataset.rowsPerIpPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, rows_ip_remaining: q.rows_ip_remaining, limit: c.dataset.rowsPerIpPerDay, asked: kept.length });
     const now = Date.now(); const day = dayKey(now);
     const id = randomUUID();
-    const name = (input.name?.trim() || `Lesson: ${kept[0].prompt.slice(0, 60)}`).slice(0, 80);
+    // an uploaded file's name is meaningful, a frozen chat basket's ("your-dataset-2026-09-01") is not — v1 naming stands there
+    const name = (input.name?.trim() || (input.datasetId ? dataset.name : '') || `Lesson: ${kept[0].prompt.slice(0, 60)}`).slice(0, 80);
     const contributorName = normalizeDisplayName(input.contributorName)?.slice(0, 40) ?? null;
     queueGate();   // again, synchronously right before the insert: the awaits above let concurrent requests pass the first check together
     this.store.insertTeachJob({
       id, contributor: input.address, contributor_name: contributorName, ip: input.ip ?? null, status: 'QUEUED',
       context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: null, npz_path: null, sha256: null, progress: null, checks: null, error: null,
       container_pid: null, draft_id: null, patch_id: null, publish_status: 'none', reject_reason: null, parent_job: input.parentJob ?? null, result: null, blocked: null, name,
+      dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training, preflight: null,
       created_at: now, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
     });
     this.store.teachQuotaBump(`addr:${input.address.toLowerCase()}`, day);
     if (input.ip) this.store.teachQuotaBump(`ip:${input.ip}`, day);
+    this.datasets.chargeRows(input.address, input.ip, kept.length, now);
+    this.datasets.markStatus(dataset.id, 'in_use');
     this.store.touchContributor(input.address, { ...(contributorName ? { name: contributorName } : {}), job: true });
     this.invalidatePolicy();
     // the prompt (job name) and the key stay out of the message: /api/events is public (data is operator-only there)
-    this.log('info', `lesson queued (${kept.length} correction(s), context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length });
+    this.log('info', `lesson queued (${kept.length} of ${dataset.rows} question(s), context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length, dataset_id: dataset.id });
     return this.view(this.store.getTeachJob(id)!);
+  }
+
+  /**
+   * Re-train from the same dataset (or a fork / another owned dataset). Same input, `parent_job` set, quota re-charged —
+   * this is what makes "Train it again" and "Add questions and continue" true.
+   */
+  async retrain(j: TeachJobRow, address: string, body: { dataset_id?: string; selected_indexes?: number[]; training?: { effort?: TeachEffort; max_steps?: number; eval_every?: number; rows_limit?: number; row_offset?: number; check_side_effects?: boolean; use_alt?: boolean }; name?: string; ip?: string }): Promise<TeachJob> {
+    const dsId = body.dataset_id ?? this.ensureDataset(j)?.id;
+    if (!dsId) throw new TeachError(409, 'dataset_not_found: this lesson has no dataset to train again');
+    const prev = j.training as TeachTrainingSpec | null;
+    const bump: Record<TeachEffort, TeachEffort> = { quick: 'balanced', balanced: 'thorough', thorough: 'thorough' };
+    const effort = body.training?.effort ?? (prev ? bump[prev.effort] : 'balanced');
+    return this.createJob({
+      address, contributorName: j.contributor_name ?? undefined, name: body.name ?? j.name ?? undefined, ip: body.ip,
+      patchIds: j.context, buildsOn: j.builds_on, datasetId: dsId,
+      selectedIndexes: body.selected_indexes ?? prev?.selected_indexes,
+      training: { ...body.training, effort }, parentJob: j.id,
+    });
+  }
+
+  /**
+   * Lazily give a v1 job a dataset (design G5): no bulk migration ever runs, but the first time its owner asks to
+   * download or re-train it the inline facts are written out as `rows.jsonl` with `source: 'derived'` and the four job
+   * columns are backfilled. Announced jobs are never touched.
+   */
+  ensureDataset(j: TeachJobRow): TeachDatasetRecord | null {
+    if (j.dataset_id) return this.store.getTeachDataset(j.dataset_id);
+    if (!j.facts.length) return null;
+    const rows: CanonicalRow[] = j.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) }));
+    const made = this.datasets.create({ owner: j.contributor, ip: j.ip ?? undefined, source: 'derived', rows, name: j.name ?? undefined });
+    const rec = this.datasets.get(made.dataset.id)!;
+    this.store.updateTeachJob(j.id, { dataset_id: rec.id, dataset_sha256: rec.sha256, dataset_rows: rec.rows, dataset_source: rec.source });
+    this.log('info', `lesson ${j.id} kept no dataset (taught before datasets existed) — one was written from its questions`, j.id, { dataset_id: rec.id });
+    return rec;
   }
 
   // ------------------------------------------------------------ views
@@ -549,17 +768,41 @@ export class TeachWorker {
       blocked: j.blocked, progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
       reject_reason: j.reject_reason ?? undefined, error: j.error ?? undefined, parent_job: j.parent_job ?? undefined,
+      dataset: this.datasetRef(j), ...(j.training ? { training: j.training } : {}),
       created_at: j.created_at, updated_at: j.updated_at, started_at: j.started_at ?? undefined, finished_at: j.finished_at ?? undefined, expires_at: j.expires_at ?? undefined,
     };
+    if (out.progress && j.started_at && !j.finished_at) out.progress = { ...out.progress, elapsed_s: Math.round((Date.now() - j.started_at) / 1000) };
     if (j.status === 'QUEUED') {
       const ahead = this.store.listTeachJobs({ status: ['QUEUED'] }).filter((x) => x.created_at < j.created_at).length + (this.current && this.current !== j.id ? 1 : 0);
       out.position = ahead;
-      const stats = this.store.teachStats(50).map((s) => s.total_s);
-      const p50 = percentile(stats, 0.5);
-      // spec §8.4: no projected duration before ≥ 3 measured lessons (the basket line applies the same rule)
-      out.eta_s = j.blocked === 'slot' || p50 === null || stats.length < ETA_MIN_SAMPLES ? null : Math.round((ahead + 1) * p50);
+      // design §10: no projected duration before ≥ 3 lessons measured on the GRADIENT backend — three 3-second stub
+      // jobs must never satisfy this, and a rows-aware fit is preferred over a global p50 over jobs of unrelated sizes.
+      const fit = this.rowsPerJob((j.training as TeachTrainingSpec | null)?.effort ?? 'balanced');
+      const stats = this.store.teachStats(50, 'gradient').map((x) => x.total_s);
+      const p50 = percentileOf(stats, 0.5);
+      const rows = j.facts.length || 1;
+      const passes = (j.training as TeachTrainingSpec | null)?.max_steps ?? this.cfg.effort.balanced.maxSteps;
+      const rowsFit = fit.s_per_row_p50 !== null && fit.samples >= ETA_MIN_SAMPLES ? (fit.load_s_p50 ?? 0) + passes * rows * fit.s_per_row_p50 : null;
+      const one = rowsFit ?? (stats.length >= ETA_MIN_SAMPLES ? p50 : null);
+      out.eta_s = j.blocked === 'slot' || one === null ? null : Math.round((ahead + 1) * one);
     }
     return out;
+  }
+
+  /** What a lesson was trained from. `id: null` on a v1 job — it still renders, publishes and pays out (design G5). */
+  private datasetRef(j: TeachJobRow): TeachDatasetRef {
+    const checks = j.checks as unknown as TeachChecks | null;
+    const training = j.training as TeachTrainingSpec | null;
+    if (!j.dataset_id) return { id: null, sha256: null, rows: j.facts.length, source: 'derived', trained_rows: j.facts.length };
+    const d = this.store.getTeachDataset(j.dataset_id);
+    return {
+      id: j.dataset_id, sha256: j.dataset_sha256, ...(d ? { revision: d.revision, name: d.name } : {}),
+      rows: j.dataset_rows ?? j.facts.length, source: (j.dataset_source ?? 'chat') as TeachDatasetSource,
+      trained_rows: j.facts.length,
+      ...(training?.selected_indexes ? { selected_indexes: training.selected_indexes } : {}),
+      ...(checks?.taught.sampled ? { sampled: checks.taught.sampled } : {}),
+      ...(!d || d.status === 'deleted' ? { deleted: true as const } : {}),
+    };
   }
   publicView(j: TeachJobRow): TeachJobPublic { const v = this.view(j); return { id: v.id, status: v.status, ...(v.position !== undefined ? { position: v.position } : {}), ...(v.eta_s !== undefined ? { eta_s: v.eta_s } : {}) }; }
   get(id: string): TeachJobRow | null { return this.store.getTeachJob(id); }
@@ -594,7 +837,9 @@ export class TeachWorker {
       this.cleanupFiles(j);
       this.finish(j.id, 'CANCELLED', { error: null, draft_id: null });
     }
-    this.log('info', `lesson ${j.id} cancelled by ${by}`, j.id);
+    // the dataset is deliberately NOT deleted — "your dataset is kept, so you can train it again" is only true because of this
+    this.datasets.markStatus(j.dataset_id, 'ready');
+    this.log('info', `lesson ${j.id} cancelled by ${by} — the dataset it was trained from is kept`, j.id);
     this.invalidatePolicy();
     return { ok: true, status: 'CANCELLED' };
   }
@@ -638,6 +883,7 @@ export class TeachWorker {
       this.store.updateTeachJob(j.id, { job_dir: null, npz_path: null });
       this.log('info', `files of ${j.status.toLowerCase()} lesson ${j.id} removed after ${this.cfg.draftTtlDays} days`, j.id);
     }
+    if (now - this.lastDatasetSweep > 60_000) { this.lastDatasetSweep = now; try { this.datasets.sweep(now); } catch (e) { this.log('warn', `dataset sweep failed: ${(e as Error).message}`); } }
   }
 
   /** publish_status announced → listed once the verifiers list the anchor (spec §6.5); cheap, runs every 30 s from tick(). */
@@ -655,6 +901,12 @@ export class TeachWorker {
 
   private finish(id: string, status: TeachStatus, extra: Partial<TeachJobRow> = {}) {
     this.store.updateTeachJob(id, { status, finished_at: Date.now(), blocked: null, ...extra });
+  }
+  /** A finished lesson releases its dataset: back to `ready`, or removed now when its owner asked for that. */
+  private releaseDataset(job: TeachJobRow) {
+    if (!job.dataset_id) return;
+    this.datasets.markStatus(job.dataset_id, 'ready');
+    this.datasets.afterTraining(job.dataset_id);
   }
 
   // ------------------------------------------------------------ the loop
@@ -774,7 +1026,13 @@ export class TeachWorker {
         const sha = await sha256File(npz);
         const size = statSync(npz).size;
         this.store.updateTeachJob(job.id, { status: 'EXPORTED', npz_path: npz, sha256: sha, result: { sha256: sha, rows: tr.done.rows, size_bytes: size }, facts: tr.facts, blocked: null });
-        this.store.putTeachStat({ job_id: job.id, load_s: tr.done.load_s ?? null, steps: tr.done.steps ?? null, step_s: tr.done.avg_step_s ?? null, total_s: tr.done.total_s ?? (job.started_at ? (Date.now() - job.started_at) / 1000 : null), rows: tr.done.rows });
+        // design §D7 (live bug fix): the backend is recorded, so a stub node's 3-second job can never be shown as
+        // measured gradient training. `sentences` = the renderings the trainer actually optimised — what drives cost.
+        this.store.putTeachStat({
+          job_id: job.id, load_s: tr.done.load_s ?? null, steps: tr.done.steps ?? null, step_s: tr.done.avg_step_s ?? null,
+          total_s: tr.done.total_s ?? (job.started_at ? (Date.now() - job.started_at) / 1000 : null), rows: tr.done.rows,
+          backend: this.cfg.backend, rows_trained: facts.length, sentences: tr.done.sentences ?? facts.length * 4,
+        });
         this.log('info', `exported ${tr.done.rows} memory entries (${(size / 1e6).toFixed(2)} MB, sha ${sha.slice(0, 12)}…)`, job.id);
         job = this.store.getTeachJob(job.id)!;
       }
@@ -789,6 +1047,7 @@ export class TeachWorker {
       const ratio = chk.checks.taught.total ? chk.checks.taught.hits / chk.checks.taught.total : 0;
       const status: TeachStatus = !chk.checks.executed || ratio >= TAUGHT_MIN_RATIO ? 'READY' : 'NEEDS_MORE';
       this.finish(job.id, status, { checks: chk.checks as unknown as Record<string, unknown>, facts: chk.facts, draft_id: draftId, expires_at: job.expires_at ?? Date.now() + this.cfg.draftTtlDays * 86_400_000 });
+      this.releaseDataset(job);
       // the private draft id stays out of the (public) message; operators see it in data
       this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
       this.checkWaitSince.delete(job.id);
@@ -796,6 +1055,7 @@ export class TeachWorker {
       if ((e as Error).message === STOPPING) { requeue(); return; }
       this.finish(job.id, 'FAILED', { error: (e as Error).message.slice(0, 500) });
       this.log('error', `lesson ${job.id} failed: ${(e as Error).message}`, job.id);
+      this.releaseDataset(job);
     } finally {
       this.current = null;
       this.child = null;
@@ -810,24 +1070,55 @@ export class TeachWorker {
     return true;
   }
 
-  /** PREFLIGHT: drop facts the model already answers with the context stack loaded (runtime down → keep the interactive result). */
+  /**
+   * PREFLIGHT: drop facts the model already answers with the context stack loaded (runtime down → keep the interactive
+   * result). Above `preflight.sampleRows` questions only a deterministic sample is probed — the sample is seeded by the
+   * dataset's own bytes, so re-training the same file always probes the same questions and nobody can re-roll.
+   */
   private async preflightJob(job: TeachJobRow): Promise<TeachFactRow[]> {
     if (this.offline) return job.facts.filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer))).map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
     const st = await this.market.runtime.status();
     if (!st.available) { this.log('warn', 'model server unavailable during preflight — keeping the interactive result', job.id); return job.facts; }
+    const probe = new Set(this.sampleIndexes(job, this.cfg.preflight.sampleRows));
     const targets = await this.contextTargets(job.context, 'worker');
-    const kept: TeachFactRow[] = [];
     const answers = await this.withStack(`teach:${job.id}:preflight`, targets, async () => {
-      const res: string[] = [];
-      for (const f of job.facts) res.push(await this.askChat(f.prompt));
+      const res = new Map<number, string>();
+      for (const i of [...probe].sort((a, b) => a - b)) res.set(i, await this.askChat(job.facts[i].prompt));
       return res;
     });
+    const kept: TeachFactRow[] = [];
     for (const [i, f] of job.facts.entries()) {
-      const base = answers[i];
-      if (normAnswer(base).includes(normAnswer(f.answer))) { this.log('info', `already known, skipped: ${f.prompt.slice(0, 40)}`, job.id); continue; }
+      const base = answers.get(i);
+      if (base === undefined) { kept.push(f); continue; }        // not sampled — kept, and counted as such below
+      if (normAnswer(base).includes(normAnswer(f.answer))) { this.log('info', `already known, skipped (question ${i + 1})`, job.id); continue; }
       kept.push({ ...f, base_answer: base });
     }
+    this.store.updateTeachJob(job.id, { preflight: { checked: probe.size, of: job.facts.length, known: job.facts.length - kept.length } });
     return kept;
+  }
+
+  /**
+   * Which questions a sampled step looks at (design §D4). Composition: what the trainer reported as missed first, then
+   * questions whose ending is shared with others (the most likely silent failure), then a deterministic fill.
+   * Seed is `sha256(dataset_sha256 + ':' + revision)` — NOT the job id: seeding by job id would let a contributor
+   * re-train until a lucky draw passes the gate.
+   */
+  private sampleIndexes(job: TeachJobRow, budget: number): number[] {
+    const n = job.facts.length;
+    if (budget >= n) return [...Array(n).keys()];
+    const d = job.dataset_id ? this.store.getTeachDataset(job.dataset_id) : null;
+    const seed = createHash('sha256').update(`${job.dataset_sha256 ?? job.id}:${d?.revision ?? 1}`).digest('hex');
+    const picked: number[] = [];
+    const add = (i: number) => { if (picked.length < budget && !picked.includes(i)) picked.push(i); };
+    for (const [i, f] of job.facts.entries()) if (f.hit === false) add(i);
+    const endings = new Map<string, number[]>();
+    for (const [i, f] of job.facts.entries()) {
+      const k = endingKey(f.prompt);
+      const g = endings.get(k); if (g) g.push(i); else endings.set(k, [i]);
+    }
+    for (const g of endings.values()) if (g.length >= 3) for (const i of g) add(i);
+    for (const i of seededOrder(seed, n)) add(i);
+    return picked.sort((a, b) => a - b);
   }
 
   // ------------------------------------------------------------ TRAINING
@@ -840,14 +1131,40 @@ export class TeachWorker {
     return out.slice(0, 8);
   }
 
+  /** Trainer knobs that scale with the question count (design §D15 / PR-D6). An older trainer ignores what it does not know. */
+  private trainerScale(rows: number) {
+    const c = this.cfg;
+    return {
+      max_contrast: clampInt(Math.ceil(rows / 2), 8, 64),
+      micro: rows < 32 ? 16 : 64,
+      eval_every_scaled: rows < 32 ? 2 : Math.ceil(rows / 32),
+      eval_sample_n: Math.min(rows, c.check.sampleRows),
+    };
+  }
+
   private async train(job: TeachJobRow): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const c = this.cfg; const dir = job.job_dir!;
     const st = await this.market.runtime.status();
     const modelId = st.model ?? 'Qwen3.8-Flash-Next';
+    const training = (job.training as TeachTrainingSpec | null);
+    const facts = job.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) }));
+    const scale = this.trainerScale(facts.length);
+    // The trained SLICE is streamed as its own file (design §D15); `facts` stays inline so a trainer that predates
+    // `facts_file` still works — unknown job.json keys are ignored by both.
+    writeFileSync(join(dir, 'facts.jsonl'), canonicalBytes(facts), { mode: 0o600 });
+    const seed = createHash('sha256').update(`${job.dataset_sha256 ?? job.id}`).digest('hex').slice(0, 16);
     const spec = {
-      facts: job.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) })),
-      contrast: await this.parentSamples(job), max_steps: c.trainer.maxSteps, eval_every: 2, lr: 2e-3, micro: 16, model: { id_M: modelId },
+      facts,
+      facts_file: `facts.jsonl`,
+      contrast: await this.parentSamples(job),
+      max_steps: training?.max_steps ?? c.trainer.maxSteps,
+      eval_every: training?.eval_every ?? scale.eval_every_scaled,
+      lr: training?.lr ?? c.effort.lr, micro: scale.micro, max_contrast: scale.max_contrast,
+      eval_sample: { n: scale.eval_sample_n, seed },
+      probe_kinds: ['qa'],
+      model: { id_M: modelId },
       job_id: job.id, contributor: job.contributor,
+      dataset: job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? facts.length, source: job.dataset_source ?? 'chat' } : undefined,
     };
     writeFileSync(join(dir, 'job.json'), JSON.stringify(spec, null, 1));
     if (c.backend === 'stub') return this.runStub(job, dir, modelId);
@@ -855,15 +1172,31 @@ export class TeachWorker {
     return this.runProcess(job, dir, 'docker', args);
   }
 
+  /**
+   * The additional stage-weighted `percent` (design §D5): the visible bar is always the real `step / max_steps`, this is
+   * for compact surfaces only. Clamped monotonic so an early stop or a re-eval cannot walk it backwards.
+   */
+  private bumpPercent(p: TeachProgress) {
+    const frac = p.max_steps > 0 ? Math.min(1, p.step / p.max_steps) : 0;
+    const computed = p.phase === 'check' ? (PHASE_WEIGHT.load + PHASE_WEIGHT.train) * 100 + PHASE_WEIGHT.check * 50
+      : p.phase === 'train' ? PHASE_WEIGHT.load * 100 + PHASE_WEIGHT.train * 100 * frac
+        : PHASE_WEIGHT.load * 100 * (p.load_s === undefined ? 0.5 : 1);
+    p.percent = Math.round(Math.max(p.percent ?? 0, computed));
+  }
+
   private handleEvent(job: TeachJobRow, ev: Record<string, unknown>, state: { facts: TeachFactRow[]; progress: TeachProgress; done: DoneEvent | null; error: string | null }) {
     const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+    state.progress.rows_total = state.progress.rows_total ?? job.facts.length;
     switch (ev.event) {
-      case 'load': state.progress.load_s = n(ev.secs); this.store.updateTeachJob(job.id, { progress: state.progress as unknown as Record<string, unknown> }); break;
+      case 'load': state.progress.load_s = n(ev.secs); state.progress.phase = 'load'; this.bumpPercent(state.progress); this.store.updateTeachJob(job.id, { progress: state.progress as unknown as Record<string, unknown> }); break;
       case 'baseline': state.progress.total = n(ev.total) ?? state.progress.total; state.progress.hits = n(ev.hits) ?? 0; break;
       case 'step': {
         state.progress.step = n(ev.step) ?? state.progress.step; state.progress.max_steps = n(ev.max_steps) ?? state.progress.max_steps;
         state.progress.loss = n(ev.loss); state.progress.hits = n(ev.hits) ?? state.progress.hits; state.progress.total = n(ev.total) ?? state.progress.total;
+        state.progress.rows_touched = n(ev.rows_touched) ?? n(ev.touched) ?? state.progress.rows_touched;
+        state.progress.phase = 'train';
         if (n(ev.secs) !== undefined) state.progress.avg_step_s = state.progress.avg_step_s === undefined ? n(ev.secs) : Math.round(((state.progress.avg_step_s * (state.progress.step - 1)) + n(ev.secs)!) / Math.max(1, state.progress.step) * 10) / 10;
+        this.bumpPercent(state.progress);
         this.store.updateTeachJob(job.id, { progress: state.progress as unknown as Record<string, unknown> });
         this.log('info', `step ${state.progress.step}/${state.progress.max_steps} loss ${state.progress.loss ?? '-'} hits ${state.progress.hits}/${state.progress.total}`, job.id, { progress: state.progress });
         break;
@@ -875,6 +1208,14 @@ export class TeachWorker {
           t.hit = f.hits === f.total; if (f.heldout_total) t.heldout_hit = f.heldout === f.heldout_total;
         }
         state.progress.hits = n(ev.hits) ?? state.progress.hits; state.progress.total = n(ev.total) ?? state.progress.total;
+        // a trainer that reports `sampled` understands `eval_sample`/`facts_file`; until one does, rowsPerJob stays at
+        // the floor (design §16) — this is the only signal the node has, and it is recorded once.
+        const sampled = ev.sampled as { n?: number; of?: number } | undefined;
+        if (sampled && n(sampled.n) !== undefined) {
+          state.progress.eval_sample = { n: n(sampled.n)!, of: n(sampled.of) ?? state.progress.rows_total ?? job.facts.length };
+          if (this.cfg.backend === 'gradient' && this.store.get(TRAINER_SAMPLING_KEY) !== '1') this.store.set(TRAINER_SAMPLING_KEY, '1');
+        }
+        this.bumpPercent(state.progress);
         this.store.updateTeachJob(job.id, { facts: state.facts, progress: state.progress as unknown as Record<string, unknown> });
         break;
       }
@@ -964,7 +1305,9 @@ export class TeachWorker {
     const fixture = this.hooks.fixtureNpz ?? DEFAULT_FIXTURE;
     const npz = join(dir, 'lesson.npz');
     const useFixture = existsSync(fixture) && job.facts.some((f) => f.prompt.includes('픽셀플러스'));
-    const rows = this.writeStubNpz(npz, useFixture ? fixture : null, existsSync(fixture) ? fixture : null, job.id);
+    // one deterministic placeholder row PER QUESTION, so `result.rows` describes the file that was actually written
+    // (design §1.1): nothing was learned, and every surface says so — but the count is not a lie.
+    const rows = this.writeStubNpz(npz, useFixture ? fixture : null, existsSync(fixture) ? fixture : null, job.id, job.facts.length);
     const facts = job.facts.map((f, i) => ({ fact: i, base_answer: f.base_answer ?? null, after_answer: f.answer, hit: true, heldout_hit: !!f.alt_prompt }));
     emit({ event: 'eval', step: 3, hits: state.progress.total, total: state.progress.total, heldout: facts.filter((f) => f.heldout_hit).length, heldout_total: facts.filter((f) => f.heldout_hit).length, facts: facts.map((f) => ({ fact: f.fact, hits: 2, total: 2, heldout: f.heldout_hit ? 1 : 0, heldout_total: f.heldout_hit ? 1 : 0, after_answer: f.after_answer })) });
     const total_s = Math.round((Date.now() - t0) / 100) / 10;
@@ -972,7 +1315,7 @@ export class TeachWorker {
       version: 1, trainer: 'stub', status: 'done', facts: job.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) })),
       sentences: samples.map((s, i) => ({ kind: 'qa', fact: i, prefix: s.prompt, target: ` ${s.expect}`.replace(/^ {2}/, ' '), is_target: true })),
       benchmark_samples: samples, contrast: [], heldout: job.facts.flatMap((f, i) => (f.alt_prompt ? [{ kind: 'qa', fact: i, prompt: f.alt_prompt, prefix: `Q: ${f.alt_prompt}\nA:${/^\d/.test(f.answer) ? ' ' : ''}` }] : [])),
-      hyper_params: { max_steps: 3, lr: 0, micro: 0, note: useFixture ? 'stub backend — copied the 픽셀플러스 fixture' : 'stub backend — 1 fixture row, no training happened' },
+      hyper_params: { max_steps: 3, lr: 0, micro: 0, note: useFixture ? 'stub backend — copied the 픽셀플러스 fixture' : `stub backend — ${rows} placeholder row(s), no training happened` },
       model: { id_M: modelId }, probes: {}, rows, load_s: 0.1, train_s: total_s, step: 3, converged: true, created_at: Date.now() / 1000,
     };
     writeFileSync(join(dir, 'recipe.json'), JSON.stringify(recipe, null, 1));
@@ -980,24 +1323,37 @@ export class TeachWorker {
     return { ok: true, done: state.done!, facts: state.facts, recipe };
   }
 
-  /** Copy the fixture (with a `teach_job` marker member so each lesson has its own sha256) or write a 1-row file. */
-  private writeStubNpz(dest: string, fullFixture: string | null, rowSource: string | null, jobId: string): number {
+  /**
+   * Copy the fixture (with a `teach_job` marker member so each lesson has its own sha256), or write `want` deterministic
+   * placeholder rows — one per question. A 500-question stub `.npz` must not look like a 1-row file OR like a real
+   * lesson: the row count is honest and `recipe.trainer = 'stub'` / `checks.simulated` travel with it everywhere.
+   */
+  private writeStubNpz(dest: string, fullFixture: string | null, rowSource: string | null, jobId: string, want = 1): number {
     const marker = { name: 'teach_job', descr: '|u1', shape: [jobId.length], body: Buffer.from(jobId, 'utf8') };
+    const n = Math.max(1, want);
     if (fullFixture) {
       const a = readNpzMember(fullFixture, 'addrs'), b = readNpzMember(fullFixture, 'before'), c = readNpzMember(fullFixture, 'after');
       writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: a.header.shape, body: a.body }, { name: 'before', descr: '<f4', shape: b.header.shape, body: b.body }, { name: 'after', descr: '<f4', shape: c.header.shape, body: c.body }, marker]);
       return a.header.shape[0];
     }
+    const base = BigInt(1 + (parseInt(jobId.replace(/-/g, '').slice(0, 6), 16) % 1_000_000));
     if (rowSource) {
       const a = readNpzMember(rowSource, 'addrs'), b = readNpzMember(rowSource, 'before'), c = readNpzMember(rowSource, 'after');
       const D = b.header.shape[1];
-      writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [1], body: a.body.subarray(0, 8) }, { name: 'before', descr: '<f4', shape: [1, D], body: b.body.subarray(0, 4 * D) }, { name: 'after', descr: '<f4', shape: [1, D], body: c.body.subarray(0, 4 * D) }, marker]);
-      return 1;
+      const addrs = Buffer.alloc(8 * n); const before = Buffer.alloc(4 * D * n); const after = Buffer.alloc(4 * D * n);
+      for (let r = 0; r < n; r++) {
+        addrs.writeBigInt64LE(a.body.readBigInt64LE(0) + BigInt(r), 8 * r);
+        b.body.copy(before, 4 * D * r, 0, 4 * D);
+        c.body.copy(after, 4 * D * r, 0, 4 * D);
+      }
+      writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [n], body: addrs }, { name: 'before', descr: '<f4', shape: [n, D], body: before }, { name: 'after', descr: '<f4', shape: [n, D], body: after }, marker]);
+      return n;
     }
-    const D = 160; const addr = Buffer.alloc(8); addr.writeBigInt64LE(BigInt(1 + (parseInt(jobId.slice(0, 6), 16) % 1_000_000)));
-    const before = Buffer.alloc(4 * D); const after = Buffer.alloc(4 * D); for (let i = 0; i < D; i++) after.writeFloatLE(0.01, 4 * i);
-    writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [1], body: addr }, { name: 'before', descr: '<f4', shape: [1, D], body: before }, { name: 'after', descr: '<f4', shape: [1, D], body: after }, marker]);
-    return 1;
+    const D = 160;
+    const addrs = Buffer.alloc(8 * n); const before = Buffer.alloc(4 * D * n); const after = Buffer.alloc(4 * D * n);
+    for (let r = 0; r < n; r++) { addrs.writeBigInt64LE(base + BigInt(r), 8 * r); for (let i = 0; i < D; i++) after.writeFloatLE(0.01, 4 * (D * r + i)); }
+    writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [n], body: addrs }, { name: 'before', descr: '<f4', shape: [n, D], body: before }, { name: 'after', descr: '<f4', shape: [n, D], body: after }, marker]);
+    return n;
   }
 
   // ------------------------------------------------------------ CHECKING (spec §8.3) — the only step besides preview that touches the serving model
@@ -1005,6 +1361,8 @@ export class TeachWorker {
     const c = this.cfg; const rt = this.market.runtime;
     const recipe = this.readTrainerRecipe(job.job_dir!);
     const facts = job.facts.map((f) => ({ ...f }));
+    const training = job.training as TeachTrainingSpec | null;
+    const sideEffects = training?.check_side_effects !== false;
     if (this.offline) {
       // simulated checks: the lesson is never applied, nothing is measured (stub backend on a node without a model server)
       this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
@@ -1041,37 +1399,62 @@ export class TeachWorker {
         let reverted = false;
         const checks: TeachChecks = { executed: true, taught: { hits: 0, total: 0 }, heldout: { hits: 0, total: 0 }, parent_regression: { ok: true, hit: 0, total: 0 }, locality: { ok: true, same: 0, total: c.locality.prompts.length }, reverted_and_reapplied: false, ok: false };
         try {
+          /*
+           * Call budget (design §D4). The live-model check costs a FIXED number of calls whatever the dataset size —
+           * the v1 census was already ~78 sequential calls at 8 questions, which at the only measured figure on this
+           * host (4.25 s per completion) is ~5.5 min of held runtime lock. The 12 locality prompts are never trimmed:
+           * they are the publish gate. What scales down instead is how many taught questions are re-asked.
+           */
+          const localityCost = sideEffects ? 2 * c.locality.prompts.length : 0;
+          const parentReserve = sideEffects && targets.length ? Math.min(c.check.parentSamplesMax, Math.max(0, c.check.callBudget - localityCost)) : 0;
+          let taughtBudget = Math.max(0, c.check.callBudget - localityCost - parentReserve);
+          const sample = this.sampleIndexes({ ...job, facts }, Math.min(facts.length, c.check.sampleRows));
           // 1) remove the context stack → clean table; locality baseline
           for (const t of [...targets].reverse()) if (wasApplied.get(t.path)) await rt.removeRaw(t.path);
           const pre: string[] = [];
-          for (const p of c.locality.prompts) pre.push(await this.askChat(p, 48));
+          if (sideEffects) for (const p of c.locality.prompts) pre.push(await this.askChat(p, 48));
           // 2) apply the lesson, measure (once more if the table reverted mid-way — serving restart)
           for (let attempt = 0; attempt < 2; attempt++) {
             if (this.stopped) throw new Error(STOPPING);
             this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
             const ap = await rt.applyRaw(lesson); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
             checks.taught = { hits: 0, total: 0 }; checks.heldout = { hits: 0, total: 0 };
-            for (const [i, f] of facts.entries()) {
+            let spent = 0; let measured = 0;
+            for (const [n, i] of sample.entries()) {
+              const f = facts[i];
+              const chatForm = n < c.check.chatFormRows;                  // only the head also gets the chat rendering
+              const wantAlt = chatForm && !!f.alt_prompt;
+              const cost = 1 + (chatForm ? 1 : 0) + (wantAlt ? 1 : 0);
+              if (spent + cost > taughtBudget) break;
+              spent += cost; measured++;
               const s = samples[i] ?? { prompt: `Q: ${f.prompt}\nA: `, expect: f.answer };
               const raw = await this.askRaw(s.prompt, 16); const rawHit = raw.startsWith(s.expect) || normAnswer(raw).startsWith(normAnswer(s.expect));
-              const chat = await this.askChat(f.prompt, 48); const chatHit = normAnswer(chat).includes(normAnswer(f.answer));
-              f.after_answer = chat; f.hit = rawHit || chatHit;
-              checks.taught.total += 2; checks.taught.hits += (rawHit ? 1 : 0) + (chatHit ? 1 : 0);
-              if (f.alt_prompt) { const alt = await this.askChat(f.alt_prompt, 48); f.heldout_hit = normAnswer(alt).includes(normAnswer(f.answer)); checks.heldout.total++; if (f.heldout_hit) checks.heldout.hits++; }
+              let chatHit = false;
+              if (chatForm) { const chat = await this.askChat(f.prompt, 48); chatHit = normAnswer(chat).includes(normAnswer(f.answer)); f.after_answer = chat; }
+              f.hit = rawHit || chatHit;
+              checks.taught.total += chatForm ? 2 : 1; checks.taught.hits += (rawHit ? 1 : 0) + (chatHit ? 1 : 0);
+              if (wantAlt) { const alt = await this.askChat(f.alt_prompt!, 48); f.heldout_hit = normAnswer(alt).includes(normAnswer(f.answer)); checks.heldout.total++; if (f.heldout_hit) checks.heldout.hits++; }
             }
-            const post: string[] = [];
-            for (const p of c.locality.prompts) post.push(await this.askChat(p, 48));
-            checks.locality.same = pre.filter((a, i) => a === post[i]).length;
-            checks.locality.ok = checks.locality.same >= c.locality.minSame;
+            // never a whole-dataset claim from a sampled check
+            if (measured < facts.length) checks.taught.sampled = { checked: measured, of: facts.length };
+            else delete checks.taught.sampled;
+            if (sideEffects) {
+              const post: string[] = [];
+              for (const p of c.locality.prompts) post.push(await this.askChat(p, 48));
+              checks.locality.same = pre.filter((a, i) => a === post[i]).length;
+              checks.locality.ok = checks.locality.same >= c.locality.minSame;
+            }
             const still = await rt.isApplied(lesson);
             if (still === false && attempt === 0) { reverted = true; this.log('warn', 'table reverted during the check (serving restart?) → re-apply & re-measure', job.id); continue; }
             break;
           }
           // 3) parent regression with the stack re-applied on top of the lesson
-          if (targets.length) {
+          if (sideEffects && targets.length) {
             for (const t of targets) { const ap = await rt.applyRaw(t.path); if (ap.code !== 0) throw new Error(`apply ${t.id} failed: ${ap.err || ap.out}`); }
+            let left = parentReserve;
             for (const t of targets) {
               for (const s of (t.entry.anchor.benchmark.samples ?? []).slice(0, 10)) {
+                if (left-- <= 0) break;
                 const got = await this.askRaw(s.prompt, 16);
                 checks.parent_regression.total++; if (got.startsWith(s.expect)) checks.parent_regression.hit++;
               }
@@ -1087,6 +1470,13 @@ export class TeachWorker {
           await this.reassertPinned();
         }
         checks.reverted_and_reapplied = reverted;
+        if (!sideEffects) {
+          // the visitor turned the check off: nothing was measured about side effects, so publish stays gated until
+          // `POST /:id/recheck` measures it — the lesson itself is unaffected and can still be kept private
+          checks.skipped = true; checks.locality = { ok: false, same: 0, total: c.locality.prompts.length };
+          checks.parent_regression = { ok: false, hit: 0, total: 0 };
+          checks.note = 'the side-effect check was turned off for this lesson — nothing was measured about unrelated answers';
+        }
         checks.ok = checks.locality.ok && checks.parent_regression.ok;
         return checks;
       }, { waitMs: 2 * 60_000 });
@@ -1117,10 +1507,12 @@ export class TeachWorker {
     const samples = [...(recipe.benchmark_samples?.length ? recipe.benchmark_samples : job.facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA: `, expect: f.answer })))];
     for (const h of recipe.heldout ?? []) { const f = job.facts[h.fact]; if (f?.heldout_hit && h.kind === 'qa' && h.prefix) samples.push({ prompt: h.prefix, expect: f.answer }); }
     const probe = { hits: checks.taught.hits, total: checks.taught.total, heldout_hits: checks.heldout.hits };
+    const ds = job.dataset_id ? this.store.getTeachDataset(job.dataset_id) : null;
+    const recipeDataset = job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? job.facts.length, revision: ds?.revision ?? 1, source: (job.dataset_source ?? 'chat') as TeachDatasetSource, ...(ds?.name ? { name: ds.name } : {}) } : undefined;
     // re-check of an existing draft (model server was down the first time): keep the id, refresh benchmark + probe
     const existing = job.draft_id ? this.store.getDraft(job.draft_id) : null;
     if (existing) {
-      this.market.updateDraft(existing.id, { benchmark: lessonBenchmark(existing.anchor.benchmark.schema, samples), recipe: anchorRecipe(recipe, modelId, probe) });
+      this.market.updateDraft(existing.id, { benchmark: lessonBenchmark(existing.anchor.benchmark.schema, samples), recipe: anchorRecipe(recipe, modelId, probe, recipeDataset) });
       return existing.id;
     }
     const benchmark = lessonBenchmark(`taught/${slug}-${hex}`, samples);
@@ -1128,7 +1520,9 @@ export class TeachWorker {
     const parents = job.builds_on ? job.context.filter((p) => listed.has(p)) : [];
     const anchor = await this.market.createDraft({
       id, name: job.name ?? `Lesson ${hex}`, description: '', model: { id_M: modelId }, benchmark,
-      recipe: anchorRecipe(recipe, modelId, probe),
+      recipe: anchorRecipe(recipe, modelId, probe, recipeDataset),
+      // hash-only on the anchor: three short fields, and the sha256 already identifies the exact bytes
+      ...(recipeDataset ? { dataset: { sha256: recipeDataset.sha256, rows: recipeDataset.rows, source: recipeDataset.source } } : {}),
       file: job.npz_path!, keepInPlace: true, parents, visibility: 'test', origin: 'teach', price: '0',
     });
     return anchor.id;
@@ -1138,7 +1532,7 @@ export class TeachWorker {
   recheck(j: TeachJobRow): { ok: true; status: 'EXPORTED' } {
     if (!['READY', 'NEEDS_MORE'].includes(j.status) || j.publish_status !== 'none') throw new TeachError(409, `job_not_ready: lesson is ${j.status} and cannot be re-checked`);
     const checks = j.checks as unknown as TeachChecks | null;
-    if (checks?.executed) throw new TeachError(409, 'job_not_ready: this lesson was already checked in the live model');
+    if (checks?.executed && !checks.skipped) throw new TeachError(409, 'job_not_ready: this lesson was already checked in the live model');
     if (!j.npz_path || !existsSync(j.npz_path)) throw new TeachError(409, 'job_not_ready: knowledge file is missing');
     this.checkWaitSince.delete(j.id);
     this.store.updateTeachJob(j.id, { status: 'EXPORTED', blocked: null, finished_at: null });
@@ -1174,6 +1568,7 @@ export class TeachWorker {
       job_id: j.id, draft_id: j.draft_id, name: j.name ?? '', model_id: modelId, sha256: j.sha256 ?? '', rows: j.result?.rows ?? 0, size_bytes: j.result?.size_bytes ?? 0, filename: this.filename(j),
       facts: j.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}), ...(f.hit !== undefined ? { hit: f.hit } : {}), ...(f.heldout_hit !== undefined ? { heldout_hit: f.heldout_hit } : {}) })),
       contributor: { address: j.contributor, ...(j.contributor_name ? { name: j.contributor_name } : {}) }, context_patch_ids: j.context, builds_on_context: j.builds_on,
+      ...(j.dataset_sha256 ? { dataset: { sha256: j.dataset_sha256, rows: j.dataset_rows ?? j.facts.length, revision: (j.dataset_id ? this.store.getTeachDataset(j.dataset_id)?.revision : 1) ?? 1, source: j.dataset_source ?? 'chat', trained_rows: j.facts.length } } : {}),
       checks: j.checks, created_at: j.created_at, node: { address: this.market.address, name: this.market.cfg.name, url: this.market.publicUrl },
     };
     return buildRecipeJson(tr, meta, draft?.anchor.benchmark ?? lessonBenchmark(`taught/${j.id.slice(0, 8)}`, tr.benchmark_samples ?? []));
@@ -1196,6 +1591,7 @@ export class TeachWorker {
     if (j.status !== 'READY') throw new TeachError(409, j.status === 'NEEDS_MORE' ? 'job_not_ready: the lesson did not stick well enough — improve and retry first' : `job_not_ready: lesson is ${j.status}`);
     const checks = j.checks as unknown as TeachChecks | null;
     if (!checks || !checks.executed) throw new TeachError(409, 'job_not_ready: this lesson has not been measured in the live model yet — run a re-check first');
+    if (checks.skipped) throw new TeachError(409, 'checks_failed: the side-effect check was turned off for this lesson — run the check now before publishing');
     if (!checks.ok) throw new TeachError(409, 'checks_failed: this lesson changed answers to unrelated questions or to the knowledge it builds on');
     const d = j.draft_id ? this.store.getDraft(j.draft_id) : null;
     if (!d) throw new TeachError(409, 'job_not_ready: draft is missing');
@@ -1307,7 +1703,7 @@ export class TeachWorker {
 
 interface DoneEvent {
   event: 'done'; rows: number; npz?: string; recipe?: string; hits: number; total: number; heldout?: number; heldout_total?: number; converged?: boolean; steps?: number;
-  load_s?: number; train_s?: number; avg_step_s?: number; total_s?: number;
+  load_s?: number; train_s?: number; avg_step_s?: number; total_s?: number; sentences?: number;
   facts?: { fact: number; base_answer?: string | null; after_answer?: string | null; hit?: boolean; heldout_hit?: boolean }[];
 }
 

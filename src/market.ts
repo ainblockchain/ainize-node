@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, canonicalJson, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
+  AinLedger, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
@@ -40,6 +40,8 @@ export interface CreateDraftInput {
   contributors?: Contributor[];
   /** 'teach' for visitor-taught knowledge; omitted for operator-registered drafts. */
   origin?: PatchOrigin;
+  /** Hash-only provenance of the dataset a taught lesson came from — the content is never published (design §D12). */
+  dataset?: PatchAnchor['dataset'];
 }
 
 /** Maximum number of knowledges one live test may load together (spec §6.3). */
@@ -49,6 +51,13 @@ export const MAX_CHAT_PATCHES = 3;
 export interface TeachSettings {
   enabled?: boolean; publish?: 'review' | 'auto' | 'never'; factsPerJob?: number; jobsPerKeyPerDay?: number; jobsPerIpPerDay?: number;
   queueMax?: number; contributorShare?: number; draftTtlDays?: number; pausedReason?: string | null; blockedTopics?: string | null;
+  /**
+   * Teach mode v2 limits (design §7.3). Flat keys over the nested `TeachConfig` blocks so a partial PATCH stays a
+   * partial PATCH — `rowsPerJob` here is an explicit override that DISABLES the measured derivation.
+   */
+  datasetMaxBytes?: number; datasetMaxRows?: number; rowsPerJob?: number;
+  rowsPerKeyPerDay?: number; rowsPerIpPerDay?: number; datasetsPerKeyPerDay?: number; datasetTtlDays?: number;
+  declarationRows?: number; queuedRowsMax?: number; checkCallBudget?: number;
 }
 export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
 
@@ -214,6 +223,7 @@ export class Market {
     const contributors = this.checkContributors(input.contributors);
     if (contributors.length) anchor.contributors = contributors;
     if (input.origin) anchor.origin = input.origin;
+    if (input.dataset) anchor.dataset = input.dataset;
     this.store.putDraft(anchor, blob.path);
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
@@ -859,10 +869,10 @@ export class Market {
 
   // ------------------------------------------------------------------ teach mode policy (config.json `teach` + operator overrides in kv `settings.teach`, spec §7.5)
   /** Effective teach config: defaults ← config.json `teach` ← operator overrides persisted in the kv store. */
-  teach(): TeachConfig & { pausedReason?: string; blockedTopics?: string } {
+  teach(): TeachConfig & { pausedReason?: string; blockedTopics?: string; rowsPerJobOverride?: number } {
     const base = teachConfig(this.cfg);
     const s = this.teachSettings();
-    const out: TeachConfig & { pausedReason?: string; blockedTopics?: string } = { ...base };
+    const out: TeachConfig & { pausedReason?: string; blockedTopics?: string; rowsPerJobOverride?: number } = { ...base };
     if (s.enabled !== undefined) out.enabled = s.enabled;
     if (s.publish !== undefined) out.publish = s.publish;
     if (s.factsPerJob !== undefined) out.factsPerJob = s.factsPerJob;
@@ -873,6 +883,19 @@ export class Market {
     if (s.draftTtlDays !== undefined) out.draftTtlDays = s.draftTtlDays;
     if (s.pausedReason) out.pausedReason = s.pausedReason;
     if (s.blockedTopics) out.blockedTopics = s.blockedTopics;
+    // v2: nested blocks are cloned before an override lands so the defaults object is never mutated
+    const ds: Partial<TeachConfig['dataset']> = {};
+    if (s.datasetMaxBytes !== undefined) ds.maxBytes = Math.min(s.datasetMaxBytes, DATASET_MAX_BYTES_CEILING);
+    if (s.datasetMaxRows !== undefined) ds.maxRows = s.datasetMaxRows;
+    if (s.rowsPerKeyPerDay !== undefined) ds.rowsPerKeyPerDay = s.rowsPerKeyPerDay;
+    if (s.rowsPerIpPerDay !== undefined) ds.rowsPerIpPerDay = s.rowsPerIpPerDay;
+    if (s.datasetsPerKeyPerDay !== undefined) ds.perKeyPerDay = s.datasetsPerKeyPerDay;
+    if (s.datasetTtlDays !== undefined) ds.ttlDays = s.datasetTtlDays;
+    if (s.declarationRows !== undefined) ds.declarationRows = s.declarationRows;
+    if (Object.keys(ds).length) out.dataset = { ...out.dataset, ...ds };
+    if (s.checkCallBudget !== undefined) out.check = { ...out.check, callBudget: s.checkCallBudget };
+    if (s.queuedRowsMax !== undefined) out.queuedRowsMax = s.queuedRowsMax;
+    if (s.rowsPerJob !== undefined) out.rowsPerJobOverride = s.rowsPerJob;
     return out;
   }
   /** Operator overrides only (what `PATCH /api/me/teach/policy` wrote). */

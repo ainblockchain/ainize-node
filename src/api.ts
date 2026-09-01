@@ -5,13 +5,13 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { randomBytes } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -20,6 +20,7 @@ import { ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './m
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
 import { ANSWER_MAX, creditedAddress, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
+import type { RowsOp } from './teach-datasets.js';
 import { PayoutError } from './payouts.js';
 import type { EventRow, TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
@@ -408,28 +409,181 @@ export function buildApi(deps: ApiDeps): Router {
   const factSchema = z.object({ prompt: z.string().min(1).max(PROMPT_MAX), answer: z.string().min(1).max(ANSWER_MAX), alt_prompt: z.string().max(PROMPT_MAX).optional(), base_answer: z.string().max(4000).optional() });
   const addressParam = (v: string): string => { if (!/^0x[0-9a-fA-F]{40}$/.test(v)) throw bad('address must be an AIN address (0x + 40 hex)'); return v; };
 
+  // ------------------------------------------------------------ teach mode — datasets (design §7.1–§7.2)
+  /**
+   * The upload multer is its OWN instance: `dest` under the teach directory, exactly one file, and a hard byte ceiling.
+   * The operator instance (4 GB) must never be reachable from a visitor route.
+   */
+  const datasetUpload = multer({ dest: join(market.cfg.dataDir, 'teach', 'incoming'), limits: { fileSize: DATASET_MAX_BYTES_CEILING, files: 1, fields: 12 } });
+  mkdirSync(join(market.cfg.dataDir, 'teach', 'incoming'), { recursive: true });
+  const dropTemp = (req: Request) => { const f = req.file?.path; if (f && existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* already gone */ } } };
+  const isMultipart = (req: Request) => (req.header('content-type') ?? '').toLowerCase().startsWith('multipart/');
+
+  /**
+   * The teach gate for uploads, registered BEFORE multer on the same chain (design §7.1 ordering rule): worker present →
+   * enabled → key/IP not banned → content-length → per-IP-per-minute limiter → byte quota. Registering the upload
+   * middleware first (the pattern `/api/patches` uses) would let a banned key write megabytes on every request.
+   */
+  const datasetGate = (req: Request, _res: Response, next: NextFunction) => {
+    try {
+      const t = needTeach();
+      // a multipart body cannot be covered by the v2 body hash, so the client signs the sha256 header instead (§D14)
+      const r = req as Request & { _teacher?: string | null };
+      if (r._teacher === undefined) r._teacher = isMultipart(req) ? teachAuth.verify(req, 'teach', req.header('x-ngram-dataset-sha256') ?? null) : teachAuth.verify(req);
+      const address = requireTeacher(req);
+      t.assertEnabled();
+      t.assertNotBanned(address, req.ip);
+      const bytes = isMultipart(req) ? Number(req.header('content-length') ?? 0) : Buffer.byteLength(JSON.stringify(req.body ?? {}));
+      t.datasets.gate(address, req.ip, bytes);
+      next();
+    } catch (e) { next(e); }
+  };
+
+  const rowSchema = z.object({ prompt: z.string().min(1).max(PROMPT_MAX), answer: z.string().min(1).max(ANSWER_MAX), alt_prompt: z.string().max(PROMPT_MAX).optional(), note: z.string().max(500).optional() });
+  const rowsOpSchema = z.union([
+    z.object({ op: z.literal('remove'), indexes: z.array(z.number().int().min(0)).min(1).max(2000) }),
+    z.object({ op: z.literal('append'), rows: z.array(rowSchema).min(1).max(2000) }),
+    z.object({ op: z.literal('replace'), index: z.number().int().min(0), row: rowSchema }),
+  ]);
+  const parseOptSchema = z.object({
+    format: z.enum(['jsonl', 'json', 'csv', 'tsv', 'txt']).optional(), delimiter: z.string().min(1).max(4).optional(),
+    has_header: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(), encoding: z.string().max(32).optional(),
+    layout: z.enum(['tsv', 'qa', 'blocks', 'prompts']).optional(),
+    columns: z.union([z.string(), z.record(z.string(), z.union([z.string(), z.number()]))]).optional(),
+  });
+  const toParse = (b: z.infer<typeof parseOptSchema>) => ({
+    ...(b.format ? { format: b.format } : {}), ...(b.delimiter ? { delimiter: b.delimiter === '\\t' ? '\t' : b.delimiter } : {}),
+    ...(b.has_header !== undefined ? { hasHeader: b.has_header === true || b.has_header === 'true' } : {}),
+    ...(b.encoding ? { encoding: b.encoding } : {}), ...(b.layout ? { layout: b.layout } : {}),
+    ...(b.columns ? { columns: (typeof b.columns === 'string' ? JSON.parse(b.columns) : b.columns) as Record<string, string | number> } : {}),
+  });
+
+  // Registered BEFORE `/api/teach/datasets/:id` so the literal `samples` segment can never be read as a dataset id.
+  router.get('/api/teach/samples', wrap(async (_req, res) => { res.set('cache-control', 'public, max-age=3600'); return { samples: needTeach().datasets.samples() }; }));
+  router.get('/api/teach/samples/:kind', wrap(async (req, res) => {
+    const body = needTeach().datasets.sampleBytes(req.params.kind as string);
+    res.set('cache-control', 'public, max-age=3600').type('application/x-ndjson; charset=utf-8').set('content-disposition', `attachment; filename="sample-${req.params.kind}.jsonl"`).send(body);
+  }));
+
+  router.post('/api/teach/datasets', datasetGate, datasetUpload.single('file'), wrap(async (req, res) => {
+    const t = needTeach(); const address = requireTeacher(req);
+    try {
+      if (req.file) {
+        const meta = parseOptSchema.extend({ name: z.string().max(80).optional(), retention: z.enum(['keep', 'delete_after_training']).optional() }).parse(req.body ?? {});
+        const declared = req.header('x-ngram-dataset-sha256');
+        const bytes = readFileSync(req.file.path);
+        const out = t.datasets.create({
+          owner: address, ip: req.ip, source: 'upload', bytes, filename: req.file.originalname,
+          name: meta.name, retention: meta.retention, parse: toParse(meta), declaredSha256: declared,
+        });
+        res.status(out.created ? 201 : 200);
+        return out;
+      }
+      const body = z.object({
+        source: z.enum(['chat', 'inline', 'sample']).default('chat'), rows: z.array(rowSchema).max(2000).optional(),
+        sample: z.string().max(40).optional(), name: z.string().max(80).optional(), retention: z.enum(['keep', 'delete_after_training']).optional(),
+      }).parse(req.body ?? {});
+      const out = body.source === 'sample'
+        ? t.datasets.createFromSample(body.sample ?? 'ko-facts', { owner: address, ip: req.ip, name: body.name, retention: body.retention })
+        : t.datasets.create({ owner: address, ip: req.ip, source: body.source, rows: body.rows ?? [], name: body.name, retention: body.retention });
+      res.status(out.created ? 201 : 200);
+      return out;
+    } finally { dropTemp(req); }
+  }));
+
+  router.get('/api/teach/datasets', wrap(async (req) => { const address = requireTeacher(req); const t = visitorGate(req, address); return { items: t.datasets.listMine(address) }; }));
+  router.get('/api/teach/datasets/:id', wrap(async (req) => {
+    const t = needTeach();
+    return { dataset: t.datasets.view(t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req))) };
+  }));
+  router.get('/api/teach/datasets/:id/rows', wrap(async (req) => {
+    const t = needTeach();
+    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req));
+    const q = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(50), status: z.string().max(20).default('all') }).parse(req.query);
+    const page = t.datasets.reportPage(d, q);
+    return { total: page.total, source_rows: page.source_rows, offset: page.offset, limit: page.limit, summary: page.summary, items: page.rows };
+  }));
+  router.post('/api/teach/datasets/:id/reparse', wrap(async (req) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = parseOptSchema.parse(req.body ?? {});
+    return t.datasets.reparse(t.datasets.owned(req.params.id as string, address), toParse(body));
+  }));
+  router.patch('/api/teach/datasets/:id', wrap(async (req) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = z.object({ name: z.string().max(80).optional(), retention: z.enum(['keep', 'delete_after_training']).optional(), rows_op: rowsOpSchema.optional() }).parse(req.body ?? {});
+    return t.datasets.patch(t.datasets.owned(req.params.id as string, address), body as { name?: string; retention?: 'keep' | 'delete_after_training'; rows_op?: RowsOp });
+  }));
+  router.post('/api/teach/datasets/:id/fork', wrap(async (req, res) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = z.object({ name: z.string().max(80).optional(), rows_op: rowsOpSchema.optional() }).parse(req.body ?? {});
+    const out = t.datasets.fork(t.datasets.owned(req.params.id as string, address), { owner: address, ip: req.ip, name: body.name, rows_op: body.rows_op as RowsOp | undefined });
+    res.status(out.created ? 201 : 200);
+    return out;
+  }));
+  router.delete('/api/teach/datasets/:id', wrap(async (req) => {
+    const t = needTeach();
+    const operator = isOperator(req);
+    const d = t.datasets.owned(req.params.id as string, teacherOf(req), operator);
+    return t.datasets.remove(d, operator && d.owner.toLowerCase() !== (teacherOf(req) ?? '').toLowerCase() ? 'operator' : 'owner');
+  }));
+  router.get('/api/teach/datasets/:id/download', wrap(async (req, res) => {
+    const t = needTeach();
+    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req));
+    const format = req.query.format === 'csv' ? 'csv' : 'jsonl';
+    const out = t.datasets.download(d, format);
+    res.status(200).type(out.contentType).set({ 'content-disposition': `attachment; filename="${out.filename}"`, 'x-content-sha256': out.sha256 }).send(out.body);
+  }));
+
   router.get('/api/teach/policy', wrap(async (req, res) => { res.set('cache-control', 'public, max-age=10'); return needTeach().policy(req.ip); }));
   router.post('/api/teach/preflight', wrap(async (req) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
-    const body = z.object({ patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), facts: z.array(factSchema).min(1).max(8) }).parse(req.body);
+    const raw = z.object({
+      patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]),
+      facts: z.array(factSchema).min(1).max(8).optional(),
+      dataset_id: z.string().min(1).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(8).optional(),
+    }).parse(req.body);
+    // `{dataset_id, offset?, limit?}` probes at most `preflight.perCall` questions per call and never more than
+    // `preflight.sampleRows` of one dataset — the response says what was sampled, so no whole-dataset claim is possible.
+    let sampled: { checked: number; of: number } | undefined;
+    let facts = raw.facts;
+    if (raw.dataset_id) {
+      const slice = t.preflightSlice(t.datasets.owned(raw.dataset_id, address), raw.offset ?? 0, raw.limit);
+      facts = slice.facts; sampled = slice.sampled;
+    }
+    if (!facts?.length) throw bad('send either `facts` or a `dataset_id` with questions in it');
+    const body = { patch_ids: raw.patch_ids, facts };
     // Preflight spends live-test units in proportion to the model calls it drives (facts + context blobs), charged to the
     // IP AND the teaching key — one of them alone is free to spoof / mint (security review: preflight DoS).
     const units = t.preflightUnits({ patchIds: body.patch_ids, facts: body.facts });
     const buckets = [`ip:${req.ip}`, `key:${address.toLowerCase()}`];
     for (const b of buckets) if (market.chatQuota(b, 20, 3600_000, false, units) < 0) throw new HttpError(429, `quota_chat: free live-test quota exhausted for this hour (this pre-flight needs ${units} unit(s)) — try again later`);
-    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, facts: body.facts });
+    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, facts: body.facts, sampled });
     for (const b of buckets) market.chatQuota(b, 20, 3600_000, true, units);
     return out;
   }));
+  const trainingSchema = z.object({
+    effort: z.enum(['quick', 'balanced', 'thorough']).optional(),
+    max_steps: z.number().int().min(1).max(200).optional(), eval_every: z.number().int().min(1).max(100).optional(),
+    rows_limit: z.number().int().min(1).max(2000).optional(), row_offset: z.number().int().min(0).max(2000).optional(),
+    check_side_effects: z.boolean().optional(), use_alt: z.boolean().optional(),
+  });
   router.post('/api/teach/jobs', wrap(async (req, res) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
+    // backward compatible: `{dataset_id}` XOR the legacy `{facts}` (which materialises a dataset server-side)
     const body = z.object({
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
-      facts: z.array(factSchema).min(1).max(8), contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
+      facts: z.array(factSchema).min(1).max(8).optional(),
+      dataset_id: z.string().min(1).optional(), selected_indexes: z.array(z.number().int().min(0)).max(2000).optional(),
+      training: trainingSchema.optional(),
+      contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
     }).parse(req.body);
-    const job = await t.createJob({ address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context, facts: body.facts });
+    if (!body.dataset_id && !body.facts?.length) throw bad('send either `dataset_id` or `facts`');
+    const job = await t.createJob({
+      address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context,
+      facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, training: body.training,
+    });
     res.status(202);
-    return { job, quota: t.quota(address, req.ip) };
+    return { job, quota: t.jobQuota(address, req.ip) };
   }));
   router.get('/api/teach/jobs', wrap(async (req) => { const address = requireTeacher(req); const t = visitorGate(req, address); return { items: t.listMine(address) }; }));
   router.get('/api/teach/jobs/:id', wrap(async (req) => {
@@ -443,7 +597,25 @@ export function buildApi(deps: ApiDeps): Router {
     const body = z.object({ facts: z.array(factSchema).min(1).max(8), name: z.string().max(80).optional() }).parse(req.body);
     const job = await t.createJob({ address: address!, contributorName: j.contributor_name ?? undefined, name: body.name ?? j.name ?? undefined, ip: req.ip, patchIds: j.context, buildsOn: j.builds_on, facts: body.facts, parentJob: j.id });
     res.status(202);
-    return { job, quota: t.quota(address!, req.ip) };
+    return { job, quota: t.jobQuota(address!, req.ip) };
+  }));
+  router.post('/api/teach/jobs/:id/retrain', wrap(async (req, res) => {
+    const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
+    const body = z.object({ dataset_id: z.string().min(1).optional(), selected_indexes: z.array(z.number().int().min(0)).max(2000).optional(), training: trainingSchema.optional(), name: z.string().max(80).optional() }).parse(req.body ?? {});
+    const job = await t.retrain(j, address!, { ...body, ip: req.ip });
+    res.status(202);
+    return { job, quota: t.jobQuota(address!, req.ip) };
+  }));
+  router.get('/api/teach/jobs/:id/events', wrap(async (req) => {
+    const { t, j } = ownerJob(req, req.params.id as string);
+    const q = z.object({ since: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(200) }).parse(req.query);
+    const rows = market.store.events({ kind: 'teach', limit: 1000 })
+      .filter((e) => (e.data as { job_id?: string } | null)?.job_id === j.id && (!q.since || e.seq > q.since))
+      .sort((a, b) => a.seq - b.seq).slice(-q.limit);
+    // the owner is not the operator: the same redaction /api/events applies (draft ids, keys, prompts stay out)
+    const events = publicEvents(rows, isOperator(req)).map((e) => ({ seq: e.seq, ts: e.ts, level: e.level, message: e.message, data: e.data }));
+    void t;
+    return { events, cursor: events.length ? events[events.length - 1].seq : (q.since ?? 0) };
   }));
   router.post('/api/teach/jobs/:id/recheck', wrap(async (req) => { const { t, j } = ownerJob(req, req.params.id as string); return t.recheck(j); }));
   router.get('/api/teach/jobs/:id/publish-challenge', wrap(async (req) => {
@@ -485,15 +657,42 @@ export function buildApi(deps: ApiDeps): Router {
       jobs_per_key_per_day: z.number().int().min(0).max(1000).optional(), jobs_per_ip_per_day: z.number().int().min(0).max(1000).optional(), queue_max: z.number().int().min(1).max(100).optional(),
       contributor_share: z.number().min(0).max(0.9).optional(), draft_ttl_days: z.number().int().min(1).max(90).optional(),
       paused_reason: z.string().max(200).nullable().optional(), blocked_topics: z.string().max(500).nullable().optional(),
+      // teach mode v2 limits; `rows_per_job` is an explicit override that DISABLES the measured derivation
+      dataset_max_bytes: z.number().int().min(1000).max(DATASET_MAX_BYTES_CEILING).nullable().optional(),
+      dataset_max_rows: z.number().int().min(1).max(100_000).nullable().optional(),
+      rows_per_job: z.number().int().min(1).max(1000).nullable().optional(),
+      rows_per_key_per_day: z.number().int().min(0).max(100_000).nullable().optional(),
+      rows_per_ip_per_day: z.number().int().min(0).max(100_000).nullable().optional(),
+      datasets_per_key_per_day: z.number().int().min(0).max(1000).nullable().optional(),
+      dataset_ttl_days: z.number().int().min(1).max(90).nullable().optional(),
+      declaration_rows: z.number().int().min(1).max(100_000).nullable().optional(),
+      queued_rows_max: z.number().int().min(1).max(1_000_000).nullable().optional(),
+      check_call_budget: z.number().int().min(24).max(500).nullable().optional(),
     }).parse(req.body ?? {});
     if (b.blocked_topics) { try { new RegExp(b.blocked_topics, 'i'); } catch { throw bad('blocked_topics must be a valid regular expression'); } }
     market.updateTeachPolicy({
       enabled: b.enabled, publish: b.publish, factsPerJob: b.facts_per_job, jobsPerKeyPerDay: b.jobs_per_key_per_day, jobsPerIpPerDay: b.jobs_per_ip_per_day,
       queueMax: b.queue_max, contributorShare: b.contributor_share, draftTtlDays: b.draft_ttl_days,
       ...('paused_reason' in b ? { pausedReason: b.paused_reason } : {}), ...('blocked_topics' in b ? { blockedTopics: b.blocked_topics } : {}),
-    });
+      ...('dataset_max_bytes' in b ? { datasetMaxBytes: b.dataset_max_bytes } : {}), ...('dataset_max_rows' in b ? { datasetMaxRows: b.dataset_max_rows } : {}),
+      ...('rows_per_job' in b ? { rowsPerJob: b.rows_per_job } : {}),
+      ...('rows_per_key_per_day' in b ? { rowsPerKeyPerDay: b.rows_per_key_per_day } : {}), ...('rows_per_ip_per_day' in b ? { rowsPerIpPerDay: b.rows_per_ip_per_day } : {}),
+      ...('datasets_per_key_per_day' in b ? { datasetsPerKeyPerDay: b.datasets_per_key_per_day } : {}), ...('dataset_ttl_days' in b ? { datasetTtlDays: b.dataset_ttl_days } : {}),
+      ...('declaration_rows' in b ? { declarationRows: b.declaration_rows } : {}), ...('queued_rows_max' in b ? { queuedRowsMax: b.queued_rows_max } : {}),
+      ...('check_call_budget' in b ? { checkCallBudget: b.check_call_budget } : {}),
+    } as Parameters<typeof market.updateTeachPolicy>[0]);
     t.invalidatePolicy();
     return policyView(t);
+  }));
+  /**
+   * What visitors have uploaded to the operator's machine. Shipping the upload route without this would leave an
+   * operator hosting content they cannot see or delete, so it lands in the same PR (design §5.10).
+   */
+  router.get('/api/me/teach/datasets', requireOperator, wrap(async (req) => {
+    const q = z.object({ limit: z.coerce.number().int().min(1).max(1000).default(200) }).parse(req.query);
+    const t = needTeach();
+    market.log('info', 'teach', 'operator opened the uploaded-datasets moderation view');
+    return { items: t.datasets.listAll(q.limit) };
   }));
   router.get('/api/me/teach/jobs', requireOperator, wrap(async () => ({ items: needTeach().listAll() })));
   router.post('/api/me/teach/jobs/:id/approve', requireOperator, wrap(async (req) => { const t = needTeach(); return t.announceJob(jobOr404(t, req.params.id as string)); }));
@@ -608,7 +807,9 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ errors
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError || err instanceof TeachError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
+    // TeachError.details carries what a bare {error} cannot: the per-row report of a failed upload, the quota that is left
+    if (err instanceof TeachError) return res.status(err.status).json({ error: err.message, ...(err.details ?? {}) });
+    if (err instanceof HttpError || err instanceof PayoutError) return res.status(err.status).json({ error: err.message });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     // typed domain errors from Market / core validation: caller mistakes are 4xx, never 500
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message });

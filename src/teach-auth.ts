@@ -36,8 +36,15 @@ export class TeachAuth {
   private lastPrune = 0;
   constructor(private readonly nodeAddress: string, private readonly skewMs = TEACH_AUTH_SKEW_MS) {}
 
-  /** Verified teaching-key address for `req`, or null (missing, malformed, expired, wrong node/route/body, or replayed). */
-  verify(req: Request, purpose = 'teach'): string | null {
+  /**
+   * Verified teaching-key address for `req`, or null (missing, malformed, expired, wrong node/route/body, or replayed).
+   *
+   * `bodyOverride` exists for ONE case (design §D14): a multipart upload's body is never captured as `rawBody`
+   * (`express.json` is what captures it), so the v2 signature cannot cover it. The dataset upload route instead signs
+   * the value of `x-ngram-dataset-sha256` and the node re-hashes the stored file against that header — request-bound
+   * and single-use, and the browser has already computed the hash to show the fingerprint.
+   */
+  verify(req: Request, purpose = 'teach', bodyOverride?: string | Uint8Array | null): string | null {
     const header = req.header('x-ngram-auth');
     if (!header) return null;
     const parts = header.split(':');
@@ -50,7 +57,7 @@ export class TeachAuth {
     const path = req.originalUrl || req.url;
     let ok = false; let key: string;
     if (ver === TEACH_AUTH_V2) {
-      const raw = method === 'GET' || method === 'HEAD' ? null : (req as Request & { rawBody?: Buffer }).rawBody ?? null;
+      const raw = bodyOverride !== undefined ? bodyOverride : method === 'GET' || method === 'HEAD' ? null : (req as Request & { rawBody?: Buffer }).rawBody ?? null;
       ok = verifyMessage(teachAuthMessage({ purpose, node: this.nodeAddress, method, path, ts, body: raw }), sig, address);
       key = sig;
     } else if (ver === undefined) {

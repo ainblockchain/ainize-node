@@ -43,13 +43,18 @@ export interface LessonMeta {
   contributor: { address: string; name?: string };
   context_patch_ids: string[];
   builds_on_context: boolean;
+  /** What this lesson was trained from — the sha256 makes the run reproducible from the teacher's own copy. */
+  dataset?: { sha256: string; rows: number; revision: number; source: string; name?: string; trained_rows: number };
   checks: unknown;
   created_at: number;
   node: { address: string; name: string; url: string };
 }
 
-/** The anchor's `recipe` field (kept small — sentences and contrast go to recipe.json / the blob, never on-chain). */
-export function anchorRecipe(tr: TrainerRecipe, modelId: string, probe: { hits: number; total: number; heldout_hits?: number }): PatchRecipe {
+/**
+ * The anchor's `recipe` field (kept small — sentences and contrast go to recipe.json / the blob, never on-chain).
+ * `dataset` is hash-only: enough for a buyer to verify that a re-train used the same input, never the input itself.
+ */
+export function anchorRecipe(tr: TrainerRecipe, modelId: string, probe: { hits: number; total: number; heldout_hits?: number }, dataset?: PatchRecipe['dataset']): PatchRecipe {
   const sentences = (tr.sentences ?? []).filter((s) => s.is_target !== false).map((s) => `${s.prefix}${s.target}`);
   return {
     corpus_template: 'Q: {prompt}\nA: {answer}',
@@ -59,6 +64,7 @@ export function anchorRecipe(tr: TrainerRecipe, modelId: string, probe: { hits: 
     held_out: (tr.heldout ?? []).map((h) => h.prompt).slice(0, 8),
     model_id: modelId,
     probe,
+    ...(dataset ? { dataset } : {}),
   };
 }
 
