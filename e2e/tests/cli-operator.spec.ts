@@ -1349,7 +1349,8 @@ test.describe('operator: fourth node', () => {
     // an item that is already LISTED (verifier.ts only picks up ANNOUNCED/VERIFYING/CHALLENGED), so the operator asks it
     // directly — the same verifyOne() the round would have called, and the only deterministic way to get the third vote.
     await waitForLockFree(request, NODE_D);
-    const tokenD = await operatorToken(request, NODE_D);
+    await runCli(['login', '--password', PASSWORD_D], D);   // node-d has its own operator password (PASSWORD_D), not the cluster default
+    const tokenD = ((await (await request.post(`${NODE_D}/api/auth/login`, { data: { password: PASSWORD_D } })).json()) as { token: string }).token;
     const v = await api<{ attestation: { verified_on: string; passed: boolean; verifier: string; score: Record<string, string> } }>(request, `/api/patches/${id}/verify`, { method: 'POST', token: tokenD, node: NODE_D });
     expect(v.status, JSON.stringify(v.body)).toBe(200);
     expect(v.body.attestation.verified_on).toBe(`vllm:${MODEL}`);
