@@ -290,6 +290,11 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 - `ee8ce1b` e2e: assert what the scenarios actually claim — no branch that quietly asserts less
 - `1915af4` e2e: follow the cluster's serving instance instead of hardcoding :8000/ple_patch
 - `b45347e` e2e: a throwaway node applies through the mailbox of the instance it talks to
+- `7e84b68` e2e: AZ-092 measures the Docs page too — the one that used to overflow at 360 px
+- `7ccf5c0` e2e: AZ-063 reads the whole attest history instead of the newest 200
+- `6492240` e2e: AZ-069's third attestation is the third one by construction, not by luck
+- `9c88fcb` e2e: AZ-069 authenticates against node-d with node-d's own operator password
+- `31396f6` test(node): the AIN ledger test drives its own verifier when the shared dev chain beat it to the quorum
 
 **Scripts and documentation**
 
@@ -300,7 +305,4 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 
 **Everything else in the range**
 
-- `9c88fcb` e2e: AZ-069 authenticates against node-d with node-d's own operator password
-- `6492240` e2e: AZ-069's third attestation is the third one by construction, not by luck
-- `7ccf5c0` e2e: AZ-063 reads the whole attest history instead of the newest 200
-- `7e84b68` e2e: AZ-092 measures the Docs page too — the one that used to overflow at 360 px
+- `04f85a9` docs: UX scenario results re-measured after the audit pass — 100/100, and what is still not covered

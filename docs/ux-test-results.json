@@ -705,6 +705,8 @@
   }
  ],
  "product_fixes": [
+  "31396f6 test(node): the AIN ledger test drives its own verifier when the shared dev chain beat it to the quorum",
+  "04f85a9 docs: UX scenario results re-measured after the audit pass — 100/100, and what is still not covered",
   "9c88fcb e2e: AZ-069 authenticates against node-d with node-d's own operator password",
   "6492240 e2e: AZ-069's third attestation is the third one by construction, not by luck",
   "7ccf5c0 e2e: AZ-063 reads the whole attest history instead of the newest 200",
