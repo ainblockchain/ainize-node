@@ -905,6 +905,7 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   const AIN_NOTE = 'AIN = AI Network token (this demo runs a local dev chain)';
   const exec = detail.attestations.filter((a) => a.passed && a.verified_on !== 'hash-only');
   const score = exec[exec.length - 1].score.free_generation;   // e.g. "26/26"
+  const before = exec[exec.length - 1].score.pre_apply;         // e.g. "1/8" — the same run before the knowledge was loaded
   const [hit, tot] = score.split('/').map(Number);
   const pctText = `${Math.round((hit / tot) * 1000) / 10}%`;
 
@@ -932,8 +933,10 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
     const v = [await stat('Purchases').innerText(), await stat('Revenue').innerText(), numLabel(fresh.downloads), revenueLabel(fresh.revenue)];
     return v[0] === v[2] && v[1] === v[3] ? 'match' : `page ${v[0]} / ${v[1]} vs api ${v[2]} / ${v[3]}`;
   }, { timeout: 40_000, message: 'Purchases / Revenue match the API' }).toBe('match');
-  await expect(stat('accuracy')).toHaveText(pctText);
-  await expect(page.getByText('accuracy', { exact: true }).first().locator('xpath=following-sibling::div[1]')).toHaveText(score);
+  // the hero stat is the measured pair (before → after); the percentage is its note (finding 28)
+  expect(before, 'the attestation carries a pre_apply baseline').toBeTruthy();
+  await expect(stat('accuracy')).toHaveText(`${before} → ${score}`);
+  await expect(page.getByText('accuracy', { exact: true }).first().locator('xpath=following-sibling::div[1]')).toHaveText(`${pctText} after loading`);
   await expect(stat('Memory entries')).toHaveText('270,053');
   await expect(stat('Facts')).toHaveText('2,761');
   await expect(stat('Size')).toHaveText('331.7 MB');

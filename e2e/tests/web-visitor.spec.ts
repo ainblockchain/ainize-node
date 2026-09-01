@@ -1367,7 +1367,11 @@ test.describe('Live test (shared runtime)', () => {
 
     await head.getByRole('link', { name: 'Details →' }).click();
     await expect(page).toHaveURL(`${origin}/${addr}/${K.pixel}`);
-    await expect(page.locator('span', { hasText: /^Newer version available$/ }).first()).toBeVisible();
+    // The route is code-split, so for a moment after the URL changes the CHAT page is still mounted — this step used
+    // to read the picker's own "Newer version available" chip and never checked the detail page at all. Wait for the
+    // detail page to be on screen, then assert the chip IT renders (which names the successor).
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(PIXEL_NAME);
+    await expect(page.locator('span', { hasText: new RegExp(`^Newer version: ${K.final}$`) }).first()).toBeVisible();
     const meta = page.getByText(new RegExp(`^By node-a · target model ${MODEL.replace('.', '\\.')} · registered`));
     await expect(meta).toContainText(`∙ Newer version: ${K.final}`);
     await meta.getByRole('link', { name: `Newer version: ${K.final}` }).click();

@@ -1005,7 +1005,7 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 - Picker item: 'Pixelplus ticker code (single fact)', 'node-a/pixelplus-087600', '8 facts', '100% accuracy', '0.1 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', status chip 'Newer version available', label 'Selected'
 - Main header shows the same name, the chip 'Newer version available', '8 facts' and the 'Details →' link — testing is not blocked for superseded knowledge
 - The turn completes: 'After loading' contains 087600 with '✓ Correct' and a short '· loaded in {n}s' (the body is only 3.7 MB); 'Before loading' shows ✓/✗ for the base model
-- 'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version: krx-all-2761' (warning palette #8a4b00 on #fff3e0); the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6)
+- 'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version: krx-all-2761' (warning palette #8a4b00 on #fff3e0); the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6) (the detail route is code-split, so the chat page stays on screen for a moment after the URL changes — read the chip only once the detail page's H1 is showing, or the picker's own 'Newer version available' chip is what gets measured)
 - The link opens the krx-all-2761 detail page (status chip 'For sale')
 
 **Evidence**
@@ -2188,9 +2188,9 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 3 prints a `before (base model)  <n> ms` block, an `after (pixelplus-087600 loaded)  <n> ms · loaded in <n> ms` block whose answer contains 087600, and the footer `correct ✓ (benchmark)  model Qwen3.8-Flash-Next`; no `free live tests left` text (operator is unlimited)
 - Step 4: `--mode base` prints only the `before (base model)` block and no correct/wrong marker; `--mode patched` prints only the `after (…)` block plus the marker (`wrong ✗ (benchmark)` would appear on a miss; `(no benchmark sample for this question)` for a free question)
 - Step 5 shows dimmed reasoning lines prefixed `┆` inside the answer blocks before the final content
-- Step 6 prints `['applied_ms', 'base', 'benchmark_hit', 'mode', 'model', 'patch_id', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']` and nothing else on stdout
+- Step 6 prints `['applied', 'applied_ms', 'base', 'benchmark_hit', 'benchmark_hits', 'history', 'mode', 'model', 'patch_id', 'patch_ids', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']` and nothing else on stdout — `history` is `{base, patched, split}`, how many messages each column was actually sent (split:false here, a single-turn call)
 - Step 7 (anonymous) ends with `free live tests left this hour: 19` (or one less per prior anonymous call from this IP in the hour)
-- Step 8: banner `live test of krx-all-2761 · mode patched · /quit to exit, /help for commands`, prompt `you> `; the answer block `after (krx-all-2761 loaded)` contains 005930 with `correct ✓ (benchmark)`; `/mode compare` → `mode → compare`; `/help` lists `/mode base|patched|compare  (now: compare)`, `/reset   forget the transcript`, `/quit    exit`; `/reset` → `transcript cleared`; `/quit` → `bye — 1 turn(s)`; exit 0
+- Step 8: banner `live test of krx-all-2761 · mode patched · /quit to exit, /help for commands`, prompt `you> ` (in `compare` mode a second dim line says 'follow-ups: each column replays only its own earlier answers — the base model is never shown the patched one', because the REPL keeps one transcript per column); the answer block `after (krx-all-2761 loaded)` contains 005930 with `correct ✓ (benchmark)`; `/mode compare` → `mode → compare`; `/help` lists `/mode base|patched|compare  (now: compare)`, `/reset   forget the transcript`, `/quit    exit`; `/reset` → `transcript cleared`; `/quit` → `bye — 1 turn(s)`; exit 0
 - Step 9 works non-interactively (no prompt echo) and ends with `bye — 1 turn(s)`; after every call the shared table is restored (`curl -s http://localhost:3402/api/runtime` shows `"applied":[]`)
 
 **Evidence**
@@ -3751,7 +3751,7 @@ This document lists 128 user-experience test scenarios for **Ainize** (ai-nize =
 **Expected**
 
 - Step 1: krx-all-2761 shows '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads' with price '25 AIN' and note 'AIN = AI Network token (this demo runs a local dev chain)'; pixelplus-087600 shows '8 facts · 2,992 memory entries · Size 3.7 MB · <n> downloads' and price '0.1 AIN' (after exactly one purchase the text reads the ungrammatical '1 downloads' - record as P2 copy defect)
-- Step 2: stats read '0 Purchases', '100% accuracy' with note '26/26', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'
+- Step 2: stats read '0 Purchases', the accuracy stat as the measured pair '1/8 → 26/26' (score.pre_apply → score.free_generation) with the note '100% after loading', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'
 - Step 3: 'Price' reads '25 AIN · pay once per download' with the AIN note
 - Step 4: picker item shows '2,761 facts', '100% accuracy', '25 AIN'; header shows '2,761 facts'
 - Step 5: 'Records' shows the live count (e.g. '20') and 'Blocks recorded' a thousands-separated block height such as '2,501'

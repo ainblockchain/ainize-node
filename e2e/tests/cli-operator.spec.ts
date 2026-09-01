@@ -609,7 +609,10 @@ test.describe('operator: runtime', () => {
     expect(r.code, r.stderr || r.stdout).toBe(0);
     const j = JSON.parse(r.stdout) as Record<string, unknown>;   // the whole stdout must be one JSON document
     // multi-knowledge chat adds the plural fields (patch_ids / benchmark_hits / applied) next to the single-knowledge ones
-    expect(Object.keys(j).sort()).toEqual(['applied', 'applied_ms', 'base', 'benchmark_hit', 'benchmark_hits', 'mode', 'model', 'patch_id', 'patch_ids', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']);
+    // `history` is what each column was actually sent — {base, patched, split} (finding 1: compare mode replays
+    // one conversation per column, and the node reports which)
+    expect(Object.keys(j).sort()).toEqual(['applied', 'applied_ms', 'base', 'benchmark_hit', 'benchmark_hits', 'history', 'mode', 'model', 'patch_id', 'patch_ids', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']);
+    expect(j.history).toEqual({ base: 1, patched: 1, split: false });   // one question, no history to split yet
     expect(j.patch_ids).toEqual([K.pixel]);
 
     // anonymous visitor (empty home, --node) → quota footer; another suite may already have used up this IP's hour
