@@ -1,21 +1,21 @@
 {
  "date": "2026-09-01",
  "summary": {
-  "passed": 100,
+  "passed": 103,
   "failed": 0,
   "blocked": 0,
-  "total": 100,
-  "text": "100 passed / 0 failed / 0 blocked of 100"
+  "total": 103,
+  "text": "103 passed / 0 failed / 0 blocked of 103"
  },
  "environment": {
-  "Date": "2026-09-01 (measured after the audit pass; the same 100 scenarios were first measured 2026-08-31 and re-measured after the teach-mode merge)",
-  "Build": "main — teach mode merged (0a5723e) plus the audit fixes; web dist rebuilt, cluster restarted before the run",
+  "Date": "2026-09-01 (the 100 scenarios were measured on `main` earlier the same day; AZ-076, AZ-091 and the three new chat scenarios AZ-131/132/133 were re-measured on the merged runtime-guard build)",
+  "Build": "`a736403` runtime-guard merged with main (D1 answer guard, D2 honest scoring, D3 visible queue on top of the audited suite) plus `7dbc6a2`; web dist rebuilt before the run",
   "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
-  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/full-run-final.log (this run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min) and results/full-run-final-attempt*.log (the earlier attempts of the same night)",
+  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
+  "Raw results": "packages/e2e/results/full-run-final.log (the 100-scenario run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min). This pass re-ran the affected part on the merged build — web `45 passed (11.9m)`, mobile `1 skipped`, cli-api `14 passed (3.4m)` — with the proof screenshots in results/prove-*.png (1280 and 360 px, English and Korean)",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "items": [
@@ -472,8 +472,8 @@
   {
    "id": "AZ-076",
    "status": "passed",
-   "duration_ms": 445,
-   "note": ""
+   "duration_ms": 7400,
+   "note": "the replay is now built from node-a's own newest ain-transfer settle record: the settle ledger is shared by the whole cluster, and a node-c royalty fixture on top of it made node-a answer 409 'not sold here' instead of 402"
   },
   {
    "id": "AZ-077",
@@ -562,8 +562,8 @@
   {
    "id": "AZ-091",
    "status": "passed",
-   "duration_ms": 29598,
-   "note": "AZ-091 applied time: · loaded in 3.0s · A cancelled live-test request is still charged when it completes on the node (quota dropped by two after cancel + retry) — UX finding, matches the scenario text."
+   "duration_ms": 27200,
+   "note": "cancel now names which of the two happened, and cancelling while still queued is genuinely free (HTTP 499, nothing charged) — the 'a cancelled try is always charged' UX finding this scenario used to record is fixed for the queued case"
   },
   {
    "id": "AZ-092",
@@ -618,6 +618,24 @@
    "status": "passed",
    "duration_ms": 11162,
    "note": "CopyButton swallows clipboard failures silently (label stays \"Copy\", no feedback) — P2 UX finding, as described in the scenario."
+  },
+  {
+   "id": "AZ-131",
+   "status": "passed",
+   "duration_ms": 45800,
+   "note": "chat path: '드' came back as an ordinary answer, unflagged and unscored — it is the quiet path, as the scenario documents; the note, the character counts and 'Show the raw answer' are observed on a prompt the model does loop on, and the completion path is compared against its own pre-guard body (raw:true), which is never flagged"
+  },
+  {
+   "id": "AZ-132",
+   "status": "passed",
+   "duration_ms": 20300,
+   "note": "the chip inserts and sends '종목코드 픽셀플러스 ' verbatim (trailing space included) and the answer 087600 is marked ✓ Correct; typed by hand without the trailing space it still scores"
+  },
+  {
+   "id": "AZ-133",
+   "status": "passed",
+   "duration_ms": 41000,
+   "note": "new scenario — the holder is a real second process taking the same cross-process lease. Writing it found the picker calling a foreign holder 'Your test has the shared model' (fixed)"
   }
  ],
  "teach_items": [
@@ -705,6 +723,7 @@
   }
  ],
  "product_fixes": [
+  "7dbc6a2 chat: name the real holder of the shared model, and prove the three reported defects on the live cluster",
   "31396f6 test(node): the AIN ledger test drives its own verifier when the shared dev chain beat it to the quorum",
   "04f85a9 docs: UX scenario results re-measured after the audit pass — 100/100, and what is still not covered",
   "9c88fcb e2e: AZ-069 authenticates against node-d with node-d's own operator password",
@@ -763,7 +782,7 @@
   "load, performance budgets, fuzzing and adversarial payment/signature testing beyond the specific replay and forgery cases the scenarios name"
  ],
  "notes": [
-  "100 of 100 passed; 0 failed; 0 blocked. 111 tests passed / 11 skipped / 0 failed / 0 flaky in 24.4 min.",
+  "103 of 103 passed; 0 failed; 0 blocked. This pass re-ran the affected part on the merged runtime-guard build: web 45 passed (11.9m), mobile 1 skipped, cli-api 14 passed (3.4m).",
   "The 11 skips are the 10 teach-mode lifecycle tests that cannot complete on a node whose stub trainer is measured against a live model or whose announce would be permanent, plus AZ-092 under the `mobile` project (it runs for real at 360 px under `web`).",
   "The demo cluster now serves from its own vLLM (:8002, mailbox ple_patch_e2e, GPUs 4,5); the suite reads the instance and mailbox from node-a's config.",
   "Global setup/teardown assert the cluster is left as it was found: the public catalog is still exactly the four demo knowledges, nothing is loaded in the shared model, node-a's teach policy and peer list are unchanged.",

@@ -1,22 +1,22 @@
 # UX scenario test results
 
-- **Date:** 2026-09-01 (measured after the audit pass; the same 100 scenarios were first measured 2026-08-31 and re-measured after the teach-mode merge)
-- **Build:** main — teach mode merged (0a5723e) plus the audit fixes; web dist rebuilt, cluster restarted before the run
+- **Date:** 2026-09-01 (the 100 scenarios were measured on `main` earlier the same day; AZ-076, AZ-091 and the three new chat scenarios AZ-131/132/133 were re-measured on the merged runtime-guard build)
+- **Build:** `a736403` runtime-guard merged with main (D1 answer guard, D2 honest scoring, D3 visible queue on top of the audited suite) plus `7dbc6a2`; web dist rebuilt before the run
 - **Cluster:** live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster
 - **Chain:** local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)
 - **Model:** shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min
 - **Runner:** Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1
-- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json
-- **Raw results:** packages/e2e/results/full-run-final.log (this run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min) and results/full-run-final-attempt*.log (the earlier attempts of the same night)
+- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json
+- **Raw results:** packages/e2e/results/full-run-final.log (the 100-scenario run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min). This pass re-ran the affected part on the merged build — web `45 passed (11.9m)`, mobile `1 skipped`, cli-api `14 passed (3.4m)` — with the proof screenshots in results/prove-*.png (1280 and 360 px, English and Korean)
 - **Host:** Linux-5.15.0-130-generic-x86_64-with-glibc2.35
 
 ## Summary
 
-**100 passed / 0 failed / 0 blocked of 100**
+**103 passed / 0 failed / 0 blocked of 103**
 
 | Persona | Passed | Failed | Blocked |
 |---|---|---|---|
-| Visitor | 26 | 0 | 0 |
+| Visitor | 29 | 0 | 0 |
 | Creator | 24 | 0 | 0 |
 | Operator | 20 | 0 | 0 |
 | Agent | 14 | 0 | 0 |
@@ -101,7 +101,7 @@
 | AZ-073 | Verify the settled 200 response contract and its ledger/event side effects after an ain-transfer payment | Agent | PASS | 541 ms |  |
 | AZ-074 | Refuse to pay when the agent's AIN balance is below the price, then succeed after funding | Agent | PASS | 10.9 s |  |
 | AZ-075 | Reject forged X-PAYMENT proofs: unknown tx hash and a real transfer that did not go to the seller | Agent | PASS | 8.5 s |  |
-| AZ-076 | Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme | Agent | PASS | 445 ms |  |
+| AZ-076 | Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme | Agent | PASS | 7.4 s | the replay is now built from node-a's own newest ain-transfer settle record: the settle ledger is shared by the whole cluster, and a node-c royalty fixture on top of it made node-a answer 409 'not sold here' instead of 402 |
 | AZ-077 | Follow supersede marks on a keyword search, and refuse an explicitly requested superseded id | Agent | PASS | 20.5 s |  |
 | AZ-078 | Skip the purchase when the model already answers correctly, and check the --max-price budget guard | Agent | PASS | 13.9 s |  |
 | AZ-079 | Refuse to buy when the seller offers no payment scheme the agent is allowed to use (--pay local-credit on an AIN node) | Agent | PASS | 7.9 s |  |
@@ -116,7 +116,7 @@
 | AZ-088 | Keep the operator signed in across refresh and new tabs via the session cookie, and sign out cleanly | Cross-cutting | PASS | 7.5 s | after Log out the browser landed on http://localhost:3402/ |
 | AZ-089 | Recover automatically after the node process restarts under an open Live test tab | Cross-cutting | PASS | 30.3 s |  |
 | AZ-090 | Reflect the model-server outage consistently on Network, Manage and My knowledge | Cross-cutting | PASS | 11.3 s |  |
-| AZ-091 | Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling | Cross-cutting | PASS | 29.6 s | AZ-091 applied time: · loaded in 3.0s · A cancelled live-test request is still charged when it completes on the node (quota dropped by two after cancel + retry) — UX finding, matches the scenario text. |
+| AZ-091 | Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling | Cross-cutting | PASS | 27.2 s | cancel now names which of the two happened, and cancelling while still queued is genuinely free (HTTP 499, nothing charged) — the 'a cancelled try is always charged' UX finding this scenario used to record is fixed for the queued case |
 | AZ-092 | Keep every page usable at 360 px width without horizontal page scrolling | Cross-cutting | PASS | 16.1 s | overflow per page: {"landing":{"ok":true,"scrollWidth":360,"innerWidth":360},"explore":{"ok":true,"scrollWidth":360,"innerWidth":360},"detail":{"ok":true,"scrollWidth":360,"innerWidth":360},"chat":{"ok":true,"scrollWidth":360,"innerWidth":360},"ledger":{"ok":true,"scrollWidth":360,"innerWidth":360},"docs":{"ok":true,"scrollWidth":360,"innerWidth":360}}; header items outside the 360px viewport: none · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project |
 | AZ-093 | Operate the Live test and sign-in entirely from the keyboard with visible focus | Cross-cutting | PASS | 8.2 s | Shift+Tab from the (now disabled) textarea landed on: button "Show 18 more" |
 | AZ-094 | Expose meaningful roles and accessible names to screen readers on the core pages | Cross-cutting | PASS | 9.7 s | axe serious/critical: /explore: color-contrast (serious) x41 → .sc-gSQHZB \| .sc-fFelbd \| p \|\| /chat: color-contrast (serious) x28 → .sc-gSQHZB \| .sc-eCIkAO \| aside > p \|\| /<addr>/krx-all-2761: color-contrast (serious) x43 → .sc-gSQHZB \| .sc-bXTeWK > span:nth-child(1) \| .sc-bXTeWK > span:nth-child(2) \|\| /ledger: color-contrast (serious) x26 → .sc-gSQHZB \| .sc-fFelbd \| p:nth-child(2) \|\| /ledger: nested-interactive (serious) x1 → svg[width="700"] · Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario. |
@@ -126,6 +126,9 @@
 | AZ-098 | Display relative times ('5m ago') with an absolute-time tooltip that keeps ticking | Cross-cutting | PASS | 1.6 min |  |
 | AZ-099 | Verify what happens to scroll position and filters on browser Back from a detail page | Cross-cutting | PASS | 4.8 s | scrollY after Back on /ledger: 0 · Back resets the ledger to the top with "All records", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /explore: 0 |
 | AZ-100 | Degrade gracefully when clipboard copy is unavailable or denied | Cross-cutting | PASS | 11.2 s | CopyButton swallows clipboard failures silently (label stays "Copy", no feedback) — P2 UX finding, as described in the scenario. |
+| AZ-131 | A runaway answer is cut off with a plain explanation, not shown as an endless loop | Visitor | PASS | 45.8 s | chat path: '드' came back as an ordinary answer, unflagged and unscored — it is the quiet path, as the scenario documents; the note, the character counts and 'Show the raw answer' are observed on a prompt the model does loop on, and the completion path is compared against its own pre-guard body (raw:true), which is never flagged |
+| AZ-132 | A sample question is sent exactly as the knowledge was trained, trailing space included | Visitor | PASS | 20.3 s | the chip inserts and sends '종목코드 픽셀플러스 ' verbatim (trailing space included) and the answer 087600 is marked ✓ Correct; typed by hand without the trailing space it still scores |
+| AZ-133 | A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing | Visitor | PASS | 41.0 s | new scenario — the holder is a real second process taking the same cross-process lease. Writing it found the picker calling a foreign holder 'Your test has the shared model' (fixed) |
 
 ## Teach-mode scenarios (AZ-101…AZ-122, TM-*) — not part of the 100
 
@@ -227,6 +230,11 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 
 ## Notes from this pass
 
+- **The three defects the owner reported are gone, proved on the live cluster.** (a) `드` no longer runs away and is no longer auto-scored — it comes back as an ordinary answer marked *Free question — not auto-scored*, and where the model does loop the reply is cut with one plain sentence and a *Show the raw answer* button that reveals the full text unchanged (AZ-131). (b) The sample chip `종목코드 픽셀플러스 ` puts the trained prompt in the box with its trailing space, sends it verbatim and scores `087600` as ✓ Correct (AZ-132). (c) The same question typed by hand, without the trailing space, still answers correctly. (d) A question asked while another process holds the shared model says so within ~1 s, names the holder and ticks, and *Stop waiting* returns HTTP 499 without charging a free try (AZ-133).
+- **Verification is untouched by the answer guard.** A real re-verification of `pixelplus-test-17` on node-a returned the same attestation as the three that predate the guard: `verified_on: vllm:Qwen3.8-Flash-Next`, `free_generation 1/1`, `pre_apply 0/1`, `restarts_detected 0`. `Runtime.verify()` passes `sampling: null` on every generation, and a new unit test (`guard-api.test.ts`, D1 EXEMPTION) captures the request body it actually sends: no `stop`, no penalties, `max_tokens: 8`, `temperature: 0`, prompt verbatim.
+- **One stale scenario assumption the shared ledger finally broke** (AZ-076). It replayed "the newest ain-transfer settle record", but the settle ledger is shared by every node in the cluster and a node-c royalty fixture (`qa-royalty-child`) had risen to the top: node-a answered 409 *not sold here* instead of 402 *payment already used*. The scenario and the test now take node-a's own newest sale. The product was right; the test was reading someone else's receipt.
+- **One product defect found by writing AZ-133** (`7dbc6a2`). Once a visitor had run a single live test, the picker announced *every* later holder of the shared model — another visitor, a verifier, another node — as "Your test has the shared model". `lockIsMine` read `useChatStatusQuery`'s `data`, and RTK Query keeps `data` from the last fetch after a query is skipped, so the flag stayed `running` for ever. It now reads `queue`, which is undefined unless a turn of this tab is actually pending.
+- **One stale expectation the merge left behind** (AZ-091). It still asserted the pre-D3 wording `Request cancelled.`; the shipped product now names which of the two things happened, because cancelling while queued is free and cancelling once running is not. The scenario text said a cancelled try is *always* charged and recorded that as a UX finding — that finding is fixed for the queued case, so the scenario and the test were both updated to the shipped behaviour.
 - **The audit's own findings.** Sixteen findings from a review of the previous green run were worked through; fifteen were real and are fixed (four in the product, eleven in the suite) — see the table above. One was rejected: the suggestion to publish AZ-031's test knowledge on a private node instead of node-a. AZ-031 *is* the operator publishing from their own node-a manage page and following node-b/node-c verifying it, so moving it would replace the scenario rather than fix it; its real defect (the publish half was skipped whenever the recorded draft was already published) is fixed by creating the precondition.
 - **The demo cluster now serves from its own vLLM.** `runtime.api` is :8002 with the mailbox `ple_patch_e2e` on GPUs 4,5,
   so the suite never competes with the main serving GPUs. The helpers read the port and mailbox from node-a's own config
@@ -243,6 +251,7 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 
 **Product fixes the scenarios forced (this audit pass)**
 
+- `7dbc6a2` chat: name the real holder of the shared model, and prove the three reported defects on the live cluster
 - `097464b` fix(web/node): stop claiming a lesson was faked, unblock Docs at 360 px, English plurals, named select listboxes
 
 **Product fixes the scenarios forced (earlier in the effort)**
