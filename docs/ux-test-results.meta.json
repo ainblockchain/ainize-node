@@ -1,0 +1,281 @@
+{
+ "date": "2026-09-01",
+ "fix_range": "665e469..HEAD",
+ "environment": {
+  "Date": "2026-09-01 (measured after the audit pass; the same 100 scenarios were first measured 2026-08-31 and re-measured after the teach-mode merge)",
+  "Build": "main — teach mode merged (0a5723e) plus the audit fixes; web dist rebuilt, cluster restarted before the run",
+  "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
+  "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
+  "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
+  "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
+  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
+  "Raw results": "packages/e2e/results/full-run-final.log (this run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min) and results/full-run-final-attempt*.log (the earlier attempts of the same night)",
+  "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
+ },
+ "teach_runs": [
+  {
+   "node": "live demo node-a :3402 — teach on, `backend: stub`, live model (`simulated_checks: false`)",
+   "result": "7 passed / 10 skipped (24.5 s)"
+  },
+  {
+   "node": "dev node-t :3412 — `backend: stub` + `stubOffline: true` (`simulated_checks: true`), local ledger",
+   "result": "17 passed (1.6 min)"
+  }
+ ],
+ "teach_prose": [
+  "The teach-mode scenarios are numbered AZ-101…AZ-122 and are **not** part of the 100. They run in two places, because the",
+  "demo cluster and the dev node differ in exactly one property that changes what a lesson can prove:",
+  "",
+  "- **node-a :3402** runs `teach.backend: \"stub\"` with a **live** model. The trainer copies a fixture instead of training,",
+  "  but the CHECKING phase is measured against the real vLLM — so `GET /api/teach/policy` reports `simulated_checks: false`",
+  "  and the UI is right to say \"correct in the live model\". A copied fixture cannot teach a run-unique phrasing, so the",
+  "  node honestly answers NEEDS_MORE and the lifecycle tests cannot complete there.",
+  "- **node-t :3412** runs the same binary with `stubOffline: true` (`simulated_checks: true`) and a local ledger, so the",
+  "  whole lifecycle — including publish, approve and announce — runs without writing a permanent anchor on the shared chain.",
+  "",
+  "Everything that does not need a trained lesson (landing, sign-in, the /new-patch pre-screen, the Teaching tab, payouts,",
+  "the banner/drawer/basket, the teaching key and its backup) runs on the live node.",
+  "",
+  "The table below is what the **full run** recorded, i.e. the teach specs as they run against node-a; the node-t column of",
+  "the summary above is a separate invocation (`AINIZE_URL=http://localhost:3412 AINIZE_PASS=teach-pass`). AZ-101 and AZ-102",
+  "are executable as `TM-090` / `TM-091` in `web-chat-multi.spec.ts` (multi-knowledge live test and the contamination",
+  "banner) and run on the live node in every full pass."
+ ],
+ "not_covered_prose": [
+  "Honest gaps. Nothing below is asserted by the suite; where a unit test covers the mechanism it is named.",
+  "",
+  "- **aindrive pairing needs a human login.** AZ-047/AZ-048 exercise the unpaired state, the pairing hint, the sync button,",
+  "  the file tree and the change history, and `ainize drive login` up to the point where it prints its Google link. The link",
+  "  itself has to be opened by a person in a browser, so a *paired* drive — real file edits flowing back into a knowledge",
+  "  file — is never tested end to end.",
+  "- **Gradient (real) training is never run.** The demo cluster is pinned to `teach.backend: \"stub\"` because GPUs 4–6 run",
+  "  the owner's `train_rev.py`. Everything downstream of the trainer (state machine, slot lease, docker-exec stdout",
+  "  protocol, timeouts, cancel, the CHECKING gates) is covered by `packages/node/test/teach.test.ts` against a fake spawn,",
+  "  and `train/teach.py` itself lives in the qwen3.8 repo — but no scenario has ever produced a lesson from a gradient run.",
+  "  AZ-117 (trainer slot busy) is unit-test-only for the same reason.",
+  "- **Teach scenarios with no e2e run:** AZ-108 (locality gate), AZ-111 (publish auto + Taught-by chips), AZ-112 (local-credit",
+  "  royalty to the contributor), AZ-114 (lineage pays the data provider), AZ-115 (per-key / per-IP quotas), AZ-117, AZ-118",
+  "  (vLLM restart mid-CHECKING), AZ-119 (draft expiry), AZ-121 (`ainize patch import` round trip), AZ-122 (AIN round trip of",
+  "  an anchor with empty contributors). Each is covered by a unit test in `packages/node/test/teach.test.ts`,",
+  "  `packages/node/test/ain.test.ts` or `packages/cli/test/cli.test.ts`; none is observed through the UI on a live node.",
+  "- **One machine, one dev chain.** Every node, the chain and the model run on this host over localhost. Nothing exercises a",
+  "  real network (latency, partitions, TLS, NAT), a public chain, real money, or two operators on different machines.",
+  "- **One browser engine.** Chromium only. The `mobile` project is Pixel-5 emulation whose layout viewport is not 360 CSS px,",
+  "  so the 360 px assertions (AZ-092/093) run under the `web` project at that size instead; Firefox and WebKit are untested.",
+  "- **Load, concurrency and security are out of scope.** No performance budget, no fuzzing, no adversarial payment or",
+  "  signature testing beyond the specific replay/forgery cases the scenarios name (AZ-072/AZ-078/AZ-081, `ain.test.ts`).",
+  "- **The public record only grows.** A published anchor and a created branch are permanent on the demo chain, so the",
+  "  scenarios that must observe a *fresh* announce (AZ-030/031, AZ-052, AZ-056, AZ-068, AZ-069) add one hidden",
+  "  `visibility: test` anchor each per run, and AZ-064 one branch. They stay out of the public catalog — the global",
+  "  teardown fails the run if `GET /api/catalog` is not exactly the four demo knowledges — but they cannot be taken back,",
+  "  and they are why the announce pre-check reports more overlaps than the scenario text's original \"conflicts: 4\".",
+  "- **AZ-052's public half runs on a private cluster.** A public announce on the shared chain would be visible in every",
+  "  later catalog assertion forever, so \"a public announce becomes publicly LISTED\" is proven on a private 3-node cluster",
+  "  started by the same `scripts/cluster-restart.sh` from the same binaries; the shared cluster keeps the `--test` run for",
+  "  the verifier trail and the ledger rows. The same substitution applies to AZ-067's restart."
+ ],
+ "notes_prose": [
+  "- **The audit's own findings.** Sixteen findings from a review of the previous green run were worked through; fifteen were real and are fixed (four in the product, eleven in the suite) — see the table above. One was rejected: the suggestion to publish AZ-031's test knowledge on a private node instead of node-a. AZ-031 *is* the operator publishing from their own node-a manage page and following node-b/node-c verifying it, so moving it would replace the scenario rather than fix it; its real defect (the publish half was skipped whenever the recorded draft was already published) is fixed by creating the precondition.",
+  "- **The demo cluster now serves from its own vLLM.** `runtime.api` is :8002 with the mailbox `ple_patch_e2e` on GPUs 4,5,",
+  "  so the suite never competes with the main serving GPUs. The helpers read the port and mailbox from node-a's own config",
+  "  instead of hardcoding :8000, and node-d follows the same instance so all four nodes queue on one cross-process lock.",
+  "- **Model-behavior finding (recorded, not a marketplace bug):** with *thinking enabled* the patched model answers a trained",
+  "  completion-style prompt (e.g. `종목코드 한독 `) with an empty string (immediate EOS); base+thinking and patched without",
+  "  thinking both answer `002390`. AZ-020 records it as a note.",
+  "- **Leftover state is now asserted, not assumed.** A global setup snapshots the public catalog, the shared model table,",
+  "  node-a's teach policy and its peer list; the global teardown fails the run on any drift and reports how many hidden test",
+  "  anchors the run added.",
+  "- **Still open — the shared record only grows.** ~5 hidden anchors, ~10 attestations and ~2 settle records per full run. AZ-063 now fails loudly when the attest history no longer fits in one `ledger ls` page (API cap 1000; 218 today), which is the tripwire for the whole family of \"newest N records\" reads. Capping the growth itself needs the announce scenarios (AZ-052/056/068/069) to move to a private cluster the way AZ-052's public half already did — not done here."
+ ],
+ "not_covered": [
+  "aindrive pairing end to end (needs a human Google login; only the unpaired state, the hint, sync, file tree and history are asserted)",
+  "gradient (real) training in teach mode — GPUs 4-6 run the owner's train_rev.py, so the demo is pinned to backend `stub`; the worker, slot lease, docker-exec protocol and the CHECKING gates are unit-tested against a fake spawn",
+  "teach scenarios AZ-108, AZ-111, AZ-112, AZ-114, AZ-115, AZ-117, AZ-118, AZ-119, AZ-121, AZ-122 — unit-test coverage only, never observed through the UI on a live node",
+  "a real network, a public chain, real money, or more than one machine",
+  "browsers other than Chromium; the `mobile` project is Pixel-5 emulation, so the 360 px assertions run under `web`",
+  "load, performance budgets, fuzzing and adversarial payment/signature testing beyond the specific replay and forgery cases the scenarios name"
+ ],
+ "notes": [
+  "100 of 100 passed; 0 failed; 0 blocked. 111 tests passed / 11 skipped / 0 failed / 0 flaky in 24.4 min.",
+  "The 11 skips are the 10 teach-mode lifecycle tests that cannot complete on a node whose stub trainer is measured against a live model or whose announce would be permanent, plus AZ-092 under the `mobile` project (it runs for real at 360 px under `web`).",
+  "The demo cluster now serves from its own vLLM (:8002, mailbox ple_patch_e2e, GPUs 4,5); the suite reads the instance and mailbox from node-a's config.",
+  "Global setup/teardown assert the cluster is left as it was found: the public catalog is still exactly the four demo knowledges, nothing is loaded in the shared model, node-a's teach policy and peer list are unchanged.",
+  "Sixteen audit findings from the previous green run were worked through: fifteen fixed (four in the product), one rejected with a reason (AZ-031 on a private node would replace the scenario, not fix it)."
+ ],
+ "fix_groups": [
+  {
+   "title": "Product fixes the scenarios forced (this audit pass)",
+   "shas": [
+    "097464b"
+   ]
+  },
+  {
+   "title": "Product fixes the scenarios forced (earlier in the effort)",
+   "shas": [
+    "53b4918",
+    "ae8e2b1",
+    "822b840",
+    "8fa3554",
+    "5dce9e6",
+    "4530834",
+    "76d106d",
+    "144a1be"
+   ]
+  },
+  {
+   "title": "Teach mode — the feature itself (PR-1 … PR-8) and its review fixes",
+   "shas": [
+    "3db1098",
+    "64a72fc",
+    "75388d0",
+    "d339098",
+    "92001a6",
+    "67eb1d8",
+    "41d928e",
+    "e90bb31",
+    "e9b76b1",
+    "87c048c",
+    "116b524",
+    "dddd9b2",
+    "0a5723e"
+   ]
+  },
+  {
+   "title": "The scenario suite: executable specs and harness",
+   "shas": [
+    "08e6052",
+    "d843751",
+    "eb160df",
+    "a5a8194",
+    "8b64bb0",
+    "9a12395",
+    "9a2e0ae",
+    "5df396d",
+    "11506ff",
+    "7deaecf",
+    "f633ae9",
+    "b01aab0",
+    "fd9be87",
+    "ee8ce1b",
+    "1915af4",
+    "b45347e",
+    "7e84b68",
+    "7ccf5c0",
+    "6492240",
+    "9c88fcb",
+    "31396f6"
+   ]
+  },
+  {
+   "title": "Scripts and documentation",
+   "shas": [
+    "046c96f",
+    "250a36b",
+    "7d68b24",
+    "9538908"
+   ]
+  }
+ ],
+ "tm_titles": {
+  "TM-090": "Load up to three knowledges together: order badges, overlap warning, one usage event per knowledge",
+  "TM-091": "Contamination banner when the operator keeps a knowledge loaded for everyone"
+ },
+ "findings": [
+  [
+   "AZ-081",
+   "high",
+   "The receipt-write path ran only while node-c still had an unbought demo patch — never, after the first run.",
+   "Fixed — the purchase runs from a private node whose home is thrown away each run (pinned chain identity), so the 402 loop, the transfer and the receipt write happen every time."
+  ],
+  [
+   "AZ-069",
+   "high",
+   "Expectations 2, 3, 5 and 6 were optional branches: no blob-fetch line, no rounded \"14 min\" retry, and node-d's executed attestation could be replaced by \"it wrote nothing\".",
+   "Fixed — node-d's copy of the body is dropped so the blob fetch is always logged, the demo verifiers are held off for the countdown by taking the shared runtime lock they share, and node-d's serving API is only restored after the item is LISTED with exactly two rows, so its executed attestation really is the third one (a verifier skips a LISTED item, so the operator drives verifyOne() through POST /api/patches/:id/verify)."
+  ],
+  [
+   "AZ-052",
+   "medium",
+   "The P0 half (a PUBLIC announce becomes publicly LISTED) was inverted to `not.toContain(id)`; the conflicts count was only annotated.",
+   "Fixed — the public announce runs for real on a private 3-node cluster from the same script and binaries; on the shared cluster the pre-check count is asserted against GET /api/patches/:id/conflicts."
+  ],
+  [
+   "suite-wide",
+   "medium",
+   "The suite did not leave the cluster as it found it: 47 chain node rows under the impersonated name \"node-a\", 15 branches, 62 hidden test anchors.",
+   "Mostly fixed — throwaway nodes have their own names and pinned identities (no new \"node-a\" rows), node-d follows the cluster's serving instance, and a global setup/teardown fails the run if the public catalog, the shared model table, the teach policy or the peer list drift. The hidden anchors and AZ-064's branch are structural (an append-only chain cannot take an announce back) and are reported per run instead."
+  ],
+  [
+   "AZ-031",
+   "medium",
+   "`wasDraft` gated the whole publish half — checklist, seal note, Publish button, 200 /announce, green alert.",
+   "Fixed — the DRAFT precondition is created when the recorded one is gone; the publish half always runs."
+  ],
+  [
+   "AZ-067",
+   "low",
+   "Step 10 (a 402 purchase after the restart) was deferred to scenarios that run against the pre-restart cluster.",
+   "Fixed — the agent buys krx-all-2761 for real after the restart and the settle record is checked. (The scenario's note that `--patch pixelplus-087600` is refused describes older agent behaviour; AZ-077 covers the current one.)"
+  ],
+  [
+   "AZ-046",
+   "low",
+   "The \"row disappears\" half was catch-and-ignore.",
+   "Fixed — the poll right after the DELETE is served the node's own post-delete peer list, then rediscovery runs unmodified."
+  ],
+  [
+   "AZ-007",
+   "low",
+   "The multi-select help line and the selection marker were not asserted.",
+   "Fixed — both asserted."
+  ],
+  [
+   "AZ-011",
+   "low",
+   "Only the `accepts_contributions: true` half of expectation 6 ran.",
+   "Fixed — the false half runs on a private node with teach off."
+  ],
+  [
+   "AZ-020",
+   "low",
+   "Expectation 3's ordering (\"completes after tab A's answer\") was never asserted.",
+   "Fixed — both POST /api/chat completion times are recorded and compared."
+  ],
+  [
+   "AZ-094",
+   "low",
+   "Only `critical` axe violations failed; ~112 serious ones were invisible to the signal.",
+   "Fixed — a frozen per-page baseline of the documented serious backlog; a new serious violation fails. Two of the recorded ones were real and are fixed in the product (the unnamed select listbox on /explore and /ledger)."
+  ],
+  [
+   "AZ-035",
+   "low",
+   "The setup form was rendered against a stubbed /api/auth/me.",
+   "Fixed — it renders from a private node with a real `needsSetup: true`."
+  ],
+  [
+   "REV-1",
+   "high",
+   "The lesson card told every visitor its verification was faked: it used the trainer backend as a proxy for simulated checks and ignored the node's own `simulated_checks` / `checks.simulated` flags.",
+   "Fixed in the product (`packages/web`) — the card reads the node's flags; the demo node now correctly says \"correct in the live model\" and drops the false \"Demo node\" disclaimer."
+  ],
+  [
+   "REV-2",
+   "medium",
+   "Docs → REST API scrolled the page horizontally at 360 px (528 px against a 360 px viewport).",
+   "Fixed in the product — the summary row wraps and long paths break."
+  ],
+  [
+   "REV-3",
+   "low",
+   "`/api/catalog` accepted a 12th query parameter, `include_drafts`, that OpenAPI did not document.",
+   "Fixed in the product."
+  ],
+  [
+   "REV-4",
+   "low",
+   "English plurals on the teach path (\"1 corrections\", \"1 memory entries\") and a hardcoded en-US number format.",
+   "Fixed in the product — `t(key, vars, count)` picks a `_one` entry; the number goes through `useFormat`."
+  ]
+ ]
+}

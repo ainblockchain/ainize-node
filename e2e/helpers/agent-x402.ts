@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { APIRequestContext } from '@playwright/test';
-import { AGENT, CHAIN, NODE_A, NODE_BIN, RUNTIME_REPO, VLLM, api, cli, HOME_A } from './ainize';
+import { AGENT, CHAIN, NODE_A, NODE_BIN, RUNTIME_PATCH_DIR, VLLM, api, cli, HOME_A } from './ainize';
 
 const execFileP = promisify(execFile);
 // Playwright workers run with FORCE_COLOR set; the CLIs (chalk) must print plain text for exact string assertions.
@@ -26,10 +26,15 @@ export const AGENT_HOME = process.env.NGRAM_AGENT_HOME ?? join(homedir(), '.ngra
 export interface Run { code: number; stdout: string; stderr: string; ms: number }
 
 /** Run the agent binary (`node packages/agent/dist/bin.js …`) with optional env overrides. */
+/**
+ * The agent talks to a serving instance directly (it is not a node): point it at the SAME one the demo cluster uses, or
+ * its before/after check and its `patch.py apply` would land in another instance's model table and lock.
+ */
+const AGENT_ENV = { ENGRAM_API_PUBLIC: VLLM, ENGRAM_API: VLLM, ENGRAM_PATCH_DIR: RUNTIME_PATCH_DIR };
 export async function agentExec(args: string[], opts: { env?: Record<string, string>; timeoutMs?: number; cwd?: string } = {}): Promise<Run> {
   const t0 = Date.now();
   try {
-    const { stdout, stderr } = await execFileP(NODE_BIN, [AGENT, ...args], { timeout: opts.timeoutMs ?? 10 * 60_000, env: { ...process.env, ...(opts.env ?? {}) }, cwd: opts.cwd, maxBuffer: 16 * 1024 * 1024 });
+    const { stdout, stderr } = await execFileP(NODE_BIN, [AGENT, ...args], { timeout: opts.timeoutMs ?? 10 * 60_000, env: { ...process.env, ...AGENT_ENV, ...(opts.env ?? {}) }, cwd: opts.cwd, maxBuffer: 16 * 1024 * 1024 });
     return { code: 0, stdout: stripNoise(stdout), stderr: stripNoise(stderr), ms: Date.now() - t0 };
   } catch (e) {
     const err = e as { code?: number; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
@@ -139,7 +144,7 @@ export async function until<T>(fn: () => Promise<T>, pred: (v: T) => boolean, ms
 }
 
 // ------------------------------------------------------------------ shared runtime lock (mirrors packages/node/src/runtime.ts)
-const LOCK_DIR = join(RUNTIME_REPO, 'ple_patch', '.ainize-runtime.lock');
+const LOCK_DIR = join(RUNTIME_PATCH_DIR, '.ainize-runtime.lock');
 
 function lockHolder(): { owner: string; label: string; since: number } | null {
   if (!existsSync(LOCK_DIR)) return null;

@@ -3,7 +3,7 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, CHAIN, K, VLLM, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { PIXEL_NPZ } from '../helpers/operator-cli';
 import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, visitorHeaders, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
@@ -200,7 +200,7 @@ test('AZ-013 Re-order Explore by each sort option', async ({ page, request }) =>
 
 test('AZ-014 Filter Explore by model and topic and search, including the empty state', async ({ page, request }) => {
   const cat = await catalog(request);
-  const visibleTopics = [...new Set(cat.items.map((e) => (e.anchor as { benchmark: { schema: string } }).benchmark.schema))];
+  const visibleTopics = [...new Set(cat.items.map((e) => (e.anchor as unknown as { benchmark: { schema: string } }).benchmark.schema))];
   expect(visibleTopics).toEqual(['krx-ticker-codes']);
   await page.goto(NODE_A + '/explore');
   await expect(rows(page)).toHaveCount(4);
@@ -578,6 +578,20 @@ test('AZ-011 Pick an audience card and land on the right entry point', async ({ 
   await page.goto(NODE_A + '/');
   await page.getByRole('link', { name: 'Open the operator console' }).click();
   await expect(page).toHaveURL(`${NODE_A}/signing`);
+
+  // Expectation 6, false half: a node that does NOT accept lessons (teach.enabled defaults to false) drops the nav item
+  // and says so under the creator card. Run on a private node built from the same binary + web UI.
+  const noTeach = await startThrowawayNode('az011', { roles: 'seller,serving', maxLifeS: 300 });
+  try {
+    expect((await (await page.request.get(`${noTeach.url}/api/info`)).json()).accepts_contributions).toBe(false);
+    await page.goto(noTeach.url + '/');
+    const offCard = page.getByTestId('landing-creator-card');
+    await expect(offCard.getByRole('heading', { name: 'I want to teach the model something' })).toBeVisible();
+    await expect(offCard).toContainText('This node is not accepting lessons right now. Live test still works.');
+    await expect(page.getByTestId('landing-nav-teach')).toHaveCount(0);
+  } finally {
+    await noTeach.stop();
+  }
 });
 
 test('AZ-012 Copy the one-line commands and read the How-it-works / Why Ainize story', async ({ page, context }) => {
@@ -757,7 +771,7 @@ test('AZ-022 Explore the Network page and try the gateway router demo', async ({
 
   await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live');
   await expect(dd(page, 'Model')).toHaveText(MODEL);
-  await expect(dd(page, 'API')).toHaveText('http://localhost:8000');
+  await expect(dd(page, 'API')).toHaveText(VLLM);
   await expect(dd(page, 'Live connection')).toHaveText('connected — load and unload without restart');
 
   const peersTable = page.locator('table').first();
@@ -894,6 +908,8 @@ test.describe('Live test (shared runtime)', () => {
 
     const panel = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' });
     await expect(panel.getByText('Only knowledge whose body is on this node can be tested.')).toBeVisible();
+    // the multi-select help line (the teach-era replacement for the single-pick panel's copy)
+    await expect(panel.getByText('They load in the order you tick them. If two overlap, the one ticked last wins.')).toBeVisible();
     const items = panel.locator('li > label');   // multi-select rows (each wraps a checkbox)
     await expect(items).toHaveCount(testable.length);
     expect(testable.length).toBe(4);
@@ -918,6 +934,9 @@ test.describe('Live test (shared runtime)', () => {
     await panel.getByRole('button', { name: 'Clear selection' }).click();
     await itemFor(K.pixel).click();
     await expect(page).toHaveURL(new RegExp(`/chat/${K.pixel}$`));
+    // selection marker on the active item: the multi-select list shows the load ORDER where the old single-pick list said "Selected"
+    await expect(itemFor(K.pixel)).toContainText('Loads 1.');
+    await expect(itemFor(K.final)).not.toContainText('Loads ');
     const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ });   // the picker's and lesson basket's own headings sit in <main> too
     await expect(head).toHaveText(PIXEL_NAME);
     await expect(head.locator('..')).toContainText('Newer version available');
@@ -1088,6 +1107,11 @@ test.describe('Live test (shared runtime)', () => {
     await page.getByRole('checkbox', { name: 'Enable thinking' }).check();
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await chip(page, '종목코드 한독').click();
+    // Expectation 3 is about ORDER: B must be served after A, not beside it. Both response promises are armed before the
+    // send so the two completion times can be compared (A is the slower call — compare + thinking = two generations — so
+    // a node that served B concurrently would finish B FIRST).
+    const chatPost = (p: Page) => p.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 20 * 60_000 }).then(() => Date.now());
+    const doneA = chatPost(page);
     const turnA = await sendPrompt(page);
 
     const lock = await waitForLock(request, origin, (l) => !!l && l.label === `chat:${K.final}`);
@@ -1105,12 +1129,17 @@ test.describe('Live test (shared runtime)', () => {
     await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
 
     await modeRadio(tabB, 'Before only').click();
+    const doneB = chatPost(tabB);
+    const bSentAt = Date.now();
     const turnB = await sendPrompt(tabB, '종목코드 HMM');
     // D3: tab B's own transcript says it is queued (not silently pending) while tab A holds the shared model
     await expect(tabB.getByTestId('chat-queued').first()).toContainText('Queued behind another test');
     await expect(tabB.getByRole('button', { name: 'Stop waiting' })).toBeVisible();
     await waitTurnDone(page, request, turnA);
     await waitTurnDone(tabB, request, turnB);
+    const [atA, atB] = await Promise.all([doneA, doneB]);
+    expect(bSentAt, 'tab B sent while tab A was still pending (real contention)').toBeLessThan(atA);
+    expect(atB, 'tab B is serialised behind tab A — its answer arrives after A\'s').toBeGreaterThan(atA);
     // Tab A finished; the scenario asserts the correct result on tab B (bullet 3). Tab A's patched answer is auto-scored
     // (Expected: 002390) but with thinking ON the patched model answers this trained completion-style prompt with an
     // empty string (immediate EOS) — recorded as a model-behavior finding; base+thinking and patched without thinking answer 002390.
@@ -1121,10 +1150,14 @@ test.describe('Live test (shared runtime)', () => {
     await expect(bubble(turnB, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
     await expect(tabB.getByText('The shared model stayed busy for too long, so this request gave up waiting.')).toHaveCount(0);
 
-    await waitForLock(request, origin, (l) => l === null);
-    await tabB.reload();
-    await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
-    await expect(tabB.getByTestId('chat-lock')).toHaveCount(0);
+    // The banner mirrors the shared lock, and the node's own background work (a verifier run, a queued lesson) can
+    // take it again between the check and the reload — retry until the page is loaded while nobody holds it.
+    await expect.poll(async () => {
+      await waitForLock(request, origin, (l) => l === null);
+      await tabB.reload();
+      await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
+      return tabB.getByTestId('chat-lock').count();
+    }, { timeout: 3 * 60_000, intervals: [2_000], message: 'the lock banner is gone once nobody holds the shared model' }).toBe(0);
     await tabB.close();
   });
 
@@ -1219,7 +1252,7 @@ test.describe('Live test (shared runtime)', () => {
     // and is opened later — vLLM itself is never paused. It holds the pixelplus body, so that knowledge is testable there.
     const OFF_MSG = 'The model server is off right now, so testing is unavailable.';
     const proxy = await startRuntimeProxy();
-    const off = await startThrowawayNode('az021', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: proxy.url, maxLifeS: 540 });
+    const off = await startThrowawayNode('az021', { name: 'node-az021', stableId: 'az021', roles: 'seller,serving', ledger: 'ain', runtimeApi: proxy.url, maxLifeS: 540 });
     try {
       await off.seed(PIXEL_NPZ, 'az021-seed');
       const posts: string[] = [];

@@ -6,7 +6,7 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import { homedir } from 'node:os';
@@ -19,7 +19,6 @@ export const NODE_A = process.env.AINIZE_URL ?? 'http://localhost:3402';
 export const NODE_B = 'http://localhost:3403';
 export const NODE_C = 'http://localhost:3404';
 export const CHAIN = 'http://localhost:8081';
-export const VLLM = 'http://localhost:8000';
 export const REPO = process.env.AINIZE_REPO ?? '/mnt/newdata/ainize/knowledge-marketplace';
 export const RUNTIME_REPO = '/mnt/newdata/qwen3.8';
 export const CLI = join(REPO, 'packages/cli/dist/bin.js');
@@ -29,6 +28,18 @@ export const HOME_A = join(CLUSTER_HOME, 'node-a');
 export const HOME_B = join(CLUSTER_HOME, 'node-b');
 export const HOME_C = join(CLUSTER_HOME, 'node-c');
 export const NODE_BIN = process.execPath;
+
+/**
+ * The serving instance and patch-hook mailbox node-a actually talks to, read from its own config — the demo cluster
+ * moved from :8000/ple_patch to its own vLLM on :8002/ple_patch_e2e, and a scenario that must reach "the same shared
+ * model" (or the lock the three nodes share) has to follow it rather than a hardcoded port.
+ */
+const runtimeCfg = (): { api?: string; patchDir?: string; repo?: string } => {
+  try { return (JSON.parse(readFileSync(join(HOME_A, 'config.json'), 'utf8')) as { runtime?: { api?: string; patchDir?: string; repo?: string } }).runtime ?? {}; } catch { return {}; }
+};
+export const VLLM = runtimeCfg().api ?? 'http://localhost:8000';
+/** Directory holding the cross-process runtime lock the demo nodes share (`<patchDir>/.ainize-runtime.lock`). */
+export const RUNTIME_PATCH_DIR = runtimeCfg().patchDir ?? join(runtimeCfg().repo ?? RUNTIME_REPO, 'ple_patch');
 
 /** Demo knowledge (real Qwen3.8 training artifacts). */
 export const K = {
@@ -155,6 +166,27 @@ export async function waitForLockFree(request: APIRequestContext, node = NODE_A,
   }
 }
 
+/**
+ * Take the demo cluster's cross-process runtime lock (the atomic `mkdir` lease every node uses before touching the
+ * shared model) so a scenario can decide WHEN the demo verifiers are allowed to run — the only way to observe a
+ * verifier's grace countdown without racing them. The holder is this test process, so nobody breaks the lease while
+ * it is alive; always release in a `finally`.
+ */
+export async function holdRuntimeLock(request: APIRequestContext, label: string, opts: { waitMs?: number } = {}): Promise<() => void> {
+  const dir = join(RUNTIME_PATCH_DIR, '.ainize-runtime.lock');
+  await waitForLockFree(request, NODE_A, opts.waitMs ?? 10 * 60_000);
+  const t0 = Date.now();
+  for (;;) {
+    try { mkdirSync(dir); break; } catch {
+      if (Date.now() - t0 > (opts.waitMs ?? 10 * 60_000)) throw new Error(`could not take the shared runtime lock (${dir} held)`);
+      await sleep(1000);
+    }
+  }
+  writeFileSync(join(dir, 'holder.json'), JSON.stringify({ owner: `pid:${process.pid}`, label, since: Date.now() }));
+  let released = false;
+  return () => { if (released) return; released = true; try { rmSync(dir, { recursive: true, force: true }); } catch { /* already gone */ } };
+}
+
 export function fileExists(p: string): boolean { return existsSync(p); }
 export function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -178,10 +210,18 @@ export interface ThrowawayOpts {
   ledger?: 'local' | 'ain';
   /** Serving API URL (default: a closed port, so the node never touches the shared vLLM). */
   runtimeApi?: string;
+  /** Patch-hook mailbox (default: the one the demo cluster's serving instance uses — see RUNTIME_PATCH_DIR). */
+  patchDir?: string;
   /** Extra `ainize config set <key> <value>` pairs applied before the first start (e.g. `{ 'verifier.auto': 'false' }`). */
   set?: Record<string, string>;
   /** Hard lifetime cap in seconds: a detached watchdog kills the process afterwards even if the test crashed (default 600). */
   maxLifeS?: number;
+  /**
+   * Reuse one identity across runs (key kept under SCRATCH/ids/<stableId>.json). A node that starts with `ledger: 'ain'`
+   * announces itself on the shared record, and a NEW key each run means one more permanent `node` row on the demo chain
+   * — so any throwaway that must touch the chain pins its address here and registers exactly once, ever.
+   */
+  stableId?: string;
 }
 
 export interface ThrowawayNode {
@@ -214,6 +254,21 @@ export async function startThrowawayNode(tag: string, opts: ThrowawayOpts = {}):
   if (ledger === 'ain') initArgs.push('--ain-provider', CHAIN);
   const init = await cli(initArgs, home, { timeoutMs: 60_000 });
   if (init.code !== 0) throw new Error(`throwaway node init failed: ${init.stderr || init.stdout}`);
+  // A throwaway that can reach a model must use the SAME patch-hook mailbox as the instance it talks to — the demo
+  // cluster's serving instance has its own (`ple_patch_e2e`), and a node applying through the default one would write
+  // into another instance's table and never change the answers it is being tested on.
+  {
+    const r = await cli(['config', 'set', 'runtime.patchDir', opts.patchDir ?? RUNTIME_PATCH_DIR], home, { timeoutMs: 30_000 });
+    if (r.code !== 0) throw new Error(`throwaway node config set runtime.patchDir failed: ${r.stderr || r.stdout}`);
+  }
+  if (opts.stableId) {
+    const keep = join(SCRATCH, 'ids', `${opts.stableId}.json`);
+    mkdirSync(join(SCRATCH, 'ids'), { recursive: true });
+    const cfgPath = join(home, 'config.json');
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { identity: unknown };
+    if (existsSync(keep)) { cfg.identity = JSON.parse(readFileSync(keep, 'utf8')); writeFileSync(cfgPath, JSON.stringify(cfg, null, 2)); }
+    else writeFileSync(keep, JSON.stringify(cfg.identity, null, 2));
+  }
   for (const [k, v] of Object.entries(opts.set ?? {})) {
     const r = await cli(['config', 'set', k, v], home, { timeoutMs: 30_000 });
     if (r.code !== 0) throw new Error(`throwaway node config set ${k} failed: ${r.stderr || r.stdout}`);
@@ -268,7 +323,7 @@ export async function startThrowawayNode(tag: string, opts: ThrowawayOpts = {}):
     if (pid) spawn('sh', ['-c', `sleep ${opts.maxLifeS ?? 600}; kill ${pid} 2>/dev/null`], { detached: true, stdio: 'ignore' }).unref();   // watchdog
     node.pid = pid;
   };
-  const seed = async (npz: string, id: string, benchmark = { schema: 'pixelplus-seed', queries: 1, samples: [{ prompt: '종목코드 픽셀플러스 ', expect: '087600' }] }) => {
+  const seed: ThrowawayNode['seed'] = async (npz, id, benchmark = { schema: 'pixelplus-seed', queries: 1, samples: [{ prompt: '종목코드 픽셀플러스 ', expect: '087600' }] }) => {
     const dir = join(home, 'seed');
     mkdirSync(dir, { recursive: true });
     const copy = join(dir, basename(npz));

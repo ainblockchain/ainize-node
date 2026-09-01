@@ -268,8 +268,10 @@ export class Runtime {
       const patchDir = this.patchDir();
       // ENGRAM_PATCH_DIR points engram/live.py at THIS instance's mailbox (engram/live.py:14); without it every node
       // writes into <repo>/ple_patch — the mailbox of whichever server happens to watch it, not the one `api` addresses.
-      const p = spawn(this.cfg.python ?? 'python3', args, { cwd: repo,
-        env: { ...process.env, ENGRAM_API: this.cfg.api ?? '', ...(patchDir ? { ENGRAM_PATCH_DIR: patchDir } : {}) } });
+      const p = spawn(this.cfg.python ?? 'python3', args, {
+        cwd: repo,
+        env: { ...process.env, ENGRAM_API: this.cfg.api ?? '', ...(patchDir ? { ENGRAM_PATCH_DIR: patchDir } : {}) },
+      });
       let out = '', err = '';
       const t = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
       p.stdout.on('data', (d) => (out += d));

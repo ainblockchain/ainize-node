@@ -69,6 +69,20 @@ export async function visitorOrigin(): Promise<string> {
   return (visitorOriginCache = NODE_A);
 }
 
+/**
+ * Give this browser context its own free-try bucket. All chat-driving cross-cutting scenarios share one alternate
+ * origin, so without this they also share its 20 tries/hour and a second run of the suite inside the same hour hits
+ * the quota wall. The node meters per client IP and trusts proxy headers, so the fake IP is stamped on every request
+ * that goes to the node (per request, not with setExtraHTTPHeaders(), which would also mark cross-origin font
+ * requests and make their CORS preflight fail).
+ */
+export async function freshTries(page: Page, node = NODE_A): Promise<void> {
+  const o = () => 1 + Math.floor(Math.random() * 253);
+  const ip = `10.${o()}.${o()}.${o()}`;
+  const port = new URL(node).port || '80';
+  await page.context().route((u) => u.port === port, (route) => route.continue({ headers: { ...route.request().headers(), 'x-forwarded-for': ip } }));
+}
+
 /** Model reachable + nobody holding the shared runtime lock. Throws when the model does not come back in time. */
 export async function ensureRuntime(request: APIRequestContext, node = NODE_A): Promise<void> {
   const ok = await waitForRuntime(request, node);

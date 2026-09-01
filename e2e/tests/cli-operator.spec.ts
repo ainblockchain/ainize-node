@@ -13,11 +13,12 @@ import { connect } from 'node:net';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import {
-  NODE_A, NODE_B, NODE_C, HOME_A, HOME_B, HOME_C, K, PASSWORDS, REPO, api, agentRun, cliLogin, nodeAddress, operatorToken, sleep, waitForRuntime,
+  NODE_A, NODE_B, NODE_C, HOME_A, HOME_B, HOME_C, K, PASSWORDS, REPO, RUNTIME_PATCH_DIR, VLLM, api, agentRun, cliLogin, holdRuntimeLock, nodeAddress,
+  operatorToken, sleep, waitForLockFree, waitForRuntime,
 } from '../helpers/ainize';
 import {
   runCli, spawnCli, strip, uid, PIXEL_NPZ, PIXEL_SHA, KRX_SHA, MODEL, benchJson, shortAddr, esc, tableRows, tmpHome, SCRATCH,
-  HOME_D, NODE_D, PORT_D, PASSWORD_D, cleanupNodeD, nodeDPid, httpUp, httpDown, startNodeD, chatApi, withRuntime, pollUntil, RUN,
+  HOME_D, NODE_D, PORT_D, PASSWORD_D, cleanupNodeD, nodeDPid, httpUp, httpDown, startNodeD, startPrivateCluster, chatApi, withRuntime, pollUntil, RUN,
 } from '../helpers/operator-cli';
 
 const ADDR_A = nodeAddress(HOME_A);
@@ -34,8 +35,9 @@ const draftCount = async (pw: typeof import('@playwright/test')['request']): Pro
 /** node-d config must exist (AZ-057 creates it); when a test of the block runs on its own, create + fund it here. */
 const ensureNodeD = async () => {
   if (existsSync(join(HOME_D, 'config.json'))) return;
-  const r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D], { home: HOME_D });
+  const r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D, '--runtime-api', VLLM], { home: HOME_D });
   expect(r.code, r.stderr).toBe(0);
+  expect((await runCli(['config', 'set', 'runtime.patchDir', RUNTIME_PATCH_DIR], { home: HOME_D })).code).toBe(0);
   const f = await runCli(['chain', 'fund', nodeAddress(HOME_D), '100'], { home: HOME_D });
   expect(f.code, f.stderr).toBe(0);
 };
@@ -262,8 +264,13 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^AT\s+KIND\s+AUTHOR\s+SUMMARY\s+HASH\s*$/m);
     const recordsA = Number(/^records\s+(\d+)$/m.exec(r.stdout)![1]);
 
-    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '200'], A);
-    const attRows = ledgerRows(r.stdout).filter((l) => l.includes(`krx-all-2761 · PASS · vllm:${MODEL}`));
+    // `ledger ls` returns the NEWEST n records and every announce in the suite adds attestations, so the demo patch's
+    // two rows are only found while the page still reaches back to them — read the whole attest history (API cap 1000)
+    // and fail loudly if it no longer fits rather than quietly asserting over a window that has moved past them.
+    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '1000'], A);
+    const allAtt = ledgerRows(r.stdout);
+    expect(allAtt.length, 'the whole attest history still fits in one page (raise the approach, not the limit, when it does not)').toBeLessThan(1000);
+    const attRows = allAtt.filter((l) => l.includes(`krx-all-2761 · PASS · vllm:${MODEL}`));
     expect(attRows.length).toBeGreaterThanOrEqual(2);
     expect(attRows.every((l) => /\sattest\s/.test(l))).toBe(true);
     r = await runCli(['ledger', 'ls', '--kind', 'supersede'], A);
@@ -775,7 +782,7 @@ test.describe('operator: runtime', () => {
   });
 
   test('AZ-052 Announce a public patch and watch node-b and node-c verify it on the real model until it is LISTED', async ({ request }) => {
-    test.setTimeout(25 * 60_000);
+    test.setTimeout(45 * 60_000);
     await cliLogin(HOME_A, NODE_A);
     await waitForRuntime(request);
     // Published with `--test` (hidden from public catalogs) and a run-unique schema so the shared catalog stays clean.
@@ -797,9 +804,13 @@ test.describe('operator: runtime', () => {
     r = await runCli(['logs', '--kind', 'publish', '--limit', '5'], A);
     const pub = new RegExp(`announced ${esc(id)} \\(conflicts: (\\d+)\\)`).exec(r.stdout);
     expect(pub).not.toBeNull();
-    // NOTE: for a `--test` anchor the pre-check reports 0 overlaps (market.conflicts() only looks at the public catalog) — a public
-    // publish of this body reports 4 (the demo bodies). Recorded as an observation; the count is not asserted for hidden anchors.
-    test.info().annotations.push({ type: 'note', description: `announce pre-check reported conflicts: ${pub![1]} (hidden --test anchor)` });
+    // The scenario's literal "conflicts: 4" is the count on a node that holds exactly the four demo bodies; what the line
+    // must actually report is every knowledge on this node whose address set overlaps the new body. Asserted against the
+    // node's own overlap check (the demo bodies plus the pixel copies earlier runs announced).
+    const overlaps = (await api<{ conflicts: { patch_id: string }[] }>(request, `/api/patches/${id}/conflicts`)).body.conflicts;
+    expect(Number(pub![1]), 'the announce pre-check counts the same overlaps GET /api/patches/:id/conflicts reports').toBe(overlaps.length);
+    expect(overlaps.map((c) => c.patch_id)).toEqual(expect.arrayContaining([K.final, K.pixel]));
+    test.info().annotations.push({ type: 'note', description: `announce pre-check reported conflicts: ${pub![1]} (the 4 demo bodies + the pixel copies earlier runs announced)` });
 
     // 4 — poll status on node-a until LISTED, remembering the transitions
     const seen: string[] = [];
@@ -837,6 +848,37 @@ test.describe('operator: runtime', () => {
     r = await runCli(['patch', 'get', K.final], A);
     expect(r.stdout.split('\n')[0]).toContain('LISTED');
     expect(r.stdout).not.toMatch(/superseded by/i);
+
+    // Step 5 for real — a PUBLIC announce becoming publicly LISTED. It cannot run on the shared cluster (a public anchor
+    // is permanent on the demo chain and would be visible in every later catalog assertion), so the public half runs on a
+    // private 3-node cluster from the same script and binaries: same publish → same two verifiers → same real model.
+    const priv = await startPrivateCluster('az052-public');
+    try {
+      const P = { home: join(priv.home, 'node-a') };
+      const pubId = 'o08-pixel-public';
+      expect((await runCli(['login', '--password', 'az052-pass'], P)).code).toBe(0);
+      let p = await runCli(['publish', PIXEL_NPZ, '--id', pubId, '--name', name, '--model', MODEL, '--benchmark', benchJson('o08-pixel-public-check'), '--price', '0.1'], P);
+      expect(p.code, p.stderr || p.stdout).toBe(0);
+      const plines = p.stdout.split('\n').filter(Boolean);
+      expect(plines[0]).toBe(`✓ draft created: ${pubId}  (2,992 rows, sha256 ${PIXEL_SHA.slice(0, 12)}…)`);
+      expect(plines[1]).toMatch(new RegExp(`^✓ announced ${esc(pubId)} → ledger record [0-9a-f]{16}… \\(verifiers will now attest; quorum lists it\\)$`));
+      p = await runCli(['logs', '--kind', 'publish', '--limit', '5'], P);
+      expect(p.stdout, 'nothing else on this node overlaps the body').toContain(`announced ${pubId} (conflicts: 0)`);
+
+      const listed = await pollUntil(() => runCli(['patch', 'get', pubId], P), (x) => / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '') || /REJECTED/.test(x.stdout.split('\n')[0] ?? ''), 15 * 60_000, 10_000);
+      expect(listed.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+      expect(listed.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+      // step 5 of the scenario: `patch ls --status LISTED` lists it, and it is public (anonymous /api/catalog sees it)
+      p = await runCli(['patch', 'ls', '--status', 'LISTED'], P);
+      expect(p.stdout).toContain(pubId);
+      const cat = (await api<{ items: { anchor: { id: string; visibility?: string }; status: string }[] }>(request, '/api/catalog?limit=200', { node: priv.urls[0] })).body.items;
+      const row = cat.find((e) => e.anchor.id === pubId);
+      expect(row, 'a public announce is in the anonymous catalog').toBeTruthy();
+      expect(row!.status).toBe('LISTED');
+      expect(row!.anchor.visibility ?? 'public').toBe('public');
+    } finally {
+      await priv.stop();
+    }
 
     // 7 — the two new attest records on the shared ledger
     r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '10'], A);
@@ -920,7 +962,7 @@ test.describe('operator: fourth node', () => {
     const cfgPath = join(HOME_D, 'config.json');
     expect(existsSync(HOME_D)).toBe(false);
 
-    let r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D], D);
+    let r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D), '--ledger', 'ain', '--ain-provider', 'http://localhost:8081', '--peer', NODE_A, '--roles', 'verifier', '--public-url', NODE_D, '--runtime-api', VLLM], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     const l = r.stdout.split('\n');
     expect(l[0]).toBe(`✓ node initialised at ${cfgPath}`);
@@ -937,6 +979,12 @@ test.describe('operator: fourth node', () => {
     expect(r.code).toBe(1);
     expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} (use --force to overwrite, or \`ngram config show\`)`);
     expect(readFileSync(cfgPath, 'utf8')).toBe(cfgText);
+
+    // node-d is a fourth node of THIS demo cluster: same serving instance (--runtime-api above) and the same patch-hook
+    // mailbox, so it queues on the one cross-process lock the other three share instead of driving a second instance.
+    r = await runCli(['config', 'set', 'runtime.patchDir', RUNTIME_PATCH_DIR], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout.trim()).toBe(`✓ runtime.patchDir = ${JSON.stringify(RUNTIME_PATCH_DIR)}  (restart the node to apply)`);
 
     r = await runCli(['keys', 'show'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1234,8 +1282,18 @@ test.describe('operator: fourth node', () => {
     r = await runCli(['status'], D);
     expect(r.stdout).toMatch(/^runtime\s+unavailable \(serving API unreachable\)$/m);
 
-    // node-d may already hold the pixelplus body (bought/fetched earlier in this block) — then there is no blob fetch to log
-    const hadBody = ((await api<{ node: { blobs: string[] } }>(request, '/api/info', { node: NODE_D })).body.node?.blobs ?? []).includes(PIXEL_SHA);
+    // node-d may already hold the pixelplus body (bought/fetched earlier in this block) — drop its copy so the verifier
+    // really has to fetch the body and expectation 2's `blob` line is produced on every run.
+    rmSync(join(HOME_D, 'data', 'blobs', `${PIXEL_SHA}.npz`), { force: true });
+    expect(((await api<{ node: { blobs: string[] } }>(request, '/api/info', { node: NODE_D })).body.node?.blobs ?? []).includes(PIXEL_SHA)).toBe(false);
+    // Expectation 3 needs node-d to keep retrying for more than a minute, and it only retries while the item is
+    // ANNOUNCED/VERIFYING — node-b/node-c normally list it within ~30-60 s. So the demo verifiers are held off for the
+    // countdown window by taking the cross-process runtime lock they share (node-d never takes it: with a closed serving
+    // port it fails before any model work). The lock is released in the `finally` below.
+    const releaseLock = await holdRuntimeLock(request, 'e2e:AZ-069 grace window');
+    let lockHeld = true;
+    const release = () => { if (lockHeld) { lockHeld = false; releaseLock(); } };
+    try {
     // a fresh announce (hidden, run-unique schema) right after node-d is up
     const id = uid('o69-grace', test.info().retry);
     const name = 'O69 grace period';
@@ -1246,72 +1304,73 @@ test.describe('operator: fourth node', () => {
     const iV = ev.findIndex((l) => /info {2}verifier {2}\[.*\] verifying /.test(l) && l.includes(`verifying ${id} (${name})`));
     const iB = ev.findIndex((l) => /info {2}blob {6}\[/.test(l) && l.includes(`fetched ${id} body from`));
     const iW = ev.findIndex((l) => /warn {2}verifier {2}\[/.test(l) && l.includes(`verify ${id} failed: runtime unavailable (serving API unreachable) — waiting up to 15 min before hash-only fallback`));
-    expect([iV >= 0, iW > iV]).toEqual([true, true]);
-    if (hadBody) test.info().annotations.push({ type: 'note', description: 'node-d already held the pixelplus body from an earlier purchase in this block — no blob fetch line, the first failed attempt follows the verifying line directly' });
-    else expect([iB > iV, iW > iB]).toEqual([true, true]);
+    expect([iV >= 0, iB > iV, iW > iB]).toEqual([true, true, true]);
 
     // The grace clock starts at node-d's FIRST failed attempt (after the blob fetch). node-d keeps retrying every ~5 s
     // only while the item is ANNOUNCED/VERIFYING — node-b/node-c usually list it within ~30-60 s, which ends the retries.
     const firstWarnAt = new Date(ev[iW].slice(0, 19)).getTime();
-    let warns: string[] = []; let listedEarly = false;
-    while (Date.now() - firstWarnAt < 70_000) {
+    let warns: string[] = [];
+    while (Date.now() - firstWarnAt < 75_000) {
       warns = (await runCli(['logs', '--kind', 'verifier', '--limit', '80'], D)).stdout.split('\n').filter((l) => l.includes(`verify ${id} failed`));
-      const g = await runCli(['patch', 'get', id], A);
-      if (/ {2}LISTED/.test(g.stdout.split('\n')[0] ?? '') && Date.now() - firstWarnAt > 35_000) { listedEarly = true; break; }
       await sleep(5000);
     }
-    expect(warns.length).toBeGreaterThanOrEqual(1);
+    expect(warns.length, 'node-d retries every ~5 s for the whole window').toBeGreaterThanOrEqual(5);
     for (const w of warns) expect(w).toMatch(/ — waiting up to 1[345] min before hash-only fallback$/);   // never a hash-only vote
     const late = warns.filter((w) => new Date(w.slice(0, 19)).getTime() - firstWarnAt >= 31_000);
-    if (late.length) expect(late[late.length - 1]).toMatch(/waiting up to 14 min before hash-only fallback$/);
-    else { expect(listedEarly).toBe(true); test.info().annotations.push({ type: 'note', description: `node-b/node-c listed ${id} before node-d had retried for 30 s (${warns.length} retry warning(s), all "15 min") — the rounded-down "14 min" message is not observable in this timing` }); }
+    expect(late.length, 'retries continued past the first 30 s').toBeGreaterThan(0);
+    expect(late[late.length - 1], 'the minute count rounds down as the grace period runs out').toMatch(/waiting up to 14 min before hash-only fallback$/);
     const addrD = nodeAddress(HOME_D);
     r = await runCli(['patch', 'records', id], A);
     expect(r.stdout).not.toContain(shortAddr(addrD, 8));
     r = await runCli(['patch', 'get', id], A);
     expect(r.stdout).not.toContain('hash-only');
 
-    r = await runCli(['config', 'set', 'runtime.api', 'http://localhost:8000'], D);
-    expect(r.stdout.trim()).toBe('✓ runtime.api = "http://localhost:8000"  (restart the node to apply)');
+    // Let the demo verifiers have the model back: they reach quorum on their own while node-d's serving port is still
+    // closed, so the scenario's "third attestation" really is the third one.
+    release();
+    const twoRows = (x: { stdout: string }) => / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '')
+      && x.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length === 2;
+    const quorum = await pollUntil(() => runCli(['patch', 'get', id], A), twoRows, 12 * 60_000, 5000);
+    expect(quorum.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+    expect(quorum.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
+    expect(quorum.stdout, 'node-d wrote nothing while its serving API was down').not.toContain(`node-d ${shortAddr(addrD, 6)}`);
+    expect(quorum.stdout).not.toContain('hash-only');
+
+    // Step 4 — restore node-d's serving API and restart it
+    r = await runCli(['config', 'set', 'runtime.api', VLLM], D);
+    expect(r.stdout.trim()).toBe(`✓ runtime.api = ${JSON.stringify(VLLM)}  (restart the node to apply)`);
     r = await runCli(['stop'], D);
     expect(r.stdout.trim()).toMatch(/^✓ stopped node \(pid \d+\)$/);
     r = await startNodeD();
     expect(r.stdout).toMatch(/^✓ node started in the background/);
-    const restartedAt = Date.now();
     await waitForRuntime(request, NODE_D);
 
-    // node-d re-verifies for real once its runtime is back — unless node-b/node-c already reached quorum in the meantime
-    // (a verifier only picks up ANNOUNCED/VERIFYING items); in both cases no hash-only vote may exist.
-    const outcome = await pollUntil(async () => {
-      const dlog = await runCli(['logs', '--limit', '60'], D);
-      const attested = dlog.stdout.includes(`attested ${id}: `);
-      const g = await runCli(['patch', 'get', id], A);
-      const listed = / {2}LISTED/.test(g.stdout.split('\n')[0] ?? '');
-      const lockFree = !(await api<{ lock: unknown }>(request, '/api/chat/patches', { node: NODE_D })).body.lock;
-      const skipped = listed && lockFree && !dlog.stdout.split('\n').some((l) => l.includes(`verifying ${id}`) && new Date(l.slice(0, 19)).getTime() > restartedAt) && Date.now() - restartedAt > 90_000;
-      return { attested, listed, skipped, dlog: dlog.stdout, get: g.stdout };
-    }, (o) => o.attested || o.skipped, 12 * 60_000, 10_000);
-    expect(outcome.get).not.toContain('hash-only');
-    expect(outcome.dlog).not.toContain('hash-only)');
-    if (outcome.attested) {
-      expect(outcome.dlog).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
-      // node-d's real vote counts toward the quorum; the item is LISTED once ≥ 2 executed PASS votes exist (node-b/node-c
-      // may still be waiting for the shared model when node-d came back — then node-d's vote is the one completing the quorum)
-      const listedWithD = (x: { stdout: string }) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`) && / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '');
-      const g = await pollUntil(() => runCli(['patch', 'get', id], A), listedWithD, 12 * 60_000, 5000);
-      expect(g.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
-      expect(g.stdout).toMatch(new RegExp(`^node-d ${esc(shortAddr(addrD, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+`, 'm'));
-      expect(g.stdout).not.toContain('hash-only');
-      const passRows = g.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length;
-      expect(passRows).toBeGreaterThanOrEqual(2);
-      expect(g.stdout).toMatch(new RegExp(`^verification\\s+${passRows}/2 passed ✓ quorum$`, 'm'));
-      if (passRows < 3) test.info().annotations.push({ type: 'note', description: `node-d's real attestation completed the quorum before every demo verifier voted (${passRows} executed PASS votes) — the scenario's third row is not observable in this timing` });
-    } else {
-      expect(outcome.get.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
-      // quorum was reached by node-b + node-c before node-d came back: node-d correctly wrote nothing (no third row, no hash-only)
-      test.info().annotations.push({ type: 'note', description: 'node-b/node-c listed the patch before node-d\'s runtime returned; node-d skipped the LISTED item (no attestation at all) — grace period held, third attestation not observable in this timing' });
-      expect(outcome.get).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
-      expect(outcome.get).not.toContain(`node-d ${shortAddr(addrD, 6)}`);
+    // Step 5 — node-d verifies the patch FOR REAL now that its runtime is back. Its background round deliberately skips
+    // an item that is already LISTED (verifier.ts only picks up ANNOUNCED/VERIFYING/CHALLENGED), so the operator asks it
+    // directly — the same verifyOne() the round would have called, and the only deterministic way to get the third vote.
+    await waitForLockFree(request, NODE_D);
+    await runCli(['login', '--password', PASSWORD_D], D);   // node-d has its own operator password (PASSWORD_D), not the cluster default
+    const tokenD = ((await (await request.post(`${NODE_D}/api/auth/login`, { data: { password: PASSWORD_D } })).json()) as { token: string }).token;
+    const v = await api<{ attestation: { verified_on: string; passed: boolean; verifier: string; score: Record<string, string> } }>(request, `/api/patches/${id}/verify`, { method: 'POST', token: tokenD, node: NODE_D });
+    expect(v.status, JSON.stringify(v.body)).toBe(200);
+    expect(v.body.attestation.verified_on).toBe(`vllm:${MODEL}`);
+    expect(v.body.attestation.passed).toBe(true);
+    expect(v.body.attestation.verifier).toBe(addrD);
+    const dlog2 = await pollUntil(() => runCli(['logs', '--limit', '80'], D), (x) => x.stdout.includes(`attested ${id}: `), 3 * 60_000, 5000);
+    expect(dlog2.stdout).toContain(`attested ${id}: PASS (vllm:${MODEL})`);
+    expect(dlog2.stdout).not.toContain('hash-only)');
+
+    // Step 6 — node-d's row is the third attestation, VERIFIED ON the real model, on a LISTED item
+    const listedWithD = (x: { stdout: string }) => x.stdout.includes(`node-d ${shortAddr(addrD, 6)}`) && / {2}LISTED/.test(x.stdout.split('\n')[0] ?? '');
+    const g = await pollUntil(() => runCli(['patch', 'get', id], A), listedWithD, 12 * 60_000, 5000);
+    expect(g.stdout.split('\n')[0]).toBe(`${name}  LISTED  (yours)`);
+    expect(g.stdout).toMatch(new RegExp(`^node-d ${esc(shortAddr(addrD, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+`, 'm'));
+    expect(g.stdout).not.toContain('hash-only');
+    const passRows = g.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length;
+    expect(passRows, 'node-b, node-c and node-d all voted PASS on the real model').toBe(3);
+    expect(g.stdout).toMatch(new RegExp(`^verification\\s+${passRows}/2 passed ✓ quorum$`, 'm'));
+    } finally {
+      release();
     }
   });
 
@@ -1345,8 +1404,6 @@ test.describe('operator: fourth node', () => {
     expect(cat.code, cat.stderr || cat.stdout).toBe(0);
     expect(cat.stdout).toMatch(/^krx-all-2761\s+LISTED\s+270053 rows {2}25 AIN {2}attest 2\/2 {2}KRX ticker codes for 2,761 listed companies \(final\)$/m);
     expect(cat.stdout).not.toContain(K.pixel);
-    // Step 10 (the agent's 402 purchase of krx-all-2761 after a restart) is asserted end-to-end by AZ-071..AZ-082
-    // against this same live cluster — which was itself brought up by this very script.
 
     // ---- steps 1-7 for REAL on a private throwaway cluster (same script, same binaries, same web UI) ----
     // scripts/cluster-restart.sh may not bounce the shared demo cluster while other groups use it, so the restart
@@ -1474,6 +1531,32 @@ test.describe('operator: fourth node', () => {
       }
       for (const u of urls) await httpDown(u, 30_000);
       rmSync(pHome, { recursive: true, force: true });
+    }
+
+    // Step 10 for real, against the LIVE cluster this script brought up: the agent still completes a 402 purchase after a
+    // restart. pixelplus-087600 is SUPERSEDED (the scenario's own note), so the success check buys krx-all-2761.
+    await waitForRuntime(request);
+    await waitForLockFree(request);
+    // (the scenario's step-10 note that `--patch pixelplus-087600` is REFUSED describes older behaviour: an explicitly
+    //  requested SUPERSEDED knowledge is now honoured with a note — asserted in AZ-077 — so the success check simply
+    //  buys krx-all-2761 as the scenario itself prescribes)
+    const settleBefore = (await api<{ records: { body: { buyer: string } }[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length;
+    const funded = await runCli(['chain', 'fund', agentAddr!, '30'], A);
+    expect(funded.code, funded.stderr || funded.stdout).toBe(0);
+    const buy = await agentRun(['run', '--market', NODE_A, '--patch', K.final, '--pay', 'ain-transfer', '--json'], { timeoutMs: 20 * 60_000 });
+    expect(buy.code, buy.stderr || buy.stdout).toBe(0);
+    const res = JSON.parse(strip(buy.stdout)) as { success: boolean; patch_id: string | null; scheme: string; already_known: boolean; restored: boolean; steps: string[] };
+    expect(res.success).toBe(true);
+    expect(res.scheme).toBe('ain-transfer');
+    expect(res.steps[res.steps.length - 1]).toBe('result: SUCCESS — the 402 purchase loop completed');
+    if (res.already_known) {
+      // documented in the scenario: with the knowledge already loaded in the shared model the agent stops at step [1]
+      test.info().annotations.push({ type: 'note', description: 'the shared model already answered the benchmark question — already_known:true, patch_id null, no purchase (documented in the scenario)' });
+    } else {
+      expect(res.patch_id).toBe(K.final);
+      const settleRecs = (await api<{ records: { body: { buyer: string; patch_id: string; amount: string } }[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records;
+      expect(settleRecs.length).toBe(settleBefore + 1);
+      expect(settleRecs.some((x) => x.body.buyer === agentAddr && x.body.patch_id === K.final), 'node-a settled the agent as buyer after the restart').toBe(true);
     }
   });
 });

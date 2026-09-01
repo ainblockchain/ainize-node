@@ -4,11 +4,12 @@
  * per-run unique ids for on-chain artifacts and a visitor-scoped POST /api/chat.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { connect as netConnect } from 'node:net';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { APIRequestContext } from '@playwright/test';
-import { CLI, NODE_A, NODE_BIN, REPO, api, sleep, waitForLockFree, waitForRuntime } from './ainize';
+import { CLI, NODE_A, NODE_BIN, REPO, RUNTIME_PATCH_DIR, VLLM, api, sleep, waitForLockFree, waitForRuntime } from './ainize';
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -144,6 +145,43 @@ export async function withRuntime<T extends { stdout: string; stderr: string; co
     await sleep(20_000);
   }
   return r;
+}
+
+/**
+ * A private 3-node cluster from the same script and binaries as the demo one (`scripts/cluster-restart.sh` with
+ * NGRAM_CLUSTER_HOME / NGRAM_PORT_BASE / NGRAM_LEDGER=local / NGRAM_SEED=0): its own home, its own ports, a local
+ * ledger (nothing on the shared chain) and no demo seed. It talks to the SAME serving instance as the demo cluster, so
+ * its verifiers queue on the one cross-process runtime lock like every other node. Always `stop()` in a `finally`.
+ */
+export interface PrivateCluster { home: string; base: number; urls: string[]; sh: (...args: string[]) => Promise<RunResult>; stop: () => Promise<void> }
+export async function startPrivateCluster(tag: string): Promise<PrivateCluster> {
+  const portBusy = (port: number) => new Promise<boolean>((resolve) => {
+    const sock = netConnect({ port, host: '127.0.0.1' });
+    sock.setTimeout(1500, () => { sock.destroy(); resolve(true); });
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('error', () => resolve(false));
+  });
+  let base = 0;
+  for (const cand of [3502, 3512, 3522, 3532, 3542, 3552]) {
+    if (!(await Promise.all([cand, cand + 1, cand + 2].map(portBusy))).some(Boolean)) { base = cand; break; }
+  }
+  if (!base) throw new Error('no free port base for a private cluster');
+  const home = tmpHome(tag);
+  const urls = [base, base + 1, base + 2].map((p) => `http://localhost:${p}`);
+  const sh = (...args: string[]): Promise<RunResult> => new Promise((resolve) => {
+    const child = spawn('bash', [join(REPO, 'scripts/cluster-restart.sh'), ...args], {
+      cwd: REPO, env: { ...process.env, NGRAM_CLUSTER_HOME: home, NGRAM_PORT_BASE: String(base), NGRAM_LEDGER: 'local', NGRAM_SEED: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = ''; let err = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    const t = setTimeout(() => child.kill('SIGKILL'), 150_000);
+    child.on('close', (code) => { clearTimeout(t); resolve({ code: code ?? 1, stdout: strip(out), stderr: strip(err) }); });
+  });
+  const boot = await sh();
+  if (boot.code !== 0) throw new Error(`private cluster ${tag} failed to start: ${boot.stderr || boot.stdout}`);
+  for (const u of urls) if (!(await httpUp(u, 120_000))) { await sh('--stop'); throw new Error(`private cluster ${tag}: ${u} never answered`); }
+  return { home, base, urls, sh, stop: async () => { await sh('--stop'); rmSync(home, { recursive: true, force: true }); } };
 }
 
 export async function pollUntil<T>(fn: () => Promise<T>, ok: (v: T) => boolean, ms: number, everyMs = 5000): Promise<T> {

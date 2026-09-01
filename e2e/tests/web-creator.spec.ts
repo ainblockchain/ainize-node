@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect, type Page, type Request as PwRequest } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, api, operatorToken, loginViaUi, startThrowawayNode, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, HOME_A, K, PASSWORDS, VLLM, api, operatorToken, loginViaUi, startThrowawayNode, waitForRuntime, waitForLockFree, sleep } from '../helpers/ainize';
 import {
   NPZ_NAME, NPZ_PATH, PIXEL_SAMPLE, SAMSUNG_SAMPLE, authMe, benchmarkJson, createDraftViaApi, deleteDraftIfAny, delayRoute, ensureDraft, esc, fmtBytes, fmtMoney, fmtNum,
   kv, manageUrl, nodeInfo, patchDetail, pickFreeId, readState, saveState, shortAddr, shortHash, testDraftSpec, titleChip, uploadDraftSpec, type PatchDetail,
@@ -49,7 +49,7 @@ test('AZ-027 Create the operator password on first visit and land on My knowledg
   // The first-visit setup form can only be exercised once per node and every cluster node already has its operator
   // password, so the scenario runs against a private throwaway node (same binary + web UI, local ledger, no peers,
   // roles seller/verifier/serving like node-a) that is started here and removed afterwards.
-  const tn = await startThrowawayNode('az027', { name: 'node-a', roles: 'seller,verifier,serving' });
+  const tn = await startThrowawayNode('az027', { name: 'node-az027', roles: 'seller,verifier,serving' });
   try {
     await runFirstVisitSetup(page, tn.url);
   } finally {
@@ -142,18 +142,16 @@ test('AZ-035 Reject invalid password setup input client-side and refuse a second
   await operatorToken(request, NODE_A); // node-a: password already set (C-01)
   let node: string | null = null;
   for (const n of [NODE_B, NODE_C]) if ((await authMe(request, n)).needsSetup) { node = n; break; }
-  if (!node) {
-    // every node already has a password: the setup form only depends on GET /api/auth/me needsSetup:true, so render it with a
-    // stubbed /api/auth/me — the three checks under test are purely client-side and never reach the server.
-    node = NODE_A;
-    const me = await authMe(request, NODE_A);
-    await page.route('**/api/auth/me', (route) => route.fulfill({ json: { ...me, signedIn: false, needsSetup: true } }));
-    note('no node still needed setup — client-side validation exercised with a stubbed GET /api/auth/me (needsSetup:true) on node-a');
-  }
+  // every cluster node has had its password since the first run, so the form is rendered from REAL server state on a
+  // private throwaway node built from the same binary + web UI (genuinely needsSetup) rather than a stubbed /api/auth/me.
+  const fresh = node ? null : await startThrowawayNode('az035', { roles: 'seller,verifier,serving', maxLifeS: 420 });
+  if (fresh) note(`no cluster node still needed setup — the client-side half runs against a private node with a real needsSetup:true (${fresh.name})`);
+  const setupNode: string = node ?? fresh!.url;
+  try {
   const setupCalls: string[] = [];
   page.on('request', (r) => { if (r.url().includes('/api/auth/setup')) setupCalls.push(r.url()); });
 
-  await page.goto(`${node}/signing`);
+  await page.goto(`${setupNode}/signing`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Create the operator password');
   const pw = page.getByLabel('Password', { exact: true });
   const confirm = page.getByLabel('Confirm password', { exact: true });
@@ -172,13 +170,16 @@ test('AZ-035 Reject invalid password setup input client-side and refuse a second
   await confirm.fill('abcd'); await terms.uncheck(); await submit.click();
   await expect(page.locator('form').getByText('Please agree to the Terms and Policies.', { exact: true })).toBeVisible();
   expect(setupCalls).toHaveLength(0);
-  expect((await authMe(request, node)).needsSetup || node === NODE_A).toBe(true); // nothing was created
+  expect((await authMe(request, setupNode)).needsSetup, 'nothing was created — the node still has no operator password').toBe(true);
 
   const r = await request.post(`${NODE_A}/api/auth/setup`, { data: { password: 'other123' } });
   expect(r.status()).toBe(409);
   expect(((await r.json()) as { error: string }).error).toBe('operator password already set');
   const login = await request.post(`${NODE_A}/api/auth/login`, { data: { password: PASSWORDS[NODE_A] } });
   expect(login.status()).toBe(200);
+  } finally {
+    await fresh?.stop();
+  }
 });
 
 // =====================================================================================================================
@@ -964,6 +965,18 @@ test('AZ-046 Remove and re-add a connected peer node', async ({ page, request })
     await expect(r.getByRole('button', { name: 'Remove' })).toBeVisible();
   }
 
+  // node-c has node-a as a configured peer and says hello every ~4 s, so the peer exchange can re-add it before the
+  // polling table ever renders without it. To assert the "row disappears" half for real, the next /api/nodes poll AFTER
+  // the DELETE is served with the post-delete peer list (the node's own answer, node-c filtered out); rediscovery then
+  // runs unmodified against the live node.
+  let deleted = false;
+  page.on('response', (r) => { if (r.url().endsWith('/api/peers') && r.request().method() === 'DELETE') deleted = true; });
+  await page.route('**/api/nodes', async (route) => {
+    const resp = await route.fetch();
+    const json = (await resp.json()) as Peers;
+    if (deleted) json.peers = json.peers.filter((p) => p.endpoint !== NODE_C);
+    await route.fulfill({ response: resp, json });
+  });
   const [res] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/peers') && r.request().method() === 'DELETE'),
     rowC.getByRole('button', { name: 'Remove' }).click(),
@@ -973,10 +986,12 @@ test('AZ-046 Remove and re-add a connected peer node', async ({ page, request })
   expect(await res.json()).toEqual({ ok: true });
   expect(rightAfter).not.toContain(NODE_C);
   await expect(page.getByText('Node removed.', { exact: true })).toBeVisible();
-  await expect(rowC).toHaveCount(0);
-  // node-c has node-a as a configured peer and says hello every ~4 s → the peer exchange re-adds it automatically
+  // the table renders the removal …
+  await expect(rowC).toHaveCount(0, { timeout: 30_000 });
+  await page.unroute('**/api/nodes');
+  // … and then, unmodified, the row comes back on its own ("only briefly", per the scenario)
   await expect.poll(async () => (await api<Peers>(request, '/api/nodes')).body.peers.map((p) => p.endpoint), { timeout: 30_000, message: 'peer :3404 re-discovered' }).toContain(NODE_C);
-  if ((await rowC.count()) === 0) note('the Connected nodes table does not poll — the re-discovered :3404 row only re-appears after the next mutation/reload');
+  await expect(rowC).toHaveCount(1, { timeout: 30_000 });   // and it is back in the table on its own
 
   await page.getByLabel('Add node endpoint').fill(`${NODE_C}/`);
   const [addReq, addRes] = await Promise.all([
@@ -1073,9 +1088,17 @@ test.describe('runtime', () => {
     test.setTimeout(30 * 60_000);
     const token = await operatorToken(request);
     const info = await nodeInfo(request);
-    const id = readState().draftId ?? 'pixelplus-test-1';
-    const spec = testDraftSpec(id);
+    let id = readState().draftId ?? 'pixelplus-test-1';
+    let spec = testDraftSpec(id);
     let d = await patchDetail(request, id, token);
+    if (d && d.status !== 'DRAFT') {
+      // The recorded draft is already on the public record (a targeted re-run of AZ-031, or AZ-030 did not run first).
+      // Publishing IS this scenario, so guarantee the precondition with a fresh id instead of following verification only.
+      note(`${id} is already ${d.status} — creating an identical fresh draft so the checklist + publish half really runs`);
+      id = await pickFreeId(request, token, 'pixelplus-test-1');
+      spec = testDraftSpec(id);
+      d = await patchDetail(request, id, token);
+    }
     if (!d) d = await ensureDraft(request, token, { ...spec, visibility: 'test' });
     if (d.status === 'DRAFT' && d.anchor.visibility !== 'test') {
       // the web form cannot set visibility; re-create the identical draft with visibility:test so the public catalog stays clean
@@ -1085,8 +1108,7 @@ test.describe('runtime', () => {
       note(`draft ${id} re-created with visibility:test (identical fields) before publishing`);
     }
     saveState({ publishedId: id });
-    const wasDraft = d.status === 'DRAFT';
-    if (!wasDraft) note(`${id} was already published (${d.status}) — following its verification only`);
+    expect(d.status, 'AZ-031 publishes a DRAFT — the precondition is created above when the recorded one is gone').toBe('DRAFT');
     const samples = d.anchor.benchmark.samples?.length ?? 0;
     expect(samples).toBeGreaterThan(0);
     expect(await waitForRuntime(request, NODE_B), 'node-b runtime').toBe(true);
@@ -1095,7 +1117,7 @@ test.describe('runtime', () => {
 
     await login(page);
     await page.goto(manageUrl(NODE_A, info.address, id));
-    if (wasDraft) {
+    {
       await expect(titleChip(page)).toHaveText('Draft');
       const list = page.locator('strong', { hasText: 'Before you publish' }).locator('xpath=following-sibling::ul[1]');
       // each row is a "✓" mark span followed by the label text
@@ -1146,7 +1168,7 @@ test.describe('runtime', () => {
       await sleep(1000);
     }
     expect(cur?.status, `final status after ${Math.round((Date.now() - t0) / 1000)}s`).toBe('LISTED');
-    if (wasDraft) expect([...chips]).toContain('Registered · awaiting verification');
+    expect([...chips]).toContain('Registered · awaiting verification');
     expect([...chips]).toContain('Verified');
     const window = firstAt !== null && secondAt !== null ? secondAt - firstAt : 0;
     if (window > 7000) {
@@ -1404,7 +1426,7 @@ test.describe('runtime', () => {
     test.setTimeout(20 * 60_000);
     expect(await waitForRuntime(request), 'node-a runtime').toBe(true);
     const rt = (await api<{ available: boolean; api: string; model: string; hook: boolean; applied: { patch_id: string; reason: string }[] }>(request, '/api/runtime')).body;
-    expect(rt).toMatchObject({ available: true, api: 'http://localhost:8000', model: MODEL, hook: true });
+    expect(rt).toMatchObject({ available: true, api: VLLM, model: MODEL, hook: true });
 
     await login(page);
     await page.goto(`${NODE_A}/account`);
@@ -1412,7 +1434,7 @@ test.describe('runtime', () => {
     await expect(page.getByText('The real model this node can load knowledge into and out of. Verification scoring and live tests use it too.', { exact: true })).toBeVisible();
     await expect(kv(page, 'Status')).toHaveText('available');
     expect(await color(kv(page, 'Status'))).toBe(GREEN);
-    await expect(kv(page, 'Model server')).toHaveText('http://localhost:8000');
+    await expect(kv(page, 'Model server')).toHaveText(VLLM);
     await expect(kv(page, 'Model')).toHaveText(MODEL);
     await expect(kv(page, 'Load/unload hook')).toHaveText('connected');
     if (rt.applied.length === 0) await expect(kv(page, 'Knowledge loaded now')).toHaveText('none');
