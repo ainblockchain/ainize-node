@@ -2,7 +2,7 @@
 
 _A senior design review of the running product: node-a (demo cluster, http://localhost:3402) and node-u (dataset-first teach build, http://localhost:3422), driven with Playwright at 1280 px and 360 px, in English and Korean, across first-visit, empty, loading, error, offline, permission-denied, long-content and shared-GPU-queue states. Screenshots cited by filename live in `packages/e2e/results/ux/`. 100 findings, ranked; the first 20 are the ones that would change the product most._
 
-**Review date:** 2026-09-01 · **Findings:** 100 (24 critical, 69 major, 7 minor)
+**Review date:** 2026-09-01 · **Findings:** 100 (24 critical, 69 major, 7 minor) · **Fixed and re-verified on the running product:** 17 (items 1, 2, 6, 7, 12, 20, 22, 24, 26, 27, 28, 29, 55, 56, 84, 85, 97)
 
 ---
 
@@ -26,18 +26,18 @@ Below: 100 problems worth fixing, ranked - the first 20 are the ones that would 
 
 | # | Finding | Theme | Severity |
 |---|---|---|---|
-| 1 | From turn 2 the "Before loading" column is fed the patched answer as its own history, so the demo disproves itself | The live test moment | critical |
-| 2 | Accuracy is printed against the wrong denominator on every surface that shows it | Trust and evidence | critical |
+| 1 | From turn 2 the "Before loading" column is fed the patched answer as its own history, so the demo disproves itself | The live test moment | critical ✅ fixed |
+| 2 | Accuracy is printed against the wrong denominator on every surface that shows it | Trust and evidence | critical ✅ fixed |
 | 3 | The Buy tab promises "no sign-up" and then offers a visitor nothing but an operator sign-in | Deciding what to load | critical |
 | 4 | Retired knowledge is fully purchasable and the newer-version warning lives in a different tab | Deciding what to load | critical |
 | 5 | Fixing one flagged row silently deletes every other flagged row, then reports "0 need a fix" | Teaching from a dataset (node-u) | critical |
-| 6 | "Your lesson is ready - it learned all 11 questions" sits above "no training happened", with Publish as the primary button | Teaching from a dataset (node-u) | critical |
-| 7 | The node announces simulated checks as measurements "in the live model" | Trust and evidence | critical |
+| 6 | "Your lesson is ready - it learned all 11 questions" sits above "no training happened", with Publish as the primary button | Teaching from a dataset (node-u) | critical ✅ fixed |
+| 7 | The node announces simulated checks as measurements "in the live model" | Trust and evidence | critical ✅ fixed |
 | 8 | Lessons publish automatically by default, and Approve puts a stranger’s lesson on the public record under your node in one click | The operator console | critical |
 | 9 | "Subscribe" buys every item in a track with no price, no count and no confirmation | The operator console | critical |
 | 10 | A failing API renders as a healthy, empty operator console | States, errors and empty screens | critical |
 | 11 | A transient API error turns a live, listed knowledge page into "This node does not know this knowledge" | States, errors and empty screens | critical |
-| 12 | The "AI Network" ledger badge is painted on top of the first nav link at every desktop width | Visual system and copy | critical |
+| 12 | The "AI Network" ledger badge is painted on top of the first nav link at every desktop width | Visual system and copy | critical ✅ fixed |
 | 13 | The loudest element on the landing page is a count that reads "1 verified knowledge" here and "0 verified knowledge" on the other node | What this is and who it is for | critical |
 | 14 | Ticking another knowledge silently empties both the conversation and the lesson you were building | Teaching from a conversation | critical |
 | 15 | 4 KB of random binary passes as a valid dataset and is marked "Will train" | Teaching from a dataset (node-u) | critical |
@@ -45,7 +45,7 @@ Below: 100 problems worth fixing, ranked - the first 20 are the ones that would 
 | 17 | The progress line says "2 of 2 correct" and the verdict on the same card says "0 of 2" | Teaching from a conversation | critical |
 | 18 | No item on the browse list shows a price on a phone | Mobile | critical |
 | 19 | On a phone the answer lands off-screen and is never scrolled into view - a free try spent on something never seen | Mobile | critical |
-| 20 | The expected answer is never rendered as text, so the tick-or-cross verdict cannot be checked - and on touch it does not exist | Trust and evidence | critical |
+| 20 | The expected answer is never rendered as text, so the tick-or-cross verdict cannot be checked - and on touch it does not exist | Trust and evidence | critical ✅ fixed |
 
 ---
 
@@ -157,6 +157,7 @@ _9 findings (2 critical, 7 major, 0 minor) — items 3, 4, 25, 26, 27, 30, 73, 7
 - **Evidence:** critic-explore-w.png, browse-buy-explore-w-en.png; /api/info counts.
 - **User cost:** The visitor has to read four near-identical names and work out which one is current. On a real catalogue with retired versions of every item the list becomes unusable.
 - **Fix:** Add a third chip group "Show: Current only | All versions" defaulting to Current only, wired to the existing status query param, with a line under the count: "3 older versions hidden - show".
+- **Status:** fixed — Explore gained a third chip group "Show: Current only | All versions", default Current only, sent as the catalogue's own `status` param, with "3 older versions hidden · show" under the count. The default hides nothing from the operator who owns those versions — the dashboard and each item's own page are unchanged.
 
 #### 27. The default sort puts a retired single-fact item at the top of the marketplace
 
@@ -166,6 +167,7 @@ _9 findings (2 critical, 7 major, 0 minor) — items 3, 4, 25, 26, 27, 30, 73, 7
 - **Evidence:** GET /api/catalog?sort=popular ordering; critic-explore-w.png.
 - **User cost:** The first card a visitor sees is a dead item that teaches one ticker code; clicking it lands on a page marked "Newer version available" and they have to find the real item themselves.
 - **Fix:** Make status the first key of the popular sorter in packages/node/src/api.ts:151 - LISTED before SUPERSEDED and REJECTED, then downloads. One line.
+- **Status:** fixed — `sort=popular` ranks by status first (LISTED 0, in-flight 1, SUPERSEDED 2, REJECTED 3) and only then by downloads and passed count, so the flagship heads the marketplace and the retired single-fact item with 251 downloads does not.
 
 #### 30. There is no price or buy affordance above the fold - buying is the fourth tab
 
@@ -215,6 +217,7 @@ _12 findings (1 critical, 11 major, 0 minor) — items 1, 57, 58, 59, 60, 61, 62
 - **Evidence:** Wire capture: turn 2 sent [{user:"종목코드 픽셀플러스 "},{assistant:"**픽셀플러스**의 코스닥 시장 종목코드는 **087600**입니다."},{user:"방금 말한 종목코드를 숫자만 다시 알려줘"}] with mode:"compare". Screenshots live-test-28-history-contaminates-base-1280-en.png, critic-chat-history.png.
 - **User cost:** The page exists to prove the base model cannot do this and the knowledge can. Two turns in it proves the opposite, and a visitor deciding on a 25 AIN purchase concludes the knowledge is worthless. Nothing warns that the comparison has stopped being clean.
 - **Fix:** Build two histories in compare mode: replay tr.response.base for the base call and tr.response.patched for the patched call, sending messages_base and messages_patched (or a history:[{prompt, base, patched}] array the node splits at market.ts:707). If that is too large for now, make compare mode single-turn: send only the new prompt and say "Each comparison is a fresh question - earlier answers are not carried over".
+- **Status:** fixed — Compare mode sends one conversation per column: POST /api/chat gained `messages_base` / `messages_patched` (both must end with the same question, else 400) and the node replays each to its own generation, reporting `history {base, patched, split}`. A column that never answered a turn is left out of that column's history rather than faked, and from turn 2 the transcript states the rule. Re-measured on the node→model wire: the base call carries the base model's own "136950" and answers 136950, the patched call carries "087600" and answers 087600.
 
 #### 57. "Buy the knowledge" is said four times on one screen and is not a link anywhere
 
@@ -457,6 +460,7 @@ _13 findings (3 critical, 8 major, 2 minor) — items 5, 6, 15, 45, 46, 47, 48, 
 - **Evidence:** Trained a real 12-question dataset on :3422; guard-ds-result.png, teach-dataset-27-result.png, teach-dataset-42-result-360.png. Policy: backend "stub", simulated_checks true.
 - **User cost:** Two sentences that cannot both be true, with the false one in display type and the true one in a pale box. A user who scans the headline believes they produced sellable knowledge, and the loudest action offers to put that nothing on a public marketplace under their name.
 - **Fix:** When simulated or stub, replace the headline rather than appending a caveat: title "Demo run finished - nothing was trained", subtitle explaining the numbers are illustrative, disclaimer first and in warning tone, and hide the Publish card (keep "Keep it private" and "Train it again").
+- **Status:** fixed — (shipped in `knowledge-marketplace-teachable`) On a stub / simulated node the lesson result page leads with "Demo run finished — nothing was trained", the admission is first and warning-toned (#fff3e0), the counts say they are illustrative, "Keep it private" is the filled primary button and publishing is demoted to a plain "Publish anyway (demo)" link under "What this demo node produced is a placeholder file." The card is gone rather than the route: the publish flow stays reachable so the scenarios that walk publishing, review, decline, credit and payout still exercise it.
 
 #### 15. 4 KB of random binary passes as a valid dataset and is marked "Will train"
 
@@ -663,6 +667,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** GET /api/patches/krx-all-2761: benchmark.queries 2761, attestations score {free_generation:"26/26", pre_apply:"1/8"}. Screenshots browse-buy-detail-krx-all-2761-overview.png, critic-landing-sec4.png, browse-buy-explore-w-en.png. Strings: i18n/pages/detail.ts detail.ov.accuracy_line; LandingPage.tsx:404-409; PatchListItem.tsx:14-23.
 - **User cost:** A non-expert reads "100% over 2,761 questions" as an exhaustive audit and pays 25 AIN on that basis; the real guarantee is 26 spot checks. This is the one number the whole marketplace asks people to trust and it is inflated by roughly two orders of magnitude.
 - **Fix:** Derive the denominator from the attestation, never from the anchor: change detail.ov.accuracy_line to "{score} on {tested} of {facts} questions checked by verifiers" and pass the parsed denominator of score.free_generation. On cards (PatchListItem.tsx:162) print "100% (26/26 checked)"; on the landing card (LandingPage.tsx:407) print "100% on a 26-question sample of 2,761".
+- **Status:** fixed — Every surface derives the denominator from the attestation instead of the anchor: cards read "100% (26/26 checked)", the landing card "100% on a 26-question sample of 2,761", the knowledge page "Accuracy 100% on 26 of 2,761 questions checked by verifiers". An item with no scored attestation still prints no accuracy at all.
 
 #### 7. The node announces simulated checks as measurements "in the live model"
 
@@ -672,6 +677,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** guard-ds-checked.png, teach-dataset-07b-check-1500ms.png; policy JSON quoted above.
 - **User cost:** The check is the evidence-producing action on the screen where users decide which questions to keep and which to drop. Every one of those decisions is made on a fabricated basis and nothing on the screen says so; the disclosure only appears later, on the result page.
 - **Fix:** Read policy.simulated_checks in TeachDatasetPage: relabel the button "Check (simulated on this node)", swap teach.rows.checked_sample for a variant that says simulated and not measured in a live model, and render the per-row "It answered" help in the muted/warn tone, reusing the existing teach.card.simulated copy.
+- **Status:** fixed — (shipped in `knowledge-marketplace-teachable`) TeachDatasetPage reads `policy.simulated_checks`: a warning banner before the button ("Demo node — these checks were simulated, not measured in a live model."), the button "Check (simulated on this node)", the result line "Simulated check: 2 of 3 are marked to train — nothing was measured in a live model." and every quoted answer as "Simulated answer (no model was asked): …" in the warning tone. On a live model all of it reverts to the measured wording.
 
 #### 20. The expected answer is never rendered as text, so the tick-or-cross verdict cannot be checked - and on touch it does not exist
 
@@ -681,6 +687,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** live-test-03-answer-compare-1280-en.png; DOM probe of both title attributes; innerText search.
 - **User cost:** The page’s central claim is "this answer is right and that one is wrong". A visitor is shown a red cross next to 136950 and a green tick next to 087600 and has to take it on faith; on a phone or tablet the justification simply does not exist.
 - **Fix:** When turn.expect is set, render "Expected: 087600" as visible muted text under the hit chip (a new chat.hit.expected key, keeping the tooltip for the longer explanation) and as a second line inside the sample chip. A fact that only a mouse can reach is a fact the product does not have.
+- **Status:** fixed — Every scored answer bubble renders "Expected: 087600" as visible muted text under the ✓/✗ chip (the tooltip is kept for the longer explanation), and every sample chip carries it on a second visible line while its accessible name stays the bare prompt.
 
 #### 24. Scores measured on different question sets are presented as comparable
 
@@ -690,6 +697,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** API benchmark_hash and format for all four items; browse-buy-benchmarks.png.
 - **User cost:** A buyer comparing ep12 (10 AIN, 100%) with the final (25 AIN, 100%, same facts, same verifiers) sees no reason to pay 2.5x, and the page has explicitly told them the comparison is valid. The whole point of the version ladder is invisible.
 - **Fix:** Group the list by benchmark_hash with a heading per question set ("template only - 26 questions", "template + chat - 26 questions"), put the format next to the accuracy on the card, and replace bench.explain with the honest version: scores are comparable only within one question set.
+- **Status:** fixed — `/benchmarks/:schema` groups by `benchmark_hash`, with a heading per question set naming the format, the question count and the short hash, and a line per group saying whether anything here can be compared with it. Every card prints its format next to its accuracy, and the old "scored with the same question set, so it can be compared" claim is gone.
 
 #### 28. The before/after evidence exists in every attestation and is shown nowhere
 
@@ -699,6 +707,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** API attestations quoted above; browse-buy-detail-krx-all-2761-verification.png, critic-detail-verification.png (Accuracy column shows only 26/26; "1/8" appears in no tab’s innerText).
 - **User cost:** "100%" alone means nothing - the model might already know the answers. "1 of 8 right before, 26 of 26 after" is the proof the product is built on, it was measured twice independently, and a buyer never sees it.
 - **Fix:** Add a Before column to the verification table beside Accuracy, and put the pair in the hero stat: replace the bare "100%" StatValue with "1/8 -> 26/26" and keep the percentage as the StatNote.
+- **Status:** fixed — The baseline every attestation already carried (`score.pre_apply`) is rendered: a Before column in the Verification table, the hero stat as "1/8 → 26/26" with the percentage as its note, and a line under the Overview score bar naming the pair as one run scored twice.
 
 #### 29. "Verified" means two different things and is printed twice on the same row
 
@@ -708,6 +717,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** Live innerText of the row; critic-explore-w.png, critic-explore-ko.png, browse-buy-benchmarks.png.
 - **User cost:** On one screen the same word means "passed verifier quorum" and "currently for sale". A reader cannot tell whether "1 verified" means three items failed verification, and the doubled badge reads like a rendering bug.
 - **Fix:** Rename status.LISTED to "For sale" (ko 판매 중) and reserve "Verified" for the attestation badge; change bench.stats from "{listed} verified" to "{listed} current version(s)". The pairs then read "Verified ✓ · For sale" and "Verified ✓ · Newer version available", both true.
+- **Status:** fixed — `status.LISTED` is "For sale" / "판매 중" and "Verified" is reserved for the attestation badge, so the pairs read "Verified · For sale" and "Verified · Newer version: …". `bench.stats` counts current versions and question sets instead of "{listed} verified".
 
 #### 55. Overview promises a side-effect threshold the verification tab says was never measured
 
@@ -717,6 +727,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** critic-detail-overview.png vs critic-detail-verification.png; API attestations carry no collateral_nat.
 - **User cost:** "Will loading this break the rest of my model?" is the question a buyer most needs answered. The page implies it was checked, the evidence tab says it was not, and the buyer has to notice the contradiction unaided.
 - **Fix:** When no attestation reports collateral_nat, render the Overview row in warning tone as "Limit declared (<= 0.08 nat) - not yet measured by any verifier" and link it to the Verification tab.
+- **Status:** fixed — The Overview side-effect row counts what verifiers actually reported: "Threshold set — measured by {n} of {of} verifiers" when someone measured it, and otherwise "Limit declared (≤ 0.08 nat) — not yet measured by any verifier" in warning tone (#8a4b00) with a button that opens the Verification tab, where the same fact reads "not reported".
 
 #### 56. Every card wears the same certified seal, including the three retired items
 
@@ -726,6 +737,7 @@ _8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 5
 - **Evidence:** critic-explore-w.png, critic-explore-ko.png (four identical purple seals).
 - **User cost:** The strongest trust signal on the page carries zero information and contradicts the status chip beside it, and it burns the one chance to give four same-named items distinct visual identities.
 - **Fix:** Drive the icon from the entry: seal for quorum_ok && status === "LISTED", an outline/greyed variant for SUPERSEDED, the pulsing treatment already in StatusChip for VERIFYING. If per-item art is out of scope, drop the icon and give the 56 px back to the content.
+- **Status:** fixed — The 56 px certified seal is drawn from the entry instead of unconditionally: full colour for `quorum_ok && LISTED`, greyed (grayscale(1), opacity .45) for SUPERSEDED, pulsing for VERIFYING / ANNOUNCED, and absent for anything that never reached quorum — each with its own tooltip.
 
 ### States, errors and empty screens
 
@@ -757,6 +769,7 @@ _7 findings (3 critical, 3 major, 1 minor) — items 10, 11, 22, 76, 77, 78, 79_
 - **Evidence:** critic-chat-429.png, live-test-06-quota-429-1280-en.png; request counter after click = 0.
 - **User cost:** The one affordance given to a blocked user is a no-op. They click, nothing happens, they click again, and conclude the site is broken rather than that they hit a limit.
 - **Fix:** Carry a retryable flag on the Turn (false for 429, 499 and AbortError) and do not render Retry for those. In the quota case put a link to the knowledge page labelled "Buy this knowledge" and the time the hour window resets in its place.
+- **Status:** fixed — The Turn carries a `retryable` flag; the quota 429 renders no Retry and offers "Buy this knowledge" plus the measured reset instant instead, from the node's new `quota_reset` field on the 429 body (Market.chatQuotaResetsAt, documented in the OpenAPI). Only the 429 is marked non-retryable: a cancelled turn's Retry does issue a real request, so it stays.
 
 #### 76. The catalogue error state prints a raw JS exception, offers no retry, and loses the filters
 
@@ -806,6 +819,7 @@ _6 findings (0 critical, 5 major, 1 minor) — items 84, 85, 86, 87, 88, 89_
 - **Evidence:** critic-landing-ko-1280.png (h1 renders as "AI", the audience heading as "?", both hero pills empty) on a host where fc-list :lang=ko returns 0; /explore in Korean renders perfectly (critic-explore-ko.png) because it uses font.body.
 - **User cost:** On bare Linux, CI and any device without a Hangul system font, the Korean landing page has no headline, no section titles and two unlabelled buttons; everywhere else the brand face silently drops out for Korean readers only.
 - **Fix:** Append the Hangul fallbacks to both stacks in theme/theme.ts so they match font.body: display gains Apple SD Gothic Neo and Noto Sans KR, mono gains Noto Sans KR before monospace. One line each.
+- **Status:** fixed — `theme.font.display` gains 'Apple SD Gothic Neo','Noto Sans KR' and `theme.font.mono` gains 'Noto Sans KR' before monospace — the Hangul faces index.html already downloads. Latin rendering is untouched: Mulish is still the first family and the Hangul names are appended after it.
 
 #### 85. Every page shares one title, and neither the title nor <html lang> follows the language toggle
 
@@ -815,6 +829,7 @@ _6 findings (0 critical, 5 major, 1 minor) — items 84, 85, 86, 87, 88, 89_
 - **Evidence:** Title and lang probes across nine routes; first-impression-path-*.png.
 - **User cost:** Three open tabs are indistinguishable and history and bookmarks all read the same line; for a Korean visitor the page declares itself English, so screen readers pronounce Hangul with an English voice and browsers offer to translate a page already in their language.
 - **Fix:** Set document.documentElement.lang = locale in an effect in LocaleProvider, and add a small useTitle(text) hook called once per page ("Explore knowledge · Ainize", "Live test · Ainize", "<patch name> · Ainize", "404 · Ainize") sourced from the existing i18n keys.
+- **Status:** fixed — LocaleProvider sets `document.documentElement.lang` from the locale, and a new `useTitle(text)` hook names each of the 18 pages from its existing dictionary key, so ten routes now report ten distinct titles and the title and lang follow the language toggle without a reload.
 
 #### 86. The flagship publish command carries a Korean product name on the English page and wraps onto two lines
 
@@ -962,6 +977,7 @@ _5 findings (1 critical, 3 major, 1 minor) — items 12, 97, 98, 99, 100_
 - **Evidence:** critic-header-1280.png ("AI N[Explore knowledge]"), first-impression-header-1280-ko.png ("AI Network지식 둘러보기"), final-ledger-1280.png, final-network-1280.png, guard-header-out-1280.png.
 - **User cost:** The first screen after the landing CTA has its brand mark, ledger mode and primary nav item smeared over each other on every page of the product. It reads as broken software before anything has been evaluated.
 - **Fix:** Header.tsx: make Home flex: 0 0 auto and let Nav absorb the slack (flex: 1 1 auto; justify-content: flex-end; min-width: 0). Keep the sm breakpoint wrap rule as it is - at 700 px and below Home already takes its own row and there is no collision.
+- **Status:** fixed — Home is `flex: 0 0 auto` and Nav takes the slack; nav-item horizontal padding went 16 px → 10 px. Measured at 1440/1280/1024/960/900/768/700/600/414/360 px: the badge and the first nav link now clear each other by 19 px at desktop and the bar wraps cleanly below ~900 px (was a 65 px overlap at 1024–1440 and 141 px at 900).
 
 #### 97. "Newer version available" is the lowest-contrast element on the card
 
@@ -971,6 +987,7 @@ _5 findings (1 critical, 3 major, 1 minor) — items 12, 97, 98, 99, 100_
 - **Evidence:** critic-explore-w.png, browse-buy-detail-krx-all-2761-ep6-overview.png; ratio computed from the two theme values.
 - **User cost:** Scanning the list the eye lands on the seal, the bold name and the green Verified and skips the grey chip, so a retired item reads as endorsed - which is exactly what happens to the top-ranked card.
 - **Fix:** Give SUPERSEDED the warning palette already used by KindChip (#8a4b00 on #fff3e0, 6.4:1) and put the successor id in the chip text: "Newer version: krx-all-2761".
+- **Status:** fixed — `STATUS_META.SUPERSEDED` uses the warning palette KindChip already used (#8a4b00 on #fff3e0 — measured 6.20:1 in the live page, was 2.96:1) and the chip names its successor: "Newer version: krx-all-2761".
 
 #### 98. The three step illustrations are recycled container-hosting art, and step 3 is a struck-through dollar sign above "payment is automatic"
 
