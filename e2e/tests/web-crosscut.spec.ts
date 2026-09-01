@@ -268,19 +268,31 @@ test.describe('runtime', () => {
     expect(quotaBefore).not.toBeNull();
     await sendPrompt(page, K.pixelPrompt.trim());
     await strip.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click({ timeout: 2000 });
-    await expect(lastTurn(page).getByRole('alert')).toHaveText('Request cancelled.');
+    // D3: which of the two the visitor is told depends on whether the node had already taken the shared lock when the
+    // button was pressed, and that is a genuine race — the scenario documents BOTH and requires the message to say
+    // which happened. ("Request cancelled." is the pre-D3 wording and must no longer appear.)
+    const alert = lastTurn(page).getByRole('alert');
+    const FREE = 'You stopped waiting. The node had not started this test yet, so no free try was used.';
+    const CHARGED = 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.';
+    await expect(alert).toHaveText(new RegExp(`^(${FREE.replace(/[.]/g, '\\.')}|${CHARGED.replace(/[.]/g, '\\.')})$`));
+    const charged = (await alert.innerText()).includes('still counts as one free try');
     await expect(lastTurn(page).getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(chatTextarea(page)).toBeEnabled({ timeout: 2000 });
 
-    // Step 5 — quota unchanged at cancel time; the aborted request is still charged once it completes on the node
+    // Step 5 — the counter never moves at cancel time (no response arrived). What the retry costs follows the message:
+    // cancelled while QUEUED nothing reached the model, so only the retry is charged; cancelled while RUNNING the node
+    // finishes the work and charges it too.
     expect(await readQuota(page)).toBe(quotaBefore);
     await lastTurn(page).getByRole('button', { name: 'Retry' }).click();
     const done = await completeTurn(page, request);
     expect(done.status).toBe('done');
     const drop = (quotaBefore as number) - (await readQuota(page) as number);
-    if (done.retries === 0) expect(drop, 'cancelled request + retry are both charged').toBe(2);
-    else { expect([1, 2]).toContain(drop); test.info().annotations.push({ type: 'note', description: `runtime hiccup during step 5 (${done.retries} retry); quota drop observed: ${drop}` }); }
-    test.info().annotations.push({ type: 'note', description: 'A cancelled live-test request is still charged when it completes on the node (quota dropped by two after cancel + retry) — UX finding, matches the scenario text.' });
+    const expected = charged ? 2 : 1;
+    if (done.retries === 0) expect(drop, charged ? 'cancelled-while-running + retry are both charged' : 'cancelled while queued is free, so only the retry is charged').toBe(expected);
+    else { expect([expected - 1, expected]).toContain(drop); test.info().annotations.push({ type: 'note', description: `runtime hiccup during step 5 (${done.retries} retry); quota drop observed: ${drop}` }); }
+    test.info().annotations.push({ type: 'note', description: charged
+      ? 'The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour.'
+      : 'The give-up landed while the request was still queued: nothing was sent to the model, HTTP 499, and only the retry was charged (quota dropped by one).' });
   });
 
   test('AZ-093 Operate the Live test and sign-in entirely from the keyboard with visible focus', async ({ page, request }) => {

@@ -3,7 +3,7 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, CHAIN, K, VLLM, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, CHAIN, K, VLLM, api, holdRuntimeLock, operatorToken, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { PIXEL_NPZ } from '../helpers/operator-cli';
 import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, visitorHeaders, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
@@ -24,6 +24,11 @@ function executedAccuracyPct(e: CatalogEntry): number | null {
   return m && Number(m[2]) ? Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10 : null;
 }
 interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number }[] }
+/** POST /api/chat (the fields D1/D2 added: the guard verdict and the honest score). */
+interface ChatAnswer { content: string; truncated: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string; finish_reason: string | null }
+interface ChatResponse { patched: ChatAnswer; base: ChatAnswer | null; benchmark_hit: boolean | null; benchmark_hits: Record<string, boolean | null>; remaining_quota: number | null; quota_limit: number | null }
+/** POST /api/runtime/complete — `raw: true` reproduces the pre-guard request body. */
+interface CompleteResponse { text: string; finish_reason: string | null; truncated: 'repetition' | 'length' | null; shown_chars: number; raw_chars: number; raw_text?: string }
 interface Info { node: { address: string; blobs: string[] }; ledger: { records: number; height: number; provider: string; app: string }; counts: { listed: number; verifying: number }; quorum: number; royalty_share: number; peers: number }
 
 const dd = (page: Page, label: string) => page.locator(`xpath=//dt[normalize-space()="${label}"]/following-sibling::dd[1]`);
@@ -1357,4 +1362,285 @@ test.describe('Live test (shared runtime)', () => {
     await expect(tab2.getByRole('status').filter({ hasText: none })).toBeVisible();
     await tab2.close();
   });
+
+  /* ================================================== D1 / D2 / D3 — the three reported defects, proved on the UI */
+
+  /** Proof screenshots: 1280 px and 360 px, English and Korean, into the MAIN checkout's results directory. */
+  const PROVE_DIR = '/mnt/newdata/ainize/knowledge-marketplace/packages/e2e/results';
+  const shot = (page: Page, name: string, lang: 'en' | 'ko', px: 1280 | 360) => page.screenshot({ path: `${PROVE_DIR}/prove-${name}-${px}-${lang}.png`, fullPage: true });
+  const langButton = (page: Page) => page.getByRole('button', { name: 'language' });
+  /** Run `body` at 1280 then at 360, in English then Korean, taking one screenshot per combination. */
+  async function inBothWidthsAndLocales(page: Page, name: string, body: (lang: 'en' | 'ko') => Promise<void>): Promise<void> {
+    const original = page.viewportSize();
+    for (const px of [1280, 360] as const) {
+      await page.setViewportSize({ width: px, height: px === 1280 ? 900 : 780 });
+      for (const lang of ['en', 'ko'] as const) {
+        if (lang === 'ko') await langButton(page).click();
+        await body(lang);
+        await shot(page, name, lang, px);
+        if (lang === 'ko') await langButton(page).click();
+      }
+    }
+    if (original) await page.setViewportSize(original);
+  }
+
+  test('AZ-131 A runaway answer is cut off with a plain explanation, not shown as an endless loop', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    const bodies: { messages: { content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') bodies.push(r.postDataJSON()); });
+    const ask = async (text: string) => {
+      const res = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+      const turn = await sendPrompt(page, text);
+      await waitTurnDone(page, request, turn);
+      return { turn, json: await (await res).json() as ChatResponse };
+    };
+    /** Each prompt is asked on an EMPTY transcript: the composer sends the conversation history, and a preceding
+        turn changes what the model answers next (it is what made this scenario's loop prompt answer normally). */
+    const clear = async () => {
+      const btn = page.getByRole('button', { name: 'Clear conversation' });
+      if (await btn.count()) { await btn.click(); await expect(turns(page)).toHaveCount(0); }
+    };
+
+    /* Steps 2-5 — a prompt that DOES loop through the chat path, so the note and the raw-answer affordance are seen
+       end to end. Measured on this cluster: cycle score 1.00, period 8-9. Two candidates, because the shared
+       instance is not bit-deterministic; the assertions below run against whichever one the model looped on. */
+    let loop: { turn: Locator; json: ChatResponse } | null = null;
+    let LOOP = '';
+    for (const cand of ['가나다라마바사 '.repeat(10).trim(), '가나다라마바사아 '.repeat(8).trim(), '가나다라 '.repeat(8).trim()]) {
+      await clear();
+      const got = await ask(cand);
+      if (got.json.patched.truncated === 'repetition') { loop = got; LOOP = cand; break; }
+      test.info().annotations.push({ type: 'note', description: `'${cand.slice(0, 20)}…' did not loop this time (truncated=${got.json.patched.truncated})` });
+    }
+    expect(loop, 'at least one of the loop prompts made the model repeat itself').not.toBeNull();
+    const { turn: turn2, json: j2 } = loop!;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'the prompt is sent verbatim').toBe(LOOP);
+    expect(j2.patched.truncated).toBe('repetition');
+    expect(j2.patched.shown_chars!).toBeLessThan(j2.patched.raw_chars!);
+    expect(j2.patched.raw_content!.startsWith(j2.patched.content)).toBe(true);
+    expect(j2.patched.raw_content!.length).toBe(j2.patched.raw_chars);
+
+    const note = turn2.getByTestId('chat-truncated');
+    await expect(note).toHaveAttribute('data-truncated', 'repetition');
+    await expect(note).toContainText('The model started repeating itself, so the answer is cut off here — that usually means the question is outside what this knowledge covers.');
+    await expect(note).toContainText(`showing ${j2.patched.shown_chars} of ${j2.patched.raw_chars} characters`);
+    await expect(bubble(turn2, 'After loading')).toContainText(j2.patched.content.trim());
+    // nothing is ever deleted: the model's full output is one click away
+    const toggle = turn2.getByTestId('chat-raw-toggle');
+    await expect(toggle).toHaveText(`Show the raw answer (all ${j2.patched.raw_chars} characters)`);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('Hide the raw answer');
+    await expect(turn2.getByTestId('chat-raw-answer')).toHaveText(j2.patched.raw_content!);
+
+    await inBothWidthsAndLocales(page, 'a-runaway-cut', async (lang) => {
+      await expect(note).toContainText(lang === 'en'
+        ? 'The model started repeating itself, so the answer is cut off here'
+        : '모델이 같은 말을 반복하기 시작해서 답을 여기서 잘랐습니다.');
+      await expect(turn2.getByTestId('chat-raw-toggle')).toHaveText(lang === 'en' ? 'Hide the raw answer' : '원본 답변 숨기기');
+      await expect(turn2.getByTestId('chat-raw-answer')).toHaveText(j2.patched.raw_content!);
+    });
+
+    /* Step 2 — the one-character prompt the owner reported, on its own clean transcript. The chat path is the quiet
+       one (D1 stop sequences), so what is asserted is the DEFECT being gone, not one particular answer. */
+    await clear();
+    const { turn: turn1, json: j1 } = await ask('드');
+    // D1 — whatever the model said, it is not an endless loop: no 40-character run of one character.
+    expect(j1.patched.content, 'the answer shown is not an endless loop').not.toMatch(/(.)\1{39}/su);
+    expect(j1.patched.shown_chars ?? j1.patched.content.length).toBeLessThanOrEqual(j1.patched.raw_chars ?? j1.patched.content.length);
+    // D2 — '드' used to be auto-scored '✗ Wrong' against 종목코드 픽셀플러스 , a sample it never asked about.
+    expect(j1.benchmark_hit, "'드' is too short to be matched to a benchmark sample").toBeNull();
+    const after1 = bubble(turn1, 'After loading');
+    await expect(after1.getByText(/^(✓ Correct|✗ Wrong)$/)).toHaveCount(0);
+    // if the guard did fire on this turn too it must explain itself and keep the raw text — never delete it silently
+    if (await turn1.getByTestId('chat-truncated').count()) {
+      await expect(turn1.getByTestId('chat-truncated')).toContainText('The model started repeating itself');
+      await expect(turn1.getByTestId('chat-raw-toggle')).toBeVisible();
+    }
+    // NOTE: the bubble() helper matches the ENGLISH label, so the locale passes assert on the turn itself.
+    await inBothWidthsAndLocales(page, 'a-short-prompt', async (lang) => {
+      await expect(turn1.getByText(lang === 'en' ? 'Free question — not auto-scored' : '자유 질문 — 자동 채점 없음')).toBeVisible();
+    });
+
+    /* Steps 3/4 — the completion path, where the guard can be compared against its own pre-guard request body. */
+    const token = await operatorToken(request);
+    const complete = async (raw: boolean) => (await api<CompleteResponse>(request, '/api/runtime/complete',
+      { method: 'POST', token, data: { prompt: '드', max_tokens: 200, ...(raw ? { raw: true } : {}) } })).body;
+    // `raw: true` is exactly what this endpoint sent before D1: no stop sequences, no guard, never flagged.
+    for (let i = 0; i < 3; i++) {
+      const r = await complete(true);
+      expect(r.truncated, 'raw:true reproduces the pre-guard body, so nothing is ever flagged').toBeNull();
+      expect(r.shown_chars).toBe(r.raw_chars);
+      expect(r.raw_text).toBeUndefined();
+    }
+    // the guarded call never returns a runaway; when it cuts one it says so and keeps the whole text.
+    let cut = 0;
+    for (let i = 0; i < 6; i++) {
+      const g = await complete(false);
+      expect(g.text, 'the guarded completion is never an endless loop').not.toMatch(/(.)\1{39}/su);
+      if (g.truncated === null) { expect(g.shown_chars).toBe(g.raw_chars); continue; }
+      cut++;
+      expect(g.truncated).toBe('repetition');
+      expect(g.shown_chars).toBeLessThan(g.raw_chars);
+      expect(g.raw_text!.length).toBe(g.raw_chars);
+      expect(g.raw_text!.startsWith(g.text)).toBe(true);
+    }
+    test.info().annotations.push({ type: 'note', description: `'드': ${cut}/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents` });
+
+    /* A short correct answer is never flagged. The claim is about the GUARD, so the correct answer is the
+       PRECONDITION: the shared instance is not bit-deterministic (the same trained prompt occasionally comes back
+       wrong under another tenant's load), and one bad roll must not be reported as the guard misbehaving. Whatever
+       comes back, it is never flagged — that part is asserted on every attempt. */
+    let hits = 0;
+    for (let i = 1; i <= 3; i++) {
+      const good = await api<ChatResponse>(request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_ids: [K.final], mode: 'patched', messages: [{ role: 'user', content: K.pixelPrompt }] } });
+      expect(good.body.patched.truncated, 'a short answer to a trained prompt is never called a loop').toBeNull();
+      expect(good.body.patched.shown_chars ?? 0).toBe(good.body.patched.raw_chars ?? 0);
+      if (good.body.benchmark_hit === true) {
+        expect(good.body.patched.content.replace(/\s/g, '')).toContain(K.pixelExpect);
+        hits++;
+        if (i > 1) test.info().annotations.push({ type: 'note', description: `the trained prompt needed ${i} generations to come back correct (shared instance, another tenant's load) — no attempt was ever flagged as a loop` });
+        break;
+      }
+      test.info().annotations.push({ type: 'note', description: `attempt ${i}: the shared model answered the trained prompt with ${JSON.stringify(good.body.patched.content.slice(0, 40))} — unflagged, as it must be` });
+    }
+    expect(hits, 'the trained prompt answers 087600 within three generations').toBe(1);
+  });
+
+  test('AZ-132 A sample question is sent exactly as the knowledge was trained, trailing space included', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    // the chip label is trimmed and carries the ␣ marker; its accessible name stays the plain prompt
+    const pixelChip = chip(page, '종목코드 픽셀플러스');
+    await expect(pixelChip).toHaveText('종목코드 픽셀플러스␣');
+    await expect(pixelChip).toHaveAttribute('title', `Expected: ${K.pixelExpect}`);
+    await expect(pixelChip.getByText('␣')).toHaveAttribute('title', 'The trailing space is part of the trained prompt — clicking inserts it, and it is sent, exactly as trained.');
+    await expect(page.getByText('Samples are sent exactly as trained, trailing space included.')).toBeVisible();
+
+    // clicking it puts the TRAINED prompt in the box — trailing space included
+    const bodies: { messages: { content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') bodies.push(r.postDataJSON()); });
+    await pixelChip.click();
+    expect(await textarea(page).inputValue(), 'the box holds the trained prompt verbatim').toBe(K.pixelPrompt);
+
+    const r1 = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+    const turn1 = await sendPrompt(page);
+    await waitTurnDone(page, request, turn1);
+    const j1 = await (await r1).json() as ChatResponse;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'the request body carries the trailing space').toBe(K.pixelPrompt);
+    expect(j1.benchmark_hit).toBe(true);
+    expect(j1.patched.truncated).toBeNull();
+    const after1 = bubble(turn1, 'After loading');
+    await expect(after1).toContainText(K.pixelExpect);
+    await expect(after1.getByText('✓ Correct')).toHaveAttribute('title', `This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: ${K.pixelExpect}`);
+    await expect(turn1.getByTestId('chat-truncated')).toHaveCount(0);
+    // NOTE: the bubble() helper matches the ENGLISH label, so the locale passes assert on the turn itself.
+    await inBothWidthsAndLocales(page, 'b-sample-chip', async (lang) => {
+      await expect(turn1.getByText(lang === 'en' ? '✓ Correct' : '✓ 정답')).toBeVisible();
+      await expect(turn1).toContainText(K.pixelExpect);
+    });
+
+    // typed by hand, WITHOUT the trailing space: still the right answer and still scored (trimmed equality)
+    const r2 = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+    const turn2 = await sendPrompt(page, '종목코드 픽셀플러스');
+    await waitTurnDone(page, request, turn2);
+    const j2 = await (await r2).json() as ChatResponse;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'what the visitor typed is sent unchanged').toBe('종목코드 픽셀플러스');
+    expect(j2.benchmark_hit).toBe(true);
+    const after2 = bubble(turn2, 'After loading');
+    await expect(after2).toContainText(K.pixelExpect);
+    await expect(after2.getByText('✓ Correct')).toBeVisible();
+    await inBothWidthsAndLocales(page, 'c-typed-by-hand', async (lang) => {
+      await expect(turn2.getByText(lang === 'en' ? '✓ Correct' : '✓ 정답')).toBeVisible();
+      await expect(turn2).toContainText(K.pixelExpect);
+    });
+
+    // a knowledge verified only in the completion form warns that the chat form can differ
+    await page.goto(`${origin}/chat/${K.ep12}`);
+    await expect(page.getByTestId('chat-format-note')).toContainText('This knowledge was trained and verified in the completion form');
+  });
+
+  test('AZ-133 A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    // one real test first, so the quota footer shows a number this scenario can watch
+    const turn0 = await sendPrompt(page, K.pixelPrompt);
+    await waitTurnDone(page, request, turn0);
+    await expect(quotaFooter(page)).toHaveText('Free trial 19/20 left this hour');
+
+    // a SECOND process (this test) takes the cross-process lease on the same mailbox the node uses
+    const release = await holdRuntimeLock(request, `chat:${K.final}`);
+    try {
+      // the picker names the holder — a live foreign pid, so neither 'mine' nor 'stale'
+      // The node reports the new holder at once; the picker polls GET /api/chat/patches every 20 s, so the banner
+      // can still be showing the previous holder for one cycle. Wait for it to name THIS process.
+      const held = await api<{ lock: { owner: string; alive: boolean; stale: boolean; mine: boolean } | null }>(request, '/api/chat/patches', { node: origin });
+      expect(held.body.lock, 'this test process holds the shared lease').toMatchObject({ owner: `pid:${process.pid}`, alive: true, stale: false, mine: false });
+      const banner = page.getByTestId('chat-lock');
+      const holderLine = new RegExp(`Another test in progress \\(chat:${K.final}, node process ${process.pid}\\) — started \\d+(s|m) ago`);
+      await expect(banner).toContainText(holderLine, { timeout: 90_000 });
+      await expect(banner).toContainText('Someone else is testing on the shared model right now.');
+      await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
+      await expect(page.getByTestId('chat-lock-mine')).toHaveCount(0);
+      await expect(page.getByTestId('chat-lock-stale')).toHaveCount(0);
+
+      const sentAt = Date.now();
+      const turn = await sendPrompt(page, '종목코드 삼성전자 ');
+      // ...the transcript says it is queued within ~2 s, names the holder, and ticks
+      const queued = turn.getByTestId('chat-queued');
+      await expect(queued).toContainText('Queued behind another test — your question has not been lost.', { timeout: 5_000 });
+      const queuedAfterMs = Date.now() - sentAt;
+      test.info().annotations.push({ type: 'note', description: `the queued state appeared ${queuedAfterMs} ms after the question was sent` });
+      expect(queuedAfterMs, 'the queued state appears within a couple of seconds of sending').toBeLessThan(5_000);
+      await expect(queued).toContainText(new RegExp(`Someone else has the shared model \\(chat:${K.final}, started \\d+s ago\\)\\.`));
+      // position is shown only when someone is ahead in this node's OWN queue; alone in line it stays quiet
+      await expect(queued).not.toContainText('You are number');
+      const secs = async () => Number(/waiting (\d+)s/.exec((await queued.textContent()) ?? '')?.[1] ?? -1);
+      const t1 = await secs();
+      expect(t1).toBeGreaterThanOrEqual(0);
+      await expect.poll(secs, { timeout: 15_000, intervals: [500], message: 'the queue clock ticks' }).toBeGreaterThan(t1);
+      await inBothWidthsAndLocales(page, 'd-queued', async (lang) => {
+        await expect(turn.getByTestId('chat-queued')).toContainText(lang === 'en' ? 'Queued behind another test' : '다른 테스트 뒤에서 순서를 기다리는 중입니다');
+      });
+
+      // ...and can be given up on for free: nothing was ever sent to the model
+      const stop = page.getByRole('button', { name: 'Stop waiting' });
+      await expect(stop).toBeVisible();
+      const cancelled = page.waitForResponse((r) => r.url().includes('/api/chat/cancel') && r.request().method() === 'POST');
+      await stop.click();
+      expect(await (await cancelled).json()).toEqual({ cancelled: true, reason: 'queued', charged: false });
+      await expect(turn.getByRole('alert')).toHaveText('You stopped waiting. The node had not started this test yet, so no free try was used.');
+      await expect(turn.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await expect(textarea(page)).toBeEnabled();
+      // the quota counter did not move — the give-up was free
+      await expect(quotaFooter(page)).toHaveText('Free trial 19/20 left this hour');
+    } finally {
+      release();
+    }
+
+    // once the holder lets go the banner clears and the very same question is answered, charging exactly one try
+    await expect.poll(async () => {
+      await waitForLockFree(request, origin);
+      await page.reload();
+      await expect(page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
+      return page.getByTestId('chat-lock').count();
+    }, { timeout: 3 * 60_000, intervals: [2_000], message: 'the lock banner is gone once nobody holds the shared model' }).toBe(0);
+    await modeRadio(page, 'After only').click();
+    const turn2 = await sendPrompt(page, '종목코드 삼성전자 ');
+    await waitTurnDone(page, request, turn2);
+    await expect(bubble(turn2, 'After loading')).toContainText(K.samsungExpect);
+    await expect(quotaFooter(page)).toHaveText('Free trial 18/20 left this hour');
+  });
+
 });

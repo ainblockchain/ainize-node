@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (126)
+# Ainize UX Test Scenarios (127)
 
-This document lists 126 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 127 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -18,18 +18,18 @@ This document lists 126 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Persona | Count | P0 | P1 | P2 |
 |---|---:|---:|---:|---:|
-| Visitor (knowledge user) | 28 | 10 | 16 | 2 |
+| Visitor (knowledge user) | 29 | 10 | 17 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
 | Node operator / developer | 20 | 6 | 11 | 3 |
 | AI agent / automation | 14 | 6 | 7 | 1 |
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 3 | 1 | 2 | 0 |
-| **Total** | **126** | **42** | **66** | **18** |
+| **Total** | **127** | **42** | **67** | **18** |
 
 | Area | Count |
 |---|---:|
-| chat | 16 |
+| chat | 17 |
 | teach | 13 |
 | x402 | 13 |
 | agent | 7 |
@@ -56,7 +56,7 @@ This document lists 126 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 70 |
+| e2e | 71 |
 | cli | 25 |
 | api | 19 |
 | manual | 12 |
@@ -1075,6 +1075,42 @@ This document lists 126 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/web/src/components/chat/ChatComposer.tsx insert()/submit() (no trim), ␣ marker with aria-label unchanged`
 - `packages/node/src/market.ts matchBenchmarkSample() (trimmed equality first, containment only ≥ 8 chars); packages/web/src/components/chat/util.ts matchSample mirror`
 - `packages/node/src/runtime.ts verify() — sampling: null on every generation`
+
+### AZ-133 - A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing
+
+**Goal:** When someone else — another visitor, a verifier, another node on the same machine — is using the shared model, the visitor is told they are in line, who is ahead of them and for how long, and can stop waiting without spending a free try.
+
+**Priority:** P1 - **Area:** chat - **Automation:** e2e
+
+**Preconditions**
+
+- Model server available; krx-all-2761 testable on node-a
+- A SECOND process holds the cross-process runtime lease of the same patch mailbox (<runtime.patchDir>/.ainize-runtime.lock with a live holder pid) — the e2e helper holdRuntimeLock() takes it exactly the way a node does
+
+**Steps**
+
+1. Run one live test on http://localhost:3402/chat/krx-all-2761 so the free-trial counter shows a number
+2. From another process, take the shared runtime lease on the same mailbox
+3. Read the knowledge picker
+4. Ask a question while the lease is held
+5. Press 'Stop waiting' and read the free-trial counter
+6. Release the lease and ask the same question again
+
+**Expected**
+
+- The picker says 'Someone else is testing on the shared model right now.' with 'Another test in progress (chat:krx-all-2761, node process <pid>) — started {n}s ago' and the one-at-a-time explanation — naming the FOREIGN holder, never 'Your test has the shared model' (that line is for this tab's own in-flight request only)
+- The transcript's own pending turn says 'Queued behind another test — your question has not been lost.' within a couple of seconds, names the holder ('Someone else has the shared model (chat:krx-all-2761, started {n}s ago).') and shows a ticking 'waiting {n}s' counter
+- The queue position line is shown only when someone is ahead in this node's own queue (alone in line it stays quiet)
+- The pending row's button reads 'Stop waiting' rather than 'Cancel'
+- Pressing it returns {cancelled: true, reason: 'queued', charged: false}; the turn says 'You stopped waiting. The node had not started this test yet, so no free try was used.' and offers Retry
+- The free-trial counter is unchanged — nothing was sent to the model, so nothing was charged (POST /api/chat answers HTTP 499)
+- Once the holder lets go the banner disappears and the same question is answered normally, charging exactly one free try
+
+**Evidence**
+
+- `packages/node/src/chat-queue.ts (ticket registry: queued/running/gone, per-visitor, free cancel while queued); packages/node/src/runtime.ts lockHolder()/queueState()/serial() onEnter`
+- `packages/node/src/api.ts GET /api/chat/status, POST /api/chat/cancel, quota consumed only after a successful chat`
+- `packages/web/src/pages/ChatPage.tsx lockIsMine={queue?.state === 'running'} (RTK Query keeps `data` after a query is skipped, so reading `qs` directly made every later holder read as 'your test'); packages/web/src/components/chat/TurnView.tsx QueuePending; packages/web/src/components/chat/util.ts lockKind()`
 
 ## Knowledge creator (operator)
 
@@ -2965,12 +3001,12 @@ This document lists 126 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Preconditions**
 
-- At least one settle record with scheme 'ain-transfer' exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts
+- At least one settle record with scheme 'ain-transfer' AND seller = node-a exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts. The settle ledger is shared by every node in the cluster, so the NEWEST ain-transfer record is not necessarily node-a's: replaying a sale another node made is a different scenario (node-a answers 409 'not sold here' for a patch it does not sell)
 - Seller node http://localhost:3402 up; node-a address = GET /api/info node.address (currently 0xF7A9dE49902C95661AC6556D631e2B60a081A1F5)
 
 **Steps**
 
-1. Fetch an existing settlement: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1' | python3 -c 'import json,sys;b=json.load(sys.stdin)["records"][0]["body"];print(b["patch_id"],b["tx_hash"],b["buyer"])'`
+1. Fetch an existing settlement NODE-A SOLD: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1000' | python3 -c 'import json,sys;A="0xF7A9dE49902C95661AC6556D631e2B60a081A1F5";b=next(r["body"] for r in json.load(sys.stdin)["records"] if r["body"]["scheme"]=="ain-transfer" and r["body"]["seller"]==A);print(b["patch_id"],b["tx_hash"],b["buyer"])'`
 2. Build a replay payload with that tx hash: `R=$(printf '{"scheme":"ain-transfer","network":"ain:local","txHash":"<tx_hash>","from":"<buyer>","to":"0xF7A9dE49902C95661AC6556D631e2B60a081A1F5","amount":"25","nonce":"000000000000000000000000"}' | base64 -w0)`
 3. `curl -s -i -H "x-payment: $R" http://localhost:3402/x402/patch/<patch_id>` (same patch the tx paid for)
 4. `curl -s -i -H "x-payment: $R" http://localhost:3402/x402/patch/krx-all-2761` (different patch, same tx; use krx-all-2761-ep12 if the tx already belonged to krx-all-2761)
@@ -3506,23 +3542,24 @@ This document lists 126 user-experience test scenarios for **Ainize** (ai-nize =
 1. Note the footer text under the composer (e.g. 'Free tries are limited per hour. No sign-in needed.' or 'Free trial N/20 left this hour')
 2. Select 'Compare', click the chip '종목코드 픽셀플러스', press Enter and observe the UI during the request
 3. After the answer arrives, read the meta line of the 'After loading' bubble
-4. Send the same prompt again and click 'Cancel' in the strip above the composer within 2 s
+4. Send the same prompt again and click 'Cancel' / 'Stop waiting' in the strip above the composer within 2 s
 5. Read the footer quota text, click 'Retry' under the cancelled turn and read the footer again after it completes
 
 **Expected**
 
 - Step 2: user bubble 'You' appears; both bubbles show three pulsing dots (aria-label 'Generating…') and the note 'Includes loading and unloading — this can take tens of seconds.'; the Send button shows a spinner with 'Waiting for the answer…'; a strip (role=status) reads 'Waiting for the answer — you can cancel if it takes too long.' with a 'Cancel' button; the 'View' radios, 'Enable thinking' and the textarea are disabled; the spinner does not block the picker
 - Step 3: the patched bubble header shows 'After loading · reply NNNms · loaded in N.Ns' (applied_ms around 2-4 s for this file) and '✓ Correct'; the base bubble shows 'Before loading · reply N.Ns'
-- Step 4: the turn switches to a red alert 'Request cancelled.' with a 'Retry' button; the composer unlocks immediately
-- Step 5: the quota text is unchanged at cancel time (no response arrived), but the node keeps processing the aborted request and consumes the try when it finishes; Retry is queued behind it under the runtime lock and, once it completes, the footer has dropped by two (e.g. from 19/20 to 17/20) — a cancelled request is still charged once it completes on the node (record as a UX finding if the team expects cancelled tries to be free)
+- Step 4: the turn switches to a red alert naming which of the two things happened — 'You stopped waiting. The node had not started this test yet, so no free try was used.' while it was still queued, or 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.' once the node had taken the shared lock — with a 'Retry' button; the composer unlocks immediately. The pre-D3 wording 'Request cancelled.' must no longer appear: a wait is not a rejection, and the visitor is told whether it cost them anything
+- Step 5: the quota text is unchanged at cancel time either way (no response arrived). What the retry then costs follows the message, and which message appears is a genuine race against the shared lock: cancelled while still QUEUED nothing was ever sent to the model, so only the retry is charged and the footer drops by one; cancelled once it was already RUNNING the node finishes the work and charges it, so cancel + retry drop the footer by two (e.g. 19/20 to 17/20). The 'a cancelled try is always charged' finding this scenario used to record is fixed for the queued case (POST /api/chat answers HTTP 499 and consumes nothing)
 
 **Evidence**
 
-- `packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote`
+- `packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote / QueuePending`
 - `packages/web/src/pages/ChatPage.tsx CancelRow, cancel(), inflight abort, quota handling`
 - `packages/web/src/components/chat/ChatComposer.tsx loading / locked`
-- `packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed after market.chat resolves regardless of client abort)`
-- `packages/web/src/i18n/pages/chat.ts chat.bubble.compare_pending, chat.input.sending, chat.input.in_flight, chat.err.cancelled, chat.bubble.applied`
+- `packages/node/src/chat-queue.ts ChatQueue.cancel() (free while queued, honest once running) + ChatCancelledError (HTTP 499)`
+- `packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed only after market.chat resolves), POST /api/chat/cancel`
+- `packages/web/src/i18n/pages/chat.ts chat.queue.cancelled, chat.queue.cancelled_late, chat.bubble.compare_pending, chat.input.sending, chat.bubble.applied`
 - `packages/web/src/utils/format.ts bytes()`
 
 ### AZ-092 - Keep every page usable at 360 px width without horizontal page scrolling

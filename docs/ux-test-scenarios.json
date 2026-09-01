@@ -2751,11 +2751,11 @@
   "title": "Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme",
   "goal": "A tx hash that already bought a manifest cannot be replayed to obtain another manifest or a second download token.",
   "preconditions": [
-   "At least one settle record with scheme 'ain-transfer' exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts",
+   "At least one settle record with scheme 'ain-transfer' AND seller = node-a exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts. The settle ledger is shared by every node in the cluster, so the NEWEST ain-transfer record is not necessarily node-a's: replaying a sale another node made is a different scenario (node-a answers 409 'not sold here' for a patch it does not sell)",
    "Seller node http://localhost:3402 up; node-a address = GET /api/info node.address (currently 0xF7A9dE49902C95661AC6556D631e2B60a081A1F5)"
   ],
   "steps": [
-   "Fetch an existing settlement: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1' | python3 -c 'import json,sys;b=json.load(sys.stdin)[\"records\"][0][\"body\"];print(b[\"patch_id\"],b[\"tx_hash\"],b[\"buyer\"])'`",
+   "Fetch an existing settlement NODE-A SOLD: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1000' | python3 -c 'import json,sys;A=\"0xF7A9dE49902C95661AC6556D631e2B60a081A1F5\";b=next(r[\"body\"] for r in json.load(sys.stdin)[\"records\"] if r[\"body\"][\"scheme\"]==\"ain-transfer\" and r[\"body\"][\"seller\"]==A);print(b[\"patch_id\"],b[\"tx_hash\"],b[\"buyer\"])'`",
    "Build a replay payload with that tx hash: `R=$(printf '{\"scheme\":\"ain-transfer\",\"network\":\"ain:local\",\"txHash\":\"<tx_hash>\",\"from\":\"<buyer>\",\"to\":\"0xF7A9dE49902C95661AC6556D631e2B60a081A1F5\",\"amount\":\"25\",\"nonce\":\"000000000000000000000000\"}' | base64 -w0)`",
    "`curl -s -i -H \"x-payment: $R\" http://localhost:3402/x402/patch/<patch_id>` (same patch the tx paid for)",
    "`curl -s -i -H \"x-payment: $R\" http://localhost:3402/x402/patch/krx-all-2761` (different patch, same tx; use krx-all-2761-ep12 if the tx already belonged to krx-all-2761)",
@@ -3274,24 +3274,25 @@
    "Note the footer text under the composer (e.g. 'Free tries are limited per hour. No sign-in needed.' or 'Free trial N/20 left this hour')",
    "Select 'Compare', click the chip '종목코드 픽셀플러스', press Enter and observe the UI during the request",
    "After the answer arrives, read the meta line of the 'After loading' bubble",
-   "Send the same prompt again and click 'Cancel' in the strip above the composer within 2 s",
+   "Send the same prompt again and click 'Cancel' / 'Stop waiting' in the strip above the composer within 2 s",
    "Read the footer quota text, click 'Retry' under the cancelled turn and read the footer again after it completes"
   ],
   "expected": [
    "Step 2: user bubble 'You' appears; both bubbles show three pulsing dots (aria-label 'Generating…') and the note 'Includes loading and unloading — this can take tens of seconds.'; the Send button shows a spinner with 'Waiting for the answer…'; a strip (role=status) reads 'Waiting for the answer — you can cancel if it takes too long.' with a 'Cancel' button; the 'View' radios, 'Enable thinking' and the textarea are disabled; the spinner does not block the picker",
    "Step 3: the patched bubble header shows 'After loading · reply NNNms · loaded in N.Ns' (applied_ms around 2-4 s for this file) and '✓ Correct'; the base bubble shows 'Before loading · reply N.Ns'",
-   "Step 4: the turn switches to a red alert 'Request cancelled.' with a 'Retry' button; the composer unlocks immediately",
-   "Step 5: the quota text is unchanged at cancel time (no response arrived), but the node keeps processing the aborted request and consumes the try when it finishes; Retry is queued behind it under the runtime lock and, once it completes, the footer has dropped by two (e.g. from 19/20 to 17/20) — a cancelled request is still charged once it completes on the node (record as a UX finding if the team expects cancelled tries to be free)"
+   "Step 4: the turn switches to a red alert naming which of the two things happened — 'You stopped waiting. The node had not started this test yet, so no free try was used.' while it was still queued, or 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.' once the node had taken the shared lock — with a 'Retry' button; the composer unlocks immediately. The pre-D3 wording 'Request cancelled.' must no longer appear: a wait is not a rejection, and the visitor is told whether it cost them anything",
+   "Step 5: the quota text is unchanged at cancel time either way (no response arrived). What the retry then costs follows the message, and which message appears is a genuine race against the shared lock: cancelled while still QUEUED nothing was ever sent to the model, so only the retry is charged and the footer drops by one; cancelled once it was already RUNNING the node finishes the work and charges it, so cancel + retry drop the footer by two (e.g. 19/20 to 17/20). The 'a cancelled try is always charged' finding this scenario used to record is fixed for the queued case (POST /api/chat answers HTTP 499 and consumes nothing)"
   ],
   "priority": "P1",
   "area": "perf",
   "automation": "e2e",
   "evidence": [
-   "packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote",
+   "packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote / QueuePending",
    "packages/web/src/pages/ChatPage.tsx CancelRow, cancel(), inflight abort, quota handling",
    "packages/web/src/components/chat/ChatComposer.tsx loading / locked",
-   "packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed after market.chat resolves regardless of client abort)",
-   "packages/web/src/i18n/pages/chat.ts chat.bubble.compare_pending, chat.input.sending, chat.input.in_flight, chat.err.cancelled, chat.bubble.applied",
+   "packages/node/src/chat-queue.ts ChatQueue.cancel() (free while queued, honest once running) + ChatCancelledError (HTTP 499)",
+   "packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed only after market.chat resolves), POST /api/chat/cancel",
+   "packages/web/src/i18n/pages/chat.ts chat.queue.cancelled, chat.queue.cancelled_late, chat.bubble.compare_pending, chat.input.sending, chat.bubble.applied",
    "packages/web/src/utils/format.ts bytes()"
   ]
  },
@@ -4345,6 +4346,41 @@
    "packages/web/src/components/chat/ChatComposer.tsx insert()/submit() (no trim), ␣ marker with aria-label unchanged",
    "packages/node/src/market.ts matchBenchmarkSample() (trimmed equality first, containment only ≥ 8 chars); packages/web/src/components/chat/util.ts matchSample mirror",
    "packages/node/src/runtime.ts verify() — sampling: null on every generation"
+  ]
+ },
+ {
+  "id": "AZ-133",
+  "persona": "Visitor (knowledge user)",
+  "title": "A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing",
+  "goal": "When someone else — another visitor, a verifier, another node on the same machine — is using the shared model, the visitor is told they are in line, who is ahead of them and for how long, and can stop waiting without spending a free try.",
+  "preconditions": [
+   "Model server available; krx-all-2761 testable on node-a",
+   "A SECOND process holds the cross-process runtime lease of the same patch mailbox (<runtime.patchDir>/.ainize-runtime.lock with a live holder pid) — the e2e helper holdRuntimeLock() takes it exactly the way a node does"
+  ],
+  "steps": [
+   "Run one live test on http://localhost:3402/chat/krx-all-2761 so the free-trial counter shows a number",
+   "From another process, take the shared runtime lease on the same mailbox",
+   "Read the knowledge picker",
+   "Ask a question while the lease is held",
+   "Press 'Stop waiting' and read the free-trial counter",
+   "Release the lease and ask the same question again"
+  ],
+  "expected": [
+   "The picker says 'Someone else is testing on the shared model right now.' with 'Another test in progress (chat:krx-all-2761, node process <pid>) — started {n}s ago' and the one-at-a-time explanation — naming the FOREIGN holder, never 'Your test has the shared model' (that line is for this tab's own in-flight request only)",
+   "The transcript's own pending turn says 'Queued behind another test — your question has not been lost.' within a couple of seconds, names the holder ('Someone else has the shared model (chat:krx-all-2761, started {n}s ago).') and shows a ticking 'waiting {n}s' counter",
+   "The queue position line is shown only when someone is ahead in this node's own queue (alone in line it stays quiet)",
+   "The pending row's button reads 'Stop waiting' rather than 'Cancel'",
+   "Pressing it returns {cancelled: true, reason: 'queued', charged: false}; the turn says 'You stopped waiting. The node had not started this test yet, so no free try was used.' and offers Retry",
+   "The free-trial counter is unchanged — nothing was sent to the model, so nothing was charged (POST /api/chat answers HTTP 499)",
+   "Once the holder lets go the banner disappears and the same question is answered normally, charging exactly one free try"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/chat-queue.ts (ticket registry: queued/running/gone, per-visitor, free cancel while queued); packages/node/src/runtime.ts lockHolder()/queueState()/serial() onEnter",
+   "packages/node/src/api.ts GET /api/chat/status, POST /api/chat/cancel, quota consumed only after a successful chat",
+   "packages/web/src/pages/ChatPage.tsx lockIsMine={queue?.state === 'running'} (RTK Query keeps `data` after a query is skipped, so reading `qs` directly made every later holder read as 'your test'); packages/web/src/components/chat/TurnView.tsx QueuePending; packages/web/src/components/chat/util.ts lockKind()"
   ]
  }
 ]

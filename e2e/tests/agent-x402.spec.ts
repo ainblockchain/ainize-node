@@ -213,11 +213,15 @@ test.describe('x402 seller gateway contract', () => {
   });
 
   test('AZ-076 Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme', async ({ request }) => {
+    // The settle ledger is SHARED by every node in the demo cluster, so "the newest ain-transfer record" is not
+    // necessarily one of node-a's sales: a node-c royalty fixture (qa-royalty-child) can sit on top of it. Replaying
+    // someone else's payment to node-a is a different scenario — node-a answers 409 'not sold here' for a patch it
+    // does not sell, and 'transfer recipient … is not the seller' for one it does — so pick node-a's own newest sale.
     const all = await settles(request);
-    const rec = all.find((r) => r.body.scheme === 'ain-transfer');
-    expect(rec, 'an ain-transfer settle record must exist').toBeTruthy();
+    const rec = all.find((r) => r.body.scheme === 'ain-transfer' && r.body.seller === NODE_A_ADDR);
+    expect(rec, 'an ain-transfer settle record sold by node-a must exist').toBeTruthy();
     const s = rec!.body;
-    const otherPatch = s.patch_id === K.final ? K.ep12 : K.final;
+    const otherPatch = s.patch_id === K.final ? K.ep12 : K.final;   // another patch node-a sells
     const before = { seen: await hasSettleTx(request, s.tx_hash), d1: (await entry(request, s.patch_id)).downloads, d2: (await entry(request, otherPatch)).downloads };
     expect(before.seen).toBe(1);
 

@@ -180,6 +180,40 @@ test('D1: POST /api/runtime/complete returns the same structured flag, and raw:t
   assert.equal(bodies.find((x) => x.path === '/v1/completions')!.stop, undefined, 'raw:true must send the pre-D1 body');
 });
 
+test('D1 EXEMPTION: benchmark verification still sends the pre-guard body — no stop sequences, no guard', async () => {
+  // Attestations published before and after D1 must stay comparable, so Runtime.verify() passes `sampling: null`
+  // on every generation. A stop sequence could only ever cut an answer short, i.e. lower a published score.
+  const rt = N.market.runtime as unknown as Record<string, unknown> & {
+    verify(npz: string, bench: unknown, opts?: unknown): Promise<{ passed: boolean; score: Record<string, string>; verified_on: string }>;
+  };
+  const py = rt.py;
+  Object.assign(rt, { py: async () => ({ code: 0, out: 'ok', err: '' }) });   // no GPU, no patch hook
+  // a runaway that the CHAT path would cut in half: verification must still score the whole thing
+  reply = { text: '087600' + '0'.repeat(300), finish_reason: 'length' };
+  bodies.length = 0;
+  try {
+    const out = await rt.verify('/tmp/fake.npz', { samples: [{ prompt: '종목코드 픽셀플러스 ', expect: '087600' }] });
+    const gens = bodies.filter((x) => x.path === '/v1/completions');
+    assert.ok(gens.length >= 1, 'verification generated at least once');
+    for (const b of gens) {
+      assert.equal(b.stop, undefined, 'verification must not send stop sequences');
+      assert.equal(b.repetition_penalty, undefined);
+      assert.equal(b.frequency_penalty, undefined);
+      assert.equal(b.presence_penalty, undefined);
+      assert.equal(b.temperature, 0);
+    }
+    // the sample generations (the ones that produce the score) carry the exact body this node has always sent;
+    // the extra generation is verify()'s liveness probe ("Q: 1+1=\nA:", 1 token), itself exempt.
+    const scored = gens.filter((b) => b.prompt === '종목코드 픽셀플러스 ');
+    assert.ok(scored.length >= 1, 'the sample prompt is sent exactly as stored, trailing space included (D2)');
+    for (const b of scored) assert.equal(b.max_tokens, 8, 'the body this node has always sent');
+    // and the guard never touched the answer: the score is measured on the model's full output
+    assert.equal(out.passed, true);
+    assert.equal(out.score.free_generation, '1/1');
+    assert.equal(out.verified_on, `vllm:${model}`);
+  } finally { Object.assign(rt, { py }); }
+});
+
 // ---------------------------------------------------------------- D2
 test('D2: benchmark_hit is scored on the model\'s full answer, not on the truncated one', async () => {
   // the ticker is in the head, the loop is in the tail: the guard cuts the tail, the score must not change
