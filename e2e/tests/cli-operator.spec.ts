@@ -264,8 +264,13 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^AT\s+KIND\s+AUTHOR\s+SUMMARY\s+HASH\s*$/m);
     const recordsA = Number(/^records\s+(\d+)$/m.exec(r.stdout)![1]);
 
-    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '200'], A);
-    const attRows = ledgerRows(r.stdout).filter((l) => l.includes(`krx-all-2761 · PASS · vllm:${MODEL}`));
+    // `ledger ls` returns the NEWEST n records and every announce in the suite adds attestations, so the demo patch's
+    // two rows are only found while the page still reaches back to them — read the whole attest history (API cap 1000)
+    // and fail loudly if it no longer fits rather than quietly asserting over a window that has moved past them.
+    r = await runCli(['ledger', 'ls', '--kind', 'attest', '--limit', '1000'], A);
+    const allAtt = ledgerRows(r.stdout);
+    expect(allAtt.length, 'the whole attest history still fits in one page (raise the approach, not the limit, when it does not)').toBeLessThan(1000);
+    const attRows = allAtt.filter((l) => l.includes(`krx-all-2761 · PASS · vllm:${MODEL}`));
     expect(attRows.length).toBeGreaterThanOrEqual(2);
     expect(attRows.every((l) => /\sattest\s/.test(l))).toBe(true);
     r = await runCli(['ledger', 'ls', '--kind', 'supersede'], A);
