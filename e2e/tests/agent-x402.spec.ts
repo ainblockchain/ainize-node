@@ -82,23 +82,34 @@ async function ensureAgentFunded(min: number): Promise<string> {
   return addr;
 }
 
+/** True once the shared model table has been restored for this run (see requireNotLoaded). */
+let tableRestored = false;
+
 /**
- * The knowledge check of the agent must fail (patch not loaded) for a purchase to happen. A live test whose model
- * call died in a vLLM hang can leave its knowledge in the shared table, so give the node a moment to clean up and
- * then restore the precondition through the operator API instead of failing every scenario behind it.
+ * The knowledge check of the agent must fail (patch not loaded) for a purchase to happen. Every node on this machine
+ * writes into ONE model table, so the precondition can be broken by something none of them still tracks: a live test
+ * whose model call died in a vLLM hang, or a private serving node from an earlier scenario that is already gone. The
+ * first agent scenario therefore restores the table — `remove` writes the original rows back whoever applied them —
+ * and each one clears whatever the demo nodes still report as applied, instead of failing every scenario behind it.
  */
 async function requireNotLoaded(request: Parameters<typeof api>[0]) {
-  const applied = async () => (await api<{ applied: { patch_id: string }[] }>(request, '/api/runtime')).body.applied ?? [];
+  const { operatorToken } = await import('../helpers/ainize');
+  const applied = async (node: string) => (await api<{ applied: { patch_id: string }[] }>(request, '/api/runtime', { node })).body.applied ?? [];
   const t0 = Date.now();
-  while ((await applied()).length > 0 && Date.now() - t0 < 60_000) await new Promise((r) => setTimeout(r, 5_000));
-  const left = await applied();
-  if (left.length > 0) {
-    const { operatorToken } = await import('../helpers/ainize');
-    const token = await operatorToken(request, NODE_A);
-    for (const p of left) await api(request, `/api/patches/${p.patch_id}/remove`, { method: 'POST', token });
-    test.info().annotations.push({ type: 'note', description: `unloaded ${left.map((p) => p.patch_id).join(', ')} left in the shared model by an interrupted live test` });
+  while ((await applied(NODE_A)).length > 0 && Date.now() - t0 < 60_000) await new Promise((r) => setTimeout(r, 5_000));
+  for (const node of [NODE_A, NODE_B, NODE_C]) {
+    const left = await applied(node);
+    if (left.length === 0) continue;
+    const token = await operatorToken(request, node);
+    for (const p of left) await api(request, `/api/patches/${p.patch_id}/remove`, { method: 'POST', node, token });
+    test.info().annotations.push({ type: 'note', description: `unloaded ${left.map((p) => p.patch_id).join(', ')} that ${node} still held in the shared model` });
   }
-  expect(await applied(), 'precondition: no patch loaded in the shared model').toEqual([]);
+  if (!tableRestored) {
+    tableRestored = true;
+    const token = await operatorToken(request, NODE_A);
+    for (const id of [K.final, K.pixel]) await api(request, `/api/patches/${id}/remove`, { method: 'POST', token });
+  }
+  expect(await applied(NODE_A), 'precondition: no patch loaded in the shared model').toEqual([]);
 }
 
 // =====================================================================================================================

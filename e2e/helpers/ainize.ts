@@ -236,7 +236,26 @@ export async function startThrowawayNode(tag: string, opts: ThrowawayOpts = {}):
     if (alive(pid)) { try { process.kill(pid!, 'SIGKILL'); } catch { /* gone */ } }
     for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
   };
+  /**
+   * Leave the SHARED model table as we found it. A throwaway node applies knowledge into the runtime repo that every
+   * node on this machine shares, and its own bookkeeping dies with the home — an apply left behind would silently
+   * make the demo model answer a benchmark question correctly (breaking the agent scenarios) with nothing to point at.
+   */
+  const unloadAll = async () => {
+    const rt = await fetch(`${url}/api/runtime`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json() as Promise<{ applied?: { patch_id: string }[] }>);
+    if (!rt.applied?.length) return;
+    const me = await fetch(`${url}/api/auth/me`).then((r) => r.json() as Promise<{ needsSetup: boolean }>);
+    const auth = await fetch(`${url}${me.needsSetup ? '/api/auth/setup' : '/api/auth/login'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORDS[url] ?? 'e2e-pass' }),
+    });
+    if (!auth.ok) return;
+    const token = ((await auth.json()) as { token: string }).token;
+    for (const a of rt.applied) {
+      await fetch(`${url}/api/patches/${encodeURIComponent(a.patch_id)}/remove`, { method: 'POST', headers: { authorization: `Bearer ${token}` } }).catch(() => undefined);
+    }
+  };
   const stop = async () => {
+    await unloadAll().catch(() => undefined);   // best effort: the node may already be gone
     await cli(['stop'], home, { timeoutMs: 30_000 }).catch(() => undefined);
     await killPid();
     rmSync(home, { recursive: true, force: true });

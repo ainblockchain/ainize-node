@@ -4,7 +4,7 @@
  * Tagged @runtime: the banner test loads/unloads a knowledge in the shared serving model as operator.
  */
 import { test, expect } from '@playwright/test';
-import { K, NODE_A, api, operatorToken, runtimeAvailable } from '../helpers/ainize';
+import { K, NODE_A, api, operatorToken, runtimeAvailable, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -45,6 +45,7 @@ test('TM-090 picker: tick up to 3 knowledges, order badges, overlap warning, rou
 });
 
 test('TM-090 api: patch_ids loads in order, one usage event per knowledge, malformed bodies → 400 @runtime', async ({ request }) => {
+  test.setTimeout(25 * 60_000);   // room for one vLLM stall (~5 min) and the retry of the loaded turn
   const { body } = await api<ChatPatches>(request, '/api/chat/patches');
   test.skip(!Array.isArray(body.applied), 'node without teach-mode chat');
   const bad1 = await api(request, '/api/chat', { method: 'POST', data: { patch_id: K.final, patch_ids: [K.pixel], mode: 'base', messages: [{ role: 'user', content: 'x' }] } });
@@ -55,9 +56,16 @@ test('TM-090 api: patch_ids loads in order, one usage event per knowledge, malfo
   const ids = body.items.map((e) => e.anchor.id);
   test.skip(!ids.includes(K.final) || !ids.includes(K.pixel), 'demo knowledge not testable here');
   const before = await api<{ events: { patch_id: string }[] }>(request, '/api/events?kind=usage&limit=1');
-  const r = await api<{ patch_id: string; patch_ids: string[]; applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; applied_ms: number | null; benchmark_hits: Record<string, boolean | null>; benchmark_hit: boolean | null; patched: { content: string } | null }>(
-    request, '/api/chat', { method: 'POST', data: { patch_ids: [K.final, K.pixel], mode: 'compare', messages: [{ role: 'user', content: K.pixelPrompt }], max_tokens: 16 } });
-  expect(r.status).toBe(200);
+  type ChatReply = { patch_id: string; patch_ids: string[]; applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; applied_ms: number | null; benchmark_hits: Record<string, boolean | null>; benchmark_hit: boolean | null; patched: { content: string } | null; error?: string };
+  const ask = () => api<ChatReply>(request, '/api/chat', { method: 'POST', data: { patch_ids: [K.final, K.pixel], mode: 'compare', messages: [{ role: 'user', content: K.pixelPrompt }], max_tokens: 16 } });
+  let r = await ask();
+  // the shared vLLM stalls about once an hour and comes back in ~5 min: a 503 is the model, not the multi-load API
+  for (let attempt = 0; r.status === 503 && attempt < 2; attempt++) {
+    expect(await waitForRuntime(request, NODE_A, 8 * 60_000), `model back after 503: ${r.body.error}`).toBe(true);
+    await waitForLockFree(request, NODE_A, 5 * 60_000);
+    r = await ask();
+  }
+  expect(r.status, JSON.stringify(r.body)).toBe(200);
   expect(r.body.patch_id).toBe(K.final);
   expect(r.body.patch_ids).toEqual([K.final, K.pixel]);
   expect(r.body.applied.map((a) => a.patch_id)).toEqual([K.final, K.pixel]);
