@@ -8,7 +8,7 @@ import { K, NODE_A, PASSWORDS, VLLM, api, loginViaUi, operatorToken, sleep, star
 import { KRX_NPZ, PIXEL_NPZ, httpDown } from '../helpers/operator-cli';
 import {
   AGO_EN, AGO_KO, CHAT, CANCEL_STRIP, DATE_TIME, PURPLE, agoLabel, bubble, bytesLabel, chatPicker, chatTextarea, ensureRuntime, focusInfo, footerText,
-  completeTurn, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerBoxes, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
+  completeTurn, freshTries, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerBoxes, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
   type FocusInfo,
 } from '../helpers/crosscut-ui';
 
@@ -30,7 +30,7 @@ test.describe('runtime', () => {
 
   test('AZ-085 Show a plain error when the node API is unreachable on every public page', async ({ page, context, request }) => {
     await ensureRuntime(request);
-    const V = await visitorOrigin();
+    const V = await visitorOrigin();   // 2 tries only — no per-scenario quota bucket, whose route would collide with the offline simulation below
     await page.goto(`${V}/chat/${K.final}`);
     await waitForPicker(page, 4);
 
@@ -92,6 +92,7 @@ test.describe('runtime', () => {
   test('AZ-087 Switch the whole UI between English and Korean and keep the choice across reloads and pages', async ({ page, request }) => {
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const cat = await api<{ total: number }>(request, '/api/catalog');
     const total = numLabel(cat.body.total);
 
@@ -220,6 +221,7 @@ test.describe('runtime', () => {
   test('AZ-091 Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling', async ({ page, request }) => {
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     await page.goto(`${V}/chat/${K.final}`);
     await waitForPicker(page, 4);
 
@@ -285,6 +287,7 @@ test.describe('runtime', () => {
     await ensureRuntime(request);
     await operatorToken(request);   // makes sure the operator password exists for step 6
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const cp = await api<{ items: CatalogItem[] }>(request, '/api/chat/patches');
     const items = cp.body.items;
     const final = items.find((e) => e.anchor.id === K.final)!;
@@ -416,6 +419,7 @@ test.describe('runtime', () => {
     await page.setViewportSize({ width: 360, height: 740 });
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const addr = await nodeAAddress(request);
     const overflow: Record<string, { ok: boolean; scrollWidth: number; innerWidth: number }> = {};
 

@@ -1112,10 +1112,14 @@ test.describe('Live test (shared runtime)', () => {
     await expect(bubble(turnB, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
     await expect(tabB.getByText('Another test was running so this request could not be handled.')).toHaveCount(0);
 
-    await waitForLock(request, origin, (l) => l === null);
-    await tabB.reload();
-    await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
-    await expect(tabB.getByRole('status').filter({ hasText: 'Another test is running' })).toHaveCount(0);
+    // The banner mirrors the shared lock, and the node's own background work (a verifier run, a queued lesson) can
+    // take it again between the check and the reload — retry until the page is loaded while nobody holds it.
+    await expect.poll(async () => {
+      await waitForLock(request, origin, (l) => l === null);
+      await tabB.reload();
+      await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
+      return tabB.getByRole('status').filter({ hasText: 'Another test is running' }).count();
+    }, { timeout: 3 * 60_000, intervals: [2_000], message: 'the lock banner is gone once nobody holds the shared model' }).toBe(0);
     await tabB.close();
   });
 
