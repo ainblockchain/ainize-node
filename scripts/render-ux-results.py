@@ -84,7 +84,9 @@ def collect(report_path):
     hundred, teach = OrderedDict(), OrderedDict()
     for sid in sorted(rows):
         n = int(sid.split('-')[1])
-        (hundred if sid.startswith('AZ-') and n <= 100 else teach)[sid] = rows[sid]
+        # teach mode owns AZ-101…AZ-130 and the TM-* pair; every other AZ id is a numbered scenario of the main
+        # catalogue — AZ-131/132/133 (the three chat scenarios) included.
+        (teach if sid.startswith('TM-') or 101 <= n <= 130 else hundred)[sid] = rows[sid]
     return hundred, teach
 
 
@@ -97,7 +99,7 @@ def main():
     for sid in missing:
         hundred[sid] = {'id': sid, 'status': 'blocked', 'duration_ms': 0, 'note': 'not executed in this run'}
     hundred = OrderedDict(sorted(hundred.items()))
-    summary_text = '%d passed / %d failed / %d blocked of 100' % (passed, failed, blocked)
+    summary_text = '%d passed / %d failed / %d blocked of %d' % (passed, failed, blocked, passed + failed + blocked)
 
     per = {p: Counter() for p in ORDER}
     for sid, r in hundred.items():
@@ -106,7 +108,7 @@ def main():
     fixes = subprocess.run(['git', 'log', '--oneline', META['fix_range']], cwd=ROOT, capture_output=True, text=True).stdout.strip().split('\n')
 
     out_json = {
-        'date': META['date'], 'summary': {'passed': passed, 'failed': failed, 'blocked': blocked, 'total': 100, 'text': summary_text},
+        'date': META['date'], 'summary': {'passed': passed, 'failed': failed, 'blocked': blocked, 'total': passed + failed + blocked, 'text': summary_text},
         'environment': META['environment'], 'items': list(hundred.values()),
         'teach_items': list(teach.values()), 'teach_runs': META['teach_runs'],
         'product_fixes': fixes, 'not_covered': META['not_covered'], 'notes': META['notes'],

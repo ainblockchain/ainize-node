@@ -2,14 +2,14 @@
  "date": "2026-09-01",
  "fix_range": "665e469..HEAD",
  "environment": {
-  "Date": "2026-09-01 (the 100 scenarios were measured on `main` earlier the same day; AZ-076, AZ-091 and the three new chat scenarios AZ-131/132/133 were re-measured on the merged runtime-guard build)",
-  "Build": "`a736403` runtime-guard merged with main (D1 answer guard, D2 honest scoring, D3 visible queue on top of the audited suite) plus `7dbc6a2`; web dist rebuilt before the run",
+  "Date": "2026-09-01 (wave 0 of the UX critique — findings 2, 12, 20, 22, 26, 27, 84, 85 and 97 of docs/ux-critique.json; the whole suite re-measured afterwards on a fully rebuilt cluster)",
+  "Build": "`906b8b4` — the wave-0 fixes on top of `89844ca`. core/node/cli/agent and the web dist were all rebuilt and the cluster restarted before the run; the previous pass had been running a node dist older than its source (see the notes on AZ-055 and AZ-052)",
   "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
   "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/full-run-final.log (the 100-scenario run: 111 passed / 11 skipped / 0 failed / 0 flaky in 24.4 min). This pass re-ran the affected part on the merged build — web `45 passed (11.9m)`, mobile `1 skipped`, cli-api `14 passed (3.4m)` — with the proof screenshots in results/prove-*.png (1280 and 360 px, English and Korean)",
+  "Raw results": "packages/e2e/results/results.json and full-run-wave0.log — 113 passed / 11 skipped / 0 failed / 1 flaky (AZ-044, ECONNRESET, green on retry) in 26.2 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-0 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave0/",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "teach_runs": [
@@ -75,6 +75,8 @@
   "  the verifier trail and the ledger rows. The same substitution applies to AZ-067's restart."
  ],
  "notes_prose": [
+  "- **Wave 0 of the UX critique — nine findings, each implemented and then verified in a real browser.** `docs/ux-critique.json` items 2, 12, 20, 22, 26, 27, 84, 85 and 97: accuracy is printed against the denominator the verifiers actually used, on all three surfaces that show it; the \"AI Network\" ledger badge no longer paints over the first nav link at any desktop width; the benchmark's expected answer is rendered as text under every verdict and on every sample chip, not only in a `title`; the quota 429 offers \"Buy this knowledge\" and the node's measured reset time in place of a Retry that issued zero requests; Explore opens on \"Current only\" with \"3 older versions hidden · show\" and ranks \"Most popular\" by status before downloads; the display and mono font stacks carry the Hangul fallback the page already downloads; `<html lang>` and a per-page `<title>` follow the language toggle; and SUPERSEDED wears the warning palette and names its successor. Before/after screenshots at 1280 and 360 px in English and Korean: `packages/e2e/results/wave0/`.",
+  "- **The demo cluster had been running a node dist older than its source.** Rebuilding it for wave 0 raised two assertions that described the old binary rather than the code in the tree: the OpenAPI documents 76 paths, not 74 (the D3 queue endpoints `/api/chat/status` and `/api/chat/cancel` have been in the source since `b517cae`), and AZ-052's announce pre-check — which runs inside the node and counts every overlapping body it holds, private drafts included — has to be compared with the OPERATOR's view of `GET /api/patches/:id/conflicts`. Three taught lessons sitting on node-a as private drafts are redacted from the public answer, and the old comparison only held while the node happened to hold none.",
   "- **The three defects the owner reported are gone, proved on the live cluster.** (a) `드` no longer runs away and is no longer auto-scored — it comes back as an ordinary answer marked *Free question — not auto-scored*, and where the model does loop the reply is cut with one plain sentence and a *Show the raw answer* button that reveals the full text unchanged (AZ-131). (b) The sample chip `종목코드 픽셀플러스 ` puts the trained prompt in the box with its trailing space, sends it verbatim and scores `087600` as ✓ Correct (AZ-132). (c) The same question typed by hand, without the trailing space, still answers correctly. (d) A question asked while another process holds the shared model says so within ~1 s, names the holder and ticks, and *Stop waiting* returns HTTP 499 without charging a free try (AZ-133).",
   "- **Verification is untouched by the answer guard.** A real re-verification of `pixelplus-test-17` on node-a returned the same attestation as the three that predate the guard: `verified_on: vllm:Qwen3.8-Flash-Next`, `free_generation 1/1`, `pre_apply 0/1`, `restarts_detected 0`. `Runtime.verify()` passes `sampling: null` on every generation, and a new unit test (`guard-api.test.ts`, D1 EXEMPTION) captures the request body it actually sends: no `stop`, no penalties, `max_tokens: 8`, `temperature: 0`, prompt verbatim.",
   "- **One stale scenario assumption the shared ledger finally broke** (AZ-076). It replayed \"the newest ain-transfer settle record\", but the settle ledger is shared by every node in the cluster and a node-c royalty fixture (`qa-royalty-child`) had risen to the top: node-a answered 409 *not sold here* instead of 402 *payment already used*. The scenario and the test now take node-a's own newest sale. The product was right; the test was reading someone else's receipt.",
@@ -101,13 +103,26 @@
   "load, performance budgets, fuzzing and adversarial payment/signature testing beyond the specific replay and forgery cases the scenarios name"
  ],
  "notes": [
-  "103 of 103 passed; 0 failed; 0 blocked. This pass re-ran the affected part on the merged runtime-guard build: web 45 passed (11.9m), mobile 1 skipped, cli-api 14 passed (3.4m).",
+  "113 passed / 0 failed / 11 skipped in one full run (26.2 min) on the rebuilt cluster — web, mobile and cli-api together. One flake: AZ-044 lost a single API call to ECONNRESET and passed on the retry.",
   "The 11 skips are the 10 teach-mode lifecycle tests that cannot complete on a node whose stub trainer is measured against a live model or whose announce would be permanent, plus AZ-092 under the `mobile` project (it runs for real at 360 px under `web`).",
   "The demo cluster now serves from its own vLLM (:8002, mailbox ple_patch_e2e, GPUs 4,5); the suite reads the instance and mailbox from node-a's config.",
   "Global setup/teardown assert the cluster is left as it was found: the public catalog is still exactly the four demo knowledges, nothing is loaded in the shared model, node-a's teach policy and peer list are unchanged.",
   "Sixteen audit findings from the previous green run were worked through: fifteen fixed (four in the product), one rejected with a reason (AZ-031 on a private node would replace the scenario, not fix it)."
  ],
  "fix_groups": [
+  {
+   "title": "Wave 0 of the UX critique (findings 2, 12, 20, 22, 26, 27, 84, 85, 97)",
+   "shas": [
+    "a194a5d",
+    "5fde838",
+    "46d8afa",
+    "2dfb21d",
+    "10eaaa8",
+    "981f0e1",
+    "fcf4798",
+    "19c0d96"
+   ]
+  },
   {
    "title": "Product fixes the scenarios forced (this audit pass)",
    "shas": [
@@ -203,7 +218,7 @@
    "AZ-052",
    "medium",
    "The P0 half (a PUBLIC announce becomes publicly LISTED) was inverted to `not.toContain(id)`; the conflicts count was only annotated.",
-   "Fixed — the public announce runs for real on a private 3-node cluster from the same script and binaries; on the shared cluster the pre-check count is asserted against GET /api/patches/:id/conflicts."
+   "Fixed — the public announce runs for real on a private 3-node cluster from the same script and binaries; on the shared cluster the pre-check count is asserted against GET /api/patches/:id/conflicts as the OPERATOR sees it (the pre-check counts private drafts too, which the public answer redacts)."
   ],
   [
    "suite-wide",
