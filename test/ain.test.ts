@@ -76,10 +76,17 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
   const edges = graph.edges[childNode!] ?? {};
   assert.ok(Object.values(edges).some((e: any) => e.type === 'extends'), 'lineage is an `extends` edge in the ain-js knowledge graph');
   const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'LISTED', 90000);
-  const e = cat.find((x) => x.anchor.id === childId)!;
+  let e = cat.find((x) => x.anchor.id === childId)!;
   assert.equal(e.status, 'LISTED', JSON.stringify(e.attestations));
-  // the dev chain is shared with whatever else runs on this machine (the demo cluster's verifiers watch the same app),
-  // so assert that B attested — not that it happened to be first
+  // The dev chain is shared with whatever else watches this app (the demo cluster's verifiers do), and a verifier only
+  // picks up ANNOUNCED/VERIFYING items — so with quorum 1 someone else can list it before B's round reaches it. Ask B
+  // directly in that case: the point of the assertion is that B's attestation is accepted under the rule, not that B
+  // happened to be first.
+  if (!e.attestations.some((a) => a.verifier === B.cfg.identity.address)) {
+    await B.verifier!.verifyOne(e.anchor);
+    e = (await waitFor(() => B.market.catalog(true), (c) => !!c.find((x) => x.anchor.id === childId)?.attestations.some((a) => a.verifier === B.cfg.identity.address), 30000))
+      .find((x) => x.anchor.id === childId)!;
+  }
   assert.ok(e.attestations.some((a) => a.verifier === B.cfg.identity.address), `B attested: ${JSON.stringify(e.attestations.map((a) => a.verifier))}`);
   // B cannot forge an attestation as A: rule rejects
   const r = await (B.ledger as AinLedger).ain.db.ref(`/apps/knowledge/market/attestations/${childId}/${A.cfg.identity.address}`).setValue({ value: { passed: true }, nonce: -1 });
