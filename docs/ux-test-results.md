@@ -1,22 +1,22 @@
 # UX scenario test results
 
-- **Date:** 2026-09-01 (wave 0 of the UX critique — findings 2, 12, 20, 22, 26, 27, 84, 85 and 97 of docs/ux-critique.json; the whole suite re-measured afterwards on a fully rebuilt cluster)
-- **Build:** `906b8b4` — the wave-0 fixes on top of `89844ca`. core/node/cli/agent and the web dist were all rebuilt and the cluster restarted before the run; the previous pass had been running a node dist older than its source (see the notes on AZ-055 and AZ-052)
+- **Date:** 2026-09-01 (wave 1 of the UX critique — the honesty pass: findings 1, 6, 7, 24, 28, 29, 55 and 56 of docs/ux-critique.json; the whole suite re-measured afterwards)
+- **Build:** `a676836` — the wave-1 fixes on top of the wave-0 build `96f202f`. core/node/cli/agent and the web dist were rebuilt and the cluster restarted before the run (the node contract changed: POST /api/chat gained `messages_base` / `messages_patched`, and GET /api/ledger's window cap went 1,000 → 5,000)
 - **Cluster:** live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster
 - **Chain:** local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)
 - **Model:** shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min
 - **Runner:** Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1
-- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json
-- **Raw results:** packages/e2e/results/results.json and full-run-wave0.log — 113 passed / 11 skipped / 0 failed / 1 flaky (AZ-044, ECONNRESET, green on retry) in 26.2 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-0 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave0/
+- **Specs:** packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133/134) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json
+- **Raw results:** packages/e2e/results/results.json and full-run-wave1.log — 114 passed / 11 skipped / 0 failed, 1 flake (AZ-044, ECONNRESET on the settings save, green on retry) in 27.5 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-1 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave1/
 - **Host:** Linux-5.15.0-130-generic-x86_64-with-glibc2.35
 
 ## Summary
 
-**103 passed / 0 failed / 0 blocked of 103**
+**104 passed / 0 failed / 0 blocked of 104**
 
 | Persona | Passed | Failed | Blocked |
 |---|---|---|---|
-| Visitor | 29 | 0 | 0 |
+| Visitor | 30 | 0 | 0 |
 | Creator | 24 | 0 | 0 |
 | Operator | 20 | 0 | 0 |
 | Agent | 14 | 0 | 0 |
@@ -28,107 +28,108 @@
 |---|---|---|---|---|---|
 | AZ-001 | Read the landing hero and follow the two primary calls to action | Visitor | PASS | 2.0 s |  |
 | AZ-002 | Inspect the trending card for the only verified knowledge | Visitor | PASS | 1.3 s |  |
-| AZ-003 | Browse the Explore list and read every field of a knowledge row | Visitor | PASS | 4.3 s |  |
-| AZ-004 | Read the knowledge detail header and stat strip | Visitor | PASS | 6.0 s |  |
-| AZ-005 | Read the Verification tab and confirm only real-model runs count | Visitor | PASS | 6.0 s |  |
-| AZ-006 | Read the Buy tab as a visitor and probe the automatic-payment address | Visitor | PASS | 6.0 s |  |
-| AZ-007 | Open Live test, pick knowledge and use the sample-question chips | Visitor | PASS | 3.3 s |  |
-| AZ-008 | Run a Compare test and read the correct-answer marker and quota counter | Visitor | PASS | 11.6 s |  |
-| AZ-009 | Exhaust the 20-per-hour free trial and read the quota message | Visitor | PASS | 32.6 s |  |
-| AZ-010 | Audit the public record: filters, integrity card and origin → derivative map | Visitor | PASS | 5.0 s |  |
-| AZ-011 | Pick an audience card and land on the right entry point (creator card = teach the model) | Visitor | PASS | 9.5 s |  |
+| AZ-003 | Browse the Explore list and read every field of a knowledge row | Visitor | PASS | 1.3 s |  |
+| AZ-004 | Read the knowledge detail header and stat strip | Visitor | PASS | 7.0 s |  |
+| AZ-005 | Read the Verification tab and confirm only real-model runs count | Visitor | PASS | 7.0 s |  |
+| AZ-006 | Read the Buy tab as a visitor and probe the automatic-payment address | Visitor | PASS | 7.6 s |  |
+| AZ-007 | Open Live test, pick knowledge and use the sample-question chips | Visitor | PASS | 3.4 s |  |
+| AZ-008 | Run a Compare test and read the correct-answer marker and quota counter | Visitor | PASS | 13.3 s |  |
+| AZ-009 | Exhaust the 20-per-hour free trial and read the quota message | Visitor | PASS | 33.0 s |  |
+| AZ-010 | Audit the public record: filters, integrity card and origin → derivative map | Visitor | PASS | 6.1 s |  |
+| AZ-011 | Pick an audience card and land on the right entry point (creator card = teach the model) | Visitor | PASS | 9.6 s |  |
 | AZ-012 | Copy the one-line commands and read the How-it-works / Why Ainize story | Visitor | PASS | 3.6 s |  |
-| AZ-013 | Re-order Explore by each sort option | Visitor | PASS | 9.1 s |  |
-| AZ-014 | Filter Explore by model and topic and search, including the empty state | Visitor | PASS | 2.4 s |  |
-| AZ-015 | Read the Overview tab: model, verification questions, integrity and tracks | Visitor | PASS | 6.2 s |  |
-| AZ-016 | Follow origins, overlap and newer-version notices in both directions (and the multi-select overlap warning in Live test) | Visitor | PASS | 8.4 s |  |
-| AZ-017 | Compare all knowledge on the same subject and hit the unknown-topic 404 | Visitor | PASS | 1.9 s |  |
-| AZ-018 | Use 'After only' and 'Before only' views, ask a free question and clear the conversation | Visitor | PASS | 12.9 s |  |
-| AZ-019 | Stop a slow live test — and be told whether it cost a free try | Visitor | PASS | 22.2 s |  |
-| AZ-020 | See who holds the shared model, and that your own test is queued behind it | Visitor | PASS | 21.9 s | turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding) |
-| AZ-021 | Handle the model-server-off state on Live test and Network | Visitor | PASS | 51.8 s |  |
-| AZ-022 | Explore the Network page and try the gateway router demo | Visitor | PASS | 5.9 s |  |
-| AZ-023 | Use the Docs page: copy one-liners, browse the CLI table and the API groups | Visitor | PASS | 4.7 s |  |
-| AZ-024 | Ask a follow-up question and confirm the conversation history is sent with it | Visitor | PASS | 23.4 s |  |
-| AZ-025 | Read the History tab of a knowledge and match it to the public record | Visitor | PASS | 15.6 s |  |
-| AZ-026 | Live-test an older (superseded) version and jump to its detail page | Visitor | PASS | 8.7 s |  |
+| AZ-013 | Re-order Explore by each sort option | Visitor | PASS | 9.5 s |  |
+| AZ-014 | Filter Explore by model and topic and search, including the empty state | Visitor | PASS | 2.2 s |  |
+| AZ-015 | Read the Overview tab: model, verification questions, integrity and tracks | Visitor | PASS | 7.0 s |  |
+| AZ-016 | Follow origins, overlap and newer-version notices in both directions (and the multi-select overlap warning in Live test) | Visitor | PASS | 9.6 s |  |
+| AZ-017 | Compare all knowledge on the same subject and hit the unknown-topic 404 | Visitor | PASS | 2.2 s |  |
+| AZ-018 | Use 'After only' and 'Before only' views, ask a free question and clear the conversation | Visitor | PASS | 15.3 s |  |
+| AZ-019 | Stop a slow live test — and be told whether it cost a free try | Visitor | PASS | 23.4 s |  |
+| AZ-020 | See who holds the shared model, and that your own test is queued behind it | Visitor | PASS | 27.8 s | turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding) |
+| AZ-021 | Handle the model-server-off state on Live test and Network | Visitor | PASS | 52.5 s |  |
+| AZ-022 | Explore the Network page and try the gateway router demo | Visitor | PASS | 6.8 s |  |
+| AZ-023 | Use the Docs page: copy one-liners, browse the CLI table and the API groups | Visitor | PASS | 5.1 s |  |
+| AZ-024 | Ask a follow-up question and confirm the conversation history is sent with it | Visitor | PASS | 24.0 s |  |
+| AZ-025 | Read the History tab of a knowledge and match it to the public record | Visitor | PASS | 17.1 s |  |
+| AZ-026 | Live-test an older (superseded) version and jump to its detail page | Visitor | PASS | 9.3 s |  |
 | AZ-027 | Create the operator password on first visit and land on My knowledge | Creator | PASS | 5.0 s |  |
-| AZ-028 | Sign in with the operator password after being redirected from a protected page (visitors are told they do not need to) | Creator | PASS | 6.7 s |  |
-| AZ-029 | Review the My knowledge table for a verified and a superseded item | Creator | PASS | 4.4 s |  |
-| AZ-030 | Register a new knowledge draft from a file path on the node (signed out, /new-patch shows the two-way pre-screen first) | Creator | PASS | 9.1 s | pixelplus-test-1 was already published by an earlier run — using pixelplus-test-21 |
-| AZ-031 | Publish a draft after the checklist and follow verification until Verified | Creator | PASS | 15.7 s | draft pixelplus-test-21 re-created with visibility:test (identical fields) before publishing · both attestations landed within 2332 ms — the intermediate Verifying state was not observable in the 5 s UI poll |
-| AZ-032 | Load knowledge into the model and unload it from the manage page | Creator | PASS | 19.8 s |  |
-| AZ-033 | Log out from the user menu and lose access to console pages | Creator | PASS | 3.1 s |  |
-| AZ-034 | Buy verified knowledge with the node's wallet from the Buy tab and load it from Purchased knowledge | Creator | PASS | 8.9 s | buyer node-b (http://localhost:3403), knowledge pixelplus-087600 at 0.1 AIN, already purchased before: true |
-| AZ-035 | Reject invalid password setup input client-side and refuse a second setup server-side | Creator | PASS | 5.9 s | no cluster node still needed setup — the client-side half runs against a private node with a real needsSetup:true (node-az035) |
+| AZ-028 | Sign in with the operator password after being redirected from a protected page (visitors are told they do not need to) | Creator | PASS | 5.9 s |  |
+| AZ-029 | Review the My knowledge table for a verified and a superseded item | Creator | PASS | 7.7 s |  |
+| AZ-030 | Register a new knowledge draft from a file path on the node (signed out, /new-patch shows the two-way pre-screen first) | Creator | PASS | 10.1 s | pixelplus-test-1 was already published by an earlier run — using pixelplus-test-25 |
+| AZ-031 | Publish a draft after the checklist and follow verification until the knowledge is on sale | Creator | PASS | 15.8 s | draft pixelplus-test-25 re-created with visibility:test (identical fields) before publishing · both attestations landed within 3535 ms — the intermediate Verifying state was not observable in the 5 s UI poll |
+| AZ-032 | Load knowledge into the model and unload it from the manage page | Creator | PASS | 22.2 s |  |
+| AZ-033 | Log out from the user menu and lose access to console pages | Creator | PASS | 3.6 s |  |
+| AZ-034 | Buy verified knowledge with the node's wallet from the Buy tab and load it from Purchased knowledge | Creator | PASS | 9.5 s | buyer node-b (http://localhost:3403), knowledge pixelplus-087600 at 0.1 AIN, already purchased before: true |
+| AZ-035 | Reject invalid password setup input client-side and refuse a second setup server-side | Creator | PASS | 5.7 s | no cluster node still needed setup — the client-side half runs against a private node with a real needsSetup:true (node-az035) |
 | AZ-036 | Keep the sample-question editor and the benchmark JSON in sync both ways | Creator | PASS | 1.9 s |  |
 | AZ-037 | Show validation errors when saving an incomplete or conflicting draft | Creator | PASS | 2.5 s |  |
 | AZ-038 | Edit description, price, billing and license of a draft and save | Creator | PASS | 4.1 s |  |
-| AZ-039 | Validate and save the benchmark JSON of a draft | Creator | PASS | 5.5 s |  |
-| AZ-040 | Inspect the overlap check and lineage of the verified KRX knowledge (and see the same overlap warned about in Live test) | Creator | PASS | 9.2 s |  |
-| AZ-041 | Run Verify now on this node and see the attestation appear | Creator | PASS | 7.1 s | the timeline renders "accuracy <free_generation>" only — the pre_apply score ("1/8" in the scenario text) is not shown |
-| AZ-042 | Delete a draft with typed confirmation and see that published knowledge cannot be deleted | Creator | PASS | 7.7 s | bin.ts has no `patch forget` subcommand — the manage page advertises `ainize patch forget <id>` (docs/CLI gap) |
-| AZ-043 | Filter node logs by level, expand details, load older events and read the public-record timeline | Creator | PASS | 6.1 s |  |
-| AZ-044 | Save display name, payout address and notification preference on the node | Creator | PASS | 7.7 s | flaky: passed on retry (web) |
-| AZ-045 | Read account identity, AIN wallet balance, sales and creator revenue share | Creator | PASS | 2.9 s |  |
-| AZ-046 | Remove and re-add a connected peer node | Creator | PASS | 30.0 s |  |
-| AZ-047 | Review Files & changes: pairing hint, sync, file tree and change history | Creator | PASS | 3.6 s |  |
-| AZ-048 | Upload a .npz file from the browser and watch the fingerprint being computed | Creator | PASS | 4.0 s |  |
-| AZ-049 | Copy the README badge snippet for the auto-pay address | Creator | PASS | 7.5 s |  |
-| AZ-050 | Check the model runtime card and ask the model directly | Creator | PASS | 3.2 s |  |
-| AZ-051 | Log in and out as operator from the CLI (first login sets the node password) and observe the 401 guard | Operator | PASS | 4.5 s |  |
-| AZ-052 | Announce a public patch and watch node-b and node-c verify it on the real model until it is LISTED | Operator | PASS | 45.1 s | announce pre-check reported conflicts: 124 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 121, because private drafts are redacted from public overlap answers |
-| AZ-053 | Use knowledge in one line: `ainize use krx-all-2761` verifies, pays in AIN, downloads and loads it; then re-run and remove | Operator | PASS | 47.5 s |  |
-| AZ-054 | Live-test knowledge from the CLI: `chat --list`, one-shot compare, `--mode`, `--thinking`, `--json`, quota footer and the interactive REPL | Operator | PASS | 45.6 s |  |
-| AZ-055 | Drive the public and operator HTTP API with curl from /api/openapi.json: catalog, detail, benchmarks, info, 401 guards, login token and settings | Operator | PASS | 3.5 s |  |
-| AZ-056 | Probe the seller gateway's X-PAYMENT validation, the 423 not-listed state and the gated blob download with curl | Operator | PASS | 2.4 s |  |
-| AZ-057 | Bring up a fourth node with `ainize init`, fund it on the local AIN chain, start it detached, peer it with the demo cluster and stop it | Operator | PASS | 13.3 s |  |
-| AZ-058 | Read node events with `ainize logs` filters and confirm `ainize seed` refuses to run against a live node | Operator | PASS | 9.8 s |  |
-| AZ-059 | Add, list and remove peers on a node and watch gossip discover the other nodes | Operator | PASS | 24.6 s |  |
-| AZ-060 | Inspect the catalog with `patch ls`, `patch get`, `patch records` and `patch conflicts` | Operator | PASS | 12.3 s |  |
-| AZ-061 | Register a draft with `ainize publish --no-announce`, check its visibility, reject bad inputs and delete it | Operator | PASS | 7.3 s |  |
-| AZ-062 | Use a SUPERSEDED knowledge with `ainize use --no-apply` and get the newer-version note | Operator | PASS | 5.9 s |  |
-| AZ-063 | Audit the shared ledger with `ledger ls`, `ledger verify`, `ledger graph` and `ledger export`, and cross-check two nodes | Operator | PASS | 5.6 s |  |
-| AZ-064 | Create a branch, add knowledge, subscribe a node and route `jurisdiction=KR` to it | Operator | PASS | 14.6 s |  |
-| AZ-065 | Operate the local AIN chain from the CLI: `chain status`, `chain up`, `chain fund`, `chain setup` and `wallet` | Operator | PASS | 8.4 s |  |
-| AZ-066 | Exhaust the anonymous live-test quota (20/hour per IP) via POST /api/chat and confirm operators are unmetered and failed calls are not charged | Operator | PASS | 18.2 s |  |
-| AZ-067 | Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase | Operator | PASS | 36.6 s |  |
-| AZ-068 | Publish a hidden test listing with `ainize publish --test` and confirm it stays out of public catalogs and counts | Operator | PASS | 16.8 s |  |
-| AZ-069 | Show that a verifier whose serving API is down keeps retrying for 15 minutes instead of attesting hash-only | Operator | PASS | 1.8 min |  |
-| AZ-070 | Check the aindrive mirror: `drive status --files`, `drive sync`, `drive up` before pairing, and the changes API guard | Operator | PASS | 13.0 s |  |
-| AZ-071 | Run the autonomous buyer end to end: detect the gap, pay 25 AIN via 402, verify the hash, load and restore | Agent | PASS | 12.0 s |  |
-| AZ-072 | Verify the x402 402 challenge contract on the seller gateway (header, body, CORS exposure, non-seller and unknown ids) | Agent | PASS | 3.0 s |  |
-| AZ-073 | Verify the settled 200 response contract and its ledger/event side effects after an ain-transfer payment | Agent | PASS | 608 ms |  |
-| AZ-074 | Refuse to pay when the agent's AIN balance is below the price, then succeed after funding | Agent | PASS | 11.0 s |  |
-| AZ-075 | Reject forged X-PAYMENT proofs: unknown tx hash and a real transfer that did not go to the seller | Agent | PASS | 12.7 s |  |
-| AZ-076 | Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme | Agent | PASS | 5.3 s |  |
-| AZ-077 | Follow supersede marks on a keyword search, and refuse an explicitly requested superseded id | Agent | PASS | 26.0 s |  |
-| AZ-078 | Skip the purchase when the model already answers correctly, and check the --max-price budget guard | Agent | PASS | 12.7 s |  |
+| AZ-039 | Validate and save the benchmark JSON of a draft | Creator | PASS | 6.7 s |  |
+| AZ-040 | Inspect the overlap check and lineage of the verified KRX knowledge (and see the same overlap warned about in Live test) | Creator | PASS | 10.8 s |  |
+| AZ-041 | Run Verify now on this node and see the attestation appear | Creator | PASS | 7.4 s | the timeline renders "accuracy <free_generation>" only — the pre_apply score ("1/8" in the scenario text) is not shown |
+| AZ-042 | Delete a draft with typed confirmation and see that published knowledge cannot be deleted | Creator | PASS | 8.2 s | bin.ts has no `patch forget` subcommand — the manage page advertises `ainize patch forget <id>` (docs/CLI gap) |
+| AZ-043 | Filter node logs by level, expand details, load older events and read the public-record timeline | Creator | PASS | 6.5 s |  |
+| AZ-044 | Save display name, payout address and notification preference on the node | Creator | PASS | 8.9 s | flaky: passed on retry (web) |
+| AZ-045 | Read account identity, AIN wallet balance, sales and creator revenue share | Creator | PASS | 2.8 s |  |
+| AZ-046 | Remove and re-add a connected peer node | Creator | PASS | 29.6 s |  |
+| AZ-047 | Review Files & changes: pairing hint, sync, file tree and change history | Creator | PASS | 3.8 s |  |
+| AZ-048 | Upload a .npz file from the browser and watch the fingerprint being computed | Creator | PASS | 3.9 s |  |
+| AZ-049 | Copy the README badge snippet for the auto-pay address | Creator | PASS | 8.0 s |  |
+| AZ-050 | Check the model runtime card and ask the model directly | Creator | PASS | 3.1 s |  |
+| AZ-051 | Log in and out as operator from the CLI (first login sets the node password) and observe the 401 guard | Operator | PASS | 4.7 s |  |
+| AZ-052 | Announce a public patch and watch node-b and node-c verify it on the real model until it is LISTED | Operator | PASS | 42.2 s | announce pre-check reported conflicts: 144 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 141, because private drafts are redacted from public overlap answers |
+| AZ-053 | Use knowledge in one line: `ainize use krx-all-2761` verifies, pays in AIN, downloads and loads it; then re-run and remove | Operator | PASS | 44.0 s |  |
+| AZ-054 | Live-test knowledge from the CLI: `chat --list`, one-shot compare, `--mode`, `--thinking`, `--json`, quota footer and the interactive REPL | Operator | PASS | 46.6 s |  |
+| AZ-055 | Drive the public and operator HTTP API with curl from /api/openapi.json: catalog, detail, benchmarks, info, 401 guards, login token and settings | Operator | PASS | 3.4 s |  |
+| AZ-056 | Probe the seller gateway's X-PAYMENT validation, the 423 not-listed state and the gated blob download with curl | Operator | PASS | 2.6 s |  |
+| AZ-057 | Bring up a fourth node with `ainize init`, fund it on the local AIN chain, start it detached, peer it with the demo cluster and stop it | Operator | PASS | 13.9 s |  |
+| AZ-058 | Read node events with `ainize logs` filters and confirm `ainize seed` refuses to run against a live node | Operator | PASS | 10.0 s |  |
+| AZ-059 | Add, list and remove peers on a node and watch gossip discover the other nodes | Operator | PASS | 25.6 s |  |
+| AZ-060 | Inspect the catalog with `patch ls`, `patch get`, `patch records` and `patch conflicts` | Operator | PASS | 12.1 s |  |
+| AZ-061 | Register a draft with `ainize publish --no-announce`, check its visibility, reject bad inputs and delete it | Operator | PASS | 7.6 s |  |
+| AZ-062 | Use a SUPERSEDED knowledge with `ainize use --no-apply` and get the newer-version note | Operator | PASS | 6.7 s |  |
+| AZ-063 | Audit the shared ledger with `ledger ls`, `ledger verify`, `ledger graph` and `ledger export`, and cross-check two nodes | Operator | PASS | 5.5 s |  |
+| AZ-064 | Create a branch, add knowledge, subscribe a node and route `jurisdiction=KR` to it | Operator | PASS | 14.2 s |  |
+| AZ-065 | Operate the local AIN chain from the CLI: `chain status`, `chain up`, `chain fund`, `chain setup` and `wallet` | Operator | PASS | 9.0 s |  |
+| AZ-066 | Exhaust the anonymous live-test quota (20/hour per IP) via POST /api/chat and confirm operators are unmetered and failed calls are not charged | Operator | PASS | 18.4 s |  |
+| AZ-067 | Restart the demo cluster with scripts/cluster-restart.sh and confirm data survives, peers re-gossip and the agent buyer still completes a 402 purchase | Operator | PASS | 38.1 s |  |
+| AZ-068 | Publish a hidden test listing with `ainize publish --test` and confirm it stays out of public catalogs and counts | Operator | PASS | 17.2 s |  |
+| AZ-069 | Show that a verifier whose serving API is down keeps retrying for 15 minutes instead of attesting hash-only | Operator | PASS | 1.9 min |  |
+| AZ-070 | Check the aindrive mirror: `drive status --files`, `drive sync`, `drive up` before pairing, and the changes API guard | Operator | PASS | 12.9 s |  |
+| AZ-071 | Run the autonomous buyer end to end: detect the gap, pay 25 AIN via 402, verify the hash, load and restore | Agent | PASS | 12.6 s |  |
+| AZ-072 | Verify the x402 402 challenge contract on the seller gateway (header, body, CORS exposure, non-seller and unknown ids) | Agent | PASS | 3.9 s |  |
+| AZ-073 | Verify the settled 200 response contract and its ledger/event side effects after an ain-transfer payment | Agent | PASS | 622 ms |  |
+| AZ-074 | Refuse to pay when the agent's AIN balance is below the price, then succeed after funding | Agent | PASS | 11.5 s |  |
+| AZ-075 | Reject forged X-PAYMENT proofs: unknown tx hash and a real transfer that did not go to the seller | Agent | PASS | 14.0 s |  |
+| AZ-076 | Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme | Agent | PASS | 6.4 s |  |
+| AZ-077 | Follow supersede marks on a keyword search, and refuse an explicitly requested superseded id | Agent | PASS | 23.4 s |  |
+| AZ-078 | Skip the purchase when the model already answers correctly, and check the --max-price budget guard | Agent | PASS | 13.4 s |  |
 | AZ-079 | Refuse to buy when the seller offers no payment scheme the agent is allowed to use (--pay local-credit on an AIN node) | Agent | PASS | 7.8 s |  |
-| AZ-080 | Detect a tampered or corrupted patch body by sha256 before applying it to the model | Agent | PASS | 7.2 s |  |
-| AZ-081 | Write and read back the on-chain access receipt after a node-side purchase (ainize use / POST buy) | Agent | PASS | 14.1 s |  |
-| AZ-082 | Split the price along lineage when the source knowledge has a different author (royalty share 0.3) | Agent | PASS | 35.6 s |  |
-| AZ-083 | Meter live-test hits through POST /api/chat and read them back as usage events with a per-visitor quota | Agent | PASS | 37.4 s |  |
-| AZ-084 | Inspect the agent's identity, catalog view and credit balance with the keys / catalog / balance subcommands | Agent | PASS | 5.6 s |  |
-| AZ-085 | Show a plain error when the node API is unreachable on every public page | Cross-cutting | PASS | 12.1 s | LedgerPage / NetworkPage have no error branch: offline they show "No records yet." and the cached node cards + a spinner, never an explicit error (matches the scenario text; flagged as a UX gap). |
-| AZ-086 | Refuse to downgrade to an integrity-only attestation during the 15-minute runtime grace period | Cross-cutting | PASS | 12.7 s |  |
-| AZ-087 | Switch the whole UI between English and Korean and keep the choice across reloads and pages | Cross-cutting | PASS | 22.3 s |  |
-| AZ-088 | Keep the operator signed in across refresh and new tabs via the session cookie, and sign out cleanly | Cross-cutting | PASS | 7.3 s | after Log out the browser landed on http://localhost:3402/ |
-| AZ-089 | Recover automatically after the node process restarts under an open Live test tab | Cross-cutting | PASS | 30.8 s |  |
-| AZ-090 | Reflect the model-server outage consistently on Network, Manage and My knowledge | Cross-cutting | PASS | 14.1 s |  |
-| AZ-091 | Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling | Cross-cutting | PASS | 25.1 s | AZ-091 applied time: · loaded in 3.0s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour. |
-| AZ-092 | Keep every page usable at 360 px width without horizontal page scrolling, and the header free of collisions at desktop widths | Cross-cutting | PASS | 20.2 s | desktop header geometry: {"960":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1024":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1280":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1440":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738}} · overflow per page: {"landing":{"ok":true,"scrollWidth":360,"innerWidth":360},"explore":{"ok":true,"scrollWidth":360,"innerWidth":360},"detail":{"ok":true,"scrollWidth":360,"innerWidth":360},"chat":{"ok":true,"scrollWidth":360,"innerWidth":360},"ledger":{"ok":true,"scrollWidth":360,"innerWidth":360},"docs":{"ok":true,"scrollWidth":360,"innerWidth":360}}; header items outside the 360px viewport: none · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project |
-| AZ-093 | Operate the Live test and sign-in entirely from the keyboard with visible focus | Cross-cutting | PASS | 12.1 s | Shift+Tab from the (now disabled) textarea landed on: button "Show 18 more" |
-| AZ-094 | Expose meaningful roles and accessible names to screen readers on the core pages | Cross-cutting | PASS | 10.9 s | axe serious/critical: /explore: color-contrast (serious) x20 → .sc-gSQHZB \| .sc-fFelbd \| p \|\| /chat: color-contrast (serious) x33 → .sc-gSQHZB \| .sc-eCIkAO \| aside > p \|\| /<addr>/krx-all-2761: color-contrast (serious) x43 → .sc-gSQHZB \| .sc-bXTeWK > span:nth-child(1) \| .sc-bXTeWK > span:nth-child(2) \|\| /ledger: color-contrast (serious) x26 → .sc-gSQHZB \| .sc-fFelbd \| p:nth-child(2) \|\| /ledger: nested-interactive (serious) x1 → svg[width="700"] · Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario. |
-| AZ-095 | Format large numbers, sizes and prices consistently (270,053 entries, 331.7 MB, 25 AIN) | Cross-cutting | PASS | 17.6 s |  |
+| AZ-080 | Detect a tampered or corrupted patch body by sha256 before applying it to the model | Agent | PASS | 7.5 s |  |
+| AZ-081 | Write and read back the on-chain access receipt after a node-side purchase (ainize use / POST buy) | Agent | PASS | 14.7 s |  |
+| AZ-082 | Split the price along lineage when the source knowledge has a different author (royalty share 0.3) | Agent | PASS | 35.5 s |  |
+| AZ-083 | Meter live-test hits through POST /api/chat and read them back as usage events with a per-visitor quota | Agent | PASS | 36.9 s |  |
+| AZ-084 | Inspect the agent's identity, catalog view and credit balance with the keys / catalog / balance subcommands | Agent | PASS | 5.9 s |  |
+| AZ-085 | Show a plain error when the node API is unreachable on every public page | Cross-cutting | PASS | 12.3 s | LedgerPage / NetworkPage have no error branch: offline they show "No records yet." and the cached node cards + a spinner, never an explicit error (matches the scenario text; flagged as a UX gap). |
+| AZ-086 | Refuse to downgrade to an integrity-only attestation during the 15-minute runtime grace period | Cross-cutting | PASS | 14.3 s |  |
+| AZ-087 | Switch the whole UI between English and Korean and keep the choice across reloads and pages | Cross-cutting | PASS | 23.3 s |  |
+| AZ-088 | Keep the operator signed in across refresh and new tabs via the session cookie, and sign out cleanly | Cross-cutting | PASS | 7.8 s | after Log out the browser landed on http://localhost:3402/ |
+| AZ-089 | Recover automatically after the node process restarts under an open Live test tab | Cross-cutting | PASS | 30.9 s |  |
+| AZ-090 | Reflect the model-server outage consistently on Network, Manage and My knowledge | Cross-cutting | PASS | 13.3 s |  |
+| AZ-091 | Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling | Cross-cutting | PASS | 26.5 s | AZ-091 applied time: · loaded in 3.1s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour. |
+| AZ-092 | Keep every page usable at 360 px width without horizontal page scrolling, and the header free of collisions at desktop widths | Cross-cutting | PASS | 20.9 s | desktop header geometry: {"960":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1024":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1280":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738},"1440":{"intersects":false,"headerH":81,"sameRow":true,"navNeed":715,"navWidth":738}} · overflow per page: {"landing":{"ok":true,"scrollWidth":360,"innerWidth":360},"explore":{"ok":true,"scrollWidth":360,"innerWidth":360},"detail":{"ok":true,"scrollWidth":360,"innerWidth":360},"chat":{"ok":true,"scrollWidth":360,"innerWidth":360},"ledger":{"ok":true,"scrollWidth":360,"innerWidth":360},"docs":{"ok":true,"scrollWidth":360,"innerWidth":360}}; header items outside the 360px viewport: none · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project |
+| AZ-093 | Operate the Live test and sign-in entirely from the keyboard with visible focus | Cross-cutting | PASS | 12.3 s | Shift+Tab from the (now disabled) textarea landed on: button "Show 18 more" |
+| AZ-094 | Expose meaningful roles and accessible names to screen readers on the core pages | Cross-cutting | PASS | 11.2 s | axe serious/critical: /explore: color-contrast (serious) x21 → .sc-gSQHZB \| .sc-fFelbd \| p \|\| /chat: color-contrast (serious) x33 → .sc-gSQHZB \| .sc-eCIkAO \| aside > p \|\| /<addr>/krx-all-2761: color-contrast (serious) x44 → .sc-gSQHZB \| .sc-bXTeWK > span:nth-child(1) \| .sc-bXTeWK > span:nth-child(2) \|\| /ledger: color-contrast (serious) x27 → .sc-gSQHZB \| .sc-fFelbd \| p:nth-child(2) \|\| /ledger: nested-interactive (serious) x1 → svg[width="700"] · Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario. |
+| AZ-095 | Format large numbers, sizes and prices consistently (270,053 entries, 331.7 MB, 25 AIN) | Cross-cutting | PASS | 21.5 s |  |
 | AZ-096 | Read the Terms page and reach the 404 pages from bad URLs | Cross-cutting | PASS | 2.1 s |  |
-| AZ-097 | Show helpful empty states when a filter, search or section has nothing to display | Cross-cutting | PASS | 4.3 s |  |
+| AZ-097 | Show helpful empty states when a filter, search or section has nothing to display | Cross-cutting | PASS | 4.8 s |  |
 | AZ-098 | Display relative times ('5m ago') with an absolute-time tooltip that keeps ticking | Cross-cutting | PASS | 1.7 min |  |
-| AZ-099 | Verify what happens to scroll position and filters on browser Back from a detail page | Cross-cutting | PASS | 8.6 s | scrollY after Back on /ledger: 0 · Back resets the ledger to the top with "All records", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /explore: 0 |
-| AZ-100 | Degrade gracefully when clipboard copy is unavailable or denied | Cross-cutting | PASS | 19.4 s | CopyButton swallows clipboard failures silently (label stays "Copy", no feedback) — P2 UX finding, as described in the scenario. |
-| AZ-131 | A runaway answer is cut off with a plain explanation, not shown as an endless loop | Visitor | PASS | 38.5 s | '드': 1/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents |
-| AZ-132 | A sample question is sent exactly as the knowledge was trained, trailing space included | Visitor | PASS | 19.9 s |  |
-| AZ-133 | A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing | Visitor | PASS | 41.3 s | the queued state appeared 79 ms after the question was sent |
+| AZ-099 | Verify what happens to scroll position and filters on browser Back from a detail page | Cross-cutting | PASS | 9.5 s | scrollY after Back on /ledger: 0 · Back resets the ledger to the top with "All records", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /explore: 0 |
+| AZ-100 | Degrade gracefully when clipboard copy is unavailable or denied | Cross-cutting | PASS | 21.1 s | CopyButton swallows clipboard failures silently (label stays "Copy", no feedback) — P2 UX finding, as described in the scenario. |
+| AZ-131 | A runaway answer is cut off with a plain explanation, not shown as an endless loop | Visitor | PASS | 43.2 s | '드': 3/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents |
+| AZ-132 | A sample question is sent exactly as the knowledge was trained, trailing space included | Visitor | PASS | 20.5 s |  |
+| AZ-133 | A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing | Visitor | PASS | 41.5 s | the queued state appeared 127 ms after the question was sent |
+| AZ-134 | Ask a follow-up in Compare mode and confirm each column replays only its own earlier answers | Visitor | PASS | 19.1 s |  |
 
 ## Teach-mode scenarios (AZ-101…AZ-122, TM-*) — not part of the 100
 
@@ -152,23 +153,23 @@ banner) and run on the live node in every full pass.
 
 | Node | Result |
 |---|---|
-| live demo node-a :3402 — teach on, `backend: stub`, live model (`simulated_checks: false`) | 7 passed / 10 skipped (24.5 s) |
-| dev node-t :3412 — `backend: stub` + `stubOffline: true` (`simulated_checks: true`), local ledger | 17 passed (1.6 min) |
+| live demo node-a :3402 — teach on, `backend: stub`, live model (`simulated_checks: false`) | 7 passed / 10 skipped (in the full run) |
+| dev node-t :3412 — `backend: stub` + `stubOffline: true` (`simulated_checks: true`), local ledger | 17 passed (1.6 min) — measured in the wave-0 pass; node-t was not re-run in wave 1 |
 
 | Id | Title | Status | Duration | Note |
 |---|---|---|---|---|
-| AZ-103 | Teach drawer from a wrong answer → basket persists across reload | PASS | 6.1 s |  |
-| AZ-104 | First train → Who gets the credit? sheet → key in localStorage → backup download → restore in a fresh browser | PASS | 357 ms | skipped [web]: no backup (earlier step skipped) |
+| AZ-103 | Teach drawer from a wrong answer → basket persists across reload | PASS | 6.2 s |  |
+| AZ-104 | First train → Who gets the credit? sheet → key in localStorage → backup download → restore in a fresh browser | PASS | 369 ms | skipped [web]: no backup (earlier step skipped) |
 | AZ-105 | Pre-flight: already-correct fact skipped; all-correct → "Nothing to teach" | SKIPPED | 1 ms | skipped [web]: stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the run-unique phrasing, so the node reports NEEDS_MORE — the lifecycle runs on a node with simulated checks or a real trainer |
-| AZ-106 | Job lifecycle with backend 'stub': QUEUED → TRAINING → CHECKING → READY; events kind teach; card copy per state | SKIPPED | 5 ms | skipped [web]: no job (earlier step skipped) |
-| AZ-107 | Try it now on a READY lesson: /api/chat with the draft id returns before/after | SKIPPED | 5 ms | skipped [web]: no job (earlier step skipped) |
+| AZ-106 | Job lifecycle with backend 'stub': QUEUED → TRAINING → CHECKING → READY; events kind teach; card copy per state | SKIPPED | 3 ms | skipped [web]: no job (earlier step skipped) |
+| AZ-107 | Try it now on a READY lesson: /api/chat with the draft id returns before/after | SKIPPED | 3 ms | skipped [web]: no job (earlier step skipped) |
 | AZ-109 | Keep it private: token download works, sha256 matches, recipe.json and RUN-LOCALLY.md served; link expires | SKIPPED | 3 ms | skipped [web]: no job (earlier step skipped) |
-| AZ-110 | Publish (review mode): PENDING_REVIEW → operator approves on the Teaching tab → ANNOUNCED → verifiers attest → LISTED; anchor carries contributors[].sig that verifies | SKIPPED | 156 ms | skipped [web]: stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the lesson, so it never reaches PENDING_REVIEW — the review queue runs on a node with simulated checks or a real trainer · skipped [web]: shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage · skipped [web]: no job (earlier step skipped) |
-| AZ-113 | Buy on AIN with the transfer forced to fail: payouts row failed, contributor sees pending, operator Retry succeeds | PASS | 3.5 s |  |
-| AZ-116 | Ban by address → 403 banned; hide name → "Taught by a visitor" | SKIPPED | 73 ms | skipped [web]: no announced lesson (earlier step skipped) |
+| AZ-110 | Publish (review mode): PENDING_REVIEW → operator approves on the Teaching tab → ANNOUNCED → verifiers attest → LISTED; anchor carries contributors[].sig that verifies | SKIPPED | 188 ms | skipped [web]: stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the lesson, so it never reaches PENDING_REVIEW — the review queue runs on a node with simulated checks or a real trainer · skipped [web]: shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage · skipped [web]: no job (earlier step skipped) |
+| AZ-113 | Buy on AIN with the transfer forced to fail: payouts row failed, contributor sees pending, operator Retry succeeds | PASS | 3.4 s |  |
+| AZ-116 | Ban by address → 403 banned; hide name → "Taught by a visitor" | SKIPPED | 90 ms | skipped [web]: no announced lesson (earlier step skipped) |
 | AZ-120 | Owner mismatch: another key reads the job → redacted body; publish → 403 not_owner | SKIPPED | 3 ms | skipped [web]: no job (earlier step skipped) |
-| TM-090 | Load up to three knowledges together in one live test, see the overlap warning, and meter one usage event per knowledge | PASS | 11.4 s |  |
-| TM-091 | Show the contamination banner when the operator keeps knowledge loaded for everyone | PASS | 5.2 s |  |
+| TM-090 | Load up to three knowledges together in one live test, see the overlap warning, and meter one usage event per knowledge | PASS | 11.3 s |  |
+| TM-091 | Show the contamination banner when the operator keeps knowledge loaded for everyone | PASS | 4.9 s |  |
 
 ## Audit findings from the previous green run
 
@@ -230,6 +231,10 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 
 ## Notes from this pass
 
+- **Wave 1 of the UX critique — the honesty pass, eight findings.** `docs/ux-critique.json` items 1, 6, 7, 24, 28, 29, 55 and 56. The live test no longer disproves itself: compare mode sends one conversation per column (`messages_base` / `messages_patched`, both required to end with the same question), so the un-patched model is never replayed the knowledge's answer. Measured on node-a with krx-all-2761 and the follow-up '방금 말한 종목코드를 숫자만 다시 알려줘': with the old single history the "Before loading" column answered **087600** — the knowledge's own answer — while with split histories it answers its own wrong **136950** and the patched column still answers 087600 (`packages/e2e/wave1-history.mjs`). The knowledge page now prints the evidence the product is built on: the hero stat reads "1/8 → 26/26" with "100% after loading" as its note, the Verification table has a Before column (`score.pre_apply`, which every attestation carries and which used to reach the DOM only inside a `title=`), and the Overview side-effect row says "Limit declared (≤ 0.08 nat) — not yet measured by any verifier" in the warning tone instead of implying a check no attestation reports. "Verified" now means one thing: the LISTED chip reads "For sale" / "판매 중", `/benchmarks` counts "1 current version(s)", and the certified seal is drawn from the entry (full colour for the current verified version, greyed for a retired one, pulsing while verification arrives, absent below quorum) instead of the same purple seal on every card. And scores are grouped by the question set they were measured on — three sets for these four items — with the form ("asked as template + chat") next to each accuracy. Before/after screenshots at 1280 and 360 px, English and Korean: `packages/e2e/results/wave1/`.
+- **Two of the eight findings live in the teachable checkout** (`/mnt/newdata/ainize/knowledge-marketplace-teachable`, node-u :3422, commit `6344b9d`), because that is where the dataset-teaching screens are. Finding 7: the dataset screen read `policy.simulated_checks` and now says so before the button is pressed ("Demo node — these checks were simulated, not measured in a live model."), on the button ("Check (simulated on this node)"), in the result ("Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.") and under every row ("Simulated answer (no model was asked): …" in the warning tone). Finding 6: the result page's headline is "Demo run finished — nothing was trained" with the admission first and warning-toned, the counts labelled illustrative, and "Keep it private" as the filled button. Its scenarios were updated and re-run: AZ-125, AZ-152, AZ-157, AZ-158, AZ-159, AZ-160, AZ-175, AZ-182, AZ-185, AZ-186, AZ-187, AZ-189 (stub and live), AZ-195 and AZ-196 — all green.
+- **AZ-026 had been measuring the wrong page.** Its step "'Details →' opens the detail page; the chip reads 'Newer version: krx-all-2761'" was satisfied by the CHAT page: the detail route is code-split, so for a moment after the URL changes the previous page is still mounted, and the picker's own "Newer version available" chip answered the query. The step now waits for the detail page's H1 before reading the chip — which is why the scenario, unchanged in its intent since wave 0, only now actually checks it.
+- **The demo chain crossed 1,000 records during this pass, and two scenarios went red on the same silence.** GET /api/ledger returns the NEWEST `limit` records and cannot page backwards: `ainize ledger export` asked for a fixed 1,000 and printed "✓ exported 1000 record(s)" for a 1,043-record ledger, and /ledger printed "1,043 records" in its info card above a table that could only ever hold 1,000 of them (the three oldest `supersede` records among the ones it could not reach). The export now asks how big the ledger is and requests exactly that many (max 5,000 per request; past that it says "exported the most recent 5000 of N record(s) … cannot page further back"), and the public-record page prints "Showing the most recent 1,000 of 1,043 records". AZ-010 also stopped counting kinds inside its own 1,000-record sample — the node applies the kind filter over the whole ledger, so the sample claimed "0 supersede records" about a ledger that has three.
 - **Wave 0 of the UX critique — nine findings, each implemented and then verified in a real browser.** `docs/ux-critique.json` items 2, 12, 20, 22, 26, 27, 84, 85 and 97: accuracy is printed against the denominator the verifiers actually used, on all three surfaces that show it; the "AI Network" ledger badge no longer paints over the first nav link at any desktop width; the benchmark's expected answer is rendered as text under every verdict and on every sample chip, not only in a `title`; the quota 429 offers "Buy this knowledge" and the node's measured reset time in place of a Retry that issued zero requests; Explore opens on "Current only" with "3 older versions hidden · show" and ranks "Most popular" by status before downloads; the display and mono font stacks carry the Hangul fallback the page already downloads; `<html lang>` and a per-page `<title>` follow the language toggle; and SUPERSEDED wears the warning palette and names its successor. Before/after screenshots at 1280 and 360 px in English and Korean: `packages/e2e/results/wave0/`.
 - **The demo cluster had been running a node dist older than its source.** Rebuilding it for wave 0 raised two assertions that described the old binary rather than the code in the tree: the OpenAPI documents 76 paths, not 74 (the D3 queue endpoints `/api/chat/status` and `/api/chat/cancel` have been in the source since `b517cae`), and AZ-052's announce pre-check — which runs inside the node and counts every overlapping body it holds, private drafts included — has to be compared with the OPERATOR's view of `GET /api/patches/:id/conflicts`. Three taught lessons sitting on node-a as private drafts are redacted from the public answer, and the old comparison only held while the node happened to hold none.
 - **The three defects the owner reported are gone, proved on the live cluster.** (a) `드` no longer runs away and is no longer auto-scored — it comes back as an ordinary answer marked *Free question — not auto-scored*, and where the model does loop the reply is cut with one plain sentence and a *Show the raw answer* button that reveals the full text unchanged (AZ-131). (b) The sample chip `종목코드 픽셀플러스 ` puts the trained prompt in the box with its trailing space, sends it verbatim and scores `087600` as ✓ Correct (AZ-132). (c) The same question typed by hand, without the trailing space, still answers correctly. (d) A question asked while another process holds the shared model says so within ~1 s, names the holder and ticks, and *Stop waiting* returns HTTP 499 without charging a free try (AZ-133).
@@ -250,6 +255,14 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 - **Still open — the shared record only grows.** ~5 hidden anchors, ~10 attestations and ~2 settle records per full run. AZ-063 now fails loudly when the attest history no longer fits in one `ledger ls` page (API cap 1000; 218 today), which is the tripwire for the whole family of "newest N records" reads. Capping the growth itself needs the announce scenarios (AZ-052/056/068/069) to move to a private cluster the way AZ-052's public half already did — not done here.
 
 ## Product fixes made during this effort (`git log --oneline 665e469..HEAD`)
+
+**Wave 1 of the UX critique — the honesty pass (findings 1, 6, 7, 24, 28, 29, 55, 56) and what the suite forced with it**
+
+- `140d0b9` chat: one conversation per column, so the live test stops disproving itself (finding 1)
+- `9054f9d` detail: show the before/after the verifiers measured, and stop promising a check nobody ran (findings 28, 55)
+- `4f4281b` explore/benchmarks: For sale is not Verified, and a score belongs to its question set (findings 29, 56, 24)
+- `2dcb1b1` benchmarks: the file docstring said the old, untrue thing about the page
+- `a676836` ledger: say which part of the record you are looking at (the chain grew past 1,000)
 
 **Wave 0 of the UX critique (findings 2, 12, 20, 22, 26, 27, 84, 85, 97)**
 
@@ -327,6 +340,9 @@ Honest gaps. Nothing below is asserted by the suite; where a unit test covers th
 
 **Everything else in the range**
 
+- `dc753b6` e2e: three expectations the wave-1 build changed, and one that was measuring the wrong page
+- `52b4323` e2e: the scenarios and specs the wave-1 detail and explore fixes changed
+- `96f202f` docs: UX scenario results re-measured on the wave-0 build — 103/103 in one run
 - `906b8b4` e2e: three stale expectations the rebuilt node exposed, and the 429 body's new field
 - `511707e` e2e: the scenarios and specs the wave-0 fixes changed, and new coverage for what they added
 - `89844ca` docs: critical UX review of the Ainize frontend — 100 findings

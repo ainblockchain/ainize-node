@@ -2,24 +2,24 @@
  "date": "2026-09-01",
  "fix_range": "665e469..HEAD",
  "environment": {
-  "Date": "2026-09-01 (wave 0 of the UX critique — findings 2, 12, 20, 22, 26, 27, 84, 85 and 97 of docs/ux-critique.json; the whole suite re-measured afterwards on a fully rebuilt cluster)",
-  "Build": "`906b8b4` — the wave-0 fixes on top of `89844ca`. core/node/cli/agent and the web dist were all rebuilt and the cluster restarted before the run; the previous pass had been running a node dist older than its source (see the notes on AZ-055 and AZ-052)",
+  "Date": "2026-09-01 (wave 1 of the UX critique — the honesty pass: findings 1, 6, 7, 24, 28, 29, 55 and 56 of docs/ux-critique.json; the whole suite re-measured afterwards)",
+  "Build": "`a676836` — the wave-1 fixes on top of the wave-0 build `96f202f`. core/node/cli/agent and the web dist were rebuilt and the cluster restarted before the run (the node contract changed: POST /api/chat gained `messages_base` / `messages_patched`, and GET /api/ledger's window cap went 1,000 → 5,000)",
   "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
-  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/results.json and full-run-wave0.log — 113 passed / 11 skipped / 0 failed / 1 flaky (AZ-044, ECONNRESET, green on retry) in 26.2 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-0 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave0/",
+  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-131/132/133/134) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
+  "Raw results": "packages/e2e/results/results.json and full-run-wave1.log — 114 passed / 11 skipped / 0 failed, 1 flake (AZ-044, ECONNRESET on the settings save, green on retry) in 27.5 min, one uninterrupted run of every project (web, mobile, cli-api). Wave-1 before/after screenshots (1280 and 360 px, English and Korean) are in packages/e2e/results/wave1/",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "teach_runs": [
   {
    "node": "live demo node-a :3402 — teach on, `backend: stub`, live model (`simulated_checks: false`)",
-   "result": "7 passed / 10 skipped (24.5 s)"
+   "result": "7 passed / 10 skipped (in the full run)"
   },
   {
    "node": "dev node-t :3412 — `backend: stub` + `stubOffline: true` (`simulated_checks: true`), local ledger",
-   "result": "17 passed (1.6 min)"
+   "result": "17 passed (1.6 min) — measured in the wave-0 pass; node-t was not re-run in wave 1"
   }
  ],
  "teach_prose": [
@@ -75,6 +75,10 @@
   "  the verifier trail and the ledger rows. The same substitution applies to AZ-067's restart."
  ],
  "notes_prose": [
+  "- **Wave 1 of the UX critique — the honesty pass, eight findings.** `docs/ux-critique.json` items 1, 6, 7, 24, 28, 29, 55 and 56. The live test no longer disproves itself: compare mode sends one conversation per column (`messages_base` / `messages_patched`, both required to end with the same question), so the un-patched model is never replayed the knowledge's answer. Measured on node-a with krx-all-2761 and the follow-up '방금 말한 종목코드를 숫자만 다시 알려줘': with the old single history the \"Before loading\" column answered **087600** — the knowledge's own answer — while with split histories it answers its own wrong **136950** and the patched column still answers 087600 (`packages/e2e/wave1-history.mjs`). The knowledge page now prints the evidence the product is built on: the hero stat reads \"1/8 → 26/26\" with \"100% after loading\" as its note, the Verification table has a Before column (`score.pre_apply`, which every attestation carries and which used to reach the DOM only inside a `title=`), and the Overview side-effect row says \"Limit declared (≤ 0.08 nat) — not yet measured by any verifier\" in the warning tone instead of implying a check no attestation reports. \"Verified\" now means one thing: the LISTED chip reads \"For sale\" / \"판매 중\", `/benchmarks` counts \"1 current version(s)\", and the certified seal is drawn from the entry (full colour for the current verified version, greyed for a retired one, pulsing while verification arrives, absent below quorum) instead of the same purple seal on every card. And scores are grouped by the question set they were measured on — three sets for these four items — with the form (\"asked as template + chat\") next to each accuracy. Before/after screenshots at 1280 and 360 px, English and Korean: `packages/e2e/results/wave1/`.",
+  "- **Two of the eight findings live in the teachable checkout** (`/mnt/newdata/ainize/knowledge-marketplace-teachable`, node-u :3422, commit `6344b9d`), because that is where the dataset-teaching screens are. Finding 7: the dataset screen read `policy.simulated_checks` and now says so before the button is pressed (\"Demo node — these checks were simulated, not measured in a live model.\"), on the button (\"Check (simulated on this node)\"), in the result (\"Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.\") and under every row (\"Simulated answer (no model was asked): …\" in the warning tone). Finding 6: the result page's headline is \"Demo run finished — nothing was trained\" with the admission first and warning-toned, the counts labelled illustrative, and \"Keep it private\" as the filled button. Its scenarios were updated and re-run: AZ-125, AZ-152, AZ-157, AZ-158, AZ-159, AZ-160, AZ-175, AZ-182, AZ-185, AZ-186, AZ-187, AZ-189 (stub and live), AZ-195 and AZ-196 — all green.",
+  "- **AZ-026 had been measuring the wrong page.** Its step \"'Details →' opens the detail page; the chip reads 'Newer version: krx-all-2761'\" was satisfied by the CHAT page: the detail route is code-split, so for a moment after the URL changes the previous page is still mounted, and the picker's own \"Newer version available\" chip answered the query. The step now waits for the detail page's H1 before reading the chip — which is why the scenario, unchanged in its intent since wave 0, only now actually checks it.",
+  "- **The demo chain crossed 1,000 records during this pass, and two scenarios went red on the same silence.** GET /api/ledger returns the NEWEST `limit` records and cannot page backwards: `ainize ledger export` asked for a fixed 1,000 and printed \"✓ exported 1000 record(s)\" for a 1,043-record ledger, and /ledger printed \"1,043 records\" in its info card above a table that could only ever hold 1,000 of them (the three oldest `supersede` records among the ones it could not reach). The export now asks how big the ledger is and requests exactly that many (max 5,000 per request; past that it says \"exported the most recent 5000 of N record(s) … cannot page further back\"), and the public-record page prints \"Showing the most recent 1,000 of 1,043 records\". AZ-010 also stopped counting kinds inside its own 1,000-record sample — the node applies the kind filter over the whole ledger, so the sample claimed \"0 supersede records\" about a ledger that has three.",
   "- **Wave 0 of the UX critique — nine findings, each implemented and then verified in a real browser.** `docs/ux-critique.json` items 2, 12, 20, 22, 26, 27, 84, 85 and 97: accuracy is printed against the denominator the verifiers actually used, on all three surfaces that show it; the \"AI Network\" ledger badge no longer paints over the first nav link at any desktop width; the benchmark's expected answer is rendered as text under every verdict and on every sample chip, not only in a `title`; the quota 429 offers \"Buy this knowledge\" and the node's measured reset time in place of a Retry that issued zero requests; Explore opens on \"Current only\" with \"3 older versions hidden · show\" and ranks \"Most popular\" by status before downloads; the display and mono font stacks carry the Hangul fallback the page already downloads; `<html lang>` and a per-page `<title>` follow the language toggle; and SUPERSEDED wears the warning palette and names its successor. Before/after screenshots at 1280 and 360 px in English and Korean: `packages/e2e/results/wave0/`.",
   "- **The demo cluster had been running a node dist older than its source.** Rebuilding it for wave 0 raised two assertions that described the old binary rather than the code in the tree: the OpenAPI documents 76 paths, not 74 (the D3 queue endpoints `/api/chat/status` and `/api/chat/cancel` have been in the source since `b517cae`), and AZ-052's announce pre-check — which runs inside the node and counts every overlapping body it holds, private drafts included — has to be compared with the OPERATOR's view of `GET /api/patches/:id/conflicts`. Three taught lessons sitting on node-a as private drafts are redacted from the public answer, and the old comparison only held while the node happened to hold none.",
   "- **The three defects the owner reported are gone, proved on the live cluster.** (a) `드` no longer runs away and is no longer auto-scored — it comes back as an ordinary answer marked *Free question — not auto-scored*, and where the model does loop the reply is cut with one plain sentence and a *Show the raw answer* button that reveals the full text unchanged (AZ-131). (b) The sample chip `종목코드 픽셀플러스 ` puts the trained prompt in the box with its trailing space, sends it verbatim and scores `087600` as ✓ Correct (AZ-132). (c) The same question typed by hand, without the trailing space, still answers correctly. (d) A question asked while another process holds the shared model says so within ~1 s, names the holder and ticks, and *Stop waiting* returns HTTP 499 without charging a free try (AZ-133).",
@@ -110,6 +114,16 @@
   "Sixteen audit findings from the previous green run were worked through: fifteen fixed (four in the product), one rejected with a reason (AZ-031 on a private node would replace the scenario, not fix it)."
  ],
  "fix_groups": [
+  {
+   "title": "Wave 1 of the UX critique — the honesty pass (findings 1, 6, 7, 24, 28, 29, 55, 56) and what the suite forced with it",
+   "shas": [
+    "140d0b9",
+    "9054f9d",
+    "4f4281b",
+    "2dcb1b1",
+    "a676836"
+   ]
+  },
   {
    "title": "Wave 0 of the UX critique (findings 2, 12, 20, 22, 26, 27, 84, 85, 97)",
    "shas": [
