@@ -476,8 +476,14 @@ test.describe('runtime', () => {
     await page.getByRole('button', { name: K.pixelPrompt.trim(), exact: true }).click();
     await chatTextarea(page).press('Enter');
     expect((await completeTurn(page, request)).status).toBe('done');
-    const b1 = (await bubble(page, 'base').boundingBox())!;
-    const b2 = (await bubble(page, 'patched').boundingBox())!;
+    // both boxes in ONE layout read: the transcript scrolls smoothly to the new turn, so two separate
+    // boundingBox() calls can be taken at different scroll offsets and appear to overlap
+    const [b1, b2] = await page.evaluate(() => {
+      const turn = [...document.querySelectorAll('article')].pop()!;
+      const bubbles = [...turn.querySelectorAll<HTMLElement>('[aria-busy]')];
+      const box = (re: RegExp) => { const r = bubbles.find((b) => re.test(b.innerText))!.getBoundingClientRect(); return { x: r.x, y: r.y, height: r.height }; };
+      return [box(/Before loading/), box(/After loading/)];
+    });
     expect(b2.y).toBeGreaterThanOrEqual(b1.y + b1.height - 1);
     expect(Math.abs(b1.x - b2.x)).toBeLessThan(2);
     const ta = (await chatTextarea(page).boundingBox())!;

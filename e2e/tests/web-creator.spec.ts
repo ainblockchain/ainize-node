@@ -973,10 +973,13 @@ test('AZ-046 Remove and re-add a connected peer node', async ({ page, request })
   expect(await res.json()).toEqual({ ok: true });
   expect(rightAfter).not.toContain(NODE_C);
   await expect(page.getByText('Node removed.', { exact: true })).toBeVisible();
-  await expect(rowC).toHaveCount(0);
-  // node-c has node-a as a configured peer and says hello every ~4 s → the peer exchange re-adds it automatically
+  // The row disappears "only briefly" (scenario text): node-c has node-a as a configured peer and says hello every
+  // ~4 s, so the peer exchange re-adds it and the polling table can show it again before this check samples it —
+  // the removal itself is proven by the 200 {ok:true} and by `rightAfter` above.
+  const rowGone = await rowC.waitFor({ state: 'detached', timeout: 5_000 }).then(() => true).catch(() => false);
+  if (!rowGone) note('the :3404 row was re-discovered before it could be observed missing (hello every ~4 s, the table polls) — auto-rediscovery is the expected behaviour');
   await expect.poll(async () => (await api<Peers>(request, '/api/nodes')).body.peers.map((p) => p.endpoint), { timeout: 30_000, message: 'peer :3404 re-discovered' }).toContain(NODE_C);
-  if ((await rowC.count()) === 0) note('the Connected nodes table does not poll — the re-discovered :3404 row only re-appears after the next mutation/reload');
+  await expect(rowC).toHaveCount(1, { timeout: 30_000 });   // and it is back in the table on its own
 
   await page.getByLabel('Add node endpoint').fill(`${NODE_C}/`);
   const [addReq, addRes] = await Promise.all([
