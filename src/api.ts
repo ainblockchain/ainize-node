@@ -148,9 +148,12 @@ export function buildApi(deps: ApiDeps): Router {
     if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
     if (q.branch) { const b = (await market.branches()).find((x) => x.name === q.branch); items = items.filter((e) => b?.patch_ids.includes(e.anchor.id)); }
     if (q.q) { const s = q.q.toLowerCase(); items = items.filter((e) => [e.anchor.id, e.anchor.name, e.anchor.description, e.anchor.model.id_M, e.anchor.benchmark.schema].join(' ').toLowerCase().includes(s)); }
+    // "Most popular" ranks by status FIRST: downloads accumulate forever, so a retired single-fact patch with 187
+    // downloads used to head the marketplace over the flagship it was replaced by. Tradeable before retired.
+    const statusRank = (s: string) => (s === 'LISTED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
     const sorters = {
       latest: (a: typeof items[0], b: typeof items[0]) => b.anchor.created_at - a.anchor.created_at,
-      popular: (a: typeof items[0], b: typeof items[0]) => b.downloads - a.downloads || b.passed - a.passed,
+      popular: (a: typeof items[0], b: typeof items[0]) => statusRank(a.status) - statusRank(b.status) || b.downloads - a.downloads || b.passed - a.passed,
       price: (a: typeof items[0], b: typeof items[0]) => Number(a.anchor.price) - Number(b.anchor.price),
       rows: (a: typeof items[0], b: typeof items[0]) => b.anchor.rows - a.anchor.rows,
     };
