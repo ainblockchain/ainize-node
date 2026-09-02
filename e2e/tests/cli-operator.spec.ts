@@ -109,10 +109,11 @@ test.describe('operator: account / API / inspection', () => {
     // 34 = the 23 of teach mode v1 + the 11 dataset routes of the dataset-first door (datasets CRUD/rows/fork/reparse/
     // download, the operator's dataset list, local-run and recipe) — one pipeline, two doors, one API group.
     expect(teachPaths.length, 'teach-mode paths (lessons, review queue, datasets, contributors, payouts)').toBe(34);
-    // 53 = 51 + the two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel), documented since b517cae
-    expect(paths.length - teachPaths.length, 'marketplace paths').toBe(53);
-    expect(paths.length).toBe(87);
-    for (const p of ['/api/chat/status', '/api/chat/cancel']) expect(oa.paths).toHaveProperty(p);
+    // 55 = 51 + the two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel, documented since b517cae)
+    //    + the two health probes (/healthz, /readyz — item 134)
+    expect(paths.length - teachPaths.length, 'marketplace paths').toBe(55);
+    expect(paths.length).toBe(89);
+    for (const p of ['/api/chat/status', '/api/chat/cancel', '/healthz', '/readyz']) expect(oa.paths).toHaveProperty(p);
     expect(oa.paths).toHaveProperty('/api/patches/{id}/forget');
     expect(oa.paths).toHaveProperty('/x402/patch/{id}');
     expect(oa.paths).toHaveProperty('/api/chat');
@@ -1839,6 +1840,61 @@ test.describe('operator: commands that report state', () => {
       // a node whose config matches the build says nothing extra
       const a = await runCli(['status'], { home: HOME_A });
       expect(a.stdout).toMatch(/^version\s+\d+\.\d+\.\d+ · built \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/m);
+    } finally { await t.stop(); }
+  });
+
+  test('AZ-233 Health checks that can fail: `/healthz`, `/readyz` and `ainize status --check`', async ({ request }) => {
+    test.setTimeout(4 * 60_000);
+    const codeOf = async (u: string) => { const r = await fetch(u); return { status: r.status, type: r.headers.get('content-type') ?? '' }; };
+
+    expect(await codeOf(`${NODE_A}/healthz`)).toEqual({ status: 200, type: 'application/json; charset=utf-8' });
+    expect(await codeOf(`${NODE_A}/readyz`)).toEqual({ status: 200, type: 'application/json; charset=utf-8' });
+    for (const p of ['status', 'metrics', 'health', 'ping']) {
+      const r = await codeOf(`${NODE_A}/${p}`);
+      expect(r.status, p).toBe(404);
+      expect(r.type, p).toContain('application/json');
+    }
+    // an ordinary unknown path is still the web app's own not-found page: that is a person's typo, not a monitor
+    expect((await codeOf(`${NODE_A}/this-node-is-on-fire`)).type).toContain('text/html');
+
+    const health = (await (await fetch(`${NODE_A}/healthz`)).json()) as { ok: boolean; node: string; uptime_s: number };
+    expect(health.ok).toBe(true);
+    expect(health.node).toBe('node-a');
+    expect(health.uptime_s).toBeGreaterThanOrEqual(0);
+
+    await waitForRuntime(request);
+    const ready = (await (await fetch(`${NODE_A}/readyz`)).json()) as { ok: boolean; checks: Record<string, { ok: boolean }> };
+    expect(ready.ok).toBe(true);
+    expect(Object.keys(ready.checks).sort()).toEqual(['ledger', 'peers', 'runtime']);
+    const check = await runCli(['status', '--check'], { home: HOME_A });
+    expect(check.code, check.stderr).toBe(0);
+    expect(check.stdout).toContain('✓ node-a');
+    expect(check.stdout).toMatch(/^ledger\s+ok · ain · height \d+$/m);
+    expect(check.stdout).toMatch(new RegExp(`^runtime\\s+ok · ${esc(MODEL)}$`, 'm'));
+
+    // a node whose model server is gone is NOT ready — the failure this product actually has
+    const t = await throwawayNode('readyz');
+    try {
+      const r = await fetch(`${t.url}/readyz`);
+      expect(r.status).toBe(503);
+      const body = (await r.json()) as { ok: boolean; checks: { ledger: { ok: boolean }; runtime: { ok: boolean; required: boolean; error?: string } } };
+      expect(body.ok).toBe(false);
+      expect(body.checks.ledger.ok).toBe(true);
+      expect(body.checks.runtime).toMatchObject({ ok: false, required: true, error: 'serving API unreachable' });
+      const bad = await t.cli(['status', '--check']);
+      expect(bad.code).toBe(1);
+      expect(bad.stdout).toContain('NOT READY');
+      expect(bad.stdout).toMatch(/^runtime\s+serving API unreachable$/m);
+
+      // …but a node whose roles need no runtime is ready without one
+      expect((await t.cli(['stop'])).code).toBe(0);
+      expect((await t.cli(['config', 'set', 'roles', 'seller'])).code).toBe(0);
+      expect((await t.cli(['start', '-d'])).code).toBe(0);
+      expect(await httpUp(t.url, 60_000)).toBe(true);
+      expect((await fetch(`${t.url}/readyz`)).status).toBe(200);
+      const okNow = await t.cli(['status', '--check']);
+      expect(okNow.code, okNow.stderr).toBe(0);
+      expect(okNow.stdout).toMatch(/^runtime\s+not required by this node's roles$/m);
     } finally { await t.stop(); }
   });
 });

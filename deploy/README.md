@@ -95,3 +95,30 @@ the proxy — set the knob to what is actually in front of the node and nothing 
 
 or `NGRAM_TRUST_PROXY=1` in the environment (`0`/`false` = off). Never set `true` on a node that is reachable directly:
 that trusts whatever the client puts in the header.
+
+### 4. Health checks — `/healthz` and `/readyz`
+
+Point an uptime check, a Kubernetes probe or a load balancer at one of these two, never at `/` or `/api/info`: every path
+the API does not claim is answered by the web app with **200 and an HTML page**, so a check on `/health` or `/status` is a
+permanently green light — including on a node whose model server has been gone for a day.
+
+| path | meaning | codes |
+|---|---|---|
+| `GET /healthz` | the process is alive (liveness) | always `200` with `{ok, node, address, version, uptime_s}` |
+| `GET /readyz` | the node can actually do its job (readiness) | `200` when ready, `503` with the failing check |
+
+`/readyz` fails when the ledger is unreachable (an `ain` node with no block height cannot read or write the public record)
+or, on a node whose roles include `serving` or `verifier`, when the runtime is unavailable — the failure this product
+actually has: the node is up and the model is gone. The body is the same either way:
+
+```json
+{ "ok": false, "node": "node-a", "checks": {
+  "ledger":  { "ok": true,  "kind": "ain", "height": 180664, "records": 1298 },
+  "runtime": { "ok": false, "required": true, "available": false, "model": null, "error": "serving API unreachable" },
+  "peers":   { "ok": true,  "configured": 2, "unreachable": 0 } } }
+```
+
+From a deploy script or a terminal: `ainize status --check` prints the same three checks and **exits 1** when any of them
+fails. The other probe paths (`/health`, `/healthcheck`, `/ready`, `/live`, `/livez`, `/ping`, `/status`, `/metrics`,
+`/version`, `/up`) answer `404` with a JSON hint rather than the web app, so a monitor pointed at the wrong one fails loudly
+instead of reporting success forever.

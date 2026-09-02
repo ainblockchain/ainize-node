@@ -318,6 +318,10 @@ export function buildOpenApi(base: string, version: string) {
       '/p2p/peers': { get: { tags: ['P2P'], summary: 'Peer list for peer exchange', responses: ok('endpoints') } },
       '/p2p/blobs': { get: { tags: ['P2P'], summary: 'Knowledge bodies held by this node (sha256 list)', responses: ok('blobs') } },
       '/api/openapi.json': { get: { tags: ['Public record'], summary: 'This document', responses: ok('OpenAPI') } },
+      '/healthz': { get: { tags: ['Public record'], summary: 'Liveness: 200 while the process is up', responses: ok('ok, node, address, version, uptime_s', { type: 'object', properties: {
+        ok: { type: 'boolean' }, node: { type: 'string' }, address: { type: 'string' }, version: { type: 'string' }, uptime_s: { type: 'integer' } } }) } },
+      '/readyz': { get: { tags: ['Public record'], summary: 'Readiness: 200 when the ledger is reachable and, for a serving/verifier node, the runtime is available; 503 with the failing check otherwise',
+        responses: { ...ok('ready — checks.ledger / checks.runtime / checks.peers'), 503: { description: 'not ready — the same body, with the failing check' } } } },
       '/p2p/info': { get: { tags: ['P2P'], summary: 'Node info', responses: ok('PeerInfo') } },
       '/p2p/records': { get: { tags: ['P2P'], summary: 'Ledger record sync (local-ledger mode)', parameters: [{ name: 'since', in: 'query', schema: { type: 'number' } }], responses: ok('records + cursor') }, post: { tags: ['P2P'], summary: 'Push records', responses: ok('added/rejected') } },
     },

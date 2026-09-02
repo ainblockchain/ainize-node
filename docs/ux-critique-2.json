@@ -452,7 +452,9 @@
      "evidence": "critique2-verify.txt §9, live against node-a: `/healthz`, `/readyz`, `/status` and `/this-node-is-on-fire` all return `200 text/html; charset=utf-8`. operator-day2-17: the same on a node whose `/api/info` reported `runtime.available = false`; `ainize status --json` on that node exited 0.",
      "user_cost": "An operator who wires the node into Uptime Kuma, a Kubernetes probe or a load-balancer health check gets a permanently green light — including on a node whose model server is dead, whose ledger is unreachable and whose verifier can no longer produce a real attestation. The failure mode this product actually has (the node is up, the model is gone) is exactly the one the default monitoring cannot see.",
      "fix": "Add `GET /healthz` (process alive, 200) and `GET /readyz` before the SPA fallback: 200 only when the ledger is reachable and, for a node with the `serving`/`verifier` role, the runtime is available; otherwise 503 with `{checks:{ledger,runtime,peers}}`. Return 404 rather than the SPA for paths that look like probes. Give `ainize status` a `--check` flag that exits 1 when any check fails.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "The node now answers GET /healthz (liveness) and GET /readyz (503 with the failing check when the ledger is unreachable or a serving/verifier node has no runtime), returns 404 for the other probe paths instead of the web app, documents both in the OpenAPI document and deploy/README.md, and `ainize status --check` exits 1 when a check fails."
     },
     {
      "n": 135,

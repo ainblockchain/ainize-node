@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (234)
+# Ainize UX Test Scenarios (235)
 
-This document lists 234 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 235 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,8 +28,8 @@ This document lists 234 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 4 | 3 | 1 | 0 |
-| **Total** | **234** | **100** | **113** | **21** |
+| Node operator | 5 | 3 | 2 | 0 |
+| **Total** | **235** | **100** | **114** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -38,7 +38,7 @@ This document lists 234 user-experience test scenarios for **Ainize** (ai-nize =
 | chat | 18 |
 | cli | 14 |
 | x402 | 14 |
-| api | 9 |
+| api | 10 |
 | dashboard | 8 |
 | agent | 7 |
 | teach-parser | 7 |
@@ -68,7 +68,7 @@ This document lists 234 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
-| cli | 35 |
+| cli | 36 |
 | api | 32 |
 | manual | 11 |
 
@@ -2243,7 +2243,7 @@ This document lists 234 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 87 True True` — 87 documented paths, 53 marketplace + 34 teach-mode (23 of teach mode v1 + 11 dataset routes). The two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel) are part of the 53; a build without them documents 85.
+- Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 89 True True` — 89 documented paths, 55 marketplace + 34 teach-mode (23 of teach mode v1 + 11 dataset routes). The two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel) and the two health probes (/healthz, /readyz) are part of the 55.
 - Step 2 prints `['cli', 'node', 'openapi'] Use knowledge (one line)`
 - Step 3 prints `4 pixelplus-087600 False ['Qwen3.8-Flash-Next'] ['krx-ticker-codes']` (attestation signatures are stripped from the catalog)
 - Step 4: both return 400 with body `{"error":"invalid request","issues":[…]}`
@@ -8428,3 +8428,39 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/node.ts nodeVersion()`
 - `packages/node/src/server.ts (start-up line when the two differ)`
 - `docs/ux-critique-2.json item 141`
+
+### AZ-233 - Health checks that can fail: `/healthz`, `/readyz` and `ainize status --check`
+
+**Goal:** An operator can wire the node into an uptime check, a Kubernetes probe or a deploy script and have it go red when the node cannot do its job — instead of a permanently green 200 from the web app.
+
+**Priority:** P1 - **Area:** api - **Automation:** cli
+
+**Preconditions**
+
+- Demo cluster running (node-a on :3402, model server up)
+- A throwaway node of your own with an unreachable runtime: `$N --home $S/h init --name h --port 3597 --ledger local --runtime-api http://127.0.0.1:1`, `$N --home $S/h start -d`
+
+**Steps**
+
+1. Run `curl -s -o /dev/null -w '%{http_code} %{content_type}\n' http://localhost:3402/healthz` and the same for /readyz, /status, /metrics and /this-node-is-on-fire
+2. Run `curl -s http://localhost:3402/readyz | python3 -m json.tool`
+3. Run `ainize --home ~/.ngram-cluster/node-a status --check`
+4. Run `curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3597/readyz` (the node whose model server is unreachable) and read the body
+5. Run `$N --home $S/h status --check`
+6. Stop that node, run `$N --home $S/h config set roles seller`, start it again and repeat `status --check`
+
+**Expected**
+
+- Step 1: `/healthz` and `/readyz` answer `200 application/json`; `/status` and `/metrics` answer `404 application/json` with `{"error":"not found","hint":"health checks: /healthz (the process is alive) and /readyz (ledger + runtime); /api/info for detail"}`; an ordinary unknown path (`/this-node-is-on-fire`) is still the web app's own 404 page (200 text/html), because that is a person's typo, not a monitor
+- Step 2: `{ok:true, node:"node-a", address, version, checks:{ledger:{ok,kind,height,records}, runtime:{ok,required,available,model}, peers:{ok,configured,unreachable}}}`
+- Step 3 prints `✓ node-a  http://localhost:3402` with `ledger ok · ain · height <h>`, `runtime ok · Qwen3.8-Flash-Next`, `peers 2 configured`; exit 0
+- Step 4: HTTP 503, with `checks.runtime` = `{ok:false, required:true, available:false, model:null, error:"serving API unreachable"}` while `checks.ledger.ok` is true
+- Step 5 prints `✗ h  http://localhost:3597  NOT READY` and `runtime  serving API unreachable`; exit code 1 — the failure a monitor must see
+- Step 6: with roles `seller` only, the runtime is not required — `/readyz` is 200 again and `status --check` prints `runtime  not required by this node's roles` and exits 0
+
+**Evidence**
+
+- `packages/node/src/server.ts (/healthz, /readyz, the probe-path 404 before the SPA fallback)`
+- `packages/cli/src/commands/node.ts statusCheck()`
+- `packages/node/src/openapi.ts (/healthz + /readyz documented), deploy/README.md §4`
+- `docs/ux-critique-2.json item 134`

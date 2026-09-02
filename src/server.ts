@@ -111,6 +111,34 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig }));
 
+  // ---------------------------------------------------------------- health probes (item 134)
+  // Everything that is not an API route used to be answered 200 with the web app, so `/healthz` — the path every
+  // uptime check tries first — reported a perfectly healthy node while its model server was gone. These two answer
+  // for real, and the other probe paths answer 404 instead of an HTML page a monitor will read as success.
+  const startedAt = Date.now();
+  app.get('/healthz', (_req, res) => {
+    res.json({ ok: true, node: cfg.name, address: cfg.identity.address, version: VERSION, uptime_s: Math.round((Date.now() - startedAt) / 1000) });
+  });
+  app.get('/readyz', async (_req, res) => {
+    const info = await ledger.info().catch(() => null);
+    // an AIN node with no block height cannot read or write the public record; a local ledger is its own file
+    const ledgerOk = !!info && (info.kind !== 'ain' || info.height !== undefined);
+    const needsRuntime = cfg.roles.includes('serving') || cfg.roles.includes('verifier');
+    const rt = await runtime.status().catch(() => null);
+    const peers = store.listPeers();
+    const checks = {
+      ledger: { ok: ledgerOk, kind: cfg.ledger.kind, height: info?.height ?? null, records: info?.records ?? null, ...(ledgerOk ? {} : { error: `ledger unreachable${cfg.ledger.ain ? ` (${cfg.ledger.ain.providerUrl})` : ''}` }) },
+      runtime: { ok: !needsRuntime || !!rt?.available, required: needsRuntime, available: !!rt?.available, model: rt?.model ?? null, ...(rt?.error ? { error: rt.error } : {}) },
+      peers: { ok: true, configured: peers.length, unreachable: peers.filter((p) => p.failures > 0).length },
+    };
+    const ok = checks.ledger.ok && checks.runtime.ok;
+    res.status(ok ? 200 : 503).json({ ok, node: cfg.name, address: cfg.identity.address, version: VERSION, checks });
+  });
+  // the usual probe paths must never be answered with the SPA: a 200 HTML page is a green light to every monitor
+  app.get(/^\/(health|healthcheck|_health|ready|live|livez|ping|status|metrics|version|up)\/?$/, (_req, res) => {
+    res.status(404).json({ error: 'not found', hint: 'health checks: /healthz (the process is alive) and /readyz (ledger + runtime); /api/info for detail' });
+  });
+
   const webDist = opts.webDist ?? defaultWebDist();
   if (opts.serveWeb !== false && existsSync(join(webDist, 'index.html'))) {
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
