@@ -318,7 +318,7 @@
      "fix": "Define the config as a zod schema next to `defaultConfig` (the types exist in packages/core/src/types.ts) and run `configSet` through it: reject an unknown dotted path with the nearest known key (`unknown config key 'verifier.stak' — did you mean 'verifier.stake'?`), reject a wrong type naming the expected one, and range-check `port`, `verifier.quorum`, `market.royaltyShare`, `teach.contributorShare`. Validate the same schema in `startNode` and refuse to boot with the offending keys listed. Add `config get` and `config unset`, and keep a table of which keys are live vs. startup so the suffix is true.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "config.json now has a zod schema in core: `config set` refuses an unknown key (naming the nearest real one), a wrong type or an out-of-range value, `config get` and `config unset` exist, and startNode refuses to boot on an invalid value while only warning about a key it does not know."
+     "shipped": "config.json now has a zod schema in core: `config set` refuses an unknown key (naming the nearest real one), a wrong type or an out-of-range value, `config get` and `config unset` exist, and startNode refuses to boot on an invalid value while only warning about a key it does not know. Re-verified on a throwaway node: a config.json whose port is not a number used to make every command — `config set port`, the fix, included — die with `--node must be a full URL`; the port is now named as the config's problem, the local commands still run, and `start`/`seed` refuse an unusable config themselves before spawning anything."
     },
     {
      "n": 124,
@@ -544,7 +544,7 @@
      "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
+     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
     },
     {
      "n": 142,

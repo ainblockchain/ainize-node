@@ -7890,6 +7890,7 @@
    "Run `$N --home $S/c config set market.defaultPrice 9.99` and read the value back with `$N --home $S/c config get market.defaultPrice`",
    "Run `$N --home $S/c config set teach.trainer.gpus 0,1` then `$N --home $S/c config unset teach.trainer.gpus`",
    "Hand-edit config.json to `\"port\": \"notanumber\"` and `\"roles\": [\"admin\"]`, then run `$N --home $S/c start`",
+   "With config.json still holding `\"port\": \"notanumber\"`, run `$N --home $S/c config show`, `$N --home $S/c status` and `$N --home $S/c config set port 3594`",
    "Hand-edit config.json to add `\"strayKey\": 1`, start the node and run `$N --home $S/c logs --kind config`"
   ],
   "expected": [
@@ -7901,7 +7902,8 @@
    "Step 6 prints `✓ market.defaultPrice = \"9.99\"  (the node reads config.json when it starts)` — a price is stored as the decimal STRING the rest of the product uses, never a JSON number — and `config get` prints `9.99`",
    "Step 7: `config unset` on a key the config cannot do without resets it to the built-in default (`✓ teach.trainer.gpus reset to the default \"4,5,6\" (was \"0,1\"; it cannot be absent)`); on an optional key it removes it and says the node falls back to its default",
    "Step 8: the node refuses to start — `error: this node's config is not usable:` then one line per key (`port must be a number`, `roles.0 must be a comma list of …`) and the path of the config.json to fix; exit 1; nothing binds a port",
-   "Step 9: the node starts (a key this build does not know must not stop an older binary from booting) and logs one `warn config strayKey: unknown config key` line"
+   "Step 9: `config show` prints the file (exit 0); `status` fails with `error: port in $S/c/config.json is \"notanumber\", not a port number — fix it with \\`ainize config set port <1-65535>\\`` (exit 2) — never `--node must be a full URL`, a flag nobody passed; and `config set port 3594` succeeds: the fix the refusal names is never itself locked out",
+   "Step 10: the node starts (a key this build does not know must not stop an older binary from booting) and logs one `warn config strayKey: unknown config key` line"
   ],
   "priority": "P0",
   "area": "cli",
@@ -7911,7 +7913,8 @@
    "packages/cli/src/commands/init.ts configSet / configGet / configUnset",
    "packages/node/src/server.ts startNode() (refuses invalid values, warns about unknown keys)",
    "packages/core/test/config.test.ts + packages/cli/test/operator.test.ts (item 123)",
-   "docs/ux-critique-2.json item 123"
+   "docs/ux-critique-2.json item 123",
+   "packages/cli/src/context.ts buildContext() (nodeUrlProblem: a broken config port is named by the commands that need a node, not reported as a --node typo)"
   ]
  },
  {
@@ -7963,7 +7966,7 @@
   "expected": [
    "Step 1 succeeds — `version` is a real config key (the schema version config.json was written by)",
    "Step 2 prints `version     0.1.0 · built <YYYY-MM-DD HH:MM:SS>  (config.json written by 0.0.1-from-2024)`: the running build first, the config's claim named as the config's claim",
-   "Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is \"0.0.1-from-2024\" — so every peer and the generated OpenAPI document report the build, not the file — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts",
+   "Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is \"0.0.1-from-2024\" — so every peer and the generated OpenAPI document report the build, not the file — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts",
    "Step 4 shows one info line `config: config.json was written by version 0.0.1-from-2024; this node is running 0.1.0` — the hook a future config migration hangs on",
    "Step 5 prints `version     0.1.0 · built <…>` with no config note, because there is nothing to say"
   ],
@@ -7976,6 +7979,7 @@
    "packages/cli/src/commands/node.ts nodeVersion()",
    "packages/node/src/server.ts (start-up line when the two differ)",
    "docs/ux-critique-2.json item 141",
+   "packages/core/test/config.test.ts (buildStamp measured once)",
    "packages/core/test/config.test.ts (buildStamp measured once)"
   ]
  },

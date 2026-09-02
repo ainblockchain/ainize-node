@@ -1793,6 +1793,17 @@ test.describe('operator: commands that report state', () => {
       expect(start.stderr).toContain(cfgPath);
       expect(await portBusy(t.port), 'nothing bound the port').toBe(false);
 
+      // the broken port must not lock the operator out of the fix: every command used to die with
+      // "--node must be a full URL — did you mean http://localhost:notanumber?" — a flag nobody passed
+      const show = await t.cli(['config', 'show']);
+      expect(show.code, show.stderr).toBe(0);
+      const status = await t.cli(['status']);
+      expect(status.code).toBe(2);
+      expect(status.stderr.trim()).toBe(`error: port in ${cfgPath} is "notanumber", not a port number — fix it with \`ainize config set port <1-65535>\``);
+      const fix = await t.cli(['config', 'set', 'port', String(t.port)]);
+      expect(fix.code, fix.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(cfgPath, 'utf8')).port).toBe(t.port);
+
       // a key this build does not know is a warning, not a refusal
       broken.port = t.port;
       broken.roles = ['seller'];
