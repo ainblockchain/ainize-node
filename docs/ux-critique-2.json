@@ -246,7 +246,9 @@
      "evidence": "packages/e2e/results/ux2/critic-07-start-busyport.txt: on a home configured for port 3402, `start -d` → `✓ node started in the background (pid 1915235) — port 3402`, exit 0, while node.log holds only `error: listen EADDRINUSE: address already in use 0.0.0.0:3402` and the pid is dead 4 s later. `ainize status` on the same home then printed a full healthy block for `node-a  http://localhost:3402 / address 0xF7A9dE49…A1F5 / runtime available / patches 4 (1 listed)` while the home's own identity was `0xd37924E9…2AC3`. `ainize stop` → `no background node running for this NGRAM_HOME`, exit 0. Reproduced independently in operator-day2-03-start-port-conflict.txt and operator-network-start-eaddrinuse.txt.",
      "user_cost": "The operator's very first command lies, the health check lies in a way that confirms the lie — address, roles, ledger height, runtime, catalogue, all someone else's — and the only command that tells the truth phrases it as \"nothing to stop\". On the documented three-node host this is the normal case, not an edge one: every subsequent decision is made about a different node.",
      "fix": "In the detach branch, after `spawn`, poll `GET <url>/api/info` for up to ~10 s; on `child.exit` or timeout print the last 20 lines of node.log, delete the pid file and exit non-zero instead of the tick. In `status()` compare `d.node.address` with `requireConfig(ctx).identity.address` and, when they differ, print `! http://localhost:3402 is answered by \"node-a\" (0xF7A9…A1F5), not the node in <home> (0xd379…2AC3) — that node is not running` above the table and exit non-zero. When no pid is running for the home, say `not running (no process for this NGRAM_HOME)` explicitly.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "`start -d` now polls /api/info until the child answers with this home's own identity and otherwise prints the tail of node.log, deletes the pid file and exits 1; `status` names the stranger answering the port and exits 2 instead of rendering their node as yours."
     },
     {
      "n": 119,
@@ -258,7 +260,9 @@
      "evidence": "packages/e2e/results/ux2/critic-08-stop-lies.txt: a healthy node on :3579 was SIGSTOPped; `ainize stop` returned after 11 s with `✓ stopped node (pid 1915669)`, exit 0, `ps -o stat` still showed `Tsl`, and node.pid was gone. The follow-up `start -d` then printed `✓ node started in the background (pid 1916096) — port 3579` while node.log recorded `error: listen EADDRINUSE …0.0.0.0:3579`. Same in operator-day2-22-stop-lies.txt.",
      "user_cost": "Chained with item 118 this is worse than either: after a false stop the pid file is gone, so the real node can no longer be reached by `ainize stop` at all, and the follow-up `start -d` says it started a node that is already dead. The operator has one process they cannot manage and one screen telling them everything is fine.",
      "fix": "After the wait loop, re-check `process.kill(pid, 0)`; if the process is alive, escalate to SIGKILL after the grace period; if it is still alive, keep the pid file and exit non-zero with `node <pid> did not stop (still running) — kill it manually`. Only unlink the pid file and print the tick on a confirmed exit.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "`stop` now checks the wait loop, escalates to SIGKILL after the grace period, keeps the pid file and exits non-zero when the process is still alive, and tells the operator when a node is serving that it did not start."
     },
     {
      "n": 120,

@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (230)
+# Ainize UX Test Scenarios (231)
 
-This document lists 230 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 231 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,7 +28,8 @@ This document lists 230 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| **Total** | **230** | **97** | **112** | **21** |
+| Node operator | 1 | 1 | 0 | 0 |
+| **Total** | **231** | **98** | **112** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -36,7 +37,7 @@ This document lists 230 user-experience test scenarios for **Ainize** (ai-nize =
 | teach-dataset | 23 |
 | chat | 18 |
 | x402 | 14 |
-| cli | 10 |
+| cli | 11 |
 | api | 9 |
 | dashboard | 8 |
 | agent | 7 |
@@ -68,7 +69,7 @@ This document lists 230 user-experience test scenarios for **Ainize** (ai-nize =
 |---|---:|
 | e2e | 156 |
 | api | 32 |
-| cli | 31 |
+| cli | 32 |
 | manual | 11 |
 
 ## Visitor (knowledge user)
@@ -8272,3 +8273,44 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/auth.ts login() (refuses /api/auth/setup against a node the user did not name)`
 - `packages/cli/test/operator.test.ts (nodeSource + requireNodeTarget unit tests)`
 - `docs/ux-critique-2.json item 101`
+
+## Node operator
+
+### AZ-229 - `start -d` on a busy port fails loudly, `status` refuses to pass off the stranger holding it, and `stop` never reports a process it did not stop
+
+**Goal:** The three commands an operator lives by report what actually happened: a node that died on startup is not announced as started, a health check does not describe someone else's node, and a stop that did not stop is not a tick.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- Two throwaway homes of your own under the scratchpad — never the demo cluster: `S=<scratch>`; `N="node packages/cli/dist/bin.js"`
+- Home A: `$N --home $S/a init --name a --port 3593 --ledger local --runtime-api http://127.0.0.1:1` then `$N --home $S/a start -d`
+- Home B on the SAME port: `$N --home $S/b init --name b --port 3593 --ledger local --runtime-api http://127.0.0.1:1`
+
+**Steps**
+
+1. Run `$N --home $S/b start -d` (port 3593 is already node a's)
+2. Check whether $S/b/node.pid exists
+3. Run `$N --home $S/b status`
+4. Run `$N --home $S/b stop`
+5. SIGSTOP node a: `kill -STOP $(cat $S/a/node.pid)` — it now ignores SIGTERM
+6. Run `NGRAM_STOP_GRACE_MS=3000 $N --home $S/a stop`
+7. Check the process is gone (`ps -o stat -p <pid>`) and $S/a/node.pid is removed
+8. Run `$N --home $S/a start -d` again
+
+**Expected**
+
+- Step 1 fails: `error: node exited while starting (exit code 1) — it is not running.` followed by `$S/b/node.log (last N lines):` and the log's own reason `error: listen EADDRINUSE: address already in use 0.0.0.0:3593`; exit code 1; no green tick and no pid
+- Step 2: $S/b/node.pid does not exist — a pid file is written only for a node that answered
+- Step 3 prints on stderr, above the block, `! http://localhost:3593 is answered by "a" (0x…), not the node in $S/b (0x…) — that node is not running.` with the dim second line `everything below belongs to that other node.`; the block that follows is node a's; exit code 2 (not 0)
+- Step 4 prints `no background node running for this NGRAM_HOME` and exits 0 — home b really has no node, and the node on the port is not b's, so nothing else is claimed
+- Step 6 prints `! node <pid> is still running 3 s after SIGTERM — sending SIGKILL` and then `✓ stopped node (pid <pid>) — it ignored SIGTERM, so it was killed`; exit code 0
+- Step 7: the process is gone and $S/a/node.pid is removed — the pid file survives only a stop that did not confirm the exit, in which case the command exits non-zero with `did not stop (still running after SIGTERM and SIGKILL)`
+- Step 8 succeeds with `✓ node started in the background (pid N) — port 3593`, printed only after the new node answered /api/info with home a's own address
+
+**Evidence**
+
+- `packages/cli/src/commands/node.ts start() (poll /api/info, identity match, startFailed + logTail), stop() (waitGone, SIGKILL escalation), status() (stranger warning + exit 2)`
+- `packages/cli/test/operator.test.ts (items 118/119 unit tests)`
+- `docs/ux-critique-2.json items 118, 119`

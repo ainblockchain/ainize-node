@@ -1630,4 +1630,57 @@ test.describe('operator: commands that report state', () => {
       } finally { await other.stop(); }
     } finally { await t.stop(); }
   });
+
+  test('AZ-229 `start -d` on a busy port fails loudly, `status` refuses to pass off the stranger holding it, and `stop` never reports a process it did not stop', async () => {
+    test.setTimeout(4 * 60_000);
+    const a = await throwawayNode('busy-a');
+    const b = await throwawayNode('busy-b', { port: a.port, start: false });
+    try {
+      expect((await b.init()).code).toBe(0);
+
+      // step 1-2: the second node cannot bind, and says so with the log's own reason
+      const started = await b.cli(['start', '-d']);
+      expect(started.code).toBe(1);
+      expect(started.stdout).not.toContain('✓');
+      expect(started.stderr).toContain('error: node exited while starting (exit code 1) — it is not running.');
+      expect(started.stderr).toContain(`${join(b.home, 'node.log')} (last `);
+      expect(started.stderr).toContain(`error: listen EADDRINUSE: address already in use 0.0.0.0:${a.port}`);
+      expect(existsSync(join(b.home, 'node.pid')), 'no pid file for a node that never answered').toBe(false);
+
+      // step 3: status does not render node a as node b
+      const addrA = nodeAddress(a.home);
+      const addrB = nodeAddress(b.home);
+      const st = await b.cli(['status']);
+      expect(st.code).toBe(2);
+      expect(st.stderr).toContain(`! ${a.url} is answered by "busy-a" (${shortAddr(addrA, 8)}), not the node in ${b.home} (${shortAddr(addrB, 8)}) — that node is not running.`);
+      expect(st.stderr).toContain('everything below belongs to that other node.');
+      expect(st.stdout).toContain(addrA);          // the block is still printed, and it is honestly labelled
+
+      // step 4: nothing of b's is running, and nothing else is claimed
+      const stopB = await b.cli(['stop']);
+      expect(stopB.code).toBe(0);
+      expect(stopB.stdout.trim()).toBe('no background node running for this NGRAM_HOME');
+      expect(stopB.stderr).toBe('');
+
+      // steps 5-7: a node that ignores SIGTERM is killed, and only then reported stopped
+      const pid = Number(readFileSync(join(a.home, 'node.pid'), 'utf8').trim());
+      process.kill(pid, 'SIGSTOP');
+      const stopA = await a.cli(['stop'], { env: { NGRAM_STOP_GRACE_MS: '3000' } });
+      expect(stopA.code, stopA.stderr).toBe(0);
+      expect(stopA.stderr).toContain(`! node ${pid} is still running 3 s after SIGTERM — sending SIGKILL`);
+      expect(stopA.stdout.trim()).toBe(`✓ stopped node (pid ${pid}) — it ignored SIGTERM, so it was killed`);
+      expect(() => process.kill(pid, 0), 'the process is really gone').toThrow();
+      expect(existsSync(join(a.home, 'node.pid'))).toBe(false);
+      expect(await httpDown(a.url, 20_000)).toBe(true);
+
+      // step 8: the port is free again, so the restart really starts
+      const again = await a.cli(['start', '-d']);
+      expect(again.code, again.stderr).toBe(0);
+      expect(again.stdout).toContain(`✓ node started in the background (pid `);
+      expect(await httpUp(a.url, 60_000)).toBe(true);
+    } finally {
+      await b.stop();
+      await a.stop();
+    }
+  });
 });
