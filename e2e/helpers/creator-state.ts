@@ -38,12 +38,14 @@ export async function authMe(request: APIRequestContext, node = NODE_A) {
 
 // ------------------------------------------------------------------ patches
 export interface Sample { prompt: string; expect: string }
-export interface Attestation { verifier: string; verifier_name?: string; passed: boolean; verified_on: string; score: Record<string, string | number>; stake: string; restarts_detected?: number; created_at?: number }
+/** `stake` exists only on records written before 2026-09: nothing was ever escrowed, and new attestations omit it (critique 2 item 127). */
+export interface Attestation { verifier: string; verifier_name?: string; passed: boolean; verified_on: string; score: Record<string, string | number>; stake?: string; restarts_detected?: number; created_at?: number }
 export interface PatchDetail {
   anchor: { id: string; name: string; description: string; author: string; author_name?: string; price: string; currency: string; billing: string; license?: string; branch?: string;
     rows: number; size_bytes: number; patch_sha256: string; benchmark_hash: string; visibility?: 'public' | 'test'; parents: string[];
     benchmark: { schema: string; queries: number; format?: string[]; collateral_bound_nat?: number; samples?: Sample[] }; model: { id_M: string; row_dim?: number }; created_at: number };
-  status: string; attestations: Attestation[]; passed: number; integrity_checks: number; quorum: number; quorum_ok: boolean; downloads: number; revenue: string;
+  status: string; attestations: Attestation[]; passed: number; integrity_checks: number; self_checks: number; quorum: number; quorum_ok: boolean; sellable: boolean;
+  open_challenge?: { patch_id: string; challenger: string; reason: string; created_at: number }; challenges: { challenger: string; reason: string; created_at: number }[]; downloads: number; revenue: string;
   supersedes: string[]; superseded_by: string[]; lineage: { parents: { id: string; name: string; status: string }[]; children: { id: string; name: string; status: string }[] };
   conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null; listed_at?: number;

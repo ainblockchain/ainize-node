@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (228)
+# Ainize UX Test Scenarios (229)
 
-This document lists 228 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 229 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -20,21 +20,21 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 |---|---:|---:|---:|---:|
 | Visitor (knowledge user) | 30 | 11 | 17 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
-| Node operator / developer | 30 | 12 | 15 | 3 |
+| Node operator / developer | 31 | 13 | 15 | 3 |
 | AI agent / automation | 14 | 6 | 7 | 1 |
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 9 | 4 | 5 | 0 |
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
-| **Total** | **228** | **95** | **112** | **21** |
+| **Total** | **229** | **96** | **112** | **21** |
 
 | Area | Count |
 |---|---:|
 | teach | 57 |
 | teach-dataset | 23 |
 | chat | 18 |
-| x402 | 13 |
+| x402 | 14 |
 | api | 9 |
 | cli | 9 |
 | dashboard | 8 |
@@ -65,10 +65,10 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 155 |
-| api | 31 |
+| e2e | 156 |
+| api | 32 |
 | cli | 30 |
-| manual | 12 |
+| manual | 11 |
 
 ## Visitor (knowledge user)
 
@@ -224,30 +224,30 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 
 ### AZ-005 - Read the Verification tab and confirm only real-model runs count
 
-**Goal:** A visitor can see who verified the knowledge, how, and understand why integrity-only checks are shown separately.
+**Goal:** A visitor can see who verified the knowledge, how, which results counted, and what actually backs a verification.
 
 **Priority:** P0 - **Area:** verification - **Automation:** e2e
 
 **Preconditions**
 
 - No operator session
-- krx-all-2761 has two executed attestations (node-b and node-c; verified_on vllm:Qwen3.8-Flash-Next; stake 5; restarts 0); verifier addresses come from GET /api/nodes (currently node-b 0x430b3A37…9935, node-c 0x199Ff870…bce9)
+- krx-all-2761 has two executed attestations (node-b and node-c; verified_on vllm:Qwen3.8-Flash-Next; restarts 0); verifier addresses come from GET /api/nodes (currently node-b 0x430b3A37…9935, node-c 0x199Ff870…bce9)
 
 **Steps**
 
 1. Open the detail page of krx-all-2761 and click the 'Verification' tab
 2. Read the summary row
-3. Read both table rows; hover the 'Side-effect check' and 'Deposit' cells
+3. Read both table rows; hover the 'Side-effect check' and 'Counts' cells
 4. Read the three explanatory notes under the table
 
 **Expected**
 
 - Summary: 'Run on the real model' 2/2; 'Integrity only' 0; 'Status' chip 'For sale'
-- Table headers: 'Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time' — 'Before' is score.pre_apply, which every attestation carries and which used to reach the DOM only inside a title= attribute
-- Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Before '1/8' (the same run's pre_apply, tooltip 'What the same verifier scored on the same questions BEFORE the knowledge was loaded (pre_apply) …'); Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Deposit '5 AIN'; Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip
+- Table headers: 'Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Counts', 'Result', 'Time' — 'Before' is score.pre_apply, which every attestation carries and which used to reach the DOM only inside a title= attribute; 'Counts' replaced the old 'Deposit' column, which reported a bond that was never escrowed (critique 2 item 127)
+- Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Before '1/8' (the same run's pre_apply, tooltip 'What the same verifier scored on the same questions BEFORE the knowledge was loaded (pre_apply) …'); Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Counts 'independent' (tooltip: the result is signed with the verifier node's key, no deposit is escrowed, any node can challenge it); Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip
 - Note 1 starts 'Verified — Only verifications run on the real model count toward Verified (currently 2/2). The 0 integrity-only checks are shown separately…'
 - A note under the table explains the pair: '"Before" and "Accuracy" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.'
-- Note 2 starts 'Restarts detected: if the model server restarted mid-run…'; Note 3 starts 'Deposit: what a verifier loses if its verification turns out wrong…'
+- Note 2 starts 'Restarts detected: if the model server restarted mid-run…'; Note 3 is the honest backing statement: 'No deposit is at stake on a verification. Each result is signed with the verifier node's key and stays on the public record under that identity for ever. Any node that thinks a result is wrong can challenge it, and a challenge stops the sale until the knowledge is re-verified.'
 
 **Evidence**
 
@@ -256,6 +256,7 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/node/src/verifier.ts (only executed attestations count; hash-only separate)`
 - `packages/web/src/i18n/pages/detail.ts: detail.ver.*, detail.how.executed, detail.pass`
 - `GET /api/patches/krx-all-2761 attestations`
+- `packages/core/src/catalog.ts deriveCatalog (self-attestations excluded; the fraction is clamped to the quorum)`
 
 ### AZ-006 - Read the Buy tab as a visitor and probe the automatic-payment address
 
@@ -609,7 +610,7 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 
 - Accuracy line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers', and under it the baseline from the same run: 'The same run scored 1/8 before the knowledge was loaded → 26/26 after'
 - 'Target model' note 'This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.'; rows 'Model' Qwen3.8-Flash-Next, 'Checkpoint' W4A16, 'Entry width' 160, 'Billing' 'pay once per download', 'License' 'Use on the identified model · no resale of raw data', 'Created' (date)
-- 'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' — since no attestation carries collateral_nat — reads 'Limit declared (≤ 0.08 nat) — not yet measured by any verifier' in the warning tone (#8a4b00) with a 'See the verification tab →' button that opens the tab where the same fact reads 'not reported'; once a verifier does report one the row reads 'Threshold set — measured by {n} of {of} verifiers'; 'Question-set hash' shown
+- 'Verification questions' note 'Verifier nodes score the knowledge with these questions. They are published with the knowledge — not sealed — so anyone can re-run the same scoring and check the verdict. It also means the author knew these questions in advance; read the accuracy with that in mind.' (the old wording claimed a sealed answer key that GET /api/patches/:id serves to anonymous callers — critique 2 item 164); 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' — since no attestation carries collateral_nat — reads 'Limit declared (≤ 0.08 nat) — not yet measured by any verifier' in the warning tone (#8a4b00) with a 'See the verification tab →' button that opens the tab where the same fact reads 'not reported'; once a verifier does report one the row reads 'Threshold set — measured by {n} of {of} verifiers'; 'Question-set hash' shown
 - 'Sample questions (26)' lists 12 items like '"종목코드 픽셀플러스 " → 087600' followed by '… 14 more'
 - Recipe details show JSON with corpus_template and hyperparams
 - 'Integrity' note 'A downloaded file is genuine only if its content hash matches the value below.'; 'Content hash' 57c93463… (stable: sha256 of rows-pin.npz); 'Copy' turns into 'Copied' and the clipboard holds the 64-hex sha256; 'Public record ID' equals record_hash from GET /api/patches/krx-all-2761 (chain-specific, do not hardcode); 'File stored on this node' 'yes'
@@ -1345,7 +1346,7 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 - Button reads "Publishing…" then green alert "Published — it is on the public record and verifiers were notified."; POST /api/patches/pixelplus-test-1/announce returns 200 with an anchor record
 - Status chip becomes "Registered · awaiting verification", then "Verifying" with a spinner once the first attestation arrives (page polls GET /api/patches/pixelplus-test-1 every 5 s); the line reads "executed 1/2 passed · integrity 0 · 1 result(s)"
 - When two executed attestations have passed the chip reads "For sale" (status.LISTED), the line "executed 2/2 passed · integrity 0 · 2 result(s)", a "Verified on" date appears and the "Auto-pay address" link http://localhost:3402/x402/patch/pixelplus-test-1 becomes active
-- "Verification results" table lists node-b and node-c with Result "PASS", How "executed (vllm:Qwen3.8-Flash-Next)" and a Deposit in AIN
+- "Verification results" table lists node-b and node-c with Result "PASS", How "executed (vllm:Qwen3.8-Flash-Next)" and Counts "independent"
 - Fields under "Description & price" are disabled with the note "Published knowledge is fixed on the public record — these fields can no longer change."; the checklist and publish button are gone
 
 **Evidence**
@@ -1678,43 +1679,42 @@ This document lists 228 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/node/src/api.ts GET /api/patches/:id (conflicts, lineage.parents, supersedes); packages/node/src/seed.ts parents`
 - `packages/web/src/components/chat/KnowledgePicker.tsx (chat.picker.overlap_pair); packages/node/src/market.ts chatOverlaps()`
 
-### AZ-041 - Run Verify now on this node and see the attestation appear
+### AZ-041 - Try Verify now on your own knowledge and be told why you cannot
 
-**Goal:** An operator whose node is also a verifier can add its own executed verification result from the console.
+**Goal:** An operator learns that a verification of their own knowledge would never count, before spending GPU minutes on it — the badge only means other nodes ran it.
 
-**Priority:** P1 - **Area:** verification - **Automation:** manual
+**Priority:** P1 - **Area:** verification - **Automation:** e2e
 
 **Preconditions**
 
 - Signed in on http://localhost:3402 (node-a roles include verifier)
-- node-a has not yet attested krx-all-2761 (the automatic verifier round skips the node's own anchors, so only node-b and node-c have attested)
-- Model runtime on :3402 available (GET /api/runtime available:true)
+- The knowledge under test was published by node-a itself (AZ-031's visibility:test knowledge, or any id from GET /api/me/patches) — on this cluster node-a is the only seller, so every catalog entry is its own
+- Shipped config: verifier.allowSelfAttest is false
 - node-a address = GET /api/info node.address (currently 0xF7A9dE49902C95661AC6556D631e2B60a081A1F5)
 
 **Steps**
 
-1. Open http://localhost:3402/project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761
-2. Confirm the button "Verify now (this node)" is shown under "Verification"
-3. Click "Verify now (this node)" and wait (loading the 331 MB knowledge and scoring may take several minutes; the shared runtime lock may delay it while a live test runs)
-4. Read the "Verification results" table and the "Verification" line
-5. Reload the page
+1. Open http://localhost:3402/project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/<own knowledge id>
+2. Look under 'Verification' for the 'Verify now (this node)' button
+3. Read the line printed in its place
+4. Call POST /api/patches/<id>/verify with the operator token directly (what `ainize patch verify` does)
+5. Re-read the 'Verification' line and the 'Verification results' table
 
 **Expected**
 
-- While running the button reads "Verifying…"; POST /api/patches/krx-all-2761/verify returns 200 {attestation:{…}}
-- Green alert "Verification result published."
-- A new row "node-a" appears with Result "PASS" (green), Accuracy "26/26", How "executed (vllm:Qwen3.8-Flash-Next)", Restarts 0, a Deposit "5 AIN" and a timestamp
-- The line reads "executed 3/2 passed · integrity 0 · 3 result(s)"
-- After reload the button is replaced by the text "This node already verified this knowledge."
-- Logs page /project/…/krx-all-2761/logs shows a new "verify" event and the Public-record timeline a "verified" entry "PASS by node-a (executed (vllm:Qwen3.8-Flash-Next)) · accuracy 26/26, 1/8"
+- No 'Verify now (this node)' button is rendered on your own knowledge (it is offered only for knowledge published by another node)
+- In its place: 'You cannot verify your own knowledge. Verified means other nodes ran it on a real model — an attestation by this node would not count.'
+- POST /api/patches/<id>/verify returns 409 {"error":"cannot verify your own knowledge: <id> was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it."} and no attestation record is appended (GET /api/patches/<id> attestation count unchanged)
+- `ainize patch verify <id>` prints the same sentence and exits non-zero
+- The 'Verification' line still reads 'executed 2/2 passed · integrity 0 · 2 result(s)' — the numerator never exceeds the quorum, and a self-check would have been reported separately as 'n self-check(s), not counted' rather than counted
 
 **Evidence**
 
-- `packages/web/src/pages/ManagePage.tsx canVerify, alreadyAttested`
-- `packages/web/src/i18n/pages/operator.ts op.manage.verify_now, op.manage.verifying, op.manage.verified_ok, op.manage.already, op.manage.attest.how.run`
-- `packages/node/src/api.ts POST /api/patches/:id/verify`
-- `packages/node/src/verifier.ts verifyOne (allowSelfAttest false in round())`
-- `packages/node/src/runtime.ts shared lock`
+- `packages/web/src/pages/ManagePage.tsx canVerify (isMine), op.manage.self_verify`
+- `packages/node/src/api.ts POST /api/patches/:id/verify → Verifier.verifyOne`
+- `packages/node/src/verifier.ts verifyOne (author check before any GPU work), packages/node/src/market.ts attest (write refused)`
+- `packages/core/src/catalog.ts deriveCatalog (self_checks excluded from passed/status)`
+- `packages/node/test/trust.test.ts item 146`
 
 ### AZ-042 - Delete a draft with typed confirmation and see that published knowledge cannot be deleted
 
@@ -3214,6 +3214,45 @@ just prose, nothing else
 - `packages/node/src/api.ts:501-507 (rows page shape), :470-495 (multipart create, declaredSha256)`
 - `packages/node/src/teach-datasets.ts:160-170 (dataset_hash), :264-276 (download jsonl/csv sha)`
 - `packages/node/src/teach-dataset.ts (parser statuses and detail copy)`
+
+### AZ-227 - Challenge a listed knowledge and confirm it stops selling until it is re-verified
+
+**Goal:** A verifier that disputes a result can take the knowledge off sale, everyone can read why, and a re-verification puts it back — instead of the item selling at full price with a red chip.
+
+**Priority:** P0 - **Area:** x402 - **Automation:** api
+
+**Preconditions**
+
+- A PRIVATE three-node cluster on the local ledger (NGRAM_CLUSTER_HOME=<tmp> NGRAM_PORT_BASE=3512 NGRAM_LEDGER=local NGRAM_SEED=0 scripts/cluster-restart.sh). Never the shared demo chain: a challenge record is permanent and would take a demo knowledge off sale for everyone
+- One knowledge published by node-a and LISTED (2/2) — GET /x402/patch/<id> answers 402
+- Operator sessions on node-b and node-c
+
+**Steps**
+
+1. GET /x402/patch/<id> on the seller and note the 402
+2. On node-c: `ainize patch challenge <id> --reason "the ticker codes are wrong"`
+3. GET /x402/patch/<id> again
+4. On node-b: `ainize patch buy <id>`
+5. Open the knowledge page and the seller's manage page in the browser
+6. Wait for the verifiers' next automatic round (verifier.intervalMs) and repeat the GET
+
+**Expected**
+
+- Before the challenge the gateway answers 402 with the payment requirements
+- GET /api/patches/<id> reports status CHALLENGED, quorum_ok true (the quorum is still met) and sellable false, with open_challenge {challenger, reason, created_at}
+- The gateway answers 423 'a verifier has challenged this knowledge — re-verification pending, so it is not for sale (0x…: "the ticker codes are wrong")' — not a discounted 402
+- `ainize patch buy` refuses with the same sentence and no settlement record is written
+- The knowledge page shows a warning banner naming the challenger, the reason, when, and what happens next; the Buy tab says 'Challenged knowledge is not on sale at any price — the sale is stopped, not discounted.'; the seller's manage page shows the same banner
+- `ainize patch get <id>` prints a 'challenges' block with the challenger, reason and which challenge is open
+- After a verifier re-runs the benchmark (the automatic round now re-verifies a knowledge it has already attested when a challenge is open), the newer attestation replaces its earlier one, the status returns to LISTED, sellable is true again and the gateway answers 402
+
+**Evidence**
+
+- `packages/core/src/catalog.ts deriveCatalog (sellable, open_challenge, effectiveAttestation)`
+- `packages/node/src/api.ts GET /x402/patch/:id (423 + challengedMessage), packages/node/src/market.ts buy()`
+- `packages/node/src/verifier.ts round() (re-verify a CHALLENGED anchor it already attested)`
+- `packages/web/src/pages/PatchPage.tsx challenge banner + Buy tab, packages/web/src/pages/ManagePage.tsx challenged banner`
+- `packages/node/test/trust.test.ts item 153 (the same flow on three nodes, automated)`
 
 ## AI agent / automation
 

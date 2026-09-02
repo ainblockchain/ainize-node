@@ -10,8 +10,8 @@
  *    lives in the serial `runtime` block at the end and waits for the cross-process runtime lock
  *  - to keep the public catalog clean, the draft that gets PUBLISHED is re-created with visibility:test right before
  *    publishing (the web form has no visibility field), the purchase scenario buys the cheapest knowledge (0.1 AIN) and
- *    "Verify now" is exercised on that published test knowledge instead of the demo's krx-all-2761 (a self-attestation
- *    on the demo item would permanently change its public record).
+ *    the self-verification refusal (AZ-041) is checked on that published test knowledge rather than on the demo's
+ *    krx-all-2761, so a future change of that scenario can never touch the demo item's public record.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1191,7 +1191,8 @@ test.describe('runtime', () => {
       await expect(cells.nth(1)).toHaveText('PASS');
       expect(await color(cells.nth(1))).toBe(GREEN);
       await expect(cells.nth(3)).toHaveText(`executed (vllm:${MODEL})`);
-      await expect(cells.nth(5)).toHaveText(/^\d+(\.\d+)? AIN$/);
+      // the old column reported a "Deposit" nothing escrowed; it says whether the result counted now (item 127/146)
+      await expect(cells.nth(5)).toHaveText('independent');
     }
     await expect(page.getByText('Published knowledge is fixed on the public record — these fields can no longer change.', { exact: true })).toBeVisible();
     for (const f of [page.getByLabel('Description', { exact: true }), page.getByLabel('Price (AIN)'), page.getByLabel('Billing'), page.getByLabel('Knowledge track'), page.getByLabel('License')]) await expect(f).toBeDisabled();
@@ -1363,64 +1364,46 @@ test.describe('runtime', () => {
     await expect(cells.nth(4)).toHaveText('no');
   });
 
-  test('AZ-041 Run Verify now on this node and see the attestation appear', async ({ page, request }) => {
-    test.setTimeout(25 * 60_000);
+  test('AZ-041 Try Verify now on your own knowledge and be told why you cannot', async ({ page, request }) => {
+    test.setTimeout(5 * 60_000);
     const token = await operatorToken(request);
     const info = await nodeInfo(request);
     expect(info.roles).toContain('verifier');
-    // exercised on the knowledge published by AZ-031 (visibility:test) — a self-attestation on the demo's krx-all-2761 would
-    // permanently change the shared public record (2/2 → 3/2) for every other suite
+    // Critique 2 item 146: this page used to offer a one-click "Verify now (this node)" on the operator's OWN
+    // knowledge, `POST /api/patches/:id/verify` had no author check, and deriveCatalog counted the result — the
+    // seller could mint their own badge (and print `3/2`). The button is gone, the write is refused, and a
+    // self-attestation that reached the ledger another way is excluded from the count.
     const id = readState().publishedId ?? readState().draftId ?? 'pixelplus-test-1';
-    let d = await patchDetail(request, id, token);
-    if (!d || d.status === 'DRAFT') throw new Error(`precondition: ${id} must be published and verified by node-b/node-c first (AZ-031) — status ${d?.status ?? 'missing'}`);
-    const n = d.anchor.benchmark.samples?.length ?? 0;
-    const already = d.attestations.some((a) => a.verifier === info.address);
-    expect(await waitForRuntime(request), 'node-a runtime').toBe(true);
-    await waitForLockFree(request);
+    const before = await patchDetail(request, id, token);
+    if (!before || before.status === 'DRAFT') throw new Error(`precondition: ${id} must be published and verified by node-b/node-c first (AZ-031) — status ${before?.status ?? 'missing'}`);
+    expect(before.anchor.author, 'the knowledge under test is node-a\'s own').toBe(info.address);
+    expect(before.self_checks, 'no self-check counted before').toBe(0);
 
     await login(page);
     await page.goto(manageUrl(NODE_A, info.address, id));
-    if (!already) {
-      const btn = page.getByRole('button', { name: /^(Verify now \(this node\)|Verifying…)$/ });
-      await expect(btn).toBeVisible();
-      const resP = page.waitForResponse((r) => r.url().endsWith(`/api/patches/${id}/verify`), { timeout: 15 * 60_000 });
-      await btn.click();
-      await expect(btn).toHaveText('Verifying…');
-      const res = await resP;
-      expect(res.status(), await res.text()).toBe(200);
-      const att = ((await res.json()) as { attestation: { verifier: string; passed: boolean; verified_on: string } }).attestation;
-      expect(att.verifier).toBe(info.address);
-      expect(att.passed).toBe(true);
-      expect(att.verified_on).toBe(`vllm:${MODEL}`);
-      const ok = page.getByText('Verification result published.', { exact: true });
-      await expect(ok).toBeVisible();
-      expect(await bg(ok)).toBe(ALERT_SUCCESS_BG);
-    } else note('node-a had already attested this knowledge in an earlier run — asserting the persisted result');
-    d = (await patchDetail(request, id, token))!;
-    const mine = d.attestations.find((a) => a.verifier === info.address)!;
-    expect(mine.passed).toBe(true);
-
-    const table = page.getByRole('table').first();
-    const row = table.getByRole('row').filter({ hasText: info.name });
-    const cells = row.getByRole('cell');
-    await expect(cells.nth(1)).toHaveText('PASS');
-    expect(await color(cells.nth(1))).toBe(GREEN);
-    await expect(cells.nth(2)).toHaveText(`${n}/${n}`);
-    await expect(cells.nth(3)).toHaveText(`executed (vllm:${MODEL})`);
-    await expect(cells.nth(4)).toHaveText('0');
-    await expect(cells.nth(5)).toHaveText('5 AIN');
-    await expect(cells.nth(6)).toHaveText(/^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2}/);
-    expect(d.passed).toBeGreaterThanOrEqual(3);
-    await expect(kv(page, 'Verification')).toHaveText(new RegExp(`^executed ${d.passed}/${d.quorum} passed · integrity ${d.integrity_checks} · ${d.attestations.length} result\\(s\\)`));
-
-    await page.reload();
-    await expect(page.getByText('This node already verified this knowledge.', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Verify now/ })).toHaveCount(0);
+    await expect(page.getByTestId('self-verify-note')).toHaveText('You cannot verify your own knowledge. Verified means other nodes ran it on a real model — an attestation by this node would not count.');
 
-    await page.goto(`${manageUrl(NODE_A, info.address, id)}/logs`);
-    await expect(page.getByText(new RegExp(`^attested ${esc(id)}: PASS \\(vllm:${esc(MODEL)}\\)`)).first()).toBeVisible();
-    await expect(page.locator('ol > li').filter({ hasText: `PASS by ${info.name}` })).toContainText(`PASS by ${info.name} (executed (vllm:${MODEL})) · accuracy ${n}/${n}`);
-    note('the timeline renders "accuracy <free_generation>" only — the pre_apply score ("1/8" in the scenario text) is not shown');
+    // the same refusal on the API `ainize patch verify` calls — before any GPU work
+    const res = await request.post(`${NODE_A}/api/patches/${encodeURIComponent(id)}/verify`, { headers: { authorization: `Bearer ${token}` } });
+    expect(res.status()).toBe(409);
+    expect(((await res.json()) as { error: string }).error)
+      .toBe(`cannot verify your own knowledge: ${id} was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it.`);
+
+    // nothing was written, and the page still reports the honest count
+    const after = (await patchDetail(request, id, token))!;
+    expect(after.attestations.length).toBe(before.attestations.length);
+    expect(after.passed).toBe(before.passed);
+    expect(after.self_checks).toBe(0);
+    await page.reload();
+    await expect(kv(page, 'Verification')).toHaveText(new RegExp(`^executed ${Math.min(after.passed, after.quorum)}/${after.quorum} passed · integrity ${after.integrity_checks} · ${after.attestations.length} result\\(s\\)`));
+    const table = page.getByRole('table').first();
+    for (const at of after.attestations) {
+      const row = table.getByRole('row').filter({ hasText: at.verifier_name ?? at.verifier.slice(0, 6) });
+      await expect(row.getByRole('cell').nth(5)).toHaveText('independent');
+    }
+    await expect(page.getByRole('columnheader', { name: 'Deposit' })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Counts' })).toBeVisible();
   });
 
   test('AZ-050 Check the model runtime card and ask the model directly', async ({ page, request }) => {

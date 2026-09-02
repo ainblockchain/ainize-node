@@ -222,7 +222,41 @@ export class Market {
       }
     }
     this.catalogCache = { at: Date.now(), value };
+    this.noticeOwnEvents(value);
     return value;
+  }
+
+  /**
+   * The three things that happen TO an author's knowledge — a challenge, a supersede, a failed verification — used to
+   * arrive as an anonymous "received 1 record(s) via push" and change the listing silently (item 156). Whatever path
+   * the record took (p2p push, gossip pull, a chain read), the author's node logs each of them exactly once, with who,
+   * why and what it means. Derived here rather than at ingest so it works on both ledgers.
+   */
+  private noticeOwnEvents(entries: CatalogEntry[]): void {
+    for (const e of entries) {
+      if (e.anchor.author.toLowerCase() !== this.address.toLowerCase()) continue;
+      if (!e.open_challenge && !e.superseded_by.length && !e.attestations.some((a) => !a.passed)) continue;   // nothing notable: no store read
+      const key = `owner_notified:${e.anchor.id}`;
+      const seen = new Set<string>(JSON.parse(this.store.get(key) ?? '[]') as string[]);
+      const before = seen.size;
+      const once = (mark: string, level: EventRow['level'], kind: string, message: string, data?: unknown) => {
+        if (seen.has(mark)) return;
+        seen.add(mark);
+        this.log(level, kind, message, e.anchor.id, data);
+      };
+      const c = e.open_challenge;
+      if (c) once(`challenge:${c.challenger}:${c.created_at}`, 'warn', 'challenge',
+        `${c.challenger.slice(0, 10)}… challenged your knowledge ${e.anchor.id}: "${c.reason}" — it is off sale until a verifier re-runs the benchmark and passes it`,
+        { challenger: c.challenger, reason: c.reason, created_at: c.created_at });
+      for (const newer of e.superseded_by) once(`supersede:${newer}`, 'warn', 'publish',
+        `${newer} supersedes your knowledge ${e.anchor.id} — buyers now see "Newer version available" on it`, { superseded_by: newer });
+      for (const a of e.attestations) {
+        if (a.passed) continue;
+        once(`fail:${a.verifier}:${a.created_at}`, 'warn', 'verify',
+          `${a.verifier_name ?? a.verifier.slice(0, 10)} verified your knowledge ${e.anchor.id} and it FAILED (${a.verified_on}): ${JSON.stringify(a.score)}`, { verifier: a.verifier, score: a.score });
+      }
+      if (seen.size !== before) this.store.set(key, JSON.stringify([...seen]));
+    }
   }
 
   static isAnchor(b: unknown): b is PatchAnchor {

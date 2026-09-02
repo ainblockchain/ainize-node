@@ -23,7 +23,7 @@ function executedAccuracyPct(e: CatalogEntry): number | null {
   const m = /^(\d+)\s*\/\s*(\d+)$/.exec(String(raw ?? ''));
   return m && Number(m[2]) ? Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10 : null;
 }
-interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number; score: Record<string, string | number>; collateral_nat?: number | null }[] }
+interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; passed: number; quorum: number; self_checks: number; sellable: boolean; attestations: { verifier: string; verifier_name: string; created_at: number; score: Record<string, string | number>; collateral_nat?: number | null }[] }
 /** POST /api/chat (the fields D1/D2 added: the guard verdict and the honest score). */
 interface ChatAnswer { content: string; truncated: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string; finish_reason: string | null }
 interface ChatResponse { patched: ChatAnswer; base: ChatAnswer | null; benchmark_hit: boolean | null; benchmark_hits: Record<string, boolean | null>; remaining_quota: number | null; quota_limit: number | null }
@@ -416,7 +416,9 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
   await expect(summary('Status')).toHaveText('For sale');
 
   // Finding 28: both verifiers recorded pre_apply "1/8" and it was rendered nowhere. It is a column now.
-  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time']);
+  // Critique 2 item 127: the 'Deposit' column reported a bond nothing ever escrowed. What replaced it is the
+  // question a reader actually has — did this result count toward Verified?
+  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Counts', 'Result', 'Time']);
   const body = page.locator('tbody tr');
   await expect(body).toHaveCount(d.attestations.length);
   expect(d.attestations.length).toBe(2);
@@ -435,8 +437,8 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
     await expect(cells.nth(4)).toHaveText('not reported');
     await expect(cells.nth(4)).toHaveAttribute('title', /side-effect|Checks that adding the knowledge/);
     await expect(cells.nth(5)).toHaveText('none');
-    await expect(cells.nth(6)).toHaveText('5 AIN');
-    await expect(cells.nth(6)).toHaveAttribute('title', /A deposit a verifier loses if its verification turns out wrong/);
+    await expect(cells.nth(6)).toHaveText('independent');
+    await expect(cells.nth(6)).toHaveAttribute('title', /No deposit is escrowed or slashed anywhere; instead any node can challenge a result/);
     await expect(cells.nth(7)).toHaveText('Passed');
     await expect(cells.nth(7)).toHaveCSS('color', 'rgb(68, 164, 95)');
     await expect(cells.nth(8)).toHaveText(/^\d+(s|m|h|d) ago$/);
@@ -445,7 +447,11 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
   await expect(page.getByText('"Before" and "Accuracy" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.')).toBeVisible();
   await expect(page.getByText(/^Verified — Only verifications run on the real model count toward Verified \(currently 2\/2\)\. The 0 integrity-only checks are shown separately/)).toBeVisible();
   await expect(page.getByText(/^Restarts detected: if the model server restarted mid-run/)).toBeVisible();
-  await expect(page.getByText(/^Deposit: what a verifier loses if its verification turns out wrong/)).toBeVisible();
+  await expect(page.getByText(/^No deposit is at stake on a verification\. Each result is signed with the verifier node’s key and stays on the public record under that identity for ever\. Any node that thinks a result is wrong can challenge it, and a challenge stops the sale until the knowledge is re-verified\.$/)).toBeVisible();
+  // the fraction a reader sees is never more than the quorum, and no self-check is counted (item 146)
+  expect(d.self_checks).toBe(0);
+  expect(d.attestations.every((a) => a.verifier !== d.anchor.author)).toBe(true);
+  await expect(page.getByText(/^Deposit/)).toHaveCount(0);
 });
 
 test('AZ-006 Read the Buy tab as a visitor and probe the automatic-payment address', async ({ page, context, request }) => {
@@ -510,7 +516,10 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
   await expect(dd(page, 'License')).toHaveText('Use on the identified model · no resale of raw data');
   await expect(dd(page, 'Created')).toHaveText(/^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/);
 
-  await expect(page.getByText('Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.')).toBeVisible();
+  // Item 164: the samples are in the public anchor and one unauthenticated GET reads them — the note says so now
+  const anon = await request.get(`${NODE_A}/api/patches/${K.final}`);
+  expect(((await anon.json()) as { anchor: { benchmark: { samples: { prompt: string; expect: string }[] } } }).anchor.benchmark.samples.length).toBeGreaterThan(0);
+  await expect(page.getByText('Verifier nodes score the knowledge with these questions. They are published with the knowledge — not sealed — so anyone can re-run the same scoring and check the verdict. It also means the author knew these questions in advance; read the accuracy with that in mind.')).toBeVisible();
   await expect(dd(page, 'Subject').getByRole('link')).toHaveAttribute('href', '/benchmarks/krx-ticker-codes');
   await expect(dd(page, 'facts covered')).toHaveText('2,761 facts');
   await expect(dd(page, 'Question formats')).toHaveText('template, chat');
