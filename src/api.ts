@@ -330,7 +330,10 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => market.buy(req.params.id as string, { apply: !!req.body?.apply })));
   router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => ({ result: await market.applyPatch(req.params.id as string, 'manual') })));
   router.post('/api/patches/:id/remove', requireOperator, wrap(async (req) => ({ result: await market.removePatch(req.params.id as string) })));
-  router.post('/api/patches/:id/forget', requireOperator, wrap(async (req) => market.forgetBody(req.params.id as string)));
+  router.post('/api/patches/:id/forget', requireOperator, wrap(async (req) => {
+    const { all_sharing } = z.object({ all_sharing: z.boolean().optional() }).parse(req.body ?? {});
+    return market.forgetBody(req.params.id as string, { allSharing: all_sharing });
+  }));
   router.get('/api/patches/:id/conflicts', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
     if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
@@ -901,7 +904,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'invalid request', issues: err.issues });
     // typed domain errors from Market / core validation: caller mistakes are 4xx, never 500
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message });
-    if (err instanceof ConflictError) return res.status(409).json({ error: err.message });
+    if (err instanceof ConflictError) return res.status(409).json({ error: err.message, ...(err.details ?? {}) });
     if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
     const msg = (err as Error)?.message ?? String(err);
     // Market / runtime errors carry the status they mean (400 bad input, 404 unknown, 409 conflict, 503 model unavailable).

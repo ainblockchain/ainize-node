@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (236)
+# Ainize UX Test Scenarios (237)
 
-This document lists 236 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 237 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -29,14 +29,15 @@ This document lists 236 user-experience test scenarios for **Ainize** (ai-nize =
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
 | Node operator | 6 | 4 | 2 | 0 |
-| **Total** | **236** | **101** | **114** | **21** |
+| Knowledge publisher | 1 | 1 | 0 | 0 |
+| **Total** | **237** | **102** | **114** | **21** |
 
 | Area | Count |
 |---|---:|
 | teach | 57 |
 | teach-dataset | 23 |
 | chat | 18 |
-| cli | 15 |
+| cli | 16 |
 | x402 | 14 |
 | api | 10 |
 | dashboard | 8 |
@@ -68,7 +69,7 @@ This document lists 236 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
-| cli | 37 |
+| cli | 38 |
 | api | 32 |
 | manual | 11 |
 
@@ -8504,3 +8505,40 @@ prompt,answer,alt_prompt
 - `packages/cli/test/operator.test.ts (items 120/122)`
 - `packages/node/src/openapi.ts CLI_REFERENCE group 'Your node: identity, config, backups'; deploy/README.md §5; README.md Run`
 - `docs/ux-critique-2.json items 120, 122`
+
+## Knowledge publisher
+
+### AZ-235 - `patch forget` shows the blast radius before deleting, not after
+
+**Goal:** Withdrawing one version never silently pulls the knowledge file out from under every other version and draft built from the same training output.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- A PRIVATE node of your own (never the demo cluster: forgetting a demo body would un-serve it for everyone): `$N --home $S/fg init --name fg --port 3601 --ledger local --runtime-api http://127.0.0.1:1`, quorum 1 + allowSelfAttest in config.json, `start -d`, `login`
+- One .npz published twice under different ids and benchmark schemas — the normal case, since v1/v2/v3 of a knowledge are usually the same file re-announced: `adv-v1` and `adv-share`
+
+**Steps**
+
+1. Run `$N --home $S/fg patch forget adv-v1`
+2. Run `$N --home $S/fg patch get adv-v1` and check `body on this node`
+3. Run `$N --home $S/fg patch forget adv-v1 --all-sharing`
+4. Run `$N --home $S/fg patch get adv-share` and check `body on this node`
+5. Run `curl -s -X POST http://localhost:3601/api/patches/adv-v1/forget -H "authorization: Bearer <operator token>"` on a body another item shares
+
+**Expected**
+
+- Step 1 fails (exit 1) with `error: adv-v1 shares its knowledge file with 1 other item(s) on this node — forgetting it stops serving them too:` followed by a table `ALSO STOPS SERVING / NAME / STATUS / SALES` listing `adv-share  adv share  ANNOUNCED  0`, and the line `the public record is untouched either way. To stop serving all of them: `ainize patch forget adv-v1 --all-sharing``
+- Step 2: `body on this node  yes` — the refusal deleted nothing
+- Step 3 succeeds: `✓ forgot adv-v1 body 62d0978ccbf0… — file left in place, no longer served from this node` followed by `! same body as adv-share — those are no longer served from here either`
+- Step 4: `body on this node  no` — the operator asked for exactly this
+- Step 5: HTTP 409 with `{error: "… shares its knowledge file with …", also_affects:[{id,name,status,sales}], sha256}`; passing `{"all_sharing": true}` performs the deletion. A body no other item shares still needs no flag
+
+**Evidence**
+
+- `packages/node/src/market.ts forgetBody() (also_affects resolved and refused BEFORE blobs.remove)`
+- `packages/node/src/api.ts POST /api/patches/:id/forget (all_sharing), ConflictError details in the 409 body`
+- `packages/cli/src/commands/patch.ts patchForget() (--all-sharing, the blast-radius table)`
+- `packages/cli/test/cli.test.ts (item 149)`
+- `docs/ux-critique-2.json item 149`

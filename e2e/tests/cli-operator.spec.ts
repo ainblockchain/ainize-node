@@ -1998,4 +1998,38 @@ test.describe('operator: commands that report state', () => {
       await f.stop();
     }
   });
+
+  test('AZ-235 `patch forget` shows the blast radius before deleting, not after', async () => {
+    test.setTimeout(6 * 60_000);
+    // a private node of our own: forgetting a body on the demo cluster would un-serve a demo knowledge for everyone
+    const t = await throwawayNode('forget', { start: false });
+    try {
+      expect((await t.init()).code).toBe(0);
+      // quorum 1 + self-attest so the two publishes reach a steady state without another node
+      for (const [k, v] of [['verifier.quorum', '1'], ['verifier.allowSelfAttest', 'true']]) expect((await t.cli(['config', 'set', k, v])).code).toBe(0);
+      expect((await t.cli(['start', '-d'])).code).toBe(0);
+      expect(await httpUp(t.url, 60_000)).toBe(true);
+      expect((await t.cli(['login'], { env: { NGRAM_PASSWORD: 'forget-pass-1234' } })).code).toBe(0);
+
+      const bench = (schema: string) => { const p = join(SCRATCH, `az235-${schema}-${RUN}.json`); writeFileSync(p, benchJson(schema)); return p; };
+      const one = await t.cli(['publish', PIXEL_NPZ, '--name', 'adv v1', '--model', MODEL, '--benchmark', bench('az235a'), '--id', `adv-v1-${RUN}`, '--price', '1', '--test']);
+      expect(one.code, one.stderr).toBe(0);
+      const two = await t.cli(['publish', PIXEL_NPZ, '--name', 'adv share', '--model', MODEL, '--benchmark', bench('az235b'), '--id', `adv-share-${RUN}`, '--price', '1', '--test']);
+      expect(two.code, two.stderr).toBe(0);
+
+      const refused = await t.cli(['patch', 'forget', `adv-v1-${RUN}`]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(`error: adv-v1-${RUN} shares its knowledge file with 1 other item(s) on this node — forgetting it stops serving them too:`);
+      expect(refused.stderr).toContain('ALSO STOPS SERVING');
+      expect(refused.stderr).toMatch(new RegExp(`adv-share-${RUN}\\s+adv share\\s+\\w+\\s+0`));
+      expect(refused.stderr).toContain(`To stop serving all of them: \`ainize patch forget adv-v1-${RUN} --all-sharing\``);
+      expect((await t.cli(['patch', 'get', `adv-v1-${RUN}`])).stdout, 'the refusal deleted nothing').toMatch(/^body on this node\s+yes$/m);
+
+      const done = await t.cli(['patch', 'forget', `adv-v1-${RUN}`, '--all-sharing']);
+      expect(done.code, done.stderr).toBe(0);
+      expect(done.stdout).toContain(`✓ forgot adv-v1-${RUN} body ${PIXEL_SHA.slice(0, 12)}…`);
+      expect(done.stdout).toContain(`! same body as adv-share-${RUN} — those are no longer served from here either`);
+      expect((await t.cli(['patch', 'get', `adv-share-${RUN}`])).stdout).toMatch(/^body on this node\s+no$/m);
+    } finally { await t.stop(); }
+  });
 });

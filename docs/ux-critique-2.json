@@ -647,7 +647,9 @@
      "evidence": "`ainize patch forget adv-v1` → `✓ forgot adv-v1 body 62d0978ccbf0… — file left in place, no longer served from this node` followed by `! same body as adv-share — those are no longer served from here either`; adv-share was a separate LISTED product that had already sold. packages/e2e/results/ux2/publisher-path-cli-11-forget.txt shows a four-item blast radius from one command: `! same body as no-price, typo-model, pixelplus-fixed, pixelplus-ticker-code`.",
      "user_cost": "A publisher withdrawing one version silently pulls the file out from under every other version and draft built from the same training output — the normal case, since v1/v2/v3 of a knowledge are usually the same .npz re-announced. One keystroke, no confirmation, no inverse command.",
      "fix": "Make `forget` resolve `also_affects` first and refuse when it is non-empty: print the list with each item's status and sales count and require `--all-sharing` (or an interactive y/N naming each id). Return 409 with `also_affects` from the API unless the caller passes `all_sharing: true`.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "status": "fixed",
+     "shipped": "`patch forget` now resolves the other knowledge built from the same file first and refuses with their id, name, status and sales count (HTTP 409 + also_affects), deleting only when the operator repeats the command with --all-sharing."
     },
     {
      "n": 150,

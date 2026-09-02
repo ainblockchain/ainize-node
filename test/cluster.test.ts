@@ -223,7 +223,7 @@ test('visibility: hidden test anchors and private drafts never surface next to p
   // forget: the body leaves this node, the record stays; drafts / unknown ids are refused
   const forget = await fetch(`${A.url}/api/patches/vis-hidden-child/forget`, { method: 'POST', headers: op });
   assert.equal(forget.status, 200);
-  const fr = await forget.json() as { sha256: string; deleted_file: boolean; also_affects: string[] };
+  const fr = await forget.json() as { sha256: string; deleted_file: boolean; also_affects: { id: string; status: string; sales: number }[] };
   assert.equal(fr.sha256, hidden.patch_sha256);
   assert.equal(fr.deleted_file, false, 'in-place files are deregistered, not deleted');
   assert.ok(!A.market.blobs.has(hidden.patch_sha256));

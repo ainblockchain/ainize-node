@@ -75,13 +75,20 @@ export interface PurchaseResult {
 const SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
 
 /** Error that carries the HTTP status the API should answer with (400 bad input, 404 unknown, 409 conflict, 503 unavailable). */
-export class MarketError extends Error { constructor(public readonly status: number, message: string) { super(message); this.name = 'MarketError'; } }
+export class MarketError extends Error {
+  /** Structured body merged into the JSON error response — what a bare `{error}` cannot carry (e.g. a blast radius). */
+  constructor(public readonly status: number, message: string, public readonly details?: Record<string, unknown>) { super(message); this.name = 'MarketError'; }
+}
 /** The request names something that does not exist (HTTP 404). */
 export class NotFoundError extends MarketError { constructor(message: string) { super(404, message); this.name = 'NotFoundError'; } }
 /** The request conflicts with current state — duplicate id, immutable anchor, missing body (HTTP 409). */
-export class ConflictError extends MarketError { constructor(message: string) { super(409, message); this.name = 'ConflictError'; } }
+export class ConflictError extends MarketError { constructor(message: string, details?: Record<string, unknown>) { super(409, message, details); this.name = 'ConflictError'; } }
 const notFound = (msg: string) => new NotFoundError(msg);
-const conflict = (msg: string) => new ConflictError(msg);
+const conflict = (msg: string, details?: Record<string, unknown>) => new ConflictError(msg, details);
+
+/** Another knowledge item on this node whose body is the same file — what `patch forget` would take down with it. */
+export interface SharedBody { id: string; name: string; status: string; sales: number }
+export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: SharedBody[] }
 
 /** Why a verified entry is still not for sale: the one sentence the 402 gate, `patch buy` and the web all show. */
 export function challengedMessage(e: CatalogEntry): string {
@@ -469,18 +476,28 @@ export class Market {
    * same sha256 loses its local body too; the ids are reported. Refused while the patch is loaded in the model or is
    * still a draft (delete the draft instead) — nothing on the ledger changes.
    */
-  async forgetBody(id: string): Promise<{ ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: string[] }> {
+  async forgetBody(id: string, opts: { allSharing?: boolean } = {}): Promise<ForgetResult> {
     const e = await this.entry(id);
     if (!e) throw notFound('patch not found');
     if (e.status === 'DRAFT') throw conflict('this is a draft — delete it instead (ainize patch rm <id>)');
     if (this.isApplied(id)) throw conflict('patch is loaded in the model — unload it first (ainize patch remove <id>)');
     const blob = this.blobs.get(e.anchor.patch_sha256);
     if (!blob) throw notFound('body not held by this node');
-    const alsoAffects = (await this.catalogAll()).filter((x) => x.anchor.id !== id && x.anchor.patch_sha256 === blob.sha256).map((x) => x.anchor.id);
+    // Bodies are content-addressed, so this deletes the file out from under every other id built from the same
+    // training output — the normal case for v1/v2/v3 of one knowledge. Say so BEFORE deleting, not after (item 149).
+    const alsoAffects: SharedBody[] = (await this.catalogAll())
+      .filter((x) => x.anchor.id !== id && x.anchor.patch_sha256 === blob.sha256)
+      .map((x) => ({ id: x.anchor.id, name: x.anchor.name, status: x.status, sales: x.settlements.length }));
+    if (alsoAffects.length && !opts.allSharing) {
+      throw conflict(
+        `${id} shares its knowledge file with ${alsoAffects.length} other item(s) on this node — forgetting it stops serving them too`,
+        { also_affects: alsoAffects, sha256: blob.sha256 },
+      );
+    }
     const inStore = blob.path.startsWith(this.blobs.dir);
     this.blobs.remove(blob.sha256);
     this.invalidate();
-    this.log('info', 'blob', `forgot ${id} body (${blob.sha256.slice(0, 12)}…, ${(blob.size_bytes / 1e6).toFixed(1)} MB${inStore ? ', file deleted' : ', file left in place'}) — no longer served from this node${alsoAffects.length ? `; same body as ${alsoAffects.join(', ')}` : ''}`, id);
+    this.log('info', 'blob', `forgot ${id} body (${blob.sha256.slice(0, 12)}…, ${(blob.size_bytes / 1e6).toFixed(1)} MB${inStore ? ', file deleted' : ', file left in place'}) — no longer served from this node${alsoAffects.length ? `; same body as ${alsoAffects.map((x) => x.id).join(', ')}` : ''}`, id);
     return { ok: true, patch_id: id, sha256: blob.sha256, deleted_file: inStore, also_affects: alsoAffects };
   }
 
