@@ -7789,5 +7789,44 @@
    "packages/web/src/pages/PatchPage.tsx challenge banner + Buy tab, packages/web/src/pages/ManagePage.tsx challenged banner",
    "packages/node/test/trust.test.ts item 153 (the same flow on three nodes, automated)"
   ]
+ },
+ {
+  "id": "AZ-228",
+  "persona": "CLI user / node operator",
+  "title": "A machine with no node config is told so, instead of being shown whatever answers port 3402",
+  "goal": "The first command a newcomer types after installing never reports a stranger's node as theirs, and `login` never claims a node the user did not name.",
+  "preconditions": [
+   "Demo cluster running (node-a on :3402) — it is the stranger's node this scenario must NOT report",
+   "Shell: `export PATH=\"$HOME/.local/node/bin:$PATH\"; cd /mnt/newdata/ainize/knowledge-marketplace; X=\"node packages/cli/dist/bin.js --home /no/such/dir\"`",
+   "A throwaway node of your own for step 7: `node packages/cli/dist/bin.js --home $S/t3 init --name t3 --port 3592 --ledger local --runtime-api http://127.0.0.1:1` then `… --home $S/t3 start -d` (never logged in, so it has no operator password)"
+  ],
+  "steps": [
+   "Run `$X status`",
+   "Run `$X patch ls`",
+   "Run `$X wallet`",
+   "Run `$X config show`",
+   "Run `$X --node http://localhost:3402 status`",
+   "Run `$X teach status http://localhost:3402`",
+   "Init a second home `$S/t4` on the same port 3592 as the throwaway node, then run `NGRAM_PASSWORD=hack-me node packages/cli/dist/bin.js --home $S/t4 login`",
+   "Repeat step 7 with `--node http://localhost:3592` added"
+  ],
+  "expected": [
+   "Steps 1-3 each fail with `error: no node configured in /no/such/dir — run \\`ainize init\\` to create one, or pass --node <url> to talk to an existing node`, exit code 2; no request is made and nothing about node-a (its name, address, ledger height or catalog) is printed",
+   "Step 4 fails with `error: no node config at /no/such/dir/config.json — run \\`ainize init\\` first`, exit code 1 (the local config commands answer for themselves)",
+   "Step 5 prints node-a's full status block and exits 0 — an explicitly named node is a target the user aimed",
+   "Step 6 prints node-a's teaching policy and exits 0 — `teach status <url>` names its own node, so it needs no config",
+   "Step 7 fails with `error: http://localhost:3592 is answered by \"t3\" (0x…), which has no operator password yet — and it is not the node in $S/t4 (0x…). Refusing to claim someone else's node; re-run with --node http://localhost:3592 if that is really what you want.`, exit code 2; GET /api/auth/me on :3592 still reports needsSetup true",
+   "Step 8 succeeds: `✓ operator password set and logged in to http://localhost:3592` — claiming a node is allowed only when the user names it"
+  ],
+  "priority": "P0",
+  "area": "cli",
+  "automation": "cli",
+  "evidence": [
+   "packages/cli/src/context.ts buildContext (nodeSource) + requireNodeTarget",
+   "packages/cli/src/bin.ts run() (the NoConfig exemptions: init, config, keys, start/stop/seed, chain, logout, `teach status <target>`)",
+   "packages/cli/src/commands/auth.ts login() (refuses /api/auth/setup against a node the user did not name)",
+   "packages/cli/test/operator.test.ts (nodeSource + requireNodeTarget unit tests)",
+   "docs/ux-critique-2.json item 101"
+  ]
  }
 ]

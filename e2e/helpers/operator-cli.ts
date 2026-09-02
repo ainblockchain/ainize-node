@@ -116,6 +116,49 @@ export async function httpDown(url: string, ms = 15_000): Promise<boolean> {
   return false;
 }
 
+/** Is something already listening on this port? */
+export const portBusy = (port: number): Promise<boolean> => new Promise((resolve) => {
+  const sock = netConnect({ port, host: '127.0.0.1' });
+  sock.setTimeout(1500, () => { sock.destroy(); resolve(true); });
+  sock.once('connect', () => { sock.destroy(); resolve(true); });
+  sock.once('error', () => resolve(false));
+});
+export async function freePort(candidates: number[]): Promise<number> {
+  for (const p of candidates) if (!(await portBusy(p))) return p;
+  throw new Error(`no free port among ${candidates.join(', ')}`);
+}
+
+/**
+ * One throwaway node of our own: its own home under SCRATCH, a free port, the local ledger and an unreachable
+ * runtime API (nothing of ours ever touches the shared serving instance or the demo cluster). The place to test
+ * `start -d` / `stop` / `config set` / `keys` / `init --force`, none of which may be run against the demo nodes.
+ */
+export interface Throwaway { home: string; url: string; port: number; init: (args?: string[]) => Promise<RunResult>; cli: (args: string[], opts?: RunOpts) => Promise<RunResult>; stop: () => Promise<void>; }
+export async function throwawayNode(tag: string, opts: { port?: number; init?: string[]; start?: boolean } = {}): Promise<Throwaway> {
+  const port = opts.port ?? (await freePort([3591, 3592, 3593, 3594, 3595, 3596, 3597, 3598]));
+  const home = tmpHome(`node-${tag}`);
+  rmSync(home, { recursive: true, force: true });
+  const url = `http://localhost:${port}`;
+  const cli = (args: string[], o: RunOpts = {}) => runCli(args, { home, timeoutMs: 90_000, ...o });
+  const t: Throwaway = {
+    home, url, port, cli,
+    init: (args: string[] = []) => cli(['init', '--name', tag, '--port', String(port), '--ledger', 'local', '--runtime-api', 'http://127.0.0.1:1', ...args]),
+    async stop() {
+      await cli(['stop']).catch(() => undefined);
+      await httpDown(url, 20_000);
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+  if (opts.start !== false) {
+    const i = await t.init(opts.init ?? []);
+    if (i.code !== 0) throw new Error(`throwaway ${tag} init failed: ${i.stderr || i.stdout}`);
+    const r = await cli(['start', '-d']);
+    if (r.code !== 0) throw new Error(`throwaway ${tag} start failed: ${r.stderr || r.stdout}`);
+    if (!(await httpUp(url, 60_000))) throw new Error(`throwaway ${tag} never answered on ${url}`);
+  }
+  return t;
+}
+
 /** Start node-d detached (`start -d`) and wait until its API answers. */
 export async function startNodeD(extra: string[] = []): Promise<RunResult> {
   const r = await runCli(['start', '-d', ...extra], { home: HOME_D, timeoutMs: 60_000 });
@@ -155,12 +198,6 @@ export async function withRuntime<T extends { stdout: string; stderr: string; co
  */
 export interface PrivateCluster { home: string; base: number; urls: string[]; sh: (...args: string[]) => Promise<RunResult>; stop: () => Promise<void> }
 export async function startPrivateCluster(tag: string): Promise<PrivateCluster> {
-  const portBusy = (port: number) => new Promise<boolean>((resolve) => {
-    const sock = netConnect({ port, host: '127.0.0.1' });
-    sock.setTimeout(1500, () => { sock.destroy(); resolve(true); });
-    sock.once('connect', () => { sock.destroy(); resolve(true); });
-    sock.once('error', () => resolve(false));
-  });
   let base = 0;
   for (const cand of [3502, 3512, 3522, 3532, 3542, 3552]) {
     if (!(await Promise.all([cand, cand + 1, cand + 2].map(portBusy))).some(Boolean)) { base = cand; break; }

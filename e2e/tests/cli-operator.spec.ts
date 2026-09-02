@@ -19,6 +19,7 @@ import {
 import {
   runCli, spawnCli, strip, uid, PIXEL_NPZ, PIXEL_SHA, KRX_SHA, MODEL, benchJson, shortAddr, esc, tableRows, tmpHome, SCRATCH,
   HOME_D, NODE_D, PORT_D, PASSWORD_D, cleanupNodeD, nodeDPid, httpUp, httpDown, startNodeD, startPrivateCluster, chatApi, withRuntime, pollUntil, RUN,
+  throwawayNode,
 } from '../helpers/operator-cli';
 
 const ADDR_A = nodeAddress(HOME_A);
@@ -1574,5 +1575,59 @@ test.describe('operator: fourth node', () => {
       expect(settleRecs.length).toBe(settleBefore + 1);
       expect(settleRecs.some((x) => x.body.buyer === agentAddr && x.body.patch_id === K.final), 'node-a settled the agent as buyer after the restart').toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------- commands that report state (review 2, items 101/118/119/123/134/141)
+test.describe('operator: commands that report state', () => {
+  test('AZ-228 A machine with no node config is told so, instead of being shown whatever answers port 3402', async () => {
+    test.setTimeout(4 * 60_000);
+    const NOWHERE = '/no/such/dir';
+    const refusal = `error: no node configured in ${NOWHERE} — run \`ainize init\` to create one, or pass --node <url> to talk to an existing node`;
+
+    // steps 1-3: the read commands refuse instead of reporting node-a
+    for (const args of [['status'], ['patch', 'ls'], ['wallet']]) {
+      const r = await runCli(args, { home: NOWHERE });
+      expect(r.code, args.join(' ')).toBe(2);
+      expect(r.stderr.trim(), args.join(' ')).toBe(refusal);
+      expect(r.stdout, args.join(' ')).not.toContain('node-a');
+      expect(r.stdout, args.join(' ')).not.toContain(ADDR_A);
+      expect(r.stdout, args.join(' ')).not.toContain('krx-all-2761');
+    }
+
+    // step 4: the local config command answers for itself
+    const cfg = await runCli(['config', 'show'], { home: NOWHERE });
+    expect(cfg.code).toBe(1);
+    expect(cfg.stderr.trim()).toBe(`error: no node config at ${NOWHERE}/config.json — run \`ainize init\` first`);
+
+    // step 5: an explicitly named node is a target the user aimed
+    const named = await runCli(['status'], { home: NOWHERE, node: NODE_A });
+    expect(named.code, named.stderr).toBe(0);
+    expect(named.stdout).toContain('node-a');
+
+    // step 6: `teach status <url>` names its own node
+    const teach = await runCli(['teach', 'status', NODE_A], { home: NOWHERE });
+    expect(teach.code, teach.stderr).toBe(0);
+    expect(teach.stdout).toContain('node-a');
+
+    // steps 7-8: login never claims an unclaimed node the user did not name
+    const t = await throwawayNode('unclaimed');
+    try {
+      const me = await (await fetch(`${t.url}/api/auth/me`)).json() as { needsSetup: boolean; address: string };
+      expect(me.needsSetup).toBe(true);
+      const other = await throwawayNode('claimer', { port: t.port, start: false });
+      try {
+        expect((await other.init()).code).toBe(0);
+        const stolen = await runCli(['login'], { home: other.home, env: { NGRAM_PASSWORD: 'hack-me' } });
+        expect(stolen.code).toBe(2);
+        expect(stolen.stderr).toContain(`${t.url} is answered by "unclaimed" (${shortAddr(me.address, 8)}), which has no operator password yet`);
+        expect(stolen.stderr).toContain(`Refusing to claim someone else's node; re-run with --node ${t.url}`);
+        expect(((await (await fetch(`${t.url}/api/auth/me`)).json()) as { needsSetup: boolean }).needsSetup, 'still unclaimed').toBe(true);
+
+        const named2 = await runCli(['login'], { home: other.home, node: t.url, env: { NGRAM_PASSWORD: 'hack-me' } });
+        expect(named2.code, named2.stderr).toBe(0);
+        expect(named2.stdout).toContain(`operator password set and logged in to ${t.url}`);
+      } finally { await other.stop(); }
+    } finally { await t.stop(); }
   });
 });

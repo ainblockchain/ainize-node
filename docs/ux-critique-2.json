@@ -33,7 +33,9 @@
      "evidence": "On an empty home: `ainize --home /no/such/dir status` → `node-a  http://localhost:3402 / address 0xF7A9dE49…A1F5 / ledger ain · 1223 records / patches 4 (1 listed) / blobs held 4`, exit 0 (packages/e2e/results/ux2/critique2-verify.txt, §1). `patch ls` on the same home lists all of node-a's knowledge including the 331.7 MB `krx-all-2761`. `--home /no/such/dir config show` correctly errors `no node config at /no/such/dir/config.json`, so the CLI knows.",
      "user_cost": "The first command a newcomer types after installing returns a healthy marketplace with four knowledges, 1,223 ledger records and a live GPU — none of it theirs, with nothing on screen saying so. On a shared or multi-tenant host the same fallback points read commands at a colleague's node and `login` at claiming it.",
      "fix": "In `buildContext` mark the context when `cfg === null` and none of `--node` / `NGRAM_NODE_URL` / `cli.json` was given; in the `run()` wrapper (packages/cli/src/bin.ts:36-46) refuse before the first request with `no node configured in <home> — run \\`ainize init\\`, or pass --node <url> to talk to an existing node` (exit 2). Exempt only `--help`, `--version` and `init`. `login` must never POST `/api/auth/setup` against a URL the user did not name explicitly.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "status": "fixed",
+     "shipped": "buildContext now records where the node URL came from and every node-touching command refuses (exit 2) when this home has no config and no --node, while `login` refuses to set the operator password on a node the user did not name."
     },
     {
      "n": 102,

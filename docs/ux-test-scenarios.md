@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (229)
+# Ainize UX Test Scenarios (230)
 
-This document lists 229 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 230 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -27,7 +27,8 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 | Teach mode (operator) | 9 | 4 | 5 | 0 |
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
-| **Total** | **229** | **96** | **112** | **21** |
+| CLI user / node operator | 1 | 1 | 0 | 0 |
+| **Total** | **230** | **97** | **112** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -35,8 +36,8 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 | teach-dataset | 23 |
 | chat | 18 |
 | x402 | 14 |
+| cli | 10 |
 | api | 9 |
-| cli | 9 |
 | dashboard | 8 |
 | agent | 7 |
 | teach-parser | 7 |
@@ -67,7 +68,7 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 |---|---:|
 | e2e | 156 |
 | api | 32 |
-| cli | 30 |
+| cli | 31 |
 | manual | 11 |
 
 ## Visitor (knowledge user)
@@ -8229,3 +8230,45 @@ prompt,answer,alt_prompt
 - `packages/web/src/components/chat/TeachDrawer.tsx:43,78,82 (v_full alert, Add disabled) and packages/web/src/components/chat/LessonBasket.tsx:112 (the same string in the basket)`
 - `packages/web/src/i18n/pages/teach.ts:29 teach.drawer.v_full — the number 8 is inside the sentence, en and ko`
 - `packages/node/src/teach.ts:656 (`invalid: 1..${c.factsPerJob} corrections per lesson`), :408 (facts_per_job published in the policy); packages/web/src/components/operator/TeachingTab.tsx:98 (the operator knob)`
+
+## CLI user / node operator
+
+### AZ-228 - A machine with no node config is told so, instead of being shown whatever answers port 3402
+
+**Goal:** The first command a newcomer types after installing never reports a stranger's node as theirs, and `login` never claims a node the user did not name.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- Demo cluster running (node-a on :3402) — it is the stranger's node this scenario must NOT report
+- Shell: `export PATH="$HOME/.local/node/bin:$PATH"; cd /mnt/newdata/ainize/knowledge-marketplace; X="node packages/cli/dist/bin.js --home /no/such/dir"`
+- A throwaway node of your own for step 7: `node packages/cli/dist/bin.js --home $S/t3 init --name t3 --port 3592 --ledger local --runtime-api http://127.0.0.1:1` then `… --home $S/t3 start -d` (never logged in, so it has no operator password)
+
+**Steps**
+
+1. Run `$X status`
+2. Run `$X patch ls`
+3. Run `$X wallet`
+4. Run `$X config show`
+5. Run `$X --node http://localhost:3402 status`
+6. Run `$X teach status http://localhost:3402`
+7. Init a second home `$S/t4` on the same port 3592 as the throwaway node, then run `NGRAM_PASSWORD=hack-me node packages/cli/dist/bin.js --home $S/t4 login`
+8. Repeat step 7 with `--node http://localhost:3592` added
+
+**Expected**
+
+- Steps 1-3 each fail with `error: no node configured in /no/such/dir — run \`ainize init\` to create one, or pass --node <url> to talk to an existing node`, exit code 2; no request is made and nothing about node-a (its name, address, ledger height or catalog) is printed
+- Step 4 fails with `error: no node config at /no/such/dir/config.json — run \`ainize init\` first`, exit code 1 (the local config commands answer for themselves)
+- Step 5 prints node-a's full status block and exits 0 — an explicitly named node is a target the user aimed
+- Step 6 prints node-a's teaching policy and exits 0 — `teach status <url>` names its own node, so it needs no config
+- Step 7 fails with `error: http://localhost:3592 is answered by "t3" (0x…), which has no operator password yet — and it is not the node in $S/t4 (0x…). Refusing to claim someone else's node; re-run with --node http://localhost:3592 if that is really what you want.`, exit code 2; GET /api/auth/me on :3592 still reports needsSetup true
+- Step 8 succeeds: `✓ operator password set and logged in to http://localhost:3592` — claiming a node is allowed only when the user names it
+
+**Evidence**
+
+- `packages/cli/src/context.ts buildContext (nodeSource) + requireNodeTarget`
+- `packages/cli/src/bin.ts run() (the NoConfig exemptions: init, config, keys, start/stop/seed, chain, logout, `teach status <target>`)`
+- `packages/cli/src/commands/auth.ts login() (refuses /api/auth/setup against a node the user did not name)`
+- `packages/cli/test/operator.test.ts (nodeSource + requireNodeTarget unit tests)`
+- `docs/ux-critique-2.json item 101`
