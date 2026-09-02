@@ -94,7 +94,7 @@ if (ledger === 'ain') {
       const l = new core.AinLedger({ providerUrl: cfg.ledger.ain.providerUrl, chainId: 0 }, cfg.identity);
       const bal = await l.balance();
       if (bal < 50) { await core.fundFromGenesis(cfg.ledger.ain.providerUrl, cfg.identity.address, 1000); console.log(`[cluster] funded ${cfg.name} with 1000 AIN`); }
-    } catch (e) { console.error(`[cluster] AIN funding failed for ${cfg.name}: ${e.message} — is the chain up? (ngram chain up)`); }
+    } catch (e) { console.error(`[cluster] AIN funding failed for ${cfg.name}: ${e.message} — is the chain up? (ainize chain up)`); }
   }
   const admin = new core.AinLedger({ providerUrl: nodes[0].cfg.ledger.ain.providerUrl, chainId: 0 }, nodes[0].cfg.identity);
   try { const s = await admin.setupApp(); console.log(`[cluster] AIN app ${s.created ? 'created' : 'exists'} (admin ${s.admin ?? nodes[0].cfg.identity.address})`); } catch (e) { console.error(`[cluster] setupApp: ${e.message}`); }

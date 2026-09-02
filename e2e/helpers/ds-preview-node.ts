@@ -208,7 +208,7 @@ export async function startNode(env: Record<string, string> = {}): Promise<void>
   nodeAddressCache = null;
 }
 
-/** Read a dotted key straight out of the node home's config.json (the CLI has `config set`/`show`, no `get`). */
+/** Read a dotted key straight out of the node home's config.json (faster than shelling out to `ainize config get`). */
 export function configGet(key: string): unknown {
   const cfg = JSON.parse(readFileSync(join(NODE_HOME, 'config.json'), 'utf8')) as Record<string, unknown>;
   let cur: unknown = cfg;
