@@ -841,7 +841,8 @@ test.describe('operator: runtime', () => {
     const attRows = final.stdout.split('\n').filter((l) => /\sPASS\s|\sFAIL\s/.test(l) && /vllm:|hash-only/.test(l));
     expect(attRows.length).toBe(2);
     for (const [nm, addr] of [['node-b', ADDR_B], ['node-c', ADDR_C]]) {
-      expect(final.stdout).toMatch(new RegExp(`^${nm} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+0\\s+5\\s+`, 'm'));
+      // restarts 0, then COUNTS "yes" — the column that replaced STAKE, which reported a deposit nothing escrowed
+      expect(final.stdout).toMatch(new RegExp(`^${nm} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=1/1 pre_apply=\\S+\\s+vllm:${esc(MODEL)}\\s+0\\s+yes\\s+`, 'm'));
     }
     expect(attRows.some((l) => l.startsWith('node-a '))).toBe(false);
 
