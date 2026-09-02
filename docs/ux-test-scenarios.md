@@ -2327,12 +2327,12 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 prints `✓ node initialised at $H/config.json` with `name node-d`, `address 0x…` (20-byte hex), `port 3410`, `ledger ain`, `roles verifier`, followed by `next: \`ngram start\`   (then \`ngram login\`, \`ngram seed\`)`; exit code 0
-- Step 2 fails with `error: config already exists at $H/config.json (use --force to overwrite, or \`ngram config show\`)`; exit code 1; config.json unchanged
+- Step 1 prints `✓ node initialised at $H/config.json` with `name node-d`, `address 0x…` (20-byte hex), `port 3410`, `ledger ain`, `roles verifier`, followed by `next: \`ainize start\`   (then \`ainize login\`, \`ainize seed\`)`; exit code 0
+- Step 2 fails with `error: config already exists at $H/config.json (use --force to overwrite, or \`ainize config show\`)`; exit code 1; config.json unchanged
 - Step 3 prints `address` and `public key` lines plus the dim hint `add --reveal to print the private key`; no private key is shown
 - Step 4 prints `✓ funded 0x… with 100 AIN  tx 0x…  balance now 100 AIN`
-- Step 5 prints `✓ node started in the background (pid N) — port 3410` and `logs: $H/node.log   stop: ngram stop`; $H/node.pid contains N
-- Step 6 fails with `error: node already running in the background (pid N) — \`ngram stop\` first`; exit code 1
+- Step 5 prints `✓ node started in the background (pid N) — port 3410` and `logs: $H/node.log   stop: ainize stop`; $H/node.pid contains N
+- Step 6 fails with `error: node already running in the background (pid N) — \`ainize stop\` first`; exit code 1
 - Step 7 shows `node-d  http://localhost:3410  (pid N)`, `roles       verifier`, `ledger      ain · ain:local · http://localhost:8081 · <n> records · height <h>` (same record count as `curl http://localhost:3402/api/info`), `peers       3` (the first gossip round's peer exchange with node-a added node-b and node-c — `peers 1` is only visible in the first second), `patches     4 (1 listed)`, `quorum      2`, `currency    AIN`
 - Step 8 lists three rows: `http://localhost:3402  node-a  0xF7A9dE49…A1F5  seller,verifier,serving  <timestamp>  0` plus http://localhost:3403 and http://localhost:3404 (shown as `(unreached)` until their first hello succeeds)
 - Step 9 output contains `node-d` (learned through /p2p/hello and the on-chain `node` record) next to node-a, node-b, node-c
@@ -2369,7 +2369,7 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 fails with `error: a node is running at http://localhost:3402; seeding writes to its data directory — stop it first (\`ngram stop\`) or seed from the web console`; exit 1; catalog unchanged
+- Step 1 fails with `error: a node is running at http://localhost:3402; seeding writes to its data directory — stop it first (\`ainize stop\`) or seed from the web console`; exit 1; catalog unchanged
 - Step 2 prints lines formatted `<YYYY-MM-DD HH:MM:SS> info  verify    [krx-all-2761] attested krx-all-2761: PASS (vllm:Qwen3.8-Flash-Next)` (kind column padded to 9, patch id in brackets)
 - Step 3 shows only events whose patch id is krx-all-2761 (e.g. `verifier`, `verify`, `publish`, `trade`, `usage` kinds)
 - Step 4 prints a JSON array of at most 3 objects with keys `seq, ts, level, kind, patch_id, message, data`
@@ -2849,14 +2849,14 @@ This document lists 229 user-experience test scenarios for **Ainize** (ai-nize =
 
 **Expected**
 
-- Step 1 prints `folder    /home/<user>/.ngram-cluster/node-a/data/drive`, `paired    no — run \`ngram drive login\``, `agent     stopped`, `server    https://aindrive.ainetwork.ai`, `drive id  -`, `url       -`, `files     <n>`
+- Step 1 prints `folder    /home/<user>/.ngram-cluster/node-a/data/drive`, `paired    no — run \`ainize drive login\``, `agent     stopped`, `server    https://aindrive.ainetwork.ai`, `drive id  -`, `url       -`, `files     <n>`
 - Step 2 adds a `PATH SIZE MODIFIED` table containing `branches/finance__KRX-latest.json`, `branches/finance__KRX-history.json`, `ledger/records.jsonl` and patch folders
 - Step 3 prints `✓ drive folder synced (<n> file(s) written)`
-- Step 4 prints `! drive not paired yet — run: cd /home/<user>/.ngram-cluster/node-a/data/drive && npx aindrive login --server https://aindrive.ainetwork.ai   # one-time browser pairing, then: ngram drive up`
+- Step 4 prints `! drive not paired yet — run: cd /home/<user>/.ngram-cluster/node-a/data/drive && npx aindrive login --server https://aindrive.ainetwork.ai   # one-time browser pairing, then: ainize drive up`
 - Step 5 prints `✓ not running`
 - Step 6: the first call returns JSON for the mirrored ledger file; the path-traversal call returns 400 (`{"error":"path must be relative to the drive folder"}`)
 - Step 7 returns 401
-- Step 8 prints the `aindrive pairing` header with `folder :` and `server :` lines and the dim instructions `A browser sign-in link will be printed — open it, click Authorize, and this folder becomes a drive.` / `After pairing, Ctrl+C here and run \`ngram drive up\` to serve it in the background.` (or `error: aindrive CLI not installed (npm install aindrive)` if the package is missing)
+- Step 8 prints the `aindrive pairing` header with `folder :` and `server :` lines and the dim instructions `A browser sign-in link will be printed — open it, click Authorize, and this folder becomes a drive.` / `After pairing, Ctrl+C here and run \`ainize drive up\` to serve it in the background.` (or `error: aindrive CLI not installed (npm install aindrive)` if the package is missing)
 
 **Evidence**
 

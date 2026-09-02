@@ -141,7 +141,9 @@
      "evidence": "`ainize init` → ``next: `ngram start`   (then `ngram login`, `ngram seed`)`` (init.ts:27). `ainize start -d` → `stop: ngram stop` (node.ts:59). `ainize config show` → ``\"privateKey\": \"<hidden — `ngram keys show --reveal`>\"`` (init.ts:43). `ainize seed` after `start` → ``stop it first (`ngram stop`)`` (node.ts:138). The foreground banner reads `ngram node \"fresh\" listening on …`. bin.ts:63 even documents the situation: \"`ngram` is the historical name of this binary\".",
      "user_cost": "`ainize` is the name on the landing page, the README, /docs and `--help`. The binary's own first success message tells the user to run a different program they have never seen, and if only one bin was linked, `ngram start` is `command not found`. The same substitution poisons the recovery hints where recovery matters most: `ngram stop`, `ngram chain setup`, `ngram keys show --reveal`.",
      "fix": "Import `PROG` in each of the seven command modules and interpolate it at the thirteen sites; pass the program name into `core/src/ain-ledger.ts:457` or drop the command from that message; template the node's banner. Add an ESLint `no-restricted-syntax` rule banning the literal `` `ngram `` inside a string or template under packages/cli/src so it cannot regress.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "status": "fixed",
+     "shipped": "Every hint now interpolates PROG, so the binary the user typed is the binary the hint names; the node banner and the two hints outside the CLI say `ainize`, and a CLI unit test fails on any new hardcoded `ngram <cmd>` literal."
     },
     {
      "n": 111,

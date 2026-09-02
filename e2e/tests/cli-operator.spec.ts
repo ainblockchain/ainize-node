@@ -404,7 +404,7 @@ test.describe('operator: account / API / inspection', () => {
     let r = await runCli(['drive', 'status'], A);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     expect(r.stdout).toMatch(new RegExp(`^folder\\s+${esc(folder)}$`, 'm'));
-    expect(r.stdout).toMatch(/^paired\s+no — run `ngram drive login`$/m);
+    expect(r.stdout).toMatch(/^paired\s+no — run `ainize drive login`$/m);
     expect(r.stdout).toMatch(/^agent\s+stopped$/m);
     expect(r.stdout).toMatch(/^server\s+https:\/\/aindrive\.ainetwork\.ai$/m);
     expect(r.stdout).toMatch(/^drive id\s+-$/m);
@@ -423,7 +423,7 @@ test.describe('operator: account / API / inspection', () => {
 
     r = await runCli(['drive', 'up'], A);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe(`! drive not paired yet — run: cd ${folder} && npx aindrive login --server https://aindrive.ainetwork.ai   # one-time browser pairing, then: ngram drive up`);
+    expect(r.stdout.trim()).toBe(`! drive not paired yet — run: cd ${folder} && npx aindrive login --server https://aindrive.ainetwork.ai   # one-time browser pairing, then: ainize drive up`);
 
     r = await runCli(['drive', 'stop'], A);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -454,7 +454,7 @@ test.describe('operator: account / API / inspection', () => {
       expect(outp).toMatch(new RegExp(`^ {2}folder : ${esc(folder)}$`, 'm'));
       expect(outp).toMatch(/^ {2}server : https:\/\/aindrive\.ainetwork\.ai$/m);
       expect(outp).toContain('A browser sign-in link will be printed — open it, click Authorize, and this folder becomes a drive.');
-      expect(outp).toContain('After pairing, Ctrl+C here and run `ngram drive up` to serve it in the background.');
+      expect(outp).toContain('After pairing, Ctrl+C here and run `ainize drive up` to serve it in the background.');
     }
   });
 
@@ -467,7 +467,7 @@ test.describe('operator: account / API / inspection', () => {
     const totalBefore = (await api<{ total: number }>(request, '/api/catalog')).body.total;
     let r = await runCli(['seed'], { home: seedHome, node: NODE_A, timeoutMs: 120_000 });
     expect(r.code).toBe(1);
-    expect(r.stderr.trim()).toBe(`error: a node is running at ${NODE_A}; seeding writes to its data directory — stop it first (\`ngram stop\`) or seed from the web console`);
+    expect(r.stderr.trim()).toBe(`error: a node is running at ${NODE_A}; seeding writes to its data directory — stop it first (\`ainize stop\`) or seed from the web console`);
     expect((await api<{ total: number }>(request, '/api/catalog')).body.total).toBe(totalBefore);
 
     // 2 verify events on node-b
@@ -986,13 +986,13 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout).toMatch(new RegExp(`^port\\s+${PORT_D}$`, 'm'));
     expect(r.stdout).toMatch(/^ledger\s+ain$/m);
     expect(r.stdout).toMatch(/^roles\s+verifier$/m);
-    expect(r.stdout.trim().endsWith('next: `ngram start`   (then `ngram login`, `ngram seed`)')).toBe(true);
+    expect(r.stdout.trim().endsWith('next: `ainize start`   (then `ainize login`, `ainize seed`)')).toBe(true);
     const cfgText = readFileSync(cfgPath, 'utf8');
     const addr = nodeAddress(HOME_D);
 
     r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D)], D);
     expect(r.code).toBe(1);
-    expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} (use --force to overwrite, or \`ngram config show\`)`);
+    expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} (use --force to overwrite, or \`ainize config show\`)`);
     expect(readFileSync(cfgPath, 'utf8')).toBe(cfgText);
 
     // node-d is a fourth node of THIS demo cluster: same serving instance (--runtime-api above) and the same patch-hook
@@ -1016,14 +1016,14 @@ test.describe('operator: fourth node', () => {
 
     r = await startNodeD();
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    const started = new RegExp(`^✓ node started in the background \\(pid (\\d+)\\) — port ${PORT_D}\\n {2}logs: ${esc(join(HOME_D, 'node.log'))} {3}stop: ngram stop$`).exec(r.stdout.trim());
+    const started = new RegExp(`^✓ node started in the background \\(pid (\\d+)\\) — port ${PORT_D}\\n {2}logs: ${esc(join(HOME_D, 'node.log'))} {3}stop: ainize stop$`).exec(r.stdout.trim());
     expect(started).not.toBeNull();
     const pid = Number(started![1]);
     expect(readFileSync(join(HOME_D, 'node.pid'), 'utf8').trim()).toBe(String(pid));
 
     r = await runCli(['start', '-d'], D);
     expect(r.code).toBe(1);
-    expect(r.stderr.trim()).toBe(`error: node already running in the background (pid ${pid}) — \`ngram stop\` first`);
+    expect(r.stderr.trim()).toBe(`error: node already running in the background (pid ${pid}) — \`ainize stop\` first`);
 
     r = await pollUntil(() => runCli(['status'], D), (x) => /^peers\s+3$/m.test(x.stdout), 60_000, 3000);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1491,7 +1491,7 @@ test.describe('operator: fourth node', () => {
       // step 2: the fresh cluster.log shows the three boot lines and the web-UI line
       const log = await pollUntil(
         () => Promise.resolve(readFileSync(join(pHome, 'cluster.log'), 'utf8')),
-        (l) => ['node-a', 'node-b', 'node-c'].every((n) => l.includes(`[${n}] ngram node "${n}" listening`)) && l.includes('[cluster] web UI'),
+        (l) => ['node-a', 'node-b', 'node-c'].every((n) => l.includes(`[${n}] ainize node "${n}" listening`)) && l.includes('[cluster] web UI'),
         30_000, 1000,
       );
       expect(log).toContain(`[cluster] web UI → http://localhost:${base}   (B: ${base + 1}, C: ${base + 2}; homes under ${pHome}; ledger=local; teach backend=stub)`);

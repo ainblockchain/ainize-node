@@ -89,7 +89,7 @@ export class Drive {
     return {
       configured: !!cfg?.driveId, running: pid !== null, pid, folder: this.folder, server,
       drive_id: cfg?.driveId ?? null, url: cfg?.driveId ? `${server.replace(/\/$/, '')}/d/${cfg.driveId}` : null,
-      login_hint: `cd ${this.folder} && npx aindrive login --server ${server}   # one-time browser pairing, then: ngram drive up`,
+      login_hint: `cd ${this.folder} && npx aindrive login --server ${server}   # one-time browser pairing, then: ainize drive up`,
       files: files.slice(0, 500),
     };
   }

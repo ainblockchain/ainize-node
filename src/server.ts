@@ -96,7 +96,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
     app.get(/^\/(?!api\/|x402\/|p2p\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
   } else {
-    app.get('/', (_req, res) => { res.type('text').send(`ngram node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nweb UI not built — run \`npm run build -w packages/web\``); });
+    app.get('/', (_req, res) => { res.type('text').send(`ainize node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nweb UI not built — run \`npm run build -w packages/web\``); });
   }
 
   const server = createServer(app);
@@ -106,7 +106,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const url = opts.listen === false ? selfUrl : `http://${cfg.host === '0.0.0.0' ? 'localhost' : cfg.host}:${(server.address() as { port: number }).port}`;
 
   if (!opts.quiet) {
-    console.log(`ngram node "${cfg.name}" listening on ${url}`);
+    console.log(`ainize node "${cfg.name}" listening on ${url}`);
     console.log(`  identity : ${cfg.identity.address}`);
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
   }
