@@ -8,7 +8,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
@@ -19,7 +19,7 @@ import {
 import {
   runCli, spawnCli, strip, uid, PIXEL_NPZ, PIXEL_SHA, KRX_SHA, MODEL, benchJson, shortAddr, esc, tableRows, tmpHome, SCRATCH,
   HOME_D, NODE_D, PORT_D, PASSWORD_D, cleanupNodeD, nodeDPid, httpUp, httpDown, startNodeD, startPrivateCluster, chatApi, withRuntime, pollUntil, RUN,
-  throwawayNode,
+  throwawayNode, portBusy,
 } from '../helpers/operator-cli';
 
 const ADDR_A = nodeAddress(HOME_A);
@@ -1682,5 +1682,70 @@ test.describe('operator: commands that report state', () => {
       await b.stop();
       await a.stop();
     }
+  });
+
+  test('AZ-230 `config set` validates against the config schema, `config get`/`unset` exist, and a node refuses to boot on a config it cannot use', async () => {
+    test.setTimeout(4 * 60_000);
+    const t = await throwawayNode('config', { start: false });
+    try {
+      expect((await t.init()).code).toBe(0);
+      const cfgPath = join(t.home, 'config.json');
+      const before = readFileSync(cfgPath, 'utf8');
+
+      const refused: [string[], string][] = [
+        [['port', 'notanumber'], 'error: port must be a number — got "notanumber"'],
+        [['verifier.stak', '5'], "error: unknown config key 'verifier.stak' — did you mean 'verifier.stake'?"],
+        [['market.defaultprice', '0.5'], "error: unknown config key 'market.defaultprice' — did you mean 'market.defaultPrice'?"],
+        [['ledger.knid', 'ain'], "error: unknown config key 'ledger.knid' — did you mean 'ledger.kind'?"],
+        [['typo.that.does.not.exist', 'hello'], "error: unknown config key 'typo.that.does.not.exist'; `ainize config show` lists every key this node has"],
+        [['host', '999.999.999.999'], 'error: host must be an interface to bind: an IP address (0.0.0.0, 127.0.0.1, ::) or a hostname — got "999.999.999.999"'],
+        [['roles', 'admin'], `error: roles must be a comma list of 'seller', 'verifier', 'serving', 'gateway' — got "admin"`],
+        [['verifier.quorum', '-3'], 'error: verifier.quorum must be at least 1 — got "-3"'],
+        [['market.royaltyShare', '47'], 'error: market.royaltyShare must be a fraction between 0 and 1 — got "47"'],
+        [['identity.privateKey', 'dead'], "error: refusing to set identity.privateKey: the identity is this node's only key pair — see `ainize keys`"],
+        [['market', '{}'], 'error: market is a group of keys, not a value — set one of: market.currency, market.defaultPrice, market.royaltyShare, market.initialCredit'],
+      ];
+      for (const [args, message] of refused) {
+        const r = await t.cli(['config', 'set', ...args]);
+        expect(r.code, args.join(' ')).toBe(1);
+        expect(r.stderr.trim(), args.join(' ')).toBe(message);
+      }
+      expect(readFileSync(cfgPath, 'utf8'), 'nothing refused was written').toBe(before);
+
+      // a price is stored as the decimal string the rest of the product uses
+      const priced = await t.cli(['config', 'set', 'market.defaultPrice', '9.99']);
+      expect(priced.code, priced.stderr).toBe(0);
+      expect(priced.stdout.trim()).toBe('✓ market.defaultPrice = "9.99"  (the node reads config.json when it starts)');
+      expect(JSON.parse(readFileSync(cfgPath, 'utf8')).market.defaultPrice).toBe('9.99');
+      expect((await t.cli(['config', 'get', 'market.defaultPrice'])).stdout.trim()).toBe('9.99');
+
+      expect((await t.cli(['config', 'set', 'teach.trainer.gpus', '0,1'])).code).toBe(0);
+      const unset = await t.cli(['config', 'unset', 'teach.trainer.gpus']);
+      expect(unset.code, unset.stderr).toBe(0);
+      expect(unset.stdout.trim()).toBe('✓ teach.trainer.gpus reset to the default "4,5,6" (was "0,1"; it cannot be absent)');
+
+      // a config the node cannot use stops it from starting, and says which keys
+      const broken = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      broken.port = 'notanumber';
+      broken.roles = ['admin'];
+      writeFileSync(cfgPath, JSON.stringify(broken, null, 2));
+      const start = await t.cli(['start']);
+      expect(start.code).toBe(1);
+      expect(start.stderr).toContain("error: this node's config is not usable:");
+      expect(start.stderr).toContain('  port must be a number');
+      expect(start.stderr).toContain(`  roles.0 must be a comma list of 'seller', 'verifier', 'serving', 'gateway'`);
+      expect(start.stderr).toContain(cfgPath);
+      expect(await portBusy(t.port), 'nothing bound the port').toBe(false);
+
+      // a key this build does not know is a warning, not a refusal
+      broken.port = t.port;
+      broken.roles = ['seller'];
+      broken.strayKey = 1;
+      writeFileSync(cfgPath, JSON.stringify(broken, null, 2));
+      expect((await t.cli(['start', '-d'])).code).toBe(0);
+      expect(await httpUp(t.url, 60_000)).toBe(true);
+      const logs = await pollUntil(() => t.cli(['logs', '--kind', 'config', '--limit', '10']), (r) => r.stdout.includes('strayKey'), 20_000, 1000);
+      expect(logs.stdout).toContain('warn  config    strayKey: unknown config key');
+    } finally { await t.stop(); }
   });
 });

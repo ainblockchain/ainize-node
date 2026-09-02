@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, LocalLedger, saveConfig, type Ledger, type NodeConfig } from '@ngram/core';
+import { AinLedger, LocalLedger, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
 import { buildApi } from './api.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
@@ -51,6 +51,17 @@ function defaultWebDist(): string {
 }
 
 export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promise<RunningNode> {
+  // A config nothing ever checked used to boot: `port notanumber` bound an ephemeral port, `roles admin` silently
+  // disabled every role, `host 999.999.999.999` listened nowhere findable. Refuse, and name every offending key
+  // with what it should hold (item 123). Keys this build does not know are only reported, so a config written by a
+  // newer build still starts here.
+  const problems = validateConfig(cfg);
+  const invalid = problems.filter((p) => p.kind === 'invalid');
+  if (invalid.length) {
+    throw new Error(`this node's config is not usable:\n${invalid.map((p) => `  ${p.key} ${p.message}`).join('\n')}\n` +
+      `fix it with \`ainize config set <key> <value>\` (or \`ainize config unset <key>\` for the default) in ${join(dirname(cfg.dataDir), 'config.json')}`);
+  }
+
   const store = new Store(join(cfg.dataDir, 'node.sqlite'));
   const runtime = new Runtime(cfg.runtime ?? {});
   const blobs = new BlobStore(store, cfg.dataDir);
@@ -111,6 +122,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
   }
   market.log('info', 'node', `node started (${ledger.kind} ledger, roles ${cfg.roles.join('/')})`);
+  for (const p of problems) market.log('warn', 'config', `${p.key}: ${p.message}`);
   // A config written before 2026-09 still carries `verifier.stake`. Nothing was ever escrowed or slashed for it, so
   // the node ignores it and says so once — an operator must not go on believing money is at risk (item 127).
   if (cfg.verifier?.stake !== undefined) {

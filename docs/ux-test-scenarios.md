@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (231)
+# Ainize UX Test Scenarios (232)
 
-This document lists 231 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 232 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,8 +28,8 @@ This document lists 231 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 1 | 1 | 0 | 0 |
-| **Total** | **231** | **98** | **112** | **21** |
+| Node operator | 2 | 2 | 0 | 0 |
+| **Total** | **232** | **99** | **112** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -37,7 +37,7 @@ This document lists 231 user-experience test scenarios for **Ainize** (ai-nize =
 | teach-dataset | 23 |
 | chat | 18 |
 | x402 | 14 |
-| cli | 11 |
+| cli | 12 |
 | api | 9 |
 | dashboard | 8 |
 | agent | 7 |
@@ -68,8 +68,8 @@ This document lists 231 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
+| cli | 33 |
 | api | 32 |
-| cli | 32 |
 | manual | 11 |
 
 ## Visitor (knowledge user)
@@ -8314,3 +8314,45 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/node.ts start() (poll /api/info, identity match, startFailed + logTail), stop() (waitGone, SIGKILL escalation), status() (stranger warning + exit 2)`
 - `packages/cli/test/operator.test.ts (items 118/119 unit tests)`
 - `docs/ux-critique-2.json items 118, 119`
+
+### AZ-230 - `config set` validates against the config schema, `config get`/`unset` exist, and a node refuses to boot on a config it cannot use
+
+**Goal:** The CLI's only configuration verb can tell an operator whether the thing they just set is real, and a mistyped value never produces a running node bound nowhere findable.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- A throwaway home of your own: `$N --home $S/c init --name c --port 3594 --ledger local --runtime-api http://127.0.0.1:1` (never the demo cluster)
+
+**Steps**
+
+1. Run `$N --home $S/c config set port notanumber`
+2. Run `$N --home $S/c config set verifier.stak 5`, `… market.defaultprice 0.5`, `… ledger.knid ain`
+3. Run `$N --home $S/c config set typo.that.does.not.exist hello`
+4. Run `$N --home $S/c config set host 999.999.999.999`, `… roles admin`, `… verifier.quorum -3`, `… market.royaltyShare 47`
+5. Run `$N --home $S/c config set identity.privateKey dead` and `… config set market {}`
+6. Run `$N --home $S/c config set market.defaultPrice 9.99` and read the value back with `$N --home $S/c config get market.defaultPrice`
+7. Run `$N --home $S/c config set teach.trainer.gpus 0,1` then `$N --home $S/c config unset teach.trainer.gpus`
+8. Hand-edit config.json to `"port": "notanumber"` and `"roles": ["admin"]`, then run `$N --home $S/c start`
+9. Hand-edit config.json to add `"strayKey": 1`, start the node and run `$N --home $S/c logs --kind config`
+
+**Expected**
+
+- Step 1 fails with `error: port must be a number — got "notanumber"`, exit 1; config.json is unchanged
+- Step 2 fails with the nearest real key each time: `error: unknown config key 'verifier.stak' — did you mean 'verifier.stake'?`, `… 'market.defaultprice' — did you mean 'market.defaultPrice'?`, `… 'ledger.knid' — did you mean 'ledger.kind'?`; exit 1
+- Step 3 fails with `error: unknown config key 'typo.that.does.not.exist'; \`ainize config show\` lists every key this node has`; no key is created
+- Step 4 fails with, respectively, `host must be an interface to bind: an IP address (0.0.0.0, 127.0.0.1, ::) or a hostname`, `roles must be a comma list of 'seller', 'verifier', 'serving', 'gateway'`, `verifier.quorum must be at least 1`, `market.royaltyShare must be a fraction between 0 and 1` — each naming what the key wants and what it got
+- Step 5 fails with `refusing to set identity.privateKey: the identity is this node's only key pair — see \`ainize keys\`` and `market is a group of keys, not a value — set one of: market.currency, market.defaultPrice, market.royaltyShare, market.initialCredit`
+- Step 6 prints `✓ market.defaultPrice = "9.99"  (the node reads config.json when it starts)` — a price is stored as the decimal STRING the rest of the product uses, never a JSON number — and `config get` prints `9.99`
+- Step 7: `config unset` on a key the config cannot do without resets it to the built-in default (`✓ teach.trainer.gpus reset to the default "4,5,6" (was "0,1"; it cannot be absent)`); on an optional key it removes it and says the node falls back to its default
+- Step 8: the node refuses to start — `error: this node's config is not usable:` then one line per key (`port must be a number`, `roles.0 must be a comma list of …`) and the path of the config.json to fix; exit 1; nothing binds a port
+- Step 9: the node starts (a key this build does not know must not stop an older binary from booting) and logs one `warn config strayKey: unknown config key` line
+
+**Evidence**
+
+- `packages/core/src/config-schema.ts (nodeConfigSchema, configField, nearestConfigKey, coerceConfigValue, validateConfig)`
+- `packages/cli/src/commands/init.ts configSet / configGet / configUnset`
+- `packages/node/src/server.ts startNode() (refuses invalid values, warns about unknown keys)`
+- `packages/core/test/config.test.ts + packages/cli/test/operator.test.ts (item 123)`
+- `docs/ux-critique-2.json item 123`
