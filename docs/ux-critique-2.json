@@ -536,7 +536,9 @@
      "evidence": "packages/e2e/results/ux2/critic-18-auth-version.txt: `ainize config set version 0.0.1-from-2024` on a node built from this commit, then a full stop/start; `ainize status` prints `version  0.0.1-from-2024` and `GET /api/info` returns `node.version = 0.0.1-from-2024` to every caller and every peer.",
      "user_cost": "After an upgrade there is no way to tell which build a node is running — from the CLI, the API, the console, or another node. Rolling an upgrade across a fleet, or asking a peer \"are you on the build with the payout fix?\", is guesswork, and a node initialised a year ago reports last year's version forever while running today's code.",
      "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs."
     },
     {
      "n": 142,

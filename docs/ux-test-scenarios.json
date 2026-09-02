@@ -7944,5 +7944,38 @@
    "packages/cli/src/commands/init.ts configSet() (runningHere warning)",
    "docs/ux-critique-2.json item 124"
   ]
+ },
+ {
+  "id": "AZ-232",
+  "persona": "Node operator",
+  "title": "The version a node reports is the build it is running, not a string frozen into config.json at init",
+  "goal": "After an upgrade, the CLI, the API, the console and every peer agree on which build a node is running — and a config written a year ago cannot make it claim last year's version.",
+  "preconditions": [
+   "A throwaway node of your own: `$N --home $S/v init --name v --port 3596 --ledger local --runtime-api http://127.0.0.1:1`"
+  ],
+  "steps": [
+   "Run `$N --home $S/v config set version 0.0.1-from-2024`",
+   "Run `$N --home $S/v start -d` and then `$N --home $S/v status`",
+   "Run `curl -s http://localhost:3596/api/info | python3 -m json.tool` and read node.version / node.build / node.config_version",
+   "Run `$N --home $S/v logs --kind config --limit 3`",
+   "Run `$N --home ~/.ngram-cluster/node-a status` (a node whose config.json version matches the build)"
+  ],
+  "expected": [
+   "Step 1 succeeds — `version` is a real config key (the schema version config.json was written by)",
+   "Step 2 prints `version     0.1.0 · built <YYYY-MM-DD HH:MM:SS>  (config.json written by 0.0.1-from-2024)`: the running build first, the config's claim named as the config's claim",
+   "Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is \"0.0.1-from-2024\" — so every peer and the generated OpenAPI document report the build, not the file",
+   "Step 4 shows one info line `config: config.json was written by version 0.0.1-from-2024; this node is running 0.1.0` — the hook a future config migration hangs on",
+   "Step 5 prints `version     0.1.0 · built <…>` with no config note, because there is nothing to say"
+  ],
+  "priority": "P1",
+  "area": "cli",
+  "automation": "cli",
+  "evidence": [
+   "packages/core/src/config.ts VERSION + buildStamp()",
+   "packages/node/src/market.ts selfInfo() (version/build/config_version), packages/node/src/api.ts (OpenAPI version)",
+   "packages/cli/src/commands/node.ts nodeVersion()",
+   "packages/node/src/server.ts (start-up line when the two differ)",
+   "docs/ux-critique-2.json item 141"
+  ]
  }
 ]

@@ -11,7 +11,7 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -118,8 +118,8 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   // ------------------------------------------------------------ API reference (OpenAPI 3.1 + CLI reference)
-  router.get('/api/openapi.json', wrap(async () => buildOpenApi(market.publicUrl, market.cfg.version)));
-  router.get('/api/docs', wrap(async () => ({ openapi: buildOpenApi(market.publicUrl, market.cfg.version), cli: CLI_REFERENCE, node: market.publicUrl })));
+  router.get('/api/openapi.json', wrap(async () => buildOpenApi(market.publicUrl, VERSION)));
+  router.get('/api/docs', wrap(async () => ({ openapi: buildOpenApi(market.publicUrl, VERSION), cli: CLI_REFERENCE, node: market.publicUrl })));
 
   // ------------------------------------------------------------ public info & catalog
   router.get('/api/info', wrap(async () => ({

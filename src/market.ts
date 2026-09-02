@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
+  AinLedger, VERSION, buildStamp, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
@@ -993,7 +993,7 @@ export class Market {
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
-      blobs: this.blobs.list().map((b) => b.sha256), version: this.cfg.version, last_seen: Date.now(),
+      blobs: this.blobs.list().map((b) => b.sha256), version: VERSION, build: buildStamp(), config_version: this.cfg.version, last_seen: Date.now(),
     };
   }
 

@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (233)
+# Ainize UX Test Scenarios (234)
 
-This document lists 233 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 234 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,16 +28,16 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 3 | 3 | 0 | 0 |
-| **Total** | **233** | **100** | **112** | **21** |
+| Node operator | 4 | 3 | 1 | 0 |
+| **Total** | **234** | **100** | **113** | **21** |
 
 | Area | Count |
 |---|---:|
 | teach | 57 |
 | teach-dataset | 23 |
 | chat | 18 |
+| cli | 14 |
 | x402 | 14 |
-| cli | 13 |
 | api | 9 |
 | dashboard | 8 |
 | agent | 7 |
@@ -68,7 +68,7 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
-| cli | 34 |
+| cli | 35 |
 | api | 32 |
 | manual | 11 |
 
@@ -8394,3 +8394,37 @@ prompt,answer,alt_prompt
 - `packages/node/src/server.ts persistConfig() (bootCfg → live diff applied to the current file)`
 - `packages/cli/src/commands/init.ts configSet() (runningHere warning)`
 - `docs/ux-critique-2.json item 124`
+
+### AZ-232 - The version a node reports is the build it is running, not a string frozen into config.json at init
+
+**Goal:** After an upgrade, the CLI, the API, the console and every peer agree on which build a node is running — and a config written a year ago cannot make it claim last year's version.
+
+**Priority:** P1 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- A throwaway node of your own: `$N --home $S/v init --name v --port 3596 --ledger local --runtime-api http://127.0.0.1:1`
+
+**Steps**
+
+1. Run `$N --home $S/v config set version 0.0.1-from-2024`
+2. Run `$N --home $S/v start -d` and then `$N --home $S/v status`
+3. Run `curl -s http://localhost:3596/api/info | python3 -m json.tool` and read node.version / node.build / node.config_version
+4. Run `$N --home $S/v logs --kind config --limit 3`
+5. Run `$N --home ~/.ngram-cluster/node-a status` (a node whose config.json version matches the build)
+
+**Expected**
+
+- Step 1 succeeds — `version` is a real config key (the schema version config.json was written by)
+- Step 2 prints `version     0.1.0 · built <YYYY-MM-DD HH:MM:SS>  (config.json written by 0.0.1-from-2024)`: the running build first, the config's claim named as the config's claim
+- Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is "0.0.1-from-2024" — so every peer and the generated OpenAPI document report the build, not the file
+- Step 4 shows one info line `config: config.json was written by version 0.0.1-from-2024; this node is running 0.1.0` — the hook a future config migration hangs on
+- Step 5 prints `version     0.1.0 · built <…>` with no config note, because there is nothing to say
+
+**Evidence**
+
+- `packages/core/src/config.ts VERSION + buildStamp()`
+- `packages/node/src/market.ts selfInfo() (version/build/config_version), packages/node/src/api.ts (OpenAPI version)`
+- `packages/cli/src/commands/node.ts nodeVersion()`
+- `packages/node/src/server.ts (start-up line when the two differ)`
+- `docs/ux-critique-2.json item 141`

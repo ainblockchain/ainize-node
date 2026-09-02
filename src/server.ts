@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, LocalLedger, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
+import { AinLedger, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
 import { buildApi } from './api.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
@@ -132,6 +132,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
   market.log('info', 'node', `node started (${ledger.kind} ledger, roles ${cfg.roles.join('/')})`);
   for (const p of problems) market.log('warn', 'config', `${p.key}: ${p.message}`);
+  // `version` in config.json is the string the config was WRITTEN with; the running build is VERSION in the code.
+  // Say so once when they differ — the natural hook for a future config migration (item 141).
+  if (cfg.version !== VERSION) {
+    market.log('info', 'config', `config.json was written by version ${cfg.version}; this node is running ${VERSION}`);
+  }
   // A config written before 2026-09 still carries `verifier.stake`. Nothing was ever escrowed or slashed for it, so
   // the node ignores it and says so once — an operator must not go on believing money is at risk (item 127).
   if (cfg.verifier?.stake !== undefined) {

@@ -1811,4 +1811,34 @@ test.describe('operator: commands that report state', () => {
       expect(typeof after.operatorPasswordHash).toBe('string');
     } finally { await t.stop(); }
   });
+
+  test('AZ-232 The version a node reports is the build it is running, not a string frozen into config.json at init', async () => {
+    test.setTimeout(3 * 60_000);
+    const t = await throwawayNode('version', { start: false });
+    try {
+      expect((await t.init()).code).toBe(0);
+      expect((await t.cli(['config', 'set', 'version', '0.0.1-from-2024'])).code).toBe(0);
+      expect((await t.cli(['start', '-d'])).code).toBe(0);
+      expect(await httpUp(t.url, 60_000)).toBe(true);
+
+      const st = await t.cli(['status']);
+      expect(st.code, st.stderr).toBe(0);
+      expect(st.stdout).toMatch(/^version\s+\d+\.\d+\.\d+ · built \d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}\(config\.json written by 0\.0\.1-from-2024\)$/m);
+
+      const info = (await (await fetch(`${t.url}/api/info`)).json()) as { node: { version: string; build: string; config_version: string } };
+      expect(info.node.version).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(info.node.version).not.toBe('0.0.1-from-2024');
+      expect(Number.isFinite(Date.parse(info.node.build))).toBe(true);
+      expect(info.node.config_version).toBe('0.0.1-from-2024');
+      const openapi = (await (await fetch(`${t.url}/api/openapi.json`)).json()) as { info: { version: string } };
+      expect(openapi.info.version).toBe(info.node.version);
+
+      const logs = await pollUntil(() => t.cli(['logs', '--kind', 'config', '--limit', '5']), (r) => r.stdout.includes('written by version'), 20_000, 1000);
+      expect(logs.stdout).toContain(`config.json was written by version 0.0.1-from-2024; this node is running ${info.node.version}`);
+
+      // a node whose config matches the build says nothing extra
+      const a = await runCli(['status'], { home: HOME_A });
+      expect(a.stdout).toMatch(/^version\s+\d+\.\d+\.\d+ · built \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/m);
+    } finally { await t.stop(); }
+  });
 });
