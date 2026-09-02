@@ -23,6 +23,7 @@ import type { Drive } from './drive.js';
 import { ANSWER_MAX, creditedAddress, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
 import type { RowsOp } from './teach-datasets.js';
 import { PayoutError } from './payouts.js';
+import { EVENT_LEVELS } from './store.js';
 import type { EventRow, TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
@@ -250,7 +251,14 @@ export function buildApi(deps: ApiDeps): Router {
     const nodes = await Promise.all((await market.knownNodes()).map(async (n) => ({ ...n, blobs: await market.publicBlobs(n.blobs ?? []) })));
     return { nodes, peers: market.p2p.peers(), self: market.address };
   }));
-  router.get('/api/events', wrap(async (req) => ({ events: publicEvents(market.store.events({ since: req.query.since ? Number(req.query.since) : undefined, limit: Number(req.query.limit ?? 200), kind: req.query.kind as string | undefined }), isOperator(req)) })));
+  router.get('/api/events', wrap(async (req) => ({
+    events: publicEvents(market.store.events({
+      since: req.query.since ? Number(req.query.since) : undefined,
+      limit: Number(req.query.limit ?? 200),
+      kind: req.query.kind as string | undefined,
+      level: EVENT_LEVELS.includes(req.query.level as (typeof EVENT_LEVELS)[number]) ? (req.query.level as (typeof EVENT_LEVELS)[number]) : undefined,
+    }), isOperator(req)),
+  })));
   router.get('/api/chain', wrap(async () => market.chainStatus()));
 
   // ------------------------------------------------------------ operator actions

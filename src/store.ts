@@ -9,7 +9,18 @@ import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDat
 
 export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; }
 export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string; manifest: PatchManifest | null; path: string | null; created_at: number; }
-export interface EventRow { seq: number; ts: number; level: 'debug' | 'info' | 'warn' | 'error'; kind: string; patch_id: string | null; message: string; data: unknown; }
+/** Severity order (low → high): a `level` filter means "this level and worse". */
+export const EVENT_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+/**
+ * Every `kind` this node writes events under. `ainize logs --kind` offers exactly these, so a mistyped kind is
+ * refused with the list instead of printing an empty screen that looks like an idle node (items 116/132).
+ */
+export const EVENT_KINDS = [
+  'blob', 'branch', 'buy', 'challenge', 'config', 'drive', 'node', 'p2p', 'patch', 'payout', 'publish',
+  'runtime', 'seed', 'settings', 'teach', 'trade', 'usage', 'verifier', 'verify',
+] as const;
+
+export interface EventRow { seq: number; ts: number; level: (typeof EVENT_LEVELS)[number]; kind: string; patch_id: string | null; message: string; data: unknown; }
 export interface PeerRow { endpoint: string; address: string | null; info: PeerInfo | null; last_seen: number; failures: number; cursor: number; }
 export interface DraftRow { id: string; anchor: PatchAnchor; file_path: string; created_at: number; updated_at: number; }
 
@@ -207,11 +218,17 @@ export class Store {
     this.db.prepare('INSERT INTO events (ts, level, kind, patch_id, message, data) VALUES (?, ?, ?, ?, ?, ?)')
       .run(Date.now(), level, kind, patchId, message, data === null ? null : JSON.stringify(data));
   }
-  events(opts: { patch_id?: string; since?: number; limit?: number; kind?: string } = {}): EventRow[] {
+  events(opts: { patch_id?: string; since?: number; limit?: number; kind?: string; level?: EventRow['level'] } = {}): EventRow[] {
     const where: string[] = []; const args: (string | number)[] = [];
     if (opts.patch_id) { where.push('patch_id = ?'); args.push(opts.patch_id); }
     if (opts.since) { where.push('ts > ?'); args.push(opts.since); }
     if (opts.kind) { where.push('kind = ?'); args.push(opts.kind); }
+    // `level` is a floor, not an exact match: `--level warn` is "warnings and worse", the question an operator asks
+    if (opts.level) {
+      const wanted = EVENT_LEVELS.slice(EVENT_LEVELS.indexOf(opts.level));
+      where.push(`level IN (${wanted.map(() => '?').join(', ')})`);
+      args.push(...wanted);
+    }
     const sql = `SELECT * FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY seq DESC LIMIT ${Number(opts.limit ?? 200)}`;
     return (this.db.prepare(sql).all(...args) as Record<string, unknown>[]).map((r) => ({
       seq: r.seq as number, ts: r.ts as number, level: r.level as EventRow['level'], kind: r.kind as string, patch_id: (r.patch_id as string) ?? null,

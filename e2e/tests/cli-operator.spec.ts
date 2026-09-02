@@ -506,11 +506,29 @@ test.describe('operator: account / API / inspection', () => {
     expect(seen).toBe(true);
     expect(code).not.toBe('hung');
 
-    // 6 unknown kind
+    // 6 an unrecognised kind is refused with the list, never answered with an empty screen
     r = await runCli(['logs', '--kind', 'nosuchkind'], A);
-    expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(r.stderr.trim()).toBe('');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('Argument: kind, Given: "nosuchkind", Choices:');
+    expect(r.stderr).toContain('"challenge"');
+
+    // 7 the operator's own terminal is the operator view (the CLI sends its token); a visitor never sees draft lines
+    await cliLogin(HOME_A, NODE_A);
+    r = await runCli(['logs', '--kind', 'patch', '--limit', '20'], A);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d info {2}patch {5}\[[^\]]+\] draft /m);
+    const visitorHome = tmpHome('logs-visitor');
+    r = await runCli(['logs', '--kind', 'patch', '--limit', '20'], { home: visitorHome, node: NODE_A });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe("(no events match kind 'patch' — and you are not logged in, so teach and draft lines are hidden; run `ainize login`)");
+
+    // 8 --level is a floor, and an empty filtered result says which filter emptied it
+    r = await runCli(['logs', '--level', 'warn', '--limit', '20'], A);
+    expect(r.code, r.stderr).toBe(0);
+    for (const l of r.stdout.split('\n').filter(Boolean)) expect(l).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (warn |error)/);
+    r = await runCli(['logs', '--kind', 'challenge'], A);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe("(no events match kind 'challenge')");
   });
 
   test('AZ-061 Register a draft with `ainize publish --no-announce`, check its visibility, reject bad inputs and delete it', async ({ request }) => {

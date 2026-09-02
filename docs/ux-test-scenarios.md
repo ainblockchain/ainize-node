@@ -2368,6 +2368,8 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 4. Run `$A logs --limit 3 --json`
 5. Run `$A logs --follow` in a second terminal, then in the first terminal run `curl -s -X POST http://localhost:3402/api/chat -H 'content-type: application/json' -d '{"patch_id":"pixelplus-087600","mode":"base","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}'`; then Ctrl+C the follower
 6. Run `$A logs --kind nosuchkind`
+7. Run `$A logs --kind patch --limit 5` from the logged-in operator home, then the same command from a home with no operator token (`--node http://localhost:3402 --home <empty home>`)
+8. Run `$A logs --level warn --limit 5` and `$A logs --kind challenge`
 
 **Expected**
 
@@ -2376,7 +2378,9 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 3 shows only events whose patch id is krx-all-2761 (e.g. `verifier`, `verify`, `publish`, `trade`, `usage` kinds)
 - Step 4 prints a JSON array of at most 3 objects with keys `seq, ts, level, kind, patch_id, message, data`
 - Step 5: within ~2 s the follower prints a new line `usage     [pixelplus-087600] live test pixelplus-087600 (base) by ip:::ffff:127.0.0.1: base only` (visitor key 'ip:' + req.ip, truncated to 24 chars); Ctrl+C exits cleanly
-- Step 6 prints an empty line (a table with zero rows) and exits 0 — no error for an unknown kind
+- Step 6 fails with `error: Invalid values:` / `  Argument: kind, Given: "nosuchkind", Choices: "blob", "branch", "buy", "challenge", "config", "drive", "node", "p2p", "patch", "payout", "publish", "runtime", "seed", "settings", "teach", "trade", "usage", "verifier", "verify"`; exit 1 — an unrecognised kind is never answered with an empty screen
+- Step 7: the operator's terminal shows `patch` events including `draft created: …` lines (the CLI sends its operator token); the same command with no token prints `(no events match kind 'patch' — and you are not logged in, so teach and draft lines are hidden; run `ainize login`)` — the visitor stream drops every `draft …` line by design
+- Step 8: `--level warn` prints only `warn` and `error` rows (the level is a floor, not an exact match); a filter that matches nothing prints `(no events match kind 'challenge')`, never a blank line
 
 **Evidence**
 

@@ -424,7 +424,9 @@
      "evidence": "packages/e2e/results/ux2/critic-20-logs-redaction.txt, logged in as the node's own operator: `ainize logs --kind patch --limit 20` printed one blank line, exit 0, while the same endpoint with the operator bearer token returned 5 events (`draft created: draft-test (600 rows, 0.8 MB)`, `draft deleted: throwaway-draft`, …). On node-a all 200 of the most recent `patch` events are `draft …` lines, so the operator's view of a busy node is empty. `ainize logs --level error` → `error: Unknown argument: level`.",
      "user_cost": "The terminal tool for investigating your own node is the least informative view of it, and its blank screen is indistinguishable from an idle or broken node. The operator has to go find the web console for information their CLI session is already authenticated for.",
      "fix": "Change node.ts:116 to `{ auth: true }` — the client already falls back to anonymous when there is no token. Render an explicit `(no events match)` for an empty result. Add `level` to `/api/events`, `store.events()` and a `--level` flag.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "`logs` now sends the operator token, so the operator's terminal shows the operator stream; an empty result names the filter that emptied it (and says when the missing rows are the ones a visitor never sees), and `--level` filters by severity floor."
     },
     {
      "n": 133,

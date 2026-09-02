@@ -9,7 +9,7 @@ export {
   type CanonicalRow, type ParseOptions, type ParseResult, type TxtLayout,
 } from './teach-dataset.js';
 export { TEACH_SAMPLES, sampleOf, type SampleDataset, type SampleKind } from './teach-samples.js';
-export { Store, type PayoutRow } from './store.js';
+export { Store, EVENT_KINDS, EVENT_LEVELS, type EventRow, type PayoutRow } from './store.js';
 export { Payouts, PayoutError, PAYOUT_MAX_ATTEMPTS, PAYOUT_RETRY_MS, PAYOUT_INTERRUPTED, type PayoutWallet, type PayoutRun } from './payouts.js';
 export { BlobStore, sha256File } from './blobs.js';
 export { Runtime, RuntimeUnavailableError, MODEL_UNAVAILABLE } from './runtime.js';
