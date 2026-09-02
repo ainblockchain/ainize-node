@@ -1,8 +1,11 @@
 /**
  * Node-mode control for the result-screen scenarios: the dev node node-u (:3422) runs with a stub trainer whose checks
  * are simulated by default, and several scenarios (AZ-183/184/188/189/190/191/202) only mean anything against the real
- * serving model. Switching modes is a config change plus a restart, and the restart carries `ENGRAM_PATCH_DIR` — the
- * patch hook reads that ENV VAR; there is no `runtime.patchDir` config key.
+ * serving model. Switching modes is a config change plus a restart, and the restart carries the mailbox TWICE:
+ * `NGRAM_RUNTIME_PATCH_DIR` sets `runtime.patchDir` in the node's own config, and `ENGRAM_PATCH_DIR` is the variable
+ * the patch hook itself reads. Both are needed: the node RE-EXPORTS `ENGRAM_PATCH_DIR` from its own `patchDir()` when
+ * it calls the hook (packages/node/src/runtime.ts), so a node without `runtime.patchDir` silently falls back to
+ * `<runtime.repo>/ple_patch` — the SHARED production mailbox — and overrides whatever this helper exported.
  *
  * Owner rule, enforced here: the live model is ALWAYS http://localhost:8002 (container flashnext-e2e, GPUs 4+5).
  * Never :8000 / :8001.
@@ -91,7 +94,7 @@ export async function setNodeMode(mode: NodeMode, restoreApi?: string): Promise<
   }
   await configSet('teach.stubOffline', 'false');
   await configSet('runtime.api', mode === 'live' ? LIVE_API : DEAD_API);
-  await restartNode({ ENGRAM_PATCH_DIR: PATCH_DIR });
+  await restartNode({ ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR });
 }
 
 /** True once the node reports a usable serving model + patch hook. */
@@ -163,7 +166,7 @@ export async function startPrivateNode(tag: string, env: Record<string, string> 
     const child = spawn(process.execPath, [CLI, '--home', home, 'start'], {
       cwd: REPO, detached: true, stdio: ['ignore', log, log],
       env: {
-        ...process.env, ENGRAM_PATCH_DIR: PATCH_DIR,
+        ...process.env, ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR,
         NGRAM_TEACH_ENABLED: '1', NGRAM_TEACH_BACKEND: 'stub', NGRAM_RUNTIME_API: LIVE_API,
         ...env, ...extra,
       },

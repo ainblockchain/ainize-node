@@ -105,10 +105,12 @@ test.describe('operator: account / API / inspection', () => {
     // 50 in the scenario snapshot + POST /api/patches/{id}/forget (ainize patch forget); teach mode adds its own group
     const paths = Object.keys(oa.paths);
     const teachPaths = paths.filter((p) => /\/teach|\/teacher\/|\/payouts/.test(p));
-    expect(teachPaths.length, 'teach-mode paths (lessons, review queue, contributors, payouts)').toBe(23);
+    // 34 = the 23 of teach mode v1 + the 11 dataset routes of the dataset-first door (datasets CRUD/rows/fork/reparse/
+    // download, the operator's dataset list, local-run and recipe) — one pipeline, two doors, one API group.
+    expect(teachPaths.length, 'teach-mode paths (lessons, review queue, datasets, contributors, payouts)').toBe(34);
     // 53 = 51 + the two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel), documented since b517cae
     expect(paths.length - teachPaths.length, 'marketplace paths').toBe(53);
-    expect(paths.length).toBe(76);
+    expect(paths.length).toBe(87);
     for (const p of ['/api/chat/status', '/api/chat/cancel']) expect(oa.paths).toHaveProperty(p);
     expect(oa.paths).toHaveProperty('/api/patches/{id}/forget');
     expect(oa.paths).toHaveProperty('/x402/patch/{id}');
@@ -694,7 +696,7 @@ test.describe('operator: runtime', () => {
     expect(remaining).toEqual(Array.from({ length: 20 }, (_, i) => 19 - i));
 
     r = await chatApi(request, BODY, { ip });
-    expect([r.status, r.body.error]).toEqual([429, 'free live-test quota exhausted for this hour — buy the patch or run your own node']);
+    expect([r.status, r.body.error]).toEqual([429, 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node']);
 
     r = await pollUntil(() => chatApi(opCtx, BODY, { ip, token }), (x) => x.status === 200, 3 * 60_000, 10_000);
     expect(r.status).toBe(200);

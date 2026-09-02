@@ -235,7 +235,8 @@ export const runtimeInfo = async (request: APIRequestContext): Promise<RuntimeIn
 
 /**
  * Run `body` with node-u pointed at the dedicated e2e model server (`runtime.api=:8002`, `teach.stubOffline=false`,
- * `ENGRAM_PATCH_DIR` in the environment — there is NO `runtime.patchDir` config key). Whatever happens, the node is put
+ * `NGRAM_RUNTIME_PATCH_DIR` + `ENGRAM_PATCH_DIR` in the environment: the node re-exports the hook's variable from its
+ * own `runtime.patchDir`, so both are needed). Whatever happens, the node is put
  * back exactly as it was found and restarted, because every other scenario in the suite depends on the stub.
  */
 export async function withLiveModel(body: (ctl: { pointRuntimeAt: (api: string) => Promise<void> }) => Promise<void>): Promise<void> {
@@ -273,9 +274,9 @@ export async function withLiveModel(body: (ctl: { pointRuntimeAt: (api: string) 
 
   try {
     await applyMode({ 'runtime.api': E2E_MODEL_API, 'teach.stubOffline': 'false' },
-      async () => (await policySays(false)()) && (await runtimeApiIs(E2E_MODEL_API)()), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR });
+      async () => (await policySays(false)()) && (await runtimeApiIs(E2E_MODEL_API)()), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: E2E_PATCH_DIR });
     await body({
-      pointRuntimeAt: async (api: string) => applyMode({ 'runtime.api': api }, runtimeApiIs(api), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR }),
+      pointRuntimeAt: async (api: string) => applyMode({ 'runtime.api': api }, runtimeApiIs(api), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: E2E_PATCH_DIR }),
     });
   } finally {
     await applyMode({ 'runtime.api': before.api, 'teach.stubOffline': before.stub ? 'true' : 'false' }, policySays(before.stub));

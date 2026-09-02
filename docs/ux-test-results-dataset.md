@@ -1,14 +1,14 @@
 # UX scenario test results — dataset-first teach mode (AZ-123…AZ-222)
 
 - **Node under test:** node-u on http://localhost:3422 (home `~/.ngram-teachable/node-u`, operator password `teachable-pass`, local ledger, `teach.enabled`, `publish: auto`, backend `stub`, `teach.stubOffline: true`). Shipped limits: 8 corrections per lesson · 3 lessons/key/day · 5 lessons/IP/day · 300 rows/key/day · 500 rows/IP/day · `blockedTopics` null. Every suite that needs other limits raises them for its own duration and puts back what it found.
-- **Model server:** the dedicated e2e vLLM at http://localhost:8002 — container `flashnext-e2e`, Qwen3.8-Flash-Next, **GPUs 4+5 only**, patch hook on, mailbox `/mnt/newdata/qwen3.8/ple_patch_e2e`. The twelve live-model scenarios switch node-u onto it (`runtime.api=:8002`, `teach.stubOffline=false`, `ENGRAM_PATCH_DIR` in the node's environment) and put the node back on its offline stub afterwards. The shared servers on :8000 / :8001 and GPUs 0-3 were never touched by this run.
-- **Code:** worktree `/mnt/newdata/ainize/knowledge-marketplace-teachable`, branch `teachable-ui` — the fix pass `40c5820` → this commit
+- **Model server:** the dedicated e2e vLLM at http://localhost:8002 — container `flashnext-e2e`, Qwen3.8-Flash-Next, **GPUs 4+5 only**, patch hook on, mailbox `/mnt/newdata/qwen3.8/ple_patch_e2e`. The twelve live-model scenarios switch node-u onto it (`runtime.api=:8002`, `teach.stubOffline=false`, and BOTH `NGRAM_RUNTIME_PATCH_DIR` and `ENGRAM_PATCH_DIR` in the node's environment — the node re-exports the hook's variable from its own `runtime.patchDir`, so the first is what actually decides the mailbox) and put the node back on its offline stub afterwards. The shared servers on :8000 / :8001 and GPUs 0-3 were never touched by this run.
+- **Code:** worktree `/mnt/newdata/ainize/knowledge-marketplace-teachable`, branch `teachable-ui` at the merge commit `e168c59` — the same tree as `main` — rebuilt from source (core/node/cli/agent tsc + web tsc/vite); node-u was restarted on that build before the run
 - **Runner:** Playwright 1.62.1 · Node v24.20.0 · projects `web` (Chromium 1280×900), `mobile` (Pixel 5 @ 360×780, only tests tagged @mobile), `cli-api` · workers=1, retries=1
 - **Specs:** packages/e2e/tests/{web-ds-upload,web-ds-preview,web-ds-train,web-ds-result,ds-chat-cli-op}.spec.ts — scenarios: docs/ux-test-scenarios.json (AZ-123…AZ-222)
 - **Command:** `cd packages/e2e && AINIZE_URL=http://localhost:3422 AINIZE_PASS=teachable-pass npx playwright test tests/web-ds-*.spec.ts tests/ds-*.spec.ts --reporter=list,json` (all three projects in one run)
-- **Raw results:** packages/e2e/results/ds-full-run.log and ds-full-run.json (`results/` is gitignored)
+- **Raw results:** packages/e2e/results/merged-dataset.log and merged-dataset.json (`results/` is gitignored)
 - **Host:** Linux 5.15.0-130-generic x86_64 (glibc 2.35)
-- **Run:** one pass of all three projects, 106 tests (100 scenarios + the 5 @mobile repeats + one shared-setup test), 0 failed, 0 flaky, 31.6 min wall clock, finished 2026-09-01 12:47 UTC
+- **Run:** one pass of all three projects, 106 tests (100 scenarios + the 5 @mobile repeats + one shared-setup test), 0 failed, 0 flaky, 31.2 min wall clock, finished 2026-09-02 06:50 UTC
 
 ## Summary
 
@@ -33,106 +33,106 @@
 
 | Id | Title | Persona | Area | Status | Duration | Note |
 |---|---|---|---|---|---|---|
-| AZ-123 | /teach entry choice: two doors, one pipeline — the file card leads and the five-step strip is the same for both | Dataset uploader (visitor) | teach-ui | PASS | 2.4 s |  |
-| AZ-124 | /teach/upload first look: three ways in are all present at once, and the privacy sentence is above the fold before any file is chosen | Dataset uploader (visitor) | teach-ui | PASS | 2.4 s |  |
-| AZ-125 | jsonl through the file picker: chip → node report → preview, and a teaching key is created silently with a backup link | Dataset uploader (visitor) | teach-dataset | PASS | 6.9 s |  |
-| AZ-126 | Drag-and-drop onto the zone, and the same zone opened from the keyboard | Dataset uploader (visitor) | teach-ui | PASS | 5.3 s |  |
-| AZ-127 | Paste a table instead: two spreadsheet columns become a .tsv the NODE parses | Dataset uploader (visitor) | teach-dataset | PASS | 4.0 s |  |
-| AZ-128 | Format help and the three sample datasets: download one, or start from it in one click | Dataset uploader (visitor) | teach-dataset | PASS | 3.8 s |  |
-| AZ-129 | CSV with a header and values containing commas inside quotes | Dataset uploader (visitor) | teach-parser | PASS | 2.5 s |  |
-| AZ-130 | Header detection both ways: Korean column names are recognised, a headerless TSV keeps its first line as data | Dataset uploader (visitor) | teach-parser | PASS | 40.7 s |  |
-| AZ-131 | Plain text: the Q:/A: layout the format help promises | Dataset uploader (visitor) | teach-parser | PASS | 13.3 s |  |
-| AZ-132 | Alpaca and ChatML: the two shapes people already have on disk are read without an export step | Dataset uploader (visitor) | teach-parser | PASS | 6.0 s |  |
-| AZ-133 | Encodings: UTF-8 BOM + CRLF is silent, EUC-KR/cp949 and UTF-16 are read and SAID so | Dataset uploader (visitor) | teach-parser | PASS | 54.5 s |  |
-| AZ-134 | 'Wrong columns or separator?' re-reads the bytes the node already has — no re-upload, new revision, new fingerprint | Dataset uploader (visitor) | teach-dataset | PASS | 3.8 s |  |
-| AZ-135 | Size cap: a 5.1 MB file is refused in the browser before a byte is uploaded, and the node refuses it independently | Dataset uploader (visitor) | teach-limits | PASS | 2.5 s |  |
-| AZ-136 | Row caps: the 'Choose which 200' lesson banner, and the over-2000 dataset note that says nothing was hidden | Dataset uploader (visitor) | teach-limits | PASS | 20.7 s |  |
-| AZ-137 | Nothing usable in the file: 0 bytes, binary rubbish, a wrong file type, and a header with no data rows | Dataset uploader (visitor) | teach-dataset | PASS | 32.7 s |  |
-| AZ-138 | A file that is all duplicates: one question kept, every later copy shown with the line it repeats | Dataset uploader (visitor) | teach-parser | PASS | 8.4 s |  |
-| AZ-139 | A messy real-world file: contradictions, over-length, a missing answer, an unreadable line — all counted, none hidden | Dataset uploader (visitor) | teach-parser | PASS | 2.8 s |  |
-| AZ-140 | Privacy notice and retention: 'Delete my file as soon as training finishes' is offered before the upload and honoured in the record | Dataset uploader (visitor) | teach-privacy | PASS | 39.6 s |  |
-| AZ-141 | A visitor with no teaching key: nothing is owned, nothing is 401-ing in their face, and the key is created at the exact moment it is needed | Dataset uploader (visitor) | teach-auth | PASS | 7.7 s |  |
-| AZ-142 | 한국어 toggle: the file door, the format examples and the error copy all switch, and the pipeline does not | Dataset uploader (visitor) | i18n | PASS | 3.3 s |  |
-| AZ-143 | The whole file door on a 360 px phone: nothing scrolls sideways and the question table becomes cards | Dataset uploader (visitor) | teach-ui | PASS | 25.5 s |  |
-| AZ-144 | Preview table: ok vs tidied-up rows, the tidy-up receipt and the same verdicts in Korean | Dataset uploader (visitor) | teach-dataset | PASS | 1.6 s |  |
+| AZ-123 | /teach entry choice: two doors, one pipeline — the file card leads and the five-step strip is the same for both | Dataset uploader (visitor) | teach-ui | PASS | 2.3 s |  |
+| AZ-124 | /teach/upload first look: three ways in are all present at once, and the privacy sentence is above the fold before any file is chosen | Dataset uploader (visitor) | teach-ui | PASS | 2.2 s |  |
+| AZ-125 | jsonl through the file picker: chip → node report → preview, and a teaching key is created silently with a backup link | Dataset uploader (visitor) | teach-dataset | PASS | 7.5 s |  |
+| AZ-126 | Drag-and-drop onto the zone, and the same zone opened from the keyboard | Dataset uploader (visitor) | teach-ui | PASS | 5.5 s |  |
+| AZ-127 | Paste a table instead: two spreadsheet columns become a .tsv the NODE parses | Dataset uploader (visitor) | teach-dataset | PASS | 4.3 s |  |
+| AZ-128 | Format help and the three sample datasets: download one, or start from it in one click | Dataset uploader (visitor) | teach-dataset | PASS | 4.3 s |  |
+| AZ-129 | CSV with a header and values containing commas inside quotes | Dataset uploader (visitor) | teach-parser | PASS | 3.0 s |  |
+| AZ-130 | Header detection both ways: Korean column names are recognised, a headerless TSV keeps its first line as data | Dataset uploader (visitor) | teach-parser | PASS | 38.9 s |  |
+| AZ-131 | Plain text: the Q:/A: layout the format help promises | Dataset uploader (visitor) | teach-parser | PASS | 14.1 s |  |
+| AZ-132 | Alpaca and ChatML: the two shapes people already have on disk are read without an export step | Dataset uploader (visitor) | teach-parser | PASS | 6.9 s |  |
+| AZ-133 | Encodings: UTF-8 BOM + CRLF is silent, EUC-KR/cp949 and UTF-16 are read and SAID so | Dataset uploader (visitor) | teach-parser | PASS | 53.7 s |  |
+| AZ-134 | 'Wrong columns or separator?' re-reads the bytes the node already has — no re-upload, new revision, new fingerprint | Dataset uploader (visitor) | teach-dataset | PASS | 4.2 s |  |
+| AZ-135 | Size cap: a 5.1 MB file is refused in the browser before a byte is uploaded, and the node refuses it independently | Dataset uploader (visitor) | teach-limits | PASS | 2.9 s |  |
+| AZ-136 | Row caps: the 'Choose which 200' lesson banner, and the over-2000 dataset note that says nothing was hidden | Dataset uploader (visitor) | teach-limits | PASS | 21.4 s |  |
+| AZ-137 | Nothing usable in the file: 0 bytes, binary rubbish, a wrong file type, and a header with no data rows | Dataset uploader (visitor) | teach-dataset | PASS | 31.4 s |  |
+| AZ-138 | A file that is all duplicates: one question kept, every later copy shown with the line it repeats | Dataset uploader (visitor) | teach-parser | PASS | 8.9 s |  |
+| AZ-139 | A messy real-world file: contradictions, over-length, a missing answer, an unreadable line — all counted, none hidden | Dataset uploader (visitor) | teach-parser | PASS | 3.2 s |  |
+| AZ-140 | Privacy notice and retention: 'Delete my file as soon as training finishes' is offered before the upload and honoured in the record | Dataset uploader (visitor) | teach-privacy | PASS | 38.7 s |  |
+| AZ-141 | A visitor with no teaching key: nothing is owned, nothing is 401-ing in their face, and the key is created at the exact moment it is needed | Dataset uploader (visitor) | teach-auth | PASS | 7.9 s |  |
+| AZ-142 | 한국어 toggle: the file door, the format examples and the error copy all switch, and the pipeline does not | Dataset uploader (visitor) | i18n | PASS | 3.6 s |  |
+| AZ-143 | The whole file door on a 360 px phone: nothing scrolls sideways and the question table becomes cards | Dataset uploader (visitor) | teach-ui | PASS | 21.9 s |  |
+| AZ-144 | Preview table: ok vs tidied-up rows, the tidy-up receipt and the same verdicts in Korean | Dataset uploader (visitor) | teach-dataset | PASS | 1.5 s |  |
 | AZ-145 | Two answers for one question block both copies, and 'Keep this answer' resolves the contradiction | Dataset uploader (visitor) | teach-dataset | PASS | 1.5 s |  |
 | AZ-146 | Too long: the pill names the real length and the node's limit, and the edit sheet refuses the same text | Dataset uploader (visitor) | teach-dataset | PASS | 1.5 s |  |
-| AZ-147 | A half-filled line says which half is missing | Dataset uploader (visitor) | teach-dataset | PASS | 1.3 s |  |
-| AZ-148 | A topic the operator blocks is refused per row, and the regex itself is validated | Dataset uploader (visitor) | teach-dataset | PASS | 56.7 s |  |
-| AZ-149 | Lines the node could not read never enter the table — they are listed and counted underneath | Dataset uploader (visitor) | teach-dataset | PASS | 1.4 s |  |
-| AZ-150 | The Line column is the line of the uploaded file: header, blank lines and a quoted newline all counted the node's way | Dataset uploader (visitor) | teach-dataset | PASS | 1.2 s |  |
-| AZ-151 | After the first edit the report is rebuilt: rejected lines disappear and the numbers stop being file lines | Dataset uploader (visitor) | teach-dataset | PASS | 1.6 s |  |
+| AZ-147 | A half-filled line says which half is missing | Dataset uploader (visitor) | teach-dataset | PASS | 1.2 s |  |
+| AZ-148 | A topic the operator blocks is refused per row, and the regex itself is validated | Dataset uploader (visitor) | teach-dataset | PASS | 57.0 s |  |
+| AZ-149 | Lines the node could not read never enter the table — they are listed and counted underneath | Dataset uploader (visitor) | teach-dataset | PASS | 1.3 s |  |
+| AZ-150 | The Line column is the line of the uploaded file: header, blank lines and a quoted newline all counted the node's way | Dataset uploader (visitor) | teach-dataset | PASS | 1.3 s |  |
+| AZ-151 | After the first edit the report is rebuilt: rejected lines disappear and the numbers stop being file lines | Dataset uploader (visitor) | teach-dataset | PASS | 1.5 s |  |
 | AZ-152 | Changing a question throws away every model verdict on the screen | Dataset uploader (visitor) | teach-dataset | PASS | 46.6 s |  |
 | AZ-153 | Editing a refused row adds the corrected question instead of pretending to repair the file | Dataset uploader (visitor) | teach-dataset | PASS | 10.4 s |  |
-| AZ-154 | Remove a question, undo it, and see exactly what changed each time | Dataset uploader (visitor) | teach-dataset | PASS | 10.5 s |  |
-| AZ-155 | The last question cannot be removed, and the refusal must be about the removal | Dataset uploader (visitor) | teach-dataset | PASS | 1.7 s |  |
-| AZ-156 | Questions that end the same way get an advisory that never blocks and disappears when it stops being true | Dataset uploader (visitor) | teach-dataset | PASS | 2.3 s |  |
+| AZ-154 | Remove a question, undo it, and see exactly what changed each time | Dataset uploader (visitor) | teach-dataset | PASS | 10.6 s |  |
+| AZ-155 | The last question cannot be removed, and the refusal must be about the removal | Dataset uploader (visitor) | teach-dataset | PASS | 1.5 s |  |
+| AZ-156 | Questions that end the same way get an advisory that never blocks and disappears when it stops being true | Dataset uploader (visitor) | teach-dataset | PASS | 2.4 s |  |
 | AZ-157 | The counts pill after a sampled check never claims more than was measured | Dataset uploader (visitor) | teach-dataset | PASS | 46.0 s |  |
 | AZ-158 | The free checks run out halfway: what was measured is kept and the visitor is told the rest still trains | Dataset uploader (visitor) | teach-dataset | PASS | 36.4 s |  |
-| AZ-159 | Pre-flight against the live model: the verdict quotes the model's own answer, and an unreachable model says so | Dataset uploader (visitor) | teach-dataset | PASS | 14.8 s |  |
-| AZ-160 | 'Already known' from the preview to the settings promise to the result | Dataset uploader (visitor) | teach-dataset | PASS | 36.8 s |  |
+| AZ-159 | Pre-flight against the live model: the verdict quotes the model's own answer, and an unreachable model says so | Dataset uploader (visitor) | teach-dataset | PASS | 14.9 s |  |
+| AZ-160 | 'Already known' from the preview to the settings promise to the result | Dataset uploader (visitor) | teach-dataset | PASS | 36.7 s |  |
 | AZ-161 | Taking it home: the dataset download is the fingerprinted file, and the per-line report is read through the API/CLI | Dataset uploader (visitor) | teach-dataset | PASS | 13.3 s |  |
-| AZ-162 | Three effort cards, no numbers: pick how hard it should try | Dataset uploader (visitor) | teach | PASS | 11.0 s |  |
+| AZ-162 | Three effort cards, no numbers: pick how hard it should try | Dataset uploader (visitor) | teach | PASS | 11.2 s |  |
 | AZ-163 | No raw "epoch" anywhere; the trainer numbers live only in "For developers" | Dataset uploader (visitor) | teach | PASS | 1.5 s |  |
-| AZ-164 | The side-effect check is locked on wherever publishing is possible | Dataset uploader (visitor) | teach | PASS | 4.9 s |  |
-| AZ-165 | Where publishing is off the visitor may switch the check off — and the result says so and offers to run it | Dataset uploader (visitor) | teach | PASS | 1.0 min |  |
+| AZ-164 | The side-effect check is locked on wherever publishing is possible | Dataset uploader (visitor) | teach | PASS | 6.0 s |  |
+| AZ-165 | Where publishing is off the visitor may switch the check off — and the result says so and offers to run it | Dataset uploader (visitor) | teach | PASS | 51.1 s |  |
 | AZ-166 | "Test with a different wording" counts the rows that have one, and off means off | Dataset uploader (visitor) | teach | PASS | 15.1 s |  |
-| AZ-167 | Lesson name, dataset fingerprint and the per-lesson question cap on the settings screen | Dataset uploader (visitor) | teach | PASS | 5.9 s |  |
-| AZ-168 | Press Train: one POST, 202, and the progress screen owns the lesson | Dataset uploader (visitor) | teach | PASS | 15.7 s |  |
-| AZ-169 | Train refused (daily limit): a plain sentence, and nothing on the screen is lost | Dataset uploader (visitor) | teach | PASS | 22.1 s |  |
-| AZ-170 | The progress screen names the stage it is in — and a demo node says "Starting…" | Dataset uploader (visitor) | teach | PASS | 32.2 s |  |
+| AZ-167 | Lesson name, dataset fingerprint and the per-lesson question cap on the settings screen | Dataset uploader (visitor) | teach | PASS | 6.1 s |  |
+| AZ-168 | Press Train: one POST, 202, and the progress screen owns the lesson | Dataset uploader (visitor) | teach | PASS | 20.1 s |  |
+| AZ-169 | Train refused (daily limit): a plain sentence, and nothing on the screen is lost | Dataset uploader (visitor) | teach | PASS | 17.3 s |  |
+| AZ-170 | The progress screen names the stage it is in — and a demo node says "Starting…" | Dataset uploader (visitor) | teach | PASS | 34.1 s |  |
 | AZ-171 | A real step bar and real counters — no invented percentage | Dataset uploader (visitor) | teach | PASS | 4.1 s |  |
-| AZ-172 | Elapsed always, minutes only after three measured gradient lessons | Dataset uploader (visitor) | teach | PASS | 17.1 s |  |
-| AZ-173 | "This lesson's log" — the trainer's own lines, with nothing private in them | Dataset uploader (visitor) | teach | PASS | 27.7 s |  |
-| AZ-174 | Cancel training: confirm, stop, and the dataset survives | Dataset uploader (visitor) | teach | PASS | 15.9 s |  |
-| AZ-175 | Close the tab while it trains — the lesson keeps its place and is findable again | Dataset uploader (visitor) | teach | PASS | 29.9 s |  |
+| AZ-172 | Elapsed always, minutes only after three measured gradient lessons | Dataset uploader (visitor) | teach | PASS | 20.9 s |  |
+| AZ-173 | "This lesson's log" — the trainer's own lines, with nothing private in them | Dataset uploader (visitor) | teach | PASS | 27.8 s |  |
+| AZ-174 | Cancel training: confirm, stop, and the dataset survives | Dataset uploader (visitor) | teach | PASS | 16.1 s |  |
+| AZ-175 | Close the tab while it trains — the lesson keeps its place and is findable again | Dataset uploader (visitor) | teach | PASS | 29.7 s |  |
 | AZ-176 | FAILED, honestly: "there was nothing to teach" | Dataset uploader (visitor) | teach | PASS | 5.2 s |  |
-| AZ-177 | NEEDS_MORE: "Your lesson needs a bit more", with the misses listed | Dataset uploader (visitor) | teach | PASS | 44.3 s |  |
+| AZ-177 | NEEDS_MORE: the misses are listed and publishing stays shut | Dataset uploader (visitor) | teach | PASS | 44.6 s |  |
 | AZ-178 | Fix a wrong answer and train again — new revision, new lesson, old one untouched | Dataset uploader (visitor) | teach | PASS | 25.0 s |  |
-| AZ-179 | Continue from a dataset: "Train again" and "Add questions" from My datasets | Dataset uploader (visitor) | teach | PASS | 12.2 s |  |
-| AZ-180 | "Train it again" from the result screen bumps the effort one step | Dataset uploader (visitor) | teach | PASS | 13.6 s |  |
-| AZ-181 | The queue: waiting behind another lesson, and being turned away when the trainer has no room | Dataset uploader (visitor) | teach | PASS | 35.8 s |  |
-| AZ-182 | Result screen (step 5): "Your lesson is ready" + the per-question "What it learned" table (Question / Before / After / Other wording) | Dataset uploader (visitor) | teach | PASS | 5.1 s |  |
-| AZ-183 | Result screen: "What it did not learn" — the partial result names every missed question and offers the honest next step | Dataset uploader (visitor) | teach | PASS | 37.8 s |  |
+| AZ-179 | Continue from a dataset: "Train again" and "Add questions" from My datasets | Dataset uploader (visitor) | teach | PASS | 12.7 s |  |
+| AZ-180 | "Train it again" from the result screen bumps the effort one step | Dataset uploader (visitor) | teach | PASS | 13.3 s |  |
+| AZ-181 | The queue: waiting behind another lesson, and being turned away when the trainer has no room | Dataset uploader (visitor) | teach | PASS | 35.5 s |  |
+| AZ-182 | Result screen (step 5): a demo run says it trained nothing, with the per-question "What it learned" table (Question / Before / After / Other wording) | Dataset uploader (visitor) | teach | PASS | 4.8 s |  |
+| AZ-183 | Result screen: "What it did not learn" — the partial result names every missed question and offers the honest next step | Dataset uploader (visitor) | teach | PASS | 35.9 s |  |
 | AZ-184 | Sampled live-model check never makes a whole-dataset claim: "Checked k of n questions in the live model — h correct" | Dataset uploader (visitor) | teach | PASS | 2.5 min |  |
-| AZ-185 | A big result must say how much of itself it is showing: the learned/missed tables cap at 50 rows | Dataset uploader (visitor) | teach | PASS | 11.4 s |  |
-| AZ-186 | Side effects panel: unrelated answers unchanged, the unstable-prompt caveat, and "Run the check now" when it was switched off | Dataset uploader (visitor) | teach | PASS | 5.2 s |  |
+| AZ-185 | A big result must say how much of itself it is showing: the learned/missed tables cap at 50 rows | Dataset uploader (visitor) | teach | PASS | 11.2 s |  |
+| AZ-186 | Side effects panel: unrelated answers unchanged, the unstable-prompt caveat, and "Run the check now" when it was switched off | Dataset uploader (visitor) | teach | PASS | 5.3 s |  |
 | AZ-187 | A lesson that changes unrelated answers is un-publishable but still keepable and downloadable | Dataset uploader (visitor) | teach | PASS | 5.3 s |  |
-| AZ-188 | Result screen accounts for the questions that never trained: already-known and already-on-sale | Dataset uploader (visitor) | teach | PASS | 1.1 min |  |
-| AZ-189 | Demo-node honesty: the result screen distinguishes "checks were simulated" from "training was fake" | Dataset uploader (visitor) | teach | PASS | 54.3 s |  |
-| AZ-190 | "Try it here": the live A/B on the private draft — with your lesson vs without it, side by side | Dataset uploader (visitor) | teach | PASS | 47.8 s |  |
-| AZ-191 | "Try it here" fails loudly, not silently: quota, model outage and a draft that is not yours | Dataset uploader (visitor) | teach | PASS | 1.1 min |  |
-| AZ-192 | Keep it private → Make download links: the .npz, recipe.json, RUN-LOCALLY.md, the sha256 and the 7-day expiry | Dataset uploader (visitor) | teach | PASS | 5.3 s |  |
-| AZ-193 | "Run it on my own machine": the hardware truth first, then the node's own RUN-LOCALLY.md | Dataset uploader (visitor) | teach | PASS | 14.4 s |  |
-| AZ-194 | Keeping a lesson private end to end: keep it on this node for 7 days, then delete it | Dataset uploader (visitor) | teach | PASS | 9.5 s |  |
-| AZ-195 | Publish: name, price, licence, payout and the two consents → signed claim → ANNOUNCED with links to the page and the earnings | Dataset uploader (visitor) | teach | PASS | 6.1 s |  |
-| AZ-196 | Rights declaration: publishing 100 questions or more needs the third, dataset-specific consent | Dataset uploader (visitor) | teach | PASS | 22.7 s |  |
-| AZ-197 | Credit: the display name shown in "Shown as" must be the name the public record carries (file door) | Dataset uploader (visitor) | teach | PASS | 9.9 s |  |
+| AZ-188 | Result screen accounts for the questions that never trained: already-known and already-on-sale | Dataset uploader (visitor) | teach | PASS | 62.9 s |  |
+| AZ-189 | Demo-node honesty: the headline says nothing was trained, and "checks were simulated" stays a different admission from "training was fake" | Dataset uploader (visitor) | teach | PASS | 50.4 s |  |
+| AZ-190 | "Try it here": the live A/B on the private draft — with your lesson vs without it, side by side | Dataset uploader (visitor) | teach | PASS | 43.6 s |  |
+| AZ-191 | "Try it here" fails loudly, not silently: quota, model outage and a draft that is not yours | Dataset uploader (visitor) | teach | PASS | 58.7 s |  |
+| AZ-192 | Keep it private → Make download links: the .npz, recipe.json, RUN-LOCALLY.md, the sha256 and the 7-day expiry | Dataset uploader (visitor) | teach | PASS | 5.6 s |  |
+| AZ-193 | "Run it on my own machine": the hardware truth first, then the node's own RUN-LOCALLY.md | Dataset uploader (visitor) | teach | PASS | 14.7 s |  |
+| AZ-194 | Keeping a lesson private end to end: keep it on this node for 7 days, then delete it | Dataset uploader (visitor) | teach | PASS | 9.6 s |  |
+| AZ-195 | Publish: name, price, licence, payout and the two consents → signed claim → ANNOUNCED with links to the page and the earnings | Dataset uploader (visitor) | teach | PASS | 6.0 s |  |
+| AZ-196 | Rights declaration: publishing 100 questions or more needs the third, dataset-specific consent | Dataset uploader (visitor) | teach | PASS | 22.6 s |  |
+| AZ-197 | Credit: the display name shown in "Shown as" must be the name the public record carries (file door) | Dataset uploader (visitor) | teach | PASS | 6.9 s |  |
 | AZ-198 | The data-provider share: pay my key, pay my wallet, or credit me with no payment (share 0) | Dataset uploader (visitor) | teach | PASS | 18.0 s |  |
-| AZ-199 | The published knowledge page: Taught-lesson chip, the data provider and their share, and the dataset provenance | Dataset uploader (visitor) | detail | PASS | 2.7 s |  |
+| AZ-199 | The published knowledge page: Taught-lesson chip, the data provider and their share, and the dataset provenance | Dataset uploader (visitor) | detail | PASS | 3.1 s |  |
 | AZ-200 | "My datasets and lessons": dataset-first cards with fingerprint, source, retention and the four actions | Dataset uploader (visitor) | teach | PASS | 11.7 s |  |
-| AZ-201 | Fork a dataset, and honour "delete my file as soon as training finishes" | Dataset uploader (visitor) | teach | PASS | 5.8 s |  |
-| AZ-202 | The chat basket IS a dataset: "Your dataset · 2 questions", the file door's preview table, and a canonical .jsonl download | Chat teacher (visitor) | teach | PASS | 19.3 s |  |
+| AZ-201 | Fork a dataset, and honour "delete my file as soon as training finishes" | Dataset uploader (visitor) | teach | PASS | 5.9 s |  |
+| AZ-202 | The chat basket IS a dataset: "Your dataset · 2 questions", the file door's preview table, and a canonical .jsonl download | Chat teacher (visitor) | teach | PASS | 6.4 s |  |
 | AZ-203 | Freeze receipt: pressing Teach turns the basket into a file — named .jsonl, fingerprint on the dataset page, sha256 equal to the downloaded bytes | Chat teacher (visitor) | teach | PASS | 11.8 s |  |
 | AZ-204 | The chat body and an uploaded file produce byte-identical artifacts: POST /api/teach/jobs {facts} freezes one canonical dataset, and re-sending it makes no second copy | Node operator / developer | api | PASS | 8.5 s |  |
 | AZ-205 | The frozen chat dataset appears in My datasets and can be re-trained from there (en + 한국어) | Chat teacher (visitor) | teach | PASS | 11.0 s |  |
-| AZ-206 | The chat basket stops at 8 corrections — a number the browser holds, not the node | Chat teacher (visitor) | teach-limits | PASS | 33.7 s |  |
-| AZ-207 | The lesson carries its dataset: a signed download of exactly what it trained on, and an honest screen once the owner deletes it | Dataset uploader (visitor) | teach | PASS | 7.4 s |  |
-| AZ-208 | CLI file door: `ainize teach dataset <file>` validates, uploads and prints every line that will not train — and a second upload makes no second copy | Node operator / developer | cli | PASS | 2.6 s |  |
-| AZ-209 | CLI failure contract: a refused upload still prints the per-line report, and the exit codes are 0 / 1 / 2 | Node operator / developer | cli | PASS | 1.4 min |  |
+| AZ-206 | The chat basket stops at 8 corrections — a number the browser holds, not the node | Chat teacher (visitor) | teach-limits | PASS | 34.3 s |  |
+| AZ-207 | The lesson carries its dataset: a signed download of exactly what it trained on, and an honest screen once the owner deletes it | Dataset uploader (visitor) | teach | PASS | 7.9 s |  |
+| AZ-208 | CLI file door: `ainize teach dataset <file>` validates, uploads and prints every line that will not train — and a second upload makes no second copy | Node operator / developer | cli | PASS | 2.7 s |  |
+| AZ-209 | CLI failure contract: a refused upload still prints the per-line report, and the exit codes are 0 / 1 / 2 | Node operator / developer | cli | PASS | 86.8 s |  |
 | AZ-210 | `ainize teach train ./file --effort quick --wait` goes from a file on disk to a finished lesson in one line, and refuses more rows than the node teaches | Node operator / developer | cli | PASS | 8.3 s |  |
 | AZ-211 | `teach dataset get <id> -o questions.jsonl` round-trips: the saved bytes verify against the fingerprint and re-uploading them lands on the same dataset | Node operator / developer | cli | PASS | 5.4 s |  |
-| AZ-212 | `teach jobs` / `teach status` from the terminal: my lessons with their dataset, the node's teaching policy, and a foreign key sees status only | Node operator / developer | cli | PASS | 9.4 s |  |
-| AZ-213 | OpenAPI documents every dataset route the node actually serves — path, method, auth and error codes | Node operator / developer | api | PASS | 74 ms |  |
-| AZ-214 | Quotas are counted in QUESTIONS, not lessons: rows_per_key_per_day and rows_per_ip_per_day refuse the lesson with the numbers in the message | Node operator / developer | api | PASS | 6.1 s |  |
+| AZ-212 | `teach jobs` / `teach status` from the terminal: my lessons with their dataset, the node's teaching policy, and a foreign key sees status only | Node operator / developer | cli | PASS | 12.7 s |  |
+| AZ-213 | OpenAPI documents every dataset route the node actually serves — path, method, auth and error codes | Node operator / developer | api | PASS | 96 ms |  |
+| AZ-214 | Quotas are counted in QUESTIONS, not lessons: rows_per_key_per_day and rows_per_ip_per_day refuse the lesson with the numbers in the message | Node operator / developer | api | PASS | 6.2 s |  |
 | AZ-215 | Owner-only reads: a stranger's key, an unsigned request and a replayed signature all get 404 — and the operator can read but cannot edit someone's dataset | Node operator / developer | api | PASS | 4.5 s |  |
-| AZ-216 | The rows report is the contract behind the preview table: /rows paging, status filter and summary must agree with the dataset and with the download | Node operator / developer | api | PASS | 187 ms |  |
-| AZ-217 | Operator dataset moderation: GET /api/me/teach/datasets shows who uploaded what, from which IP — and opening it is audited | Teach mode (operator) | api | PASS | 5.0 s |  |
-| AZ-218 | Blocking a teaching key from the Teaching tab actually refuses that key's next upload and lesson | Teach mode (operator) | dashboard | PASS | 37.5 s |  |
-| AZ-219 | Publish review: "Review each one" holds a taught lesson at PENDING_REVIEW, and Approve / Decline reaches the teacher | Teach mode (operator) | dashboard | PASS | 29.8 s |  |
-| AZ-220 | Payouts to the data provider: the published anchor names the teacher with the node's share, and the operator's Payouts panel is honest about a node with no chain wallet | Teach mode (operator) | dashboard | PASS | 11.1 s |  |
-| AZ-221 | Teach settings on the Teaching tab: every visible knob saves, a pause reason reaches the visitor immediately, and a bad blocked-topics regex is refused | Teach mode (operator) | dashboard | PASS | 29.9 s |  |
-| AZ-222 | The dataset-era limits are operator-settable only through the API, and the visitor UI obeys them: file size, dataset cap, per-lesson cap and the publish declaration | Teach mode (operator) | teach | PASS | 9.0 s |  |
+| AZ-216 | The rows report is the contract behind the preview table: /rows paging, status filter and summary must agree with the dataset and with the download | Node operator / developer | api | PASS | 193 ms |  |
+| AZ-217 | Operator dataset moderation: GET /api/me/teach/datasets shows who uploaded what, from which IP — and opening it is audited | Teach mode (operator) | api | PASS | 5.2 s |  |
+| AZ-218 | Blocking a teaching key from the Teaching tab actually refuses that key's next upload and lesson | Teach mode (operator) | dashboard | PASS | 39.5 s |  |
+| AZ-219 | Publish review: "Review each one" holds a taught lesson at PENDING_REVIEW, and Approve / Decline reaches the teacher | Teach mode (operator) | dashboard | PASS | 33.6 s |  |
+| AZ-220 | Payouts to the data provider: the published anchor names the teacher with the node's share, and the operator's Payouts panel is honest about a node with no chain wallet | Teach mode (operator) | dashboard | PASS | 11.4 s |  |
+| AZ-221 | Teach settings on the Teaching tab: every visible knob saves, a pause reason reaches the visitor immediately, and a bad blocked-topics regex is refused | Teach mode (operator) | dashboard | PASS | 34.7 s |  |
+| AZ-222 | The dataset-era limits are operator-settable only through the API, and the visitor UI obeys them: file size, dataset cap, per-lesson cap and the publish declaration | Teach mode (operator) | teach | PASS | 7.8 s |  |
 
 ## Product fixes made during this pass
 
@@ -214,6 +214,7 @@ The suite is honest about the file door and the chat door as products. It is not
 
 ## Notes from the run
 
+- **The dataset live-model legs were writing to the WRONG patch mailbox after the merge, and AZ-190 caught it. main added a `runtime.patchDir` config key and the node re-exports `ENGRAM_PATCH_DIR` to the patch hook from that value; these helpers predate the key and set only the hook's variable, so a node they started fell back to `<runtime.repo>/ple_patch` — the SHARED production mailbox — and the patch never reached the :8002 test server, which is why the live A/B measured no change. helpers/{ds-result-node,ds-train-node,ds-preview-node,ds-chat-cli-op-api}.ts now pass `NGRAM_RUNTIME_PATCH_DIR` beside `ENGRAM_PATCH_DIR`, and node-u's own config carries `runtime.patchDir=/mnt/newdata/qwen3.8/ple_patch_e2e`. AZ-190 went red -> green on that change alone.**
 - The operator lesson-list defect (AZ-218 / AZ-219) only appears on a node that has run more than 500 lessons — the dev node had 607. A fresh node passes both scenarios with the bug present.
 - AZ-190 is the one scenario whose truth depends on the base model: the un-tagged 픽셀플러스 question is answered 087600 by Qwen3.8-Flash-Next on its own, so the A/B must be asked with one of the taught questions.
 - node-u is shared. Datasets from another session (named messy / good40 / big2500 / train12 / binary) appeared on it during this pass; every suite re-establishes its own preconditions rather than trusting the node it finds, and the runs above were unaffected.

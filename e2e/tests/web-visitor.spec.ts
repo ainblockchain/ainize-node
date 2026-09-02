@@ -954,7 +954,7 @@ test('AZ-023 Use the Docs page: copy one-liners, browse the CLI table and the AP
   await expect(page.getByText("Like the 2019 ainize-cli turned repos into AI services, today's ainize puts knowledge into models. Every command supports --help and --json.")).toBeVisible();
   await expect(page.locator('table').first().locator('th')).toHaveText(['Command', 'What it does']);
   const groups = docs.cli.groups.map((g) => g.name);
-  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (lessons taught by visitors)', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
+  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (turn your own questions and answers into knowledge)', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
   for (const g of groups) await expect(page.getByRole('heading', { name: g, exact: true }).last()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Benchmark file (bench.json) example' })).toBeVisible();
 
@@ -1041,7 +1041,7 @@ test.describe('Live test (shared runtime)', () => {
     // selection marker on the active item: the multi-select list shows the load ORDER where the old single-pick list said "Selected"
     await expect(itemFor(K.pixel)).toContainText('Loads 1.');
     await expect(itemFor(K.final)).not.toContainText('Loads ');
-    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ });   // the picker's and lesson basket's own headings sit in <main> too
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson|^Your dataset/ });   // the picker's and the dataset basket's own headings sit in <main> too
     await expect(head).toHaveText(PIXEL_NAME);
     await expect(head.locator('..')).toContainText('Newer version available');
     await expect(head.locator('..')).toContainText('8 facts');
@@ -1359,7 +1359,7 @@ test.describe('Live test (shared runtime)', () => {
     const item = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' }).locator('li > label').filter({ has: page.getByRole('checkbox', { checked: true }) });
     await expect(item).toHaveCount(1);
     for (const s of [PIXEL_NAME, `node-a/${K.pixel}`, '8 facts', '100% accuracy', '0.1 AIN', AIN_NOTE, 'Newer version available', 'Loads 1.']) await expect(item).toContainText(s);
-    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ }).locator('..');
+    const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson|^Your dataset/ }).locator('..');
     await expect(head).toContainText(PIXEL_NAME);
     await expect(head).toContainText('Newer version available');
     await expect(head).toContainText('8 facts');
@@ -1502,7 +1502,7 @@ test.describe('Live test (shared runtime)', () => {
     // one more request from the same IP: HTTP 429 with the exact server message
     const r = await api<{ error: string; quota_reset: number }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
     expect(r.status).toBe(429);
-    expect(r.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
+    expect(r.body.error).toBe('quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node');
     // the body carries the measured end of this visitor's hour, so the page can print a time instead of "in an hour"
     expect(r.body.quota_reset).toBeGreaterThan(Date.now());
     expect(r.body.quota_reset).toBeLessThanOrEqual(Date.now() + 3600_000);

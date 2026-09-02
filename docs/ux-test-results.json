@@ -1,646 +1,646 @@
 {
- "date": "2026-09-01",
+ "date": "2026-09-02",
  "summary": {
-  "passed": 104,
-  "failed": 0,
+  "passed": 89,
+  "failed": 15,
   "blocked": 0,
   "total": 104,
-  "text": "104 passed / 0 failed / 0 blocked of 104"
+  "text": "89 passed / 15 failed / 0 blocked of 104"
  },
  "environment": {
-  "Date": "2026-09-01 (adversarial re-verification of the 17 findings fixed in waves 0 and 1 — items 1, 2, 6, 7, 12, 20, 22, 24, 26, 27, 28, 29, 55, 56, 84, 85, 97 of docs/ux-critique.json; each original problem statement was reproduced on the running product before the suite was re-measured)",
-  "Build": "`fe0dba7` — unchanged product code. This pass verified the wave-0 and wave-1 fixes rather than adding to them, so nothing was rebuilt; the cluster restarted twice (never `--fresh`) only to route the node→model calls through a logging proxy for the finding-1 wire capture, and was put back on http://localhost:8002 before the run",
-  "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster",
+  "Date": "2026-09-02 (both suites re-measured on the MERGED tree: the marketplace + guard scenarios against the demo cluster and the dataset scenarios against node-u, after `git merge` brought main and teachable-ui together at `e168c59`. This pass verified the merge rather than adding product changes.)",
+  "Build": "`e168c59` — the merge of main into teachable-ui (both teach doors + the runtime guard), rebuilt from source: `npm run build -w packages/core -w packages/node -w packages/cli -w packages/agent`, then `tsc --noEmit` + `vite build` for packages/web. Unit suites on the same tree: core 21/21 · node 126/126 (all but ain.test.ts) · cli 21/21 · web teacherKey 6/6 · packages/e2e `tsc -p tsconfig.check.json` clean.",
+  "Cluster": "live demo cluster — node-a http://localhost:3402 (web + API + seller, teach ON, publish auto, trainer backend `stub`), node-b :3403 (verifier), node-c :3404 (verifier + serving); homes ~/.ngram-cluster. **The public catalog was no longer the documented four during this pass**: a concurrent session on the same machine published `adv-unfunded` (author 0x207D8574…, author_name `adv-chain`) to the SHARED local AIN chain from a throwaway cluster (~/.ngram-pa2, :3620) and then deleted that home, so node-a now derives 5 public / 2 LISTED from the chain. See the notes below.",
   "Chain": "local AIN dev chain :8081 (ledger=ain, app /apps/knowledge)",
   "Model": "shared vLLM :8002 (Qwen3.8-Flash-Next, engram patch hook, mailbox /mnt/newdata/qwen3.8/ple_patch_e2e on GPUs 4,5) — the demo cluster's own serving instance; it hangs about hourly and returns in ~5 min",
   "Runner": "Playwright 1.62.1 · Node v24.20.0 · projects web (Chromium 1280×900), mobile (Pixel 5, @mobile only), cli-api · workers=1, retries=1",
-  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-223/132/133/134) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
-  "Raw results": "packages/e2e/results/results.json and results/wave-run.log — 115 passed / 11 skipped / 0 failed / 0 flaky in 26.9 min, one uninterrupted run of every project (web, mobile, cli-api). A first full run of the same build (results/wave-run-pass1.log, 27.0 min) was 113 passed / 11 skipped / 0 failed with 2 flakes green on retry (AZ-091, AZ-052 — both timing, neither reproduced). Verification probes and screenshots for this pass: packages/e2e/verify-*.mjs, packages/e2e/model-tap.mjs, packages/e2e/results/verify/",
+  "Specs": "packages/e2e/tests/{web-visitor,web-creator,cli-operator,agent-x402,web-crosscut}.spec.ts (the 100 scenarios; web-visitor.spec.ts also carries AZ-223/224/225/226) + {web-chat-multi,web-teach,web-teach-operator}.spec.ts (teach mode) — scenarios: docs/ux-test-scenarios.json",
+  "Raw results": "packages/e2e/results/merged-market.log and merged-market.json (`results/` is gitignored) — 97 passed / 15 failed / 2 flaky / 11 skipped in one 29.7-min run of every project (web, mobile, cli-api). Dataset suite: packages/e2e/results/merged-dataset.log and merged-dataset.json against node-u :3422.",
   "Host": "Linux-5.15.0-130-generic-x86_64-with-glibc2.35"
  },
  "items": [
   {
    "id": "AZ-001",
-   "status": "passed",
-   "duration_ms": 1923,
+   "status": "failed",
+   "duration_ms": 4644,
    "note": ""
   },
   {
    "id": "AZ-002",
-   "status": "passed",
-   "duration_ms": 1305,
+   "status": "failed",
+   "duration_ms": 3613,
    "note": ""
   },
   {
    "id": "AZ-003",
-   "status": "passed",
-   "duration_ms": 3897,
+   "status": "failed",
+   "duration_ms": 3304,
    "note": ""
   },
   {
    "id": "AZ-004",
    "status": "passed",
-   "duration_ms": 7675,
+   "duration_ms": 1939,
    "note": ""
   },
   {
    "id": "AZ-005",
    "status": "passed",
-   "duration_ms": 7509,
+   "duration_ms": 1903,
    "note": ""
   },
   {
    "id": "AZ-006",
    "status": "passed",
-   "duration_ms": 7042,
+   "duration_ms": 1849,
    "note": ""
   },
   {
    "id": "AZ-007",
-   "status": "passed",
-   "duration_ms": 3334,
+   "status": "failed",
+   "duration_ms": 4196,
    "note": ""
   },
   {
    "id": "AZ-008",
    "status": "passed",
-   "duration_ms": 13324,
+   "duration_ms": 12345,
    "note": ""
   },
   {
    "id": "AZ-009",
    "status": "passed",
-   "duration_ms": 32726,
+   "duration_ms": 33260,
    "note": ""
   },
   {
    "id": "AZ-010",
-   "status": "passed",
-   "duration_ms": 5451,
+   "status": "failed",
+   "duration_ms": 53447,
    "note": ""
   },
   {
    "id": "AZ-011",
    "status": "passed",
-   "duration_ms": 10152,
+   "duration_ms": 19715,
    "note": ""
   },
   {
    "id": "AZ-012",
    "status": "passed",
-   "duration_ms": 3612,
+   "duration_ms": 3851,
    "note": ""
   },
   {
    "id": "AZ-013",
-   "status": "passed",
-   "duration_ms": 9733,
+   "status": "failed",
+   "duration_ms": 42812,
    "note": ""
   },
   {
    "id": "AZ-014",
-   "status": "passed",
-   "duration_ms": 2443,
+   "status": "failed",
+   "duration_ms": 2138,
    "note": ""
   },
   {
    "id": "AZ-015",
    "status": "passed",
-   "duration_ms": 7288,
+   "duration_ms": 1974,
    "note": ""
   },
   {
    "id": "AZ-016",
    "status": "passed",
-   "duration_ms": 9895,
+   "duration_ms": 2163,
    "note": ""
   },
   {
    "id": "AZ-017",
    "status": "passed",
-   "duration_ms": 2455,
+   "duration_ms": 2929,
    "note": ""
   },
   {
    "id": "AZ-018",
    "status": "passed",
-   "duration_ms": 14488,
+   "duration_ms": 14976,
    "note": ""
   },
   {
    "id": "AZ-019",
    "status": "passed",
-   "duration_ms": 22118,
+   "duration_ms": 22661,
    "note": ""
   },
   {
    "id": "AZ-020",
    "status": "passed",
-   "duration_ms": 22528,
+   "duration_ms": 27389,
    "note": "turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding)"
   },
   {
    "id": "AZ-021",
-   "status": "passed",
-   "duration_ms": 52580,
+   "status": "failed",
+   "duration_ms": 42767,
    "note": ""
   },
   {
    "id": "AZ-022",
    "status": "passed",
-   "duration_ms": 6873,
+   "duration_ms": 4292,
    "note": ""
   },
   {
    "id": "AZ-023",
    "status": "passed",
-   "duration_ms": 5184,
+   "duration_ms": 3103,
    "note": ""
   },
   {
    "id": "AZ-024",
    "status": "passed",
-   "duration_ms": 24463,
+   "duration_ms": 24011,
    "note": ""
   },
   {
    "id": "AZ-025",
    "status": "passed",
-   "duration_ms": 16892,
+   "duration_ms": 11423,
    "note": ""
   },
   {
    "id": "AZ-026",
    "status": "passed",
-   "duration_ms": 9689,
+   "duration_ms": 6619,
    "note": ""
   },
   {
    "id": "AZ-027",
    "status": "passed",
-   "duration_ms": 5070,
+   "duration_ms": 5128,
    "note": ""
   },
   {
    "id": "AZ-028",
    "status": "passed",
-   "duration_ms": 7029,
+   "duration_ms": 7129,
    "note": ""
   },
   {
    "id": "AZ-029",
    "status": "passed",
-   "duration_ms": 6297,
+   "duration_ms": 4307,
    "note": ""
   },
   {
    "id": "AZ-030",
    "status": "passed",
-   "duration_ms": 9665,
-   "note": "pixelplus-test-1 was already published by an earlier run — using pixelplus-test-27"
+   "duration_ms": 8416,
+   "note": "pixelplus-test-1 was already published by an earlier run — using pixelplus-test-30"
   },
   {
    "id": "AZ-031",
    "status": "passed",
-   "duration_ms": 21111,
-   "note": "draft pixelplus-test-27 re-created with visibility:test (identical fields) before publishing · both attestations landed within 3520 ms — the intermediate Verifying state was not observable in the 5 s UI poll"
+   "duration_ms": 15328,
+   "note": "draft pixelplus-test-30 re-created with visibility:test (identical fields) before publishing · both attestations landed within 2306 ms — the intermediate Verifying state was not observable in the 5 s UI poll"
   },
   {
    "id": "AZ-032",
    "status": "passed",
-   "duration_ms": 23546,
+   "duration_ms": 11340,
    "note": ""
   },
   {
    "id": "AZ-033",
    "status": "passed",
-   "duration_ms": 3220,
+   "duration_ms": 3537,
    "note": ""
   },
   {
    "id": "AZ-034",
    "status": "passed",
-   "duration_ms": 8876,
+   "duration_ms": 8782,
    "note": "buyer node-b (http://localhost:3403), knowledge pixelplus-087600 at 0.1 AIN, already purchased before: true"
   },
   {
    "id": "AZ-035",
    "status": "passed",
-   "duration_ms": 5710,
+   "duration_ms": 5825,
    "note": "no cluster node still needed setup — the client-side half runs against a private node with a real needsSetup:true (node-az035)"
   },
   {
    "id": "AZ-036",
    "status": "passed",
-   "duration_ms": 1875,
+   "duration_ms": 1813,
    "note": ""
   },
   {
    "id": "AZ-037",
    "status": "passed",
-   "duration_ms": 2575,
+   "duration_ms": 1983,
    "note": ""
   },
   {
    "id": "AZ-038",
    "status": "passed",
-   "duration_ms": 4123,
+   "duration_ms": 3481,
    "note": ""
   },
   {
    "id": "AZ-039",
    "status": "passed",
-   "duration_ms": 5984,
+   "duration_ms": 3349,
    "note": ""
   },
   {
    "id": "AZ-040",
    "status": "passed",
-   "duration_ms": 13939,
+   "duration_ms": 3450,
    "note": ""
   },
   {
    "id": "AZ-041",
    "status": "passed",
-   "duration_ms": 7681,
+   "duration_ms": 7180,
    "note": "the timeline renders \"accuracy <free_generation>\" only — the pre_apply score (\"1/8\" in the scenario text) is not shown"
   },
   {
    "id": "AZ-042",
    "status": "passed",
-   "duration_ms": 7727,
+   "duration_ms": 5308,
    "note": "bin.ts has no `patch forget` subcommand — the manage page advertises `ainize patch forget <id>` (docs/CLI gap)"
   },
   {
    "id": "AZ-043",
    "status": "passed",
-   "duration_ms": 7346,
+   "duration_ms": 6760,
    "note": ""
   },
   {
    "id": "AZ-044",
    "status": "passed",
-   "duration_ms": 8712,
-   "note": ""
+   "duration_ms": 6189,
+   "note": "flaky: passed on retry (web)"
   },
   {
    "id": "AZ-045",
    "status": "passed",
-   "duration_ms": 2799,
+   "duration_ms": 2986,
    "note": ""
   },
   {
    "id": "AZ-046",
    "status": "passed",
-   "duration_ms": 29628,
+   "duration_ms": 29178,
    "note": ""
   },
   {
    "id": "AZ-047",
    "status": "passed",
-   "duration_ms": 3882,
+   "duration_ms": 4130,
    "note": ""
   },
   {
    "id": "AZ-048",
    "status": "passed",
-   "duration_ms": 3797,
+   "duration_ms": 3657,
    "note": ""
   },
   {
    "id": "AZ-049",
    "status": "passed",
-   "duration_ms": 7967,
+   "duration_ms": 5021,
    "note": ""
   },
   {
    "id": "AZ-050",
    "status": "passed",
-   "duration_ms": 3123,
+   "duration_ms": 3255,
    "note": ""
   },
   {
    "id": "AZ-051",
    "status": "passed",
-   "duration_ms": 4525,
+   "duration_ms": 4645,
    "note": ""
   },
   {
    "id": "AZ-052",
    "status": "passed",
-   "duration_ms": 41787,
-   "note": "announce pre-check reported conflicts: 155 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 152, because private drafts are redacted from public overlap answers"
+   "duration_ms": 42408,
+   "note": "announce pre-check reported conflicts: 167 (the 4 demo bodies + the pixel copies earlier runs announced), of which 3 are this node's private drafts — a visitor is shown 164, because private drafts are redacted from public overlap answers"
   },
   {
    "id": "AZ-053",
    "status": "passed",
-   "duration_ms": 40164,
+   "duration_ms": 41283,
    "note": ""
   },
   {
    "id": "AZ-054",
    "status": "passed",
-   "duration_ms": 45225,
+   "duration_ms": 46766,
    "note": ""
   },
   {
    "id": "AZ-055",
-   "status": "passed",
-   "duration_ms": 541,
+   "status": "failed",
+   "duration_ms": 521,
    "note": ""
   },
   {
    "id": "AZ-056",
    "status": "passed",
-   "duration_ms": 2297,
+   "duration_ms": 2484,
    "note": ""
   },
   {
    "id": "AZ-057",
    "status": "passed",
-   "duration_ms": 13289,
+   "duration_ms": 13574,
    "note": ""
   },
   {
    "id": "AZ-058",
    "status": "passed",
-   "duration_ms": 9779,
+   "duration_ms": 9837,
    "note": ""
   },
   {
    "id": "AZ-059",
    "status": "passed",
-   "duration_ms": 24486,
+   "duration_ms": 24768,
    "note": ""
   },
   {
    "id": "AZ-060",
-   "status": "passed",
-   "duration_ms": 6925,
+   "status": "failed",
+   "duration_ms": 1375,
    "note": ""
   },
   {
    "id": "AZ-061",
    "status": "passed",
-   "duration_ms": 7041,
+   "duration_ms": 7173,
    "note": ""
   },
   {
    "id": "AZ-062",
    "status": "passed",
-   "duration_ms": 5953,
+   "duration_ms": 6021,
    "note": ""
   },
   {
    "id": "AZ-063",
    "status": "passed",
-   "duration_ms": 5509,
+   "duration_ms": 5736,
    "note": ""
   },
   {
    "id": "AZ-064",
    "status": "passed",
-   "duration_ms": 14503,
+   "duration_ms": 14391,
    "note": ""
   },
   {
    "id": "AZ-065",
    "status": "passed",
-   "duration_ms": 8401,
+   "duration_ms": 8541,
    "note": ""
   },
   {
    "id": "AZ-066",
    "status": "passed",
-   "duration_ms": 18274,
+   "duration_ms": 18598,
    "note": ""
   },
   {
    "id": "AZ-067",
    "status": "passed",
-   "duration_ms": 37497,
+   "duration_ms": 37992,
    "note": ""
   },
   {
    "id": "AZ-068",
-   "status": "passed",
-   "duration_ms": 16617,
+   "status": "failed",
+   "duration_ms": 34743,
    "note": ""
   },
   {
    "id": "AZ-069",
    "status": "passed",
-   "duration_ms": 105589,
+   "duration_ms": 105912,
    "note": ""
   },
   {
    "id": "AZ-070",
    "status": "passed",
-   "duration_ms": 13008,
+   "duration_ms": 13063,
    "note": ""
   },
   {
    "id": "AZ-071",
    "status": "passed",
-   "duration_ms": 12357,
+   "duration_ms": 12221,
    "note": ""
   },
   {
    "id": "AZ-072",
    "status": "passed",
-   "duration_ms": 3682,
+   "duration_ms": 1128,
    "note": ""
   },
   {
    "id": "AZ-073",
    "status": "passed",
-   "duration_ms": 535,
+   "duration_ms": 595,
    "note": ""
   },
   {
    "id": "AZ-074",
    "status": "passed",
-   "duration_ms": 10893,
+   "duration_ms": 11152,
    "note": ""
   },
   {
    "id": "AZ-075",
    "status": "passed",
-   "duration_ms": 14000,
+   "duration_ms": 8857,
    "note": ""
   },
   {
    "id": "AZ-076",
    "status": "passed",
-   "duration_ms": 777,
+   "duration_ms": 647,
    "note": ""
   },
   {
    "id": "AZ-077",
    "status": "passed",
-   "duration_ms": 20462,
+   "duration_ms": 18508,
    "note": ""
   },
   {
    "id": "AZ-078",
    "status": "passed",
-   "duration_ms": 12816,
+   "duration_ms": 12822,
    "note": ""
   },
   {
    "id": "AZ-079",
    "status": "passed",
-   "duration_ms": 7649,
+   "duration_ms": 8094,
    "note": ""
   },
   {
    "id": "AZ-080",
    "status": "passed",
-   "duration_ms": 7482,
+   "duration_ms": 7476,
    "note": ""
   },
   {
    "id": "AZ-081",
    "status": "passed",
-   "duration_ms": 14266,
+   "duration_ms": 14375,
    "note": ""
   },
   {
    "id": "AZ-082",
    "status": "passed",
-   "duration_ms": 35725,
+   "duration_ms": 35917,
    "note": ""
   },
   {
    "id": "AZ-083",
    "status": "passed",
-   "duration_ms": 36330,
+   "duration_ms": 38209,
    "note": ""
   },
   {
    "id": "AZ-084",
    "status": "passed",
-   "duration_ms": 5625,
+   "duration_ms": 5635,
    "note": ""
   },
   {
    "id": "AZ-085",
    "status": "passed",
-   "duration_ms": 11919,
+   "duration_ms": 6330,
    "note": "LedgerPage / NetworkPage have no error branch: offline they show \"No records yet.\" and the cached node cards + a spinner, never an explicit error (matches the scenario text; flagged as a UX gap)."
   },
   {
    "id": "AZ-086",
    "status": "passed",
-   "duration_ms": 14238,
+   "duration_ms": 8373,
    "note": ""
   },
   {
    "id": "AZ-087",
    "status": "passed",
-   "duration_ms": 23260,
+   "duration_ms": 15370,
    "note": ""
   },
   {
    "id": "AZ-088",
    "status": "passed",
-   "duration_ms": 8268,
+   "duration_ms": 7835,
    "note": "after Log out the browser landed on http://localhost:3402/"
   },
   {
    "id": "AZ-089",
    "status": "passed",
-   "duration_ms": 31069,
+   "duration_ms": 31082,
    "note": ""
   },
   {
    "id": "AZ-090",
    "status": "passed",
-   "duration_ms": 13944,
+   "duration_ms": 11657,
    "note": ""
   },
   {
    "id": "AZ-091",
    "status": "passed",
-   "duration_ms": 26182,
-   "note": "AZ-091 applied time: · loaded in 3.0s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour."
+   "duration_ms": 25650,
+   "note": "AZ-091 applied time: · loaded in 2.9s · The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour."
   },
   {
    "id": "AZ-092",
    "status": "passed",
-   "duration_ms": 20746,
-   "note": "desktop header geometry: {\"960\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1024\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1280\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1440\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738}} · overflow per page: {\"landing\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"explore\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"detail\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"chat\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"ledger\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"docs\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360}}; header items outside the 360px viewport: none · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project"
+   "duration_ms": 36192,
+   "note": "desktop header geometry: {\"960\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1024\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1280\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738},\"1440\":{\"intersects\":false,\"headerH\":81,\"sameRow\":true,\"navNeed\":715,\"navWidth\":738}} · overflow per page: {\"landing\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"explore\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"detail\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"chat\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"ledger\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360},\"docs\":{\"ok\":true,\"scrollWidth\":360,\"innerWidth\":360}}; header items outside the 360px viewport: none · flaky: passed on retry (web) · skipped [mobile]: Pixel 5 mobile emulation scales the layout viewport away from 360 CSS px; the 360px assertions run under the web project"
   },
   {
    "id": "AZ-093",
    "status": "passed",
-   "duration_ms": 12772,
+   "duration_ms": 12599,
    "note": "Shift+Tab from the (now disabled) textarea landed on: button \"Show 18 more\""
   },
   {
    "id": "AZ-094",
-   "status": "passed",
-   "duration_ms": 11342,
-   "note": "axe serious/critical: /explore: color-contrast (serious) x21 → .sc-gSQHZB | .sc-fFelbd | p || /chat: color-contrast (serious) x33 → .sc-gSQHZB | .sc-eCIkAO | aside > p || /<addr>/krx-all-2761: color-contrast (serious) x44 → .sc-gSQHZB | .sc-bXTeWK > span:nth-child(1) | .sc-bXTeWK > span:nth-child(2) || /ledger: color-contrast (serious) x27 → .sc-gSQHZB | .sc-fFelbd | p:nth-child(2) || /ledger: nested-interactive (serious) x1 → svg[width=\"700\"] · Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario."
+   "status": "failed",
+   "duration_ms": 50167,
+   "note": ""
   },
   {
    "id": "AZ-095",
-   "status": "passed",
-   "duration_ms": 25723,
+   "status": "failed",
+   "duration_ms": 49354,
    "note": ""
   },
   {
    "id": "AZ-096",
    "status": "passed",
-   "duration_ms": 2046,
+   "duration_ms": 2553,
    "note": ""
   },
   {
    "id": "AZ-097",
-   "status": "passed",
-   "duration_ms": 4440,
+   "status": "failed",
+   "duration_ms": 43254,
    "note": ""
   },
   {
    "id": "AZ-098",
    "status": "passed",
-   "duration_ms": 101463,
+   "duration_ms": 96137,
    "note": ""
   },
   {
    "id": "AZ-099",
-   "status": "passed",
-   "duration_ms": 9619,
-   "note": "scrollY after Back on /ledger: 0 · Back resets the ledger to the top with \"All records\", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /explore: 0"
+   "status": "failed",
+   "duration_ms": 49685,
+   "note": "scrollY after Back on /ledger: 0 · Back resets the ledger to the top with \"All records\", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario. · scrollY after Back on /ledger: 0 · Back resets the ledger to the top with \"All records\", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario."
   },
   {
    "id": "AZ-100",
    "status": "passed",
-   "duration_ms": 21960,
+   "duration_ms": 11491,
    "note": "CopyButton swallows clipboard failures silently (label stays \"Copy\", no feedback) — P2 UX finding, as described in the scenario."
   },
   {
    "id": "AZ-223",
    "status": "passed",
-   "duration_ms": 38446,
+   "duration_ms": 42511,
    "note": "'드': 2/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents"
   },
   {
    "id": "AZ-224",
    "status": "passed",
-   "duration_ms": 19769,
+   "duration_ms": 20072,
    "note": ""
   },
   {
    "id": "AZ-225",
    "status": "passed",
-   "duration_ms": 41204,
+   "duration_ms": 41284,
    "note": "the queued state appeared 91 ms after the question was sent"
   },
   {
    "id": "AZ-226",
    "status": "passed",
-   "duration_ms": 19501,
+   "duration_ms": 19105,
    "note": ""
   }
  ],
@@ -648,13 +648,13 @@
   {
    "id": "AZ-103",
    "status": "passed",
-   "duration_ms": 6082,
+   "duration_ms": 6361,
    "note": ""
   },
   {
    "id": "AZ-104",
    "status": "passed",
-   "duration_ms": 372,
+   "duration_ms": 339,
    "note": "skipped [web]: no backup (earlier step skipped)"
   },
   {
@@ -666,37 +666,37 @@
   {
    "id": "AZ-106",
    "status": "skipped",
-   "duration_ms": 3,
+   "duration_ms": 4,
    "note": "skipped [web]: no job (earlier step skipped)"
   },
   {
    "id": "AZ-107",
    "status": "skipped",
-   "duration_ms": 3,
+   "duration_ms": 4,
    "note": "skipped [web]: no job (earlier step skipped)"
   },
   {
    "id": "AZ-109",
    "status": "skipped",
-   "duration_ms": 3,
+   "duration_ms": 6,
    "note": "skipped [web]: no job (earlier step skipped)"
   },
   {
    "id": "AZ-110",
    "status": "skipped",
-   "duration_ms": 172,
+   "duration_ms": 185,
    "note": "skipped [web]: stub trainer measured against a real serving model (teach.stubOffline is false): a copied fixture cannot teach the lesson, so it never reaches PENDING_REVIEW — the review queue runs on a node with simulated checks or a real trainer · skipped [web]: shared AIN chain — approve/announce is permanent; run against a local-ledger node for announce coverage · skipped [web]: no job (earlier step skipped)"
   },
   {
    "id": "AZ-113",
    "status": "passed",
-   "duration_ms": 3386,
+   "duration_ms": 3395,
    "note": ""
   },
   {
    "id": "AZ-116",
    "status": "skipped",
-   "duration_ms": 86,
+   "duration_ms": 87,
    "note": "skipped [web]: no announced lesson (earlier step skipped)"
   },
   {
@@ -708,13 +708,13 @@
   {
    "id": "TM-090",
    "status": "passed",
-   "duration_ms": 10728,
+   "duration_ms": 11435,
    "note": ""
   },
   {
    "id": "TM-091",
    "status": "passed",
-   "duration_ms": 5129,
+   "duration_ms": 5519,
    "note": ""
   }
  ],
@@ -729,13 +729,20 @@
   }
  ],
  "product_fixes": [
+  "d345e55 docs: second UX critique — CLI user, node operator, knowledge publisher",
+  "e168c59 merge main into teachable-ui: one codebase with both doors and the runtime guard",
+  "3a4379a docs: UX scenario results re-measured on an unchanged build — 104/104",
+  "d503f4f e2e: the probes that re-measured the 17 fixed findings on the running product",
+  "d5bed50 docs: mark the 17 re-verified findings fixed, each with what shipped",
   "fe0dba7 docs: UX scenario results re-measured on the wave-1 build — 104/104 in one run",
+  "3f93b0c e2e: the two live-model scenarios that still expected the old lesson headline (finding 6)",
   "a676836 ledger: say which part of the record you are looking at (the chain grew past 1,000)",
   "2dcb1b1 benchmarks: the file docstring said the old, untrue thing about the page",
   "dc753b6 e2e: three expectations the wave-1 build changed, and one that was measuring the wrong page",
   "52b4323 e2e: the scenarios and specs the wave-1 detail and explore fixes changed",
   "4f4281b explore/benchmarks: For sale is not Verified, and a score belongs to its question set (findings 29, 56, 24)",
   "9054f9d detail: show the before/after the verifiers measured, and stop promising a check nobody ran (findings 28, 55)",
+  "6344b9d teach: a simulated check says it is simulated, and a demo run stops calling itself a lesson (findings 7, 6)",
   "140d0b9 chat: one conversation per column, so the live test stops disproving itself (finding 1)",
   "96f202f docs: UX scenario results re-measured on the wave-0 build — 103/103 in one run",
   "906b8b4 e2e: three stale expectations the rebuilt node exposed, and the 429 body's new field",
@@ -747,7 +754,16 @@
   "2dfb21d web: print accuracy against the denominator the verifiers actually used (finding 2)",
   "46d8afa web: SUPERSEDED gets the warning palette and names its successor (finding 97)",
   "5fde838 web: Hangul in every font stack, and a title and lang that follow the language (findings 84, 85)",
-  "a194a5d web: stop the ledger badge painting over the first nav link (finding 12)"
+  "a194a5d web: stop the ledger badge painting over the first nav link (finding 12)",
+  "e42148f teachable: the dataset e2e suite goes green (AZ-123…AZ-222)",
+  "40c5820 teachable: fix what the dataset scenarios found (AZ-125..AZ-220)",
+  "3b20ad7 e2e: the file door, AZ-123..AZ-142 (dataset upload and preview)",
+  "558b4fc docs: 100 UX scenarios for dataset-first teach mode (AZ-123..AZ-222)",
+  "774f2ed teachable PR-D4: smoke both doors and fix what the walk broke open",
+  "14347ef teachable PR-D3: the file door from the terminal (CLI + docs)",
+  "cc12d24 teachable PR-D2: the Teachable-NLP-style teach UI (upload → preview → train → result)",
+  "5711198 teachable PR-D1: the dataset pipeline (core + node)",
+  "df533d3 docs: dataset-first teach mode (Teachable-NLP-style) design"
  ],
  "not_covered": [
   "aindrive pairing end to end (needs a human Google login; only the unpaired state, the hint, sync, file tree and history are asserted)",
@@ -758,7 +774,7 @@
   "load, performance budgets, fuzzing and adversarial payment/signature testing beyond the specific replay and forgery cases the scenarios name"
  ],
  "notes": [
-  "113 passed / 0 failed / 11 skipped in one full run (26.2 min) on the rebuilt cluster — web, mobile and cli-api together. One flake: AZ-044 lost a single API call to ECONNRESET and passed on the retry.",
+  "97 passed / 15 failed / 2 flaky / 11 skipped in one full run (29.7 min) on the merged build — web, mobile and cli-api together. The 15 failures are one external cause (a foreign anchor on the shared dev chain), not product behaviour; the two flakes (AZ-044 ECONNRESET, AZ-092) passed on retry.",
   "The 11 skips are the 10 teach-mode lifecycle tests that cannot complete on a node whose stub trainer is measured against a live model or whose announce would be permanent, plus AZ-092 under the `mobile` project (it runs for real at 360 px under `web`).",
   "The demo cluster now serves from its own vLLM (:8002, mailbox ple_patch_e2e, GPUs 4,5); the suite reads the instance and mailbox from node-a's config.",
   "Global setup/teardown assert the cluster is left as it was found: the public catalog is still exactly the four demo knowledges, nothing is loaded in the shared model, node-a's teach policy and peer list are unchanged.",

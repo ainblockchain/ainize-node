@@ -320,7 +320,10 @@ export async function setNodeMode(mode: 'live' | 'stub', original: { api: string
   cfg.teach.stubOffline = want.stubOffline;
   writeFileSync(configPath(), JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   await stopNode();
-  await startNode(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR } : {});
+  // BOTH vars: NGRAM_RUNTIME_PATCH_DIR sets the node's own `runtime.patchDir`, ENGRAM_PATCH_DIR is what the hook
+  // reads. The node re-exports ENGRAM_PATCH_DIR from its own patchDir() (packages/node/src/runtime.ts), so without the
+  // first one it falls back to <runtime.repo>/ple_patch — the shared production mailbox — and overrides the second.
+  await startNode(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR } : {});
 }
 
 async function nodeAnswers(): Promise<boolean> {
