@@ -276,7 +276,9 @@
      "evidence": "packages/e2e/results/ux2/critic-04-init-force.txt: `init --name critic-n1 --port 3577 --ledger local` → address `0x095753f9…17ce`; `init --force --name renamed` → `✓ node initialised`, exit 0, no prompt, address `0xa298138a…441b`, port silently back to 3402. Reproduced twice more (cli-firstrun-11, operator-day2-24) including `operatorPasswordHash: <GONE>`.",
      "user_cost": "That key owns every anchor the node published, its AIN balance, its payout address and the identity peers know it by. One `--force` — the remedy the error message names — destroys the only copy. Published knowledge stays on the permanent record under an address nobody can sign for, pending royalties are orphaned, and the operator is locked out of their own console. There is no recovery.",
      "fix": "On `--force`, read the existing config first and carry `identity` and `operatorPasswordHash` forward unless an explicit `--new-identity` is also passed; print `keeping identity 0x… (pass --new-identity to replace it)`. Gate `--new-identity` behind typing the current address, and write `<home>/config.json.bak-<ts>` first. Change the duplicate-init error to name the safe path: `config already exists at … — change one setting with \\`ainize config set <key> <value>\\`; \\`--force\\` rewrites the file (keeping this node's identity).`",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "`init --force` now carries the identity and the operator password forward and copies the old config.json aside, `--new-identity` is gated behind typing the current address, and the duplicate-init error names `config set` first."
     },
     {
      "n": 121,
@@ -300,7 +302,9 @@
      "evidence": "critique2-verify.txt (CLI_REFERENCE counts, all 0) and packages/e2e/results/ux2/critic-17-keys-node-url.txt: `keys show --reveal` prints `private key  2b574b62…41fac` with no prompt and no warning, and the `add --reveal to print the private key` hint simply disappears; `ainize keys backup` → `Unknown argument: backup`. Grepping README.md and deploy/README.md for backup guidance returns only teaching-key material (README.md:52, :79, deploy/README.md:82) — every hit is about the *visitor's* key.",
      "user_cost": "The operator is the one person on the network with real money at stake and the only one given no key hygiene, while the product runs a whole warning-and-download system for a visitor's browser key. A wiped disk, a rebuilt container, an `rm -rf ~/.ngram` or one `--force` (item 120) ends the node's identity: published knowledge can never be superseded or retired by its author again, and any balance is gone. Nothing in the product ever says so.",
      "fix": "Add `ainize keys backup <file>` writing a 0600 encrypted keystore (the same shape the teach flow already downloads) and `ainize keys import <file>`; make `--reveal` require an interactive confirmation or `--yes` plus a one-line shell-history warning. Add three lines to `init`'s success block: where the key is, that it is the only copy, and the backup command. Add a 'Node identity & config' group to CLI_REFERENCE covering `keys show|backup`, `config show|set`, `nodes`, `logout`, and a 'Backing up your node' section to deploy/README.md.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "`keys backup|export <file>` writes a 0600 keystore (scrypt + aes-256-gcm with a passphrase), `keys import` and `keys rotate` replace the identity behind a typed confirmation and a config backup, `keys show --reveal` asks first, and the shipped CLI reference, README and deploy guide now cover node-key hygiene."
     },
     {
      "n": 123,

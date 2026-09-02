@@ -963,7 +963,7 @@ test('AZ-023 Use the Docs page: copy one-liners, browse the CLI table and the AP
   await expect(page.getByText("Like the 2019 ainize-cli turned repos into AI services, today's ainize puts knowledge into models. Every command supports --help and --json.")).toBeVisible();
   await expect(page.locator('table').first().locator('th')).toHaveText(['Command', 'What it does']);
   const groups = docs.cli.groups.map((g) => g.name);
-  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (turn your own questions and answers into knowledge)', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
+  expect(groups).toEqual(['Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (turn your own questions and answers into knowledge)', 'Your node: identity, config, backups', 'Records & network', 'AIN chain & drive (operators)', 'AI agent']);
   for (const g of groups) await expect(page.getByRole('heading', { name: g, exact: true }).last()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Benchmark file (bench.json) example' })).toBeVisible();
 

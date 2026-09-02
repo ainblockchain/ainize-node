@@ -8,7 +8,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
@@ -1027,7 +1027,7 @@ test.describe('operator: fourth node', () => {
 
     r = await runCli(['init', '--name', 'node-d', '--port', String(PORT_D)], D);
     expect(r.code).toBe(1);
-    expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} (use --force to overwrite, or \`ainize config show\`)`);
+    expect(r.stderr.trim()).toBe(`error: config already exists at ${cfgPath} — change one setting with \`ainize config set <key> <value>\`; \`--force\` rewrites the file (keeping this node's identity)`);
     expect(readFileSync(cfgPath, 'utf8')).toBe(cfgText);
 
     // node-d is a fourth node of THIS demo cluster: same serving instance (--runtime-api above) and the same patch-hook
@@ -1040,10 +1040,32 @@ test.describe('operator: fourth node', () => {
     expect(r.code, r.stderr || r.stdout).toBe(0);
     expect(r.stdout).toMatch(new RegExp(`^address\\s+${addr}$`, 'm'));
     expect(r.stdout).toMatch(/^public key\s+[0-9a-f]{128}$/m);
-    expect(r.stdout.trim().endsWith('add --reveal to print the private key')).toBe(true);
+    expect(r.stdout.trim().endsWith('add --reveal to print the private key, or `ainize keys backup <file>` to save it')).toBe(true);
     const priv = (JSON.parse(cfgText) as { identity: { privateKey: string } }).identity.privateKey;
     expect(r.stdout).not.toContain(priv);
     expect(r.stdout).not.toMatch(/^private key\s/m);
+
+    // the key can be backed up and restored — the only thing in a node that cannot be rebuilt (item 122)
+    const keyFile = join(SCRATCH, `node-d-key-${RUN}.json`);
+    rmSync(keyFile, { force: true });
+    const backup = await runCli(['keys', 'backup', keyFile, '--passphrase', 'e2e-passphrase'], D);
+    expect(backup.code, backup.stderr).toBe(0);
+    expect(backup.stdout).toContain(`node key of node-d (${addr}) written to ${keyFile}`);
+    expect(backup.stdout).toContain('encrypted (scrypt + aes-256-gcm)');
+    const saved = JSON.parse(readFileSync(keyFile, 'utf8')) as { kind: string; address: string; privateKey?: string; cipher?: { alg: string } };
+    expect(saved.kind).toBe('ainize-node-key');
+    expect(saved.address).toBe(addr);
+    expect(saved.privateKey, 'an encrypted backup never carries the key in the clear').toBeUndefined();
+    expect(saved.cipher!.alg).toBe('aes-256-gcm');
+    expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+    const again = await runCli(['keys', 'backup', keyFile], D);
+    expect(again.code).toBe(1);
+    expect(again.stderr).toContain('already exists — pick another name');
+    // importing the key this node already has is refused before anything is touched
+    const same = await runCli(['keys', 'import', keyFile, '--passphrase', 'e2e-passphrase'], D);
+    expect(same.code).toBe(1);
+    expect(same.stderr).toContain(`error: ${addr} is already this node's identity — nothing to do`);
+    rmSync(keyFile, { force: true });
 
     r = await runCli(['chain', 'fund', addr, '100'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1896,5 +1918,84 @@ test.describe('operator: commands that report state', () => {
       expect(okNow.code, okNow.stderr).toBe(0);
       expect(okNow.stdout).toMatch(/^runtime\s+not required by this node's roles$/m);
     } finally { await t.stop(); }
+  });
+
+  test('AZ-234 The node identity survives `init --force`, and replacing it takes a typed confirmation and leaves a backup', async () => {
+    test.setTimeout(4 * 60_000);
+    const f = await throwawayNode('identity', { start: false });
+    const g = await throwawayNode('identity-2', { start: false });
+    const keyFile = join(SCRATCH, `az234-key-${RUN}.json`);
+    rmSync(keyFile, { force: true });
+    try {
+      expect((await f.init()).code).toBe(0);
+      const cfgPath = join(f.home, 'config.json');
+      const first = JSON.parse(readFileSync(cfgPath, 'utf8')) as { identity: { address: string } };
+      writeFileSync(cfgPath, JSON.stringify({ ...JSON.parse(readFileSync(cfgPath, 'utf8')), operatorPasswordHash: 'HASH-KEEP-ME' }, null, 2));
+
+      const dup = await f.cli(['init', '--name', 'x']);
+      expect(dup.code).toBe(1);
+      expect(dup.stderr.trim()).toBe(`error: config already exists at ${cfgPath} — change one setting with \`ainize config set <key> <value>\`; \`--force\` rewrites the file (keeping this node's identity)`);
+
+      const forced = await f.cli(['init', '--force', '--name', 'renamed']);
+      expect(forced.code, forced.stderr).toBe(0);
+      expect(forced.stdout).toContain(`keeping this node's identity ${first.identity.address} (pass --new-identity to replace it)`);
+      expect(forced.stdout).toContain('previous config saved as ');
+      const after = JSON.parse(readFileSync(cfgPath, 'utf8')) as { identity: { address: string }; operatorPasswordHash: string; name: string };
+      expect(after.identity.address).toBe(first.identity.address);
+      expect(after.operatorPasswordHash).toBe('HASH-KEEP-ME');
+      expect(after.name).toBe('renamed');
+      const backups = readdirSync(f.home).filter((x: string) => x.startsWith('config.json.bak-'));
+      expect(backups.length).toBe(1);
+      expect(statSync(join(f.home, backups[0])).mode & 0o777).toBe(0o600);
+
+      // --new-identity: the wrong address changes nothing
+      const wrong = await f.cli(['init', '--force', '--new-identity'], { input: 'nope\n' });
+      expect(wrong.code).toBe(1);
+      expect(wrong.stdout).toContain(`! this replaces the node identity ${first.identity.address}`);
+      expect(wrong.stderr).toContain("error: that is not this node's address — nothing was changed");
+      expect((JSON.parse(readFileSync(cfgPath, 'utf8')) as { identity: { address: string } }).identity.address).toBe(first.identity.address);
+
+      // …and the right one does
+      const right = await f.cli(['init', '--force', '--new-identity'], { input: `${first.identity.address}\n` });
+      expect(right.code, right.stderr).toBe(0);
+      const minted = (JSON.parse(readFileSync(cfgPath, 'utf8')) as { identity: { address: string } }).identity.address;
+      expect(minted).not.toBe(first.identity.address);
+      expect(readdirSync(f.home).filter((x: string) => x.startsWith('config.json.bak-')).length).toBe(2);
+
+      // backup → import on another home
+      const backup = await f.cli(['keys', 'backup', keyFile, '--passphrase', 'hunter2']);
+      expect(backup.code, backup.stderr).toBe(0);
+      expect((await f.cli(['keys', 'backup', keyFile])).stderr).toContain('already exists — pick another name');
+      expect((await g.init()).code).toBe(0);
+      const gAddr = nodeAddress(g.home);
+      const badPass = await g.cli(['keys', 'import', keyFile, '--passphrase', 'wrong'], { input: `${gAddr}\n` });
+      expect(badPass.code).toBe(1);
+      expect(badPass.stderr).toContain('error: wrong passphrase for this backup');
+      expect(nodeAddress(g.home)).toBe(gAddr);
+      const imported = await g.cli(['keys', 'import', keyFile, '--passphrase', 'hunter2'], { input: `${gAddr}\n` });
+      expect(imported.code, imported.stderr).toBe(0);
+      expect(imported.stdout).toContain(`✓ this node is now ${minted}`);
+      expect(nodeAddress(g.home)).toBe(minted);
+      expect(JSON.parse(readFileSync(join(g.home, 'config.json'), 'utf8')).port).toBe(g.port);   // every other setting untouched
+
+      const rotated = await g.cli(['keys', 'rotate'], { input: `${minted}\n` });
+      expect(rotated.code, rotated.stderr).toBe(0);
+      expect(rotated.stdout).toMatch(new RegExp(`✓ new identity 0x[0-9a-fA-F]{40} \\(was ${minted}; previous config saved as .*; restart the node to apply\\)`));
+      expect(nodeAddress(g.home)).not.toBe(minted);
+
+      // --reveal asks first, and prints nothing when the answer is not "show"
+      const reveal = await g.cli(['keys', 'show', '--reveal'], { input: '\n' });
+      expect(reveal.code).toBe(1);
+      expect(reveal.stderr).toContain("this prints the node's private key on the screen");
+      expect(reveal.stderr).toContain('error: cancelled — nothing was printed');
+      expect(reveal.stdout).not.toMatch(/^private key/m);
+      const revealed = await g.cli(['keys', 'show', '--reveal', '--yes']);
+      expect(revealed.code, revealed.stderr).toBe(0);
+      expect(revealed.stdout).toMatch(/^private key\s+[0-9a-f]{64}$/m);
+    } finally {
+      rmSync(keyFile, { force: true });
+      await g.stop();
+      await f.stop();
+    }
   });
 });

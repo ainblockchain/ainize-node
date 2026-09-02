@@ -374,11 +374,22 @@ export const CLI_REFERENCE = {
       { cmd: '--key-file <backup.json>   ·   NGRAM_TEACH_KEY', desc: 'the teaching key every teach request is signed with — there is no account, the key IS the identity. Without one the CLI keeps its own at <NGRAM_HOME>/teaching-key.json (created on first use, mode 0600): back it up, it is the only way back to your lessons and their earnings' },
       { cmd: 'ainize patch import <lesson.npz> --recipe recipe.json', desc: 'run a downloaded lesson on YOUR node: private DRAFT (file kept in place, benchmark from the recipe), no announce, no ledger record — then `patch apply` / `chat`' },
     ] },
+    { name: 'Your node: identity, config, backups', commands: [
+      { cmd: 'ainize keys show [--reveal]', desc: 'the node identity: address and public key. --reveal prints the private key after a typed confirmation — it owns everything this node published, its balance and its payout address' },
+      { cmd: 'ainize keys backup <file> [--passphrase …]', desc: 'save that key to a file (encrypted with a passphrase, mode 0600). config.json is the only copy until you do this: a wiped disk, a rebuilt container or one `init --force --new-identity` ends the identity, and published knowledge can then never be superseded or retired by its author again' },
+      { cmd: 'ainize keys import <file> [--passphrase …] | keys rotate', desc: 'make a backed-up key this node\'s identity again, or mint a new one; both copy config.json aside first and ask you to type the current address' },
+      { cmd: 'ainize config show | ainize config get <key> | ainize config set <key> <value> | ainize config unset <key>', desc: 'the node config (NGRAM_HOME/config.json). `set` validates against the config schema: an unknown key is refused with the nearest real one, a wrong type or an out-of-range value with what the key wants' },
+      { cmd: 'ainize init --force [--new-identity]', desc: 'rewrite config.json keeping this node\'s identity and operator password (the old file is copied aside). --new-identity replaces the key and asks you to type the current address first' },
+      { cmd: 'ainize status [--check] | ainize logs [--kind … --level warn] | ainize nodes | ainize logout', desc: 'status (--check = readiness, exits 1 when the ledger or the runtime is not usable), the node\'s own event log, the nodes it knows, and forgetting the operator session' },
+      { cmd: 'GET /healthz · GET /readyz', desc: 'liveness and readiness for an uptime check or a Kubernetes probe: /readyz answers 503 with the failing check when the ledger is unreachable or a serving/verifier node has no runtime' },
+    ] },
     { name: 'Records & network', commands: [
       { cmd: 'ainize ledger ls | verify | graph | export <file>', desc: 'public record' },
       { cmd: 'ainize branch ls | create <name> --context k=v | add <name> <id> | subscribe <name>', desc: 'knowledge tracks (branches)' },
       { cmd: 'ainize route jurisdiction=KR', desc: 'find the branch and nodes for a context' },
       { cmd: 'ainize peers ls | add <url> | rm <url>', desc: 'peers' },
+      { cmd: 'ainize seed [--synthetic --prototype]', desc: 'seed demo data into a STOPPED node (it writes to the data directory directly)' },
+      { cmd: 'ainize patch rm <id>', desc: 'delete a draft of yours (a published anchor stays on the public record for good)' },
     ] },
     { name: 'AIN chain & drive (operators)', commands: [
       { cmd: 'ainize chain up | status | fund <addr> [amt] | setup | down', desc: 'local AIN development chain (docker)' },

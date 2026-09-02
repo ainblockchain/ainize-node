@@ -122,3 +122,23 @@ From a deploy script or a terminal: `ainize status --check` prints the same thre
 fails. The other probe paths (`/health`, `/healthcheck`, `/ready`, `/live`, `/livez`, `/ping`, `/status`, `/metrics`,
 `/version`, `/up`) answer `404` with a JSON hint rather than the web app, so a monitor pointed at the wrong one fails loudly
 instead of reporting success forever.
+
+### 5. Backing up your node — the identity is the only thing you cannot rebuild
+
+`<NGRAM_HOME>/config.json` holds the node's private key in plain hex, and that key **is** the node: it owns every
+knowledge item this node published, its AIN balance, its payout address and the address peers know it by. Everything
+else in a node (the catalog, the bodies, the ledger cache) can be re-fetched or re-seeded; the key cannot. A wiped
+disk, a rebuilt container, an `rm -rf ~/.ngram` or one `ainize init --force --new-identity` ends it, and published
+knowledge can then never be superseded, retired or challenged by its author again.
+
+```bash
+ainize keys backup ~/node-key.json --passphrase "…"    # scrypt + aes-256-gcm, mode 0600 — keep it off this machine
+ainize keys import ~/node-key.json --passphrase "…"    # the way back, on a new machine after `ainize init`
+```
+
+- `keys backup` without a passphrase stores the key **in the clear** and says so; the file is still 0600.
+- `keys import` and `keys rotate` copy `config.json` aside as `config.json.bak-<timestamp>` and ask you to type the
+  current address before replacing the identity. So does `init --force --new-identity`; plain `init --force` keeps the
+  identity and the operator password and only rewrites the rest of the file.
+- Back up `<NGRAM_HOME>/data/` too if the node is a seller: it holds the `.npz` bodies buyers download. They can be
+  re-registered from the original files, but only if you still have them.

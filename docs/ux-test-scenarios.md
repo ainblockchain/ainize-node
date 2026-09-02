@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (235)
+# Ainize UX Test Scenarios (236)
 
-This document lists 235 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 236 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,15 +28,15 @@ This document lists 235 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 5 | 3 | 2 | 0 |
-| **Total** | **235** | **100** | **114** | **21** |
+| Node operator | 6 | 4 | 2 | 0 |
+| **Total** | **236** | **101** | **114** | **21** |
 
 | Area | Count |
 |---|---:|
 | teach | 57 |
 | teach-dataset | 23 |
 | chat | 18 |
-| cli | 14 |
+| cli | 15 |
 | x402 | 14 |
 | api | 10 |
 | dashboard | 8 |
@@ -68,7 +68,7 @@ This document lists 235 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
-| cli | 36 |
+| cli | 37 |
 | api | 32 |
 | manual | 11 |
 
@@ -911,7 +911,7 @@ This document lists 235 user-experience test scenarios for **Ainize** (ai-nize =
 - Title 'Docs · API · CLI'; lede 'This reference is served by the node itself. Publishing or using knowledge starts with one line; the REST API below is what this very node serves.'
 - Cards 'Publishing knowledge', 'Using knowledge', 'Try before you buy'; the 'Using knowledge' command shows 'ainize use krx-all-2761        # check verification → pay automatically → download → load into your model' but 'Copy' places only 'ainize use krx-all-2761' on the clipboard and the button reads 'Copied'; 'Try before you buy' shows 'ainize chat krx-all-2761 "픽셀플러스 종목코드 알려줘. 숫자만."   # the knowledge is Korean stock data, so ask in the trained phrasing'
 - 'Install' block starts with 'npm install -g ainize'
-- CLI tab: intro 'Like the 2019 ainize-cli turned repos into AI services, today's ainize puts knowledge into models. Every command supports --help and --json.'; table columns 'Command' / 'What it does'; English group headings served by the node: 'Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (turn your own questions and answers into knowledge)', 'Records & network', 'AIN chain & drive (operators)', 'AI agent'
+- CLI tab: intro 'Like the 2019 ainize-cli turned repos into AI services, today's ainize puts knowledge into models. Every command supports --help and --json.'; table columns 'Command' / 'What it does'; English group headings served by the node: 'Getting started', 'Using knowledge', 'Publishing knowledge', 'Teach mode (turn your own questions and answers into knowledge)', 'Your node: identity, config, backups', 'Records & network', 'AIN chain & drive (operators)', 'AI agent'
 - REST API tab: 'Base URL http://localhost:3402. Public browsing, purchase and live tests need no auth; operator APIs use the login cookie or a Bearer token. Raw spec: /api/openapi.json' (link opens JSON in a new tab); blue box 'Automatic payment flow (developers)' with steps 1)–4) mentioning 402, x-payment-required, X-PAYMENT, blob_urls
 - Operations grouped under English tags 'Find knowledge', 'Live test', 'Teach', 'Automatic payment & download', 'Register & sell knowledge', 'Public record', 'Operator', 'P2P'; each row has a method badge (GET/POST/PATCH/DELETE), path, summary, and 'operator auth' on protected endpoints; expanding shows 'Parameters', 'Request body', 'Responses'
 - 'Schemas' lists collapsible JSON schema boxes
@@ -2319,7 +2319,7 @@ This document lists 235 user-experience test scenarios for **Ainize** (ai-nize =
 
 1. Run `$D init --name node-d --port 3410 --ledger ain --ain-provider http://localhost:8081 --peer http://localhost:3402 --roles verifier --public-url http://localhost:3410`
 2. Run `$D init --name node-d --port 3410` a second time (no --force)
-3. Run `$D keys show` and copy the printed address (ADDR)
+3. Run `$D keys show`, then `$D keys backup <file> --passphrase e2e-passphrase` twice and `$D keys import <file> --passphrase e2e-passphrase`
 4. Run `$D chain fund $ADDR 100`
 5. Run `$D start -d`
 6. Run `$D start -d` again while the node is up
@@ -2332,8 +2332,8 @@ This document lists 235 user-experience test scenarios for **Ainize** (ai-nize =
 **Expected**
 
 - Step 1 prints `✓ node initialised at $H/config.json` with `name node-d`, `address 0x…` (20-byte hex), `port 3410`, `ledger ain`, `roles verifier`, followed by `next: \`ainize start\`   (then \`ainize login\`, \`ainize seed\`)`; exit code 0
-- Step 2 fails with `error: config already exists at $H/config.json (use --force to overwrite, or \`ainize config show\`)`; exit code 1; config.json unchanged
-- Step 3 prints `address` and `public key` lines plus the dim hint `add --reveal to print the private key`; no private key is shown
+- Step 2 fails with ``error: config already exists at $H/config.json — change one setting with `ainize config set <key> <value>`; `--force` rewrites the file (keeping this node's identity)``; exit code 1; config.json unchanged
+- Step 3 prints `address` and `public key` lines plus the dim hint `add --reveal to print the private key, or \`ainize keys backup <file>\` to save it`; no private key is shown. `keys backup` writes `{kind:"ainize-node-key", version:1, address, publicKey, node, created_at, cipher:{alg:"aes-256-gcm", kdf:"scrypt", …}}` with mode 0600 and no `privateKey` field, and prints `encrypted (scrypt + aes-256-gcm) — without the passphrase this file is useless, including to you`; a second backup to the same path is refused (`already exists — pick another name`), and importing the key this node already has is refused with `<addr> is already this node's identity — nothing to do` before anything is touched
 - Step 4 prints `✓ funded 0x… with 100 AIN  tx 0x…  balance now 100 AIN`
 - Step 5 prints `✓ node started in the background (pid N) — port 3410` and `logs: $H/node.log   stop: ainize stop`; $H/node.pid contains N
 - Step 6 fails with `error: node already running in the background (pid N) — \`ainize stop\` first`; exit code 1
@@ -8464,3 +8464,43 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/node.ts statusCheck()`
 - `packages/node/src/openapi.ts (/healthz + /readyz documented), deploy/README.md §4`
 - `docs/ux-critique-2.json item 134`
+
+### AZ-234 - The node identity survives `init --force`, and replacing it takes a typed confirmation and leaves a backup
+
+**Goal:** The remedy the CLI's own error recommends cannot destroy the key that owns everything the node published, and an operator who really wants a new identity has to say so in words.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- A throwaway home of your own: `$N --home $S/f init --name critic-n1 --port 3577 --ledger local --runtime-api http://127.0.0.1:1`
+- An operator password on it (or edit operatorPasswordHash into config.json) so you can see it survive
+
+**Steps**
+
+1. Run `$N --home $S/f init --name x` (no --force)
+2. Run `$N --home $S/f init --force --name renamed` and compare address, operatorPasswordHash and the files in $S/f
+3. Run `printf 'nope\n' | $N --home $S/f init --force --new-identity`
+4. Run `printf '<the current address>\n' | $N --home $S/f init --force --new-identity`
+5. Run `$N --home $S/f keys backup $S/key.json --passphrase hunter2`, then `$N --home $S/f keys backup $S/key.json` again
+6. On a second home: `$N --home $S/g init --name g --port 3599 --ledger local`, then `printf '<g's address>\n' | $N --home $S/g keys import $S/key.json --passphrase hunter2`
+7. Run `printf '<the new address>\n' | $N --home $S/g keys rotate`
+8. Run `$N --home $S/g keys show --reveal` with no answer on stdin
+
+**Expected**
+
+- Step 1 fails with ``error: config already exists at $S/f/config.json — change one setting with `ainize config set <key> <value>`; `--force` rewrites the file (keeping this node's identity)`` — the error names the safe path first
+- Step 2 succeeds and prints `keeping this node's identity 0x… (pass --new-identity to replace it)` and `previous config saved as $S/f/config.json.bak-<timestamp>`: the address is unchanged, operatorPasswordHash is unchanged, and the old file is on disk (mode 0600)
+- Step 3 prints the warning block (`! this replaces the node identity 0x…`, what it costs) and the prompt `Type the current address to replace it (0x…): `, then fails with `error: that is not this node's address — nothing was changed`; the address in config.json is unchanged
+- Step 4 succeeds: a new address, another config.json.bak-<timestamp>
+- Step 5 writes `{kind:"ainize-node-key", version:1, address, publicKey, node, created_at, cipher:{alg:"aes-256-gcm", kdf:"scrypt"}}` at mode 0600 with no plaintext key, and says the file is useless without the passphrase; the second call is refused with `already exists — pick another name (or pass --force to overwrite it)`
+- Step 6 asks for g's current address, then prints `✓ this node is now 0x…` — the backed-up identity, with g's port and every other setting untouched; a wrong passphrase gives `error: wrong passphrase for this backup` and changes nothing
+- Step 7 asks for the address again and prints `✓ new identity 0x… (was 0x…; previous config saved as …; restart the node to apply)`
+- Step 8: `keys show --reveal` warns that the key will be in the scrollback and asks you to type "show"; with no answer it exits 1 with `error: cancelled — nothing was printed` and prints no key. `--yes` skips the question for scripts
+
+**Evidence**
+
+- `packages/cli/src/commands/init.ts init() (identity carried forward, backupConfig, --new-identity confirmation), keysBackup/keysImport/keysRotate/keysShow`
+- `packages/cli/test/operator.test.ts (items 120/122)`
+- `packages/node/src/openapi.ts CLI_REFERENCE group 'Your node: identity, config, backups'; deploy/README.md §5; README.md Run`
+- `docs/ux-critique-2.json items 120, 122`
