@@ -216,9 +216,11 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum$/m);
     expect(r.stdout).toMatch(/^body on this node\s+yes$/m);
     expect(r.stdout).toMatch(/^attestations$/m);
-    expect(r.stdout).toMatch(/^VERIFIER\s+RESULT\s+SCORE\s+VERIFIED ON\s+RESTARTS\s+STAKE\s+AT\s*$/m);
+    // The STAKE column is gone (no deposit was ever escrowed — critique 2 item 127); COUNTS says whether the row
+    // counted toward the quorum, which is the fact a reader of this table actually needs.
+    expect(r.stdout).toMatch(/^VERIFIER\s+RESULT\s+SCORE\s+VERIFIED ON\s+RESTARTS\s+COUNTS\s+AT\s*$/m);
     for (const [name, addr] of [['node-b', ADDR_B], ['node-c', ADDR_C]]) {
-      expect(r.stdout).toMatch(new RegExp(`^${name} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=\\d+/\\d+ pre_apply=\\d+/\\d+\\s+vllm:${esc(MODEL)}\\s+0\\s+5\\s+\\d{4}-\\d\\d-\\d\\d`, 'm'));
+      expect(r.stdout).toMatch(new RegExp(`^${name} ${esc(shortAddr(addr, 6))}\\s+PASS\\s+free_generation=\\d+/\\d+ pre_apply=\\d+/\\d+\\s+vllm:${esc(MODEL)}\\s+0\\s+yes\\s+\\d{4}-\\d\\d-\\d\\d`, 'm'));
     }
     expect(r.stdout.split('\n').filter((l) => /^node-a /.test(l)).length).toBe(0);
     expect(r.stdout).toMatch(/^lineage$/m);
@@ -1380,7 +1382,8 @@ test.describe('operator: fourth node', () => {
     expect(g.stdout).not.toContain('hash-only');
     const passRows = g.stdout.split('\n').filter((l) => /^node-[a-z] 0x\S+\s+PASS\s/.test(l)).length;
     expect(passRows, 'node-b, node-c and node-d all voted PASS on the real model').toBe(3);
-    expect(g.stdout).toMatch(new RegExp(`^verification\\s+${passRows}/2 passed ✓ quorum$`, 'm'));
+    // Item 146: the fraction is clamped to the quorum — a third verifier reads as "2/2 (+1 more)", never "3/2"
+    expect(g.stdout).toMatch(/^verification\s+2\/2 passed ✓ quorum \(\+1 more independent attestation\)$/m);
     } finally {
       release();
     }
