@@ -544,7 +544,7 @@
      "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs."
+     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
     },
     {
      "n": 142,
