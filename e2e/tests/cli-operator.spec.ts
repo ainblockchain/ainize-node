@@ -1843,6 +1843,17 @@ test.describe('operator: commands that report state', () => {
       expect(after.market.defaultPrice, 'the CLI edit survived the console save').toBe('9.99');
       expect(after.peers, "the node's own change was written too").toContain('http://localhost:9999');
       expect(typeof after.operatorPasswordHash).toBe('string');
+
+      // …and a removal reaches the file too: diffed against the boot snapshot, "added then removed" was "no change"
+      const del = await fetch(`${t.url}/api/peers`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'http://localhost:9999' }),
+      });
+      expect(del.status).toBe(200);
+      const gone = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      expect(gone.peers, 'the node diffs against what it last wrote, not its boot snapshot').not.toContain('http://localhost:9999');
+      expect(gone.market.defaultPrice).toBe('9.99');
     } finally { await t.stop(); }
   });
 
