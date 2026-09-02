@@ -1,12 +1,14 @@
 /**
  * Verifier role (검증기 120 / 청구항 2, 19): watches announced patches, fetches bodies from peers,
  * checks sha256 against the anchor, runs the benchmark on the serving runtime when available
- * (restart-aware, restores rows afterwards) and publishes an attestation with stake.
+ * (restart-aware, restores rows afterwards) and publishes a signed attestation.
+ * The attestation carries no deposit: it is backed by the verifier's node signature on a permanent public record,
+ * and nothing is escrowed or slashed anywhere in this product (item 127).
  * Without a runtime the attestation is explicitly `verified_on: "hash-only"` — never a fake score.
  */
 import type { Attestation, PatchAnchor } from '@ngram/core';
 import { signMessage } from '@ngram/core';
-import type { Market } from './market.js';
+import { ConflictError, type Market } from './market.js';
 
 export class Verifier {
   private timer: NodeJS.Timeout | null = null;
@@ -45,6 +47,12 @@ export class Verifier {
         if (e.anchor.author === me && !cfg.verifier?.allowSelfAttest) continue;
         const mine = e.attestations.find((a) => a.verifier === me);
         const compatible = st.available && !!st.model && e.anchor.model.id_M.startsWith(st.model) && !!e.anchor.benchmark.samples?.length;
+        // A challenge is an open question addressed to the verifiers: re-run it even when this node has already
+        // attested, otherwise a 3-node network where everyone has attested can never answer one (item 153).
+        if (e.status === 'CHALLENGED' && e.open_challenge && (!mine || mine.created_at < e.open_challenge.created_at)) {
+          await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `re-verify (challenged) ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
+          continue;
+        }
         if (mine) {
           // Upgrade: we attested hash-only earlier but a compatible runtime is available now → re-verify for real.
           if (mine.verified_on === 'hash-only' && compatible && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
@@ -61,8 +69,22 @@ export class Verifier {
     }
   }
 
+  /**
+   * Verify one anchor and write the attestation. Refuses BEFORE spending GPU minutes when the result could not
+   * count: a self-attestation (item 146), or a re-run whose record the derivation would discard (item 153).
+   */
   async verifyOne(anchor: PatchAnchor): Promise<Attestation> {
     const m = this.market;
+    const me = m.cfg.identity.address;
+    if (anchor.author.toLowerCase() === me.toLowerCase() && !m.cfg.verifier?.allowSelfAttest) {
+      throw new ConflictError(`cannot verify your own knowledge: ${anchor.id} was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it.`);
+    }
+    const e = await m.entry(anchor.id);
+    const mine = e?.attestations.find((a) => a.verifier === me);
+    const challengedAt = e?.open_challenge?.created_at ?? 0;
+    if (mine && mine.verified_on !== 'hash-only' && mine.created_at >= challengedAt) {
+      throw new ConflictError(`this node already attested ${anchor.id} (${mine.passed ? 'PASS' : 'FAIL'}, ${new Date(mine.created_at).toISOString()}); a second attestation would not be counted. Re-verification counts only after someone challenges the knowledge (ainize patch challenge ${anchor.id} --reason …).`);
+    }
     m.log('info', 'verifier', `verifying ${anchor.id} (${anchor.name})`, anchor.id);
     const blob = await m.ensureBlob(anchor);
     const st = await m.runtime.status();
@@ -102,7 +124,7 @@ export class Verifier {
     const body: Omit<Attestation, 'sig'> = {
       patch_id: anchor.id, verifier: m.cfg.identity.address, verifier_name: m.cfg.name, patch_sha256: blob.sha256,
       benchmark_hash: anchor.benchmark_hash, score, passed, collateral_nat: collateral, verified_on, restarts_detected: restarts,
-      stake: m.cfg.verifier?.stake ?? '0', created_at: Date.now(),
+      created_at: Date.now(),
     };
     const sig = signMessage(JSON.stringify([body.patch_id, body.patch_sha256, body.benchmark_hash, body.passed, body.score]), m.cfg.identity.privateKey);
     const att: Attestation = { ...body, sig };

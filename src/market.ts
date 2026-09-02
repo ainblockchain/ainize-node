@@ -82,6 +82,13 @@ export class NotFoundError extends MarketError { constructor(message: string) { 
 export class ConflictError extends MarketError { constructor(message: string) { super(409, message); this.name = 'ConflictError'; } }
 const notFound = (msg: string) => new NotFoundError(msg);
 const conflict = (msg: string) => new ConflictError(msg);
+
+/** Why a verified entry is still not for sale: the one sentence the 402 gate, `patch buy` and the web all show. */
+export function challengedMessage(e: CatalogEntry): string {
+  const c = e.open_challenge;
+  const who = c ? `${c.challenger.slice(0, 10)}…` : 'a verifier node';
+  return `a verifier has challenged this knowledge — re-verification pending, so it is not for sale${c ? ` (${who}: "${c.reason}")` : ''}`;
+}
 const badInput = (msg: string) => new MarketError(400, msg);
 const unavailable = (msg: string) => new MarketError(503, msg);
 
@@ -206,7 +213,7 @@ export class Market {
     const wellFormed = (anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[]).map((r) => Market.sanitizeAnchorRecord(r));
     const wellFormedAtts = atts.filter((r) => Market.isAttestation(r.body));
     const drafts = this.store.listDrafts().map((d) => d.anchor);
-    const value = deriveCatalog(wellFormed, wellFormedAtts, setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts);
+    const value = deriveCatalog(wellFormed, wellFormedAtts, setts, chals, sups, this.cfg.verifier?.quorum ?? 2, drafts, !!this.cfg.verifier?.allowSelfAttest);
     // Legacy prototype anchors carry no size/rows — fill them in when we hold the very same body (sha256 match).
     for (const e of value) {
       if (e.anchor.rows === 0 || e.anchor.size_bytes === 0) {
@@ -358,7 +365,17 @@ export class Market {
     return rec;
   }
 
+  /**
+   * Append one attestation (the verifier role's only write). Refuses a self-attestation — an author verifying its own
+   * anchor — unless `verifier.allowSelfAttest` is on: the derivation already excludes such records from the quorum
+   * (catalog.ts), and this stops the useless record from being written and broadcast at all.
+   */
   async attest(att: Attestation): Promise<void> {
+    const e = await this.entry(att.patch_id);
+    if (e && !this.cfg.verifier?.allowSelfAttest
+        && e.anchor.author.toLowerCase() === att.verifier.toLowerCase()) {
+      throw conflict(`cannot verify your own knowledge: ${att.patch_id} was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it.`);
+    }
     const rec = await this.ledger.append('attest', att);
     this.invalidate();
     this.log('info', 'verify', `attested ${att.patch_id}: ${att.passed ? 'PASS' : 'FAIL'} (${att.verified_on})`, att.patch_id, att.score);
@@ -367,7 +384,8 @@ export class Market {
   }
 
   async challenge(patchId: string, reason: string): Promise<void> {
-    const c: Challenge = { patch_id: patchId, challenger: this.address, reason, stake: this.cfg.verifier?.stake ?? '0', created_at: Date.now() };
+    // No `stake`: nothing is escrowed anywhere in this product, so the record does not claim a bond (item 127).
+    const c: Challenge = { patch_id: patchId, challenger: this.address, reason, created_at: Date.now() };
     const rec = await this.ledger.append('challenge', c);
     this.invalidate();
     this.log('warn', 'challenge', `challenged ${patchId}: ${reason}`, patchId);
@@ -559,9 +577,10 @@ export class Market {
     const steps: PurchaseResult['steps'] = [];
     const step = (s: string, d: string) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, patchId); };
     let entry = await this.entry(patchId);
-    if (entry && !entry.quorum_ok) { await this.refreshLedger(); entry = await this.entry(patchId); }
+    if (entry && !entry.sellable) { await this.refreshLedger(); entry = await this.entry(patchId); }
     if (!entry) throw notFound('patch not found');
     if (!entry.quorum_ok) throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
+    if (!entry.sellable) throw conflict(challengedMessage(entry));
     step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
     const gw = (entry.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? `${this.publicUrl}/x402/patch/${patchId}`;
     const r1 = await fetch(gw, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });

@@ -16,7 +16,7 @@ import {
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
 import { TeachAuth } from './teach-auth.js';
-import { ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
+import { challengedMessage, ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
 import { ChatCancelledError } from './chat-queue.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
@@ -811,10 +811,12 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/x402/patch/:id', wrap(async (req, res) => {
     const id = req.params.id as string;
     let e = await market.entry(id);
-    if (!e || !e.quorum_ok) { await market.refreshLedger(); e = await market.entry(id); }
+    if (!e || !e.sellable) { await market.refreshLedger(); e = await market.entry(id); }
     if (!e || e.status === 'DRAFT') throw notFound('patch not found');
     if (e.anchor.author !== market.address) throw new HttpError(409, `not sold here; gateway is ${(e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? 'unknown'}`);
     if (!e.quorum_ok) throw new HttpError(423, `patch not listed yet (verification ${e.passed}/${e.quorum})`);
+    // A challenged entry is locked, not discounted: no price is honest while a verifier disputes the result (item 153).
+    if (!e.sellable) throw new HttpError(423, challengedMessage(e));
     const resource = `/x402/patch/${id}`;
     const header = req.header(X402_HEADER_PAYMENT);
     if (!header) {
