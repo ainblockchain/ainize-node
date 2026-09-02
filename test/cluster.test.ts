@@ -17,7 +17,7 @@ const mk = (name: string, port: number, peers: string[], roles: NodeConfig['role
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };   // no runtime in tests → hash-only attestations
   cfg.gossipIntervalMs = 300;
-  cfg.verifier = { quorum: 2, stake: '5', allowSelfAttest: false, intervalMs: 400 };
+  cfg.verifier = { quorum: 2, allowSelfAttest: false, intervalMs: 400 };
   cfg.publicUrl = `http://127.0.0.1:${port}`;
   cfg.host = '127.0.0.1';
   return cfg;

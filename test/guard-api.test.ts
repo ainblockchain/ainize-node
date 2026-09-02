@@ -70,7 +70,7 @@ before(async () => {
   // patchDir = the mailbox of the instance `api` addresses → the cross-process lock lives under it (real code path)
   cfg.runtime = { repo: undefined, api, patchDir: MAILBOX };
   cfg.host = '127.0.0.1'; cfg.publicUrl = `http://127.0.0.1:${PORT}`;
-  cfg.verifier = { quorum: 1, stake: '5', allowSelfAttest: true, intervalMs: 300_000, auto: false };
+  cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300_000, auto: false };
   cfg.gossipIntervalMs = 60_000;
   N = await startNode(cfg, { quiet: true, serveWeb: false });
   url = `http://127.0.0.1:${PORT}`;

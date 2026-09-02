@@ -20,7 +20,7 @@ const mk = (name: string, port: number, peers: string[], roles: NodeConfig['role
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'ain', ainProviderUrl: PROVIDER });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
   cfg.gossipIntervalMs = 500;
-  cfg.verifier = { quorum: 1, stake: '5', allowSelfAttest: false, intervalMs: 800 };
+  cfg.verifier = { quorum: 1, allowSelfAttest: false, intervalMs: 800 };
   cfg.publicUrl = `http://127.0.0.1:${port}`; cfg.host = '127.0.0.1';
   cfg.includeTestAnchors = true;
   return cfg;

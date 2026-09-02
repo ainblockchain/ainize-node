@@ -111,6 +111,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
   }
   market.log('info', 'node', `node started (${ledger.kind} ledger, roles ${cfg.roles.join('/')})`);
+  // A config written before 2026-09 still carries `verifier.stake`. Nothing was ever escrowed or slashed for it, so
+  // the node ignores it and says so once — an operator must not go on believing money is at risk (item 127).
+  if (cfg.verifier?.stake !== undefined) {
+    market.log('warn', 'config', `verifier.stake ("${cfg.verifier.stake}") is ignored: no deposit is escrowed, transferred or slashed anywhere in this product. An attestation is backed by this node's signature on a permanent public record, and any node can challenge it. Remove the key from ${join(dirname(cfg.dataDir), 'config.json')}.`);
+  }
 
   // background loops
   await market.registerSelf().catch((e) => market.log('warn', 'node', `self-registration failed: ${(e as Error).message}`));
