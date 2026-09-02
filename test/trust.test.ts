@@ -18,7 +18,7 @@ import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-trust-'));
-const PORT = { A: 34031, B: 34032, C: 34033 };
+const PORT = { A: 34061, B: 34062, C: 34063 };   // 3406x is this file's range (chat.test.ts owns 34031, ain.test.ts 34031-2)
 const mk = (name: string, port: number, peers: string[], roles: NodeConfig['roles']): NodeConfig => {
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };   // no runtime → hash-only attestations
