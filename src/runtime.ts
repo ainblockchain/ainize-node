@@ -6,7 +6,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BenchmarkSpec, NodeConfig, RuntimeStatus } from '@ngram/core';
+import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ngram/core';
+import { guardAnswer, type GuardResult } from './degenerate.js';
 
 export interface VerifyOutcome {
   passed: boolean;
@@ -21,7 +22,37 @@ export interface VerifyOutcome {
 }
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
-export interface ChatResult { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
+export interface ChatResult {
+  /** What to show: the answer after the degeneracy guard (identical to `raw_content` unless it was cut). */
+  content: string;
+  reasoning?: string | null;
+  usage?: Record<string, unknown>;
+  latency_ms: number;
+  model: string;
+  /** Upstream finish_reason ("stop" | "length" | …). */
+  finish_reason?: string | null;
+  /** D1 — why the shown answer is shorter than what the model produced. */
+  truncated?: 'repetition' | 'length' | null;
+  shown_chars?: number;
+  raw_chars?: number;
+  /** The model's full output; only present when `truncated === 'repetition'`, so the UI can offer "show the raw answer". */
+  raw_content?: string;
+  /** Which guard rule fired, at what score/period (diagnostics; the UI does not show it). */
+  truncate_detail?: GuardResult['detail'];
+}
+
+/**
+ * D1 defaults, measured on the shared serving instance (PROBE A/B, 2026-09-01).
+ * chat: "\n\n\n\n" cannot cut a paragraphed answer but does end a runaway that fills the budget with blank lines;
+ * "<think>" catches the model dropping into a reasoning block when thinking was NOT requested (it is removed
+ * automatically when the caller asks for thinking, or it would truncate the reasoning itself).
+ * complete: "\n\n" — provably safe on all 26 real KRX benchmark prompts (the answer is a bare code on line 1) and
+ * measured to raise completion accuracy from 10/12 to 12/12 while halving degeneration.
+ * Penalties are deliberately unset: repetition_penalty 1.1 made degeneration WORSE (36.1% vs 33.3%) and
+ * frequency_penalty 1.0 bought a lower loop rate by dropping correct answers from 12/12 to 8/12.
+ */
+export const DEFAULT_CHAT_SAMPLING: SamplingOptions = { stop: ['\n\n\n\n', '<think>'], guard: true };
+export const DEFAULT_COMPLETE_SAMPLING: SamplingOptions = { stop: ['\n\n', '<think>'], guard: true };
 
 /** Shown to callers whenever the serving model cannot answer (engine crash, restart in progress, connection refused). */
 export const MODEL_UNAVAILABLE = 'model unavailable, try again in a few minutes';
@@ -60,10 +91,13 @@ export class Runtime {
    * in-process queue we take a cross-process lock (atomic mkdir under the shared repo) with a lease; a stale
    * lease (crashed holder) is broken after `staleMs`.
    */
-  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number): Promise<T> {
+  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void): Promise<T> {
     const run = async () => {
       const release = await this.acquireLock(label, undefined, waitMs);
       this.busy = { label, since: Date.now() };
+      // The caller learns the wait is over the instant the lock is ours — before any model call — so a request
+      // that is still queued can be told apart from one that is running (and cancelled for free while queued).
+      try { onEnter?.(); } catch { /* a bookkeeping callback must never fail the run */ }
       try { return await fn(); } finally { this.busy = null; release(); }
     };
     const next = this.queue.then(run, run);
@@ -76,16 +110,40 @@ export class Runtime {
   /** Number of callers waiting in the in-process queue (approximate). */
   private waiting = 0;
 
-  private lockDir(): string | null { return this.repo ? join(this.repo, 'ple_patch', '.ainize-runtime.lock') : null; }
+  /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
+  patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
+  private lockDir(): string | null { const d = this.patchDir(); return d ? join(d, '.ainize-runtime.lock') : null; }
 
-  /** Who holds the shared runtime lock right now (null = free). */
-  lockHolder(): { owner: string; label: string; since: number } | null {
+  /**
+   * Who holds the shared runtime lock right now (null = free).
+   * `alive`/`stale` use exactly the checks acquireLock() uses to break a lease, so the UI never reports a dead
+   * holder as a live one: before this, a holder.json left behind by a killed node made the "someone else is
+   * testing" banner permanent while every request in fact succeeded instantly (D3, inverted).
+   */
+  lockHolder(): { owner: string; label: string; since: number; alive: boolean; stale: boolean; mine: boolean } | null {
     const dir = this.lockDir();
     if (!dir || !existsSync(dir)) return null;
-    try { return JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { return null; }
+    let h: { owner: string; label: string; since: number };
+    try { h = JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { return null; }
+    if (!h || typeof h.owner !== 'string') return null;
+    return { ...h, alive: Runtime.holderAlive(h.owner), stale: Date.now() - h.since > Runtime.STALE_MS, mine: h.owner === this.owner };
   }
 
-  private async acquireLock(label: string, staleMs = 15 * 60_000, waitMs: number = 20 * 60_000): Promise<() => void> {
+  /** Lease length: a holder older than this is broken by acquireLock() and reported `stale` by lockHolder(). */
+  static readonly STALE_MS = 15 * 60_000;
+  /** A `pid:<n>` holder on this machine is probed the way acquireLock() probes it; any other owner is assumed alive. */
+  private static holderAlive(owner: string): boolean {
+    const pid = owner.startsWith('pid:') ? Number(owner.slice(4)) : null;
+    if (!pid || pid === process.pid) return true;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  /** What the shared model is doing and how many callers are behind it (D3 — the queue must be visible). */
+  queueState(): { running: { label: string; since: number } | null; waiting: number; lock: ReturnType<Runtime['lockHolder']> } {
+    return { running: this.busy ? { ...this.busy } : null, waiting: Math.max(0, this.waiting - (this.busy ? 1 : 0)), lock: this.lockHolder() };
+  }
+
+  private async acquireLock(label: string, staleMs = Runtime.STALE_MS, waitMs: number = 20 * 60_000): Promise<() => void> {
     const dir = this.lockDir();
     if (!dir) return () => undefined;
     const t0 = Date.now();
@@ -107,9 +165,9 @@ export class Runtime {
   }
 
   /** Run `fn` while holding the shared runtime lock (for multi-step operations such as apply → chat → restore). */
-  exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  exclusive<T>(label: string, fn: () => Promise<T>, opts: { onEnter?: () => void } = {}): Promise<T> {
     this.waiting++;
-    return this.serial(fn, label).finally(() => { this.waiting--; });
+    return this.serial(fn, label, undefined, opts.onEnter).finally(() => { this.waiting--; });
   }
 
   /**
@@ -128,16 +186,47 @@ export class Runtime {
     return this.serial(fn, label, left);
   }
 
+  /**
+   * Sampling for one generation path: the measured defaults with `runtime.sampling.<path>` merged over them.
+   * `null` means "exactly what this node sent before the D1 guard existed" — used by benchmark verification and by
+   * the teach worker, whose numbers must stay comparable with everything measured to date.
+   */
+  sampling(path: 'chat' | 'complete', override?: SamplingOptions | null): SamplingOptions | null {
+    if (override === null) return null;
+    const base = path === 'chat' ? DEFAULT_CHAT_SAMPLING : DEFAULT_COMPLETE_SAMPLING;
+    return { ...base, ...(this.cfg.sampling?.[path] ?? {}), ...(override ?? {}) };
+  }
+
+  /** The vLLM request fields a SamplingOptions turns into (omitted fields are simply not sent). */
+  private static samplingBody(s: SamplingOptions | null, thinking = false): Record<string, unknown> {
+    if (!s) return {};
+    const body: Record<string, unknown> = {};
+    // "<think>" must not stop a request that ASKED for thinking — it would truncate the reasoning block itself.
+    const stop = (s.stop ?? []).filter((x) => x && (!thinking || x !== '<think>'));
+    if (stop.length) body.stop = stop;
+    if (s.repetitionPenalty !== undefined) body.repetition_penalty = s.repetitionPenalty;
+    if (s.frequencyPenalty !== undefined) body.frequency_penalty = s.frequencyPenalty;
+    if (s.presencePenalty !== undefined) body.presence_penalty = s.presencePenalty;
+    return body;
+  }
+
   /** Chat completion on the serving model (OpenAI-compatible). Thinking is off by default so short factual answers come back directly. */
-  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number } = {}): Promise<ChatResult> {
+  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number; sampling?: SamplingOptions | null } = {}): Promise<ChatResult> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
+    const sampling = this.sampling('chat', opts.sampling);
     const t0 = Date.now();
     let r: Response;
     try {
       r = await fetch(`${this.cfg.api}/v1/chat/completions`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens ?? 256, temperature: opts.temperature ?? 0, chat_template_kwargs: { enable_thinking: !!opts.thinking } }),
+        body: JSON.stringify({
+          model, messages,
+          max_tokens: opts.maxTokens ?? sampling?.maxTokens ?? 256,
+          temperature: opts.temperature ?? sampling?.temperature ?? 0,
+          chat_template_kwargs: { enable_thinking: !!opts.thinking },
+          ...Runtime.samplingBody(sampling, !!opts.thinking),
+        }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
       });
     } catch (e) { throw this.markDown(`chat: ${(e as Error).message}`); }
@@ -146,20 +235,43 @@ export class Runtime {
       if (Runtime.isModelFailure(r.status)) throw this.markDown(`chat failed: ${r.status} ${text}`);
       throw new Error(`chat failed: ${r.status} ${text}`);
     }
-    const j = (await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string } }[]; usage?: Record<string, unknown> };
-    const m = j.choices?.[0]?.message;
+    const j = (await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string }; finish_reason?: string }[]; usage?: Record<string, unknown> };
+    const c = j.choices?.[0];
+    const m = c?.message;
     this.downUntil = 0;
-    return { content: m?.content ?? '', reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: Date.now() - t0, model };
+    const lastUser = [...messages].reverse().find((x) => x.role === 'user')?.content ?? '';
+    const g = guardAnswer(m?.content ?? '', c?.finish_reason ?? null, lastUser, !!sampling && sampling.guard !== false);
+    return {
+      content: g.text, reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: Date.now() - t0, model,
+      finish_reason: c?.finish_reason ?? null, ...Runtime.guardFields(g),
+    };
   }
 
-  /** Raw completion without the shared lock (read-only w.r.t. the table). */
-  async completeRaw(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> { return this.complete(prompt, maxTokens, timeoutMs); }
+  /** The truncation fields of a ChatResult / completion response (`raw_content` only when something was cut). */
+  private static guardFields(g: GuardResult) {
+    return {
+      truncated: g.truncated, shown_chars: g.shown_chars, raw_chars: g.raw_chars,
+      ...(g.truncated === 'repetition' ? { raw_content: g.raw, truncate_detail: g.detail } : {}),
+    };
+  }
+
+  /**
+   * Raw completion without the shared lock (read-only w.r.t. the table) and WITHOUT sampling or the guard —
+   * the teach worker scores facts with it, and those numbers must stay comparable across the D1 change.
+   */
+  async completeRaw(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> { return this.complete(prompt, maxTokens, timeoutMs, { sampling: null }); }
 
   private py(args: string[], timeoutMs = 600_000): Promise<{ code: number; out: string; err: string }> {
     return new Promise((resolve) => {
       const repo = this.repo;
       if (!repo) return resolve({ code: 127, out: '', err: 'runtime repo not configured' });
-      const p = spawn(this.cfg.python ?? 'python3', args, { cwd: repo, env: { ...process.env, ENGRAM_API: this.cfg.api ?? '' } });
+      const patchDir = this.patchDir();
+      // ENGRAM_PATCH_DIR points engram/live.py at THIS instance's mailbox (engram/live.py:14); without it every node
+      // writes into <repo>/ple_patch — the mailbox of whichever server happens to watch it, not the one `api` addresses.
+      const p = spawn(this.cfg.python ?? 'python3', args, {
+        cwd: repo,
+        env: { ...process.env, ENGRAM_API: this.cfg.api ?? '', ...(patchDir ? { ENGRAM_PATCH_DIR: patchDir } : {}) },
+      });
       let out = '', err = '';
       const t = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
       p.stdout.on('data', (d) => (out += d));
@@ -211,34 +323,53 @@ export class Runtime {
     return r.out.includes('끼워짐');
   }
 
-  /** Cheap liveness probe: a 1-token completion must return within `timeoutMs`. */
+  /** Cheap liveness probe: a 1-token completion must return within `timeoutMs` (unsampled — it only needs a reply). */
   async probe(timeoutMs = 45_000): Promise<boolean> {
-    try { await this.complete('Q: 1+1=\nA:', 1, timeoutMs); return true; } catch { return false; }
+    try { await this.complete('Q: 1+1=\nA:', 1, timeoutMs, { sampling: null }); return true; } catch { return false; }
   }
 
-  async complete(prompt: string, maxTokens = 8, timeoutMs = 300_000): Promise<string> {
+  async complete(prompt: string, maxTokens = 8, timeoutMs = 300_000, opts: { sampling?: SamplingOptions | null } = {}): Promise<string> {
+    return (await this.completeDetailed(prompt, { maxTokens, timeoutMs, ...opts })).content;
+  }
+
+  /**
+   * Completion with the guard verdict attached (POST /api/runtime/complete). `sampling: null` reproduces exactly
+   * what this node sent before D1: no stop sequences, no guard, raw text.
+   */
+  async completeDetailed(prompt: string, opts: { maxTokens?: number; timeoutMs?: number; sampling?: SamplingOptions | null } = {}): Promise<ChatResult> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
+    const sampling = this.sampling('complete', opts.sampling);
+    const maxTokens = opts.maxTokens ?? sampling?.maxTokens ?? 8;
+    const t0 = Date.now();
     let r: Response;
     try {
       r = await fetch(`${this.cfg.api}/v1/completions`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model, prompt, max_tokens: maxTokens, temperature: 0 }),
-        signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({ model, prompt, max_tokens: maxTokens, temperature: sampling?.temperature ?? 0, ...Runtime.samplingBody(sampling) }),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
       });
     } catch (e) { throw this.markDown(`completion: ${(e as Error).message}`); }
     if (!r.ok) {
       if (Runtime.isModelFailure(r.status)) throw this.markDown(`completion failed: ${r.status} ${(await r.text().catch(() => '')).slice(0, 200)}`);
       throw new Error(`completion failed: ${r.status}`);
     }
-    const j = (await r.json()) as { choices: { text: string }[] };
+    const j = (await r.json()) as { choices: { text: string; finish_reason?: string }[] };
     this.downUntil = 0;
-    return j.choices?.[0]?.text ?? '';
+    const c = j.choices?.[0];
+    const g = guardAnswer(c?.text ?? '', c?.finish_reason ?? null, prompt, !!sampling && sampling.guard !== false);
+    return { content: g.text, latency_ms: Date.now() - t0, model, finish_reason: c?.finish_reason ?? null, ...Runtime.guardFields(g) };
   }
 
   /**
    * Restart-aware verification (청구항 2): apply → score samples in chunks, re-checking a sample row
    * between chunks; if the table reverted (serving restart) re-apply and re-measure the chunk; restore.
+   *
+   * DELIBERATELY EXEMPT FROM D1 SAMPLING. Every generation below passes `sampling: null`, i.e. the request body
+   * this node has always sent: {model, prompt, max_tokens: 8, temperature: 0}, no stop sequences, no guard.
+   * A stop sequence can only ever cut an answer short, so adding one here could only lower the hit count — it
+   * would change what an attestation measures, and scores published before and after would stop being comparable.
+   * The prompts are also sent verbatim (`s.prompt`, trailing space included) exactly as before.
    */
   async verify(npz: string, bench: BenchmarkSpec, opts: { restore?: boolean; maxSamples?: number } = {}): Promise<VerifyOutcome> {
     return this.serial(async () => {
@@ -253,7 +384,7 @@ export class Runtime {
       const before: VerifyOutcome['details'] = [];
       if (!wasApplied) {
         for (const s of samples.slice(0, Math.min(samples.length, 8))) {
-          const got = (await this.complete(s.prompt)).trim();
+          const got = (await this.complete(s.prompt, 8, 300_000, { sampling: null })).trim();
           before.push({ prompt: s.prompt, expect: s.expect, got, hit: got.startsWith(s.expect) });
         }
         log.push(`pre-apply hits ${before.filter((d) => d.hit).length}/${before.length}`);
@@ -270,7 +401,7 @@ export class Runtime {
         for (;;) {
           const res: VerifyOutcome['details'] = [];
           for (const s of chunk) {
-            const got = (await this.complete(s.prompt)).trim();
+            const got = (await this.complete(s.prompt, 8, 300_000, { sampling: null })).trim();
             res.push({ prompt: s.prompt, expect: s.expect, got, hit: got.startsWith(s.expect) });
           }
           const still = await this.isApplied(npz);

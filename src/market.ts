@@ -17,6 +17,7 @@ import {
 import { BlobStore } from './blobs.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
+import { ChatCancelledError, ChatQueue } from './chat-queue.js';
 import type { Store, BlobRow, EventRow } from './store.js';
 import { Payouts } from './payouts.js';
 
@@ -86,6 +87,59 @@ const unavailable = (msg: string) => new MarketError(503, msg);
 
 /** Who is asking for a knowledge in a live test / teach context (drafts are owner- or operator-only). */
 export interface Caller { address?: string | null; operator?: boolean }
+
+/** One live test: what to load, what to ask, and (D3) the client's id for it. */
+export interface ChatOpts {
+  patchIds?: string[]; patchId?: string;
+  /** The conversation, ending with the question to answer. Used for both columns unless one is overridden below. */
+  messages: ChatMessage[];
+  /**
+   * Compare mode with a history: each column must replay ITS OWN earlier answers. Feeding the patched answer back
+   * to the un-patched model teaches it the knowledge inside the very test meant to show it does not have it — from
+   * turn 2 the "before" column just repeats what the knowledge said. Both arrays end with the same question
+   * (enforced in POST /api/chat); when absent the column falls back to `messages`.
+   */
+  messagesBase?: ChatMessage[];
+  messagesPatched?: ChatMessage[];
+  mode: 'base' | 'patched' | 'compare';
+  maxTokens?: number; thinking?: boolean;
+  visitor: string; caller?: Caller;
+  /** Client-side id: registers a queue ticket so the wait is visible and a give-up while queued is free. */
+  requestId?: string;
+}
+
+/** The answer(s) of one live test, plus what was loaded and how it scored. */
+export interface ChatOutcome {
+  patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
+  applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
+  applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[];
+  benchmark_hits: Record<string, boolean | null>;
+  /** How many messages each column was actually sent, and whether the two conversations differed. */
+  history: { base: number; patched: number; split: boolean };
+}
+
+/** Shortest visitor question that may be matched to a benchmark sample by containment (D2). */
+export const BENCH_MATCH_MIN = 8;
+
+/**
+ * The benchmark sample a visitor's question should be auto-scored against (D2 — "keep benchmark_hit honest").
+ *
+ * Trimmed equality first, so a sample chip sent verbatim ("종목코드 픽셀플러스 ") scores against its own sample even
+ * though the label drops the trained trailing space. Containment is then allowed only for questions of at least
+ * BENCH_MATCH_MIN characters: without that floor "드" — the one-character prompt that produced the runaway in D1 —
+ * matched "종목코드 픽셀플러스 " and was shown to the visitor as ✗ Wrong against a ticker it never asked about.
+ * (So did "코드", "종목" and a single space.)
+ *
+ * packages/web/src/components/chat/util.ts mirrors this rule so the ✓/✗ chip and the node never disagree.
+ */
+export function matchBenchmarkSample(samples: { prompt: string; expect: string }[] | undefined, userText: string): { prompt: string; expect: string } | undefined {
+  const u = (userText ?? '').trim();
+  if (!u || !samples?.length) return undefined;
+  const exact = samples.find((x) => x.prompt.trim() === u);
+  if (exact) return exact;
+  if (u.length < BENCH_MATCH_MIN) return undefined;
+  return samples.find((x) => u.includes(x.prompt.trim()) || x.prompt.trim().includes(u));
+}
 
 export class Market {
   private catalogCache: { at: number; value: CatalogEntry[] } | null = null;
@@ -612,6 +666,8 @@ export class Market {
 
   // ------------------------------------------------------------------ ChatMode (live test of a knowledge patch)
   private chatUsage = new Map<string, { count: number; window: number }>();
+  /** D3 — one ticket per live test so the client can be told it is queued (and cancel while it still costs nothing). */
+  readonly chatQueue = new ChatQueue();
 
   /** Per-visitor trial quota for public live tests (operator is unlimited). Returns remaining or -1 when exhausted. */
   chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true, units = 1): number {
@@ -621,6 +677,17 @@ export class Market {
     if (cur.count + units > limit) return -1;
     if (consume) { cur.count += units; this.chatUsage.set(visitor, cur); }
     return limit - cur.count;
+  }
+
+  /**
+   * When the caller's current free-try hour ends (epoch ms), or null if no window is open. The client shows this in
+   * place of a Retry button that cannot work — a measured instant, not "try again in an hour".
+   */
+  chatQuotaResetsAt(visitor: string, windowMs = 3600_000): number | null {
+    const u = this.chatUsage.get(visitor);
+    if (!u) return null;
+    const end = u.window + windowMs;
+    return end > Date.now() ? end : null;
   }
 
   /**
@@ -641,11 +708,17 @@ export class Market {
    * the last one wins on overlapping addresses → patched answer] → restore in reverse (remove what we added, re-apply
    * what we removed). Every patched answer is metered as one `usage` event PER PATCH (청구항 12 적중당 과금의 계량 단위).
    */
-  async chat(opts: { patchIds?: string[]; patchId?: string; messages: ChatMessage[]; mode: 'base' | 'patched' | 'compare'; maxTokens?: number; thinking?: boolean; visitor: string; caller?: Caller }): Promise<{
-    patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
-    applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
-    applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[]; benchmark_hits: Record<string, boolean | null>;
-  }> {
+  async chat(opts: ChatOpts): Promise<ChatOutcome> {
+    // D3: the ticket exists from the first millisecond, so GET /api/chat/status answers "queued" even while this
+    // request is still resolving catalogue entries or waiting on the shared lock.
+    // The ticket's label is the one the lock will take, base-only turns included: `chat:` with nothing after it is
+    // what the visible queue used to show for "ask the model with nothing of mine loaded".
+    const qIds = (opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean);
+    const ticket = opts.requestId ? this.chatQueue.open(opts.requestId, opts.visitor, qIds.length ? `chat:${qIds.join('+')}` : 'chat:base') : null;
+    try { return await this.chatInner(opts); } finally { if (ticket) this.chatQueue.close(ticket.id); }
+  }
+
+  private async chatInner(opts: ChatOpts): Promise<ChatOutcome> {
     const ids = [...new Set((opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean))];
     // An EMPTY selection is legal and means "ask the model this node serves, with nothing of mine loaded". Teach mode's
     // conversational door starts exactly there: you correct the model before any knowledge for it exists, and on a node
@@ -670,10 +743,20 @@ export class Market {
       if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw conflict(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
       targets.push({ id, entry, path: blob.path });
     }
-    const msgs = opts.messages.slice(-24).map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
+    const clamp = (m: ChatMessage[]) => m.slice(-24).map((x) => ({ role: x.role, content: String(x.content).slice(0, 4000) }));
+    const msgs = clamp(opts.messages);
+    // One question, two conversations: the base call replays what the BASE model said before, the patched call what
+    // the patched model said. Same last question either way (POST /api/chat rejects a pair that disagrees on it).
+    const msgsBase = opts.messagesBase ? clamp(opts.messagesBase) : msgs;
+    const msgsPatched = opts.messagesPatched ? clamp(opts.messagesPatched) : msgs;
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
     const label = baseOnly ? 'chat:base' : `chat:${ids.join('+')}`;
+    // `onEnter` fires the instant the shared lock is ours, before any model call: that is both when the client's
+    // "queued" turns into "running" and the last moment a give-up costs the visitor nothing.
+    let gaveUp = false;
+    const onEnter = opts.requestId ? () => { gaveUp = !this.chatQueue.enter(opts.requestId!); } : undefined;
     return this.runtime.exclusive(label, async () => {
+      if (gaveUp) throw new ChatCancelledError();
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
       const wasApplied: boolean[] = [];
       for (const t of targets) wasApplied.push((await this.runtime.isApplied(t.path)) === true);
@@ -688,7 +771,7 @@ export class Market {
             const r = await this.runtime.removeRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
             loaded[i] = false;
           }
-          base = await this.runtime.chat(msgs, chatOpts);
+          base = await this.runtime.chat(msgsBase, chatOpts);
         }
         if (mode === 'patched' || mode === 'compare') {
           // Apply everything in list order unless every patch is already on the table (single-patch fast path kept):
@@ -699,7 +782,7 @@ export class Market {
               appliedMs[i] = Date.now() - t0; loaded[i] = true;
             }
           }
-          patched = await this.runtime.chat(msgs, chatOpts);
+          patched = await this.runtime.chat(msgsPatched, chatOpts);
         }
       } finally {
         // Always leave the shared table the way we found it: drop what we added (reverse order), then put back what
@@ -722,8 +805,11 @@ export class Market {
       const hits: Record<string, boolean | null> = {};
       const applied = targets.map((t, i) => ({ patch_id: t.id, applied_ms: appliedMs[i], was_applied: wasApplied[i] }));
       for (const [i, t] of targets.entries()) {
-        const sample = t.entry.anchor.benchmark.samples?.find((x) => lastUser.includes(x.prompt.trim()) || x.prompt.includes(lastUser.trim()));
-        const hit = sample && patched ? patched.content.replace(/\s/g, '').includes(sample.expect) : null;
+        const sample = matchBenchmarkSample(t.entry.anchor.benchmark.samples, lastUser);
+        // Scored on what the MODEL produced, not on what the D1 guard shows: truncating a runaway must never
+        // change a ✓/✗ verdict (and a correct bare ticker is never truncated anyway).
+        const answer = patched ? patched.raw_content ?? patched.content : null;
+        const hit = sample && answer !== null ? answer.replace(/\s/g, '').includes(sample.expect) : null;
         hits[t.id] = hit;
         this.log('info', 'usage', `live test ${t.id}${ids.length > 1 ? ` [+${ids.length - 1}]` : ''} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, t.id,
           { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1 });
@@ -736,8 +822,9 @@ export class Market {
         applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0] ?? false, model: st.model,
         benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
         applied, benchmark_hits: hits,
+        history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
-    });
+    }, { onEnter });
   }
 
   /** Patches whose bodies are on this node (testable in ChatMode). */

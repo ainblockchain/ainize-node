@@ -3,7 +3,7 @@
  * Runs against the live cluster; labels come from packages/web/src/i18n (English).
  */
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { NODE_A, NODE_B, NODE_C, CHAIN, K, api, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
+import { NODE_A, NODE_B, NODE_C, CHAIN, K, VLLM, api, holdRuntimeLock, operatorToken, startRuntimeProxy, startThrowawayNode, waitForLockFree, waitForRuntime } from '../helpers/ainize';
 import { PIXEL_NPZ } from '../helpers/operator-cli';
 import { bubble, chip, freshVisitor, modeRadio, nodeAAddress, quotaFooter, sendButton, sendPrompt, textarea, turns, visitorHeaders, waitForLock, waitTurnDone } from '../helpers/visitor-chat';
 
@@ -23,7 +23,12 @@ function executedAccuracyPct(e: CatalogEntry): number | null {
   const m = /^(\d+)\s*\/\s*(\d+)$/.exec(String(raw ?? ''));
   return m && Number(m[2]) ? Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10 : null;
 }
-interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number }[] }
+interface PatchDetail { anchor: CatalogEntry['anchor'] & { patch_sha256: string; benchmark_hash: string; model: { id_M: string; checkpoint_hash: string; row_dim: number } }; record_hash: string; gateway_url: string; superseded_by: string[]; supersedes: string[]; downloads: number; revenue: string; attestations: { verifier: string; verifier_name: string; created_at: number; score: Record<string, string | number>; collateral_nat?: number | null }[] }
+/** POST /api/chat (the fields D1/D2 added: the guard verdict and the honest score). */
+interface ChatAnswer { content: string; truncated: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string; finish_reason: string | null }
+interface ChatResponse { patched: ChatAnswer; base: ChatAnswer | null; benchmark_hit: boolean | null; benchmark_hits: Record<string, boolean | null>; remaining_quota: number | null; quota_limit: number | null }
+/** POST /api/runtime/complete — `raw: true` reproduces the pre-guard request body. */
+interface CompleteResponse { text: string; finish_reason: string | null; truncated: 'repetition' | 'length' | null; shown_chars: number; raw_chars: number; raw_text?: string }
 interface Info { node: { address: string; blobs: string[] }; ledger: { records: number; height: number; provider: string; app: string }; counts: { listed: number; verifying: number }; quorum: number; royalty_share: number; peers: number }
 
 const dd = (page: Page, label: string) => page.locator(`xpath=//dt[normalize-space()="${label}"]/following-sibling::dd[1]`);
@@ -31,6 +36,12 @@ const stat = (page: Page, name: string) => page.locator(`xpath=//div[normalize-s
 const rows = (page: Page) => page.locator('main a[href^="/0x"]');
 const idOf = (href: string | null) => decodeURIComponent((href ?? '').split('/').pop() ?? '');
 const selectButton = (page: Page) => page.locator('button[aria-haspopup="listbox"]');
+/** Explore opens on "Current only" (superseded/rejected hidden). Switch it to the full catalogue. */
+const showAllVersions = async (page: Page) => {
+  const req = page.waitForRequest((r) => r.url().includes('/api/catalog') && !r.url().includes('status='));
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
+  await req;
+};
 async function choose(page: Page, label: string) {
   const btn = selectButton(page);
   await btn.click();
@@ -93,7 +104,8 @@ test('AZ-002 Inspect the trending card for the only verified knowledge', async (
   await expect(card).toContainText(`Creator: node-a · ${MODEL}`);
   const line = (label: string) => card.locator('div', { hasText: new RegExp(`^${label}`) }).first();
   await expect(line('facts covered')).toContainText('2,761 facts');
-  await expect(line('accuracy')).toContainText('100% (26/26)');
+  // the denominator is the attestation's own 26 questions, named next to the 2,761 the knowledge covers
+  await expect(line('accuracy')).toContainText('100% on a 26-question sample of 2,761');
   await expect(line('Verified')).toContainText('Verified (2/2 independent verifiers)');
   await expect(line('Price')).toContainText('25 AIN');
   await expect(line('Price')).toContainText(AIN_NOTE);
@@ -125,22 +137,47 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Explore knowledge');
   await expect(page.getByText('Choose by verification status and accuracy. You can check any of it with a live test before buying.')).toBeVisible();
-  await expect(page.getByText(`${cat.total} knowledge`, { exact: true })).toBeVisible();
+
+  // Opens on "Current only": the three superseded versions are held back and the page says how many and offers them.
+  const current = cat.items.filter((e) => !['SUPERSEDED', 'REJECTED'].includes(e.status));
+  expect(current.length).toBe(1);
   expect(cat.total).toBe(4);
+  await expect(page.getByText(`${current.length} knowledge`, { exact: true })).toBeVisible();
+  await expect(page.getByTestId('explore-hidden')).toHaveText(`${cat.total - current.length} older versions hidden · show`);
+  await expect(page.getByTestId('explore-hidden')).toHaveAttribute('title', '"Current only" hides knowledge that a newer version replaced and knowledge that failed verification.');
+  await expect(rows(page)).toHaveCount(current.length);
+  await page.getByTestId('explore-hidden').getByRole('button', { name: 'show' }).click();
+  await expect(page.getByText(`${cat.total} knowledge`, { exact: true })).toBeVisible();
+  await expect(page.getByTestId('explore-hidden')).toHaveCount(0);
 
   const row = page.locator(`main a[href$="/${K.final}"]`);
   await expect(row).toContainText(FINAL_NAME);
-  await expect(row.locator('span', { hasText: /^Verified$/ })).toHaveCount(2); // certified label + status chip
-  await expect(row.locator('span', { hasText: /^Verified$/ }).last()).toHaveCSS('color', 'rgb(68, 164, 95)');
+  // "Verified" is the attestation badge; the chip beside it is the LISTING state. One word for two things read as a
+  // rendering bug, so the chip now says what it means: "Verified ✓ · For sale".
+  await expect(row.locator('span', { hasText: /^Verified$/ })).toHaveCount(1);   // the certified label, once
+  const saleChip = row.locator('span', { hasText: /^For sale$/ });
+  await expect(saleChip).toHaveCount(1);
+  await expect(saleChip).toHaveCSS('color', 'rgb(68, 164, 95)');
+  await expect(saleChip).toHaveAttribute('title', 'On sale as the current version for this topic. Whether it passed verification is what the "Verified" badge beside it says.');
+  // the seal means something: full colour for the current verified version…
+  const seal = row.getByTestId('seal-sealed');
+  await expect(seal).toHaveCount(1);
+  await expect(seal).toHaveCSS('filter', 'none');
   await expect(row).toContainText(`node-a / ${K.final}`);
   await expect(row).toContainText(`Creator: node-a · Target model: ${MODEL} · Topic: krx-ticker-codes`);
   await expect(row).toContainText(`2,761 facts · 270,053 memory entries · Size 331.7 MB · ${num(final.downloads)} downloads`);
-  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% accuracy');
+  await expect(row).toContainText('Verified (2/2 independent verifiers) · 100% (26/26 checked) · asked as template + chat');
   await expect(row).toContainText('25 AIN');
   await expect(row).toContainText(AIN_NOTE);
 
   const prow = page.locator(`main a[href$="/${K.pixel}"]`);
-  await expect(prow).toContainText('Newer version available');
+  await expect(prow).toContainText(`Newer version: ${K.final}`);
+  // …and a greyed-out one for a retired version, instead of the same purple seal on every card
+  await expect(prow.getByTestId('seal-retired')).toHaveCount(1);
+  await expect(prow.getByTestId('seal-retired')).toHaveCSS('filter', 'grayscale(1)');
+  await expect(prow.getByTestId('seal-sealed')).toHaveCount(0);
+  // its own verifiers scored 4 questions, not the 8 facts the row also prints
+  await expect(prow).toContainText('Verified (2/2 independent verifiers) · 100% (4/4 checked)');
   await expect(prow).toContainText(`${num(pixel.anchor.benchmark.queries)} facts · ${num(pixel.anchor.rows)} memory entries`);
   expect(`${num(pixel.anchor.benchmark.queries)} facts · ${num(pixel.anchor.rows)} memory entries`).toBe('8 facts · 2,992 memory entries');
   await expect(prow).toContainText('0.1 AIN');
@@ -160,6 +197,7 @@ test('AZ-003 Browse the Explore list and read every field of a knowledge row', a
 
 test('AZ-013 Re-order Explore by each sort option', async ({ page, request }) => {
   await page.goto(NODE_A + '/explore');
+  await showAllVersions(page);          // sorting is about the whole catalogue, not the default "Current only" view
   await expect(rows(page)).toHaveCount(4);
   const order = async () => (await rows(page).evaluateAll((as) => as.map((a) => a.getAttribute('href')))).map(idOf);
 
@@ -196,15 +234,29 @@ test('AZ-013 Re-order Explore by each sort option', async ({ page, request }) =>
   await expect(selectButton(page)).toHaveText('Most popular');
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   expect(await order()).toEqual(popular.items.map((e) => e.anchor.id));
+  // "Most popular" ranks tradeable before retired: the LISTED knowledge heads the list even though the superseded
+  // single-fact item has accumulated far more downloads.
+  expect(popular.items[0].status).toBe('LISTED');
+  expect(popular.items[0].anchor.id).toBe(K.final);
+  const pixel = popular.items.find((e) => e.anchor.id === K.pixel)!;
+  expect(pixel.status).toBe('SUPERSEDED');
+  expect(pixel.downloads, 'the retired item still has the most downloads').toBeGreaterThan(popular.items[0].downloads);
+  expect(popular.items.map((e) => e.status)).toEqual(['LISTED', 'SUPERSEDED', 'SUPERSEDED', 'SUPERSEDED']);
 });
 
 test('AZ-014 Filter Explore by model and topic and search, including the empty state', async ({ page, request }) => {
   const cat = await catalog(request);
-  const visibleTopics = [...new Set(cat.items.map((e) => (e.anchor as { benchmark: { schema: string } }).benchmark.schema))];
+  const visibleTopics = [...new Set(cat.items.map((e) => (e.anchor as unknown as { benchmark: { schema: string } }).benchmark.schema))];
   expect(visibleTopics).toEqual(['krx-ticker-codes']);
   await page.goto(NODE_A + '/explore');
-  await expect(rows(page)).toHaveCount(4);
   const group = (label: string) => page.locator('div', { has: page.locator(`span.label:text-is("${label}")`) }).last();
+  // the third chip group: "Current only" is the default, "All versions" brings the retired ones back
+  await expect(group('Show').getByRole('button')).toHaveText(['Current only', 'All versions']);
+  await expect(group('Show').getByRole('button', { name: 'Current only' })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await expect(rows(page)).toHaveCount(1);
+  await showAllVersions(page);
+  await expect(group('Show').getByRole('button', { name: 'All versions' })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await expect(rows(page)).toHaveCount(4);
   await expect(group('Model').getByRole('button')).toHaveText(['All', MODEL]);
   // PRODUCT BUG candidate: /api/catalog builds `schemas`/`models` from the unfiltered catalog, so the topic of a
   // test-visibility knowledge (invisible in the list) can leak into the Topic chips. Soft so the rest is still checked.
@@ -254,17 +306,40 @@ test('AZ-014 Filter Explore by model and topic and search, including the empty s
 test('AZ-017 Compare all knowledge on the same subject and hit the unknown-topic 404', async ({ page, request }) => {
   await page.goto(NODE_A + '/benchmarks/krx-ticker-codes');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Knowledge on this topic krx-ticker-codes');
-  await expect(page.getByText(`4 knowledge · 1 verified · models: ${MODEL}`)).toBeVisible();
-  await expect(page.getByText('Knowledge on the same topic is scored with the same question set, so it can be compared. When contents overlap, the newer verified knowledge replaces the older one ("Newer version available").')).toBeVisible();
+  await expect(page.getByText(`4 knowledge · 1 current version(s) · 3 question set(s) · models: ${MODEL}`)).toBeVisible();
+  await expect(page.getByText('Scores are comparable only within one question set. The list below is grouped by the question set the verifiers used — a different set is a different exam, and those numbers cannot be lined up against each other. When contents overlap, the newer verified knowledge replaces the older one ("Newer version available").')).toBeVisible();
   const back = page.getByRole('link', { name: 'Back to Explore' });
   await expect(back).toBeVisible();
+
+  // Finding 24: these four items carry THREE benchmark hashes, so they are three different exams. The page groups
+  // them and names each set — the API is the source of the grouping.
+  const bench = (await api<{ items: { anchor: { id: string; benchmark_hash: string; benchmark: { format: string[]; queries: number } } }[] }>(request, '/api/benchmarks/krx-ticker-codes')).body.items;
+  const sets = new Map(bench.map((e) => [e.anchor.benchmark_hash, e.anchor]));
+  expect(sets.size, 'the demo catalogue really does span three question sets').toBe(3);
+  const heads = page.getByTestId('bench-group-head');
+  await expect(heads).toHaveCount(3);
+  await expect(heads.nth(0)).toContainText('Question set · template + chat · 2,761 questions');
+  await expect(heads.nth(1)).toContainText('Question set · template · 2,761 questions');
+  await expect(heads.nth(2)).toContainText('Question set · template + natural · 8 questions');
+  for (const [hash] of sets) await expect(page.getByTestId('bench-group-head').filter({ hasText: hash.slice(0, 8) })).toHaveCount(1);
+  // the final's group holds it alone; the two epoch snapshots share one set and say they are comparable with each other
+  const groups = page.getByTestId('bench-group');
+  await expect(groups.nth(0)).toContainText('The only knowledge scored on this question set — nothing here to compare it with.');
+  await expect(groups.nth(1)).toContainText('These 2 were scored on this same question set, so they can be compared with each other.');
+  await expect(groups.nth(0).locator('a[href^="/0x"]')).toHaveCount(1);
+  await expect(groups.nth(1).locator('a[href^="/0x"]')).toHaveCount(2);
+  // and each card carries the form its questions were asked in, next to the accuracy
+  await expect(groups.nth(0).getByTestId('item-format')).toHaveText('asked as template + chat');
+  await expect(groups.nth(2).getByTestId('item-format')).toHaveText('asked as template + natural');
 
   await selectButton(page).click();
   await expect(page.getByRole('option')).toHaveText(['Most popular', 'Newest', 'Knowledge size']);
   await page.getByRole('option', { name: 'Knowledge size' }).click();
   await expect(rows(page)).toHaveCount(4);
+  // the sort orders the cards INSIDE each question set; the sets themselves stay newest-first
   const order = (await rows(page).evaluateAll((as) => as.map((a) => a.getAttribute('href')))).map(idOf);
   expect(order[0]).toBe(K.final);
+  expect(order.slice(1, 3).sort()).toEqual([K.ep12, K.ep6].sort());
   expect(order[3]).toBe(K.pixel);
   await expect(rows(page).first()).toContainText(`Creator: node-a · Target model: ${MODEL} · Topic: krx-ticker-codes`);
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
@@ -299,15 +374,18 @@ test('AZ-004 Read the knowledge detail header and stat strip', async ({ page, re
   await expect(subject).toBeVisible();
 
   await expect(page.getByText('Verified on the real model 2/2 · Verified')).toBeVisible();
-  await expect(page.locator('span', { hasText: /^Verified$/ }).first()).toBeVisible();
+  await expect(page.locator('span', { hasText: /^For sale$/ }).first()).toBeVisible();
   // PRODUCT BUG candidate: PatchPage renders the "Manage" link from `data.owned` (server-side author === node address),
   // not from the operator session, so a signed-out visitor sees it too. Soft assertion so the rest of the page is still checked.
   await expect.soft(page.getByRole('link', { name: /^Manage/ }), 'no Manage link for a visitor').toHaveCount(0);
   await expect(page.getByText(new RegExp(`By node-a · target model ${MODEL.replace('.', '\\.')} · verified \\d+(s|m|h|d) ago`))).toBeVisible();
 
   await expect(stat(page, 'Purchases')).toHaveText(num(d.downloads));
-  await expect(stat(page, 'accuracy')).toHaveText('100%');
-  await expect(page.locator('xpath=//div[normalize-space()="accuracy"]/following-sibling::div[1]')).toHaveText('26/26');
+  // Finding 28: the hero stat is the PAIR the verifiers measured — "1 of 8 right before, 26 of 26 after" — with the
+  // percentage as its note. "100%" alone could not tell a buyer whether the model already knew the answers.
+  await expect(stat(page, 'accuracy')).toHaveText('1/8 → 26/26');
+  await expect(stat(page, 'accuracy')).toHaveAttribute('title', 'The same verification run scored 1/8 before the knowledge was loaded and 26/26 after.');
+  await expect(page.locator('xpath=//div[normalize-space()="accuracy"]/following-sibling::div[1]')).toHaveText('100% after loading');
   await expect(stat(page, 'Memory entries')).toHaveText('270,053');
   await expect(stat(page, 'Facts')).toHaveText('2,761');
   await expect(stat(page, 'Size')).toHaveText('331.7 MB');
@@ -335,9 +413,10 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
   const summary = (k: string) => page.locator('div', { has: page.locator(`span.k:text-is("${k}")`) }).last().locator('span.v');
   await expect(summary('Run on the real model')).toHaveText('2/2');
   await expect(summary('Integrity only')).toHaveText('0');
-  await expect(summary('Status')).toHaveText('Verified');
+  await expect(summary('Status')).toHaveText('For sale');
 
-  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time']);
+  // Finding 28: both verifiers recorded pre_apply "1/8" and it was rendered nowhere. It is a column now.
+  await expect(page.locator('thead th')).toHaveText(['Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time']);
   const body = page.locator('tbody tr');
   await expect(body).toHaveCount(d.attestations.length);
   expect(d.attestations.length).toBe(2);
@@ -348,17 +427,22 @@ test('AZ-005 Read the Verification tab and confirm only real-model runs count', 
     const cells = row.locator('td');
     await expect(cells.nth(0)).toContainText(`${address.slice(0, 10)}…${address.slice(-4)}`);
     await expect(cells.nth(1)).toHaveText('run on the real model');
-    await expect(cells.nth(2)).toHaveText('26/26');
-    await expect(cells.nth(3)).toHaveText('not reported');
-    await expect(cells.nth(3)).toHaveAttribute('title', /side-effect|Checks that adding the knowledge/);
-    await expect(cells.nth(4)).toHaveText('none');
-    await expect(cells.nth(5)).toHaveText('5 AIN');
-    await expect(cells.nth(5)).toHaveAttribute('title', /A deposit a verifier loses if its verification turns out wrong/);
-    await expect(cells.nth(6)).toHaveText('Passed');
-    await expect(cells.nth(6)).toHaveCSS('color', 'rgb(68, 164, 95)');
-    await expect(cells.nth(7)).toHaveText(/^\d+(s|m|h|d) ago$/);
-    await expect(cells.nth(7)).toHaveAttribute('title', /^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/);
+    const att = d.attestations.find((x) => x.verifier_name === name)!;
+    expect(att.score.pre_apply, 'the attestation carries the baseline').toBe('1/8');
+    await expect(cells.nth(2)).toHaveText(String(att.score.pre_apply));
+    await expect(cells.nth(2)).toHaveAttribute('title', /BEFORE the knowledge was loaded \(pre_apply\)/);
+    await expect(cells.nth(3)).toHaveText('26/26');
+    await expect(cells.nth(4)).toHaveText('not reported');
+    await expect(cells.nth(4)).toHaveAttribute('title', /side-effect|Checks that adding the knowledge/);
+    await expect(cells.nth(5)).toHaveText('none');
+    await expect(cells.nth(6)).toHaveText('5 AIN');
+    await expect(cells.nth(6)).toHaveAttribute('title', /A deposit a verifier loses if its verification turns out wrong/);
+    await expect(cells.nth(7)).toHaveText('Passed');
+    await expect(cells.nth(7)).toHaveCSS('color', 'rgb(68, 164, 95)');
+    await expect(cells.nth(8)).toHaveText(/^\d+(s|m|h|d) ago$/);
+    await expect(cells.nth(8)).toHaveAttribute('title', /^[A-Z][a-z]{2}\. \d{2} \d{4}, \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/);
   }
+  await expect(page.getByText('"Before" and "Accuracy" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.')).toBeVisible();
   await expect(page.getByText(/^Verified — Only verifications run on the real model count toward Verified \(currently 2\/2\)\. The 0 integrity-only checks are shown separately/)).toBeVisible();
   await expect(page.getByText(/^Restarts detected: if the model server restarted mid-run/)).toBeVisible();
   await expect(page.getByText(/^Deposit: what a verifier loses if its verification turns out wrong/)).toBeVisible();
@@ -414,7 +498,10 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
 
   await expect(page.getByRole('heading', { name: 'Description' })).toBeVisible();
-  await expect(page.getByText('Accuracy 100% (26/26) — over 2,761 benchmark questions')).toBeVisible();
+  await expect(page.getByText('Accuracy 100% on 26 of 2,761 questions checked by verifiers')).toBeVisible();
+  // finding 28 — the baseline the same run measured before the knowledge was loaded
+  await expect(page.getByTestId('ov-before-after')).toHaveText('The same run scored 1/8 before the knowledge was loaded → 26/26 after');
+  expect(d.attestations.every((x) => x.score.pre_apply === '1/8'), 'both verifiers recorded the same baseline').toBe(true);
   await expect(page.getByText('This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.')).toBeVisible();
   await expect(dd(page, 'Model')).toHaveText(MODEL);
   await expect(dd(page, 'Checkpoint')).toHaveText('W4A16');
@@ -427,7 +514,15 @@ test('AZ-015 Read the Overview tab: model, verification questions, integrity and
   await expect(dd(page, 'Subject').getByRole('link')).toHaveAttribute('href', '/benchmarks/krx-ticker-codes');
   await expect(dd(page, 'facts covered')).toHaveText('2,761 facts');
   await expect(dd(page, 'Question formats')).toHaveText('template, chat');
-  await expect(dd(page, 'Side-effect limit')).toHaveText('Threshold set — unrelated answers must not change when the knowledge is loaded');
+  // finding 55 — no attestation carries collateral_nat, so the row says the limit was declared and NOT measured,
+  // in the warning tone, with a way to the evidence instead of a promise the Verification tab contradicts
+  expect(d.attestations.some((x) => x.collateral_nat !== undefined && x.collateral_nat !== null), 'no verifier reported a side-effect measurement').toBe(false);
+  await expect(page.getByTestId('ov-side-effect')).toContainText('Limit declared (≤ 0.08 nat) — not yet measured by any verifier');
+  await expect(page.getByTestId('ov-side-effect').locator('span')).toHaveCSS('color', 'rgb(138, 75, 0)');
+  await page.getByTestId('ov-side-effect').getByRole('button', { name: 'See the verification tab →' }).click();
+  await expect(page.getByRole('tab', { name: 'Verification' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('tbody tr').first().locator('td').nth(4)).toHaveText('not reported');
+  await page.getByRole('tab', { name: 'Overview' }).click();
   await expect(dd(page, 'Question-set hash')).toHaveText(d.anchor.benchmark_hash);
   await expect(page.getByRole('heading', { name: 'Sample questions (26)' })).toBeVisible();
   const samples = page.locator('ul li');
@@ -578,6 +673,20 @@ test('AZ-011 Pick an audience card and land on the right entry point', async ({ 
   await page.goto(NODE_A + '/');
   await page.getByRole('link', { name: 'Open the operator console' }).click();
   await expect(page).toHaveURL(`${NODE_A}/signing`);
+
+  // Expectation 6, false half: a node that does NOT accept lessons (teach.enabled defaults to false) drops the nav item
+  // and says so under the creator card. Run on a private node built from the same binary + web UI.
+  const noTeach = await startThrowawayNode('az011', { roles: 'seller,serving', maxLifeS: 300 });
+  try {
+    expect((await (await page.request.get(`${noTeach.url}/api/info`)).json()).accepts_contributions).toBe(false);
+    await page.goto(noTeach.url + '/');
+    const offCard = page.getByTestId('landing-creator-card');
+    await expect(offCard.getByRole('heading', { name: 'I want to teach the model something' })).toBeVisible();
+    await expect(offCard).toContainText('This node is not accepting lessons right now. Live test still works.');
+    await expect(page.getByTestId('landing-nav-teach')).toHaveCount(0);
+  } finally {
+    await noTeach.stop();
+  }
 });
 
 test('AZ-012 Copy the one-line commands and read the How-it-works / Why Ainize story', async ({ page, context }) => {
@@ -668,6 +777,11 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
 
   await expect(page.locator('thead th')).toHaveText(['Time', 'Kind', 'What happened', 'By', 'Record ID / tx']);
   await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.length));
+  // The node hands back the newest `limit` records and cannot page further back. When the ledger is bigger than that
+  // window the page says so, instead of printing "1,044 records" above a table that can only ever hold 1,000.
+  const total = (await info(request)).ledger.records;
+  if (total > all.length) await expect(page.getByTestId('ledger-window')).toHaveText(`Showing the most recent ${num(all.length)} of ${num(total)} records — the node returns this many at a time and cannot page further back.`);
+  else await expect(page.getByTestId('ledger-window')).toHaveCount(0);
   const firstPage = all.slice(0, 20);
   const chipLabels: Record<string, string> = { anchor: 'Registered', attest: 'Verification', supersede: 'Newer version', branch: 'Knowledge track', node: 'Node', settle: 'Purchase settled', subscribe: 'Subscription', challenge: 'Re-verification request' };
   for (const [k, label] of Object.entries(chipLabels)) {
@@ -676,9 +790,13 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   // every kind chip on the page uses the plain-language label (never the raw kind)
   const rendered = await page.locator('tbody td:nth-child(2) span').evaluateAll((els) => els.map((e) => [e.getAttribute('title'), e.textContent]));
   for (const [k, txt] of rendered) expect(txt).toBe(chipLabels[k!] ?? k);
+  // The kind filter is applied by the NODE over the whole ledger, while `all` is only the newest window of it — once
+  // the chain grew past that window, counting kinds inside the sample said "0 supersede records" about a ledger that
+  // has three. Ask the node for each kind instead.
   for (const [k, label] of [['anchor', 'Registered'], ['attest', 'Verification'], ['supersede', 'Newer version'], ['branch', 'Knowledge track'], ['node', 'Node']]) {
+    const ofKind = (await api<{ records: unknown[] }>(request, `/api/ledger?kind=${k}&limit=1000`)).body.records.length;
     await choose(page, label);
-    await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.filter((r) => r.kind === k).length));
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, ofKind));
     await expect(page.locator(`tbody span[title="${k}"]`).first()).toHaveText(label);
   }
   await choose(page, 'All records');
@@ -695,7 +813,7 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   }
   await choose(page, 'Newer version');
   const sup = page.locator('tbody tr');
-  await expect(sup).toHaveCount(3);
+  await expect(sup).toHaveCount((await api<{ records: unknown[] }>(request, '/api/ledger?kind=supersede&limit=1000')).body.records.length);
   await expect(sup.filter({ hasText: `${K.final} marked as the newer version of ${K.ep6} (241,992 overlapping memory entries)` })).toHaveCount(1);
   await choose(page, 'All records');
   await expect(page.locator('tbody tr')).toHaveCount(Math.min(20, all.length));
@@ -712,7 +830,7 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
   expect(col(K.pixel)).toBe(0);
   expect(col(K.ep12)).toBe(1);
   expect(col(K.final)).toBe(2);
-  expect(boxes.find((b) => b.id === K.final)!.sub).toBe('Verified · Qwen3.8-Flash-N…');
+  expect(boxes.find((b) => b.id === K.final)!.sub).toBe('For sale · Qwen3.8-Flash-N…');
   await expect(svg.locator('path[marker-end]')).toHaveCount(5);
   await expect(svg.locator('path[stroke-dasharray]')).toHaveCount(3);
   await expect(svg.locator('path[marker-end]:not([stroke-dasharray])')).toHaveCount(2);
@@ -726,7 +844,9 @@ test('AZ-010 Audit the public record: filters, integrity card and origin → der
 test('AZ-022 Explore the Network page and try the gateway router demo', async ({ page, request }) => {
   // The peer rows mirror what each peer advertised in the last gossip round, so all three nodes must see the shared
   // model before the page is read (during a vLLM hang a peer advertises no model and its Model cell shows "—").
-  for (const n of [NODE_A, NODE_B, NODE_C]) expect(await waitForRuntime(request, n), `${n} runtime`).toBe(true);
+  // The three nodes share one vLLM, so they recover together: the budget covers one hang (~5 min) plus the gossip.
+  test.setTimeout(20 * 60_000);
+  for (const n of [NODE_A, NODE_B, NODE_C]) expect(await waitForRuntime(request, n, 8 * 60_000), `${n} runtime`).toBe(true);
   await expect.poll(
     async () => (await api<{ peers: { endpoint: string; info?: { model?: string } }[] }>(request, '/api/nodes')).body.peers.filter((p) => p.info?.model === MODEL).length,
     { message: 'both peers advertise the serving model', timeout: 120_000, intervals: [3_000] },
@@ -755,7 +875,7 @@ test('AZ-022 Explore the Network page and try the gateway router demo', async ({
 
   await expect(dd(page, 'Status')).toHaveText('available — knowledge can be loaded live');
   await expect(dd(page, 'Model')).toHaveText(MODEL);
-  await expect(dd(page, 'API')).toHaveText('http://localhost:8000');
+  await expect(dd(page, 'API')).toHaveText(VLLM);
   await expect(dd(page, 'Live connection')).toHaveText('connected — load and unload without restart');
 
   const peersTable = page.locator('table').first();
@@ -892,6 +1012,8 @@ test.describe('Live test (shared runtime)', () => {
 
     const panel = page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' });
     await expect(panel.getByText('Only knowledge whose body is on this node can be tested.')).toBeVisible();
+    // the multi-select help line (the teach-era replacement for the single-pick panel's copy)
+    await expect(panel.getByText('They load in the order you tick them. If two overlap, the one ticked last wins.')).toBeVisible();
     const items = panel.locator('li > label');   // multi-select rows (each wraps a checkbox)
     await expect(items).toHaveCount(testable.length);
     expect(testable.length).toBe(4);
@@ -907,7 +1029,7 @@ test.describe('Live test (shared runtime)', () => {
       await expect(it).toContainText(`${acc}% accuracy`);
       await expect(it).toContainText(`${e.anchor.price} AIN`);
       await expect(it).toContainText(AIN_NOTE);
-      await expect(it).toContainText(e.status === 'LISTED' ? 'Verified' : 'Newer version available');
+      await expect(it).toContainText(e.status === 'LISTED' ? 'For sale' : 'Newer version available');
     }
     await expect(itemFor(K.final).getByRole('checkbox')).toBeChecked();
     await expect(itemFor(K.pixel).getByRole('checkbox')).not.toBeChecked();
@@ -916,6 +1038,9 @@ test.describe('Live test (shared runtime)', () => {
     await panel.getByRole('button', { name: 'Clear selection' }).click();
     await itemFor(K.pixel).click();
     await expect(page).toHaveURL(new RegExp(`/chat/${K.pixel}$`));
+    // selection marker on the active item: the multi-select list shows the load ORDER where the old single-pick list said "Selected"
+    await expect(itemFor(K.pixel)).toContainText('Loads 1.');
+    await expect(itemFor(K.final)).not.toContainText('Loads ');
     const head = page.locator('main h2').filter({ hasNotText: /^Knowledge to load|^Your lesson/ });   // the picker's and lesson basket's own headings sit in <main> too
     await expect(head).toHaveText(PIXEL_NAME);
     await expect(head.locator('..')).toContainText('Newer version available');
@@ -932,13 +1057,17 @@ test.describe('Live test (shared runtime)', () => {
     const chips = page.locator('button[title^="Expected: "]');
     await expect(chips).toHaveCount(8);
     await expect(chip(page, '종목코드 픽셀플러스')).toHaveAttribute('title', 'Expected: 087600');
+    // the expected answer is readable without a mouse: it is a second line inside the chip
+    await expect(chip(page, '종목코드 픽셀플러스')).toContainText('Expected: 087600');
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await expect(chips).toHaveCount(26);
     await page.getByRole('button', { name: 'Show less' }).click();
     await expect(chips).toHaveCount(8);
 
     await chip(page, '종목코드 삼성전자').click();
-    await expect(textarea(page)).toHaveValue('종목코드 삼성전자');
+    // D2: the chip inserts the trained prompt verbatim — the trailing space is what the knowledge was trained on
+    // (the chip LABEL stays trimmed and carries a ␣ marker, which is why the locator above is unchanged).
+    await expect(textarea(page)).toHaveValue('종목코드 삼성전자 ');
     await expect(textarea(page)).toBeFocused();
     await expect(textarea(page)).toHaveAttribute('placeholder', 'Type a question and press Enter (Shift+Enter for a new line)');
     await expect(page.getByText('Free tries are limited per hour. No sign-in needed.')).toBeVisible();
@@ -962,8 +1091,8 @@ test.describe('Live test (shared runtime)', () => {
     await expect(bubble(turn, 'Before loading')).toHaveAttribute('aria-busy', 'true');
     await expect(bubble(turn, 'After loading')).toHaveAttribute('aria-busy', 'true');
     await expect(turn.getByText('Includes loading and unloading — this can take tens of seconds.').first()).toBeVisible();
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Cancel|Stop waiting)$/ })).toBeVisible();
     await expect(sendButton(page)).toHaveText('Waiting for the answer…');
     await expect(chip(page, '종목코드 삼성전자')).toBeDisabled();
     await expect(modeRadio(page, 'After only')).toBeDisabled();
@@ -985,6 +1114,10 @@ test.describe('Live test (shared runtime)', () => {
     await expect(hit).toBeVisible();
     await expect(hit).toHaveAttribute('title', 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930');
     await expect(bubble(turn, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
+    // the tick and the cross are checkable: the expectation is rendered as text under each verdict, not only in a tooltip
+    await expect(turn.getByTestId('chat-expected-patched')).toHaveText('Expected: 005930');
+    await expect(turn.getByTestId('chat-expected-base')).toHaveText('Expected: 005930');
+    expect(await turn.innerText()).toContain('Expected: 005930');
 
     await expect(page.getByText(`Free trial ${json.remaining_quota}/20 left this hour`)).toBeVisible();
     expect(json.remaining_quota).toBe(19);
@@ -1043,11 +1176,14 @@ test.describe('Live test (shared runtime)', () => {
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await chip(page, '종목코드 유라클').click();
     const turn = await sendPrompt(page);
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
+    await page.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click();
 
     const alert = turn.getByRole('alert');
-    await expect(alert).toHaveText('Request cancelled.');
+    // D3: which of the two the visitor is told depends on whether the node had already taken the shared lock when
+    // the button was pressed, and that is a genuine race — the scenario documents BOTH and requires the message to
+    // say which happened. ("Request cancelled." is the pre-D3 wording and must no longer appear.)
+    await expect(alert).toHaveText(/^You stopped waiting\. The node had not started this test yet, so no free try was used\.$|^You stopped waiting, but the test had already started on the shared model, so it still counts as one free try\.$/);
     await expect(turn.getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(textarea(page)).toBeEnabled();
     await expect(sendButton(page)).toHaveText('Send');
@@ -1058,7 +1194,7 @@ test.describe('Live test (shared runtime)', () => {
     await turn.getByRole('button', { name: 'Retry' }).click();
     await waitTurnDone(page, request, turn);
     expect(payloads.length).toBeGreaterThanOrEqual(1);
-    expect(payloads[0].messages).toEqual([{ role: 'user', content: '종목코드 유라클' }]); // the cancelled turn is not replayed as history
+    expect(payloads[0].messages).toEqual([{ role: 'user', content: '종목코드 유라클 ' }]); // verbatim (D2); the cancelled turn is not replayed as history
     await expect(turns(page)).toHaveCount(1);
     const after = bubble(turn, 'After loading');
     await expect(after.getByText('✓ Correct')).toHaveAttribute('title', /Expected: 088340$/);
@@ -1067,7 +1203,7 @@ test.describe('Live test (shared runtime)', () => {
     // leaving the page during a pending request aborts it without console errors
     await modeRadio(page, 'Before only').click();
     await sendPrompt(page, '종목코드 HMM');
-    await expect(page.getByText('Waiting for the answer — you can cancel if it takes too long.')).toBeVisible();
+    await expect(page.getByText(/Waiting for the answer — you can cancel if it takes too long\.|Queued behind another test/)).toBeVisible();
     await page.locator('header').getByRole('link', { name: 'Explore knowledge' }).click();
     await expect(page).toHaveURL(/\/explore$/);
     await page.waitForTimeout(1_500);
@@ -1081,25 +1217,39 @@ test.describe('Live test (shared runtime)', () => {
     await page.getByRole('checkbox', { name: 'Enable thinking' }).check();
     await page.getByRole('button', { name: 'Show 18 more' }).click();
     await chip(page, '종목코드 한독').click();
+    // Expectation 3 is about ORDER: B must be served after A, not beside it. Both response promises are armed before the
+    // send so the two completion times can be compared (A is the slower call — compare + thinking = two generations — so
+    // a node that served B concurrently would finish B FIRST).
+    const chatPost = (p: Page) => p.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 20 * 60_000 }).then(() => Date.now());
+    const doneA = chatPost(page);
     const turnA = await sendPrompt(page);
 
     const lock = await waitForLock(request, origin, (l) => !!l && l.label === `chat:${K.final}`);
     expect(lock!.owner).toMatch(/^pid:\d+$/);
     expect(typeof lock!.since).toBe('number');
-    // tab A shows the same box while its own request holds the lock (the page peeks at the lock right after sending)
-    await expect(page.getByRole('status').filter({ hasText: 'Another test is running' })).toBeVisible();
+    // D3: while it is tab A's OWN request that holds the lock, tab A is told exactly that — it used to be shown
+    // the "another test is running, try again in a moment" box about itself.
+    await expect(page.getByTestId('chat-lock-mine')).toContainText('Your test has the shared model');
 
     const tabB = await context.newPage();
     await tabB.goto(`${origin}/chat/${K.final}`);
-    const banner = tabB.getByRole('status').filter({ hasText: 'Another test is running — try again in a moment.' });
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText(new RegExp(`Another test in progress \\(node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
-    await expect(banner).toContainText('The shared model runs one test at a time, so tests queue up one after another.');
+    const banner = tabB.getByTestId('chat-lock');
+    await expect(banner).toContainText('Someone else is testing on the shared model right now.');
+    await expect(banner).toContainText(new RegExp(`Another test in progress \\(chat:${K.final}, node process ${lock!.owner.slice(4)}\\) — started \\d+(s|m) ago`));
+    await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
 
     await modeRadio(tabB, 'Before only').click();
+    const doneB = chatPost(tabB);
+    const bSentAt = Date.now();
     const turnB = await sendPrompt(tabB, '종목코드 HMM');
+    // D3: tab B's own transcript says it is queued (not silently pending) while tab A holds the shared model
+    await expect(tabB.getByTestId('chat-queued').first()).toContainText('Queued behind another test');
+    await expect(tabB.getByRole('button', { name: 'Stop waiting' })).toBeVisible();
     await waitTurnDone(page, request, turnA);
     await waitTurnDone(tabB, request, turnB);
+    const [atA, atB] = await Promise.all([doneA, doneB]);
+    expect(bSentAt, 'tab B sent while tab A was still pending (real contention)').toBeLessThan(atA);
+    expect(atB, 'tab B is serialised behind tab A — its answer arrives after A\'s').toBeGreaterThan(atA);
     // Tab A finished; the scenario asserts the correct result on tab B (bullet 3). Tab A's patched answer is auto-scored
     // (Expected: 002390) but with thinking ON the patched model answers this trained completion-style prompt with an
     // empty string (immediate EOS) — recorded as a model-behavior finding; base+thinking and patched without thinking answer 002390.
@@ -1108,18 +1258,22 @@ test.describe('Live test (shared runtime)', () => {
     const hitA = await bubble(turnA, 'After loading').getByText('✓ Correct').count();
     if (!hitA) test.info().annotations.push({ type: 'note', description: 'turn A (compare + thinking) patched answer was not ✓ Correct — patched+thinking yields an empty answer for the trained completion prompt (model-behavior finding)' });
     await expect(bubble(turnB, 'Before loading').getByText(/^(✓ Correct|✗ Wrong)$/)).toBeVisible();
-    await expect(tabB.getByText('Another test was running so this request could not be handled.')).toHaveCount(0);
+    await expect(tabB.getByText('The shared model stayed busy for too long, so this request gave up waiting.')).toHaveCount(0);
 
-    await waitForLock(request, origin, (l) => l === null);
-    await tabB.reload();
-    await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
-    await expect(tabB.getByRole('status').filter({ hasText: 'Another test is running' })).toHaveCount(0);
+    // The banner mirrors the shared lock, and the node's own background work (a verifier run, a queued lesson) can
+    // take it again between the check and the reload — retry until the page is loaded while nobody holds it.
+    await expect.poll(async () => {
+      await waitForLock(request, origin, (l) => l === null);
+      await tabB.reload();
+      await expect(tabB.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
+      return tabB.getByTestId('chat-lock').count();
+    }, { timeout: 3 * 60_000, intervals: [2_000], message: 'the lock banner is gone once nobody holds the shared model' }).toBe(0);
     await tabB.close();
   });
 
   test('AZ-024 Ask a follow-up question and confirm the conversation history is sent with it', async ({ page, request }) => {
     const origin = await freshVisitor(page);
-    const payloads: { patch_id: string; mode: string; thinking: boolean; messages: { role: string; content: string }[] }[] = [];
+    const payloads: { patch_id: string; mode: string; thinking: boolean; request_id?: string; messages: { role: string; content: string }[] }[] = [];
     page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') payloads.push(r.postDataJSON()); });
     await page.goto(`${origin}/chat/${K.final}`);
     await modeRadio(page, 'After only').click();
@@ -1138,7 +1292,11 @@ test.describe('Live test (shared runtime)', () => {
     await waitTurnDone(page, request, t2);
     await expect(bubble(t2, 'After loading')).toContainText('Free question — not auto-scored');
     expect(payloads.length).toBe(2);
-    expect(payloads[1]).toEqual({ patch_id: K.final, mode: 'patched', thinking: false, messages: [{ role: 'user', content: '종목코드 삼성전자' }, { role: 'assistant', content: answer1 }, { role: 'user', content: FOLLOW }] });
+    // D2: the sample is sent verbatim, trailing space included (that space is what the knowledge was trained on).
+    // D3: every request carries a request_id so it can be asked about and cancelled while queued.
+    const { request_id: rid, ...body } = payloads[1];
+    expect(rid).toBeTruthy();
+    expect(body).toEqual({ patch_id: K.final, mode: 'patched', thinking: false, messages: [{ role: 'user', content: '종목코드 삼성전자 ' }, { role: 'assistant', content: answer1 }, { role: 'user', content: FOLLOW }] });
 
     await page.getByRole('button', { name: 'Clear conversation' }).click();
     await expect(turns(page)).toHaveCount(0);
@@ -1146,8 +1304,52 @@ test.describe('Live test (shared runtime)', () => {
     const t3 = await sendPrompt(page);
     await waitTurnDone(page, request, t3);
     expect(payloads.length).toBe(3);
-    expect(payloads[2].messages).toEqual([{ role: 'user', content: '종목코드 삼성전자' }]);
+    expect(payloads[2].messages).toEqual([{ role: 'user', content: '종목코드 삼성전자 ' }]);
     await expect(quotaFooter(page)).toHaveText('Free trial 17/20 left this hour');
+  });
+
+  test('AZ-226 Ask a follow-up in Compare mode and confirm each column replays only its own earlier answers', async ({ page, request }) => {
+    const origin = await freshVisitor(page);
+    const payloads: { messages: { role: string; content: string }[]; messages_base?: { role: string; content: string }[]; messages_patched?: { role: string; content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') payloads.push(r.postDataJSON()); });
+    await page.goto(`${origin}/chat/${K.final}`);
+    await expect(modeRadio(page, 'Compare')).toHaveAttribute('aria-checked', 'true');
+
+    // Turn 1 — the sample question: the base model gets it wrong, the knowledge gets it right.
+    await chip(page, '종목코드 픽셀플러스').click();
+    const first = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST' && r.status() === 200, { timeout: 10 * 60_000 });
+    const t1 = await sendPrompt(page);
+    await waitTurnDone(page, request, t1);
+    const r1 = await (await first).json() as { base: { content: string }; patched: { content: string }; history: { base: number; patched: number; split: boolean } };
+    await expect(bubble(t1, 'After loading')).toContainText('087600');
+    await expect(bubble(t1, 'After loading').getByText('✓ Correct')).toBeVisible();
+    expect(r1.history, 'one message, no history to split yet').toEqual({ base: 1, patched: 1, split: false });
+
+    // Turn 2 — a follow-up that only makes sense against the previous answer.
+    const FOLLOW = '방금 말한 종목코드를 숫자만 다시 알려줘';
+    const second = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST' && r.status() === 200, { timeout: 10 * 60_000 });
+    const t2 = await sendPrompt(page, FOLLOW);
+    await waitTurnDone(page, request, t2);
+    const r2 = await (await second).json() as { base: { content: string }; patched: { content: string }; history: { base: number; patched: number; split: boolean } };
+
+    // The wire: two conversations, one question. The base column replays what the BASE model said, never the
+    // patched answer — feeding it back is what used to make the "before" column repeat the knowledge's answer.
+    const ask = { role: 'user', content: FOLLOW };
+    expect(payloads[1].messages_base).toEqual([{ role: 'user', content: K.pixelPrompt }, { role: 'assistant', content: r1.base.content }, ask]);
+    expect(payloads[1].messages_patched).toEqual([{ role: 'user', content: K.pixelPrompt }, { role: 'assistant', content: r1.patched.content }, ask]);
+    expect(payloads[1].messages, 'messages stays the patched conversation, so a client that ignores the split is unchanged').toEqual(payloads[1].messages_patched);
+    expect(r2.history).toEqual({ base: 3, patched: 3, split: true });
+
+    // What the visitor sees: the un-patched column repeats its OWN (wrong) ticker; the patched one still answers 087600.
+    expect(r1.base.content, 'the base model does not know this ticker').not.toContain('087600');
+    await expect(bubble(t2, 'After loading')).toContainText('087600');
+    expect(await bubble(t2, 'Before loading').innerText(), 'the knowledge answer never reached the base column').not.toContain('087600');
+    await expect(page.getByTestId('chat-split-history')).toHaveText('On follow-up questions each column replays only its own earlier answers — the "Before loading" model is never shown what the knowledge answered.');
+
+    // The node refuses a pair that is not asking one question — a "comparison" of two different prompts is not one.
+    const bad = await api(request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.final, mode: 'compare', messages: [ask], messages_base: [{ role: 'user', content: 'a different question' }] } });
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toContain('messages_base must end with the same message');
   });
 
   test('AZ-026 Live-test an older (superseded) version and jump to its detail page', async ({ page, request }) => {
@@ -1174,13 +1376,17 @@ test.describe('Live test (shared runtime)', () => {
 
     await head.getByRole('link', { name: 'Details →' }).click();
     await expect(page).toHaveURL(`${origin}/${addr}/${K.pixel}`);
-    await expect(page.locator('span', { hasText: /^Newer version available$/ }).first()).toBeVisible();
+    // The route is code-split, so for a moment after the URL changes the CHAT page is still mounted — this step used
+    // to read the picker's own "Newer version available" chip and never checked the detail page at all. Wait for the
+    // detail page to be on screen, then assert the chip IT renders (which names the successor).
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(PIXEL_NAME);
+    await expect(page.locator('span', { hasText: new RegExp(`^Newer version: ${K.final}$`) }).first()).toBeVisible();
     const meta = page.getByText(new RegExp(`^By node-a · target model ${MODEL.replace('.', '\\.')} · registered`));
     await expect(meta).toContainText(`∙ Newer version: ${K.final}`);
     await meta.getByRole('link', { name: `Newer version: ${K.final}` }).click();
     await expect(page).toHaveURL(`${origin}/${addr}/${K.final}`);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(FINAL_NAME);
-    await expect(page.locator('span', { hasText: /^Verified$/ }).first()).toBeVisible();
+    await expect(page.locator('span', { hasText: /^For sale$/ }).first()).toBeVisible();
   });
 
   test('AZ-021 Handle the model-server-off state on Live test and Network', async ({ page, request }) => {
@@ -1204,7 +1410,7 @@ test.describe('Live test (shared runtime)', () => {
     // and is opened later — vLLM itself is never paused. It holds the pixelplus body, so that knowledge is testable there.
     const OFF_MSG = 'The model server is off right now, so testing is unavailable.';
     const proxy = await startRuntimeProxy();
-    const off = await startThrowawayNode('az021', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: proxy.url, maxLifeS: 540 });
+    const off = await startThrowawayNode('az021', { name: 'node-az021', stableId: 'az021', roles: 'seller,serving', ledger: 'ain', runtimeApi: proxy.url, maxLifeS: 540 });
     try {
       await off.seed(PIXEL_NPZ, 'az021-seed');
       const posts: string[] = [];
@@ -1294,9 +1500,12 @@ test.describe('Live test (shared runtime)', () => {
     await expect(page.locator('main').getByText(none)).toHaveCount(2); // alert + footer
 
     // one more request from the same IP: HTTP 429 with the exact server message
-    const r = await api<{ error: string }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
+    const r = await api<{ error: string; quota_reset: number }>(page.request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }] } });
     expect(r.status).toBe(429);
     expect(r.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
+    // the body carries the measured end of this visitor's hour, so the page can print a time instead of "in an hour"
+    expect(r.body.quota_reset).toBeGreaterThan(Date.now());
+    expect(r.body.quota_reset).toBeLessThanOrEqual(Date.now() + 3600_000);
 
     // the UI maps that 429 to the red turn error (a fresh tab does not yet know the quota is gone)
     const tab2 = await context.newPage();
@@ -1307,6 +1516,301 @@ test.describe('Live test (shared runtime)', () => {
     await expect(turn.getByRole('alert')).toHaveText('You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.', { timeout: 60_000 });
     await expect(turn.getByRole('alert')).toHaveCSS('background-color', 'rgb(253, 232, 236)');
     await expect(tab2.getByRole('status').filter({ hasText: none })).toBeVisible();
+    // No Retry on the quota turn — send() returns at the exhausted guard, so the button could only ever be a no-op.
+    // In its place: the way out (the knowledge page) and the measured instant the free hour ends.
+    await expect(turn.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+    const actions = turn.getByTestId('chat-quota-actions');
+    const addr2 = await nodeAAddress(request);
+    await expect(actions.getByRole('link', { name: 'Buy this knowledge' })).toHaveAttribute('href', `/${addr2}/${K.pixel}`);
+    const resetAt = new Date(r.body.quota_reset).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    await expect(actions).toContainText(`Free tries reset at ${resetAt}`);
+    const posts: string[] = [];
+    tab2.on('request', (req) => { if (req.url().endsWith('/api/chat') && req.method() === 'POST') posts.push(req.url()); });
+    await actions.getByRole('link', { name: 'Buy this knowledge' }).click();
+    await expect(tab2).toHaveURL(`${origin}/${addr2}/${K.pixel}`);
+    expect(posts, 'the quota turn issues no further chat requests').toEqual([]);
     await tab2.close();
   });
+
+  /* ================================================== D1 / D2 / D3 — the three reported defects, proved on the UI */
+
+  /** Proof screenshots: 1280 px and 360 px, English and Korean, into the MAIN checkout's results directory. */
+  const PROVE_DIR = '/mnt/newdata/ainize/knowledge-marketplace/packages/e2e/results';
+  const shot = (page: Page, name: string, lang: 'en' | 'ko', px: 1280 | 360) => page.screenshot({ path: `${PROVE_DIR}/prove-${name}-${px}-${lang}.png`, fullPage: true });
+  const langButton = (page: Page) => page.getByRole('button', { name: 'language' });
+  /** Run `body` at 1280 then at 360, in English then Korean, taking one screenshot per combination. */
+  async function inBothWidthsAndLocales(page: Page, name: string, body: (lang: 'en' | 'ko') => Promise<void>): Promise<void> {
+    const original = page.viewportSize();
+    for (const px of [1280, 360] as const) {
+      await page.setViewportSize({ width: px, height: px === 1280 ? 900 : 780 });
+      for (const lang of ['en', 'ko'] as const) {
+        if (lang === 'ko') await langButton(page).click();
+        await body(lang);
+        await shot(page, name, lang, px);
+        if (lang === 'ko') await langButton(page).click();
+      }
+    }
+    if (original) await page.setViewportSize(original);
+  }
+
+  test('AZ-223 A runaway answer is cut off with a plain explanation, not shown as an endless loop', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    const bodies: { messages: { content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') bodies.push(r.postDataJSON()); });
+    const ask = async (text: string) => {
+      const res = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+      const turn = await sendPrompt(page, text);
+      await waitTurnDone(page, request, turn);
+      return { turn, json: await (await res).json() as ChatResponse };
+    };
+    /** Each prompt is asked on an EMPTY transcript: the composer sends the conversation history, and a preceding
+        turn changes what the model answers next (it is what made this scenario's loop prompt answer normally). */
+    const clear = async () => {
+      const btn = page.getByRole('button', { name: 'Clear conversation' });
+      if (await btn.count()) { await btn.click(); await expect(turns(page)).toHaveCount(0); }
+    };
+
+    /* Steps 2-5 — a prompt that DOES loop through the chat path, so the note and the raw-answer affordance are seen
+       end to end. Measured on this cluster: cycle score 1.00, period 8-9. Two candidates, because the shared
+       instance is not bit-deterministic; the assertions below run against whichever one the model looped on. */
+    let loop: { turn: Locator; json: ChatResponse } | null = null;
+    let LOOP = '';
+    for (const cand of ['가나다라마바사 '.repeat(10).trim(), '가나다라마바사아 '.repeat(8).trim(), '가나다라 '.repeat(8).trim()]) {
+      await clear();
+      const got = await ask(cand);
+      if (got.json.patched.truncated === 'repetition') { loop = got; LOOP = cand; break; }
+      test.info().annotations.push({ type: 'note', description: `'${cand.slice(0, 20)}…' did not loop this time (truncated=${got.json.patched.truncated})` });
+    }
+    expect(loop, 'at least one of the loop prompts made the model repeat itself').not.toBeNull();
+    const { turn: turn2, json: j2 } = loop!;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'the prompt is sent verbatim').toBe(LOOP);
+    expect(j2.patched.truncated).toBe('repetition');
+    expect(j2.patched.shown_chars!).toBeLessThan(j2.patched.raw_chars!);
+    expect(j2.patched.raw_content!.startsWith(j2.patched.content)).toBe(true);
+    expect(j2.patched.raw_content!.length).toBe(j2.patched.raw_chars);
+
+    const note = turn2.getByTestId('chat-truncated');
+    await expect(note).toHaveAttribute('data-truncated', 'repetition');
+    await expect(note).toContainText('The model started repeating itself, so the answer is cut off here — that usually means the question is outside what this knowledge covers.');
+    await expect(note).toContainText(`showing ${j2.patched.shown_chars} of ${j2.patched.raw_chars} characters`);
+    await expect(bubble(turn2, 'After loading')).toContainText(j2.patched.content.trim());
+    // nothing is ever deleted: the model's full output is one click away
+    const toggle = turn2.getByTestId('chat-raw-toggle');
+    await expect(toggle).toHaveText(`Show the raw answer (all ${j2.patched.raw_chars} characters)`);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('Hide the raw answer');
+    await expect(turn2.getByTestId('chat-raw-answer')).toHaveText(j2.patched.raw_content!);
+
+    await inBothWidthsAndLocales(page, 'a-runaway-cut', async (lang) => {
+      await expect(note).toContainText(lang === 'en'
+        ? 'The model started repeating itself, so the answer is cut off here'
+        : '모델이 같은 말을 반복하기 시작해서 답을 여기서 잘랐습니다.');
+      await expect(turn2.getByTestId('chat-raw-toggle')).toHaveText(lang === 'en' ? 'Hide the raw answer' : '원본 답변 숨기기');
+      await expect(turn2.getByTestId('chat-raw-answer')).toHaveText(j2.patched.raw_content!);
+    });
+
+    /* Step 2 — the one-character prompt the owner reported, on its own clean transcript. The chat path is the quiet
+       one (D1 stop sequences), so what is asserted is the DEFECT being gone, not one particular answer. */
+    await clear();
+    const { turn: turn1, json: j1 } = await ask('드');
+    // D1 — whatever the model said, it is not an endless loop: no 40-character run of one character.
+    expect(j1.patched.content, 'the answer shown is not an endless loop').not.toMatch(/(.)\1{39}/su);
+    expect(j1.patched.shown_chars ?? j1.patched.content.length).toBeLessThanOrEqual(j1.patched.raw_chars ?? j1.patched.content.length);
+    // D2 — '드' used to be auto-scored '✗ Wrong' against 종목코드 픽셀플러스 , a sample it never asked about.
+    expect(j1.benchmark_hit, "'드' is too short to be matched to a benchmark sample").toBeNull();
+    const after1 = bubble(turn1, 'After loading');
+    await expect(after1.getByText(/^(✓ Correct|✗ Wrong)$/)).toHaveCount(0);
+    // if the guard did fire on this turn too it must explain itself and keep the raw text — never delete it silently
+    if (await turn1.getByTestId('chat-truncated').count()) {
+      await expect(turn1.getByTestId('chat-truncated')).toContainText('The model started repeating itself');
+      await expect(turn1.getByTestId('chat-raw-toggle')).toBeVisible();
+    }
+    // NOTE: the bubble() helper matches the ENGLISH label, so the locale passes assert on the turn itself.
+    await inBothWidthsAndLocales(page, 'a-short-prompt', async (lang) => {
+      await expect(turn1.getByText(lang === 'en' ? 'Free question — not auto-scored' : '자유 질문 — 자동 채점 없음')).toBeVisible();
+    });
+
+    /* Steps 3/4 — the completion path, where the guard can be compared against its own pre-guard request body. */
+    const token = await operatorToken(request);
+    const complete = async (raw: boolean) => (await api<CompleteResponse>(request, '/api/runtime/complete',
+      { method: 'POST', token, data: { prompt: '드', max_tokens: 200, ...(raw ? { raw: true } : {}) } })).body;
+    // `raw: true` is exactly what this endpoint sent before D1: no stop sequences, no guard, never flagged.
+    for (let i = 0; i < 3; i++) {
+      const r = await complete(true);
+      expect(r.truncated, 'raw:true reproduces the pre-guard body, so nothing is ever flagged').toBeNull();
+      expect(r.shown_chars).toBe(r.raw_chars);
+      expect(r.raw_text).toBeUndefined();
+    }
+    // the guarded call never returns a runaway; when it cuts one it says so and keeps the whole text.
+    let cut = 0;
+    for (let i = 0; i < 6; i++) {
+      const g = await complete(false);
+      expect(g.text, 'the guarded completion is never an endless loop').not.toMatch(/(.)\1{39}/su);
+      if (g.truncated === null) { expect(g.shown_chars).toBe(g.raw_chars); continue; }
+      cut++;
+      expect(g.truncated).toBe('repetition');
+      expect(g.shown_chars).toBeLessThan(g.raw_chars);
+      expect(g.raw_text!.length).toBe(g.raw_chars);
+      expect(g.raw_text!.startsWith(g.text)).toBe(true);
+    }
+    test.info().annotations.push({ type: 'note', description: `'드': ${cut}/6 guarded completion calls were cut as a repetition, while the chat turn was not cut at all — the chat path is the quiet one, as the scenario documents` });
+
+    /* A short correct answer is never flagged. The claim is about the GUARD, so the correct answer is the
+       PRECONDITION: the shared instance is not bit-deterministic (the same trained prompt occasionally comes back
+       wrong under another tenant's load), and one bad roll must not be reported as the guard misbehaving. Whatever
+       comes back, it is never flagged — that part is asserted on every attempt. */
+    let hits = 0;
+    for (let i = 1; i <= 3; i++) {
+      const good = await api<ChatResponse>(request, '/api/chat', { node: origin, method: 'POST', headers: visitorHeaders(page), data: { patch_ids: [K.final], mode: 'patched', messages: [{ role: 'user', content: K.pixelPrompt }] } });
+      expect(good.body.patched.truncated, 'a short answer to a trained prompt is never called a loop').toBeNull();
+      expect(good.body.patched.shown_chars ?? 0).toBe(good.body.patched.raw_chars ?? 0);
+      if (good.body.benchmark_hit === true) {
+        expect(good.body.patched.content.replace(/\s/g, '')).toContain(K.pixelExpect);
+        hits++;
+        if (i > 1) test.info().annotations.push({ type: 'note', description: `the trained prompt needed ${i} generations to come back correct (shared instance, another tenant's load) — no attempt was ever flagged as a loop` });
+        break;
+      }
+      test.info().annotations.push({ type: 'note', description: `attempt ${i}: the shared model answered the trained prompt with ${JSON.stringify(good.body.patched.content.slice(0, 40))} — unflagged, as it must be` });
+    }
+    expect(hits, 'the trained prompt answers 087600 within three generations').toBe(1);
+  });
+
+  test('AZ-224 A sample question is sent exactly as the knowledge was trained, trailing space included', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    // the chip label is trimmed and carries the ␣ marker, with the expected answer on a second visible line;
+    // its accessible name stays the plain prompt
+    const pixelChip = chip(page, '종목코드 픽셀플러스');
+    await expect(pixelChip).toHaveText(`종목코드 픽셀플러스␣Expected: ${K.pixelExpect}`);
+    await expect(pixelChip).toHaveAttribute('title', `Expected: ${K.pixelExpect}`);
+    await expect(pixelChip.getByText('␣')).toHaveAttribute('title', 'The trailing space is part of the trained prompt — clicking inserts it, and it is sent, exactly as trained.');
+    await expect(page.getByText('Samples are sent exactly as trained, trailing space included.')).toBeVisible();
+
+    // clicking it puts the TRAINED prompt in the box — trailing space included
+    const bodies: { messages: { content: string }[] }[] = [];
+    page.on('request', (r) => { if (r.url().endsWith('/api/chat') && r.method() === 'POST') bodies.push(r.postDataJSON()); });
+    await pixelChip.click();
+    expect(await textarea(page).inputValue(), 'the box holds the trained prompt verbatim').toBe(K.pixelPrompt);
+
+    const r1 = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+    const turn1 = await sendPrompt(page);
+    await waitTurnDone(page, request, turn1);
+    const j1 = await (await r1).json() as ChatResponse;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'the request body carries the trailing space').toBe(K.pixelPrompt);
+    expect(j1.benchmark_hit).toBe(true);
+    expect(j1.patched.truncated).toBeNull();
+    const after1 = bubble(turn1, 'After loading');
+    await expect(after1).toContainText(K.pixelExpect);
+    await expect(after1.getByText('✓ Correct')).toHaveAttribute('title', `This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: ${K.pixelExpect}`);
+    await expect(turn1.getByTestId('chat-truncated')).toHaveCount(0);
+    // NOTE: the bubble() helper matches the ENGLISH label, so the locale passes assert on the turn itself.
+    await inBothWidthsAndLocales(page, 'b-sample-chip', async (lang) => {
+      await expect(turn1.getByText(lang === 'en' ? '✓ Correct' : '✓ 정답')).toBeVisible();
+      await expect(turn1).toContainText(K.pixelExpect);
+    });
+
+    // typed by hand, WITHOUT the trailing space: still the right answer and still scored (trimmed equality)
+    const r2 = page.waitForResponse((r) => r.url().endsWith('/api/chat') && r.request().method() === 'POST', { timeout: 15 * 60_000 });
+    const turn2 = await sendPrompt(page, '종목코드 픽셀플러스');
+    await waitTurnDone(page, request, turn2);
+    const j2 = await (await r2).json() as ChatResponse;
+    expect(bodies.at(-1)!.messages.at(-1)!.content, 'what the visitor typed is sent unchanged').toBe('종목코드 픽셀플러스');
+    expect(j2.benchmark_hit).toBe(true);
+    const after2 = bubble(turn2, 'After loading');
+    await expect(after2).toContainText(K.pixelExpect);
+    await expect(after2.getByText('✓ Correct')).toBeVisible();
+    await inBothWidthsAndLocales(page, 'c-typed-by-hand', async (lang) => {
+      await expect(turn2.getByText(lang === 'en' ? '✓ Correct' : '✓ 정답')).toBeVisible();
+      await expect(turn2).toContainText(K.pixelExpect);
+    });
+
+    // a knowledge verified only in the completion form warns that the chat form can differ
+    await page.goto(`${origin}/chat/${K.ep12}`);
+    await expect(page.getByTestId('chat-format-note')).toContainText('This knowledge was trained and verified in the completion form');
+  });
+
+  test('AZ-225 A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing', async ({ page, request }) => {
+    test.setTimeout(20 * 60_000);
+    const origin = await freshVisitor(page);
+    await page.goto(`${origin}/chat/${K.final}`);
+    await modeRadio(page, 'After only').click();
+
+    // one real test first, so the quota footer shows a number this scenario can watch
+    const turn0 = await sendPrompt(page, K.pixelPrompt);
+    await waitTurnDone(page, request, turn0);
+    await expect(quotaFooter(page)).toHaveText('Free trial 19/20 left this hour');
+
+    // a SECOND process (this test) takes the cross-process lease on the same mailbox the node uses
+    const release = await holdRuntimeLock(request, `chat:${K.final}`);
+    try {
+      // the picker names the holder — a live foreign pid, so neither 'mine' nor 'stale'
+      // The node reports the new holder at once; the picker polls GET /api/chat/patches every 20 s, so the banner
+      // can still be showing the previous holder for one cycle. Wait for it to name THIS process.
+      const held = await api<{ lock: { owner: string; alive: boolean; stale: boolean; mine: boolean } | null }>(request, '/api/chat/patches', { node: origin });
+      expect(held.body.lock, 'this test process holds the shared lease').toMatchObject({ owner: `pid:${process.pid}`, alive: true, stale: false, mine: false });
+      const banner = page.getByTestId('chat-lock');
+      const holderLine = new RegExp(`Another test in progress \\(chat:${K.final}, node process ${process.pid}\\) — started \\d+(s|m) ago`);
+      await expect(banner).toContainText(holderLine, { timeout: 90_000 });
+      await expect(banner).toContainText('Someone else is testing on the shared model right now.');
+      await expect(banner).toContainText('The model loads and unloads one knowledge at a time, so tests run one after another.');
+      await expect(page.getByTestId('chat-lock-mine')).toHaveCount(0);
+      await expect(page.getByTestId('chat-lock-stale')).toHaveCount(0);
+
+      const sentAt = Date.now();
+      const turn = await sendPrompt(page, '종목코드 삼성전자 ');
+      // ...the transcript says it is queued within ~2 s, names the holder, and ticks
+      const queued = turn.getByTestId('chat-queued');
+      await expect(queued).toContainText('Queued behind another test — your question has not been lost.', { timeout: 5_000 });
+      const queuedAfterMs = Date.now() - sentAt;
+      test.info().annotations.push({ type: 'note', description: `the queued state appeared ${queuedAfterMs} ms after the question was sent` });
+      expect(queuedAfterMs, 'the queued state appears within a couple of seconds of sending').toBeLessThan(5_000);
+      await expect(queued).toContainText(new RegExp(`Someone else has the shared model \\(chat:${K.final}, started \\d+s ago\\)\\.`));
+      // position is shown only when someone is ahead in this node's OWN queue; alone in line it stays quiet
+      await expect(queued).not.toContainText('You are number');
+      const secs = async () => Number(/waiting (\d+)s/.exec((await queued.textContent()) ?? '')?.[1] ?? -1);
+      const t1 = await secs();
+      expect(t1).toBeGreaterThanOrEqual(0);
+      await expect.poll(secs, { timeout: 15_000, intervals: [500], message: 'the queue clock ticks' }).toBeGreaterThan(t1);
+      await inBothWidthsAndLocales(page, 'd-queued', async (lang) => {
+        await expect(turn.getByTestId('chat-queued')).toContainText(lang === 'en' ? 'Queued behind another test' : '다른 테스트 뒤에서 순서를 기다리는 중입니다');
+      });
+
+      // ...and can be given up on for free: nothing was ever sent to the model
+      const stop = page.getByRole('button', { name: 'Stop waiting' });
+      await expect(stop).toBeVisible();
+      const cancelled = page.waitForResponse((r) => r.url().includes('/api/chat/cancel') && r.request().method() === 'POST');
+      await stop.click();
+      expect(await (await cancelled).json()).toEqual({ cancelled: true, reason: 'queued', charged: false });
+      await expect(turn.getByRole('alert')).toHaveText('You stopped waiting. The node had not started this test yet, so no free try was used.');
+      await expect(turn.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await expect(textarea(page)).toBeEnabled();
+      // the quota counter did not move — the give-up was free
+      await expect(quotaFooter(page)).toHaveText('Free trial 19/20 left this hour');
+    } finally {
+      release();
+    }
+
+    // once the holder lets go the banner clears and the very same question is answered, charging exactly one try
+    await expect.poll(async () => {
+      await waitForLockFree(request, origin);
+      await page.reload();
+      await expect(page.getByRole('complementary', { name: 'Knowledge to load (pick up to 3)' })).toBeVisible();
+      return page.getByTestId('chat-lock').count();
+    }, { timeout: 3 * 60_000, intervals: [2_000], message: 'the lock banner is gone once nobody holds the shared model' }).toBe(0);
+    await modeRadio(page, 'After only').click();
+    const turn2 = await sendPrompt(page, '종목코드 삼성전자 ');
+    await waitTurnDone(page, request, turn2);
+    await expect(bubble(turn2, 'After loading')).toContainText(K.samsungExpect);
+    await expect(quotaFooter(page)).toHaveText('Free trial 18/20 left this hour');
+  });
+
 });

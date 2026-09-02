@@ -16,7 +16,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NODE_A, NODE_B, NODE_C, CHAIN, HOME_A, HOME_C, K, REPO, api, cli, cliLogin, nodeAddress, waitForRuntime, waitForLockFree, sleep,
+  NODE_A, NODE_B, NODE_C, CHAIN, HOME_A, HOME_C, K, REPO, api, cli, cliLogin, nodeAddress, operatorToken, startThrowawayNode, waitForRuntime, waitForLockFree, sleep,
 } from '../helpers/ainize';
 import {
   AGENT_HOME, agentExec, agentAddress, ainBalance, ainGet, b64, chainBalanceOf, chainFund, entry, entryOrNull, events, freshLoopback,
@@ -82,10 +82,33 @@ async function ensureAgentFunded(min: number): Promise<string> {
   return addr;
 }
 
-/** The knowledge check of the agent must fail (patch not loaded) for a purchase to happen. */
+/** True once the shared model table has been restored for this run (see requireNotLoaded). */
+let tableRestored = false;
+
+/**
+ * The knowledge check of the agent must fail (patch not loaded) for a purchase to happen. Every node on this machine
+ * writes into ONE model table, so the precondition can be broken by something none of them still tracks: a live test
+ * whose model call died in a vLLM hang, or a private serving node from an earlier scenario that is already gone. The
+ * first agent scenario therefore restores the table — `remove` writes the original rows back whoever applied them —
+ * and each one clears whatever the demo nodes still report as applied, instead of failing every scenario behind it.
+ */
 async function requireNotLoaded(request: Parameters<typeof api>[0]) {
-  const rt = await api<{ applied: { patch_id: string }[] }>(request, '/api/runtime');
-  expect(rt.body.applied, 'precondition: no patch loaded in the shared model').toEqual([]);
+  const applied = async (node: string) => (await api<{ applied: { patch_id: string }[] }>(request, '/api/runtime', { node })).body.applied ?? [];
+  const t0 = Date.now();
+  while ((await applied(NODE_A)).length > 0 && Date.now() - t0 < 60_000) await new Promise((r) => setTimeout(r, 5_000));
+  for (const node of [NODE_A, NODE_B, NODE_C]) {
+    const left = await applied(node);
+    if (left.length === 0) continue;
+    const token = await operatorToken(request, node);
+    for (const p of left) await api(request, `/api/patches/${p.patch_id}/remove`, { method: 'POST', node, token });
+    test.info().annotations.push({ type: 'note', description: `unloaded ${left.map((p) => p.patch_id).join(', ')} that ${node} still held in the shared model` });
+  }
+  if (!tableRestored) {
+    tableRestored = true;
+    const token = await operatorToken(request, NODE_A);
+    for (const id of [K.final, K.pixel]) await api(request, `/api/patches/${id}/remove`, { method: 'POST', token });
+  }
+  expect(await applied(NODE_A), 'precondition: no patch loaded in the shared model').toEqual([]);
 }
 
 // =====================================================================================================================
@@ -190,11 +213,15 @@ test.describe('x402 seller gateway contract', () => {
   });
 
   test('AZ-076 Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme', async ({ request }) => {
+    // The settle ledger is SHARED by every node in the demo cluster, so "the newest ain-transfer record" is not
+    // necessarily one of node-a's sales: a node-c royalty fixture (qa-royalty-child) can sit on top of it. Replaying
+    // someone else's payment to node-a is a different scenario — node-a answers 409 'not sold here' for a patch it
+    // does not sell, and 'transfer recipient … is not the seller' for one it does — so pick node-a's own newest sale.
     const all = await settles(request);
-    const rec = all.find((r) => r.body.scheme === 'ain-transfer');
-    expect(rec, 'an ain-transfer settle record must exist').toBeTruthy();
+    const rec = all.find((r) => r.body.scheme === 'ain-transfer' && r.body.seller === NODE_A_ADDR);
+    expect(rec, 'an ain-transfer settle record sold by node-a must exist').toBeTruthy();
     const s = rec!.body;
-    const otherPatch = s.patch_id === K.final ? K.ep12 : K.final;
+    const otherPatch = s.patch_id === K.final ? K.ep12 : K.final;   // another patch node-a sells
     const before = { seen: await hasSettleTx(request, s.tx_hash), d1: (await entry(request, s.patch_id)).downloads, d2: (await entry(request, otherPatch)).downloads };
     expect(before.seen).toBe(1);
 
@@ -509,27 +536,33 @@ test.describe('autonomous buyer (runtime)', () => {
   });
 
   test('AZ-081 Write and read back the on-chain access receipt after a node-side purchase (ainize use / POST buy)', async ({ request }) => {
-    test.setTimeout(15 * 60_000);
+    test.setTimeout(20 * 60_000);
     await cliLogin(HOME_C, NODE_C);
-    // cheapest knowledge node-c has not bought yet (the purchase persists in node-c's store across runs)
-    const candidates = [K.pixel, K.ep6, K.ep12, K.final];
-    let id: string | null = null;
-    for (const c of candidates) { const d = await entry(request, c, NODE_C); if (!d.purchased) { id = c; break; } }
-    const fresh = id !== null;
-    id ??= K.pixel;
-    const dC = await entry(request, id, NODE_C);
-    const dA = await entry(request, id);
-    expect(dA.anchor.author).toBe(NODE_A_ADDR);
-    expect(dA.anchor.entry_id, 'anchor carries the ain-js entry id').toBeTruthy();
-    const price = Number(dA.anchor.price);
-    const walletBefore = (await api<{ balance: number; purchases: number }>(request, '/api/me/wallet', { node: NODE_C, token: await tokenC(request) })).body;
-    const settlesBefore = (await settlesBy(request, NODE_C_ADDR)).length;
-    const accessRef = `/apps/knowledge/access/${NODE_C_ADDR}`;
-    const expectedKey = `${NODE_A_ADDR}_${(dA.anchor.topic_path ?? 'patches').replace(/\//g, '|')}_${dA.anchor.entry_id}`;
+    // The receipt-WRITE path (steps 1-4) only runs for a buyer that has not bought this knowledge yet, and node-c's
+    // purchases persist across runs — so the buy is driven from a private node built from the same binary whose home is
+    // thrown away afterwards. Its chain identity is pinned (stableId), so the shared record gains one `node` row ever
+    // while every run still starts from an empty local store: a real 402 loop, a real transfer, a real receipt write.
+    // node-c keeps step 6's comparison (the receipts it wrote in earlier runs are still there).
+    const buyer = await startThrowawayNode('az081', { name: 'node-az081', stableId: 'az081', roles: 'seller', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 900 });
+    try {
+      const id = K.pixel;   // cheapest demo knowledge (0.1 AIN), same as the other purchase scenarios
+      const buyerAddr = (await api<{ node: { address: string } }>(request, '/api/info', { node: buyer.url })).body.node.address;
+      const dA = await entry(request, id);
+      expect(dA.anchor.author).toBe(NODE_A_ADDR);
+      expect(dA.anchor.entry_id, 'anchor carries the ain-js entry id').toBeTruthy();
+      const price = Number(dA.anchor.price);
+      if ((await chainBalanceOf(request, buyer.url)) < price + 0.5) await chainFund(buyerAddr, 5);
+      const login = await cli(['login', '--password', 'e2e-pass'], buyer.home, { timeoutMs: 60_000 });
+      expect(login.code, login.stderr || login.stdout).toBe(0);
+      const buyerToken = await operatorToken(request, buyer.url);
+      const walletBefore = (await api<{ balance: number; purchases: number }>(request, '/api/me/wallet', { node: buyer.url, token: buyerToken })).body;
+      expect(walletBefore.purchases, 'a thrown-away home starts with no purchases').toBe(0);
+      const settlesBefore = (await settlesBy(request, buyerAddr)).length;
+      const accessRef = `/apps/knowledge/access/${buyerAddr}`;
+      const expectedKey = `${NODE_A_ADDR}_${(dA.anchor.topic_path ?? 'patches').replace(/\//g, '|')}_${dA.anchor.entry_id}`;
 
-    if (fresh) {
       // 1-2: one-line consumer path
-      const r = await cli(['use', id, '--no-apply'], HOME_C, { timeoutMs: 10 * 60_000 });
+      const r = await cli(['use', id, '--no-apply'], buyer.home, { timeoutMs: 10 * 60_000 });
       expect(r.stderr, r.stderr).toBe('');
       expect(r.code).toBe(0);
       const out = r.stdout;
@@ -540,54 +573,66 @@ test.describe('autonomous buyer (runtime)', () => {
       expect(out).toMatch(new RegExp(`402 {7}Payment Required: ${dA.anchor.price} AIN → ${NODE_A_ADDR.slice(0, 10)}… \\(ain-transfer\\)`));
       expect(out).toMatch(/pay {7}AIN transfer tx 0x[0-9a-fA-F]{12}…/);
       expect(out).toMatch(/settled {3}seller confirmed; manifest sha256 [0-9a-f]{14}…/);
-      expect(out).toMatch(dC.has_body ? /download {2}body already present; sha256 matches on-ledger anchor/ : new RegExp(`download {2}[0-9.]+ MB from ${NODE_A}; sha256 matches on-ledger anchor`));
+      expect(out).toMatch(new RegExp(`download {2}[0-9.]+ MB from ${NODE_A}; sha256 matches on-ledger anchor`));
       expect(out).toMatch(/receipt {3}on-chain access receipt written \(\/apps\/knowledge\/access\/…, tx 0x[0-9a-fA-F]{10}…\)/);
-      expect(out).toContain(`  body: ${join(HOME_C, 'data', 'blobs', `${dA.anchor.patch_sha256}.npz`)}`);
+      expect(out).toContain(`  body: ${join(buyer.home, 'data', 'blobs', `${dA.anchor.patch_sha256}.npz`)}`);
       expect(out).toContain(`✓ downloaded — load with: ainize patch apply ${id}`);
-      const order = ['quorum', '402', 'pay', 'settled', 'download', 'receipt'].map((s) => out.indexOf(`  ${s}`));
+      const order = ['quorum', '402', 'pay', 'settled', 'download', 'receipt'].map((x) => out.indexOf(`  ${x}`));
       expect([...order].sort((a, b) => a - b)).toEqual(order);
 
       // 3: receipt on-chain, exactly where ain-js hasAccess() reads
-      const settle = (await until(() => settlesBy(request, NODE_C_ADDR), (v) => v.length === settlesBefore + 1))[0].body;
-      expect(settle).toMatchObject({ patch_id: id, buyer: NODE_C_ADDR, seller: NODE_A_ADDR, scheme: 'ain-transfer' });
+      const settle = (await until(() => settlesBy(request, buyerAddr), (v) => v.length === settlesBefore + 1))[0].body;
+      expect(settle).toMatchObject({ patch_id: id, buyer: buyerAddr, seller: NODE_A_ADDR, scheme: 'ain-transfer' });
       expect(settle.tx_hash.startsWith(txPrefix)).toBe(true);
-      const receipts = await until(() => ainGet<Record<string, Record<string, unknown>> | null>(accessRef), (v) => !!v && !!v[expectedKey], 30_000);
+      const receipts = await until(() => ainGet<Record<string, Record<string, unknown>> | null>(accessRef), (v) => !!v && v[expectedKey]?.tx_hash === settle.tx_hash, 30_000);
       expect(receipts && receipts[expectedKey], `receipt ${expectedKey} under ${accessRef}`).toBeTruthy();
       expect(receipts![expectedKey]).toMatchObject({ seller: NODE_A_ADDR, topic_path: dA.anchor.topic_path, entry_id: dA.anchor.entry_id, amount: dA.anchor.price, currency: 'AIN', tx_hash: settle.tx_hash });
       expect(typeof receipts![expectedKey].accessed_at).toBe('number');
 
       // 4: wallet
-      const w = await cli(['wallet'], HOME_C, { timeoutMs: 60_000 });
+      const w = await cli(['wallet'], buyer.home, { timeoutMs: 60_000 });
       expect(w.code).toBe(0);
       expect(w.stdout).toMatch(/^ledger\s+ain · ain:local$/m);
       expect(w.stdout).toMatch(new RegExp(`^purchases\\s+${walletBefore.purchases + 1}$`, 'm'));
       const balLine = /^balance\s+([0-9.]+) AIN$/m.exec(w.stdout);
       expect(balLine, w.stdout).toBeTruthy();
       expect(Number(balLine![1])).toBeCloseTo(walletBefore.balance - price, 5);
-      const wj = (await api<{ balance: number; purchases: number }>(request, '/api/me/wallet', { node: NODE_C, token: await tokenC(request) })).body;
+      const wj = (await api<{ balance: number; purchases: number }>(request, '/api/me/wallet', { node: buyer.url, token: buyerToken })).body;
       expect(wj.purchases).toBe(walletBefore.purchases + 1);
       expect(wj.balance).toBeCloseTo(walletBefore.balance - price, 5);
-    } else {
-      test.info().annotations.push({ type: 'note', description: 'node-c already purchased every demo patch in an earlier run — asserting the idempotent path + persisted receipt only' });
+
+      // 5: a second `use` is idempotent — no second payment, no new receipt
+      const receiptsBefore = await ainGet<Record<string, unknown> | null>(accessRef);
+      const n = (await settlesBy(request, buyerAddr)).length;
+      const r5 = await cli(['use', id, '--no-apply'], buyer.home, { timeoutMs: 120_000 });
+      expect(r5.code).toBe(0);
+      expect(r5.stdout).toContain(`✓ ${id} is already on this node (purchased)`);
+      expect(r5.stdout).toContain(`✓ try it: ainize chat ${id} "your question"`);
+      expect(r5.stdout).not.toContain('bought');
+      await sleep(2000);
+      expect((await settlesBy(request, buyerAddr)).length).toBe(n);
+      expect(await ainGet(accessRef)).toEqual(receiptsBefore);
+
+      // 5b: the same holds for a node that bought in an EARLIER run — the receipt it wrote is still on-chain
+      const already = await entry(request, id, NODE_C);
+      if (already.purchased) {
+        const cRef = `/apps/knowledge/access/${NODE_C_ADDR}`;
+        expect((await ainGet<Record<string, unknown> | null>(cRef))?.[expectedKey], `node-c's persisted receipt for ${id}`).toBeTruthy();
+        const nC = (await settlesBy(request, NODE_C_ADDR)).length;
+        const rC = await cli(['use', id, '--no-apply'], HOME_C, { timeoutMs: 120_000 });
+        expect(rC.code).toBe(0);
+        expect(rC.stdout).toContain(`✓ ${id} is already on this node (purchased)`);
+        await sleep(2000);
+        expect((await settlesBy(request, NODE_C_ADDR)).length).toBe(nC);
+      }
+
+      // 6: the standalone agent never writes a receipt (only Market.buy calls recordAccess)
+      const agent = await agentAddress();
+      expect((await settles(request)).some((x) => x.body.buyer === agent), 'the agent has bought at least once').toBe(true);
+      expect(await ainGet(`/apps/knowledge/access/${agent}`)).toBeNull();
+    } finally {
+      await buyer.stop();
     }
-
-    // 5: second `use` is idempotent — no second payment, no new receipt
-    const receiptsBefore = await ainGet<Record<string, unknown> | null>(accessRef);
-    expect(receiptsBefore && receiptsBefore[expectedKey], 'persisted receipt').toBeTruthy();
-    const n = (await settlesBy(request, NODE_C_ADDR)).length;
-    const r5 = await cli(['use', id, '--no-apply'], HOME_C, { timeoutMs: 120_000 });
-    expect(r5.code).toBe(0);
-    expect(r5.stdout).toContain(`✓ ${id} is already on this node (purchased)`);
-    expect(r5.stdout).toContain(`✓ try it: ainize chat ${id} "your question"`);
-    expect(r5.stdout).not.toContain('bought');
-    await sleep(2000);
-    expect((await settlesBy(request, NODE_C_ADDR)).length).toBe(n);
-    expect(await ainGet(accessRef)).toEqual(receiptsBefore);
-
-    // 6: the standalone agent never writes a receipt (only Market.buy calls recordAccess)
-    const agent = await agentAddress();
-    expect((await settles(request)).some((r) => r.body.buyer === agent), 'the agent has bought at least once').toBe(true);
-    expect(await ainGet(`/apps/knowledge/access/${agent}`)).toBeNull();
   });
 
   test('AZ-083 Meter live-test hits through POST /api/chat and read them back as usage events with a per-visitor quota', async ({ request }) => {
@@ -666,7 +711,11 @@ test.describe('autonomous buyer (runtime)', () => {
     const seqBefore429 = await latestSeq(request, 'usage');
     const r429 = await post({ patch_id: K.pixel, mode: 'base', messages: [{ role: 'user', content: 'hi' }], max_tokens: 4 });
     expect(r429.status).toBe(429);
-    expect(r429.body).toEqual({ error: 'free live-test quota exhausted for this hour — buy the patch or run your own node' });
+    // the body also names the measured end of this visitor's hour, so a client can print a time instead of "in an hour"
+    expect(Object.keys(r429.body).sort()).toEqual(['error', 'quota_reset']);
+    expect(r429.body.error).toBe('free live-test quota exhausted for this hour — buy the patch or run your own node');
+    expect(r429.body.quota_reset).toBeGreaterThan(Date.now());
+    expect(r429.body.quota_reset).toBeLessThanOrEqual(Date.now() + 3600_000);
     await sleep(1500);
     expect(await latestSeq(request, 'usage')).toBe(seqBefore429);
 
@@ -992,8 +1041,7 @@ test.describe('agent skip + budget', () => {
 const tokens: Record<string, string> = {};
 async function tokenFor(request: Parameters<typeof api>[0], node: string): Promise<string> {
   if (!tokens[node]) {
-    const { operatorToken } = await import('../helpers/ainize');
-    tokens[node] = await operatorToken(request, node);
+      tokens[node] = await operatorToken(request, node);
   }
   return tokens[node];
 }

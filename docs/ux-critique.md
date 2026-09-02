@@ -1,0 +1,1049 @@
+# Ainize - critical UX review
+
+_A senior design review of the running product: node-a (demo cluster, http://localhost:3402) and node-u (dataset-first teach build, http://localhost:3422), driven with Playwright at 1280 px and 360 px, in English and Korean, across first-visit, empty, loading, error, offline, permission-denied, long-content and shared-GPU-queue states. Screenshots cited by filename live in `packages/e2e/results/ux/`. 100 findings, ranked; the first 20 are the ones that would change the product most._
+
+**Review date:** 2026-09-01 · **Findings:** 100 (24 critical, 69 major, 7 minor) · **Fixed and re-verified on the running product:** 17 (items 1, 2, 6, 7, 12, 20, 22, 24, 26, 27, 28, 29, 55, 56, 84, 85, 97)
+
+---
+
+## Executive summary
+
+Ainize is a peer-to-peer marketplace for small trained memory-table patches - "knowledge" you can load into a running LLM, test live before buying, publish, and get paid for. I drove both running nodes for two days: the demo cluster on :3402 and the dataset-first teach build on :3422, at 1280 px and 360 px, in English and Korean, and in the states products usually skip - first visit, empty, loading, error, offline, permission-denied, long content, slow model, shared-GPU queue.
+
+What is fundamentally right is the product's core idea and its vocabulary discipline. This is a marketplace for a genuinely new object, and it refuses to make the buyer learn the machinery: one glossary file defines every term once with a plain Korean name, a plain English name, a technical name and a help sentence, and the whole UI pulls from it - which is why a page about n-gram memory-table patches manages to say "knowledge", "facts covered" and "memory entries" to a buyer while still handing a developer benchmark.queries on hover. The live test is the right primary action and it is free, needs no sign-in, and warns you when its own chat format may underperform the verified score. The code is repeatedly principled where it would be easy not to be: it refuses to print an accuracy number when none was measured, it counts integrity-only checks separately, it refuses to invent a training ETA from fewer than three samples, it never deletes a runaway model answer but explains and quantifies the cut, and /terms limits the product's own central claim in plain language. That is an unusually honest foundation. The three biggest problems are all places where the product's surfaces have drifted away from it.
+
+**1. The claims outrun the measurements.** Every screen that carries evidence overstates it. "Accuracy 100% (26/26) - over 2,761 benchmark questions" prints a 26-question result against a 2,761-question denominator, on the landing card, the explore cards and the knowledge page. The topic page states that scores can be compared while listing three different benchmark hashes. The before/after proof that the whole product rests on - pre_apply 1/8 -> 26/26, measured twice by independent nodes - is in the API and rendered nowhere. The tick-or-cross verdict in the live test never shows the expected answer, so it cannot be checked at all on a phone. Overview says a side-effect threshold was set where the verification tab says "not reported". The teach node announces simulated checks as measurements "in the live model" and then tells you your lesson "learned all 11 questions" directly above "no training happened". And the live test itself contaminates its own control: from the second turn the "before" column is fed the patched answer as its history, so the un-patched model repeats the knowledge's answer and the demo disproves itself. Nothing here is a lie anyone chose; it is a set of surfaces that stopped tracking what the node actually measured.
+
+**2. Every path that ends in a decision breaks at the last step.** The Buy tab explains "no sign-up" and then offers a visitor nothing but an operator sign-in. A retired version is fully purchasable with the newer-version warning parked in a different tab. The Publish button and both irreversibility consents are below the fold in every viewport I measured, so the money-and-permanence screen looks like it has no way to proceed. "Keep it on this node" confirms success without sending a request. On the operator side, Subscribe buys every item in a track with no price, no count and no confirm, and lessons publish automatically by default under the node's identity with Approve one click away from a stranger's text on the permanent record. The friction is consistently on the wrong action: publishing is frictionless, deleting a local draft demands you type its id.
+
+**3. The product destroys the user's work with ordinary actions, on a metered budget.** Ticking a second knowledge empties both the transcript and the lesson basket. "Improve & retry" replaces the basket with the failed job's facts. Fixing one flagged dataset row silently drops the four other flagged rows and then reports "0 need a fix". Clear conversation has no undo, Details -> loses the comparison on Back, an over-long question is deleted from the composer and preserved only in an error, and the explore error state throws away the filters. All of this sits on top of a twenty-tries-per-hour quota that is keyed to an IP address and presented as personal. The user pays twice for the same work and is not told the first copy still exists.
+
+Below: 100 problems worth fixing, ranked - the first 20 are the ones that would change the product most - grouped into twelve themes, each with the evidence I saw, the cost to the user, and a fix a developer can implement without asking me a question.
+
+---
+
+## Top 20 at a glance
+
+| # | Finding | Theme | Severity |
+|---|---|---|---|
+| 1 | From turn 2 the "Before loading" column is fed the patched answer as its own history, so the demo disproves itself | The live test moment | critical ✅ fixed |
+| 2 | Accuracy is printed against the wrong denominator on every surface that shows it | Trust and evidence | critical ✅ fixed |
+| 3 | The Buy tab promises "no sign-up" and then offers a visitor nothing but an operator sign-in | Deciding what to load | critical |
+| 4 | Retired knowledge is fully purchasable and the newer-version warning lives in a different tab | Deciding what to load | critical |
+| 5 | Fixing one flagged row silently deletes every other flagged row, then reports "0 need a fix" | Teaching from a dataset (node-u) | critical |
+| 6 | "Your lesson is ready - it learned all 11 questions" sits above "no training happened", with Publish as the primary button | Teaching from a dataset (node-u) | critical ✅ fixed |
+| 7 | The node announces simulated checks as measurements "in the live model" | Trust and evidence | critical ✅ fixed |
+| 8 | Lessons publish automatically by default, and Approve puts a stranger’s lesson on the public record under your node in one click | The operator console | critical |
+| 9 | "Subscribe" buys every item in a track with no price, no count and no confirmation | The operator console | critical |
+| 10 | A failing API renders as a healthy, empty operator console | States, errors and empty screens | critical |
+| 11 | A transient API error turns a live, listed knowledge page into "This node does not know this knowledge" | States, errors and empty screens | critical |
+| 12 | The "AI Network" ledger badge is painted on top of the first nav link at every desktop width | Visual system and copy | critical ✅ fixed |
+| 13 | The loudest element on the landing page is a count that reads "1 verified knowledge" here and "0 verified knowledge" on the other node | What this is and who it is for | critical |
+| 14 | Ticking another knowledge silently empties both the conversation and the lesson you were building | Teaching from a conversation | critical |
+| 15 | 4 KB of random binary passes as a valid dataset and is marked "Will train" | Teaching from a dataset (node-u) | critical |
+| 16 | The Publish button and both consent checkboxes are below the fold in every viewport | Teaching from a conversation | critical |
+| 17 | The progress line says "2 of 2 correct" and the verdict on the same card says "0 of 2" | Teaching from a conversation | critical |
+| 18 | No item on the browse list shows a price on a phone | Mobile | critical |
+| 19 | On a phone the answer lands off-screen and is never scrolled into view - a free try spent on something never seen | Mobile | critical |
+| 20 | The expected answer is never rendered as text, so the tick-or-cross verdict cannot be checked - and on touch it does not exist | Trust and evidence | critical ✅ fixed |
+
+---
+
+## The 100 findings, by theme
+
+### What this is and who it is for
+
+_7 findings (2 critical, 4 major, 1 minor) — items 13, 23, 68, 69, 70, 71, 72_
+
+#### 13. The loudest element on the landing page is a count that reads "1 verified knowledge" here and "0 verified knowledge" on the other node
+
+- **Route / surface:** `/ (hero)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** CountCard renders t("landing.hero.count", {n: num(listed)}) as 28 px purple bold above the primary CTA (LandingPage.tsx:273-277). node-a reports counts {patches:4, listed:1}; node-u at :3422 reports listed 0, so its landing page advertises "0 verified knowledge" directly above an "Explore knowledge" button. The string is also ungrammatical at n=1 although the i18n layer has a _one plural mechanism (i18n/index.ts:43) used elsewhere.
+- **Evidence:** critic-landing-en-hero.png, critic-nodeu-hero.png ("0 verified knowledge / 85 being verified"), first-impression-nodeu-hero-zero.png.
+- **User cost:** A marketplace whose headline number is 0 or 1 tells a stranger in two seconds that there is nothing here, and the items that do exist are never looked at. On node-u the page invites you to explore a catalogue it has just called empty.
+- **Fix:** Below a threshold (listed < 5) replace the number with the thing itself - the names or the topic ("Korean stock ticker codes, verified on Qwen3.8-Flash-Next"). Above it, keep the count and add landing.hero.count_one, passing count as the third argument to t().
+
+#### 23. The developer card leads with npm install -g ainize, a command that cannot resolve
+
+- **Route / surface:** `/ (developer card)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** LandingPage.tsx:329 hardcodes npm install -g ainize / ainize init / ainize start. The CLI in this repo is @ngram/cli with "private": true (packages/cli/package.json:2-4); ainize is only a local bin alias. /docs knows this and prints the working fallback right underneath ("# or from the repo: npm run build && npm link -w packages/cli"); the landing shows only the line that fails.
+- **Evidence:** critic-landing-sec1.png; /docs text read live; first-impression-path-docs.png.
+- **User cost:** The one audience addressed in its own idiom gets a 404 from npm in the first three seconds, and the page carrying the command that works is not linked from the landing nav or footer.
+- **Fix:** Show the command that works today - git clone ... && npm i && npm run build && npm link -w packages/cli - or keep the npm line and add the repo fallback exactly as /docs does. Do not ship an install command that has never resolved.
+
+#### 68. The landing nav never sticks, so 4,400 px of page have no navigation at all
+
+- **Route / surface:** `/ (nav)`
+- **Severity:** major · **Effort:** M
+- **Problem:** NavBar is position: sticky; top: 0 but its parent IntroSection sets overflow: hidden (LandingPage.tsx:11-17), which makes IntroSection the scroll container - so the bar never sticks at any offset. Measured: at scrollY 2500 the nav’s viewport top is -2500 in a 5,229 px page, and the solid state that fades the bar opaque past scrollY 600 can never fire.
+- **Evidence:** critic-landing-scrolled-2500.png, first-impression-landing-scrolled-nav.png.
+- **User cost:** After the first screen there is no way to reach Explore, Live test, Teach or sign-in without scrolling back to the top, so every section has to re-offer navigation the chrome should have kept.
+- **Fix:** Hoist NavBar out of IntroSection to be a sibling at the page root and move overflow: hidden down onto IntroContent, which is already position: relative and is what actually clips the bleeding hero image.
+
+#### 69. /docs is unreachable from both the landing nav and the landing footer
+
+- **Route / surface:** `/ (nav and footer)`
+- **Severity:** major · **Effort:** S
+- **Problem:** A full link inventory of / at 1280 px returns /explore, /chat, /chat?teach=1, /signing in the nav and /terms, /network, /ledger, ain-js and a mailto in the footer. /docs appears exactly once, as a 15 px "Full API & CLI reference ->" about 2,600 px down the page - below a nav bar that has already scrolled away. Every other page’s header does list Docs & API (Header.tsx:99).
+- **Evidence:** Link inventory above; critic-landing-sec2.png; LandingPage.tsx:259-265 and :464-470.
+- **User cost:** The developer audience - given a whole dark card and three shell commands, one of which does not work - has no persistent path to the reference that carries the command that does.
+- **Fix:** Add Docs & API to the landing nav and to the landing footer so both chromes expose the same destinations.
+
+#### 70. The hero says "1 verified knowledge"; one click later /explore says "4 knowledge", all four badged Verified
+
+- **Route / surface:** `/ -> /explore`
+- **Severity:** major · **Effort:** M
+- **Problem:** The landing counts counts.listed (1) while /explore’s default view lists all four catalogue entries, each carrying a Verified badge and three of them also "Newer version available". The two pages count different things under the same word, and nothing reconciles them.
+- **Evidence:** critic-landing-en-hero.png vs critic-explore-w.png; GET /api/info counts {patches:4, listed:1, verifying:0, superseded:3}.
+- **User cost:** The visitor is told there is one verified item and immediately shown four. They cannot tell whether the landing undercounts or the catalogue overstates, and "Verified" - the word the product rests on - is ambiguous on first contact.
+- **Fix:** Make the two pages agree on one noun: either the hero counts what /explore’s default filter shows, or /explore excludes superseded entries by default and says "1 current · 3 superseded". Use the same phrase in both places.
+
+#### 71. "Open the operator console" leads to a password wall that never says where the password comes from
+
+- **Route / surface:** `/signing`
+- **Severity:** major · **Effort:** S
+- **Problem:** The developer card’s CTA goes to /signing, which reads "Sign in to your node / Only the person who runs this node needs a password. / Enter this node’s operator password. ... / Operator password / Sign in". There is no mention that the password is set on first use by ainize login (packages/cli/src/bin.ts:131), no link to /docs and no link to the install instructions.
+- **Evidence:** Full page text read live; first-impression-path-signing.png.
+- **User cost:** The path the landing page most explicitly invites ends at a field the invited person cannot fill, with no next action and no explanation.
+- **Fix:** Add one line under the field: "Running this node yourself? The password is set the first time you run ainize login. Setup guide ->" linking to /docs#install.
+
+#### 72. "Teach the model" lands on a page whose title and highlighted nav item both say "Live test"
+
+- **Route / surface:** `/chat?teach=1`
+- **Severity:** minor · **Effort:** S
+- **Problem:** Both the nav Teach item and the creator card CTA route to /chat?teach=1, which redirects to /chat/krx-all-2761?teach=1. The h1 is "Live test", and Header.tsx:38-43 deliberately uses a non-NavLink so Teach never lights up - the active item after clicking Teach is Live test. The page does frame teaching (a purple banner and the lesson basket at the top of the left rail), so the content and the chrome contradict each other.
+- **Evidence:** critic-teach-arrival.png; redirect confirmed; LandingPage.tsx:315, Header.tsx:38-43, 96.
+- **User cost:** The user clicks a promise and arrives somewhere with a different name and a different nav item lit, so they cannot tell whether they are where they meant to be.
+- **Fix:** When teach=1 is present, set the h1 to the teach vocabulary ("Teach the model", with "tested live on Qwen3.8-Flash-Next" as the subtitle) and mark the Teach nav item active; keep the banner as it is.
+
+### Deciding what to load
+
+_9 findings (2 critical, 7 major, 0 minor) — items 3, 4, 25, 26, 27, 30, 73, 74, 75_
+
+#### 3. The Buy tab promises "no sign-up" and then offers a visitor nothing but an operator sign-in
+
+- **Route / surface:** `/:author/:patchId -> Buy tab`
+- **Severity:** critical · **Effort:** M
+- **Problem:** The explainer ends "Pay with a wallet (AIN) or node credit - no sign-up" (detail.ts:176) and the only actionable block, "Buy from this node", says "Sign in as this node’s operator to buy with the node’s wallet" (detail.ts:190). canBuy and the button live inside isOperator, so the marketplace’s primary audience has no control to click; what remains is a raw x402 gateway URL and a curl snippet behind a developer disclosure.
+- **Evidence:** browse-buy-detail-krx-all-2761-buy.png, critic-detail-buy-final.png; PatchPage.tsx:415-439.
+- **User cost:** The person the marketplace is built for cannot buy, and is told two opposite things about whether an account is needed. There is no path from "I want this" to "I have this".
+- **Fix:** Split the section by audience in PatchPage.tsx. Signed out: replace the operator sentence with the visitor path - the gateway address, one line of ainize patch buy <id>, and a Docs link - and drop "no sign-up" from detail.buy.explain (it describes the machine flow, not this page). Keep the operator button under isSignedIn.
+
+#### 4. Retired knowledge is fully purchasable and the newer-version warning lives in a different tab
+
+- **Route / surface:** `/:author/:patchId -> Buy tab (SUPERSEDED items)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** On krx-all-2761-ep6 (status SUPERSEDED, superseded_by krx-all-2761) the Buy tab is byte-identical to the current version’s apart from the price. canBuy = d.quorum_ok && !d.owned (PatchPage.tsx:415) ignores status entirely, and the only warnings sit in the header meta line and the Origins & derivatives tab, neither visible while Buy is open. Three of the four catalogue items are in this state.
+- **Evidence:** Diffed live: browse-buy-detail-krx-all-2761-ep6-buy.png vs browse-buy-detail-krx-all-2761-buy.png differ only in "5 AIN" vs "25 AIN" and the gateway id; warning only in browse-buy-detail-krx-all-2761-ep6-lineage.png.
+- **User cost:** A buyer can pay for a retired version without ever being shown that a better one exists, what it costs, or how it differs. It is the most expensive mistake this UI permits.
+- **Fix:** In the Buy panel, when d.superseded_by.length > 0 render a warning Alert above the price naming the successor with its price and accuracy, make it the primary link, and demote the buy control to a secondary "Buy this older version anyway". Reuse detail.lin.superseded_by so no new string is needed.
+
+#### 25. You cannot search for anything the knowledge actually knows
+
+- **Route / surface:** `/explore (search)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The catalogue’s pitch is that the model will know 2,761 Korean companies, and 삼성전자 is the second sample question on the flagship item. GET /api/catalog?q=samsung returns total 0; ?q=삼성 returns 0; ?q=ticker returns 4. The server filter joins only id, name, description, model.id_M and benchmark.schema (packages/node/src/api.ts:148); sample prompts and expected answers are not indexed.
+- **Evidence:** Three live API queries above; browse-buy-explore-noresult.png, browse-buy-explore-search-samsung.png.
+- **User cost:** The obvious first search - "does it cover the company I care about?" - returns the empty state and reads as an empty marketplace, and nothing tells the user that search does not look inside the knowledge.
+- **Fix:** Add anchor.benchmark.samples (prompt and expect) to the search haystack at api.ts:148, and when a query matches a sample rather than a name show the matching sample under the card ("matches: 종목코드 삼성전자 -> 005930").
+
+#### 26. There is no way to hide superseded knowledge, and three of the four items are superseded
+
+- **Route / surface:** `/explore (filters)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The filter row offers Model and Topic chips and a search box; ExplorePage.tsx:38-45 holds no status state, even though /api/catalog already accepts status=LISTED (api.ts:143) and /api/info reports counts {listed:1, superseded:3}. So 75% of the rows are things nobody should buy and the only cue is a low-contrast grey chip.
+- **Evidence:** critic-explore-w.png, browse-buy-explore-w-en.png; /api/info counts.
+- **User cost:** The visitor has to read four near-identical names and work out which one is current. On a real catalogue with retired versions of every item the list becomes unusable.
+- **Fix:** Add a third chip group "Show: Current only | All versions" defaulting to Current only, wired to the existing status query param, with a line under the count: "3 older versions hidden - show".
+- **Status:** fixed — Explore gained a third chip group "Show: Current only | All versions", default Current only, sent as the catalogue's own `status` param, with "3 older versions hidden · show" under the count. The default hides nothing from the operator who owns those versions — the dashboard and each item's own page are unchanged.
+
+#### 27. The default sort puts a retired single-fact item at the top of the marketplace
+
+- **Route / surface:** `/explore (default sort)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Sort defaults to Most popular, which the API implements as b.downloads - a.downloads || b.passed - a.passed (packages/node/src/api.ts:151). pixelplus-087600 has 187 downloads but is SUPERSEDED and covers 8 facts; the flagship krx-all-2761 has 53. Status is not a tiebreaker at any level and downloads accumulate forever.
+- **Evidence:** GET /api/catalog?sort=popular ordering; critic-explore-w.png.
+- **User cost:** The first card a visitor sees is a dead item that teaches one ticker code; clicking it lands on a page marked "Newer version available" and they have to find the real item themselves.
+- **Fix:** Make status the first key of the popular sorter in packages/node/src/api.ts:151 - LISTED before SUPERSEDED and REJECTED, then downloads. One line.
+- **Status:** fixed — `sort=popular` ranks by status first (LISTED 0, in-flight 1, SUPERSEDED 2, REJECTED 3) and only then by downloads and passed count, so the flagship heads the marketplace and the retired single-fact item with 251 downloads does not.
+
+#### 30. There is no price or buy affordance above the fold - buying is the fourth tab
+
+- **Route / surface:** `/:author/:patchId (header and stats)`
+- **Severity:** major · **Effort:** M
+- **Problem:** HeadRight contains exactly two actions: the purple Live test button and a grey "Other knowledge on this subject" link (PatchPage.tsx:169-174). The price is the sixth of seven equal-weight numbers in the stats strip (:193-201) - 53 Purchases, 100% accuracy, 270,053 Memory entries, 2,761 Facts, 331.7 MB, 25 AIN Price, 1,325 AIN Revenue - with a seller metric rendered in the same 24 px face right beside the price.
+- **Evidence:** critic-detail-buy-final.png, browse-buy-detail-krx-all-2761-overview.png.
+- **User cost:** A visitor who has decided they want the item has no obvious next step, and two large AIN numbers side by side invite misreading the price. The commercial intent of the page is invisible until you go tab-hunting.
+- **Fix:** Put the price and a "Get this knowledge - 25 AIN" button in HeadRight above Live test (which becomes secondary), and move Revenue out of the buyer-facing strip into the Verification/History tab where the settlement record lives.
+
+#### 73. Tab state is not in the URL, so evidence cannot be linked and Back leaves the page
+
+- **Route / surface:** `/:author/:patchId (tabs)`
+- **Severity:** major · **Effort:** S
+- **Problem:** const [tab, setTab] = useState("overview") (PatchPage.tsx:131). Reproduced: arriving from /explore and clicking Verification then Buy leaves the URL unchanged, and Back goes to /explore rather than to Overview. Reloading after a tab click returns to Overview, and the in-page "use it yourself ->" control has the same problem.
+- **Evidence:** Measured with a scripted walk; browse-buy-detail-krx-all-2761-verification.png.
+- **User cost:** You cannot send someone "look at the verification results", only "open this page and click the second tab", and three clicks into the evidence the Back button ejects you from the item entirely.
+- **Fix:** Back the tab with a search param: tab = sp.get("tab") ?? "overview" and setSp({tab: id}) in the Tabs onChange. Deep links and Back then both work with no other change.
+
+#### 74. The page whose entire job is comparison shows no comparison
+
+- **Route / surface:** `/benchmarks/:schema`
+- **Severity:** major · **Effort:** M
+- **Problem:** "Other knowledge on this subject" leads to /benchmarks/krx-ticker-codes, which renders the same PatchListItem stack as /explore - four cards of five prose lines each (BenchmarkPage.tsx:70) - with no table and no aligned columns, and its sort control silently drops the Price option that /explore offers (SORTS = popular, latest, rows).
+- **Evidence:** browse-buy-benchmarks.png; enumerated the sort options live; the four items differ on 25/10/5/0.1 AIN, 100/100/100/96.2% and 331.7/297.2/297.2/3.7 MB, none of which are ever adjacent.
+- **User cost:** The one screen designed for "which of these should I buy?" makes the reader hold four cards in their head and compare by scrolling.
+- **Fix:** Render this page as a comparison table - one row per item with name/version, status, price, accuracy (with denominator), question set, facts, size, downloads - highlighting the current version, and add price back to SORTS.
+
+#### 75. Sample questions are printed as raw JSON strings and the "… 14 more" that follows is not a control
+
+- **Route / surface:** `/:author/:patchId -> Overview (sample questions)`
+- **Severity:** major · **Effort:** M
+- **Problem:** The list renders {JSON.stringify(s.prompt)} -> {s.expect} (PatchPage.tsx:262), producing "종목코드 픽셀플러스 " -> 087600 with surrounding quotes and an invisible trailing space that is deliberately part of the trained prompt. Only 12 of 26 are shown, followed by a plain li reading "… 14 more". The Live test page already solves this properly, rendering the same prompts as chips with a ␣ marker and an explanatory tooltip (ChatComposer.tsx:104-108).
+- **Evidence:** innerText dump of the Overview tab; browse-buy-detail-krx-all-2761-overview.png vs critic-teach-arrival.png.
+- **User cost:** The one section showing what the knowledge actually does looks like a debug dump, and a reader cannot expand past 12 of 26.
+- **Fix:** Reuse the ChatComposer sample renderer here: drop JSON.stringify, show the ␣ marker with its tooltip, and make "… 14 more" a button that expands the list.
+
+### The live test moment
+
+_12 findings (1 critical, 11 major, 0 minor) — items 1, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67_
+
+#### 1. From turn 2 the "Before loading" column is fed the patched answer as its own history, so the demo disproves itself
+
+- **Route / surface:** `/chat, /chat/:patchId (compare mode)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** buildHistory replays each finished turn as {user, assistant} using tr.response.patched ?? tr.response.base (ChatPage.tsx:110), and the node hands that single msgs array to both generations (market.ts:707, used at :731 and :741). From the second turn on, the un-patched model is told it previously produced the knowledge answer, so it repeats it and the "before" column starts looking as good as the "after" one.
+- **Evidence:** Wire capture: turn 2 sent [{user:"종목코드 픽셀플러스 "},{assistant:"**픽셀플러스**의 코스닥 시장 종목코드는 **087600**입니다."},{user:"방금 말한 종목코드를 숫자만 다시 알려줘"}] with mode:"compare". Screenshots live-test-28-history-contaminates-base-1280-en.png, critic-chat-history.png.
+- **User cost:** The page exists to prove the base model cannot do this and the knowledge can. Two turns in it proves the opposite, and a visitor deciding on a 25 AIN purchase concludes the knowledge is worthless. Nothing warns that the comparison has stopped being clean.
+- **Fix:** Build two histories in compare mode: replay tr.response.base for the base call and tr.response.patched for the patched call, sending messages_base and messages_patched (or a history:[{prompt, base, patched}] array the node splits at market.ts:707). If that is too large for now, make compare mode single-turn: send only the new prompt and say "Each comparison is a fresh question - earlier answers are not carried over".
+- **Status:** fixed — Compare mode sends one conversation per column: POST /api/chat gained `messages_base` / `messages_patched` (both must end with the same question, else 400) and the node replays each to its own generation, reporting `history {base, patched, split}`. A column that never answered a turn is left out of that column's history rather than faked, and from turn 2 the transcript states the rule. Re-measured on the node→model wire: the base call carries the base model's own "136950" and answers 136950, the patched call carries "087600" and answers 087600.
+
+#### 57. "Buy the knowledge" is said four times on one screen and is not a link anywhere
+
+- **Route / surface:** `/chat/:patchId (quota exhausted)`
+- **Severity:** major · **Effort:** S
+- **Problem:** When the trial runs out the same sentence renders in the page-level Alert (ChatPage.tsx:396), the transcript error bubble, the textarea placeholder (:367) and the composer footer (:363). All four are plain text and none links to /{author}/{id}, although that link exists 300 px above as "Details ->".
+- **Evidence:** critic-chat-429.png, live-test-06-quota-429-1280-en.png; counted three occurrences in innerText plus the placeholder attribute.
+- **User cost:** This is the highest-intent moment on the site - the visitor liked it enough to spend twenty tries - and the product answers with four copies of a dead-end sentence, which also reads as an error rather than an invitation.
+- **Fix:** Say it once, in the Alert, with the knowledge name as a link and a "Buy - 25 AIN" button, plus the reset time (the window is anchored at first use in market.ts:653, so the node can return quota_reset_at). Reduce the placeholder and footer to "No free tries left".
+
+#### 58. With thinking on, the answer is routinely cut off or empty and there is no way to ask again
+
+- **Route / surface:** `/chat/:patchId (thinking toggle)`
+- **Severity:** major · **Effort:** M
+- **Problem:** max_tokens defaults to 200 for both cases (api.ts:380) and the reasoning channel shares that budget, so a thinking answer is regularly truncated mid-sentence and sometimes comes back empty. Either way the composer was already cleared on submit (ChatComposer.tsx:79), no Retry exists for a non-error turn, and the thinking checkbox stays on - so recovery means unchecking the box and retyping the question from memory.
+- **Evidence:** Real call: content "**픽셀플러스(087600)**  \n- **상장시장", finish_reason "length", reasoning 353 chars, quota 16 -> 15; probes after the turn: Retry buttons 0, checkbox still checked, textarea empty. live-test-26-real-thinking-long-1280-en.png, critic-chat-thinking.png.
+- **User cost:** A free try is spent on a half-sentence, and the only route back is to retype the question. When the answer is empty the bubble says "(empty answer)" while 598 characters of usable reasoning sit collapsed behind "Show thinking".
+- **Fix:** Raise max_tokens when thinking is true (api.ts:380); render a primary "Ask again without thinking" on truncated or empty thinking turns that resends the prompt with the box unchecked; and when content is empty but reasoning exists, auto-expand it under "The model ran out of budget before answering".
+
+#### 59. The free-try quota is keyed on IP but presented as a personal allowance
+
+- **Route / surface:** `/chat (free-try counter)`
+- **Severity:** major · **Effort:** M
+- **Problem:** The bucket is ip:${req.ip} with a 20-per-hour limit held in a process-local map (api.ts:386-391, market.ts:646-659), while the UI says "Free trial {n}/{limit} left this hour" (chat.ts:67). Everyone behind one office, campus or carrier NAT shares one budget; on a publicly reachable node the counter can be at zero before a visitor has asked anything, and the page will tell them they used all their free tries.
+- **Evidence:** Code paths above; on this localhost demo consecutive requests decrement one unit each, so the risk is structural rather than observed here.
+- **User cost:** On any shared address one person’s twenty tries are everyone’s, and the wording blames the visitor for consumption they cannot see or control.
+- **Fix:** Add a per-browser bucket alongside the IP one (a long-lived visitor cookie, or the existing teacher key) and take the minimum against a generous IP cap. At minimum change the copy to "20 free tries per hour for this network".
+
+#### 60. Typing eight characters that merely prefix a sample silently scores your question against a benchmark item you never asked
+
+- **Route / surface:** `/chat/:patchId (composer auto-scoring)`
+- **Severity:** major · **Effort:** S
+- **Problem:** matchSample falls back to two-way containment for prompts of eight characters or more: samples.find(x => p.includes(x.prompt.trim()) || x.prompt.trim().includes(p)) (components/chat/util.ts:27-35). A truncated company name is a prefix of a sample, so the turn is stamped with that sample’s expected value and both bubbles get a hard tick or cross against a different company.
+- **Evidence:** Typed 종목코드 한화머시 (9 chars, a truncation of the sample 종목코드 한화머시너리앤서비스홀딩스 , expected 0220W0): both bubbles showed "✗ Wrong". live-test-19-false-autoscore-1280-en.png.
+- **User cost:** The user asks about one thing and is told in a red badge that the model got it wrong, measured against another company’s ticker - and since the expected value is never rendered, the mismatch is undetectable.
+- **Fix:** Drop the x.prompt.trim().includes(p) direction in components/chat/util.ts and keep only p.includes(x.prompt.trim()) (the user typed the sample plus extra words). Mirror the change in the node’s matchBenchmarkSample so client and server keep agreeing.
+
+#### 61. No length limit or counter: an over-long question loses the text and returns advice that cannot work
+
+- **Route / surface:** `/chat/:patchId (composer)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The textarea has no maxLength (ChatComposer.tsx:133) while the node rejects anything over 4,000 characters with a zod 400 (api.ts:379). mapChatError turns 400 into "The request was too long or malformed. Clear the conversation and try again." (chat.ts:143) - but submit() cleared the box before sending (ChatComposer.tsx:79), so the text is gone and the conversation is not what is too long.
+- **Evidence:** Pasted 4,500 characters into an empty conversation: 400, that message, the full prompt dumped into the transcript, an empty composer and a Retry that will fail identically. live-test-31-long-prompt-1280-en.png, live-test-32-too-long-error-1280-en.png.
+- **User cost:** The user loses their text and is given a fix that cannot help, on the one action the page exists for.
+- **Fix:** Add maxLength={4000} and a counter that appears past ~3,500; restore the prompt into the box on any send failure; and change chat.err.too_long to name the real cause: "That question is longer than 4,000 characters. Shorten it and send again."
+
+#### 62. Selecting three knowledges buries the picker under ~500 px of near-identical overlap paragraphs
+
+- **Route / surface:** `/chat/:patchId (knowledge picker, 3 selected)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Every overlapping pair gets its own full-width Alert repeating both 50-character names plus the winner’s name again (KnowledgePicker.tsx:173-177, chat.ts:24). Measured with three KRX versions: alerts at y 678 (h 150), 840 (h 171) and 1023 (h 171) - 516 px of stacked prose that pushes "3/3 selected" to y 1206, below the fold at 1280x900.
+- **Evidence:** critic-chat-3selected.png, live-test-13-three-selected-1280-en.png.
+- **User cost:** The user who just ticked a third box loses sight of what they ticked, and the text is so repetitive it gets skipped - so the one real message ("these overlap, the last one wins") is not read.
+- **Fix:** Collapse to one Alert using the order badges already on the cards: "① ② ③ overlap on 241,992 memory entries - ③ wins where they collide", with one line per pair inside it and the full names in title.
+
+#### 63. The stack header sums facts across knowledges the picker has just called 88% identical: "8,283 facts"
+
+- **Route / surface:** `/chat/:patchId (panel head, multi-selection)`
+- **Severity:** major · **Effort:** S
+- **Problem:** ChatPage.tsx:434 sums benchmark.queries over the selection with no de-duplication. Selecting the three KRX versions (2,761 facts each, 241,992 of ~270,053 memory entries shared) yields "3 knowledges loaded together · 8,283 facts" directly beside overlap alerts stating the shared entry count.
+- **Evidence:** critic-chat-3selected.png, live-test-13-three-selected-1280-en.png.
+- **User cost:** The head’s only quantitative claim is three times the truth and contradicts the alert next to it, teaching the wrong mental model - that stacking versions multiplies coverage.
+- **Fix:** When any pair in the selection appears in overlaps, do not sum: show "3 knowledges loaded together · up to 2,761 facts each", or drop the count and show per-item facts in the numbered HeadList already rendered below.
+
+#### 64. The repetition note says the question is outside the knowledge on an answer the same bubble just marked correct
+
+- **Route / surface:** `/chat/:patchId (answer bubble, truncation note)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Truncation prints chat.trunc.repetition - "... that usually means the question is outside what this knowledge covers" (chat.ts:119) - whenever the guard fired, independent of the verdict, while benchmark_hit is deliberately scored on the raw pre-guard text (market.ts:766-768). So a correct answer that then ran away shows a green tick and an amber out-of-scope warning stacked together.
+- **Evidence:** live-test-08-truncated-repetition-1280-en.png: "✓ Correct / 087600 / The model started repeating itself ... outside what this knowledge covers. / showing 6 of 840 characters".
+- **User cost:** The two strongest signals in the bubble say opposite things and the amber one looks like an error, so the visitor cannot tell whether the knowledge worked.
+- **Fix:** Branch the sentence on the verdict in TurnView: when the hit is true print only the mechanical half ("The model repeated itself after this answer, so the rest was cut"), keeping the out-of-scope hypothesis for false or null hits.
+
+#### 65. The lock banner shows visitors an internal job id and the node’s OS process number - and calls their own lesson someone else’s test
+
+- **Route / surface:** `/chat/:patchId (shared-model lock banner)`
+- **Severity:** major · **Effort:** S
+- **Problem:** chat.lock.holder is "Another test in progress ({label}, node process {pid}) - {since}" (chat.ts:45) filled straight from the lock record (KnowledgePicker.tsx:152-158), where label is the internal lock key and owner is pid:<n>. Because lockIsMine is only true for this tab’s own chat request (ChatPage.tsx:413), a visitor whose lesson is being checked is told "Someone else is testing on the shared model right now".
+- **Evidence:** Live API data: lock {owner:"pid:1355814", label:"teach:e012b848-...:preflight"}; rendered as "Another test in progress (teach:2e85bd42-9b99-4c16-9d8a-a97116dd1d07:check, node process 1355814) - started 8s ago". guard-lock-teach.png, critic-teach-arrival.png.
+- **User cost:** A public page looks like a debug console, discloses a live job id and the server process id, and blames a stranger for a wait the visitor’s own lesson is causing.
+- **Fix:** Map the label to a human kind before display (chat:* -> "a live test", teach:* -> "a lesson being trained"), drop the pid from the visitor-facing string, and when the teach label matches the lesson shown on this page say "Checking your lesson on the shared model".
+
+#### 66. "Clear conversation" destroys the whole transcript with no confirmation and no undo
+
+- **Route / surface:** `/chat/:patchId (composer)`
+- **Severity:** major · **Effort:** S
+- **Problem:** clear() replaces the selection’s turn list with [] (ChatPage.tsx:311) and the button sits in the same footer row as Send (ChatComposer.tsx:139). Probed: no dialog fires, article count goes 1 -> 0, nothing offers an undo.
+- **Evidence:** guard-livetest-1280.png probe; footer showed "Free trial 15/20 left this hour" at the time.
+- **User cost:** The transcript is the product of a capped twenty-tries-per-hour budget and, in compare mode, the only artefact of the evaluation. One misclick beside Send erases it and the tries cannot be bought back for an hour.
+- **Fix:** Two-step the button (first click changes the label to "Clear - are you sure?" for four seconds) or clear immediately and offer an Undo in the footer for ten seconds, restoring from the retained array.
+
+#### 67. The only route to buying opens in the same tab and destroys the transcript on Back
+
+- **Route / surface:** `/chat/:patchId (panel head "Details ->")`
+- **Severity:** major · **Effort:** S
+- **Problem:** The panel-head link navigates client-side to /{author}/{id} (ChatPage.tsx:426) and transcripts are component state with no persistence (:159), so ChatPage re-mounts empty on return. Reproduced: one turn -> Details -> Back -> "No questions yet".
+- **Evidence:** Probe output; live-test entry screenshots browse-buy-livetest-entry.png, critic-chat-history.png.
+- **User cost:** The user runs a convincing comparison, clicks Details to check the price, comes back, and the evidence that persuaded them is gone - so the buy funnel breaks at its narrowest point and reproducing it costs more of a capped budget.
+- **Fix:** Persist transcripts to sessionStorage keyed by selection (the record is already serialisable) and restore on mount. Cheap interim: give the Details link target="_blank" rel="noopener".
+
+### Teaching from a conversation
+
+_13 findings (4 critical, 9 major, 0 minor) — items 14, 16, 17, 21, 36, 37, 38, 39, 40, 41, 42, 43, 44_
+
+#### 14. Ticking another knowledge silently empties both the conversation and the lesson you were building
+
+- **Route / surface:** `/chat/:patchId (picker, transcript, lesson basket)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** Transcripts are stored per selection key (transcripts[selectionKey], selectionKey = selectedIds.join(","), ChatPage.tsx:149/224) and the basket is keyed by stackHash(ids) (teachStore.ts:24-30). Adding or removing any knowledge switches to a different, empty record: the panel reverts to "No questions yet" and the basket to "Your lesson (0 of 8) - No corrections yet". Both are still in memory or localStorage under the old key, and nothing says so.
+- **Evidence:** Reproduced with a stubbed answer: 1 turn -> tick a second knowledge -> empty state -> untick -> the turn returns. teach-chat-12-basket-lost-on-stack-change.png, guard-basket-lost.png, live-test-29-transcript-vanishes-1280-en.png.
+- **User cost:** The natural next move - "now add the second knowledge and ask again" - appears to delete both the comparison the user spent scarce free tries on and the correction they were writing. The rational response is to retype it or give up.
+- **Fix:** Keep one transcript and one basket per browser and stamp each turn and each correction with the patchIds it used (Turn already carries patchIds), showing a divider when the selection changes. If per-stack storage must stay, render "You have N questions and 1 correction saved for the previous selection - untick <name> to see them" instead of an empty state.
+
+#### 16. The Publish button and both consent checkboxes are below the fold in every viewport
+
+- **Route / surface:** `/chat/:patchId -> Publish sheet`
+- **Severity:** critical · **Effort:** S
+- **Problem:** The sheet body is overflow-y: auto with the footer inside it and no sticky bar (Sheet.tsx:27, PublishSheet.tsx). Measured on a READY lesson at 1280x900: panel 836, body scrollHeight 808 vs clientHeight 749, submit bottom 919 against a 900 px viewport. At 360x740 the submit bottom is 1135 and the sheet visibly cuts off at "My own wallet address" - the revenue-split explanation, both consents and Publish are all invisible, with no scroll shadow.
+- **Evidence:** guard-publish-1280x900.png, guard-publish-360.png, teach-chat-25-publish-sheet.png, teach-chat-26-publish-clip-360x740.png.
+- **User cost:** The one screen where money and irreversibility are introduced appears to have no way to proceed, and a user who scrolls blind past two consent checkboxes to find the button has been trained to tick consents without reading them.
+- **Fix:** Move SheetFooter out of the scrolling Body into Panel as a sticky bar (position: sticky; bottom: 0, opaque background, top border) in Sheet.tsx, so the action and the consent state are always visible. The same change fixes the credit and keep-private sheets.
+
+#### 17. The progress line says "2 of 2 correct" and the verdict on the same card says "0 of 2"
+
+- **Route / surface:** `/chat/:patchId (lesson card)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** During training the card shows teach.card.training - "answers {hits} of {total} phrasings correctly so far" - from job.progress (LessonCard.tsx:133). The verdict uses job.checks.taught, a different measurement in the live model (LessonCard.tsx:148). On a fresh real job these were 2/2 then 0/2, one after the other, with no sentence explaining that the first is the trainer’s own optimism and the second is the real test.
+- **Evidence:** Real job e012b848 on :3402: progress {step:3,max_steps:3,hits:2,total:2} then checks.taught {hits:0,total:2} rendered as "It did not stick well enough (0 of 2)". guard-card-1280.png, teach-chat-18-card-needs-more.png.
+- **User cost:** The user watches the model learn it and is then told it learned nothing. It reads as a product bug rather than as the honest gap between training and a live check, so nobody knows whether to retry or give up.
+- **Fix:** Label the two numbers differently in LessonCard.tsx: training shows "Practising... step 3 of 3" (no hit count, or "2 of 2 during practice - the real check comes next"), and the verdict says "In the live model it answered 0 of 2 - practice looked good but it did not hold". Never show two bare X-of-Y counts that disagree.
+
+#### 21. "Improve & retry" wipes the basket, and the improvement it asks for cannot be made
+
+- **Route / surface:** `/chat/:patchId (lesson card, NEEDS_MORE)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** The NEEDS_MORE card says "Add another phrasing and try again" and offers Improve & retry, whose handler replaces the whole basket with the failed job facts (ChatPage.tsx:352-355). Any correction in progress is destroyed with no prompt. And once the facts are back there is no way to add a phrasing: basket items expose only "Remove ×" (LessonBasket.tsx:70), the teach drawer opens only from a chat reply, and the conversation is not persisted.
+- **Evidence:** Basket before: "A DIFFERENT correction I was still working on / keep me". After: the failed job’s fact. guard-improve-retry.png, teach-chat-56-improve-retry.png; probe of basket item controls returned ["Remove ×"].
+- **User cost:** The single remedy the product recommends after a failed lesson cannot be performed, and attempting it deletes unrelated work. The only real path costs another model call.
+- **Fix:** Make basket items editable - clicking one reopens the teach drawer prefilled with prompt, answer and alt_prompt. Then Improve & retry can merge instead of replace and can open the first item focused on the "Ask it another way" field.
+
+#### 36. "Keep it on this node for 7 days" sends no request and confirms success, while the card behind it says the opposite
+
+- **Route / surface:** `/chat/:patchId -> Keep it private sheet`
+- **Severity:** major · **Effort:** S
+- **Problem:** done() only sets local state when the choice is "node" (KeepPrivateSheet.tsx:79) - instrumented request log after clicking Done: []. The sheet then shows the green "Kept on this node for 7 days. Try, download or publish it any time from Your knowledge." while the lesson card behind it still reads "Unsaved lessons are deleted after 7 days." That expiry line is itself clipped: the card is the first child of the auto-scrolling transcript and overflows it by 80 px at 1280x900.
+- **Evidence:** guard-keep-sheet.png, guard-keep-done.png, teach-chat-19-keep-private.png; measured card bottom 798 vs transcript bottom 718.
+- **User cost:** Two framings of one deadline, one of them delivered as a success message for an action that never happened, and the sentence that states the real deadline is below a clip with no scrollbar.
+- **Fix:** Change the copy to the truth - "Nothing to do: this lesson lives on this node until {expires_at}. It is deleted then unless you download or publish it." - and drop the success alert. Render the lesson card above the Transcript rather than inside it, with the concrete date in teach.card.expiry. Do not wire option 1 to /save, which only mints download links.
+
+#### 37. The key backup - the only recovery path - is the secondary button next to a primary Continue
+
+- **Route / surface:** `/chat/:patchId -> Who gets the credit? sheet`
+- **Severity:** major · **Effort:** S
+- **Problem:** The sheet creates a secp256k1 key on open (CreditSheet.tsx:40), warns "If you clear this browser without a backup, you lose access to your lessons and any unpaid earnings" (:66), then renders "Download key backup" as a default button and "Continue" as the filled primary (:69-73). Nothing records whether a backup was taken and Continue is never gated. In a private window it is worse: saveTeacherKey swallows the storage error and falls back to an in-memory key (lib/teacherKey.ts:144-151), which the conditional wording does not cover.
+- **Evidence:** teach-chat-10-credit-sheet.png, teach-chat-51-360-credit-sheet.png.
+- **User cost:** Almost everyone clicks the primary button, and the product’s own warning then comes true for them: lessons and unpaid earnings become unreachable when the browser is cleared or the tab is closed.
+- **Fix:** Make "Download key backup" the filled primary and "Continue without a backup" the plain secondary, swapping them after a successful download. When saveTeacherKey catches, replace the conditional warning with "This browser will not remember your key - download the backup now or you lose this lesson when you close the tab."
+
+#### 38. Queueing deletes every correction the pre-flight skipped, including the ones worth fixing
+
+- **Route / surface:** `/chat/:patchId -> pre-flight`
+- **Severity:** major · **Effort:** S
+- **Problem:** onQueued calls clearBasket(selectedIds) and resets the basket unconditionally (ChatPage.tsx:340-344) while PreflightList sends only the will_train rows. The rows labelled "Already correct - skipped", "Too close to X - skipped" and "Cannot be taught - looks like personal data" are wiped along with the trained ones, with no note afterwards.
+- **Evidence:** Pre-flight with 1 will_train + 1 already_known + 1 overlaps_listing + 1 invalid; after Queue training the basket read "Your lesson (0 of 8) / No corrections yet". teach-chat-45-preflight-mixed.png, teach-chat-15-card-queued.png.
+- **User cost:** A user who taught four things and had three skipped watches all four disappear; the rejected one - the one they might reword and retry - is unrecoverable.
+- **Fix:** In onQueued keep the non-trainable facts (filter out only the trained ids) and show one line in the basket: "3 corrections stayed here: 1 the model already knows, 1 overlaps existing knowledge, 1 cannot be taught."
+
+#### 39. You cannot see what you are permanently publishing
+
+- **Route / surface:** `/chat/:patchId -> Publish sheet`
+- **Severity:** major · **Effort:** S
+- **Problem:** The consent reads "I understand this becomes a permanent public record: the questions, answers, my display name and payout address cannot be edited or deleted, and verifier nodes will read them" - but the sheet shows none of the questions or answers. It contains Name (prefilled with the raw question), Description, Shown as, Price, Licence, Get paid to, the split alert and two consents (PublishSheet.tsx:133-179).
+- **Evidence:** Dumped the sheet text on a READY lesson: no question, answer or alt_prompt anywhere. guard-publish-1280x900.png, teach-chat-25-publish-sheet.png.
+- **User cost:** The user consents to irreversibility for content they cannot review on the screen where they consent. Anyone who taught an internal name, a customer number or a phrasing they would fix has no last chance to catch it.
+- **Fix:** Add a read-only "What goes on the record" block at the top of the sheet listing each prompt -> answer (and alt_prompt), plus the display name and payout address exactly as they will appear, with the consent checkboxes directly under it.
+
+#### 40. A permanent licence choice offered as five raw SPDX identifiers
+
+- **Route / surface:** `/chat/:patchId -> Publish sheet`
+- **Severity:** major · **Effort:** S
+- **Problem:** The Licence select renders CC-BY-4.0, CC-BY-SA-4.0, CC0-1.0, ODC-By-1.0, Proprietary verbatim with no helper text, tooltip or link, defaulting to CC-BY-4.0 (PublishSheet.tsx:71, :155-158). The options are literals, so Korean shows the same five identifiers. This is a flow whose premise is "No account needed" and "Ainize just created a key for you".
+- **Evidence:** Rendered option list in both locales; teach-chat-25-publish-sheet.png, teach-chat-35-ko-publish.png.
+- **User cost:** An irreversible legal choice is made by accepting a default the user cannot read, with "Proprietary" sitting in the same list as three Creative Commons licences next to a price field.
+- **Fix:** Label each option in plain language ("CC-BY-4.0 - anyone may reuse it if they credit you", "CC0-1.0 - anyone may reuse it for anything", "Proprietary - only buyers may use it") in both locales, and add one helper line: "This cannot be changed after publishing."
+
+#### 41. Your revenue share percentage is published next to your name and the consent never mentions it
+
+- **Route / surface:** `Publish sheet -> /:author/:patchId`
+- **Severity:** major · **Effort:** S
+- **Problem:** The public knowledge page renders detail.people as "Creator node: node-a · Data provider: Minhyun (70%)" (PatchPage.tsx:163) while the IdLine directly above already prints the node as Creator. The publish consent enumerates "the questions, answers, my display name and payout address" and says nothing about the split. The person is also relabelled "Data provider" here after being "Taught by {name}" in the list.
+- **Evidence:** teach-chat-33-taught-by-detail.png; consent text read from the rendered sheet; i18n/pages/teach.ts detail.people.
+- **User cost:** A contributor discovers their commercial terms on a public page after the fact, and a buyer reading "Creator: node-a ... Data provider: Minhyun (70%)" cannot tell who actually made the knowledge.
+- **Fix:** Drop the percentage from the public line (it is already in the ledger record) or add it explicitly to teach.pub.consent_permanent. Use one word for this person across the product - "Taught by {name}" - and remove the duplicated Creator node line.
+
+#### 42. "Copy commands" puts a live download token for your private lesson on the clipboard with no warning
+
+- **Route / surface:** `/chat/:patchId -> Keep it private -> Run it on my own machine`
+- **Severity:** major · **Effort:** S
+- **Problem:** RUN-LOCALLY.md is rendered verbatim and embeds the 7-day bearer token in the recipe URL and in the curl blob line; the Copy button joins the bash fences, so the token travels with them. Nothing in the sheet says the copied text contains a secret - the only note is "The full guide ... is in RUN-LOCALLY.md."
+- **Evidence:** Called /api/teach/jobs/:id/save on a real job: token eb6c4ff0...c48 appears twice in the document and once in the copied text. teach-chat-23-keep-run-commands.png.
+- **User cost:** The natural next step for someone stuck on these commands is to paste them into an issue or a chat, handing anyone a working download link to knowledge they deliberately kept private, for seven days.
+- **Fix:** Add a note above the Doc block and on successful copy: "These commands include a private download link - anyone who has them can download your lesson until {expiry}. Do not paste them in public." Better: substitute $AINIZE_TOKEN in the displayed markdown and show the value once, separately.
+
+#### 43. "Try it now" appears to do nothing: it ticks a checkbox and stops
+
+- **Route / surface:** `/chat/:patchId (lesson card, READY)`
+- **Severity:** major · **Effort:** M
+- **Problem:** onTry refetches, adds the draft id to the selection and navigates (ChatPage.tsx:345-351). Visually the only change is a ticked checkbox in the left column and a heading that becomes "2 knowledges loaded together"; the taught question is not put in the composer, not asked, and not added to the sample chips, and the transcript stays empty.
+- **Evidence:** After the click: URL /chat/krx-all-2761,taught-who-is-the-mayor-of-spri-4c2c60?lesson=..., composer value "", 0 articles, 0 chips containing the prompt. guard-try-it-now.png, teach-chat-52-try-it-now.png.
+- **User cost:** The user clicks the primary green button on their finished lesson and sees no result. The payoff of the whole flow - watching your own correction come back from the model - requires them to remember and retype the question.
+- **Fix:** After navigating, prefill the composer with job.facts[0].prompt and scroll to it, or send it directly in After-only view. At minimum add the lesson’s own prompts to the sample chips for the draft.
+
+#### 44. "Unrelated questions unchanged: 8/12" is rendered as neutral trivia, with no sign it is the failure that blocks publishing
+
+- **Route / surface:** `/chat/:patchId (lesson card checks)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The three check bullets are plain grey list items with bare ratios (LessonCard.tsx:187-193) and look identical whether they read 12/12 or 8/12. A real job returned checks.locality {ok:false, same:8, total:12}; the explanatory alert is gated to READY jobs (:211) so on NEEDS_MORE the consequence never appears at all.
+- **Evidence:** guard-card-1280.png (NEEDS_MORE, 8/12 with no marker), teach-chat-37-card-publish-gated.png (READY, 7/12 with the alert elsewhere).
+- **User cost:** A person who has never heard of "locality" cannot tell that their correction broke the model’s answers to four unrelated questions - the difference between a useful lesson and a harmful one - or that this is why they can never publish it.
+- **Fix:** Drive each bullet from its ok flag with a tick or cross and a plain consequence when it fails: "✗ It changed the answer to 4 questions that had nothing to do with your correction - that is why this cannot be published." Show it on NEEDS_MORE too.
+
+### Teaching from a dataset (node-u)
+
+_13 findings (3 critical, 8 major, 2 minor) — items 5, 6, 15, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54_
+
+#### 5. Fixing one flagged row silently deletes every other flagged row, then reports "0 need a fix"
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** critical · **Effort:** L
+- **Problem:** messy.csv (13 data rows) previews correctly as "5 will train, 1 duplicate, 7 need a fix" with both conflict pairs, an empty-answer row, an empty-question row and an over-length row listed. One click on "Keep this answer" appends that row, which bumps the dataset revision, and the node re-derives the dataset from accepted rows only - the table drops to 6 rows and the pill reads "6 will train, 0 duplicates, 0 need a fix".
+- **Evidence:** Reproduced twice: teach-dataset-04-messy-after.png -> teach-dataset-30-after-keep1.png, and guard-ds-messy.png -> guard-ds-after-keep.png. TeachDatasetPage.tsx keepAnswer (rows_op append).
+- **User cost:** The user resolves one of five problems and the screen tells them all five are resolved. Four rows leave the dataset with no message, no undo and no entry in the "lines that were left out" disclosure, and they train on a dataset they believe is complete.
+- **Fix:** Keep rejected source rows attached to the dataset across revisions and keep rendering them (not_parsed rows already survive into the Dropped disclosure). Until that is possible, block the first revision-bumping edit behind a confirm that lists exactly which rows will be dropped.
+
+#### 6. "Your lesson is ready - it learned all 11 questions" sits above "no training happened", with Publish as the primary button
+
+- **Route / surface:** `/teach/lesson/:id (node-u)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** On a stub-backend node the result page renders, in this order: H1 "Your lesson is ready" at 32 px, "It learned all 11 questions.", then a pale info alert "Demo node - the checks were simulated and no training happened." (TeachLessonPage.tsx:235), a Before/After diff for all 11, and a "What now?" block led by the filled purple "Publish so others can use it" under "you receive 70% of every sale".
+- **Evidence:** Trained a real 12-question dataset on :3422; guard-ds-result.png, teach-dataset-27-result.png, teach-dataset-42-result-360.png. Policy: backend "stub", simulated_checks true.
+- **User cost:** Two sentences that cannot both be true, with the false one in display type and the true one in a pale box. A user who scans the headline believes they produced sellable knowledge, and the loudest action offers to put that nothing on a public marketplace under their name.
+- **Fix:** When simulated or stub, replace the headline rather than appending a caveat: title "Demo run finished - nothing was trained", subtitle explaining the numbers are illustrative, disclaimer first and in warning tone, and hide the Publish card (keep "Keep it private" and "Train it again").
+- **Status:** fixed — (shipped in `knowledge-marketplace-teachable`) On a stub / simulated node the lesson result page leads with "Demo run finished — nothing was trained", the admission is first and warning-toned (#fff3e0), the counts say they are illustrative, "Keep it private" is the filled primary button and publishing is demoted to a plain "Publish anyway (demo)" link under "What this demo node produced is a placeholder file." The card is gone rather than the route: the publish flow stays reachable so the scenarios that walk publishing, review, decline, credit and payout still exercise it.
+
+#### 15. 4 KB of random binary passes as a valid dataset and is marked "Will train"
+
+- **Route / surface:** `/teach/upload -> /teach/dataset/:id (node-u)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** acceptedFile() gates on the file extension only (lib/teachDataset.ts:48-52). I renamed 4096 bytes of /dev/urandom to binary.csv and uploaded it: the node read it as latin1 and the page reported "8 questions from binary.csv", "8 will train, 0 already known, 0 duplicates, 20 need a fix", a green Will train pill on every mojibake row, and a live "Continue to settings". The only hints are the reassuring notes "Read as latin1" and "8 question(s) were tidied up".
+- **Evidence:** guard-ds-binary.png, teach-dataset-05-binary-after.png.
+- **User cost:** A non-expert who picks the wrong file - or a .csv that is really an .xlsx, the most common mistake in any upload product - is walked to the Train button and burns a scarce training slot on noise. The preview screen’s core promise, "we checked your file", is false.
+- **Fix:** After parsing, reject (or hard-warn) when the accepted rows fail a printable-text check - more than 5% C0 controls, U+FFFD or private-use characters, or a NUL in the raw bytes - and show the first two rows as read. Also render the latin1 fallback in warning tone rather than as a neutral note (TeachDatasetPage.tsx:360).
+
+#### 45. The "delete my file" control sits below the drop zone, so the upload always happens first - and it can never be changed afterwards
+
+- **Route / surface:** `/teach/upload (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The page order is drop zone, paste box, then the "Delete my file as soon as training finishes" checkbox and the orange "the node operator can see it" warning (measured at 360 px: drop zone y=371, checkbox y=873, warning y=910). Dropping a file uploads immediately and navigates away with retention fixed at whatever the checkbox held (TeachUploadPage.tsx:60, 69-86). Nothing later can change it: patchTeachDataset accepts retention (api/api.ts:194) but no component sends it, and DatasetCard only displays it. The file’s own docstring says saying so afterwards would be too late.
+- **Evidence:** guard-ds-upload-360.png, teach-dataset-02-upload-1280.png.
+- **User cost:** The one privacy decision in the flow is placed after the action it governs and is one-way; a user who reads the warning has already put their file on a stranger’s machine for seven days.
+- **Fix:** Move the privacy sentence and the retention checkbox above the drop zone, and add a "Delete after training" toggle to the dataset card in /teach/mine wired to patchTeachDataset({retention}).
+
+#### 46. The counts pill promises "2000 will train" one line above a banner saying only 200 are taught
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** A 2500-row upload renders, stacked with nothing between them: "2000 questions from big2500.csv", the pill "2000 will train, 0 already known, 0 duplicates, 0 need a fix", the note "That file has 2500 questions; this node accepts up to 2000", and the banner "This node teaches up to 200 questions in one lesson. The first 200 are selected". The pill is Math.max(0, dataset.rows - known) and is blind to rows_per_job.
+- **Evidence:** guard-ds-cap2000.png, teach-dataset-20-cap-2000.png; policy {rows_per_job:200, dataset_max_rows:2000}.
+- **User cost:** Three totals on one screen with the biggest and greenest one wrong. A user planning a 2000-question pack learns on the next screen that 90% of it was not in this lesson - if they read the info alert.
+- **Fix:** Cap the pill at rowsPerJob(policy) and name both numbers: "200 of 2000 will train in this lesson ... 1800 stay in your dataset". Use the same figure in teach.rows.next so both screens promise the same thing.
+
+#### 47. "Check what the model already knows" checks only the first 24 questions and says so afterwards
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** major · **Effort:** M
+- **Problem:** check() runs Math.min(24, total) in batches of 8 from index 0 every time, a hardcoded constant unrelated to the node’s 200-question lesson cap. On a 40-row dataset the full-width primary button carries no qualifier and the result note reads "Checked 24 of 40 questions in the live model." There is no control to check the rest, and clicking again re-checks the same head.
+- **Evidence:** guard-ds-checked.png, teach-dataset-08-checked.png; TeachDatasetPage.tsx check().
+- **User cost:** The screen’s headline promise - see which of your questions are wasted - silently covers 60% of a 40-row file and 12% of a full lesson, and the unchecked majority carries a green "Will train" pill as its only signal.
+- **Fix:** Name the sample on the button ("Check the first 24 questions") and offer "Check the next 24" that resumes from sampled.checked. Derive the batch budget from the node’s hourly quota rather than a literal 24.
+
+#### 48. The rows that need fixing are the only rows you cannot remove
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** major · **Effort:** M
+- **Problem:** onRemove is gated on row.index !== null (DatasetTable.tsx:128) and rejected rows have no dataset index. On messy.csv the four conflict rows, the duplicate, the no-answer row, the no-question row and the over-length row all show Edit (conflicts also show "Keep this answer") but never Remove, while every clean row shows Remove.
+- **Evidence:** guard-ds-messy.png, teach-dataset-04-messy-after.png (action cells enumerated per row).
+- **User cost:** The obvious answer to "lines 4 and 5 give different answers" is to delete the wrong one, and that is the single impossible action. Every row the screen tells you to act on gets the fewest options.
+- **Fix:** Add a rows_op {op:"drop_source_lines", lines:[...]} using row.line, which the node already tracks for rejected rows, and render Remove on every row. On a conflict pair phrase it as "Use this one" / "Drop this one" so it reads as one either/or choice.
+
+#### 49. The Train button promises a question count the worker does not honour
+
+- **Route / surface:** `/teach/settings -> /teach/lesson/:id (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The button reads "Train this lesson ({n} questions)" from the dataset row count unless the user ran the optional pre-flight check on the previous screen. Skipping it on a 12-row dataset: button said 12, the progress screen said "12 questions in this lesson", and the result said "It learned all 11 questions" plus "1 of your 12 questions were left out: the model already answered them correctly" - without naming which one.
+- **Evidence:** guard-ds-settings-1280.png -> guard-ds-progress.png -> guard-ds-result.png.
+- **User cost:** The number the user commits to is wrong on the fast path, which is the path most people take, and the result then names a dropped question they cannot identify.
+- **Fix:** When no pre-flight is recorded for the current revision, hedge the button and summary ("Train this lesson (up to 12 questions)") with one line about skipping questions the model already answers, and list the left-out questions on the result screen.
+
+#### 50. The entry page advertises "up to 2000 questions" for a node that trains 200 in a lesson
+
+- **Route / surface:** `/teach (node-u entry)`
+- **Severity:** minor · **Effort:** S
+- **Problem:** The file door’s caption passes policy.limits.dataset_max_rows ?? rowsPerJob(policy) (TeachPage.tsx:60) - the storage cap, 2000. The number that governs what actually gets taught is rows_per_job: 200 and it is never mentioned until the preview and settings screens, three clicks later.
+- **Evidence:** guard-ds-entry-1280.png ("jsonl, csv, tsv or plain text · up to 2000 questions"); policy JSON.
+- **User cost:** 2000 is the first and only number a prospective teacher sees, and it is the one they size their file to; they discover on step 3 that their pack needs ten lessons.
+- **Fix:** Say both, lesson cap first: "jsonl, csv, tsv or plain text · up to 200 questions per lesson (2000 stored)". If only one fits, use the lesson cap.
+
+#### 51. Every row shows a green "Will train" pill with "Not checked yet" directly beneath it
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** view = trains && model ? model : file (DatasetTable.tsx:95), so a row whose parser status is ok renders the file-side label teach.rows.status.new - "Will train", in the green ok tone - and line 117 then adds the help line "Not checked yet". The same string is also the label for the model-side verdict will_train, so a checked row reads "Will train / It answered: ..." and an unchecked one reads "Will train / Not checked yet".
+- **Evidence:** guard-ds-messy.png, teach-dataset-03-good40-during.png (40 rows, all green pill + grey contradiction); components/teach/util.ts:63 and :99 both return teach.rows.status.new.
+- **User cost:** Forty green ticks say the work is done and forty grey lines say it is not. The screen’s purpose - separating "this parsed" from "the model needs this" - collapses into one ambiguous phrase, and the green pill removes any felt need to run the check.
+- **Fix:** Give the two families different words and tones: file side ok becomes a neutral grey "Read OK" (new key teach.rows.status.parsed); green "Will train" and muted "Already known - skipped" stay model-side only, and "Not checked yet" becomes the model-side pill rather than a footnote.
+
+#### 52. "The first 200 are selected" and "0 of 200 selected" appear in the same sentence, and picking 200 means 200 clicks
+
+- **Route / surface:** `/teach/dataset/:id (cap picker, node-u)`
+- **Severity:** major · **Effort:** M
+- **Problem:** The banner concatenates teach.rows.cap with the picker counter, rendering literally: "This node teaches up to 200 questions in one lesson. The first 200 are selected; the rest stay in your dataset for the next lesson. Choose which 200 · 0 of 200 selected". Turning the picker on adds a checkbox column with no select-all (the header cell is an empty th.pick), no shift-range, no filter, PAGE = 50 and a Previous/Next-only pager, and nothing marks which rows are "the first 200".
+- **Evidence:** guard-ds-cap-picking.png, teach-dataset-21-cap-picking.png; DatasetTable.tsx:80.
+- **User cost:** The sentence states two contradictory selection states, and the escape hatch it offers costs 200 clicks - so everyone accepts whatever arbitrary first-200 the node picked, which for a sorted export is the worst possible sample.
+- **Fix:** Show teach.rows.cap only while the picker is off and only the counter while it is on; pre-tick the default 200 so the counter starts at 200; add a "Select all on this page" checkbox in the empty header cell and shift-click ranges.
+
+#### 53. The sticky action bar is opaque and no page reserves space for it, so it permanently covers content
+
+- **Route / surface:** `/teach/dataset/:id, /teach/settings (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Both Sticky blocks are position: sticky; bottom: 0 with a white background and neither PageWrapper adds a matching padding-bottom. Measured: settings at 1280x900 - bar top 827, height 73, and the side-effect checkbox sits at y=837, under the bar; at 360x740 the bar is 124 px tall (17% of the viewport) with three effort cards intersecting it; on the preview page the gradient fades out the bottom table row and covers its Edit/Remove buttons.
+- **Evidence:** guard-ds-settings-1280.png, guard-ds-settings-360.png, teach-dataset-06-sticky-covers-rows.png.
+- **User cost:** About one table row or one radio card is unreachable at any scroll position, and because it is faded rather than hidden it reads as disabled - so on the settings screen a user can press Train while the first of three options has never been on screen.
+- **Fix:** Add padding-bottom equal to the bar height on both PageWrappers (or scroll-padding-bottom on the scroller), give the bar a top shadow instead of a fade, and collapse its summary line to one row below sm so it is not 124 px tall.
+
+#### 54. A screen that warns of 30 minutes shows no progress: a frozen 00:00, six static dots and "0 ahead (0 questions)"
+
+- **Route / surface:** `/teach/lesson/:id (queued/preparing, node-u)`
+- **Severity:** minor · **Effort:** S
+- **Problem:** While queued the page renders "Waiting for a free training slot - 1 ahead (3 questions)", "Elapsed 00:00", "No time estimate yet - this node has not finished enough lessons to know. The first one may take up to 30 minutes." over a six-dot rail. The queue line uses n = j.position ?? 0 (TeachLessonPage.tsx:169-171), so an empty queue reads "0 ahead (0 questions)", and the 30-minute figure is hardcoded in teach.run.eta_none.
+- **Evidence:** guard-ds-progress.png. The determinate bar and per-step counter do exist, but only for the training stage (TeachLessonPage.tsx:172-179).
+- **User cost:** The user is asked to wait up to half an hour in front of a screen that gives no evidence anything is happening, and is sometimes told they are behind zero people.
+- **Fix:** Tick the elapsed clock client-side from job.queued_at, hide the queue line when position is 0 or null (say "Starting shortly" instead), and reuse the training stage’s determinate treatment for queued and preparing.
+
+### The operator console
+
+_10 findings (2 critical, 8 major, 0 minor) — items 8, 9, 31, 32, 33, 34, 35, 94, 95, 96_
+
+#### 8. Lessons publish automatically by default, and Approve puts a stranger’s lesson on the public record under your node in one click
+
+- **Route / surface:** `/dashboard?tab=teaching`
+- **Severity:** critical · **Effort:** M
+- **Problem:** The "Publish lessons" radio group has "Automatically" checked (verified live: publish "auto"), the three options carry no consequence copy while the data-provider slider below them does, and the queue intro still reads "Lessons waiting for review need your decision" although in auto mode no row ever reaches review. The approve path has no confirm and no preview of the questions and answers: onClick calls approve(j.id) directly (TeachingTab.tsx:216). The page also states "Lessons are published under this node’s identity".
+- **Evidence:** Live probe of the radios: [{review,false},{auto,true},{never,false}]; guard-teaching.png, final-teaching-1280.png, adv-teaching-1280.png.
+- **User cost:** An operator who never opens this tab is publishing anonymous visitors’ text to a permanent public record under their own identity, and the one who does open it can do so accidentally with a single click on a row whose content they have not seen.
+- **Fix:** Default publish to "Review each one" and put the consequence in each option label ("Automatically - anything trained here goes on the public record under this node, no review"). Make Approve open a sheet showing the lesson’s facts, contributor and share before confirming.
+
+#### 9. "Subscribe" buys every item in a track with no price, no count and no confirmation
+
+- **Route / surface:** `/dashboard (knowledge tracks)`
+- **Severity:** critical · **Effort:** M
+- **Problem:** The track card shows a name, description, context tags and "{n} knowledge, {n} subscriber(s)" over a bare outlined Subscribe wired straight to the mutation. On the node, market.ts:853-863 loops the track’s patch_ids and calls buy(pid) for each blob this node lacks, then applies each to the live serving model; unsubscribe only removes patches and refunds nothing.
+- **Evidence:** DashboardPage.tsx track card (onClick -> subscribe({name, action:"subscribe"})); market.ts:853-865. Not clicked deliberately - it spends AIN and mutates the shared model.
+- **User cost:** An operator can spend an unbounded amount of real balance and change what their model answers for every user, from a button that looks like a newsletter sign-up.
+- **Fix:** Put the cost in the button and behind a confirm: "Subscribe - buys 6 knowledge, 41.2 AIN" opening a sheet that lists each item with price and status, with per-item opt-out, and say what unsubscribe does and does not refund.
+
+#### 31. 103 rows with no search, sort or paging, and 28 of them share one name
+
+- **Route / surface:** `/dashboard`
+- **Severity:** major · **Effort:** M
+- **Problem:** Signed in at 1280 px the knowledge table renders 103 tbody rows in a 12,134 px page with no filter, sort, pagination or row count. Duplicate names dominate: "O69 grace period" appears 28 times and three rows read "Lesson: Who is the mayor of Springfield in 2026?"; the only disambiguator is a small grey id under each name.
+- **Evidence:** guard-dash-1280.png, adv-dash-1280.png.
+- **User cost:** The operator’s own inventory is unnavigable, and picking the right row among 28 identically named ones is guesswork with real consequences (publish, verify, remove).
+- **Fix:** Add a search box and a status filter over the same list, page at 25 rows with a count line, and make the id a first-class column rather than a subtitle. Sort by status then updated_at by default.
+
+#### 32. Irreversible publishing is one click; reversible draft deletion demands you type the full id
+
+- **Route / surface:** `/project/:author/:patchId (DRAFT)`
+- **Severity:** major · **Effort:** S
+- **Problem:** On a real draft the checklist shows one unticked item ("Description written") and "Publish to the network" is enabled directly beneath it, because the gate is only disabled={!p.has_body || !a.benchmark.schema}. Below it, deleting the draft - which the page itself says leaves no public record - requires typing the exact id (disabled={confirmText !== a.id}).
+- **Evidence:** guard-manage-draft.png; publish button probe disabled:false.
+- **User cost:** The friction is on exactly the wrong action: the permanent, public, paid one is frictionless and the local, recoverable one is guarded.
+- **Fix:** Move the typed-id confirmation onto Publish (or at minimum a sheet listing what becomes permanent: id, price, licence, samples, payout address), and reduce draft deletion to a normal confirm.
+
+#### 33. "Verify now" and "Send request" stake real AIN and take the shared GPU, and neither says so beforehand
+
+- **Route / surface:** `/project/:author/:patchId (Verification)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Both buttons render bare (labels "Verify now (this node)" and "Send request"). The stake is real and unmentioned: verifier.ts:105 and market.ts:349 both read cfg.verifier?.stake, and the live attestations on krx-all-2761 carry "stake": "5". The only place the number appears is the Deposit column further down, under "The deposit is what a verifier loses if it verified wrongly". Loading state is the bare word "Verifying..." with no elapsed time.
+- **Evidence:** adv-verif-tab.png; ManagePage.tsx:166 (Verify) and the challenge button; attestation JSON.
+- **User cost:** An operator can put 5 AIN at risk and lock the node’s only GPU without being told either fact, and then watch an unqualified spinner with no sense of how long it will hold.
+- **Fix:** Put the cost in the label ("Verify now - stakes 5 AIN, uses this node’s GPU for a few minutes") and show elapsed time plus what happens if it fails while running.
+
+#### 34. There is no way to change the operator password and no recovery path
+
+- **Route / surface:** `/signing, /account`
+- **Severity:** major · **Effort:** M
+- **Problem:** packages/node/src/api.ts exposes exactly three auth routes: /api/auth/setup (:93, refusing once a hash exists), /api/auth/login (:103) and /api/auth/logout (:111). The web client exposes only login and setup (api/api.ts:100-101), and /account - which carries name, payout address, notifications, wallet, runtime - has no password block at all (verified by reading the whole page).
+- **Evidence:** Live /account text; grep for password in AccountPage.tsx returns nothing.
+- **User cost:** The single credential guarding sales, publishing, the wallet and the model runtime can never be rotated, and forgetting it locks the operator out of their own node with nothing in the UI naming the config key or a reset command.
+- **Fix:** Add a Password block to /account (current + new, calling a new POST /api/auth/password), and put one line on /signing naming the recovery route: the config key that holds the hash and the CLI command that resets it.
+
+#### 35. The public network page hands every visitor the operator’s model-server URL and filesystem path
+
+- **Route / surface:** `/network (public), /chat model chip`
+- **Severity:** major · **Effort:** S
+- **Problem:** Signed out, /network renders "API http://localhost:8002" and "Runtime repo /mnt/newdata/qwen3.8" in the Model server card. The same endpoint leaks again on the live test: the model chip’s title attribute is literally the runtime URL (ChatPage.tsx:377). Both are internal infrastructure facts with no meaning to a visitor.
+- **Evidence:** final-network-1280.png (signed-out probe returned ["http://localhost:8002","/mnt/newdata/qwen3.8"]); live probe of the chat model chip title.
+- **User cost:** A public page advertises the operator’s serving endpoint and a directory on their disk. On a node reachable from the internet that is an invitation, and it tells a visitor nothing they can use.
+- **Fix:** Show the model id and status to visitors and keep the endpoint and repo path behind the operator session (NetworkPage: gate those two rows on isSignedIn). In ChatPage.tsx:377 put the model id in the tooltip, not the URL.
+
+#### 94. The sales table silently shows 20 of 244 rows, with no count, no dates and no way to see the rest
+
+- **Route / surface:** `/account (Wallet)`
+- **Severity:** major · **Effort:** M
+- **Problem:** The summary line reads "0 purchase(s) · 244 sale(s) · 21 creator-share payment(s) received" and the Sales and royalties tables each render exactly 20 rows (AccountPage.tsx:146 and :165 both slice(0, 20)) with no footer, no "showing 20 of 244", no paging, no date filter and no export; every visible row reads "1d ago".
+- **Evidence:** final-account-1280.png; live page text quoted above.
+- **User cost:** The operator cannot reconcile revenue at all: 92% of their settlement history is unreachable from the only screen that shows it, and nothing tells them rows are missing.
+- **Fix:** Add "showing 20 of 244" with paging (or infinite scroll) over the existing endpoint, show absolute timestamps on hover, and add a CSV export - this is the accounting surface.
+
+#### 95. A multi-hundred-megabyte upload shows a spinner and nothing else - no bytes, no percent, no cancel - and a refresh loses the form
+
+- **Route / surface:** `/new-patch`
+- **Severity:** major · **Effort:** M
+- **Problem:** The page contains zero progress or role=progressbar elements; the only feedback is a static info alert plus the button’s loading state (NewPatchPage.tsx:186-188). The server accepts up to 4 GiB (packages/node/src/api.ts:44) and this node’s own bodies are 297 MB and 331 MB, so the silent wait is minutes long. Nothing persists the form, so a refresh or an accidental navigation loses name, benchmark JSON, samples and price.
+- **Evidence:** DOM probe on /new-patch; multer limit; blob sizes from /api/info.
+- **User cost:** The operator cannot tell a stalled upload from a slow one, cannot cancel, and can lose a filled-in registration form with no draft.
+- **Fix:** Upload with XHR or fetch with a ReadableStream so onprogress can drive a determinate bar with bytes and an estimated time, add a Cancel that aborts the request, and keep the form in sessionStorage until submission succeeds.
+
+#### 96. Wide tables overflow their 1024 px column with no scroll cue, so the last column is unreachable even at 1440 px
+
+- **Route / surface:** `/dashboard, /network`
+- **Severity:** major · **Effort:** S
+- **Problem:** On /dashboard the table wrapper is clientWidth 1024 with scrollWidth 1119 at both 1280 and 1440 px, and the final header cell (Manage - the per-item console link) has its right edge at x=1247 against a wrapper ending at 1192. On /network the connected-nodes table measures clientWidth 1022 vs scrollWidth 1084 and the Last seen column - the one that says whether a node is alive - is cut off at the right edge. Neither shows a scrollbar or a gradient.
+- **Evidence:** guard-dash-1440.png, final-network-1280.png (header cut to "Las").
+- **User cost:** Two console tables hide their most operational column behind an invisible scrollbar, and nothing indicates there is more to the right.
+- **Fix:** Give both wrappers a visible affordance (a right-edge gradient plus a sticky last column, or the overflow indicator pattern) and drop lower-value columns below lg so Manage and Last seen always fit.
+
+### Trust and evidence
+
+_8 findings (4 critical, 4 major, 0 minor) — items 2, 7, 20, 24, 28, 29, 55, 56_
+
+#### 2. Accuracy is printed against the wrong denominator on every surface that shows it
+
+- **Route / surface:** `/ , /explore, /:author/:patchId`
+- **Severity:** critical · **Effort:** S
+- **Problem:** The knowledge page reads "Accuracy 100% (26/26) - over 2,761 benchmark questions" (PatchPage.tsx:226 passes facts: num(a.benchmark.queries)); the landing card stacks "facts covered 2,761" directly above "accuracy 100% (26/26)" with a full green bar; the explore card for pixelplus-087600 says "8 facts ... 100% accuracy" while both attestations scored free_generation 4/4. The verifiers scored 26 questions, not 2,761 - the real denominator only exists in an abbr title.
+- **Evidence:** GET /api/patches/krx-all-2761: benchmark.queries 2761, attestations score {free_generation:"26/26", pre_apply:"1/8"}. Screenshots browse-buy-detail-krx-all-2761-overview.png, critic-landing-sec4.png, browse-buy-explore-w-en.png. Strings: i18n/pages/detail.ts detail.ov.accuracy_line; LandingPage.tsx:404-409; PatchListItem.tsx:14-23.
+- **User cost:** A non-expert reads "100% over 2,761 questions" as an exhaustive audit and pays 25 AIN on that basis; the real guarantee is 26 spot checks. This is the one number the whole marketplace asks people to trust and it is inflated by roughly two orders of magnitude.
+- **Fix:** Derive the denominator from the attestation, never from the anchor: change detail.ov.accuracy_line to "{score} on {tested} of {facts} questions checked by verifiers" and pass the parsed denominator of score.free_generation. On cards (PatchListItem.tsx:162) print "100% (26/26 checked)"; on the landing card (LandingPage.tsx:407) print "100% on a 26-question sample of 2,761".
+- **Status:** fixed — Every surface derives the denominator from the attestation instead of the anchor: cards read "100% (26/26 checked)", the landing card "100% on a 26-question sample of 2,761", the knowledge page "Accuracy 100% on 26 of 2,761 questions checked by verifiers". An item with no scored attestation still prints no accuracy at all.
+
+#### 7. The node announces simulated checks as measurements "in the live model"
+
+- **Route / surface:** `/teach/dataset/:id (node-u)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** GET /api/teach/policy on :3422 returns backend "stub" and simulated_checks true, and the type definition says the UI must not claim a live-model verification (api/types.ts:214-215). After the check runs the page prints "Checked 24 of 40 questions in the live model." (teach.rows.checked_sample, i18n/pages/teach.ts:409) with per-row help "It answered: (stub model) I do not know: ...". grep shows simulated_checks is declared and never read on this screen.
+- **Evidence:** guard-ds-checked.png, teach-dataset-07b-check-1500ms.png; policy JSON quoted above.
+- **User cost:** The check is the evidence-producing action on the screen where users decide which questions to keep and which to drop. Every one of those decisions is made on a fabricated basis and nothing on the screen says so; the disclosure only appears later, on the result page.
+- **Fix:** Read policy.simulated_checks in TeachDatasetPage: relabel the button "Check (simulated on this node)", swap teach.rows.checked_sample for a variant that says simulated and not measured in a live model, and render the per-row "It answered" help in the muted/warn tone, reusing the existing teach.card.simulated copy.
+- **Status:** fixed — (shipped in `knowledge-marketplace-teachable`) TeachDatasetPage reads `policy.simulated_checks`: a warning banner before the button ("Demo node — these checks were simulated, not measured in a live model."), the button "Check (simulated on this node)", the result line "Simulated check: 2 of 3 are marked to train — nothing was measured in a live model." and every quoted answer as "Simulated answer (no model was asked): …" in the warning tone. On a live model all of it reverts to the measured wording.
+
+#### 20. The expected answer is never rendered as text, so the tick-or-cross verdict cannot be checked - and on touch it does not exist
+
+- **Route / surface:** `/chat/:patchId (answer bubbles, sample chips)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** The benchmark expectation lives only in title attributes: the hit chip (TurnView.tsx:316-318, chat.hit.help "... Expected: 087600") and the sample chip (ChatComposer.tsx:106-109). A real turn showed "✓ Correct" and the answer while document.body.innerText contained no expected value anywhere except inside an id string.
+- **Evidence:** live-test-03-answer-compare-1280-en.png; DOM probe of both title attributes; innerText search.
+- **User cost:** The page’s central claim is "this answer is right and that one is wrong". A visitor is shown a red cross next to 136950 and a green tick next to 087600 and has to take it on faith; on a phone or tablet the justification simply does not exist.
+- **Fix:** When turn.expect is set, render "Expected: 087600" as visible muted text under the hit chip (a new chat.hit.expected key, keeping the tooltip for the longer explanation) and as a second line inside the sample chip. A fact that only a mouse can reach is a fact the product does not have.
+- **Status:** fixed — Every scored answer bubble renders "Expected: 087600" as visible muted text under the ✓/✗ chip (the tooltip is kept for the longer explanation), and every sample chip carries it on a second visible line while its accessible name stays the bare prompt.
+
+#### 24. Scores measured on different question sets are presented as comparable
+
+- **Route / surface:** `/benchmarks/:schema`
+- **Severity:** critical · **Effort:** M
+- **Problem:** The topic page states "Knowledge on the same topic is scored with the same question set, so it can be compared." (public.ts:116). It is not true of the four items it lists: krx-all-2761 carries benchmark_hash b6beb92f with format [template, chat]; ep12 and ep6 carry 7b126cec with [template]; pixelplus carries 8f1017b4 with [template, natural]. The final’s 100% is on the harder exam - exactly the improvement its description claims, and the number cannot show it.
+- **Evidence:** API benchmark_hash and format for all four items; browse-buy-benchmarks.png.
+- **User cost:** A buyer comparing ep12 (10 AIN, 100%) with the final (25 AIN, 100%, same facts, same verifiers) sees no reason to pay 2.5x, and the page has explicitly told them the comparison is valid. The whole point of the version ladder is invisible.
+- **Fix:** Group the list by benchmark_hash with a heading per question set ("template only - 26 questions", "template + chat - 26 questions"), put the format next to the accuracy on the card, and replace bench.explain with the honest version: scores are comparable only within one question set.
+- **Status:** fixed — `/benchmarks/:schema` groups by `benchmark_hash`, with a heading per question set naming the format, the question count and the short hash, and a line per group saying whether anything here can be compared with it. Every card prints its format next to its accuracy, and the old "scored with the same question set, so it can be compared" claim is gone.
+
+#### 28. The before/after evidence exists in every attestation and is shown nowhere
+
+- **Route / surface:** `/:author/:patchId -> Verification, Overview`
+- **Severity:** major · **Effort:** S
+- **Problem:** Both verifiers of krx-all-2761 recorded {"free_generation":"26/26","pre_apply":"1/8"} and pixelplus recorded {"free_generation":"4/4","pre_apply":"0/4"}. scoreText() returns only free_generation (utils/format.ts:67-73), so the UI prints 26/26 and 100% and drops the baseline; pre_apply reaches the DOM only inside title={JSON.stringify(at.score)} on a table cell. The page’s own primary CTA is captioned "Compare answers before and after".
+- **Evidence:** API attestations quoted above; browse-buy-detail-krx-all-2761-verification.png, critic-detail-verification.png (Accuracy column shows only 26/26; "1/8" appears in no tab’s innerText).
+- **User cost:** "100%" alone means nothing - the model might already know the answers. "1 of 8 right before, 26 of 26 after" is the proof the product is built on, it was measured twice independently, and a buyer never sees it.
+- **Fix:** Add a Before column to the verification table beside Accuracy, and put the pair in the hero stat: replace the bare "100%" StatValue with "1/8 -> 26/26" and keep the percentage as the StatNote.
+- **Status:** fixed — The baseline every attestation already carried (`score.pre_apply`) is rendered: a Before column in the Verification table, the hero stat as "1/8 → 26/26" with the percentage as its note, and a line under the Overview score bar naming the pair as one run scored twice.
+
+#### 29. "Verified" means two different things and is printed twice on the same row
+
+- **Route / surface:** `/explore, /benchmarks, knowledge page header`
+- **Severity:** major · **Effort:** S
+- **Problem:** status.LISTED translates to "Verified" (common.ts:49) and the attestation badge is also "Verified", and PatchListItem.tsx:136-137 renders both: the krx-all-2761 row reads "... Verified / Verified" in English and "검증 완료 / 검증 완료" in Korean. On superseded cards the same purple Verified sits next to "Newer version available", and /benchmarks prints "4 knowledge, 1 verified" above four cards each labelled "Verified (2/2 independent verifiers)".
+- **Evidence:** Live innerText of the row; critic-explore-w.png, critic-explore-ko.png, browse-buy-benchmarks.png.
+- **User cost:** On one screen the same word means "passed verifier quorum" and "currently for sale". A reader cannot tell whether "1 verified" means three items failed verification, and the doubled badge reads like a rendering bug.
+- **Fix:** Rename status.LISTED to "For sale" (ko 판매 중) and reserve "Verified" for the attestation badge; change bench.stats from "{listed} verified" to "{listed} current version(s)". The pairs then read "Verified ✓ · For sale" and "Verified ✓ · Newer version available", both true.
+- **Status:** fixed — `status.LISTED` is "For sale" / "판매 중" and "Verified" is reserved for the attestation badge, so the pairs read "Verified · For sale" and "Verified · Newer version: …". `bench.stats` counts current versions and question sets instead of "{listed} verified".
+
+#### 55. Overview promises a side-effect threshold the verification tab says was never measured
+
+- **Route / surface:** `/:author/:patchId (Overview vs Verification)`
+- **Severity:** major · **Effort:** S
+- **Problem:** Overview lists "Side-effect limit - Threshold set: unrelated answers must not change when the knowledge is loaded" (detail.ts:113) while the Verification tab’s Side-effect check column reads "not reported" for both verifiers on all three KRX items, because no attestation carries collateral_nat. The declared bound (0.08 nat) exists only in a hover tooltip.
+- **Evidence:** critic-detail-overview.png vs critic-detail-verification.png; API attestations carry no collateral_nat.
+- **User cost:** "Will loading this break the rest of my model?" is the question a buyer most needs answered. The page implies it was checked, the evidence tab says it was not, and the buyer has to notice the contradiction unaided.
+- **Fix:** When no attestation reports collateral_nat, render the Overview row in warning tone as "Limit declared (<= 0.08 nat) - not yet measured by any verifier" and link it to the Verification tab.
+- **Status:** fixed — The Overview side-effect row counts what verifiers actually reported: "Threshold set — measured by {n} of {of} verifiers" when someone measured it, and otherwise "Limit declared (≤ 0.08 nat) — not yet measured by any verifier" in warning tone (#8a4b00) with a button that opens the Verification tab, where the same fact reads "not reported".
+
+#### 56. Every card wears the same certified seal, including the three retired items
+
+- **Route / surface:** `/explore, /benchmarks (cards)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The card’s largest visual element is <Icon src="/static/images/ic-certified.svg" alt=""/> rendered unconditionally (PatchListItem.tsx:132), immediately before the conditional Certified badge. A DOM query on /explore returns four 56 px seals for four rows, three of them SUPERSEDED; an ANNOUNCED or REJECTED item would get the same seal.
+- **Evidence:** critic-explore-w.png, critic-explore-ko.png (four identical purple seals).
+- **User cost:** The strongest trust signal on the page carries zero information and contradicts the status chip beside it, and it burns the one chance to give four same-named items distinct visual identities.
+- **Fix:** Drive the icon from the entry: seal for quorum_ok && status === "LISTED", an outline/greyed variant for SUPERSEDED, the pulsing treatment already in StatusChip for VERIFYING. If per-item art is out of scope, drop the icon and give the 56 px back to the content.
+- **Status:** fixed — The 56 px certified seal is drawn from the entry instead of unconditionally: full colour for `quorum_ok && LISTED`, greyed (grayscale(1), opacity .45) for SUPERSEDED, pulsing for VERIFYING / ANNOUNCED, and absent for anything that never reached quorum — each with its own tooltip.
+
+### States, errors and empty screens
+
+_7 findings (3 critical, 3 major, 1 minor) — items 10, 11, 22, 76, 77, 78, 79_
+
+#### 10. A failing API renders as a healthy, empty operator console
+
+- **Route / surface:** `/dashboard`
+- **Severity:** critical · **Effort:** S
+- **Problem:** With /api/me/patches, /api/me/purchases and /api/branches stubbed 500 while signed in as node-a - which really holds 103 items - the console rendered "No knowledge yet - register your first one." and "No purchases yet - pick verified knowledge in Explore." with zero role=alert nodes and no retry. DashboardPage branches only on isLoading and reads x.data?.items ?? [] throughout.
+- **Evidence:** guard-dash-500.png.
+- **User cost:** The operator is told their inventory is empty when the node cannot answer. The correct reaction (retry, check the node) is invisible; the invited reaction is to register everything again.
+- **Fix:** Branch on isError in DashboardPage and every panel that uses ?? []: show an Alert with the status and a Try again button bound to the query refetch, and never render an empty state while a query is in error.
+
+#### 11. A transient API error turns a live, listed knowledge page into "This node does not know this knowledge"
+
+- **Route / surface:** `/:author/:patchId`
+- **Severity:** critical · **Effort:** S
+- **Problem:** PatchPage renders NotFoundPage on any query failure, not just 404: if (error || !data) return <NotFoundPage message={t("detail.patch.not_found", {id})} /> (PatchPage.tsx:134). With the endpoint stubbed 503 the page reads "404. Page not found - This node does not know the knowledge krx-all-2761. It may not have propagated yet, or the address is wrong." for an item that is LISTED, verified 2/2 and has 53 purchases. The page polls every 10 s, so one blip during that window paints a permanent-looking dead end with no retry.
+- **Evidence:** browse-buy-detail-error.png, critic-detail-503.png.
+- **User cost:** Someone following a shared link during a node hiccup is told the knowledge does not exist and leaves; the seller’s link looks broken and the buyer has no reason to try again.
+- **Fix:** Only a 404 from api/patches/:id may render NotFoundPage. For any other status or a network failure keep the page shell and show an inline error Alert with the status plus a Try again button wired to the refetch already returned by usePatchQuery.
+
+#### 22. The Retry button offered on a quota error does nothing at all
+
+- **Route / surface:** `/chat/:patchId (quota exhausted)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** TurnView renders Retry for every turn with status "error" (TurnView.tsx:362-366), including the 429, but send() returns immediately when exhausted is true (ChatPage.tsx:257) and the 429 handler sets exhausted (ChatPage.tsx:286). Instrumented the route and clicked: zero requests, no spinner, no message.
+- **Evidence:** critic-chat-429.png, live-test-06-quota-429-1280-en.png; request counter after click = 0.
+- **User cost:** The one affordance given to a blocked user is a no-op. They click, nothing happens, they click again, and conclude the site is broken rather than that they hit a limit.
+- **Fix:** Carry a retryable flag on the Turn (false for 429, 499 and AbortError) and do not render Retry for those. In the quota case put a link to the knowledge page labelled "Buy this knowledge" and the time the hour window resets in its place.
+- **Status:** fixed — The Turn carries a `retryable` flag; the quota 429 renders no Retry and offers "Buy this knowledge" plus the measured reset instant instead, from the node's new `quota_reset` field on the 429 body (Market.chatQuotaResetsAt, documented in the OpenAPI). Only the 429 is marked non-retryable: a cancelled turn's Retry does issue a real request, so it stays.
+
+#### 76. The catalogue error state prints a raw JS exception, offers no retry, and loses the filters
+
+- **Route / surface:** `/explore (error and loading)`
+- **Severity:** major · **Effort:** S
+- **Problem:** With /api/catalog failing the page shows "Something went wrong: boom"; offline it shows "Something went wrong: TypeError: Failed to fetch" (ExplorePage.tsx:82). There is no retry control, and the count, the Model and Topic chips and the pagination all disappear because they are gated on data (the search box does survive). The loading case is a bare spinner with no skeleton and no "still loading" text.
+- **Evidence:** critic-explore-error.png, browse-buy-explore-offline.png, browse-buy-explore-loading.png.
+- **User cost:** A visitor sees a JavaScript type name and a blank page with no way forward, and the most likely cause on this network - a peer node briefly down - is indistinguishable from an empty catalogue.
+- **Fix:** Keep the last known facet values so the Filters block still renders, replace the raw message with "Could not reach this node’s catalogue" plus the technical detail in a collapsed line, and add a Try again button bound to the query refetch. Render the list skeleton during isLoading.
+
+#### 77. When the node API is unreachable the three public pages fail three different ways and none of them says anything is wrong
+
+- **Route / surface:** `/ , /ledger, /network (node API unreachable)`
+- **Severity:** major · **Effort:** S
+- **Problem:** With /api/** blocked: the landing hero renders a grey Shimmer bar where "1 verified knowledge" belongs, forever, and the Teach nav item silently disappears (it is gated on info.accepts_contributions); /ledger renders its whole frame with em-dashes for every stat, "Integrity checking…" and "No records yet."; /network renders nothing at all between the header and the footer. No page shows an error or a retry.
+- **Evidence:** critic-landing-offline.png, first-impression-offline-hero.png; live probes of /ledger and /network with the API aborted (text captured above); LandingPage.tsx:243-247, 275.
+- **User cost:** A visitor hitting a node that is down concludes the product is empty or abandoned rather than temporarily unreachable - and on the public record page an outage is rendered as "no records", which is the worst possible lie for a ledger.
+- **Fix:** Give each page an error branch with the same shape: a short "Can’t reach this node right now" line plus a Retry button, hiding stat frames rather than filling them with em-dashes, and never render "No records yet" or an empty catalogue while a query is in error.
+
+#### 78. During a model outage the mode buttons and the thinking checkbox stay live and the empty state still says to click a sample question
+
+- **Route / surface:** `/chat/:patchId (model server off)`
+- **Severity:** major · **Effort:** S
+- **Problem:** SegBtn and the thinking Checkbox are disabled only on busy (ChatComposer.tsx:123, :128) while the chips, textarea and Send correctly use locked = disabled || busy. With runtime.available false, probes returned mode radios disabled:false and the checkbox disabled:false against chips and Send disabled:true, and the transcript centre still read "No questions yet / Click a sample question below or type your own" pointing at greyed-out chips (ChatPage.tsx:461).
+- **Evidence:** critic-chat-runtimeoff.png, live-test-05-runtime-off-1280-en.png.
+- **User cost:** The page reads as half-broken rather than temporarily unavailable: the visitor toggles Compare and gets crisp feedback, then finds nothing else responds, while the biggest text on screen tells them to do something impossible.
+- **Fix:** Pass locked (not busy) to the mode buttons and the thinking checkbox, and give the empty state a runtime-off variant reusing chat.runtime.off and chat.runtime.off_detail so the outage is stated where the user is looking.
+
+#### 79. Logs for a knowledge id that does not exist render as a normal, healthy, empty log page
+
+- **Route / surface:** `/project/:author/:patchId/logs`
+- **Severity:** minor · **Effort:** S
+- **Problem:** /project/node-a/does-not-exist/logs renders "does-not-exist logs / All levels / 0 line(s) / Load older / No events for this knowledge yet." with a working "Back to manage" link, while /project/node-a/does-not-exist correctly renders "Knowledge not found - patch not found". LogsPage destructures usePatchEventsQuery and usePatchRecordsQuery (:48-49) and has no existence or isError branch; ManagePage.tsx:87-94 has the correct one.
+- **Evidence:** adv-logs-404.png next to the manage page for the same id.
+- **User cost:** An operator debugging a mistyped or removed id is told the item is fine and simply quiet, which is the most expensive wrong answer a log page can give.
+- **Fix:** Reuse ManagePage’s not-found branch in LogsPage: when the patch query 404s, render the same "Knowledge not found" state instead of an empty log.
+
+### Korean and English
+
+_6 findings (0 critical, 5 major, 1 minor) — items 84, 85, 86, 87, 88, 89_
+
+#### 84. The display and mono font stacks omit the Hangul webfont the page already downloads
+
+- **Route / surface:** `/ (Korean)`
+- **Severity:** major · **Effort:** S
+- **Problem:** theme.font.body lists Apple SD Gothic Neo and Noto Sans KR, but theme.font.display is only Mulish, Muli, Roboto, sans-serif and theme.font.mono only Inconsolata, ui-monospace, SFMono-Regular, Menlo, monospace (theme/theme.ts:46-48) - neither names the Noto Sans KR the page loads in index.html. On a device with no system Hangul font every landing heading, both hero CTA labels and the landing nav render blank; elsewhere the effect is a silent swap to a fallback face, so the landing typography does not match any other page.
+- **Evidence:** critic-landing-ko-1280.png (h1 renders as "AI", the audience heading as "?", both hero pills empty) on a host where fc-list :lang=ko returns 0; /explore in Korean renders perfectly (critic-explore-ko.png) because it uses font.body.
+- **User cost:** On bare Linux, CI and any device without a Hangul system font, the Korean landing page has no headline, no section titles and two unlabelled buttons; everywhere else the brand face silently drops out for Korean readers only.
+- **Fix:** Append the Hangul fallbacks to both stacks in theme/theme.ts so they match font.body: display gains Apple SD Gothic Neo and Noto Sans KR, mono gains Noto Sans KR before monospace. One line each.
+- **Status:** fixed — `theme.font.display` gains 'Apple SD Gothic Neo','Noto Sans KR' and `theme.font.mono` gains 'Noto Sans KR' before monospace — the Hangul faces index.html already downloads. Latin rendering is untouched: Mulish is still the first family and the Hangul names are appended after it.
+
+#### 85. Every page shares one title, and neither the title nor <html lang> follows the language toggle
+
+- **Route / surface:** `every page (document head)`
+- **Severity:** major · **Effort:** S
+- **Problem:** index.html sets <title>Ainize | Plug knowledge into your AI</title> and lang="en", and nothing in src ever updates either. Walked /, /explore, /chat, /docs, /terms, /network, /ledger, /signing and a 404: all nine report the identical title and lang "en", and with the locale set to ko and /explore fully rendered in Korean the title stays English and lang stays en.
+- **Evidence:** Title and lang probes across nine routes; first-impression-path-*.png.
+- **User cost:** Three open tabs are indistinguishable and history and bookmarks all read the same line; for a Korean visitor the page declares itself English, so screen readers pronounce Hangul with an English voice and browsers offer to translate a page already in their language.
+- **Fix:** Set document.documentElement.lang = locale in an effect in LocaleProvider, and add a small useTitle(text) hook called once per page ("Explore knowledge · Ainize", "Live test · Ainize", "<patch name> · Ainize", "404 · Ainize") sourced from the existing i18n keys.
+- **Status:** fixed — LocaleProvider sets `document.documentElement.lang` from the locale, and a new `useTitle(text)` hook names each of the 18 pages from its existing dictionary key, so ten routes now report ten distinct titles and the title and lang follow the language toggle without a reload.
+
+#### 86. The flagship publish command carries a Korean product name on the English page and wraps onto two lines
+
+- **Route / surface:** `/ ("One line is enough")`
+- **Severity:** major · **Effort:** S
+- **Problem:** ONE_LINE_PUBLISH is a locale-independent constant containing --name "한국 상장사 종목코드" (LandingPage.tsx:229) while /docs uses --name "KRX ticker codes". The block is set in font.mono, which has no Hangul fallback, so on a host without a system Hangul font the English landing shows --name "        " and Copy copies characters the reader never saw. The command also wraps to two lines under a heading that says "One line is enough".
+- **Evidence:** critic-landing-sec2.png; /docs text read live.
+- **User cost:** The command that is meant to prove publishing is one line appears to take an empty name, and anyone who clicks Copy pastes text they did not choose and cannot see.
+- **Fix:** Move the example into the i18n dictionary as landing.oneline.publish.cmd with English and Korean variants, use the /docs English name in en, and shorten it so it fits one line at 1280 px (move --benchmark into the help text below).
+
+#### 87. Nothing on the live test says what the knowledge is, and every sample question is Korean with no gloss
+
+- **Route / surface:** `/chat/:patchId (English locale)`
+- **Severity:** major · **Effort:** S
+- **Problem:** The knowledge description is rendered only as the picker row’s title attribute (KnowledgePicker.tsx:110, 113) and is dropped entirely when the row is disabled; the panel head shows name, status, fact count and a Details link. Probed on /chat/krx-all-2761 at 1280 en: the description "All 2,761 ticker codes ..." is present in GET /api/chat/patches and absent from document.body.innerText, while all eight visible chips read 종목코드 ...␣ and their expected answers are tooltip-only.
+- **Evidence:** guard-livetest-1280.png, live-test-01b-fold-1280-en.png; the unused key chat.samples.from exists at i18n/pages/chat.ts:37 and is referenced nowhere.
+- **User cost:** An English-speaking first-timer sees a 50-character title, "2,761 facts", "100% accuracy" and eight buttons of Korean they cannot read - so the comparison they are about to run cannot be interpreted.
+- **Fix:** Render anchor.description as a clamped one-line subtitle in the panel head, and use the unused chat.samples.from slot for an English gloss above the chips: "These ask for a Korean stock ticker code - the answer is a 6-character code such as 087600."
+
+#### 88. Untranslated plural and particle placeholders reach users in both languages
+
+- **Route / surface:** `/chat/:patchId, /teach/dataset/:id`
+- **Severity:** minor · **Effort:** S
+- **Problem:** teach.card.facts is literally "{n} correction(s)" and units.facts "{n} facts", both called without a count, so the lesson card head reads "1 correction(s)" and the picker "1 facts" - even though t() supports a _one variant and uses it correctly for teach.pre.queue. In Korean the dataset preview renders the unresolved particle placeholder: "messy.csv(으)로 저장했습니다" (i18n/pages/teach.ts:413).
+- **Evidence:** guard-card-1280.png, teach-chat-31-your-knowledge.png, guard-ds-ko.png.
+- **User cost:** "(s)" and "(으)로" are the visual signature of an unfinished product, and they appear on the card the user stares at during a training wait and on the screen where they decide whether to trust a permanent record.
+- **Fix:** Add teach.card.facts_one and units.facts_one and pass the count to t(); for Korean, branch the particle on the final jamo of the filename (or reword to "저장했습니다: {filename}").
+
+#### 89. The sign-in failure is the raw server string "wrong password" - lowercase, unstyled, English even in Korean, and unthrottled
+
+- **Route / surface:** `/signing (failed sign-in)`
+- **Severity:** major · **Effort:** S
+- **Problem:** node/src/api.ts:105 throws HttpError(401, "wrong password"); errorMessage() returns e.data.error verbatim and SigningPage.tsx:64 renders it. With the locale set to ko the alert reads exactly "wrong password". There is no operator.ts key for it (only .short, .mismatch, .terms), and grepping node/src for rate limiting, attempt counters or lockout finds nothing but the payout retry counter.
+- **Evidence:** adv-signing-ko-badpass.png.
+- **User cost:** The only error on the console’s front door is untranslated developer text, and the door itself accepts unlimited guesses at the single credential protecting sales, publishing and the wallet.
+- **Fix:** Add op.sign.err.wrong in both locales and map 401 to it in SigningPage; add a per-IP attempt limit with an increasing delay on /api/auth/login and say so in the message after a few failures.
+
+### Mobile
+
+_6 findings (2 critical, 4 major, 0 minor) — items 18, 19, 90, 91, 92, 93_
+
+#### 18. No item on the browse list shows a price on a phone
+
+- **Route / surface:** `/explore at 360 px`
+- **Severity:** critical · **Effort:** S
+- **Problem:** PriceCol is display: none below 600 px (PatchListItem.tsx:111-113) and nothing replaces it, so the entire price column - "25 AIN", "0.1 AIN" and the unit note - is removed from every card. Measured widths at 360 px: 0 for all four items, against 49-54 px at 1280 px.
+- **Evidence:** browse-buy-explore-m-en.png, browse-buy-explore-mobile-noprice.png, critic-explore-m.png.
+- **User cost:** On a phone the marketplace list has no prices at all. Choosing between items spanning 0.1 to 25 AIN means opening each one and scrolling to the stats strip.
+- **Fix:** Below breakpoint.sm do not hide PriceCol - move the price into the existing Meta row as its first item ("25 AIN, 2,761 facts, 331.7 MB") and render the AIN unit note once per page instead of per card.
+
+#### 19. On a phone the answer lands off-screen and is never scrolled into view - a free try spent on something never seen
+
+- **Route / surface:** `/chat/:patchId at 360 px`
+- **Severity:** critical · **Effort:** S
+- **Problem:** The auto-scroll targets the Transcript element (scrollRef.current.scrollTo, ChatPage.tsx:247-250) but at md and below the panel is deliberately un-clamped (max-height: none, ChatPage.tsx:42), so the transcript is never its own scroller - the page is, and nothing scrolls the page. Scrolled to the bottom, as anyone is after reaching the composer, scrollY went 1779 -> 2190 on send while the answer bubble sat at top -410 with height 342.
+- **Evidence:** critic-chat-360-bottom.png (viewport shows only chips, mode buttons, composer, "Free trial 16/20 left this hour"), live-test-24-mobile-answer-offscreen-360-en.png.
+- **User cost:** The user asks a question, sees nothing happen, and has spent one of twenty hourly free tries on an answer that never appeared. The only visible change is the counter going down.
+- **Fix:** Keep a ref on the newest article and call scrollIntoView({block:"nearest"}) whenever turns.length or the turn status changes, falling back to the window when scrollRef.current.scrollHeight <= clientHeight (the single-column case).
+
+#### 90. The landing nav is a three-line ragged stack and every nav and footer link is a 20-23 px tap target
+
+- **Route / surface:** `/ at 360 px`
+- **Severity:** major · **Effort:** S
+- **Problem:** NavLinks wraps with justify-content: flex-end (LandingPage.tsx:24-30), producing three right-ragged rows: "Explore knowledge" alone, then "Live test  Teach" 20 px apart, then "Node sign-in" beside the locale pill. Measured rects: 117x20, 52x20, 37x20, 77x20; landing footer links are 23 px tall - all below the 24 px WCAG 2.5.8 minimum and far below the 44 px platform guideline.
+- **Evidence:** critic-landing-360.png, first-impression-landing-360-hero-en.png.
+- **User cost:** On a phone the site’s navigation looks like unfinished layout rather than a menu, and mis-taps between "Live test" and "Teach" send the user down the wrong audience path.
+- **Fix:** At sm and below make the landing nav a single left-aligned row that scrolls horizontally (flex-wrap: nowrap; overflow-x: auto) and give NavLink padding: 12px 10px so each item clears 44 px; do the same for the footer links.
+
+#### 91. The before/after table crushes to four ~60 px columns and the answers are clipped with no ellipsis
+
+- **Route / surface:** `/chat/:patchId (lesson card) at 360 px`
+- **Severity:** major · **Effort:** M
+- **Problem:** Facts is width: 100% inside a FactsWrap with overflow-x: auto (LessonCard.tsx:29-31), so the table never exceeds the container and the horizontal scroll never engages - it just squeezes. Measured at 360x740: column widths [74,67,58,59], table width 257 = wrapper clientWidth = wrapper scrollWidth; the answer cells report height 60 with scrollHeight 279 and 483 because .ans is max-height: 60px; overflow: hidden.
+- **Evidence:** guard-360-card.png, teach-chat-55-360-lesson-card.png (the After cell reads "There is no single," and stops).
+- **User cost:** The evidence panel - the whole reason to trust or distrust a lesson - is illegible on a phone.
+- **Fix:** Give the table min-width: 520px so FactsWrap’s scroll actually works, or below sm switch to a stacked per-fact block (Question / Before / After / Other phrasing as labelled rows), and replace overflow: hidden on .ans with a "show full answer" disclosure.
+
+#### 92. The "Remove ×" control sits on top of the correction’s own text
+
+- **Route / surface:** `/chat/:patchId (lesson basket) at 360 px`
+- **Severity:** major · **Effort:** S
+- **Problem:** Basket items position the remove button absolute; top: 6px; right: 6px (LessonBasket.tsx:26) over a question that wraps freely underneath. Measured at 360x740: the question rect spans x 44-316 and the button x 258-322 on overlapping rows.
+- **Evidence:** guard-360-basket.png, teach-chat-54-360-basket-remove-overlap.png.
+- **User cost:** The user cannot read the correction they are about to delete, and the button is easy to hit while trying to select the text.
+- **Fix:** Take the button out of the overlay: make the item a grid (minmax(0,1fr) auto) with the button in the second column, or add padding-right: 64px to the question and answer lines.
+
+#### 93. On a phone the instruction is "Drop a file here" and the real control is a 21 px native OS button
+
+- **Route / surface:** `/teach/upload at 360 px (node-u)`
+- **Severity:** major · **Effort:** S
+- **Problem:** At 360 px the drop zone still leads with a 15 px bold "Drop a file here", then "or", then a raw unstyled input type=file rendering as Chrome’s grey "Choose File / No file chosen" - measured 238 x 21 px. The component’s own comment says dropping is impossible on a phone, and the proper label exists as teach.up.browse ("Choose a file") but is used only as the input’s aria-label.
+- **Evidence:** guard-ds-upload-360.png, teach-dataset-13-upload-360.png.
+- **User cost:** On the device most people will use, the instruction cannot be followed and the thing to tap is the smallest, least button-like element on the page - under half the 44 px minimum this codebase applies elsewhere - carrying browser chrome in the browser’s language.
+- **Fix:** Visually hide the native input and render a real 44 px Button labelled teach.up.browse that triggers input.click(); below sm swap the heading to that label and demote "or drop a file here" to the secondary line.
+
+### Accessibility
+
+_4 findings (0 critical, 3 major, 1 minor) — items 80, 81, 82, 83_
+
+#### 80. The plain-language glossary is delivered almost entirely through hover-only title attributes
+
+- **Route / surface:** `/ , /explore, /:author/:patchId`
+- **Severity:** major · **Effort:** M
+- **Problem:** Counted 20 [title] elements on the landing page, 28 on /explore and 26 on the knowledge page, and they carry the only definitions of "verified knowledge", "facts covered", "accuracy", "Verified", "Live test", "Load into model", "public record", memory entries and the side-effect bound. The carriers are abbr elements with cursor: help and no tabindex (PatchListItem.tsx:93, 155-163), so neither touch nor keyboard can reach them, and five landing elements advertise cursor: help for an interaction that does not exist there.
+- **Evidence:** DOM counts above; browse-buy-explore-w-en.png, critic-landing-sec4.png.
+- **User cost:** The explanations that make this product legible to a non-expert are invisible to every mobile visitor and every keyboard user; what remains on screen is bare jargon like "270,053 memory entries · 2,761 facts" - with the price hidden too on a phone.
+- **Fix:** Promote the four terms a first-time visitor needs - verified, facts covered, accuracy, live test - into visible sub-labels (12 px grey, one clause each) on the count card, the trending card and the cards. Replace the remaining abbr title pattern with a focusable button plus aria-describedby popover so touch and keyboard get the same copy.
+
+#### 81. The result list has no headings, each card is one 575-character link, and it takes 19 tabs to reach the first result
+
+- **Route / surface:** `/explore, /:author/:patchId`
+- **Severity:** major · **Effort:** M
+- **Problem:** document.querySelectorAll("h1,h2,h3,h4") on /explore returns exactly ["H1:Explore knowledge"] - the item names are divs inside an anchor whose text runs to 575 characters (PatchListItem.tsx:88), and the first card is the 19th focusable element because the filter chips and sort options come first. The knowledge page jumps H1 straight to H3 with no H2.
+- **Evidence:** Heading and focus probes; browse-buy-explore-w-en.png.
+- **User cost:** A screen-reader user gets no heading list to skim four items and hears a 575-character link instead of a name, and a keyboard user pays 19 tab stops before the content starts.
+- **Fix:** Wrap Name in an h2 and move the non-name metadata out of the anchor (link the name, make the row clickable with a click handler) so each result has a short accessible name; give the knowledge page an h2 per section.
+
+#### 82. One aria-live region wraps the whole panel, and focus is dropped to <body> after every send
+
+- **Route / surface:** `/chat/:patchId`
+- **Severity:** major · **Effort:** S
+- **Problem:** aria-live="polite" sits on Main (ChatPage.tsx:424), a section containing the head, transcript, chips, mode buttons, composer and quota footer - measured 742 characters, 836 after a turn, with aria-atomic unset - so any change re-announces everything. And submit() clears the text without restoring focus (ChatComposer.tsx:74-80) while the textarea is disabled during the request, so document.activeElement is BODY after Send at both 1280 and 360 px; the next Tab starts at "Terms and Policies" in the footer.
+- **Evidence:** Probes above; guard-livetest-1280.png.
+- **User cost:** A screen-reader user pressing Enter hears the entire panel re-read instead of the new answer, and a keyboard user has to tab through the whole nav and picker to get back to the composer after every question.
+- **Fix:** Move aria-live onto the Transcript only with aria-atomic="false", and call the textarea ref focus() at the end of submit().
+
+#### 83. The View radiogroup ignores arrow keys and makes every option a separate tab stop
+
+- **Route / surface:** `/chat/:patchId (View control)`
+- **Severity:** minor · **Effort:** S
+- **Problem:** The segmented control declares role="radiogroup" and role="radio" (ChatComposer.tsx:121-125) but has no key handler: ArrowRight on the focused Compare option leaves aria-checked as [true,false,false] and focus unchanged, and all three options report tabindex null, so each is separately tabbable.
+- **Evidence:** Keyboard probe above.
+- **User cost:** The standard way to operate a radiogroup does nothing, and keyboard users pay three tab stops for one control.
+- **Fix:** Add an onKeyDown on the Seg that moves the selection with ArrowLeft/ArrowRight and give non-selected options tabIndex={-1} (roving tabindex).
+
+### Visual system and copy
+
+_5 findings (1 critical, 3 major, 1 minor) — items 12, 97, 98, 99, 100_
+
+#### 12. The "AI Network" ledger badge is painted on top of the first nav link at every desktop width
+
+- **Route / surface:** `every page except / (app header)`
+- **Severity:** critical · **Effort:** S
+- **Problem:** Home is flex: 1; min-width: 0 (Header.tsx:23-24) but its children - a 121 px logo and a nowrap LedgerBadge (Header.tsx:91) - cannot shrink, so the badge overflows its box onto the nav. Measured on /explore: Home ends at x=309, the badge right edge is 374, and "Explore knowledge" starts at 309 - a 65 px collision at 1024, 1280 and 1440 px, 141 px at 900 px.
+- **Evidence:** critic-header-1280.png ("AI N[Explore knowledge]"), first-impression-header-1280-ko.png ("AI Network지식 둘러보기"), final-ledger-1280.png, final-network-1280.png, guard-header-out-1280.png.
+- **User cost:** The first screen after the landing CTA has its brand mark, ledger mode and primary nav item smeared over each other on every page of the product. It reads as broken software before anything has been evaluated.
+- **Fix:** Header.tsx: make Home flex: 0 0 auto and let Nav absorb the slack (flex: 1 1 auto; justify-content: flex-end; min-width: 0). Keep the sm breakpoint wrap rule as it is - at 700 px and below Home already takes its own row and there is no collision.
+- **Status:** fixed — Home is `flex: 0 0 auto` and Nav takes the slack; nav-item horizontal padding went 16 px → 10 px. Measured at 1440/1280/1024/960/900/768/700/600/414/360 px: the badge and the first nav link now clear each other by 19 px at desktop and the bar wraps cleanly below ~900 px (was a 65 px overlap at 1024–1440 and 141 px at 900).
+
+#### 97. "Newer version available" is the lowest-contrast element on the card
+
+- **Route / surface:** `/explore, /:author/:patchId (status chip)`
+- **Severity:** major · **Effort:** S
+- **Problem:** STATUS_META.SUPERSEDED is color #8d8d8f on bg #f2f2f2 (theme/theme.ts:62), fed straight into the chip - a computed contrast ratio of 2.96:1, below the 4.5:1 AA threshold for its 11 px text and quieter than the green Verified label and the purple price beside it.
+- **Evidence:** critic-explore-w.png, browse-buy-detail-krx-all-2761-ep6-overview.png; ratio computed from the two theme values.
+- **User cost:** Scanning the list the eye lands on the seal, the bold name and the green Verified and skips the grey chip, so a retired item reads as endorsed - which is exactly what happens to the top-ranked card.
+- **Fix:** Give SUPERSEDED the warning palette already used by KindChip (#8a4b00 on #fff3e0, 6.4:1) and put the successor id in the chip text: "Newer version: krx-all-2761".
+- **Status:** fixed — `STATUS_META.SUPERSEDED` uses the warning palette KindChip already used (#8a4b00 on #fff3e0 — measured 6.20:1 in the live page, was 2.96:1) and the chip names its successor: "Newer version: krx-all-2761".
+
+#### 98. The three step illustrations are recycled container-hosting art, and step 3 is a struck-through dollar sign above "payment is automatic"
+
+- **Route / surface:** `/ ("How it works")`
+- **Severity:** major · **Effort:** M
+- **Problem:** The steps load feature-testing.png, feature-k8s.png and feature-deploy.png (LandingPage.tsx:365, 371, 377) - assets carried over from the 2019 ainize product. Step 01 "Verified" shows a four-arrow autoscale glyph, step 02 "Live test" a Kubernetes-style server rack, and step 03 "Load into model" a dollar sign with a red cross badge sitting directly above "Payment is automatic and the knowledge is in the model in seconds."
+- **Evidence:** critic-landing-sec3.png, first-impression-how-1280-en.png.
+- **User cost:** The section that exists to make the mechanism legible in three glances shows three unrelated pictures, and step 03 is worse than meaningless: a struck-through dollar next to "payment is automatic" reads as "payment failed" or "free".
+- **Fix:** Replace them with line diagrams of the actual mechanism - a file entering three nodes that each stamp a check; two answer bubbles either side of a before/after divider; a table row swapped inside a model box with an undo arrow. If new art is not on the table, drop the images and keep the numbered headings: no icon beats a wrong one.
+
+#### 99. Two different footers, two names for the same page, and no link anywhere called Privacy
+
+- **Route / surface:** `/ footer, app footer, /terms`
+- **Severity:** major · **Effort:** M
+- **Problem:** The landing has a tall dark centred footer (Terms / Network / Public record / ain-js / Contact us) and every other page a purple bar (Terms and Policies / ain-js / aindrive / Contact us). The same destination is "Terms" on the landing (public.ts:87) and "Terms and Policies" elsewhere (common.ts:16), while the page’s own h1 is "Terms and Policies" / "이용약관과 개인정보 처리방침". The privacy policy exists as section 3 with real content about what a node stores, and no navigation anywhere names it - in Korean 개인정보 처리방침 appears in no link at all.
+- **Evidence:** first-impression-1280-footer.png vs the footer in first-impression-path-404.png; strings quoted above; repo-wide search for a privacy link returns nothing.
+- **User cost:** A visitor looking for the privacy policy has no word to search the page for, and the two chromes teach two different site structures.
+- **Fix:** Use one footer component with one link list on both chromes (Terms and Policies · Privacy -> /terms#privacy · Network · Public record · Docs & API · ain-js · aindrive · Contact), styled dark on the landing, and name the terms link exactly like the page h1 in both locales.
+
+#### 100. Descriptions spend their two visible lines on build paths and optimiser settings
+
+- **Route / surface:** `/explore, /:author/:patchId (description)`
+- **Severity:** minor · **Effort:** S
+- **Problem:** The description is the largest block of prose on the card and the first section of the knowledge page, and it is clamped to two lines (PatchListItem.tsx:106-109). Verbatim from /api/catalog: "... Source: /mnt/newdata/qwen3.8 results/train-fact (2026-08-29, 10 steps of row-wise Adam). Accuracy is whatever the verifiers measured below." and "270,053 memory entries (0.084% of all parameters). Source: results/train-all/rows-pin.npz (2026-08-30)". The machine-readable equivalents already exist in the structured recipe block behind the developer disclosure.
+- **Evidence:** critic-explore-w.png (pixelplus card, second visible line is an absolute path); /api/catalog descriptions; PatchPage.tsx:270-274.
+- **User cost:** The prose that should answer "what will this let the model do?" shows a developer’s filesystem path to a buyer, and reads as unfinished on a page asking for 25 AIN.
+- **Fix:** Strip the Source and hyperparameter sentences from the seeded descriptions (they are already in recipe), and add a maxLength plus helper text to the description field in NewPatchPage so the first 160 characters have to answer "what does the model know after loading this?".
+
+---
+
+## What is genuinely well done
+
+These are not consolation prizes; they are the parts I would protect while fixing everything above.
+
+1. **The glossary architecture.** i18n/glossary.ts defines every user-facing concept once with four fields - plain ko, plain en, a tech name, and a help sentence in both languages - and pages pull them through term() / help() / tech(). Most products with this much machinery underneath leak it into the headline; this one does not.
+2. **The refusal to print unmeasured numbers.** executedAccuracy() filters attestations to passed && verified_on !== 'hash-only' and returns null otherwise, with a comment telling callers not to print a number in that case; scoreOf() falls back to "not yet"; integrity-only checks are counted in their own field. That discipline is rare and it is the foundation the evidence fixes should build on.
+3. **Live test as the primary action, honestly executed.** Free, no sign-in, the picker lists competing versions with price, accuracy and status, /chat/nope-not-here selects the first testable item and explains why rather than erroring, and the panel warns you before you ask that a completion-trained knowledge may score differently through the chat format.
+4. **The queue tells the truth about cost.** Position, who holds the lock, a counter that ticks client-side between polls, and afterwards "You stopped waiting. The node had not started this test yet, so no free try was used" versus its cancelled-late variant. Most products show a spinner and charge you.
+5. **The degeneracy guard never deletes output.** A runaway answer is cut, explained in one sentence, quantified ("showing 6 of 840 characters"), and the raw text is one click away - with the reasoning for that choice written in a comment.
+6. **The trailing-space handling.** The knowledge is trained on prompts ending in a space; the chip shows a muted marker, keeps its accessible name clean, inserts the prompt verbatim, and submit() explicitly refuses to trim, with the reason in a comment.
+7. **The teach pre-flight.** Re-asking every question in context before spending a scarce training slot, labelled in plain language - "Wrong today - will train", "Already correct - skipped", "Cannot be taught - looks like personal data" - screens personal data before it can reach a permanent record.
+8. **Honest failure and hardware copy.** "This node ran out of training GPU memory ... Try fewer corrections", with the raw trainer error behind "Technical details (attach when reporting)"; and the keep-private sheet stating "Not private from the operator" and "two 40 GB GPUs (or one 80 GB GPU) and about 110 GB of RAM. There is no laptop version yet."
+9. **Korean parity in the teach strings.** Considered translations rather than machine filler, with the suggest-phrasing templates rewritten for Korean grammar and Korean plurals correct where the English still says "1 correction(s)".
+10. **/terms limits the product's own claim.** "There is no central operator ... The page you are looking at is served by one node and speaks only for that node", "Verification is best-effort", "'integrity-only' ... does not vouch for accuracy." A terms page that argues against its own marketing is a real trust signal.
+11. **No horizontal overflow at 360 px** on dense tabular pages, including the eight-column verification table; and every price on every surface carries "AIN = AI Network token (this demo runs a local dev chain)", so the demo never lets anyone believe the money is real.
+
+## Suggested order of work
+
+**Wave 0 - one day, the truths that are one line each (items 2, 12, 20, 22, 84, 85, 97, 27, 26).** Fix the accuracy denominator string and pass the attestation's own denominator; stop the ledger badge overprinting the nav; render the expected answer as text; stop offering a dead Retry; add the Hangul fallbacks to the display and mono stacks; set document title and html lang; give SUPERSEDED the warning palette; make status the first sort key; add the current-only filter. Nine changes, no new components, and the product stops contradicting itself on first contact.
+
+**Wave 1 - the honesty pass (1, 7, 6, 24, 28, 55, 29, 56).** Split the compare histories so the base column is a real control; read simulated_checks and label simulated results as simulated; rewrite the stub result screen as a demo result; group the benchmark page by question set; surface pre_apply as a Before column; make the side-effect row say what actually happened; separate "For sale" from "Verified" and stop the seal from firing unconditionally. After this wave every number on screen means what it says.
+
+**Wave 2 - close the decisions (3, 4, 16, 8, 9, 32, 30, 39, 40).** Give a visitor a real buy path; warn on superseded before the price; float the publish footer; default lesson publishing to review and put a preview behind Approve; price the Subscribe button and confirm it; move the friction from draft deletion to publishing; put price and a buy button above the fold; show the facts in the publish sheet and label the licences.
+
+**Wave 3 - stop losing work (14, 21, 5, 38, 66, 67, 61, 76, 10, 11, 77).** One transcript and one basket per browser; non-destructive dataset edits; keep the skipped corrections; confirm or undo destructive clears; persist the transcript across Details; restore the prompt on failure; and give every error branch the same shape - a sentence, the detail, and a Retry - so a failing API never renders as healthy emptiness again.
+
+**Wave 4 - the phone and the keyboard (18, 19, 90, 91, 92, 93, 53, 80, 81, 82, 83).** Prices on mobile cards, scroll the new answer into view, 44 px targets, real file-picker buttons, sticky bars that reserve their space, definitions that survive without a mouse, headings and short link names, one live region and focus that comes back.
+
+**Wave 5 - the rest of the list**, which is mostly copy, ordering and small layout work, and can be absorbed into feature work as each surface is next touched.

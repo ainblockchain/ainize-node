@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler",
+    "strict": true, "skipLibCheck": true, "noEmit": true, "esModuleInterop": true,
+    /* The dataset specs assert against the WEB bundle's own helpers (teach/util, teachUtil, the i18n dictionary),
+     * so this check has to resolve what those files import: the `@/…` alias of packages/web and the `import.meta`
+     * of Vite. Without both, checking the specs reported errors inside packages/web instead of in the specs. */
+    "baseUrl": ".", "paths": { "@/*": ["../web/src/*"] },
+    "types": ["node", "vite/client"], "resolveJsonModule": true
+  },
+  "include": ["tests/**/*.ts", "helpers/**/*.ts", "*.ts"]
+}

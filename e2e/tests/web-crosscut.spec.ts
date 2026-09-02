@@ -8,7 +8,7 @@ import { K, NODE_A, PASSWORDS, VLLM, api, loginViaUi, operatorToken, sleep, star
 import { KRX_NPZ, PIXEL_NPZ, httpDown } from '../helpers/operator-cli';
 import {
   AGO_EN, AGO_KO, CHAT, CANCEL_STRIP, DATE_TIME, PURPLE, agoLabel, bubble, bytesLabel, chatPicker, chatTextarea, ensureRuntime, focusInfo, footerText,
-  completeTurn, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerBoxes, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
+  completeTurn, freshTries, lastTurn, loadAxe, noHorizontalScroll, nodeAAddress, numLabel, pickerBoxes, pickerItems, readQuota, runAxe, sendPrompt, tabUntil, visitorOrigin, waitForPicker, waitForTurn,
   type FocusInfo,
 } from '../helpers/crosscut-ui';
 
@@ -30,7 +30,7 @@ test.describe('runtime', () => {
 
   test('AZ-085 Show a plain error when the node API is unreachable on every public page', async ({ page, context, request }) => {
     await ensureRuntime(request);
-    const V = await visitorOrigin();
+    const V = await visitorOrigin();   // 2 tries only — no per-scenario quota bucket, whose route would collide with the offline simulation below
     await page.goto(`${V}/chat/${K.final}`);
     await waitForPicker(page, 4);
 
@@ -92,6 +92,7 @@ test.describe('runtime', () => {
   test('AZ-087 Switch the whole UI between English and Korean and keep the choice across reloads and pages', async ({ page, request }) => {
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const cat = await api<{ total: number }>(request, '/api/catalog');
     const total = numLabel(cat.body.total);
 
@@ -103,9 +104,14 @@ test.describe('runtime', () => {
     await expect(page.getByText('Topic', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'All', exact: true })).toHaveCount(2);
     await expect(page.getByPlaceholder('Search by name or description')).toBeVisible();
-    await expect(page.getByText(`${total} knowledge`)).toBeVisible();
+    await expect(page.getByText('Show', { exact: true })).toBeVisible();
+    const currentTotal = numLabel((await api<{ total: number }>(request, '/api/catalog?status=LISTED,ANNOUNCED,VERIFYING,CHALLENGED')).body.total);
+    await expect(page.getByText(`${currentTotal} knowledge`)).toBeVisible();   // Explore opens on "Current only"
     await expect(headerNav(page)).toHaveText(HEADER_NAV_EN);
     await expect(langButton(page)).toHaveText('한국어');
+    // the tab names the page, and <html lang> declares the language actually on screen
+    await expect(page).toHaveTitle('Explore knowledge · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
 
     // Step 2/3 — Korean
     await langButton(page).click();
@@ -115,9 +121,16 @@ test.describe('runtime', () => {
     await expect(page.getByText('주제', { exact: true }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: '전체', exact: true })).toHaveCount(2);
     await expect(page.getByPlaceholder('지식 이름·설명 검색')).toBeVisible();
+    await expect(page.getByText('표시', { exact: true })).toBeVisible();
+    await expect(page.getByText(`지식 ${currentTotal}개`)).toBeVisible();
+    await expect(page.getByText('검증 완료', { exact: true }).first()).toBeVisible();   // 검증 배지
+    await expect(page.getByText('판매 중', { exact: true }).first()).toBeVisible();      // 목록 상태 칩 (status.LISTED)
+    await expect(page).toHaveTitle('지식 둘러보기 · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang), '<html lang> follows the toggle without a reload').toBe('ko');
+    // the retired versions and their Korean chip come back with '모든 버전'
+    await page.getByRole('button', { name: '모든 버전', exact: true }).click();
     await expect(page.getByText(`지식 ${total}개`)).toBeVisible();
-    await expect(page.getByText('검증 완료', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('최신 버전 있음', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(`최신 버전: ${K.final}`, { exact: true }).first()).toBeVisible();
     const krxItem = page.locator(`main a[href$="/${K.final}"]`);
     await expect(krxItem).toContainText('만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes');
     await expect(headerNav(page)).toHaveText(HEADER_NAV_KO);
@@ -131,14 +144,39 @@ test.describe('runtime', () => {
     await expect(h1(page)).toHaveText('지식 둘러보기');
     await page.goto(`${V}/`);
     await expect(h1(page)).toHaveText('지식을 AI에 끼우다');
+    // Hangul renders on the landing page even where the host has no system Korean face: the display stack ends in
+    // the webfont index.html downloads, so the headings and both hero pills are not blank boxes.
+    const hero = await h1(page).evaluate((el) => ({ font: getComputedStyle(el).fontFamily, w: el.getBoundingClientRect().width }));
+    expect(hero.font, 'display stack carries the Hangul fallback').toContain('Noto Sans KR');
+    expect(hero.w, 'the Korean h1 actually renders glyphs').toBeGreaterThan(100);
+    // Every Korean label on the page renders glyphs: the defect made the hero pills (and the headings) blank runs
+    // inside their padding, so measure the CONTENT width of every link carrying one of the hero labels.
+    for (const label of ['지식 둘러보기', '라이브 테스트 해보기']) {
+      const widths = await page.getByRole('link', { name: label, exact: true }).evaluateAll((els) => els.map((el) => {
+        const cs = getComputedStyle(el);
+        return el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      }));
+      expect(widths.length, `"${label}" is on the Korean landing page`).toBeGreaterThan(0);
+      for (const w of widths) expect(w, `"${label}" renders glyphs, not blanks`).toBeGreaterThan(40);
+    }
+    await expect(page).toHaveTitle('지식을 AI에 끼우다 · Ainize');
     await langButton(page).click();
     await expect(h1(page)).toHaveText('Plug knowledge into your AI');
+    await expect(page).toHaveTitle('Plug knowledge into your AI · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
     await langButton(page).click();
     await expect(h1(page)).toHaveText('지식을 AI에 끼우다');
     await page.goto(`${V}/ledger`);
     await expect(h1(page)).toHaveText('공개 기록');
+    await expect(page).toHaveTitle('공개 기록 · Ainize');
+    await page.goto(`${V}/${await nodeAAddress(request)}/${K.final}`);
+    await expect(page).toHaveTitle(`${await h1(page).innerText()} · Ainize`);   // a knowledge page is named after the knowledge
+    await page.goto(`${V}/no-such-page-here`);
+    await expect(page).toHaveTitle('404. 페이지를 찾을 수 없습니다 · Ainize');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('ko');
     await page.goto(`${V}/chat/${K.final}`);
     await expect(h1(page)).toHaveText('라이브 테스트');
+    await expect(page).toHaveTitle('라이브 테스트 · Ainize');
 
     // Step 5
     expect(await page.evaluate(() => localStorage.getItem('ainize.locale'))).toBe('ko');
@@ -165,7 +203,7 @@ test.describe('runtime', () => {
     await ensureRuntime(request);
     // The demo node-a is never killed. The SIGTERM + restart happen for real on a private serving node built from the
     // same binary + web UI (name node-a, same public record, same shared model) that holds the pixelplus body.
-    const node = await startThrowawayNode('az089', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 1_320 });
+    const node = await startThrowawayNode('az089', { name: 'node-az089', stableId: 'az089', roles: 'seller,serving', ledger: 'ain', runtimeApi: VLLM, maxLifeS: 1_320 });
     try {
       await node.seed(PIXEL_NPZ, 'az089-seed');
       expect(await waitForRuntime(request, node.url), 'private node sees the shared model').toBe(true);
@@ -194,7 +232,7 @@ test.describe('runtime', () => {
       expect((await poll).ok()).toBe(true);
       const info = await api<{ node: { name: string } }>(request, '/api/info', { node: node.url });
       expect(info.status).toBe(200);
-      expect(info.body.node.name).toBe('node-a');
+      expect(info.body.node.name).toBe('node-az089');
       await expect(pickerItems(page)).toHaveCount(nItems);
       await expect(page.locator('header').getByText('AI Network', { exact: true })).toBeVisible();
 
@@ -220,6 +258,7 @@ test.describe('runtime', () => {
   test('AZ-091 Show honest loading states while a 331.7 MB knowledge is loaded, and allow cancelling', async ({ page, request }) => {
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     await page.goto(`${V}/chat/${K.final}`);
     await waitForPicker(page, 4);
 
@@ -243,7 +282,7 @@ test.describe('runtime', () => {
     await expect(sending.locator('span[aria-hidden]')).toHaveCount(1);   // spinner
     const strip = page.getByRole('status').filter({ hasText: CANCEL_STRIP });
     await expect(strip).toBeVisible();
-    await expect(strip.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(strip.getByRole('button', { name: /^(Cancel|Stop waiting)$/ })).toBeVisible();
     for (const r of ['Compare', 'After only', 'Before only']) await expect(page.getByRole('radio', { name: r })).toBeDisabled();
     await expect(page.getByRole('checkbox', { name: 'Enable thinking' })).toBeDisabled();
     await expect(chatTextarea(page)).toBeDisabled();
@@ -265,26 +304,39 @@ test.describe('runtime', () => {
     const quotaBefore = await readQuota(page);
     expect(quotaBefore).not.toBeNull();
     await sendPrompt(page, K.pixelPrompt.trim());
-    await strip.getByRole('button', { name: 'Cancel' }).click({ timeout: 2000 });
-    await expect(lastTurn(page).getByRole('alert')).toHaveText('Request cancelled.');
+    await strip.getByRole('button', { name: /^(Cancel|Stop waiting)$/ }).click({ timeout: 2000 });
+    // D3: which of the two the visitor is told depends on whether the node had already taken the shared lock when the
+    // button was pressed, and that is a genuine race — the scenario documents BOTH and requires the message to say
+    // which happened. ("Request cancelled." is the pre-D3 wording and must no longer appear.)
+    const alert = lastTurn(page).getByRole('alert');
+    const FREE = 'You stopped waiting. The node had not started this test yet, so no free try was used.';
+    const CHARGED = 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.';
+    await expect(alert).toHaveText(new RegExp(`^(${FREE.replace(/[.]/g, '\\.')}|${CHARGED.replace(/[.]/g, '\\.')})$`));
+    const charged = (await alert.innerText()).includes('still counts as one free try');
     await expect(lastTurn(page).getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(chatTextarea(page)).toBeEnabled({ timeout: 2000 });
 
-    // Step 5 — quota unchanged at cancel time; the aborted request is still charged once it completes on the node
+    // Step 5 — the counter never moves at cancel time (no response arrived). What the retry costs follows the message:
+    // cancelled while QUEUED nothing reached the model, so only the retry is charged; cancelled while RUNNING the node
+    // finishes the work and charges it too.
     expect(await readQuota(page)).toBe(quotaBefore);
     await lastTurn(page).getByRole('button', { name: 'Retry' }).click();
     const done = await completeTurn(page, request);
     expect(done.status).toBe('done');
     const drop = (quotaBefore as number) - (await readQuota(page) as number);
-    if (done.retries === 0) expect(drop, 'cancelled request + retry are both charged').toBe(2);
-    else { expect([1, 2]).toContain(drop); test.info().annotations.push({ type: 'note', description: `runtime hiccup during step 5 (${done.retries} retry); quota drop observed: ${drop}` }); }
-    test.info().annotations.push({ type: 'note', description: 'A cancelled live-test request is still charged when it completes on the node (quota dropped by two after cancel + retry) — UX finding, matches the scenario text.' });
+    const expected = charged ? 2 : 1;
+    if (done.retries === 0) expect(drop, charged ? 'cancelled-while-running + retry are both charged' : 'cancelled while queued is free, so only the retry is charged').toBe(expected);
+    else { expect([expected - 1, expected]).toContain(drop); test.info().annotations.push({ type: 'note', description: `runtime hiccup during step 5 (${done.retries} retry); quota drop observed: ${drop}` }); }
+    test.info().annotations.push({ type: 'note', description: charged
+      ? 'The give-up landed after the node had taken the shared lock, so the try was charged and cancel + retry dropped the quota by two — the honest half of the D3 behaviour.'
+      : 'The give-up landed while the request was still queued: nothing was sent to the model, HTTP 499, and only the retry was charged (quota dropped by one).' });
   });
 
   test('AZ-093 Operate the Live test and sign-in entirely from the keyboard with visible focus', async ({ page, request }) => {
     await ensureRuntime(request);
     await operatorToken(request);   // makes sure the operator password exists for step 6
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const cp = await api<{ items: CatalogItem[] }>(request, '/api/chat/patches');
     const items = cp.body.items;
     const final = items.find((e) => e.anchor.id === K.final)!;
@@ -376,8 +428,8 @@ test.describe('runtime', () => {
     await expect(page.getByRole('button', { name: 'Waiting for the answer…' })).toBeDisabled();
     await page.keyboard.press('Shift+Tab');
     const afterShiftTab = await focusInfo(page);
-    let cancel = afterShiftTab.name === 'Cancel' ? afterShiftTab : null;
-    if (!cancel) cancel = await tabUntil(page, (f) => f.tag === 'button' && f.name === 'Cancel', 80, 'Shift+Tab');
+    let cancel = afterShiftTab.name === 'Cancel' || afterShiftTab.name === 'Stop waiting' ? afterShiftTab : null;
+    if (!cancel) cancel = await tabUntil(page, (f) => f.tag === 'button' && (f.name === 'Cancel' || f.name === 'Stop waiting'), 80, 'Shift+Tab');
     expect(cancel, 'Cancel is reachable from the keyboard').not.toBeNull();
     expect(await page.evaluate(() => {
       const strip = document.querySelector('[role="status"] button');
@@ -416,6 +468,7 @@ test.describe('runtime', () => {
     await page.setViewportSize({ width: 360, height: 740 });
     await ensureRuntime(request);
     const V = await visitorOrigin();
+    await freshTries(page);   // this scenario's own 20 tries/hour
     const addr = await nodeAAddress(request);
     const overflow: Record<string, { ok: boolean; scrollWidth: number; innerWidth: number }> = {};
 
@@ -476,8 +529,14 @@ test.describe('runtime', () => {
     await page.getByRole('button', { name: K.pixelPrompt.trim(), exact: true }).click();
     await chatTextarea(page).press('Enter');
     expect((await completeTurn(page, request)).status).toBe('done');
-    const b1 = (await bubble(page, 'base').boundingBox())!;
-    const b2 = (await bubble(page, 'patched').boundingBox())!;
+    // both boxes in ONE layout read: the transcript scrolls smoothly to the new turn, so two separate
+    // boundingBox() calls can be taken at different scroll offsets and appear to overlap
+    const [b1, b2] = await page.evaluate(() => {
+      const turn = [...document.querySelectorAll('article')].pop()!;
+      const bubbles = [...turn.querySelectorAll<HTMLElement>('[aria-busy]')];
+      const box = (re: RegExp) => { const r = bubbles.find((b) => re.test(b.innerText))!.getBoundingClientRect(); return { x: r.x, y: r.y, height: r.height }; };
+      return [box(/Before loading/), box(/After loading/)];
+    });
     expect(b2.y).toBeGreaterThanOrEqual(b1.y + b1.height - 1);
     expect(Math.abs(b1.x - b2.x)).toBeLessThan(2);
     const ta = (await chatTextarea(page).boundingBox())!;
@@ -498,6 +557,46 @@ test.describe('runtime', () => {
     expect(g.scrollWidth).toBeGreaterThan(g.clientWidth);
     expect(await gbox.locator('xpath=following-sibling::div[1]').evaluate((el) => getComputedStyle(el).flexWrap)).toBe('wrap');
     overflow.ledger = await noHorizontalScroll(page);
+
+    // Step 6 says "true on every page": Docs → REST API is the one that used to break it (85 operation rows whose
+    // unbreakable <code> path plus a nowrap auth tag pushed the body to 528 px), so it is measured with the tab open.
+    await page.goto(`${V}/docs`);
+    await expect(h1(page)).toHaveText('Docs · API · CLI');
+    await page.getByRole('tab', { name: 'REST API' }).dispatchEvent('click');
+    await expect(page.locator('details summary code').first()).toBeVisible();
+    overflow.docs = await noHorizontalScroll(page);
+
+    // Step 7 — the same header at desktop widths: the ledger badge used to be painted 65 px over the first nav link
+    // (Home was `flex: 1; min-width: 0` around a 121 px logo and a nowrap badge, neither of which can shrink).
+    const geom: Record<number, { intersects: boolean; headerH: number; sameRow: boolean; navNeed: number; navWidth: number }> = {};
+    for (const w of [1440, 1280, 1024, 960]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.goto(`${V}/explore`);
+      await expect(h1(page)).toHaveText('Explore knowledge');
+      // measure with the webfonts in place: while the fallback face is showing the nav is wider than the bar and
+      // wraps to a second row — graceful, but not the steady state this step is about
+      await page.evaluate(() => document.fonts.ready);
+      geom[w] = await page.evaluate(() => {
+        const box = (el: Element | null | undefined) => { const r = el!.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const badge = box([...document.querySelectorAll('header span')].find((x) => /^(AI Network|P2P)$/.test(x.textContent ?? '')));
+        const first = box(document.querySelector('header nav a'));
+        const home = box(document.querySelector('header a'));
+        const nav = document.querySelector('header nav')!;
+        return {
+          intersects: badge.l < first.r && first.l < badge.r && badge.t < first.b && first.t < badge.b,
+          headerH: Math.round(document.querySelector('header')!.getBoundingClientRect().height),
+          sameRow: home.t < first.b && first.t < home.b,
+          navNeed: Math.round([...nav.children].reduce((sum, el) => sum + el.getBoundingClientRect().width, 0)),
+          navWidth: Math.round(nav.getBoundingClientRect().width),
+        };
+      });
+      expect(geom[w].intersects, `ledger badge over the first nav link at ${w}px`).toBe(false);
+      expect(geom[w].sameRow, `logo and nav share one row at ${w}px`).toBe(true);
+      expect(geom[w].headerH, `header stays one 81px row at ${w}px`).toBe(81);
+      expect(geom[w].navNeed, `the nav fits the space left beside the logo at ${w}px`).toBeLessThanOrEqual(geom[w].navWidth);
+    }
+    test.info().annotations.push({ type: 'note', description: `desktop header geometry: ${JSON.stringify(geom)}` });
+    await page.setViewportSize({ width: 360, height: 740 });
 
     // Step 6 — no body-level horizontal scroll on any page
     const bad = Object.entries(overflow).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: scrollWidth ${v.scrollWidth} > innerWidth ${v.innerWidth}`);
@@ -526,7 +625,7 @@ test('AZ-086 Refuse to downgrade to an integrity-only attestation during the 15-
   // record) whose serving API is a closed port and that already holds the krx-all-2761 body; background verification is
   // off (verifier.auto=false), so the node cannot attest anything on its own — the shared vLLM is never paused.
   const attestsBefore = (await api<PatchDetail>(request, `/api/patches/${K.final}`)).body.attestations.length;
-  const vnode = await startThrowawayNode('az086', { name: 'node-a', roles: 'verifier', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 480 });
+  const vnode = await startThrowawayNode('az086', { name: 'node-az086', stableId: 'az086', roles: 'verifier', ledger: 'ain', set: { 'verifier.auto': 'false' }, maxLifeS: 480 });
   try {
     const vtoken = await vnode.seed(KRX_NPZ, 'az086-seed', { schema: 'krx-ticker-codes', queries: 1, samples: [{ prompt: K.pixelPrompt, expect: K.pixelExpect }] });
     const verify = await api<{ error: string }>(request, `/api/patches/${K.final}/verify`, { method: 'POST', token: vtoken, node: vnode.url });
@@ -637,7 +736,7 @@ test('AZ-090 Reflect the model-server outage consistently on Network, Manage and
 
   // Steps 1–3 — the outage, for real, on a private node built from the same binary + web UI (name node-a) whose serving
   // API is a closed port; it owns one draft (body present) so its manage page has the load/unload section.
-  const off = await startThrowawayNode('az090', { name: 'node-a', roles: 'seller,serving', ledger: 'ain', maxLifeS: 480 });
+  const off = await startThrowawayNode('az090', { name: 'node-az090', stableId: 'az090', roles: 'seller,serving', ledger: 'ain', maxLifeS: 480 });
   try {
     await off.seed(PIXEL_NPZ, 'az090-draft');
     const offAddr = (await api<{ node: { address: string } }>(request, '/api/info', { node: off.url })).body.node.address;
@@ -675,6 +774,22 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   const axe = await loadAxe(request);
   const axeReport: string[] = [];
   const critical: string[] = [];
+  /**
+   * Frozen backlog of SERIOUS violations the scenario asks to document rather than fix (`<page>: <rule>`). A serious
+   * violation on a page/rule pair that is not listed here fails the test, so the debt cannot grow silently while the
+   * critical gate stays green. Counts move with the catalog, so only the pair is pinned; the exact numbers are recorded
+   * in the annotation below.
+   *   color-contrast : the grey-on-white body/meta text of the ainize palette (documented in the scenario itself)
+   *   nested-interactive : the /ledger origin map is <svg role="img"> (asserted by step 4) holding <a> node boxes
+   */
+  const A11Y_BASELINE = new Set([
+    '/explore: color-contrast',
+    '/chat: color-contrast',
+    '/<addr>/krx-all-2761: color-contrast',
+    '/ledger: color-contrast',
+    '/ledger: nested-interactive',
+  ]);
+  const newSerious: string[] = [];
   const audit = async (p: Page, name: string) => {
     if (!axe) return;
     const v = await runAxe(p, axe);
@@ -682,6 +797,7 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
       const line = `${name}: ${x.id} (${x.impact}) x${x.nodes} → ${x.targets.join(' | ')}`;
       if (x.impact === 'critical') critical.push(line);
       if (x.impact === 'critical' || x.impact === 'serious') axeReport.push(line);
+      if (x.impact === 'serious' && !A11Y_BASELINE.has(`${name}: ${x.id}`)) newSerious.push(line);
     }
   };
 
@@ -756,8 +872,9 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   await tablist.getByRole('tab', { name: 'Buy' }).click();
   await expect(tablist.getByRole('tab', { name: 'Buy' })).toHaveAttribute('aria-selected', 'true');
   await tablist.getByRole('tab', { name: 'Overview' }).click();
-  const chip = page.locator('main').getByText('Verified', { exact: true }).first().locator('xpath=ancestor-or-self::span[@title][1]');
-  await expect(chip).toHaveAttribute('title', 'Several independent verifier nodes actually loaded it into the model and checked accuracy and side effects.');
+  // the LISTED chip explains itself as a listing state; "Verified" is the attestation badge and keeps the glossary help
+  const chip = page.locator('main').getByText('For sale', { exact: true }).first().locator('xpath=ancestor-or-self::span[@title][1]');
+  await expect(chip).toHaveAttribute('title', 'On sale as the current version for this topic. Whether it passed verification is what the "Verified" badge beside it says.');
   await audit(page, '/<addr>/krx-all-2761');
 
   // Step 4 — ledger map + pagination
@@ -775,6 +892,7 @@ test('AZ-094 Expose meaningful roles and accessible names to screen readers on t
   test.info().annotations.push({ type: 'note', description: 'Tabs have no arrow-key navigation (role=tab buttons only react to click/Enter) — P2 gap as noted in the scenario.' });
   expect(axe, 'axe-core available').toBeTruthy();
   expect(critical, 'no critical axe violations').toEqual([]);
+  expect(newSerious, 'no serious axe violation outside the documented backlog (A11Y_BASELINE)').toEqual([]);
 });
 
 test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entries, 331.7 MB, 25 AIN)', async ({ page, request }) => {
@@ -787,11 +905,13 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
   const AIN_NOTE = 'AIN = AI Network token (this demo runs a local dev chain)';
   const exec = detail.attestations.filter((a) => a.passed && a.verified_on !== 'hash-only');
   const score = exec[exec.length - 1].score.free_generation;   // e.g. "26/26"
+  const before = exec[exec.length - 1].score.pre_apply;         // e.g. "1/8" — the same run before the knowledge was loaded
   const [hit, tot] = score.split('/').map(Number);
   const pctText = `${Math.round((hit / tot) * 1000) / 10}%`;
 
-  // Step 1 — Explore meta lines and price column
+  // Step 1 — Explore meta lines and price column ("All versions": the superseded rows are hidden by default)
   await page.goto(`${NODE_A}/explore`);
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   const krxItem = page.locator(`main a[href$="/${K.final}"]`);
   await expect(krxItem).toContainText(`${numLabel(krx.anchor.benchmark.queries)} facts · ${numLabel(krx.anchor.rows)} memory entries · Size ${bytesLabel(krx.anchor.size_bytes)} · ${numLabel(krx.downloads)} downloads`);
   expect(numLabel(krx.anchor.rows)).toBe('270,053');
@@ -813,13 +933,16 @@ test('AZ-095 Format large numbers, sizes and prices consistently (270,053 entrie
     const v = [await stat('Purchases').innerText(), await stat('Revenue').innerText(), numLabel(fresh.downloads), revenueLabel(fresh.revenue)];
     return v[0] === v[2] && v[1] === v[3] ? 'match' : `page ${v[0]} / ${v[1]} vs api ${v[2]} / ${v[3]}`;
   }, { timeout: 40_000, message: 'Purchases / Revenue match the API' }).toBe('match');
-  await expect(stat('accuracy')).toHaveText(pctText);
-  await expect(page.getByText('accuracy', { exact: true }).first().locator('xpath=following-sibling::div[1]')).toHaveText(score);
+  // the hero stat is the measured pair (before → after); the percentage is its note (finding 28)
+  expect(before, 'the attestation carries a pre_apply baseline').toBeTruthy();
+  await expect(stat('accuracy')).toHaveText(`${before} → ${score}`);
+  await expect(page.getByText('accuracy', { exact: true }).first().locator('xpath=following-sibling::div[1]')).toHaveText(`${pctText} after loading`);
   await expect(stat('Memory entries')).toHaveText('270,053');
   await expect(stat('Facts')).toHaveText('2,761');
   await expect(stat('Size')).toHaveText('331.7 MB');
   await expect(stat('Price')).toHaveText('25 AIN');
-  await expect(page.getByText(`Accuracy ${pctText} (${score}) — over 2,761 benchmark questions`)).toBeVisible();
+  // the denominator under the bar is the attestation's own, not the anchor's 2,761 coverage claim
+  await expect(page.getByText(`Accuracy ${pctText} on ${tot} of 2,761 questions checked by verifiers`)).toBeVisible();
   // A zero revenue reads '0 AIN' (only prices render 'Free') — the scenario recorded the old 'Free' as a defect; fixed in recordText.ts revenueLabel.
   const zeroRevenue = (await Promise.all(cat.map(async (e) => (await api<PatchDetail>(request, `/api/patches/${e.anchor.id}`)).body))).find((d) => Number(d.revenue) === 0);
   if (zeroRevenue) {
@@ -919,12 +1042,15 @@ test('AZ-097 Show helpful empty states when a filter, search or section has noth
   await expect(page.getByRole('status', { name: 'loading' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'First', exact: true })).toHaveCount(0);
 
-  // Step 2 — chips bring the list back
+  // Step 2 — chips bring the list back (Explore opens on "Current only", so the count is the current ones)
+  const current = (await api<{ total: number }>(request, '/api/catalog?status=LISTED,ANNOUNCED,VERIFYING,CHALLENGED')).body.total;
   await search.fill('');
   await page.getByRole('button', { name: 'krx-ticker-codes', exact: true }).click();
   await page.getByRole('button', { name: 'Qwen3.8-Flash-Next', exact: true }).click();
-  await expect(page.getByText(`${numLabel(total)} knowledge`)).toBeVisible();
+  await expect(page.getByText(`${numLabel(current)} knowledge`)).toBeVisible();
   await expect(page.getByText('1 / 1')).toBeVisible();
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
+  await expect(page.getByText(`${numLabel(total)} knowledge`)).toBeVisible();
 
   // Step 3 — ledger kind without records
   await page.goto(`${NODE_A}/ledger`);
@@ -1094,8 +1220,9 @@ test('AZ-099 Verify what happens to scroll position and filters on browser Back 
   await expect(page.getByRole('alert')).toHaveCount(0);
   test.info().annotations.push({ type: 'note', description: 'Back resets the ledger to the top with "All records", Forward reopens the detail on Overview (no position/filter/tab restoration) — P2 UX finding, as described in the scenario.' });
 
-  // Step 5 — explore: last item, open, Back
+  // Step 5 — explore: last item, open, Back (the last "popular" item is superseded → show all versions first)
   await page.goto(`${NODE_A}/explore`);
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   const last = items[items.length - 1];
   const lastItem = page.locator(`main a[href$="/${last.anchor.id}"]`);
   await lastItem.scrollIntoViewIfNeeded();
@@ -1104,6 +1231,9 @@ test('AZ-099 Verify what happens to scroll position and filters on browser Back 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(last.anchor.name);
   await page.goBack();
   await expect(page).toHaveURL(`${NODE_A}/explore`);
+  // Back reopens Explore in its default view — the "Show" choice is component state, like the sort and the chips
+  await expect(page.getByRole('button', { name: 'Current only', exact: true })).toHaveCSS('border-color', 'rgb(139, 62, 235)');
+  await page.getByRole('button', { name: 'All versions', exact: true }).click();
   await expect(page.locator('main a', { hasText: 'node-a /' })).toHaveCount(items.length);
   await expect(page.getByRole('status', { name: 'loading' })).toHaveCount(0);
   await page.waitForTimeout(500);

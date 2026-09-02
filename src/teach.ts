@@ -593,9 +593,14 @@ export class TeachWorker {
   }
   /** Per-call budget for the serving model inside a teach step (a stalled vLLM must surface as "runtime busy", not hang the lock). */
   private static readonly CALL_TIMEOUT_MS = 60_000;
+  /**
+   * Teach-mode measurements deliberately opt out of the D1 sampling and guard (`sampling: null`): preflight and the
+   * before/after checks compare answers against numbers measured before the guard existed, and a stop sequence or a
+   * truncated answer would change what they measure. The visitor-facing live test is where the guard belongs.
+   */
   private async askChat(prompt: string, maxTokens = 32): Promise<string> {
     if (this.stopped) throw new Error(STOPPING);
-    const r = await this.market.runtime.chat([{ role: 'user', content: prompt }], { maxTokens, thinking: false, timeoutMs: TeachWorker.CALL_TIMEOUT_MS });
+    const r = await this.market.runtime.chat([{ role: 'user', content: prompt }], { maxTokens, thinking: false, timeoutMs: TeachWorker.CALL_TIMEOUT_MS, sampling: null });
     return (r.content ?? '').trim();
   }
   private async askRaw(prompt: string, maxTokens = 16): Promise<string> {

@@ -87,7 +87,34 @@ test.afterAll(async ({ request }) => {
   }
 });
 
+/**
+ * Wait for the reply the "Teach the right answer" button hangs under. The shared vLLM stalls about once an hour and
+ * restarts in ~5 min; a turn caught by that shows the red "model server is off" alert instead of an answer, so the
+ * model is waited for and the same turn is retried (up to twice) — a stalled engine is not a teach-mode failure.
+ */
+async function waitForAnswer(request: Parameters<typeof waitForRuntime>[0], answered: ReturnType<Page['getByTestId']>, retries = 2): Promise<void> {
+  const deadline = Date.now() + 15 * 60_000;   // one stall (~5 min) + a queued turn behind another test
+  let used = 0;
+  while (Date.now() < deadline) {
+    if (await answered.isVisible().catch(() => false)) return;
+    const turn = page.locator('article').last();
+    const alert = turn.getByRole('alert');
+    if (await alert.count() > 0) {
+      const msg = (await alert.innerText()).trim();
+      expect(used, `the reply failed and cannot be retried again: ${msg}`).toBeLessThan(retries);
+      used++;
+      expect(await waitForRuntime(request, NODE, 8 * 60_000), `model back after: ${msg}`).toBe(true);
+      await waitForLockFree(request, NODE, 5 * 60_000);
+      await turn.getByRole('button', { name: /^(Retry|다시 시도)$/ }).click();
+      test.info().annotations.push({ type: 'note', description: `serving model hiccup during the turn (${msg}) — waited for the restart and pressed Retry` });
+    }
+    await page.waitForTimeout(1_000);
+  }
+  expect(await answered.isVisible(), 'the reply arrived within 15 min').toBe(true);
+}
+
 test('AZ-103 banner → "Teach the right answer" under a reply → drawer → basket persists across reload @runtime', async ({ request }) => {
+  test.setTimeout(25 * 60_000);   // room for the model to stall and come back twice (waitForAnswer retries the turn)
   test.skip(!(await waitForRuntime(request, NODE, 8 * 60_000)), 'serving model unavailable (vLLM restart takes ~5 min)');
   await waitForLockFree(request, NODE, 5 * 60_000);
   await page.goto(`${NODE}/chat/${K.pixel}?teach=1`);
@@ -106,7 +133,7 @@ test('AZ-103 banner → "Teach the right answer" under a reply → drawer → ba
   await box.fill(PROMPT);
   await box.press('Enter');
   const teachBtn = page.getByTestId('teach-base');
-  await expect(teachBtn).toBeVisible({ timeout: 4 * 60_000 });
+  await waitForAnswer(request, teachBtn);
   await teachBtn.click();
   const drawer = page.getByTestId('teach-drawer');
   await expect(drawer).toContainText('Teach the right answer');
@@ -178,7 +205,7 @@ test('AZ-105 pre-flight: wrong fact will train, already-correct fact skipped, qu
   await expect(rows.nth(1)).toContainText('Already correct — skipped');
   await expect(pf.getByTestId('preflight-quota')).toContainText(new RegExp(`\\d+ of ${policy.limits.jobs_per_key_per_day} lessons left today for this key`));
   const queue = pf.getByTestId('queue-training');
-  await expect(queue).toHaveText('Queue training (1 corrections)');
+  await expect(queue).toHaveText('Queue training (1 correction)');   // English singular: the dictionary carries a _one variant
   await page.screenshot({ path: 'results/az-103-preflight.png', fullPage: true });
   await queue.click();
   await expect(pf).toBeHidden({ timeout: 30_000 });
@@ -195,9 +222,18 @@ test('AZ-106 stub lifecycle → READY: card copy, check lines, per-correction ta
   await expect(card).toBeVisible();
   await expect(card).toContainText('Your lesson:');
   await expect(card).toHaveAttribute('data-status', 'READY', { timeout: 3 * 60_000 });
-  // stub backend → "checks were simulated" (no "in the live model" claim); a gradient node says "…correct in the live model."
-  await expect(card.getByTestId('lesson-body')).toContainText(/It learned it — 2 of 2 answers correct( in the live model)?\./);
-  if (policy.backend === 'stub') await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — these checks were simulated, not measured in a live model.');
+  // Three node kinds, three honest claims. `simulated_checks` (the node's own flag) says the CHECKS were made up;
+  // `backend: 'stub'` says only that the TRAINING was a fixture copy. Neither may be told as the other, and a demo
+  // run of either kind never gets the bare "…in the live model" sentence a real lesson gets:
+  //   · offline stub  — "2 of 2 answers correct." + "these checks were simulated"
+  //   · stub trainer, live model — the same body line + "no real training happened; the checks were measured in the live model"
+  //   · gradient trainer — "2 of 2 answers correct in the live model." and no demo tip at all
+  const sim = policy.simulated_checks === true;
+  const demo = sim || policy.backend === 'stub';
+  await expect(card.getByTestId('lesson-body')).toContainText(demo ? 'It learned it — 2 of 2 answers correct.' : 'It learned it — 2 of 2 answers correct in the live model.');
+  if (sim) await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — these checks were simulated, not measured in a live model.');
+  else if (demo) await expect(card.getByTestId('lesson-simulated')).toContainText('Demo node — no real training happened; the checks were measured in the live model.');
+  else await expect(card.getByTestId('lesson-simulated')).toHaveCount(0);
   await expect(card.getByTestId('lesson-status')).toHaveText('Ready · private');
   await expect(card).toContainText(/Unrelated questions unchanged: \d+\/\d+/);
   await expect(card).toContainText('Other phrasing answered correctly: 1/1');
@@ -261,7 +297,7 @@ test('AZ-109 Keep it private: 7-day token links, sha256 matches, recipe.json, RU
   await keep.getByTestId('keep-download').check();
   const npz = keep.getByTestId('dl-npz');
   await expect(npz).toBeVisible({ timeout: 30_000 });
-  await expect(keep).toContainText(/[\d.]+ MB · [\d,]+ memory entries · link valid for 7 days/);
+  await expect(keep).toContainText(/[\d.]+ MB · [\d,]+ memory (?:entry|entries) · link valid for 7 days/);
   const sha = (await keep.getByTestId('dl-sha').textContent())!.trim();
   expect(sha).toMatch(/^[0-9a-f]{64}$/);
   const npzHref = (await npz.getAttribute('href'))!;

@@ -69,6 +69,20 @@ export async function visitorOrigin(): Promise<string> {
   return (visitorOriginCache = NODE_A);
 }
 
+/**
+ * Give this browser context its own free-try bucket. All chat-driving cross-cutting scenarios share one alternate
+ * origin, so without this they also share its 20 tries/hour and a second run of the suite inside the same hour hits
+ * the quota wall. The node meters per client IP and trusts proxy headers, so the fake IP is stamped on every request
+ * that goes to the node (per request, not with setExtraHTTPHeaders(), which would also mark cross-origin font
+ * requests and make their CORS preflight fail).
+ */
+export async function freshTries(page: Page, node = NODE_A): Promise<void> {
+  const o = () => 1 + Math.floor(Math.random() * 253);
+  const ip = `10.${o()}.${o()}.${o()}`;
+  const port = new URL(node).port || '80';
+  await page.context().route((u) => u.port === port, (route) => route.continue({ headers: { ...route.request().headers(), 'x-forwarded-for': ip } }));
+}
+
 /** Model reachable + nobody holding the shared runtime lock. Throws when the model does not come back in time. */
 export async function ensureRuntime(request: APIRequestContext, node = NODE_A): Promise<void> {
   const ok = await waitForRuntime(request, node);
@@ -92,7 +106,8 @@ export function lastTurn(page: Page): Locator { return page.locator('article').l
 export function bubble(page: Page, kind: 'base' | 'patched'): Locator {
   return lastTurn(page).locator('[aria-busy]').filter({ hasText: kind === 'base' ? /Before loading|지식 넣기 전/ : /After loading|지식 넣은 후/ });
 }
-export const CANCEL_STRIP = /Waiting for the answer — you can cancel if it takes too long\.|답을 기다리는 중입니다/;
+// D3: while the request is queued behind the shared model the same strip says so and the button reads "Stop waiting".
+export const CANCEL_STRIP = /Waiting for the answer — you can cancel if it takes too long\.|답을 기다리는 중입니다|Queued behind another test|순서를 기다리는 중입니다/;
 
 export async function waitForPicker(page: Page, count = 4): Promise<void> {
   const items = pickerItems(page);
@@ -127,7 +142,7 @@ export async function waitForTurn(page: Page, timeoutMs = 5 * 60_000): Promise<'
 }
 
 /** Errors that mean "the shared model hiccuped" (vLLM hang / restart, lock contention) rather than a UI defect. */
-export const TRANSIENT_CHAT_ERROR = /model server is off|fetch failed|Something went wrong during the test|Timed out waiting|Another test was running|모델 서버가|테스트 중 문제가|시간이 초과|다른 테스트가/;
+export const TRANSIENT_CHAT_ERROR = /model server is off|fetch failed|Something went wrong during the test|Timed out waiting|stayed busy for too long|모델 서버가|테스트 중 문제가|시간이 초과|다른 테스트가/;
 
 /**
  * Wait for the in-flight turn. When it fails for a runtime hiccup, wait for the model to come back and press Retry

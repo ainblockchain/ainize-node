@@ -27,6 +27,12 @@ const base = process.env.NGRAM_CLUSTER_HOME ?? join(homedir(), '.ngram-cluster')
 const chainUp = await (async () => { try { const r = await fetch('http://localhost:8081/node_status', { signal: AbortSignal.timeout(2000) }); const j = await r.json(); return !!j?.result?.health; } catch { return false; } })();
 const ledger = process.env.NGRAM_LEDGER ?? (chainUp ? 'ain' : 'local');
 const portBase = Number(process.env.NGRAM_PORT_BASE ?? 3402);
+// The demo cluster (and the e2e suite that drives it) talks to its OWN vLLM instance so it never
+// competes with the main serving GPUs: flashnext-e2e on GPUs 4,5 → :8002, mailbox ple_patch_e2e.
+//   qwen3.8/serve.sh: NAME=flashnext-e2e PORT=8002 GPUS='"device=4,5"' TP=2 MTP=0 ENGRAM_HOOK=1 \
+//                     PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e ./serve.sh
+const runtimeApi = process.env.NGRAM_RUNTIME_API ?? 'http://localhost:8002';
+const runtimePatchDir = process.env.NGRAM_RUNTIME_PATCH_DIR ?? '/mnt/newdata/qwen3.8/ple_patch_e2e';
 const seedA = process.env.NGRAM_SEED !== '0';
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
@@ -53,7 +59,7 @@ function ensureConfig(d) {
   const home = join(base, d.name);
   let cfg = core.loadConfig(home);
   if (!cfg) {
-    cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger });
+    cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger, runtimeApi, runtimePatchDir });
     if (!d.runtime) cfg.runtime = { ...cfg.runtime, repo: undefined };
     cfg.publicUrl = `http://localhost:${d.port}`;
     // Core keeps `server.trustProxy` false by default (a spoofed X-Forwarded-For must not fool req.ip on a real
@@ -63,8 +69,17 @@ function ensureConfig(d) {
     if (d.teach) cfg.teach = { ...core.teachConfig(cfg), ...d.teach };   // never `stubOffline` here: the demo checks lessons on the real model
     core.saveConfig(cfg, home);
     console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})${d.teach ? `  teach: enabled, publish ${d.teach.publish}, backend ${d.teach.backend}` : ''}`);
-  } else if (d.teach && !(cfg.teach?.enabled)) {
-    console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`NGRAM_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);
+  } else {
+    // An existing home keeps its identity and data but always follows the serving instance this cluster is
+    // pointed at — otherwise a node would apply patches into another instance's mailbox and lock.
+    if (cfg.runtime?.repo && (cfg.runtime.api !== runtimeApi || cfg.runtime.patchDir !== runtimePatchDir)) {
+      cfg.runtime = { ...cfg.runtime, api: runtimeApi, patchDir: runtimePatchDir };
+      core.saveConfig(cfg, home);
+      console.log(`[cluster] ${d.name}: runtime → ${runtimeApi}  (mailbox ${runtimePatchDir})`);
+    }
+    if (d.teach && !(cfg.teach?.enabled)) {
+      console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`NGRAM_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);
+    }
   }
   return { home, cfg };
 }

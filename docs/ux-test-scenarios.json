@@ -52,7 +52,7 @@
   "expected": [
    "Sub-title 'Passed independent verification and ready to load into the model.'",
    "Exactly 1 card (catalog status=LISTED): name 'KRX ticker codes for 2,761 listed companies (final)', meta 'Creator: node-a · Qwen3.8-Flash-Next'",
-   "Lines: 'facts covered' → '2,761 facts'; 'accuracy' → '100% (26/26)' with a green score bar; 'Verified' → 'Verified (2/2 independent verifiers)'; 'Price' → '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'",
+   "Lines: 'facts covered' → '2,761 facts'; 'accuracy' → '100% on a 26-question sample of 2,761' (the percentage is printed against the denominator the verifiers actually used, next to the coverage the anchor claims) with a green score bar; 'Verified' → 'Verified (2/2 independent verifiers)'; 'Price' → '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'",
    "SUPERSEDED items (krx-all-2761-ep12, -ep6, pixelplus-087600) do not appear",
    "Clicking the card opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761 (the node-a address segment); 'See all' opens /explore"
   ],
@@ -79,16 +79,18 @@
   ],
   "steps": [
    "Open http://localhost:3402/explore",
-   "Read the title, intro and the count line",
+   "Read the title, intro, the count line and the line under it about hidden versions",
    "Read the row for 'KRX ticker codes for 2,761 listed companies (final)'",
+   "Click 'show' on that line to bring the retired versions back",
    "Read the row for 'Pixelplus ticker code (single fact)'",
    "Look at the pagination bar at the bottom",
    "Click the first row"
   ],
   "expected": [
-   "Title 'Explore knowledge'; intro 'Choose by verification status and accuracy. You can check any of it with a live test before buying.'; count '4 knowledge'",
-   "Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'Verified'; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% accuracy'; price column '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)'",
-   "Row pixelplus-087600: status chip 'Newer version available', '8 facts · 2,992 memory entries', price '0.1 AIN'",
+   "Title 'Explore knowledge'; intro 'Choose by verification status and accuracy. You can check any of it with a live test before buying.'; Explore opens on 'Show: Current only', so the count reads '1 knowledge' and the line under it reads '3 older versions hidden · show' (tooltip '\"Current only\" hides knowledge that a newer version replaced and knowledge that failed verification.'); clicking 'show' switches to 'All versions' and the count becomes '4 knowledge' with the hidden line gone",
+   "Row krx-all-2761: name followed by the purple 'Verified' certified label and a green status chip 'For sale' (tooltip 'On sale as the current version for this topic. Whether it passed verification is what the \"Verified\" badge beside it says.') — one word no longer means two things on the same row; ident 'node-a / krx-all-2761'; 'Creator: node-a · Target model: Qwen3.8-Flash-Next · Topic: krx-ticker-codes'; '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads'; 'Verified (2/2 independent verifiers) · 100% (26/26 checked) · asked as template + chat' — the denominator is the attestation's own score and the form is the one its verifiers used",
+   "Row pixelplus-087600 (visible once 'All versions' is on): status chip 'Newer version: krx-all-2761' in the warning palette (#8a4b00 on #fff3e0), '8 facts · 2,992 memory entries', 'Verified (2/2 independent verifiers) · 100% (4/4 checked) · asked as template + natural', price '0.1 AIN'",
+   "The 56 px seal on each card carries information: full colour ([data-testid=seal-sealed], filter none) only on the verified current version, greyed ([data-testid=seal-retired], grayscale(1), opacity .45) on a superseded one, and absent on anything that never reached quorum — not the same purple seal on all four rows",
    "No UI label shows raw words like 'rows', 'patch', 'LISTED' or 'SUPERSEDED' (the creator-written description text of the krx items may mention file names such as rows-pin.npz — that is data, not a label)",
    "Pagination shows 'First' ‹ '1 / 1' › 'Last' with all four buttons disabled (10 items per page)",
    "Clicking a row opens /{creator address}/{id}, i.e. /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761"
@@ -126,9 +128,9 @@
   "expected": [
    "Header: title 'KRX ticker codes for 2,761 listed companies (final)', 'ID krx-all-2761', 'Creator: node-a', 'Track finance/KRX-latest · topic finance/krx'",
    "Right side: purple button 'Live test' with sub-text 'Compare answers before and after'; link 'Other knowledge on this subject ›'",
-   "Status chip 'Verified' followed by 'Verified on the real model 2/2 · Verified'; no 'Manage' link for a visitor",
+   "Status chip 'For sale' followed by 'Verified on the real model 2/2 · Verified' — the chip is the listing state, the sentence is the verification",
    "Meta: 'By node-a · target model Qwen3.8-Flash-Next · verified {n}m ago' (or '{n}h ago' depending on age)",
-   "Stats: 'Purchases' 0; 'accuracy' (lowercase glossary term) 100% with note '26/26'; 'Memory entries' 270,053; 'Facts' 2,761; 'Size' 331.7 MB; 'Price' '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'; 'Revenue' renders 'Free' for the zero amount (shared price formatter) — flag as a copy issue if judged confusing",
+   "Stats: 'Purchases' 0; 'accuracy' (lowercase glossary term) reads the measured pair '1/8 → 26/26' (tooltip 'The same verification run scored 1/8 before the knowledge was loaded and 26/26 after.') with the note '100% after loading' — the percentage alone could not say whether the model already knew the answers; 'Memory entries' 270,053; 'Facts' 2,761; 'Size' 331.7 MB; 'Price' '25 AIN' with note 'AIN = AI Network token (this demo runs a local dev chain)'; 'Revenue' renders 'Free' for the zero amount (shared price formatter) — flag as a copy issue if judged confusing",
    "Tab bar: 'Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History'",
    "Subject link opens /benchmarks/krx-ticker-codes; 'Live test' opens /chat/krx-all-2761"
   ],
@@ -159,10 +161,11 @@
    "Read the three explanatory notes under the table"
   ],
   "expected": [
-   "Summary: 'Run on the real model' 2/2; 'Integrity only' 0; 'Status' chip 'Verified'",
-   "Table headers: 'Verifier node', 'Method', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time'",
-   "Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Deposit '5 AIN'; Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip",
+   "Summary: 'Run on the real model' 2/2; 'Integrity only' 0; 'Status' chip 'For sale'",
+   "Table headers: 'Verifier node', 'Method', 'Before', 'Accuracy', 'Side-effect check', 'Restarts detected', 'Deposit', 'Result', 'Time' — 'Before' is score.pre_apply, which every attestation carries and which used to reach the DOM only inside a title= attribute",
+   "Rows for node-b and node-c (name with the shortened address underneath): Method 'run on the real model'; Before '1/8' (the same run's pre_apply, tooltip 'What the same verifier scored on the same questions BEFORE the knowledge was loaded (pre_apply) …'); Accuracy '26/26'; Side-effect check 'not reported' (no collateral_nat in the record); Restarts detected 'none'; Deposit '5 AIN'; Result 'Passed' in green; Time as '{n}h ago' with the full date in the tooltip",
    "Note 1 starts 'Verified — Only verifications run on the real model count toward Verified (currently 2/2). The 0 integrity-only checks are shown separately…'",
+   "A note under the table explains the pair: '\"Before\" and \"Accuracy\" are the same questions scored twice in the same run — before the knowledge was loaded (pre_apply) and after it. The pair is what shows how much the knowledge changed; the second number alone cannot.'",
    "Note 2 starts 'Restarts detected: if the model server restarted mid-run…'; Note 3 starts 'Deposit: what a verifier loses if its verification turns out wrong…'"
   ],
   "priority": "P0",
@@ -231,9 +234,9 @@
   ],
   "expected": [
    "URL is replaced with /chat/krx-all-2761 (first testable item); title 'Live test'; chip 'Test model Qwen3.8-Flash-Next'; subtitle 'Ask the same question before and after loading the knowledge and watch the answer change. It loads and unloads in seconds, no restart.'",
-   "Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip; the active item shows 'Selected'",
+   "Left panel 'Knowledge to load (pick up to 3)' (checkboxes, help 'They load in the order you tick them. If two overlap, the one ticked last wins.') with hint 'Only knowledge whose body is on this node can be tested.'; 4 items each showing name, 'node-a/{id}', '{n} facts', '100% accuracy', price like '25 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', a status chip ('For sale' for the current version, 'Newer version available' for a retired one); the active item shows 'Selected'",
    "Ticking exactly one item changes the URL to /chat/{id} (several → /chat/{id1},{id2}) and the main header shows its name, status chip, '{n} facts' and a 'Details →' link; the transcript shows 'No questions yet' with 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'",
-   "krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); chip tooltip 'Expected: 087600' for '종목코드 픽셀플러스'; 'Show less' collapses back",
+   "krx-all-2761 shows 8 chips + 'Show 18 more' (26 samples); the chip for '종목코드 픽셀플러스' carries 'Expected: 087600' both as its tooltip and as a visible second line inside the chip (its accessible name stays the bare prompt); 'Show less' collapses back",
    "Clicking a chip puts its text into the textarea (placeholder 'Type a question and press Enter (Shift+Enter for a new line)') and focuses it; footer reads 'Free tries are limited per hour. No sign-in needed.'",
    "Unknown id: yellow alert 'The knowledge in the address (does-not-exist) cannot be tested on this node, so the first one in the list was chosen.' and URL becomes /chat/krx-all-2761"
   ],
@@ -269,7 +272,7 @@
   "expected": [
    "Pending state: two bubbles 'Before loading' and 'After loading' with animated dots and note 'Includes loading and unloading — this can take tens of seconds.'; the row 'Waiting for the answer — you can cancel if it takes too long.' with a 'Cancel' button; the Send button reads 'Waiting for the answer…'; chips, mode buttons and textarea are disabled",
    "HTTP 200 from POST /api/chat with mode 'compare'; 'After loading' shows 'reply {n}s' and '· loaded in {n}s' (or '· was already loaded')",
-   "'After loading' badge '✓ Correct' (answer contains 005930) with tooltip 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930'; 'Before loading' shows '✓ Correct' or '✗ Wrong' depending on the base model",
+   "'After loading' badge '✓ Correct' (answer contains 005930) with tooltip 'This question is one of the knowledge’s benchmark items, so the answer was checked automatically. Expected: 005930'; 'Before loading' shows '✓ Correct' or '✗ Wrong' depending on the base model; BOTH bubbles render 'Expected: 005930' as muted text under the verdict, so the tick or cross can be checked without a mouse (data-testid chat-expected-base / chat-expected-patched)",
    "Footer now reads 'Free trial 19/20 left this hour' (remaining_quota decremented by one, quota_limit 20)",
    "A 'Clear conversation' text button appears in the footer; transcript auto-scrolls to the newest turn"
   ],
@@ -305,7 +308,7 @@
   "expected": [
    "Footer counts down 'Free trial 19/20 left this hour' … 'Free trial 1/20 left this hour'",
    "After the 20th answer (remaining_quota 0) a yellow alert appears above the grid: 'You used all free tries for this hour. Try again in an hour or buy the knowledge.' and the textarea is disabled with that same text as placeholder; chips and Send are disabled",
-   "A further POST /api/chat from the same IP returns HTTP 429 with message 'free live-test quota exhausted for this hour — buy the patch or run your own node'; in the UI that maps to the red turn error 'You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.'",
+   "A further POST /api/chat from the same IP returns HTTP 429 with message 'free live-test quota exhausted for this hour — buy the patch or run your own node'; the 429 body also carries quota_reset (epoch ms = the window start plus the hour); in the UI that maps to the red turn error 'You used all free tries for this hour. Try again in an hour, or buy the knowledge and use it without limits on your own node.' with NO Retry button (send() would return at the exhausted guard without issuing a request) — in its place a link 'Buy this knowledge' to the knowledge page and the measured reset time 'Free tries reset at HH:MM'",
    "The quota is 20 requests per visitor IP in a fixed 60-minute window that starts at the visitor's first request (it resets once 3,600,000 ms have passed since the window began); an operator session is unlimited ('You are signed in as this node’s operator — unlimited tests.')"
   ],
   "priority": "P0",
@@ -332,17 +335,17 @@
    "Read the info card and the developer row under it; click 'Open in explorer'",
    "Read the table headers and the first rows",
    "Open the select (default 'All records') and choose 'Purchase settled'",
-   "Choose 'Newer version' and read the 3 rows",
+   "Choose 'Newer version' and compare the rows with GET /api/ledger?kind=supersede",
    "Choose 'All records', scroll to 'Origin → derivative map', hover boxes and click the box 'krx-all-2761'"
   ],
   "expected": [
    "Title 'Public record' with description 'A record anyone can check: who registered, verified and bought which knowledge.'; header badge next to the logo reads 'AI Network'",
    "Info card: 'Record type' 'AIN blockchain'; 'Network' ain:local; 'Records' {n} (= ledger.records); 'Blocks recorded' (chain height, increasing); 'Connected AI Network node' http://localhost:8081; 'Integrity' 'valid · {n} checked' in green",
    "Developer row: 'Stored at' 'NODE OPERATORS & DEVELOPERS /apps/knowledge — Recorded on the AI Network — registrations as knowledge entries; …'; 'Open in explorer' opens http://localhost:8081/get_value?ref=%2Fapps%2Fknowledge (URL-encoded href; visible text unencoded) in a new tab (JSON)",
-   "Table headers 'Time', 'Kind', 'What happened', 'By', 'Record ID / tx'; kind chips use 'Registered', 'Verification', 'Newer version', 'Knowledge track', 'Node'; pagination '1 / 1' (20 per page)",
+   "Table headers 'Time', 'Kind', 'What happened', 'By', 'Record ID / tx'; kind chips use 'Registered', 'Verification', 'Newer version', 'Knowledge track', 'Node'; 20 rows per page and a pager. GET /api/ledger returns the NEWEST `limit` records and cannot page further back, so when the ledger holds more than the page asked for (1,000) a line above the table reads 'Showing the most recent 1,000 of {n} records — the node returns this many at a time and cannot page further back.'; with a smaller ledger that line is absent",
    "Select options: 'All records', 'Registered', 'Verification', 'Purchase settled', 'Knowledge track', 'Node', 'Newer version', 'Subscription', 'Re-verification request'; 'Purchase settled' → 'No \"Purchase settled\" records yet.' (until a purchase has been made)",
-   "'Newer version' → 3 rows such as 'krx-all-2761 marked as the newer version of krx-all-2761-ep6 (241,992 overlapping memory entries)'",
-   "Map: 4 boxes in three columns — left krx-all-2761-ep6 and pixelplus-087600, middle krx-all-2761-ep12, right krx-all-2761 (label 'Verified · Qwen3.8-Flash-N…'); two grey solid 'extends' arrows (krx-all-2761 → ep12, ep12 → ep6) and three orange dashed 'supersedes' arrows; legend 'derived from origin (creator revenue share)', 'replaced by a newer version (same subject, overlapping entries)', 'origins on the left, derivatives to the right'; clicking a box opens that knowledge's detail page"
+   "'Newer version' → one row per supersede record on the WHOLE ledger (the node applies the filter, not the fetched window): e.g. 'krx-all-2761 marked as the newer version of krx-all-2761-ep6 (241,992 overlapping memory entries)'",
+   "Map: 4 boxes in three columns — left krx-all-2761-ep6 and pixelplus-087600, middle krx-all-2761-ep12, right krx-all-2761 (label 'For sale · Qwen3.8-Flash-N…' — the map prints the same listing state as the chips); two grey solid 'extends' arrows (krx-all-2761 → ep12, ep12 → ep6) and three orange dashed 'supersedes' arrows; legend 'derived from origin (creator revenue share)', 'replaced by a newer version (same subject, overlapping entries)', 'origins on the left, derivatives to the right'; clicking a box opens that knowledge's detail page"
   ],
   "priority": "P0",
   "area": "ledger",
@@ -436,7 +439,7 @@
    "Demo catalog prices: krx-all-2761 25 AIN, -ep12 10 AIN, -ep6 5 AIN, pixelplus-087600 0.1 AIN"
   ],
   "steps": [
-   "Open http://localhost:3402/explore",
+   "Open http://localhost:3402/explore and switch 'Show' to 'All versions' (the default hides the three retired ones)",
    "Open the sort select at the top-right and read its options",
    "Choose 'Price' and note the row order",
    "Choose 'Newest' and note the row order",
@@ -448,7 +451,8 @@
    "'Price' orders ascending: pixelplus-087600 (0.1 AIN), krx-all-2761-ep6 (5 AIN), krx-all-2761-ep12 (10 AIN), krx-all-2761 (25 AIN)",
    "'Newest' orders by creation: krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600",
    "'Knowledge size' orders by memory entries descending: krx-all-2761 (270,053) first, the two 241,992 items next, pixelplus-087600 (2,992) last",
-   "Sorting is done server-side by /api/catalog (the page fetches up to 200 items and paginates 10 per page client-side); while the request is in flight the count line '4 knowledge' appends ' · updating…'; the page resets to 1 / 1 after each sort change"
+   "Sorting is done server-side by /api/catalog (the page fetches up to 200 items and paginates 10 per page client-side); while the request is in flight the count line '4 knowledge' appends ' · updating…'; the page resets to 1 / 1 after each sort change",
+   "'Most popular' ranks by status FIRST and only then by downloads: krx-all-2761 (LISTED, 55 downloads) heads the list ahead of pixelplus-087600 (SUPERSEDED, 187 downloads), and the three superseded items follow — GET /api/catalog?sort=popular returns statuses ['LISTED','SUPERSEDED','SUPERSEDED','SUPERSEDED']"
   ],
   "priority": "P1",
   "area": "explore",
@@ -469,7 +473,8 @@
   ],
   "steps": [
    "Open http://localhost:3402/explore",
-   "Read the 'Model' and 'Topic' chip groups; hover the 'Topic' label",
+   "Read the 'Model', 'Topic' and 'Show' chip groups; hover the 'Topic' label",
+   "Click 'All versions' in the 'Show' group",
    "Click the 'Qwen3.8-Flash-Next' chip, then click it again",
    "Click the 'krx-ticker-codes' chip",
    "Type 'pixel' into the search box (placeholder 'Search by name or description')",
@@ -477,7 +482,7 @@
    "Clear the search box"
   ],
   "expected": [
-   "Chip groups: 'Model' → 'All', 'Qwen3.8-Flash-Next'; 'Topic' → 'All', 'krx-ticker-codes'; Topic tooltip 'Knowledge on the same topic is scored with the same question set. (benchmark.queries)'",
+   "Chip groups: 'Model' → 'All', 'Qwen3.8-Flash-Next'; 'Topic' → 'All', 'krx-ticker-codes'; 'Show' → 'Current only' (active by default, purple border) and 'All versions'; with 'Current only' the list holds 1 row and with 'All versions' 4; Topic tooltip 'Knowledge on the same topic is scored with the same question set. (benchmark.queries)'",
    "Clicking a chip highlights it and the count stays '4 knowledge' (all demo items share that model/topic); clicking the active chip again returns to 'All'",
    "Search 'pixel' → count '1 knowledge' and only 'Pixelplus ticker code (single fact)' remains (search matches id/name/description/model/topic, case-insensitive)",
    "Search 'zzz-no-match' → count '0 knowledge', the message 'No knowledge matches. Try another model, topic or search term.' and no pagination bar",
@@ -511,9 +516,9 @@
    "Read 'Knowledge tracks'"
   ],
   "expected": [
-   "Accuracy line 'Accuracy 100% (26/26) — over 2,761 benchmark questions'",
+   "Accuracy line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers', and under it the baseline from the same run: 'The same run scored 1/8 before the knowledge was loaded → 26/26 after'",
    "'Target model' note 'This knowledge works only on the model below. For other models it can be rebuilt from the recipe below.'; rows 'Model' Qwen3.8-Flash-Next, 'Checkpoint' W4A16, 'Entry width' 160, 'Billing' 'pay once per download', 'License' 'Use on the identified model · no resale of raw data', 'Created' (date)",
-   "'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' 'Threshold set — unrelated answers must not change when the knowledge is loaded'; 'Question-set hash' shown",
+   "'Verification questions' note 'Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.'; 'Subject' krx-ticker-codes (link to /benchmarks/krx-ticker-codes); 'facts covered' '2,761 facts'; 'Question formats' 'template, chat'; 'Side-effect limit' — since no attestation carries collateral_nat — reads 'Limit declared (≤ 0.08 nat) — not yet measured by any verifier' in the warning tone (#8a4b00) with a 'See the verification tab →' button that opens the tab where the same fact reads 'not reported'; once a verifier does report one the row reads 'Threshold set — measured by {n} of {of} verifiers'; 'Question-set hash' shown",
    "'Sample questions (26)' lists 12 items like '\"종목코드 픽셀플러스 \" → 087600' followed by '… 14 more'",
    "Recipe details show JSON with corpus_template and hyperparams",
    "'Integrity' note 'A downloaded file is genuine only if its content hash matches the value below.'; 'Content hash' 57c93463… (stable: sha256 of rows-pin.npz); 'Copy' turns into 'Copied' and the clipboard holds the 64-hex sha256; 'Public record ID' equals record_hash from GET /api/patches/krx-all-2761 (chain-specific, do not hardcode); 'File stored on this node' 'yes'",
@@ -552,7 +557,7 @@
    "'Origins' shows one box with the ep12 name and id krx-all-2761-ep12 underneath; 'Derived' shows 'no derived knowledge yet'; 'Revenue shared with' lists the node-a address (0xF7A9dE49…A1F5)",
    "'overlap check' table has 3 rows: krx-all-2761-ep12 '241,992 memory entries', krx-all-2761-ep6 '241,992 memory entries', pixelplus-087600 '2,170 memory entries'; Relation 'Same subject — contradictory or a newer version'; Status chip 'Newer version available'",
    "Blue notice: 'This knowledge replaces the older version(s): krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600 — same subject, overlapping entries, newer registration.'",
-   "ep12 page: status chip 'Newer version available', meta line ends with '∙ Newer version: krx-all-2761' link; its Origins tab shows 'Derived' → krx-all-2761 and a yellow notice 'A newer version exists: krx-all-2761. Subscribed nodes should update.'",
+   "ep12 page: status chip 'Newer version: krx-all-2761' (warning palette), meta line ends with '∙ Newer version: krx-all-2761' link; its Origins tab shows 'Derived' → krx-all-2761 and a yellow notice 'A newer version exists: krx-all-2761. Subscribed nodes should update.'",
    "The notice link navigates back to the krx-all-2761 page",
    "Live test picker: an info alert names both knowledges — '… overlap on 2,170 memory entries — Pixelplus ticker code (single fact), ticked last, wins.' (the same overlap the detail page's 'overlap check' table reports); the rows show 'Loads 1.' / 'Loads 2.' and the URL is /chat/krx-all-2761,pixelplus-087600 (see AZ-101 / TM-090 for the full multi-knowledge test)"
   ],
@@ -585,10 +590,12 @@
    "Open http://localhost:3402/benchmarks/no-such-topic"
   ],
   "expected": [
-   "Title 'Knowledge on this topic krx-ticker-codes'; stats '4 knowledge · 1 verified · models: Qwen3.8-Flash-Next'",
-   "Explanation 'Knowledge on the same topic is scored with the same question set, so it can be compared. When contents overlap, the newer verified knowledge replaces the older one (\"Newer version available\").' followed by the link 'Back to Explore'",
-   "Sort options are 'Most popular', 'Newest', 'Knowledge size' (no 'Price' here); 'Knowledge size' puts krx-all-2761 first and pixelplus-087600 last",
-   "4 rows rendered with the same row layout as Explore; pagination '1 / 1'",
+   "Title 'Knowledge on this topic krx-ticker-codes'; stats '4 knowledge · 1 current version(s) · 3 question set(s) · models: Qwen3.8-Flash-Next' — 'current version(s)' counts LISTED items; it never says '1 verified' above four cards that all passed verification",
+   "Explanation 'Scores are comparable only within one question set. The list below is grouped by the question set the verifiers used — a different set is a different exam, and those numbers cannot be lined up against each other. When contents overlap, the newer verified knowledge replaces the older one (\"Newer version available\").' followed by the link 'Back to Explore'",
+   "The list is grouped by benchmark_hash, newest set first, with a heading per set naming the form and the question count and showing the hash: 'Question set · template + chat · 2,761 questions' (b6beb92f, krx-all-2761 alone), 'Question set · template · 2,761 questions' (7b126cec, ep12 + ep6), 'Question set · template + natural · 8 questions' (8f1017b4, pixelplus-087600). A group of one says 'The only knowledge scored on this question set — nothing here to compare it with.'; a group of several says 'These {n} were scored on this same question set, so they can be compared with each other.'",
+   "Each card names the form its questions were asked in next to the accuracy ('asked as template + chat'), so two scores from different sets can never be read as one ranking",
+   "Sort options are 'Most popular', 'Newest', 'Knowledge size' (no 'Price' here)",
+   "Sorting by 'Knowledge size' reorders the cards INSIDE each question set (the sets stay newest-first): krx-all-2761, then the two epoch snapshots, then pixelplus-087600; the pager reads '1 / 1'",
    "'Back to Explore' → /explore",
    "Unknown topic: API returns 404 and the page shows '404. Page not found' with 'No knowledge is registered under the topic \"no-such-topic\".' and the link 'Go to Explore →'"
   ],
@@ -638,7 +645,7 @@
  {
   "id": "AZ-019",
   "persona": "Visitor (knowledge user)",
-  "title": "Cancel a slow live test and retry it",
+  "title": "Stop a slow live test — and be told whether it cost a free try",
   "goal": "A visitor is never stuck waiting: an in-flight test can be cancelled and re-sent from the transcript.",
   "preconditions": [
    "No operator session; quota not exhausted",
@@ -647,14 +654,15 @@
   "steps": [
    "Open http://localhost:3402/chat/krx-all-2761 with 'Compare' selected",
    "Click 'Show 18 more', click the chip '종목코드 유라클' and press Enter",
-   "Within the first seconds click 'Cancel' in the row 'Waiting for the answer — you can cancel if it takes too long.'",
+   "Within the first seconds click 'Cancel' (or 'Stop waiting' while the turn is queued) in the row under the transcript",
    "Read the turn in the transcript",
    "Click 'Retry' on that turn and wait for completion"
   ],
   "expected": [
-   "After 'Cancel' the pending bubbles are replaced by a red alert 'Request cancelled.' and a 'Retry' button; the composer is enabled again immediately",
+   "After 'Cancel' the pending bubbles are replaced by a red alert and a 'Retry' button; the composer is enabled again immediately",
+   "The alert says which of the two happened: cancelled while still QUEUED → 'You stopped waiting. The node had not started this test yet, so no free try was used.' (POST /api/chat/cancel answers {cancelled:true, reason:'queued', charged:false} and the node returns 499 without touching the model); cancelled while RUNNING → 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.'",
    "No duplicate turn is created; the cancelled turn is not sent back as history to the model",
-   "'Retry' re-sends the same prompt with the same view/thinking settings, replaces the errored turn in place, and finishes with '✓ Correct' (expected 088340) in 'After loading' — note the node keeps processing the cancelled request, so Retry is queued behind it and both are charged to the quota once they complete",
+   "'Retry' re-sends the same prompt with the same view/thinking settings, replaces the errored turn in place, and finishes with '✓ Correct' (expected 088340) in 'After loading' — a request cancelled while it was already running is still processed and charged, so Retry queues behind it",
    "Leaving the page (e.g. clicking 'Explore knowledge' in the header) during a pending request aborts it without console errors"
   ],
   "priority": "P1",
@@ -663,14 +671,16 @@
   "evidence": [
    "packages/web/src/pages/ChatPage.tsx cancel(), retry(), inflight abort on unmount, mapChatError AbortError → chat.err.cancelled",
    "packages/web/src/components/chat/TurnView.tsx error row with 'Retry'",
-   "packages/web/src/i18n/pages/chat.ts: chat.input.cancel, chat.err.cancelled, chat.turn.retry"
+   "packages/web/src/i18n/pages/chat.ts: chat.input.cancel, chat.err.cancelled, chat.turn.retry",
+   "packages/node/src/chat-queue.ts cancel() (queued = free, running = charged); packages/node/src/api.ts POST /api/chat/cancel",
+   "packages/web/src/i18n/pages/chat.ts: chat.queue.stop_waiting, chat.queue.cancelled, chat.queue.cancelled_late"
   ]
  },
  {
   "id": "AZ-020",
   "persona": "Visitor (knowledge user)",
-  "title": "See the 'another test in progress' banner while someone else is testing",
-  "goal": "A visitor understands why their test is queued when the shared model lock is held by another request.",
+  "title": "See who holds the shared model, and that your own test is queued behind it",
+  "goal": "A visitor whose test is waiting behind the shared model can see that it is queued (not failed), who holds the model and for how long, and can stop waiting.",
   "preconditions": [
    "No operator session; quota not exhausted (both tabs on one browser/IP share the 20/hour quota)",
    "Model server available",
@@ -684,20 +694,24 @@
    "Wait for both tabs to finish; reload tab B after tab A completes"
   ],
   "expected": [
-   "Tab B shows a blue status box: 'Another test is running — try again in a moment.' with 'Another test in progress (node process {pid}) — started {n}s ago' and 'The model loads and unloads one knowledge at a time, so tests run one after another.' (tab A shows the same box while its own request holds the lock)",
-   "GET /api/chat/patches returns a non-null lock {owner:'pid:<node pid>', label:'chat:krx-all-2761', since} while tab A's request holds the runtime lock",
-   "Tab B's request is serialized (queued in-process behind A): it completes after tab A's answer with the correct result; the 'Another test was running so this request could not be handled. Try again in a moment.' error only appears if the lock wait exceeds 20 minutes",
-   "Once tab A finishes, the lock banner disappears from tab B on the next poll (≤ 20 s) and lock is null again"
+   "While tab A's OWN request holds the lock, tab A shows 'Your test has the shared model — started {n}s ago' (D3: it used to show the 'another test is running, try again in a moment' box about itself)",
+   "Tab B shows a blue status box: 'Someone else is testing on the shared model right now.' with 'Another test in progress (chat:krx-all-2761, node process {pid}) — started {n}s ago' and 'The model loads and unloads one knowledge at a time, so tests run one after another.'; the elapsed time ticks every second instead of freezing until the next 20 s poll",
+   "GET /api/chat/patches returns a non-null lock {owner:'pid:<node pid>', label:'chat:krx-all-2761', since, alive:true, stale:false, mine:true} plus `now` (the node clock) and `queue` while tab A's request holds the runtime lock",
+   "Tab B's own pending turn says so in the transcript: 'Queued behind another test — your question has not been lost.', the holder line, a ticking 'waiting {n}s', and a 'Stop waiting' button (GET /api/chat/status?request_id= reports state 'queued' with position 1 within ~1.5 s)",
+   "Tab B's request is serialized (queued in-process behind A): it completes after tab A's answer with the correct result; the 'The shared model stayed busy for too long, so this request gave up waiting.' error only appears if the lock wait exceeds 20 minutes (HTTP 503 + Retry-After, no longer a 500)",
+   "Once tab A finishes, the lock banner disappears from tab B on the next poll (≤ 20 s) and lock is null again",
+   "A lock file left behind by a node that was killed is NOT shown as a live test: lock.alive is false and the picker shows 'A previous test left the shared model marked as busy; the next test clears it automatically.'"
   ],
   "priority": "P1",
   "area": "chat",
-  "automation": "manual",
+  "automation": "e2e",
   "evidence": [
-   "packages/node/src/runtime.ts lockHolder(), acquireLock() (waitMs 20 min), exclusive()/serial()",
-   "packages/node/src/api.ts GET /api/chat/patches (lock), POST /api/chat",
-   "packages/web/src/components/chat/KnowledgePicker.tsx lock alert, useSince()",
-   "packages/web/src/components/chat/util.ts lockOwnerLabel; ChatComposer INITIAL_CHIPS=8 / chat.samples.more",
-   "packages/web/src/i18n/pages/chat.ts: chat.lock.busy, chat.lock.holder, chat.lock.help, chat.time.s, chat.err.busy"
+   "packages/node/src/runtime.ts lockHolder() (alive/stale/mine), queueState(), serial() onEnter, acquireLock()",
+   "packages/node/src/chat-queue.ts ChatQueue (queued → running → gone, per-visitor tickets)",
+   "packages/node/src/api.ts GET /api/chat/patches (lock, now, queue), GET /api/chat/status, POST /api/chat/cancel",
+   "packages/web/src/pages/ChatPage.tsx useChatStatusQuery(1.5 s poll), queue view, cancel()",
+   "packages/web/src/components/chat/TurnView.tsx QueuePending; KnowledgePicker.tsx lock banner variants; util.ts lockKind/useSince/useTicker",
+   "packages/web/src/i18n/pages/chat.ts: chat.lock.busy, chat.lock.holder, chat.lock.mine, chat.lock.stale, chat.lock.help, chat.queue.*, chat.err.busy"
   ]
  },
  {
@@ -898,8 +912,8 @@
    "Picker item: 'Pixelplus ticker code (single fact)', 'node-a/pixelplus-087600', '8 facts', '100% accuracy', '0.1 AIN' + 'AIN = AI Network token (this demo runs a local dev chain)', status chip 'Newer version available', label 'Selected'",
    "Main header shows the same name, the chip 'Newer version available', '8 facts' and the 'Details →' link — testing is not blocked for superseded knowledge",
    "The turn completes: 'After loading' contains 087600 with '✓ Correct' and a short '· loaded in {n}s' (the body is only 3.7 MB); 'Before loading' shows ✓/✗ for the base model",
-   "'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version available'; the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6)",
-   "The link opens the krx-all-2761 detail page (status 'Verified')"
+   "'Details →' opens /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/pixelplus-087600; status chip 'Newer version: krx-all-2761' (warning palette #8a4b00 on #fff3e0); the meta line ends with '∙ Newer version: krx-all-2761' (it may list every newer same-subject version that overlapped this one, e.g. krx-all-2761, krx-all-2761-ep12, krx-all-2761-ep6) (the detail route is code-split, so the chat page stays on screen for a moment after the URL changes — read the chip only once the detail page's H1 is showing, or the picker's own 'Newer version available' chip is what gets measured)",
+   "The link opens the krx-all-2761 detail page (status chip 'For sale')"
   ],
   "priority": "P2",
   "area": "chat",
@@ -998,7 +1012,7 @@
   "expected": [
    "Headers are \"Name\", \"Status\", \"Verification\", \"Sales\", \"Logs\", \"Auto-pay address\", \"Live test\", \"Manage\"",
    "Tooltips explain Verification (\"Several independent verifier nodes actually loaded it into the model…\") and Auto-pay address (\"A person or AI agent requests this address, is quoted a price, pays automatically and downloads. No sign-up.\")",
-   "krx-all-2761 row: sub-line \"krx-all-2761 · Qwen3.8-Flash-Next · 2,761 facts\"; Status chip \"Verified\"; Verification \"executed verification 2/2\" with sub-line \"integrity check 0\"; Sales \"0 · Free\" (the money formatter renders a zero revenue as \"Free\" — flag as a copy issue if judged confusing)",
+   "krx-all-2761 row: sub-line \"krx-all-2761 · Qwen3.8-Flash-Next · 2,761 facts\"; Status chip \"For sale\" (status.LISTED — the listing state; the verification is the column beside it); Verification \"executed verification 2/2\" with sub-line \"integrity check 0\"; Sales \"0 · Free\" (the money formatter renders a zero revenue as \"Free\" — flag as a copy issue if judged confusing)",
    "krx-all-2761-ep6 row: Status chip \"Newer version available\", no spinner",
    "Manage icon navigates to /project/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761; Logs icon to /project/…/krx-all-2761/logs; Live test icon to /chat/krx-all-2761; Auto-pay icon opens http://localhost:3402/x402/patch/krx-all-2761 in a new tab (HTTP 402 payment-required JSON)",
    "The name link navigates to the public page /0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761"
@@ -1061,7 +1075,7 @@
  {
   "id": "AZ-031",
   "persona": "Knowledge creator (operator)",
-  "title": "Publish a draft after the checklist and follow verification until Verified",
+  "title": "Publish a draft after the checklist and follow verification until the knowledge is on sale",
   "goal": "A creator announces knowledge to the network and watches independent verifiers score it on the real model.",
   "preconditions": [
    "Signed in on http://localhost:3402",
@@ -1082,7 +1096,7 @@
    "Note reads \"After publishing, name, price and benchmark are sealed. The file stays only on this node until it is bought.\"",
    "Button reads \"Publishing…\" then green alert \"Published — it is on the public record and verifiers were notified.\"; POST /api/patches/pixelplus-test-1/announce returns 200 with an anchor record",
    "Status chip becomes \"Registered · awaiting verification\", then \"Verifying\" with a spinner once the first attestation arrives (page polls GET /api/patches/pixelplus-test-1 every 5 s); the line reads \"executed 1/2 passed · integrity 0 · 1 result(s)\"",
-   "When two executed attestations have passed the chip reads \"Verified\", the line \"executed 2/2 passed · integrity 0 · 2 result(s)\", a \"Verified on\" date appears and the \"Auto-pay address\" link http://localhost:3402/x402/patch/pixelplus-test-1 becomes active",
+   "When two executed attestations have passed the chip reads \"For sale\" (status.LISTED), the line \"executed 2/2 passed · integrity 0 · 2 result(s)\", a \"Verified on\" date appears and the \"Auto-pay address\" link http://localhost:3402/x402/patch/pixelplus-test-1 becomes active",
    "\"Verification results\" table lists node-b and node-c with Result \"PASS\", How \"executed (vllm:Qwen3.8-Flash-Next)\" and a Deposit in AIN",
    "Fields under \"Description & price\" are disabled with the note \"Published knowledge is fixed on the public record — these fields can no longer change.\"; the checklist and publish button are gone"
   ],
@@ -1823,7 +1837,7 @@
    "Run `$A ledger ls --kind attest --limit 3`"
   ],
   "expected": [
-   "Step 1 prints `✓ draft created: o08-pixel-copy  (2,992 rows, sha256 …)` and `✓ announced o08-pixel-copy → ledger record <hash> (verifiers will now attest; quorum lists it)`; `$A logs --kind publish --limit 2` shows `announced o08-pixel-copy (conflicts: 4)`",
+   "Step 1 prints `✓ draft created: o08-pixel-copy  (2,992 rows, sha256 …)` and `✓ announced o08-pixel-copy → ledger record <hash> (verifiers will now attest; quorum lists it)`; `$A logs --kind publish --limit 2` shows `announced o08-pixel-copy (conflicts: N)`. N is every knowledge on this node whose address set overlaps the new body — 4 on a node holding only the demo bodies, and one more for each pixel copy earlier runs announced. The pre-check runs inside the node and counts private drafts (taught lessons) too, so it equals what GET /api/patches/:id/conflicts reports TO THE OPERATOR; a visitor is shown fewer, because private drafts are redacted from public overlap answers.",
    "Step 2 returns `HTTP/1.1 423 Locked` with body `{\"error\":\"patch not listed yet (verification 0/2)\"}` (or 1/2 if one verifier already finished)",
    "Step 3 shows on node-b, in order: `verifier` lines `verifying o08-pixel-copy ([o08 test] Pixelplus ticker copy)` and `benchmark o08-pixel-copy: 1/1 restarts=0`, then a `verify` line `attested o08-pixel-copy: PASS (vllm:Qwen3.8-Flash-Next)`; node-c logs the same (they run sequentially because they share the runtime lock)",
    "Step 4: status goes ANNOUNCED → VERIFYING (after the first attestation) → LISTED with `verification 2/2 passed ✓ quorum`; the attestations table has exactly two rows, verifiers node-b and node-c, `PASS  free_generation=1/1 pre_apply=…  vllm:Qwen3.8-Flash-Next`; node-a (the author) never appears as a verifier",
@@ -1910,9 +1924,9 @@
    "Step 3 prints a `before (base model)  <n> ms` block, an `after (pixelplus-087600 loaded)  <n> ms · loaded in <n> ms` block whose answer contains 087600, and the footer `correct ✓ (benchmark)  model Qwen3.8-Flash-Next`; no `free live tests left` text (operator is unlimited)",
    "Step 4: `--mode base` prints only the `before (base model)` block and no correct/wrong marker; `--mode patched` prints only the `after (…)` block plus the marker (`wrong ✗ (benchmark)` would appear on a miss; `(no benchmark sample for this question)` for a free question)",
    "Step 5 shows dimmed reasoning lines prefixed `┆` inside the answer blocks before the final content",
-   "Step 6 prints `['applied_ms', 'base', 'benchmark_hit', 'mode', 'model', 'patch_id', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']` and nothing else on stdout",
+   "Step 6 prints `['applied', 'applied_ms', 'base', 'benchmark_hit', 'benchmark_hits', 'history', 'mode', 'model', 'patch_id', 'patch_ids', 'patched', 'quota_limit', 'remaining_quota', 'was_applied']` and nothing else on stdout — `history` is `{base, patched, split}`, how many messages each column was actually sent (split:false here, a single-turn call)",
    "Step 7 (anonymous) ends with `free live tests left this hour: 19` (or one less per prior anonymous call from this IP in the hour)",
-   "Step 8: banner `live test of krx-all-2761 · mode patched · /quit to exit, /help for commands`, prompt `you> `; the answer block `after (krx-all-2761 loaded)` contains 005930 with `correct ✓ (benchmark)`; `/mode compare` → `mode → compare`; `/help` lists `/mode base|patched|compare  (now: compare)`, `/reset   forget the transcript`, `/quit    exit`; `/reset` → `transcript cleared`; `/quit` → `bye — 1 turn(s)`; exit 0",
+   "Step 8: banner `live test of krx-all-2761 · mode patched · /quit to exit, /help for commands`, prompt `you> ` (in `compare` mode a second dim line says 'follow-ups: each column replays only its own earlier answers — the base model is never shown the patched one', because the REPL keeps one transcript per column); the answer block `after (krx-all-2761 loaded)` contains 005930 with `correct ✓ (benchmark)`; `/mode compare` → `mode → compare`; `/help` lists `/mode base|patched|compare  (now: compare)`, `/reset   forget the transcript`, `/quit    exit`; `/reset` → `transcript cleared`; `/quit` → `bye — 1 turn(s)`; exit 0",
    "Step 9 works non-interactively (no prompt echo) and ends with `bye — 1 turn(s)`; after every call the shared table is restored (`curl -s http://localhost:3402/api/runtime` shows `\"applied\":[]`)"
   ],
   "priority": "P0",
@@ -1951,7 +1965,7 @@
    "Run `curl -si $N/api/info | grep -i access-control-allow-origin`"
   ],
   "expected": [
-   "Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 50 True True`",
+   "Step 1 prints `3.1.0 Ainize node API [{'url': 'http://localhost:3402'}] 76 True True` — 76 documented paths, 53 marketplace + 23 teach-mode. The two D3 live-test queue endpoints (/api/chat/status, /api/chat/cancel) are part of the 53; a build without them documents 74.",
    "Step 2 prints `['cli', 'node', 'openapi'] Use knowledge (one line)`",
    "Step 3 prints `4 pixelplus-087600 False ['Qwen3.8-Flash-Next'] ['krx-ticker-codes']` (attestation signatures are stripped from the catalog)",
    "Step 4: both return 400 with body `{\"error\":\"invalid request\",\"issues\":[…]}`",
@@ -2271,7 +2285,7 @@
    "Step 2: attest rows read `krx-all-2761 · PASS · vllm:Qwen3.8-Flash-Next` (one per verifier per patch); supersede rows read `krx-all-2761 supersedes pixelplus-087600 (2170 rows)`, `krx-all-2761 supersedes krx-all-2761-ep6 (241992 rows)`, `krx-all-2761 supersedes krx-all-2761-ep12 (241992 rows)`",
    "Step 3 prints `✓ ledger valid — <n> record(s) checked (hashes, signatures, imported chain linkage)`; the API returns `{\"valid\":true,\"checked\":<n>,\"errors\":[]}` with the same n",
    "Step 4 prints `lineage (child → parent edges, royalties flow upward)` and the tree `krx-all-2761-ep6 [Qwen3.8-Flash-Next · krx-ticker-codes] SUPERSEDED` → `└─ krx-all-2761-ep12 … SUPERSEDED` → (indented one level further) `└─ krx-all-2761 … LISTED  supersedes krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600`, plus a separate root `pixelplus-087600 … SUPERSEDED`",
-   "Step 5 prints `✓ exported <n> record(s) to /tmp/ainize-ledger.jsonl`; `wc -l` equals n; each line is one JSON record whose keys are `author, body, hash, kind, parents, sig, ts` (sorted(r)[:6] → ['author','body','hash','kind','parents','sig']), oldest first",
+   "Step 5 prints `✓ exported <n> record(s) to /tmp/ainize-ledger.jsonl` where n is the node's whole `records` count — the CLI asks how big the ledger is and requests exactly that many (it used to ask for a fixed 1,000 and printed 'exported 1000 record(s)' once the chain grew past it). Past the node's per-request maximum (5,000) it says so instead: `exported the most recent 5000 of <n> record(s) … cannot page further back`. `wc -l` equals n; each line is one JSON record whose keys are `author, body, hash, kind, parents, sig, ts` (sorted(r)[:6] → ['author','body','hash','kind','parents','sig']), oldest first",
    "Step 6: node-b reports the same `records` count and network `ain:local` — one shared chain, no divergence",
    "Step 7 prints the header and `ledger is empty` (unknown kind matches nothing, no error)"
   ],
@@ -2744,11 +2758,11 @@
   "title": "Reject a replayed X-PAYMENT (payment already used) and ignore stale nonces in the ain-transfer scheme",
   "goal": "A tx hash that already bought a manifest cannot be replayed to obtain another manifest or a second download token.",
   "preconditions": [
-   "At least one settle record with scheme 'ain-transfer' exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts",
+   "At least one settle record with scheme 'ain-transfer' AND seller = node-a exists (from the end-to-end agent run or the one-line `use` scenario); take patch_id, tx_hash and buyer from step 1 — never from older notes, the chain is re-seeded on fresh restarts. The settle ledger is shared by every node in the cluster, so the NEWEST ain-transfer record is not necessarily node-a's: replaying a sale another node made is a different scenario (node-a answers 409 'not sold here' for a patch it does not sell)",
    "Seller node http://localhost:3402 up; node-a address = GET /api/info node.address (currently 0xF7A9dE49902C95661AC6556D631e2B60a081A1F5)"
   ],
   "steps": [
-   "Fetch an existing settlement: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1' | python3 -c 'import json,sys;b=json.load(sys.stdin)[\"records\"][0][\"body\"];print(b[\"patch_id\"],b[\"tx_hash\"],b[\"buyer\"])'`",
+   "Fetch an existing settlement NODE-A SOLD: `curl -s 'http://localhost:3402/api/ledger?kind=settle&limit=1000' | python3 -c 'import json,sys;A=\"0xF7A9dE49902C95661AC6556D631e2B60a081A1F5\";b=next(r[\"body\"] for r in json.load(sys.stdin)[\"records\"] if r[\"body\"][\"scheme\"]==\"ain-transfer\" and r[\"body\"][\"seller\"]==A);print(b[\"patch_id\"],b[\"tx_hash\"],b[\"buyer\"])'`",
    "Build a replay payload with that tx hash: `R=$(printf '{\"scheme\":\"ain-transfer\",\"network\":\"ain:local\",\"txHash\":\"<tx_hash>\",\"from\":\"<buyer>\",\"to\":\"0xF7A9dE49902C95661AC6556D631e2B60a081A1F5\",\"amount\":\"25\",\"nonce\":\"000000000000000000000000\"}' | base64 -w0)`",
    "`curl -s -i -H \"x-payment: $R\" http://localhost:3402/x402/patch/<patch_id>` (same patch the tx paid for)",
    "`curl -s -i -H \"x-payment: $R\" http://localhost:3402/x402/patch/krx-all-2761` (different patch, same tx; use krx-all-2761-ep12 if the tx already belonged to krx-all-2761)",
@@ -2990,7 +3004,7 @@
    "Step 1: HTTP 200 JSON with patch_id='krx-all-2761', mode='compare', base.content (pre-patch answer), patched.content containing '087600', benchmark_hit=true (prompt matches a benchmark sample; expected 087600), applied_ms > 0, was_applied=false, model='Qwen3.8-Flash-Next', quota_limit=20 and remaining_quota one less than before",
    "Step 2: newest event has kind='usage', patch_id='krx-all-2761', message 'live test krx-all-2761 (compare) by ip:<addr>: patched hit=true', data {visitor:'ip:<addr>', mode:'compare', hit:true, base_ms, patched_ms, applied_ms}; the same event appears under /api/patches/krx-all-2761/events",
    "Step 3: mode 'base' returns patched=null and benchmark_hit=null; the usage event message ends with 'base only' (no hit is metered when no patched answer was served); a free-form question in compare mode yields hit=null ('not auto-scored')",
-   "Step 4: when the 20-per-hour window is exhausted the request answers HTTP 429 {\"error\":\"free live-test quota exhausted for this hour — buy the patch or run your own node\"} and no usage event is written for it (the quota is checked before the runtime runs)",
+   "Step 4: when the 20-per-hour window is exhausted the request answers HTTP 429 {\"error\":\"free live-test quota exhausted for this hour — buy the patch or run your own node\",\"quota_reset\":<epoch ms>} — quota_reset is the measured end of this visitor's window (window start + 3,600,000 ms), which is what the live-test page prints in place of a Retry button that could do nothing — and no usage event is written for it (the quota is checked before the runtime runs)",
    "Step 5: HTTP 400 {\"error\":\"invalid request\",\"issues\":[…]} (messages must have 1–24 items); no usage event",
    "`patch_id` stays valid for a single knowledge; POST /api/chat also accepts `patch_ids` (1–3 ids, exactly one of the two fields) and then returns `patch_ids`, `applied[]` and one usage event per knowledge — see AZ-101"
   ],
@@ -3126,14 +3140,16 @@
    "Read the page title, sort button, filter labels, count line, the first list item's status chip and meta line, and the header nav",
    "Reload the page; then open http://localhost:3402/ (landing), http://localhost:3402/chat/krx-all-2761 and http://localhost:3402/ledger",
    "In DevTools console run: localStorage.getItem('ainize.locale')",
-   "On /chat send the chip '종목코드 픽셀플러스' and read the bubble meta; then click the header 'English' button and reload"
+   "On /chat send the chip '종목코드 픽셀플러스' and read the bubble meta; then click the header 'English' button and reload",
+   "With the UI in Korean, read the browser tab title and document.documentElement.lang on /explore, /, /chat/krx-all-2761, /ledger and an unknown URL; on the Korean landing check that the h1 and both hero pills actually render glyphs"
   ],
   "expected": [
-   "Step 1: title 'Explore knowledge', sort 'Most popular', filters 'Model' / 'Topic' / 'All', search placeholder 'Search by name or description', count '4 knowledge', nav 'Explore knowledge · Live test · Network · Public record · Docs & API · Sign in', language button '한국어' (it names the other language)",
-   "Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '전체', placeholder '지식 이름·설명 검색', count '지식 4개', chips '검증 완료' / '최신 버전 있음', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear",
-   "Step 4: Korean persists after reload and on every route (landing hero '지식을 AI에 끼우다', chat title '라이브 테스트', ledger title '공개 기록'); the landing page's dark nav has its own toggle that switches back too",
+   "Step 1: title 'Explore knowledge', sort 'Most popular', filters 'Model' / 'Topic' / 'Show' / 'All', search placeholder 'Search by name or description', count '1 knowledge' (Explore opens on 'Current only'; 'All versions' shows all 4), nav 'Explore knowledge · Live test · Network · Public record · Docs & API · Sign in', language button '한국어' (it names the other language); document.title is 'Explore knowledge · Ainize' and <html lang> is 'en'",
+   "Step 3: title '지식 둘러보기', sort '인기순', filters '대상 모델' / '주제' / '표시' / '전체', placeholder '지식 이름·설명 검색', count '지식 1개' (and '지식 4개' with '모든 버전'), chips '검증 완료' (검증 배지) and '판매 중' (목록 상태, status.LISTED) and, with '모든 버전' on, '최신 버전: krx-all-2761', meta '만든 사람: node-a · 대상 모델: Qwen3.8-Flash-Next · 주제: krx-ticker-codes', nav '지식 둘러보기 · 라이브 테스트 · 네트워크 · 공개 기록 · 문서·API · 로그인', button now 'English'; document.title is '지식 둘러보기 · Ainize' and <html lang> is 'ko' (both follow the toggle with no reload); identifiers, knowledge names/descriptions (server data), model name, 'AI Network' badge and 'AIN' stay untranslated by design; no raw keys like 'explore.title' appear",
+   "Step 4: Korean persists after reload and on every route (landing hero '지식을 AI에 끼우다', chat title '라이브 테스트', ledger title '공개 기록'); the landing page's dark nav has its own toggle that switches back too; each route names itself in the tab ('지식을 AI에 끼우다 · Ainize', '라이브 테스트 · Ainize', '공개 기록 · Ainize', 'KRX ticker codes for 2,761 listed companies (final) · Ainize', '404. 페이지를 찾을 수 없습니다 · Ainize')",
    "Step 5: returns 'ko'",
-   "Step 6: bubble meta uses Korean units ('응답 536ms', '넣는 데 2.9초', '정답'); after 'English' + reload the UI is English again and localStorage holds 'en'"
+   "Step 6: bubble meta uses Korean units ('응답 536ms', '넣는 데 2.9초', '정답'); after 'English' + reload the UI is English again and localStorage holds 'en'",
+   "The Korean landing page renders every heading and both hero CTA labels even on a host with no system Hangul font (fc-list :lang=ko empty): theme.font.display and theme.font.mono both end in 'Apple SD Gothic Neo', 'Noto Sans KR', the webfont index.html already downloads — h1 '지식을 AI에 끼우다' has a non-zero width and its computed font-family contains 'Noto Sans KR'"
   ],
   "priority": "P0",
   "area": "i18n",
@@ -3267,31 +3283,32 @@
    "Note the footer text under the composer (e.g. 'Free tries are limited per hour. No sign-in needed.' or 'Free trial N/20 left this hour')",
    "Select 'Compare', click the chip '종목코드 픽셀플러스', press Enter and observe the UI during the request",
    "After the answer arrives, read the meta line of the 'After loading' bubble",
-   "Send the same prompt again and click 'Cancel' in the strip above the composer within 2 s",
+   "Send the same prompt again and click 'Cancel' / 'Stop waiting' in the strip above the composer within 2 s",
    "Read the footer quota text, click 'Retry' under the cancelled turn and read the footer again after it completes"
   ],
   "expected": [
    "Step 2: user bubble 'You' appears; both bubbles show three pulsing dots (aria-label 'Generating…') and the note 'Includes loading and unloading — this can take tens of seconds.'; the Send button shows a spinner with 'Waiting for the answer…'; a strip (role=status) reads 'Waiting for the answer — you can cancel if it takes too long.' with a 'Cancel' button; the 'View' radios, 'Enable thinking' and the textarea are disabled; the spinner does not block the picker",
    "Step 3: the patched bubble header shows 'After loading · reply NNNms · loaded in N.Ns' (applied_ms around 2-4 s for this file) and '✓ Correct'; the base bubble shows 'Before loading · reply N.Ns'",
-   "Step 4: the turn switches to a red alert 'Request cancelled.' with a 'Retry' button; the composer unlocks immediately",
-   "Step 5: the quota text is unchanged at cancel time (no response arrived), but the node keeps processing the aborted request and consumes the try when it finishes; Retry is queued behind it under the runtime lock and, once it completes, the footer has dropped by two (e.g. from 19/20 to 17/20) — a cancelled request is still charged once it completes on the node (record as a UX finding if the team expects cancelled tries to be free)"
+   "Step 4: the turn switches to a red alert naming which of the two things happened — 'You stopped waiting. The node had not started this test yet, so no free try was used.' while it was still queued, or 'You stopped waiting, but the test had already started on the shared model, so it still counts as one free try.' once the node had taken the shared lock — with a 'Retry' button; the composer unlocks immediately. The pre-D3 wording 'Request cancelled.' must no longer appear: a wait is not a rejection, and the visitor is told whether it cost them anything",
+   "Step 5: the quota text is unchanged at cancel time either way (no response arrived). What the retry then costs follows the message, and which message appears is a genuine race against the shared lock: cancelled while still QUEUED nothing was ever sent to the model, so only the retry is charged and the footer drops by one; cancelled once it was already RUNNING the node finishes the work and charges it, so cancel + retry drop the footer by two (e.g. 19/20 to 17/20). The 'a cancelled try is always charged' finding this scenario used to record is fixed for the queued case (POST /api/chat answers HTTP 499 and consumes nothing)"
   ],
   "priority": "P1",
   "area": "perf",
   "automation": "e2e",
   "evidence": [
-   "packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote",
+   "packages/web/src/components/chat/TurnView.tsx pending Dots / PendingNote / QueuePending",
    "packages/web/src/pages/ChatPage.tsx CancelRow, cancel(), inflight abort, quota handling",
    "packages/web/src/components/chat/ChatComposer.tsx loading / locked",
-   "packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed after market.chat resolves regardless of client abort)",
-   "packages/web/src/i18n/pages/chat.ts chat.bubble.compare_pending, chat.input.sending, chat.input.in_flight, chat.err.cancelled, chat.bubble.applied",
+   "packages/node/src/chat-queue.ts ChatQueue.cancel() (free while queued, honest once running) + ChatCancelledError (HTTP 499)",
+   "packages/node/src/api.ts POST /api/chat (quota checked without consuming, consumed only after market.chat resolves), POST /api/chat/cancel",
+   "packages/web/src/i18n/pages/chat.ts chat.queue.cancelled, chat.queue.cancelled_late, chat.bubble.compare_pending, chat.input.sending, chat.bubble.applied",
    "packages/web/src/utils/format.ts bytes()"
   ]
  },
  {
   "id": "AZ-092",
   "persona": "Cross-cutting (errors, accessibility, i18n, performance)",
-  "title": "Keep every page usable at 360 px width without horizontal page scrolling",
+  "title": "Keep every page usable at 360 px width without horizontal page scrolling, and the header free of collisions at desktop widths",
   "goal": "A visitor on a small phone can reach all navigation items, read lists and scroll wide tables inside their container.",
   "preconditions": [
    "Demo cluster running",
@@ -3304,7 +3321,8 @@
    "Open http://localhost:3402/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761, check the stats strip, then open the tab 'Verification' and swipe the table sideways",
    "Open http://localhost:3402/chat/krx-all-2761, send the chip '종목코드 픽셀플러스'",
    "Open http://localhost:3402/ledger and scroll to 'Origin → derivative map'",
-   "On each page run in the console: document.documentElement.scrollWidth <= window.innerWidth"
+   "On each page run in the console: document.documentElement.scrollWidth <= window.innerWidth",
+   "Set the viewport to 1440, 1280, 1024 and 960 px on /explore and measure the 'AI Network' ledger badge against the first nav link"
   ],
   "expected": [
    "Step 1: the landing nav wraps onto a second line (flex-wrap) and all four controls are tappable",
@@ -3312,7 +3330,8 @@
    "Step 3: the seven stats ('Purchases', 'accuracy', 'Memory entries', 'Facts', 'Size', 'Price', 'Revenue') wrap; the verification table scrolls horizontally inside its wrapper while the page itself does not",
    "Step 4: the picker stacks above the transcript (single column below 960 px) and 'Before loading' / 'After loading' bubbles stack vertically below 600 px; the textarea and 'Send' stay on one row",
    "Step 5: the SVG map scrolls inside its box (overflow-x auto) and the legend wraps",
-   "Step 6: true on every page (no body-level horizontal scroll)"
+   "Step 6: true on every page (no body-level horizontal scroll)",
+   "Step 7: with the webfonts in place, at 1440, 1280, 1024 and 960 px the 'AI Network' ledger badge and 'Explore knowledge' do not intersect, the logo and the nav share one row and the bar is 81 px tall, and the nav's items fit the width left beside the logo (Home is flex: 0 0 auto, Nav flex: 1 1 auto and the nav items carry 10 px of horizontal padding). While the fallback face is still showing, or below ~900 px, the bar wraps onto a second row instead of overlapping."
   ],
   "priority": "P1",
   "area": "a11y",
@@ -3387,7 +3406,7 @@
   "expected": [
    "Step 1: logo link name 'Ainize home' (img alt 'Ainize'); language button aria-label 'language' with visible text '한국어'; sort button aria-haspopup='listbox' with role=listbox options carrying aria-selected; operator button 'node-a ▾' has aria-haspopup='menu' and aria-expanded toggling, popup role=menu with role=menuitem 'Account settings', 'Files & changes', 'Log out'",
    "Step 2: <aside aria-label='Knowledge to test'>; items are buttons with aria-pressed; radiogroup aria-label 'View' with role=radio aria-checked; textarea aria-label 'Type a question and press Enter (Shift+Enter for a new line)'; the transcript <section> has aria-live='polite'; the spinner has role=status aria-label 'loading'; the error alert has role=alert and reads 'Could not reach the node. Check your connection and try again.'; the runtime/lock/quota boxes use role=status",
-   "Step 3: role=tablist with five role=tab ('Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History') exposing aria-selected; the status chip 'Verified' has a title tooltip 'Several independent verifier nodes actually loaded it into the model and checked accuracy and side effects.' (note: tabs have no arrow-key navigation - record as P2 gap)",
+   "Step 3: role=tablist with five role=tab ('Overview', 'Verification', 'Origins & derivatives', 'Buy', 'History') exposing aria-selected; the status chip 'For sale' has a title tooltip 'On sale as the current version for this topic. Whether it passed verification is what the \"Verified\" badge beside it says.' (note: tabs have no arrow-key navigation - record as P2 gap)",
    "Step 4: svg role=img aria-label 'knowledge origin and derivative map'; pagination arrows have aria-label 'previous' / 'next' and text buttons 'First' / 'Last'",
    "Step 5: no critical axe violations; document any 'button-name' or 'color-contrast' findings with element and page"
   ],
@@ -3414,7 +3433,7 @@
    "node-a address = GET /api/info node.address (currently 0xF7A9dE49902C95661AC6556D631e2B60a081A1F5); the ledger record count is a live value (GET /api/ledger info.records)"
   ],
   "steps": [
-   "Open http://localhost:3402/explore and read the meta lines and price column of 'krx-all-2761' and 'pixelplus-087600'",
+   "Open http://localhost:3402/explore, switch 'Show' to 'All versions' and read the meta lines and price column of 'krx-all-2761' and 'pixelplus-087600'",
    "Open http://localhost:3402/0xF7A9dE49902C95661AC6556D631e2B60a081A1F5/krx-all-2761 and read the stats strip and the 'Overview' description line",
    "Open the 'Buy' tab and read 'Price'",
    "Open http://localhost:3402/chat/krx-all-2761 and read the picker item and the header facts",
@@ -3423,7 +3442,7 @@
   ],
   "expected": [
    "Step 1: krx-all-2761 shows '2,761 facts · 270,053 memory entries · Size 331.7 MB · 0 downloads' with price '25 AIN' and note 'AIN = AI Network token (this demo runs a local dev chain)'; pixelplus-087600 shows '8 facts · 2,992 memory entries · Size 3.7 MB · <n> downloads' and price '0.1 AIN' (after exactly one purchase the text reads the ungrammatical '1 downloads' - record as P2 copy defect)",
-   "Step 2: stats read '0 Purchases', '100% accuracy' with note '26/26', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% (26/26) — over 2,761 benchmark questions'",
+   "Step 2: stats read '0 Purchases', the accuracy stat as the measured pair '1/8 → 26/26' (score.pre_apply → score.free_generation) with the note '100% after loading', '270,053 Memory entries', '2,761 Facts', '331.7 MB Size', '25 AIN Price'; 'Revenue' shows 'Free' for a zero revenue (priceLabel maps 0 to 'Free') - record as defect, expected '0 AIN'; description line 'Accuracy 100% on 26 of 2,761 questions checked by verifiers'",
    "Step 3: 'Price' reads '25 AIN · pay once per download' with the AIN note",
    "Step 4: picker item shows '2,761 facts', '100% accuracy', '25 AIN'; header shows '2,761 facts'",
    "Step 5: 'Records' shows the live count (e.g. '20') and 'Blocks recorded' a thousands-separated block height such as '2,501'",
@@ -3492,7 +3511,7 @@
   ],
   "expected": [
    "Step 1: count line '0 knowledge' and a dashed box 'No knowledge matches. Try another model, topic or search term.'; no spinner; pagination hidden",
-   "Step 2: list returns with '4 knowledge' and the pagination shows '1 / 1'",
+   "Step 2: the list returns with '1 knowledge' (Explore's default 'Current only') and the pagination shows '1 / 1'; 'All versions' brings it to '4 knowledge'",
    "Step 3: the table is replaced by 'No \"Re-verification request\" records yet.'; switching back to 'All records' restores all rows (the live record count)",
    "Step 4: the 'Knowledge tracks' table lists the two seeded tracks (so 'No tracks yet.' is not shown); after 'Find nodes' a warning 'No track matches jurisdiction=KR.' appears (valid until a law/KR track is created in the branch scenario)",
    "Step 5: the empty transcript reads 'No questions yet' followed by 'Click a sample question below or type your own. You get two answers side by side: before and after loading the knowledge.'"
@@ -3557,12 +3576,12 @@
    "Click the box 'krx-all-2761' in the map",
    "On the detail page click the tab 'History', scroll down, then press the browser Back button",
    "Note the scroll position and the kind dropdown; press Forward",
-   "Repeat from http://localhost:3402/explore: scroll to the last item 'Pixelplus ticker code (single fact)' (pixelplus-087600 under the default 'Most popular' sort), open it, press Back"
+   "Repeat from http://localhost:3402/explore with 'Show' set to 'All versions': scroll to the last item 'Pixelplus ticker code (single fact)' (pixelplus-087600 under the default 'Most popular' sort), open it, press Back"
   ],
   "expected": [
    "Step 2: navigates to /<node-a address>/krx-all-2761 scrolled to the top (ScrollToTop runs on every pathname change)",
    "Step 3-4: /ledger reopens scrolled to the top with the dropdown reset to 'All records' (page state is component-local and ScrollToTop overrides browser restoration); Forward reopens the detail on the 'Overview' tab, not 'History' - record whether the team accepts this or wants position/filter restoration (P2 UX finding); no blank page, no duplicate fetch errors",
-   "Step 5: /explore reopens at the top with sort 'Most popular' and page '1 / 1'; the list renders the same 4 items without a full spinner if the RTK cache is warm (only '· updating…' may flash)"
+   "Step 5: /explore reopens at the top with sort 'Most popular', 'Show' back at its 'Current only' default and page '1 / 1'; with 'All versions' re-selected the list renders the same 4 items without a full spinner if the RTK cache is warm (only '· updating…' may flash)"
   ],
   "priority": "P2",
   "area": "ledger",
@@ -3843,7 +3862,8 @@
   ],
   "expected": [
    "Card 'Your lesson: …' with data-status moving QUEUED → PREFLIGHT → TRAINING → EXPORTED → CHECKING → READY (stub: seconds)",
-   "READY: 'It learned it — 2 of 2 answers correct in the live model.', 'Unrelated questions unchanged: 12/12', 'Other phrasing answered correctly: 1/1', 'Unsaved lessons are deleted after 7 days.'; buttons Try it now / Publish / Keep it private; no 'publish gated' notice",
+   "READY on this offline stub: 'It learned it — 2 of 2 answers correct.' (no 'in the live model' claim — nothing was measured) with the notice 'Demo node — these checks were simulated, not measured in a live model.', 'Unrelated questions unchanged: 12/12', 'Other phrasing answered correctly: 1/1', 'Unsaved lessons are deleted after 7 days.'; buttons Try it now / Publish / Keep it private; no 'publish gated' notice",
+   "On a node whose trainer is a stub but whose model server is live (:3402, simulated_checks false) the same card says 'It learned it — 2 of 2 answers correct.' plus 'Demo node — no real training happened; the checks were measured in the live model.' — the fake TRAINING and the simulated CHECKS are two different admissions and neither is told as the other; only a gradient node gets the bare '… correct in the live model.' with no demo notice",
    "Anonymous body is {id, status, position?, eta_s?} only; teach events include 'training started (stub)' and 'READY: …' with data.job_id"
   ],
   "priority": "P0",
@@ -7595,6 +7615,141 @@
    "packages/node/src/teach.ts:405-415 (policy limits, declaration_rows)",
    "packages/web/src/pages/TeachUploadPage.tsx:60-64 (maxBytes/maxMb from policy), packages/web/src/pages/TeachDatasetPage.tsx:205 (over-cap-note), :216-220 (cap-banner)",
    "packages/web/src/components/chat/PublishSheet.tsx:51-53 + :124-127 (declarationRows → consent-declaration)"
+  ]
+ },
+ {
+  "id": "AZ-223",
+  "persona": "Visitor (knowledge user)",
+  "title": "A runaway answer is cut off with a plain explanation, not shown as an endless loop",
+  "goal": "When the model gets stuck repeating itself, the visitor sees the useful part of the answer, one sentence explaining what happened, and can still open the raw text.",
+  "preconditions": [
+   "Model server available; krx-all-2761 testable on the node",
+   "No operator session needed"
+  ],
+  "steps": [
+   "Open http://localhost:3402/chat/krx-all-2761, choose 'After only'",
+   "Send the one-character prompt '드' — with the shipped stop sequences the chat path answers normally; confirm the answer does NOT run away and is NOT auto-scored",
+   "As the operator, POST /api/runtime/complete {\"prompt\":\"드\",\"max_tokens\":200} — the completion path still degenerates and is where the guard is observable end to end",
+   "Repeat that call with {\"raw\": true} to see the same request without the stop sequences and without the guard",
+   "Back in the UI, on a bubble that carries the note, click 'Show the raw answer (all {n} characters)'"
+  ],
+  "expected": [
+   "The answer is cut at the point the repetition starts; underneath it a yellow note reads 'The model started repeating itself, so the answer is cut off here — that usually means the question is outside what this knowledge covers.' with 'showing {shown} of {raw} characters'",
+   "'Show the raw answer' reveals the model's full output unchanged — nothing is ever deleted, only truncated",
+   "POST /api/chat returns patched.truncated = 'repetition' with shown_chars < raw_chars and raw_content carrying the full text",
+   "On /api/runtime/complete the guarded call returns truncated='repetition' while the same call with raw:true returns the whole loop, unflagged",
+   "The chat path is the quiet one: over PROBE A's 73 prompts re-run through this node, 0 of 73 chat answers ran away while the completion path caught and cut 8. '드' answering normally in the UI is the expected result of this scenario, not a failure of it",
+   "A short correct answer (e.g. '087600') is never flagged: truncated is null and no note is shown",
+   "Nor is any other complete short answer: a big round number ('1000000000000000'), a 60-dash rule, a dot leader, a markdown table separator row, or a run of ㅋ the visitor asked for",
+   "A markdown table, CSV, JSON dump or numbered list that runs out of budget is labelled 'The answer stopped at the length limit before it was finished.' (truncated = 'length', shown_chars = raw_chars) — never 'repetition', and never shortened",
+   "The prompt is no longer auto-scored against an unrelated benchmark sample: '드' shows 'Free question — not auto-scored' instead of '✗ Wrong'"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/degenerate.ts detectDegenerate()/guardAnswer(); packages/node/test/degenerate.test.ts + fixtures/degenerate-corpus.json (293 real answers) + fixtures/degenerate-legit-adversarial.json (57 legitimate answers written to trip the guard)",
+   "packages/node/src/runtime.ts chat()/completeDetailed() sampling + guard; DEFAULT_CHAT_SAMPLING stop ['\\n\\n\\n\\n','<think>']",
+   "packages/web/src/components/chat/TurnView.tsx Truncation; packages/web/src/i18n/pages/chat.ts chat.trunc.*"
+  ]
+ },
+ {
+  "id": "AZ-224",
+  "persona": "Visitor (knowledge user)",
+  "title": "A sample question is sent exactly as the knowledge was trained, trailing space included",
+  "goal": "Clicking a sample chip asks the model the prompt the knowledge was actually trained on — the marketplace never silently rewrites it.",
+  "preconditions": [
+   "Model server available; krx-all-2761 testable on the node"
+  ],
+  "steps": [
+   "Open http://localhost:3402/chat/krx-all-2761",
+   "Click the chip '종목코드 삼성전자' and look at the input box",
+   "Send it"
+  ],
+  "expected": [
+   "The chip label stays trimmed ('종목코드 삼성전자') and carries a small ␣ marker whose tooltip reads 'The trailing space is part of the trained prompt — clicking inserts it, and it is sent, exactly as trained.'",
+   "The textarea contains '종목코드 삼성전자 ' with the trailing space, and POST /api/chat sends exactly that string",
+   "The turn is auto-scored against its own benchmark sample ('✓ Correct', expected 005930)",
+   "Sample chips of a knowledge whose benchmark format has no chat form show 'This knowledge was trained and verified in the completion form … the answer can differ from its verified score.' above the transcript (krx-all-2761-ep6 / -ep12)",
+   "Benchmark verification is unaffected: it still sends BenchmarkSpec.samples verbatim through /v1/completions with no stop sequences and no guard"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/components/chat/ChatComposer.tsx insert()/submit() (no trim), ␣ marker with aria-label unchanged",
+   "packages/node/src/market.ts matchBenchmarkSample() (trimmed equality first, containment only ≥ 8 chars); packages/web/src/components/chat/util.ts matchSample mirror",
+   "packages/node/src/runtime.ts verify() — sampling: null on every generation"
+  ]
+ },
+ {
+  "id": "AZ-225",
+  "persona": "Visitor (knowledge user)",
+  "title": "A question asked while another process holds the shared model is queued, not lost, and giving up costs nothing",
+  "goal": "When someone else — another visitor, a verifier, another node on the same machine — is using the shared model, the visitor is told they are in line, who is ahead of them and for how long, and can stop waiting without spending a free try.",
+  "preconditions": [
+   "Model server available; krx-all-2761 testable on node-a",
+   "A SECOND process holds the cross-process runtime lease of the same patch mailbox (<runtime.patchDir>/.ainize-runtime.lock with a live holder pid) — the e2e helper holdRuntimeLock() takes it exactly the way a node does"
+  ],
+  "steps": [
+   "Run one live test on http://localhost:3402/chat/krx-all-2761 so the free-trial counter shows a number",
+   "From another process, take the shared runtime lease on the same mailbox",
+   "Read the knowledge picker",
+   "Ask a question while the lease is held",
+   "Press 'Stop waiting' and read the free-trial counter",
+   "Release the lease and ask the same question again"
+  ],
+  "expected": [
+   "The picker says 'Someone else is testing on the shared model right now.' with 'Another test in progress (chat:krx-all-2761, node process <pid>) — started {n}s ago' and the one-at-a-time explanation — naming the FOREIGN holder, never 'Your test has the shared model' (that line is for this tab's own in-flight request only)",
+   "The transcript's own pending turn says 'Queued behind another test — your question has not been lost.' within a couple of seconds, names the holder ('Someone else has the shared model (chat:krx-all-2761, started {n}s ago).') and shows a ticking 'waiting {n}s' counter",
+   "The queue position line is shown only when someone is ahead in this node's own queue (alone in line it stays quiet)",
+   "The pending row's button reads 'Stop waiting' rather than 'Cancel'",
+   "Pressing it returns {cancelled: true, reason: 'queued', charged: false}; the turn says 'You stopped waiting. The node had not started this test yet, so no free try was used.' and offers Retry",
+   "The free-trial counter is unchanged — nothing was sent to the model, so nothing was charged (POST /api/chat answers HTTP 499)",
+   "Once the holder lets go the banner disappears and the same question is answered normally, charging exactly one free try"
+  ],
+  "priority": "P1",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "packages/node/src/chat-queue.ts (ticket registry: queued/running/gone, per-visitor, free cancel while queued); packages/node/src/runtime.ts lockHolder()/queueState()/serial() onEnter",
+   "packages/node/src/api.ts GET /api/chat/status, POST /api/chat/cancel, quota consumed only after a successful chat",
+   "packages/web/src/pages/ChatPage.tsx lockIsMine={queue?.state === 'running'} (RTK Query keeps `data` after a query is skipped, so reading `qs` directly made every later holder read as 'your test'); packages/web/src/components/chat/TurnView.tsx QueuePending; packages/web/src/components/chat/util.ts lockKind()"
+  ]
+ },
+ {
+  "id": "AZ-226",
+  "persona": "Visitor (knowledge user)",
+  "title": "Ask a follow-up in Compare mode and confirm each column replays only its own earlier answers",
+  "goal": "The comparison stays a comparison past turn 1: the un-patched column is never told it produced the knowledge's answer, so the 'Before loading' column keeps being wrong and the visitor sees the real difference the knowledge makes.",
+  "preconditions": [
+   "No operator session; quota not exhausted",
+   "Model server available; krx-all-2761 testable on node-a",
+   "Browser DevTools open on the Network panel"
+  ],
+  "steps": [
+   "Open http://localhost:3402/chat/krx-all-2761 in the default 'Compare' view",
+   "Click the chip '종목코드 픽셀플러스', press Enter and wait for both columns",
+   "Type '방금 말한 종목코드를 숫자만 다시 알려줘' and press Enter",
+   "Read both columns of the second turn and the line under the transcript",
+   "In DevTools open the second POST http://localhost:3402/api/chat request and read its JSON payload"
+  ],
+  "expected": [
+   "Turn 1: 'Before loading' answers with a wrong ticker (✗ Wrong, Expected: 087600) and 'After loading' with 087600 (✓ Correct)",
+   "Turn 2's payload carries three arrays: `messages` and `messages_patched` replay the PATCHED answer of turn 1, `messages_base` replays the BASE answer of turn 1, and all three end with the same new question — POST /api/chat rejects (400) a `messages_base`/`messages_patched` whose last message differs from `messages`",
+   "The response reports what was replayed: history {base: 3, patched: 3, split: true}",
+   "Turn 2's 'Before loading' column repeats its OWN wrong ticker and does not contain 087600 — the un-patched model was never shown the knowledge's answer",
+   "Turn 2's 'After loading' column still answers 087600",
+   "A line under the transcript says 'On follow-up questions each column replays only its own earlier answers — the \"Before loading\" model is never shown what the knowledge answered.' (ko: '이어지는 질문에서 각 열은 자기가 한 답만 다시 보게 됩니다 …'), shown in Compare mode once a turn has finished"
+  ],
+  "priority": "P0",
+  "area": "chat",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/pages/ChatPage.tsx buildHistory(prior, text, column) + the compare-mode split sent as messages_base / messages_patched",
+   "packages/node/src/api.ts POST /api/chat (messages_base / messages_patched, both refined to end with the same message as messages); packages/node/src/market.ts chatInner() msgsBase / msgsPatched and the reported `history`",
+   "packages/cli/src/commands/chat.ts chatRepl(): one transcript per column (state.transcript / state.baseTranscript)",
+   "packages/web/src/i18n/pages/chat.ts: chat.history.split"
   ]
  }
 ]
