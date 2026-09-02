@@ -103,11 +103,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // The node holds its own copy of the config. Writing that whole snapshot back — which is what every console
   // save used to do — reverted every `ainize config set` made since start-up. Save only what THIS node changed,
   // on top of whatever config.json says now (item 124).
-  const bootCfg = structuredClone(cfg);
+  // The baseline is what this node LAST WROTE, not its boot snapshot: a peer added and then removed must reach the
+  // file as removed — diffed against boot it looked like "no change" and the earlier save (with the peer) stood.
+  let baseline = structuredClone(cfg);
   const persistConfig = () => {
     if (!opts.home) return;
     const onDisk = loadConfig(opts.home);
-    saveConfig(onDisk ? mergeConfigChanges(onDisk, bootCfg, cfg) : cfg, opts.home);
+    saveConfig(onDisk ? mergeConfigChanges(onDisk, baseline, cfg) : cfg, opts.home);
+    baseline = structuredClone(cfg);
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig }));
 

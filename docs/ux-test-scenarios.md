@@ -8342,7 +8342,9 @@ prompt,answer,alt_prompt
 6. Run `$N --home $S/c config set market.defaultPrice 9.99` and read the value back with `$N --home $S/c config get market.defaultPrice`
 7. Run `$N --home $S/c config set teach.trainer.gpus 0,1` then `$N --home $S/c config unset teach.trainer.gpus`
 8. Hand-edit config.json to `"port": "notanumber"` and `"roles": ["admin"]`, then run `$N --home $S/c start`
-9. Hand-edit config.json to add `"strayKey": 1`, start the node and run `$N --home $S/c logs --kind config`
+9. With config.json still holding `"port": "notanumber"`, run `$N --home $S/c config show`, `$N --home $S/c status` and `$N --home $S/c config set port 3594`
+10. With config.json still holding `"port": "notanumber"`, run `$N --home $S/c config show`, `$N --home $S/c status` and `$N --home $S/c config set port 3594`
+11. Hand-edit config.json to add `"strayKey": 1`, start the node and run `$N --home $S/c logs --kind config`
 
 **Expected**
 
@@ -8354,7 +8356,9 @@ prompt,answer,alt_prompt
 - Step 6 prints `✓ market.defaultPrice = "9.99"  (the node reads config.json when it starts)` — a price is stored as the decimal STRING the rest of the product uses, never a JSON number — and `config get` prints `9.99`
 - Step 7: `config unset` on a key the config cannot do without resets it to the built-in default (`✓ teach.trainer.gpus reset to the default "4,5,6" (was "0,1"; it cannot be absent)`); on an optional key it removes it and says the node falls back to its default
 - Step 8: the node refuses to start — `error: this node's config is not usable:` then one line per key (`port must be a number`, `roles.0 must be a comma list of …`) and the path of the config.json to fix; exit 1; nothing binds a port
-- Step 9: the node starts (a key this build does not know must not stop an older binary from booting) and logs one `warn config strayKey: unknown config key` line
+- Step 9: `config show` prints the file (exit 0); `status` fails with `error: port in $S/c/config.json is "notanumber", not a port number — fix it with \`ainize config set port <1-65535>\`` (exit 2) — never `--node must be a full URL`, a flag nobody passed; and `config set port 3594` succeeds: the fix the refusal names is never itself locked out
+- Step 10: `config show` prints the file (exit 0); `status` fails with `error: port in $S/c/config.json is "notanumber", not a port number — fix it with \`ainize config set port <1-65535>\`` (exit 2) — never `--node must be a full URL`, a flag nobody passed; and `config set port 3594` succeeds: the fix the refusal names is never itself locked out
+- Step 10: the node starts (a key this build does not know must not stop an older binary from booting) and logs one `warn config strayKey: unknown config key` line
 
 **Evidence**
 
@@ -8363,6 +8367,8 @@ prompt,answer,alt_prompt
 - `packages/node/src/server.ts startNode() (refuses invalid values, warns about unknown keys)`
 - `packages/core/test/config.test.ts + packages/cli/test/operator.test.ts (item 123)`
 - `docs/ux-critique-2.json item 123`
+- `packages/cli/src/context.ts buildContext() (nodeUrlProblem: a broken config port is named by the commands that need a node, not reported as a --node typo)`
+- `packages/cli/src/context.ts buildContext() (nodeUrlProblem: a broken config port is named by the commands that need a node, not reported as a --node typo)`
 
 ### AZ-231 - A `config set` made while the node runs survives the next console save, and says it needs a restart
 
@@ -8381,6 +8387,7 @@ prompt,answer,alt_prompt
 3. Read config.json again
 4. Make the console save the config: `curl -s -X POST http://localhost:3595/api/peers -H "authorization: Bearer <operator token>" -H 'content-type: application/json' -d '{"endpoint":"http://localhost:9999"}'`
 5. Read config.json a third time
+6. Remove the peer again: `curl -s -X DELETE http://localhost:3595/api/peers -H "authorization: Bearer <operator token>" -H 'content-type: application/json' -d '{"endpoint":"http://localhost:9999"}'`, then read config.json a fourth time
 
 **Expected**
 
@@ -8388,13 +8395,15 @@ prompt,answer,alt_prompt
 - Step 3: config.json holds "9.99"
 - Step 4 answers {"ok":true} — the peer is added
 - Step 5: config.json still holds "9.99" AND the new peer — the node writes only the keys it changed itself (its password, its peers, its display name) on top of what is on disk now, instead of dumping its start-up snapshot over the file
+- Step 6: the peer is gone from config.json and "9.99" is still there — the node diffs against what it LAST WROTE, not its boot snapshot, so an add followed by a remove reaches the file as a remove (diffed against boot it looked like "no change" and the earlier save, peer included, stood)
 
 **Evidence**
 
 - `packages/core/src/config.ts mergeConfigChanges()`
-- `packages/node/src/server.ts persistConfig() (bootCfg → live diff applied to the current file)`
+- `packages/node/src/server.ts persistConfig() (last-saved → live diff applied to the current file)`
 - `packages/cli/src/commands/init.ts configSet() (runningHere warning)`
 - `docs/ux-critique-2.json item 124`
+- `packages/node/test/config-persist.test.ts`
 
 ### AZ-232 - The version a node reports is the build it is running, not a string frozen into config.json at init
 
@@ -8418,7 +8427,7 @@ prompt,answer,alt_prompt
 
 - Step 1 succeeds — `version` is a real config key (the schema version config.json was written by)
 - Step 2 prints `version     0.1.0 · built <YYYY-MM-DD HH:MM:SS>  (config.json written by 0.0.1-from-2024)`: the running build first, the config's claim named as the config's claim
-- Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is "0.0.1-from-2024" — so every peer and the generated OpenAPI document report the build, not the file
+- Step 3: `node.version` is the VERSION constant of the running code (0.1.0), `node.build` is an ISO timestamp measured from the running files, `node.config_version` is "0.0.1-from-2024" — so every peer and the generated OpenAPI document report the build, not the file — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts — measured once, when the node loaded its code: rebuilding dist under a running node does not change what that node reports until it restarts
 - Step 4 shows one info line `config: config.json was written by version 0.0.1-from-2024; this node is running 0.1.0` — the hook a future config migration hangs on
 - Step 5 prints `version     0.1.0 · built <…>` with no config note, because there is nothing to say
 
@@ -8429,6 +8438,9 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/node.ts nodeVersion()`
 - `packages/node/src/server.ts (start-up line when the two differ)`
 - `docs/ux-critique-2.json item 141`
+- `packages/core/test/config.test.ts (buildStamp measured once)`
+- `packages/core/test/config.test.ts (buildStamp measured once)`
+- `packages/core/test/config.test.ts (buildStamp measured once)`
 
 ### AZ-233 - Health checks that can fail: `/healthz`, `/readyz` and `ainize status --check`
 
