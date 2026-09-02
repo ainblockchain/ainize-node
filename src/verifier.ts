@@ -82,8 +82,14 @@ export class Verifier {
     const e = await m.entry(anchor.id);
     const mine = e?.attestations.find((a) => a.verifier === me);
     const challengedAt = e?.open_challenge?.created_at ?? 0;
-    if (mine && mine.verified_on !== 'hash-only' && mine.created_at >= challengedAt) {
-      throw new ConflictError(`this node already attested ${anchor.id} (${mine.passed ? 'PASS' : 'FAIL'}, ${new Date(mine.created_at).toISOString()}); a second attestation would not be counted. Re-verification counts only after someone challenges the knowledge (ainize patch challenge ${anchor.id} --reason …).`);
+    if (mine && mine.created_at >= challengedAt) {
+      // The one case where re-running its own verification still changes something: this node attested hash-only
+      // and now has a model server that can actually execute the benchmark.
+      const st = await m.runtime.status();
+      const canUpgrade = mine.verified_on === 'hash-only' && st.available && !!st.model && anchor.model.id_M.startsWith(st.model) && !!anchor.benchmark.samples?.length;
+      if (!canUpgrade) {
+        throw new ConflictError(`this node already attested ${anchor.id} (${mine.passed ? 'PASS' : 'FAIL'}, ${mine.verified_on}, ${new Date(mine.created_at).toISOString()}); a second attestation would not be counted. Re-verification counts after someone challenges the knowledge (ainize patch challenge ${anchor.id} --reason …)${mine.verified_on === 'hash-only' ? ', or once this node has a model server that can run the benchmark (it has none that matches now)' : ''}.`);
+      }
     }
     m.log('info', 'verifier', `verifying ${anchor.id} (${anchor.name})`, anchor.id);
     const blob = await m.ensureBlob(anchor);
