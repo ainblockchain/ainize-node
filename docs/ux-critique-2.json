@@ -1,0 +1,931 @@
+{
+ "meta": {
+  "review": "Ainize UX critique 2 — CLI user, node operator, knowledge publisher",
+  "commit": "e168c59",
+  "date": "2026-09-02",
+  "counts": {
+   "total": 69,
+   "by_audience": {
+    "CLI user": 17,
+    "Node operator": 28,
+    "Knowledge publisher": 24
+   },
+   "by_severity": {
+    "critical": 23,
+    "major": 43,
+    "minor": 3
+   }
+  },
+  "captures": "packages/e2e/results/ux2/"
+ },
+ "summary": "Ainize is a peer-to-peer marketplace for \"knowledge\": small trained memory-table patches (.npz) that anyone can load into a running LLM, live-test, publish and be paid for. The first review drove the visitor-facing web surfaces. This one is about the three audiences it under-covered — the person at a terminal, the person who runs a node past day one, and the person who trained a .npz and wants it sold. I worked at commit e168c59: the demo cluster on :3402/:3403/:3404, the teach node on :3422, and throwaway single nodes and private 3-node clusters of my own for anything destructive. Everything below was run or read; terminal captures are in packages/e2e/results/ux2/.\n\nWhat is fundamentally right is the same instinct the first review found on the web, and it survives into the terminal. Exit codes are real and distinguished (2 = unreachable node, 3 = not logged in), and most errors name the next command rather than the failure — `cannot reach node at http://localhost:39999 (fetch failed). Is it running? Try `ainize start` or pass --node <url>.` is better than most production CLIs manage. The purchase receipt prints a millisecond-stamped timeline of every check it made before the money moved. The chat REPL replays each column only its own answers and says so on the first line — the first review's item 1, the bug that most undermined the product's central demo, never existed here. The table renderer strips ANSI and counts Hangul as two cells, so the flagship Korean knowledge aligns. And where the code handles money or crashes it is genuinely careful: the payout runner claims each row atomically and refuses to auto-retry a transfer that was interrupted mid-flight, the cross-process runtime lock uses identical liveness checks to report a holder and to break a dead lease, the teach worker persists `lesson_applied` before it applies so a crash restores the table, and the verifier refuses to invent a score it did not measure. The foundation is not the problem. The three biggest problems are all places where the surfaces stopped telling the truth about that foundation.\n\n**1. The commands that report state are the ones that lie, and they lie in the direction of \"everything is fine\".** `ainize start -d` prints a green tick and a pid for a child that died on EADDRINUSE one millisecond later; `ainize status` then finds a stranger's node on the configured port and renders its address, roles, ledger height and catalogue as yours; `ainize stop` says nothing was ever running. `ainize stop` on a live process reports `✓ stopped node (pid N)` after a wait loop whose outcome it never checks, and deletes the pid file, so the node is now unmanageable. On a machine with no config at all, every read command silently reports whatever answers port 3402. `config set` accepts `port notanumber` with a tick and the node then binds an ephemeral port; on a running node the same edit is silently reverted the next time anyone clicks anything in the console. `ainize logs` sends no operator token, so the operator's own terminal shows the redacted visitor stream and `--kind patch` prints a blank screen. `ledger ls --kind bogus` prints \"ledger is empty\" two lines under \"records 1223\". `version` is a string frozen into config.json at init. There is no `/healthz`, and every unknown path returns 200 with the web app, so a default uptime check can never fail. An operator can spend an hour reading confident numbers that describe a different node, or no node.\n\n**2. Everything that matters is irreversible, and the friction is on the wrong action.** `ainize init --force` — the remedy the CLI's own error message recommends — mints a brand-new identity key with no prompt, no backup and no `--keep-identity`, orphaning the wallet, the payout address and every record the node ever signed; there is no `keys backup`, `keys export` or `keys rotate`, and the in-product CLI reference never mentions `keys` or `config` at all. `patch forget` deletes a body by content hash and un-serves every other listing that shares it, printing the blast radius after the deletion. `publish` writes a permanent anchor by default and, when it overlaps something you already sell, silently retires that listing — and a stranger's overlapping upload retires it just as silently. A challenge from any node paints CHALLENGED on your product forever, because a verifier that has already attested can never clear it. Meanwhile the reversible actions are the ones that ask: deleting a local draft demands the full id in the console, and `patch rm` in the terminal does it on one keystroke while answering `draft not found` for the published item you actually wanted to withdraw. There is no retire, unlist, withdraw or price-edit anywhere in the product.\n\n**3. The trust machinery is real in the middle and decorative at both edges.** The verifier genuinely refuses to fake a score, and hash-only attestations are genuinely excluded from quorum. But nothing stops the author from attesting to their own anchor — `POST /api/patches/:id/verify` has no author check although the shipped config says `allowSelfAttest: false`, and `deriveCatalog` counts whatever it is given, which is why node-a is serving `3/2 ✓` right now. The \"verifier deposit\" that the glossary, the buyer page and the publisher's own manage page all describe as the reason a result can be trusted is a number copied into a JSON body: nothing is escrowed, transferred or slashed anywhere in the tree. A CHALLENGED item is sold at full price because the gate reads only `quorum_ok`. And the sample answers the knowledge page calls \"sealed so nobody can peek\" are served in the public anchor to anonymous callers — I read them with one curl. Each of these is a sentence the product tells a buyer that the code does not keep.",
+ "audiences": [
+  {
+   "name": "CLI user",
+   "items": [
+    {
+     "n": 101,
+     "title": "With no config — or a `--home` that does not exist — every command silently targets whatever answers port 3402 and presents it as your node",
+     "surface": "`ainize status`, `patch ls`, `wallet`, `login` on a machine that has never been `init`ed",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "`buildContext` resolves the node URL as `--node > NGRAM_NODE_URL > cli.json > cfg.port > 3402` and never checks whether a config was found (packages/cli/src/context.ts:61-62). `loadConfig` returning null is an error only for the handful of commands that call `requireConfig`. So a brand-new user who runs `ainize status` before `ainize init` gets a full, confident report on a node they have never met — and `ainize login` reads `/api/auth/me` from that stranger's node and offers to set its operator password when it answers `needsSetup: true`.",
+     "evidence": "On an empty home: `ainize --home /no/such/dir status` → `node-a  http://localhost:3402 / address 0xF7A9dE49…A1F5 / ledger ain · 1223 records / patches 4 (1 listed) / blobs held 4`, exit 0 (packages/e2e/results/ux2/critique2-verify.txt, §1). `patch ls` on the same home lists all of node-a's knowledge including the 331.7 MB `krx-all-2761`. `--home /no/such/dir config show` correctly errors `no node config at /no/such/dir/config.json`, so the CLI knows.",
+     "user_cost": "The first command a newcomer types after installing returns a healthy marketplace with four knowledges, 1,223 ledger records and a live GPU — none of it theirs, with nothing on screen saying so. On a shared or multi-tenant host the same fallback points read commands at a colleague's node and `login` at claiming it.",
+     "fix": "In `buildContext` mark the context when `cfg === null` and none of `--node` / `NGRAM_NODE_URL` / `cli.json` was given; in the `run()` wrapper (packages/cli/src/bin.ts:36-46) refuse before the first request with `no node configured in <home> — run \\`ainize init\\`, or pass --node <url> to talk to an existing node` (exit 2). Exempt only `--help`, `--version` and `init`. `login` must never POST `/api/auth/setup` against a URL the user did not name explicitly.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 102,
+     "title": "`ainize use` spends the node's money without ever quoting the price, and there is no confirmation, `--yes` or `--max-price`",
+     "surface": "`ainize use <id>`, `ainize patch buy <id>`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`patchUse` fetches the detail — which contains `anchor.price` and `anchor.currency` — checks quorum, and calls `patchBuy` on the next statement (packages/cli/src/commands/patch.ts:239-254). The first thing printed is the past tense `✓ bought <id> for <amount> (<scheme>)` (patch.ts:180). Grepping packages/cli/src for `readline|createInterface|[y/N]|confirm|--yes|max-price|dry-run` returns only the login password prompt (auth.ts:11) and the chat REPL (chat.ts:176): there is no confirmation anywhere in the CLI. On an `ain`-ledger node this is a real on-chain transfer.",
+     "evidence": "packages/e2e/results/ux2/cli-daily-13-use-buy.txt: `ainize use pixelplus-korean` → first output line `✓ bought pixelplus-korean for 25 (local-credit)  tx cd16998df4345ca3…`; wallet 100 CREDIT before, 75 after. Nothing was printed between the command and the charge, and the headline line carries no currency while the step below it says `25 CREDIT`.",
+     "user_cost": "The product's headline consumer command moves money on its first keystroke. A typo'd id that happens to exist, a shell-history recall or a scripted loop buys at whatever the seller set — and the buyer learns the amount only after it is gone.",
+     "fix": "In `patchUse`/`patchBuy` print the quote before paying — `pixelplus-korean · 픽셀플러스 종목코드 지식 · 25 CREDIT · seller node-a 0x9D99…07B4 · balance after 75 CREDIT` — then require `[y/N]` when stdin is a TTY. Add `--yes` and `--max-price <n>` (abort with exit 1 above the ceiling), and treat a non-TTY stdin without `--yes` as an error, not an implicit yes. Always print the currency on the `bought` line.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 103,
+     "title": "Missing arguments and misspelled commands both answer with raw yargs strings — no usage line, no example, no did-you-mean",
+     "surface": "`ainize publish`, `ainize use`, `ainize statsu`, `ainize patch`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`bin.ts:48-51`'s `fail` handler prints `error: <yargs message>` plus `Specify --help for available options.`, `showHelpOnFail(false)` (bin.ts:68) suppresses the usage block, and `.recommendCommands()` appears nowhere in the file. So the product's headline command, run bare, answers with yargs' internal arity complaint, and a one-character typo gets no suggestion from a command list that is fixed and tiny.",
+     "evidence": "critique2-verify.txt §2: `ainize publish` → `error: Not enough non-option arguments: got 0, need at least 1`, exit 1; `ainize use` → identical; `ainize statsu` → `error: Unknown argument: statsu`; `ainize pubish ./x.npz` → `error: Unknown arguments: pubish, ./x.npz`; `ainize --hepl` → `error: Specify a command. Try \\`ainize --help\\`.` — an unknown *option* reported as a missing command. Group commands are uneven: `ainize config` says `Subcommand is required (show|set).` but `ainize patch`, `ledger`, `branch`, `drive` and `chain` print the bare `Subcommand is required.` (bin.ts:187, 326, 340, 360, 371).",
+     "user_cost": "`ainize publish` — the exact string on the landing page's developer card and the first line of the README — tells a first-time user \"got 0, need at least 1\" without saying that the one thing is a path to a .npz, that three more flags are required, or that `--help` carries a worked example.",
+     "fix": "Add `.recommendCommands()` to the root parser. In `fail`, rewrite the two yargs shapes before printing: on `/Not enough non-option arguments/` print the command's own usage line and first `.example()`; on `/Unknown argument: (\\w+)/` print `unknown command \"$1\"` plus the nearest registered command by edit distance. Give the five bare `Subcommand is required.` strings the same `(a|b|c)` list the other four already have.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 104,
+     "title": "`--json` writes prose on every failure and `--quiet` swallows the id of the thing just created, so neither flag makes the CLI scriptable",
+     "surface": "`--json`, `--quiet` (global)",
+     "severity": "major",
+     "effort": "S",
+     "problem": "Two holes in the same contract. (1) The `run()` wrapper writes `chalk.red('error: ') + message` to stderr regardless of mode (packages/cli/src/bin.ts:41-45), discarding the machine-readable body the node returned, which `CliError.details` (context.ts:35) already carries and nothing prints. (2) `emit()` checks `ctx.quiet` before `ctx.json` (packages/cli/src/output.ts:73-74) and `info`/`ok` return early under `--json` (output.ts:80-81), so `--quiet` prints nothing at all — including the id of the draft just created — and `--json --quiet` prints nothing either. Commands that report only through `ok()` (`logout`, `stop`, `config set`) emit an empty document under `--json`.",
+     "evidence": "critique2-verify.txt §4: `ainize --json patch get nope-does-not-exist` → stdout empty, stderr `error: patch not found`, exit 1; `ainize --json logout` → zero bytes, exit 0. cli-daily-17: `ainize publish … --quiet` → no output, exit 0, and the draft was created. Read commands (`patch ls`, `status`, `wallet`, `keys show`, `nodes`, `logs`, `config show`) all emit correct JSON, so the gap is only on the error and mutation paths. The exit codes that make the difference legible (2 unreachable, 3 not logged in) are documented in no help text and absent from the /docs CLI reference.",
+     "user_cost": "A CI job that runs `ainize publish --json` must string-match `error:` on stderr to detect failure and cannot read the reason; a job that runs `--quiet` must re-list the catalogue and guess which entry is new. The two flags that exist for automation both fail at it.",
+     "fix": "In `run()`'s catch, when `ctx.json` write `{\"error\":{\"message\":…,\"code\":<exitCode>,\"command\":\"patch get\",\"details\":…}}` to stderr instead of prose. Swap the order of the two guards in `emit()` and make `ok()`/`info()` emit `{\"ok\":true,\"message\":…}` under `--json`. Make `--quiet` on a mutating command print the affected id on one line, the way git/npm/kubectl do. Add an `Exit codes:` block to the root `--help` epilogue and to CLI_REFERENCE (packages/node/src/openapi.ts).",
+     "audience": "CLI user"
+    },
+    {
+     "n": 105,
+     "title": "No patch or chat command prints anything until it finishes — up to 30 minutes of blank terminal on a queue the node can already describe",
+     "surface": "`ainize chat`, `patch verify`, `patch buy`, `patch apply`, `use`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "Every slow verb is a single awaited fetch with a long timeout and no intermediate output: `patch verify` 30 min (packages/cli/src/commands/patch.ts:163), `patch buy` 30 min (:176), `patch apply`/`remove` 10 min (:189, :195), `chat` 15 min (chat.ts:64, :99). No spinner, no elapsed clock, no `--verbose`. The node already models the wait: `/api/chat/patches` returns `queue: {running, waiting}` and `lock: {owner, label, since}` (packages/node/src/api.ts:366-380) and the CLI already renders that lock line — but only in `chat --list` (chat.ts:74), never while a chat is actually blocked behind it. The pattern the fix needs already exists in this codebase: `ainize teach train --wait` streams stage lines to stderr (packages/cli/src/commands/teach-dataset.ts:356).",
+     "evidence": "Timestamping every line of a real `ainize chat` against node-a shows all six lines arriving inside a 7 ms window at the end (packages/e2e/results/ux2/critic-15-chat.txt). While one chat was blocked, `chat --list` on the same node rendered `runtime busy: runtime by pid:1938917 since 4:47:54 AM` — the exact line `chat` never prints. cli-daily-12-queue.txt: two concurrent chats, 2.5 s vs 4.0 s, serialised with no output during the wait.",
+     "user_cost": "The live test runs on one shared GPU behind a lock. When someone else holds it, the terminal is indistinguishable from a hang for up to fifteen minutes, so users Ctrl-C and retry — which costs another of the twenty free live tests per hour and puts them back at the end of the queue. On `buy` it means re-entering a payment flow.",
+     "fix": "Add a shared `withProgress(ctx, label, fn)` in packages/cli/src/output.ts: on a TTY write `⠋ waiting for the model … 12s` to stderr once a second (stdout stays pipe-clean, `--json`/`--quiet` unaffected); on a non-TTY one `…` line per 30 s. Before the chat POST, GET `/api/chat/patches` and print the `runtime busy: … · N ahead` line `--list` already produces. For `verify` and `buy`, stream the step events the node already logs.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 106,
+     "title": "The correct/wrong verdict never prints the expected answer — the first review's item 20, fixed on the web, was never carried to the CLI",
+     "surface": "`ainize chat <id> \"<question>\"`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`marker()` renders `correct ✓ (benchmark)`, `wrong ✗ (benchmark)` or `(no benchmark sample for this question)` and nothing else (packages/cli/src/commands/chat.ts:102). The benchmark sample's `expect` is in the anchor the CLI has already fetched and is printed in `chat --list`'s TRY column, but never beside the verdict. `--json` does not help: the response carries `benchmark_hit: true|false|null` and no `expect`.",
+     "evidence": "critic-15-chat.txt: `ainize chat pixelplus-087600 \"종목코드 픽셀플러스 \"` → `before (base model) 215090` / `after (pixelplus-087600 loaded) 087600` / `correct ✓ (benchmark)`. The expected value is never labelled. `--json` on the same call returns keys `[applied, applied_ms, base, benchmark_hit, benchmark_hits, history, mode, model, patch_id, patch_ids, patched, quota_limit, remaining_quota, was_applied]` — no `expect` anywhere.",
+     "user_cost": "The live test is the product's central persuasion moment and its verdict is unfalsifiable in the terminal. On `wrong ✗` you cannot tell whether the knowledge failed or your phrasing missed the trained prompt — the most common cause on a product whose prompts end in a significant trailing space. On `correct ✓` you are asked to take a tick on faith. Item 20 of the first review was exactly this defect on the web; it is marked fixed there and untouched here.",
+     "fix": "Have `POST /api/chat` return the matched sample (`benchmark_sample: {prompt, expect}`, or `benchmark_samples` keyed by patch id) alongside `benchmark_hit`, and render it in `marker()`: `correct ✓ — benchmark expects \"087600\"` / `wrong ✗ — benchmark expects \"087600\", got \"215090\"`. When `hit` is null, add the nearest sample so the user can see the phrasing that would be scored.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 107,
+     "title": "`chat --list` shows three retired versions and the current one as four equally green `2/2 ✓` rows, with no status column",
+     "surface": "`ainize chat --list`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`chatPatches` renders ID, NAME, MODEL, FACTS, MEMORY ROWS, VERIFIED and TRY (packages/cli/src/commands/chat.ts:77-86) but never `e.status`, although the same catalog objects carry it, `superseded_by` sits beside it, and `statusColor` is already exported from output.ts:11 and used by `patch ls` (patch.ts:25).",
+     "evidence": "critique2-verify.txt §6-7, live on node-a: `chat --list` shows `krx-all-2761`, `krx-all-2761-ep12`, `krx-all-2761-ep6`, `pixelplus-087600`, every one `2/2 ✓` in green; `patch ls` on the same node the same second reports `krx-all-2761 LISTED`, the other three `SUPERSEDED`.",
+     "user_cost": "The command whose whole job is \"what can I test here\" presents an early epoch-6 training run and the final knowledge as indistinguishable, equally verified choices. A buyer evaluating before purchase spends one of twenty hourly free tries on a retired version and is never told a newer one exists — the defect the first review flagged on the web buy path (items 4, 26, 27), on a surface it did not cover.",
+     "fix": "Add a STATUS column using the existing `statusColor`, dim SUPERSEDED rows and footnote them `→ superseded by <id>` from `e.superseded_by`, and sort LISTED first. Keep the rows — point-in-time versions are legitimately testable — but never render a retired item as an unqualified green tick.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 108,
+     "title": "`chat --list` hides the drafts that `ainize chat <id>` will load anyway, so the publisher's test-before-you-announce loop has no discoverable path",
+     "surface": "`ainize chat --list` vs `ainize chat <draft-id>`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`testablePatches()` filters `e.status !== 'DRAFT'` (packages/node/src/market.ts:833), so a draft never appears in `chat --list`. `POST /api/chat` (api.ts:414) applies no such filter and will load the draft into the runtime. The CLI advertises the list as authoritative twice: `--list`'s describe is \"list patches testable on this node and the runtime state\", and the missing-id error says \"`ainize chat --list` shows what this node can test\".",
+     "evidence": "With `draft-test  DRAFT` visible in `patch ls --drafts` and its body held on the node (`blobs held 1`), `chat --list` omitted it entirely while `ainize chat draft-test \"종목코드 픽셀플러스 \"` went straight to the runtime and into `scripts/patch.py apply` — i.e. the endpoint accepted it (packages/e2e/results/ux2/critic-13, critic-16). cli-daily-10-draft-chat.txt captures a full successful before/after on a draft.",
+     "user_cost": "This breaks the publisher's most important loop. The whole point of `--no-announce` is to hold a draft while you check it, and the discovery command says the draft is not testable. The publisher either announces to the permanent public record just to try it — and `publish` announces by default — or gives up and uses the browser.",
+     "fix": "Drop the `status !== 'DRAFT'` filter from `testablePatches()` for authenticated operator requests (the endpoint already distinguishes them for the `lessons` block) and render drafts with their DRAFT status and a dim `(your draft — not announced)`. Fix the empty state at chat.ts:85 to distinguish \"no bodies held\" from \"bodies held but none testable on this model\", and never tell the operator to buy a patch whose body is in their own blob store.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 109,
+     "title": "`ainize login` on a non-interactive stdin dies with a Node-internal \"unsettled top-level await\" and exit 13, having said nothing about what to do",
+     "surface": "`ainize login` in a script, over ssh, or with stdin redirected",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`promptPassword` takes a readline branch when `process.stdin.isTTY` is false (packages/cli/src/commands/auth.ts:10-13). On EOF the `rl.question` callback never fires, the promise never settles, the event loop drains and Node prints its own diagnostic. There is no non-interactive detection and no message pointing at `--password` or `NGRAM_PASSWORD`, both of which exist and work.",
+     "evidence": "packages/e2e/results/ux2/critic-03-login-json.txt: `ainize --home <fresh> login < /dev/null` → `Operator password for node-a: ` then `Warning: Detected unsettled top-level await at file:///…/packages/cli/dist/bin.js:313` / `await cli.parseAsync();`, exit 13. `NGRAM_PASSWORD=… ainize login` succeeds.",
+     "user_cost": "Every scripted, CI, cron, Ansible or `ssh host 'ainize login'` invocation fails with a message about the CLI's own source file and an exit code no documentation explains. The one command that must run before any operator action is the one that cannot be automated without reading the source.",
+     "fix": "Replace the non-TTY branch with an immediate `throw new CliError('no password given and stdin is not a terminal — pass --password or set NGRAM_PASSWORD')`, and handle readline `close` as EOF on the interactive path too. Name the 4-character minimum and `NGRAM_PASSWORD` in `ainize login --help`.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 110,
+     "title": "Fourteen user-facing hints tell you to run `ngram` — starting with the first line `ainize init` prints",
+     "surface": "every success and error hint outside chat.ts / teach*.ts",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`PROG` exists precisely so hints match the invoked binary (packages/cli/src/context.ts:16-22) and `bin.ts` uses it in the usage block, `demandCommand` and the client's unreachable-node error. Three command modules import it (chat.ts, teach.ts, teach-dataset.ts); the rest hardcode the literal at fourteen user-facing sites: init.ts:16, :27, :34, :43; node.ts:48, :59, :138; chain.ts:80, :127; drive.ts:27, :59; branch.ts:30; peers.ts:17; plus packages/core/src/ain-ledger.ts:457. The node's own start banner does the same (packages/node/src/server.ts:109).",
+     "evidence": "`ainize init` → ``next: `ngram start`   (then `ngram login`, `ngram seed`)`` (init.ts:27). `ainize start -d` → `stop: ngram stop` (node.ts:59). `ainize config show` → ``\"privateKey\": \"<hidden — `ngram keys show --reveal`>\"`` (init.ts:43). `ainize seed` after `start` → ``stop it first (`ngram stop`)`` (node.ts:138). The foreground banner reads `ngram node \"fresh\" listening on …`. bin.ts:63 even documents the situation: \"`ngram` is the historical name of this binary\".",
+     "user_cost": "`ainize` is the name on the landing page, the README, /docs and `--help`. The binary's own first success message tells the user to run a different program they have never seen, and if only one bin was linked, `ngram start` is `command not found`. The same substitution poisons the recovery hints where recovery matters most: `ngram stop`, `ngram chain setup`, `ngram keys show --reveal`.",
+     "fix": "Import `PROG` in each of the seven command modules and interpolate it at the thirteen sites; pass the program name into `core/src/ain-ledger.ts:457` or drop the command from that message; template the node's banner. Add an ESLint `no-restricted-syntax` rule banning the literal `` `ngram `` inside a string or template under packages/cli/src so it cannot regress.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 111,
+     "title": "Ten flags across `publish`, `patch publish`, `start` and `logs` render with an empty description column — including the licence and the id",
+     "surface": "`ainize publish --help`, `ainize patch publish --help`, `ainize start --help`, `ainize logs --help`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`.option()` calls with no `describe` render as a name and a type: `publish` — `--id`, `--description`, `--branch`, `--topic`, `--license` (packages/cli/src/bin.ts:196-197); `patch publish` — `--name`, `--id`, `--price`, `--description`, `--branch`, `--license` (bin.ts:156-160); `start` — `--port`, `--roles`, `--public-url` (bin.ts:107-108); `logs` — `--follow`, `--limit` (bin.ts:120-121). `--price` on `publish` does have a describe but never states that omitting it uses `market.defaultPrice` ('0.1', packages/core/src/config.ts:194) or that the price is fixed forever at announce.",
+     "evidence": "critique2-verify.txt §5, live: `ainize publish --help` prints `      --id                                                    [string]`, and the same for `--description`, `--branch`, `--topic`, `--license`. `--license`, which sets the legal terms of a sale, is literally `--license   [string]`.",
+     "user_cost": "On `ainize publish` — where every one of these choices is written permanently onto a public ledger record — the user is asked to decide `--id`, `--branch`, `--topic` and `--license` with zero information about what they mean, what shape they take or what happens when they are omitted.",
+     "fix": "Fill all ten in, stating shape and default: `--id` 'catalog id (default: a slug of --name)'; `--license` 'SPDX id or free text written onto the public record (default: none — buyers are shown the node's standard terms)'; `--topic` 'ain-js knowledge topic path, e.g. finance/krx'; `--branch` 'knowledge track name (see `ainize branch ls`)'; `--roles` 'comma list of seller,verifier,serving,gateway (default: the config value)'. Add the default to `--price`. Add a lint rule requiring `describe` on every `.option()` in bin.ts.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 112,
+     "title": "`publish` and `patch publish` are the same operation with opposite `--announce` defaults, and neither help mentions the other",
+     "surface": "`ainize publish <file>` vs `ainize patch publish <file>`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`ainize patch publish` declares `--announce` `default: false` (packages/cli/src/bin.ts:163); `ainize publish` declares the same flag `default: true` (bin.ts:198). Nothing in either help says the two commands are the same operation, so which one you type decides whether your knowledge lands on the permanent ledger.",
+     "evidence": "Verified live: `ainize publish … --no-announce` leaves a DRAFT, plain `ainize publish` writes a ledger anchor in the same breath, and `ainize patch publish` with identical arguments leaves a DRAFT. The two builders are otherwise near-identical duplicates (bin.ts:154-165 vs 190-200), differing also in `--billing`/`--test` and in which flags carry a describe.",
+     "user_cost": "Someone who reads `ainize publish --help`, then reaches for the grouped form out of habit, gets a silent draft instead of a listing — or the reverse: a permanent public anchor they expected to be a draft. Announcing is the one step in the flow that cannot be undone.",
+     "fix": "Give the two commands one shared builder and one `--announce` default (false is the safer one; keep `publish`'s current behaviour behind an explicit `--announce` in the printed example). Add one line to each description naming the other and the difference. Print what actually happened on both paths: `draft created (not announced — run \\`ainize patch announce <id>\\` when you are ready)`.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 113,
+     "title": "`$0` is printed literally in the two help lines a newcomer reads first",
+     "surface": "`ainize use --help`, `ainize init --help`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "yargs expands `$0` in `.usage()` and in an example's *command* string only — not in a positional's `describe` and not in an example's *description* column. packages/cli/src/bin.ts:283 and bin.ts:88 put it in exactly those two places.",
+     "evidence": "critique2-verify.txt §3, live: `ainize use --help` → `Positionals:\\n  id  knowledge id (see \\`$0 patch ls\\`)`. `ainize init --help` → `ainize init --ledger ain --ain-provider   AIN blockchain ledger (see \\`$0 chain up\\`)`.",
+     "user_cost": "The one-liner the whole product is sold on documents its only argument as \"see `$0 patch ls`\". A user who copies it gets `$0: command not found`; a user who does not is left guessing. The `init` instance is the line an operator reads when setting up payments.",
+     "fix": "Use the `PROG` constant in both strings. Grep bin.ts for `$0` outside `.usage()` and example command strings — those two are the only offenders today.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 114,
+     "title": "`patch ls` never shows the knowledge's name, and the web never shows its id — the same object is unfindable across the two surfaces",
+     "surface": "`ainize patch ls` vs /explore and the knowledge page",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`patchLs` renders ten columns — ID, STATUS, AUTHOR, MODEL, ROWS, SIZE, PRICE, ATTEST, SOLD, BENCHMARK (packages/cli/src/commands/patch.ts:23-34). `anchor.name` — the field `publish --name` makes required, the one the publisher chooses, the one /explore renders as the card title — is in no column, although `chat --list` three commands away does have a NAME column (chat.ts:79). The empty state is also wrong-worded: with no filters applied and nothing in the catalogue it prints `no patches match` (patch.ts:34).",
+     "evidence": "critique2-verify.txt §6-7 side by side on node-a: `patch ls` shows `pixelplus-087600 … 0.1 AIN`, `chat --list` shows the same row as `Pixelplus ticker code (single fact)`. On my own node three drafts appeared as `dup-name`, `draft-test`, `only-draft`, all `600 rows / 755.4 KB / Qwen3.8-Flash-Next`, with nothing on screen saying which was which.",
+     "user_cost": "A publisher with several drafts cannot tell them apart from the listing and must run `patch get` on each. It is also the sharpest CLI/web disagreement about the same object: the web shows the name and hides the id, the CLI shows the id and hides the name, so a knowledge found on /explore cannot be located in `patch ls` by anything the browser showed you.",
+     "fix": "Insert a NAME column after ID in `patchLs`, truncated to the terminal budget (see item 115), and drop MODEL when every row shares the same model. Split the empty string: `no knowledge on this node yet — publish one with \\`ainize publish <file.npz> …\\`` when no filter was passed, `no knowledge matches those filters` when one was. Show the id on the web knowledge page beside the name.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 115,
+     "title": "Tables are sized to their content and never to the terminal — 129 to 293 display columns, byte-identical at COLUMNS=60",
+     "surface": "`ainize patch ls`, `nodes`, `chat --list`, `patch get`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`table()` computes each column's width from the widest cell and joins with two spaces (packages/cli/src/output.ts:54-63); nothing consults `process.stdout.columns`, and there is no truncation, column-dropping or `--wide`. `yargs.wrap(Math.min(110, columns))` (bin.ts:70) applies to help text only. The width function is otherwise careful — it strips ANSI and counts CJK as two cells (output.ts:49) — so the effort is real, it just has no budget to spend against.",
+     "evidence": "Measured with an east-asian-width-aware script against node-a: `patch ls` 129 display columns, `nodes` 125, `chat --list` table rows 170, its footer hint 133, and the `overlapping memory entries: …` line 293 — that last one is prose, not a table, and is the widest thing on the screen. Rendering the same commands under `COLUMNS=60` produced byte-identical output (packages/e2e/results/ux2/critic-10, cli-daily-08-pty80.txt).",
+     "user_cost": "80 columns is still the default of a split pane, an SSH session and a CI log viewer. At 80 the header, the rule and every row wrap at a different point, so the column structure — the entire reason a table was used — is destroyed, and the rightmost columns (PRICE, ATTEST, SOLD, BENCHMARK: the ones a buyer reads) land in the wrapped remainder.",
+     "fix": "Pass a budget into `table()`: `const budget = Math.max(60, process.stdout.columns || 100)`. Compute natural widths as now; when the total exceeds the budget, shrink the flexible columns (ID, NAME, BENCHMARK, TRY) with a `…` using the existing `width()` so CJK truncation stays correct, and drop optional columns in a declared priority order. Wrap or truncate the overlaps line in chat.ts:76 to the same budget. Add `--wide`, and skip the whole mechanism when stdout is not a TTY so piped output stays full-width.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 116,
+     "title": "Three checks the CLI already knows how to make are deferred to the network or skipped entirely",
+     "surface": "`--node <url>`, `ainize chat --max-tokens`, `ledger ls --kind` / `logs --kind`",
+     "severity": "minor",
+     "effort": "S",
+     "problem": "(a) `client.ts:28` turns every fetch throw into `cannot reach node at <url> (<msg>). Is it running?` without checking that `<url>` is a URL, so `--node localhost:3402` — a standard typo — is reported as a dead node. (b) `chat --help` documents `--max-tokens` as `(1–1024)` (bin.ts:296) and then sends the value unchecked, so the user gets the server's zod message. (c) `--kind` is a free-form string on both `ledger ls` and `logs` (bin.ts:121) with no `choices`, so an unrecognised value silently matches nothing.",
+     "evidence": "critic-17: `ainize --node localhost:3402 status` → `error: cannot reach node at localhost:3402 (fetch failed). Is it running? …`, exit 2, while node-a was serving on that port throughout. `ainize chat pixelplus-087600 \"x\" --max-tokens 5000` → `error: invalid request: max_tokens Too big: expected number to be <=1024`. critique2-verify.txt §8, live: `ainize ledger ls --kind bogus` → `records 1223 / height 167892` and then `ledger is empty`, exit 0; `ainize logs --kind chalenge` → no output, exit 0.",
+     "user_cost": "The scheme-less case is the expensive one: the node is up, the user is told it is down, and they restart a healthy node. The `--kind` case is worse in kind: an operator checking \"have there been any challenges?\" with a mistyped kind is told the ledger is empty, two lines under a count that says 1,223 — and both commands exit 0, so a monitoring script built on them reports healthy.",
+     "fix": "In `buildContext` run `new URL(nodeUrl)` and on failure throw `--node must be a full URL: did you mean http://localhost:3402?`. Add `.coerce`/`.check` on `--max-tokens` enforcing 1–1024 locally with the message the help already states. Declare `--kind` with yargs `choices` on both commands, and change the empty-table text to reflect the filter: `no records of kind 'challenge' (1,223 records in the ledger)`.",
+     "audience": "CLI user"
+    },
+    {
+     "n": 117,
+     "title": "The success line for loading knowledge is the Python runtime's raw Korean debug print, in every locale",
+     "surface": "`ainize patch apply`, `ainize use`, `ainize branch subscribe`, the node event log",
+     "severity": "minor",
+     "effort": "S",
+     "problem": "`patchApply` prints `applied ${id}: ${r.result}` where `result` is stdout captured from the reference runtime script (packages/cli/src/commands/patch.ts:188-190). That script prints `f\"끼움: {len(addrs)}행  {time.time()-t0:.1f}s\"` (/mnt/newdata/qwen3.8/scripts/patch.py:29). Nothing between the two parses, translates or reformats it, and the same string reaches `ainize use`, `branch subscribe` and the node's own event log.",
+     "evidence": "packages/e2e/results/ux2/cli-daily-13-use-buy.txt shows both sinks: the purchase step `+  268ms  apply     끼움: 2992행  0.1s` and the confirmation `✓ applied pixelplus-korean: 끼움: 2992행  0.1s`. cli-daily-24: node-c's event log after `branch subscribe` → `runtime [pixelplus-korean] applied pixelplus-korean: 끼움: 2992행  0.1s`.",
+     "user_cost": "The confirmation for the product's signature capability — load knowledge into a running model without a restart — is half English and half Korean in an otherwise English CLI, and the Korean half is an internal debug print. A non-Korean operator cannot tell whether it succeeded, how many rows landed or what the number means; a Korean operator sees a machine's log line where a confirmation should be. It is also brittle: any edit to the runtime script silently changes the CLI's success message.",
+     "fix": "Have the runtime adapter parse the script's stdout into `{rows, seconds}` (or switch the script to one line of JSON) and let the CLI compose its own sentence from the anchor it already holds: `✓ loaded pixelplus-korean into Qwen3.8-Flash-Next — 2,992 memory entries in 0.1 s (no restart; unload with \\`ainize patch remove pixelplus-korean\\`)`. Keep the raw line under `--verbose` and in the event log.",
+     "audience": "CLI user"
+    }
+   ]
+  },
+  {
+   "name": "Node operator",
+   "items": [
+    {
+     "n": 118,
+     "title": "`start -d` reports success for a node that died a second later, and `status` then reports a stranger's node as yours",
+     "surface": "`ainize start -d` → `ainize status` → `ainize stop`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`start()`'s detach branch spawns the child, writes `node.pid` and prints `✓ node started in the background` unconditionally — it never waits for the child to bind and never re-checks the pid (packages/cli/src/commands/node.ts:56-59). Any startup failure — port in use, bad config, unreachable chain — goes to node.log and never surfaces. `status()` then GETs `/api/info` at `http://localhost:<config port>` (context.ts:61-62) and renders whatever answers, without ever comparing the returned `node.address` to `ctx.cfg.identity.address` (node.ts:93-96); the only hint that this home's node is not running is a missing `(pid N)` suffix on a dim line.",
+     "evidence": "packages/e2e/results/ux2/critic-07-start-busyport.txt: on a home configured for port 3402, `start -d` → `✓ node started in the background (pid 1915235) — port 3402`, exit 0, while node.log holds only `error: listen EADDRINUSE: address already in use 0.0.0.0:3402` and the pid is dead 4 s later. `ainize status` on the same home then printed a full healthy block for `node-a  http://localhost:3402 / address 0xF7A9dE49…A1F5 / runtime available / patches 4 (1 listed)` while the home's own identity was `0xd37924E9…2AC3`. `ainize stop` → `no background node running for this NGRAM_HOME`, exit 0. Reproduced independently in operator-day2-03-start-port-conflict.txt and operator-network-start-eaddrinuse.txt.",
+     "user_cost": "The operator's very first command lies, the health check lies in a way that confirms the lie — address, roles, ledger height, runtime, catalogue, all someone else's — and the only command that tells the truth phrases it as \"nothing to stop\". On the documented three-node host this is the normal case, not an edge one: every subsequent decision is made about a different node.",
+     "fix": "In the detach branch, after `spawn`, poll `GET <url>/api/info` for up to ~10 s; on `child.exit` or timeout print the last 20 lines of node.log, delete the pid file and exit non-zero instead of the tick. In `status()` compare `d.node.address` with `requireConfig(ctx).identity.address` and, when they differ, print `! http://localhost:3402 is answered by \"node-a\" (0xF7A9…A1F5), not the node in <home> (0xd379…2AC3) — that node is not running` above the table and exit non-zero. When no pid is running for the home, say `not running (no process for this NGRAM_HOME)` explicitly.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 119,
+     "title": "`stop` reports success on a process it did not stop and deletes the pid file, leaving a node nothing can manage",
+     "surface": "`ainize stop`",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "`stop()` sends SIGTERM, polls for up to 10 s, then unconditionally unlinks the pid file and prints `✓ stopped node (pid N)` — the loop's outcome is never checked and there is no SIGKILL escalation (packages/cli/src/commands/node.ts:70-84).",
+     "evidence": "packages/e2e/results/ux2/critic-08-stop-lies.txt: a healthy node on :3579 was SIGSTOPped; `ainize stop` returned after 11 s with `✓ stopped node (pid 1915669)`, exit 0, `ps -o stat` still showed `Tsl`, and node.pid was gone. The follow-up `start -d` then printed `✓ node started in the background (pid 1916096) — port 3579` while node.log recorded `error: listen EADDRINUSE …0.0.0.0:3579`. Same in operator-day2-22-stop-lies.txt.",
+     "user_cost": "Chained with item 118 this is worse than either: after a false stop the pid file is gone, so the real node can no longer be reached by `ainize stop` at all, and the follow-up `start -d` says it started a node that is already dead. The operator has one process they cannot manage and one screen telling them everything is fine.",
+     "fix": "After the wait loop, re-check `process.kill(pid, 0)`; if the process is alive, escalate to SIGKILL after the grace period; if it is still alive, keep the pid file and exit non-zero with `node <pid> did not stop (still running) — kill it manually`. Only unlink the pid file and print the tick on a confirmed exit.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 120,
+     "title": "`init --force` — the fix the CLI's own error recommends — silently mints a new identity key and drops the operator password",
+     "surface": "`ainize init --force`",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "`init` refuses on an existing home with `config already exists at … (use --force to overwrite, or \\`ngram config show\\`)` (packages/cli/src/commands/init.ts:16). Take the advice and the force path calls `defaultConfig()` again (init.ts:19-23), where `const identity = opts.privateKey ? identityFromPrivateKey(...) : createIdentity()` (packages/core/src/config.ts:164) mints a brand-new keypair; every option not re-supplied reverts to its default (port back to 3402) and `operatorPasswordHash`, which is not part of `defaultConfig`, is gone. The flag's whole help text is eight words: 'overwrite existing config' (bin.ts:86). No prompt, no `--keep-identity`, no backup file, and the success block simply prints a different address.",
+     "evidence": "packages/e2e/results/ux2/critic-04-init-force.txt: `init --name critic-n1 --port 3577 --ledger local` → address `0x095753f9…17ce`; `init --force --name renamed` → `✓ node initialised`, exit 0, no prompt, address `0xa298138a…441b`, port silently back to 3402. Reproduced twice more (cli-firstrun-11, operator-day2-24) including `operatorPasswordHash: <GONE>`.",
+     "user_cost": "That key owns every anchor the node published, its AIN balance, its payout address and the identity peers know it by. One `--force` — the remedy the error message names — destroys the only copy. Published knowledge stays on the permanent record under an address nobody can sign for, pending royalties are orphaned, and the operator is locked out of their own console. There is no recovery.",
+     "fix": "On `--force`, read the existing config first and carry `identity` and `operatorPasswordHash` forward unless an explicit `--new-identity` is also passed; print `keeping identity 0x… (pass --new-identity to replace it)`. Gate `--new-identity` behind typing the current address, and write `<home>/config.json.bak-<ts>` first. Change the duplicate-init error to name the safe path: `config already exists at … — change one setting with \\`ainize config set <key> <value>\\`; \\`--force\\` rewrites the file (keeping this node's identity).`",
+     "audience": "Node operator"
+    },
+    {
+     "n": 121,
+     "title": "Any stranger who reaches a freshly started node becomes its operator, and the node advertises that it is unclaimed",
+     "surface": "`ainize init` + `ainize start` → `POST /api/auth/setup`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`defaultConfig` sets `host: '0.0.0.0'` (packages/core/src/config.ts:170) and the banner rewrites that to `localhost` before printing (packages/node/src/server.ts:106-109), so the operator is told it is loopback. Between `start` and the first `ainize login` there is no `operatorPasswordHash`, and the unauthenticated `GET /api/auth/me` publishes `needsSetup: true` (api.ts:90-92) — a beacon saying nobody owns me. `POST /api/auth/setup` has no auth guard at all and only refuses once a hash exists (api.ts:94-102). There is no password reset route anywhere in api.ts.",
+     "evidence": "packages/e2e/results/ux2/critic-18-auth-version.txt, on a node I started with plain `ainize start -d`: `curl /api/auth/me` → `{\"signedIn\":false,…,\"needsSetup\":true}`; `curl -X POST /api/auth/setup -d '{\"password\":\"i-am-not-the-owner\"}'` → `{\"ok\":true,\"token\":\"3bc31853…\"}` with no credentials; that token then wrote operator state (`PATCH /api/me/teach/policy` succeeded). The real operator's `ainize login` → `error: wrong password — run \\`ainize login\\` first`, exit 3. Reproduced over a routable address in operator-network-open-claim.txt. deploy/README.md:19 makes `start` and `login` two commands in one `&&` chain, and starts bob and carol with no `login` at all.",
+     "user_cost": "An operator who follows the shipped quickstart on any host that is not firewalled loses the node to whoever scans the port first: the claimant can announce, buy, subscribe, spend the wallet, change `payout_address`, and approve teach lessons under the node's identity. The real operator is locked out permanently — this is the other half of the first review's item 34 (no way to change or reset the operator password), and it is what makes that gap unrecoverable rather than merely annoying.",
+     "fix": "Set the password at init time, not at first HTTP call: generate one (or take `--password`) in `ainize init`, write the hash to config.json and print it once. Default `host` to `127.0.0.1` and require an explicit `--host 0.0.0.0` / `--public`; print the real bind address in the banner. Until a hash exists, serve `POST /api/auth/setup` only to loopback callers (or gate it on a one-time token written to `NGRAM_HOME/setup-token` at first start) and drop `needsSetup` from the unauthenticated `/api/auth/me`.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 122,
+     "title": "The node identity has no backup, export or rotation path, and the reference the product ships never mentions `keys` or `config`",
+     "surface": "`ainize keys show --reveal`, `ainize init` output, /docs CLI reference, README.md, deploy/README.md",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "The private key lives in plain hex in config.json. The only way to read it is `keysShow(ctx, true)` (packages/cli/src/commands/init.ts:81-86), which prints it inline in the same key/value block as the address, with no confirmation and no note about scrollback, shell history or `--json` (which dumps it too). `bin.ts:100-103` gives the `keys` group exactly one subcommand, `show` — no backup, no export, no import, no rotate. `ainize init`'s success block never mentions that a key exists, where it is or that it is the only copy: it ends `next: \\`ngram start\\``. And the CLI_REFERENCE served at /docs and advertised in the README as authoritative (packages/node/src/openapi.ts) contains zero occurrences of `ainize config`, `ainize keys`, `keys show`, `config set`, `ainize nodes`, `ainize seed`, `ainize logout` or `patch rm` — I counted them all at 0.",
+     "evidence": "critique2-verify.txt (CLI_REFERENCE counts, all 0) and packages/e2e/results/ux2/critic-17-keys-node-url.txt: `keys show --reveal` prints `private key  2b574b62…41fac` with no prompt and no warning, and the `add --reveal to print the private key` hint simply disappears; `ainize keys backup` → `Unknown argument: backup`. Grepping README.md and deploy/README.md for backup guidance returns only teaching-key material (README.md:52, :79, deploy/README.md:82) — every hit is about the *visitor's* key.",
+     "user_cost": "The operator is the one person on the network with real money at stake and the only one given no key hygiene, while the product runs a whole warning-and-download system for a visitor's browser key. A wiped disk, a rebuilt container, an `rm -rf ~/.ngram` or one `--force` (item 120) ends the node's identity: published knowledge can never be superseded or retired by its author again, and any balance is gone. Nothing in the product ever says so.",
+     "fix": "Add `ainize keys backup <file>` writing a 0600 encrypted keystore (the same shape the teach flow already downloads) and `ainize keys import <file>`; make `--reveal` require an interactive confirmation or `--yes` plus a one-line shell-history warning. Add three lines to `init`'s success block: where the key is, that it is the only copy, and the backup command. Add a 'Node identity & config' group to CLI_REFERENCE covering `keys show|backup`, `config show|set`, `nodes`, `logout`, and a 'Backing up your node' section to deploy/README.md.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 123,
+     "title": "`config set` accepts any key and any type with a green tick, and the node then boots on whatever it wrote",
+     "surface": "`ainize config set <key> <value>`, `startNode`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`configSet` walks the dotted path creating an object at every missing level, coerces the value with a loose parser, saves and prints `✓ <key> = <value>  (restart the node to apply)` (packages/cli/src/commands/init.ts:64-78). There is no schema check, no key whitelist, no type check and no range check; the only guard is the two-entry `SECRET_KEYS` deny-list (init.ts:38, which does work). `startNode` validates nothing on boot either (packages/node/src/server.ts:53-105). The confirmation suffix is uniform: every key gets `(restart the node to apply)`, including keys the node re-reads live and keys that do not exist. There is no `config get` and no `config unset`.",
+     "evidence": "packages/e2e/results/ux2/critic-05-configset.txt and critic-06-badconfig-start.txt: `port notanumber`, `typo.that.does.not.exist hello`, `market.defaultprice 0.5` (lower-case p), `host 999.999.999.999`, `roles admin`, `verifier.quorum -3`, `market.royaltyShare 47`, `ledger.knid ain` all accepted with `✓ …`, exit 0, and written into config.json. The node then printed `ngram node \"critic-n2\" listening on http://999.999.999.999:undefined … roles: admin` and logged `node started`; `ainize status` → `error: cannot reach node at http://localhost:notanumber (Failed to parse URL …)`, exit 2. `market.defaultPrice 9.99` is also stored as a JSON number while every other price in the system is a string.",
+     "user_cost": "The CLI's only configuration verb cannot tell an operator whether the thing they just set is real. `verifier.stak 5` silently creates a sibling of `stake` and verification stake is unchanged; `market.defaultprice` changes a price that never changes; `roles admin` quietly disables the seller and verifier roles. A mistyped value leaves a node running, bound on all interfaces on an ephemeral port, invisible to `status` and `logs`, with the only clue in node.log — and no undo.",
+     "fix": "Define the config as a zod schema next to `defaultConfig` (the types exist in packages/core/src/types.ts) and run `configSet` through it: reject an unknown dotted path with the nearest known key (`unknown config key 'verifier.stak' — did you mean 'verifier.stake'?`), reject a wrong type naming the expected one, and range-check `port`, `verifier.quorum`, `market.royaltyShare`, `teach.contributorShare`. Validate the same schema in `startNode` and refuse to boot with the offending keys listed. Add `config get` and `config unset`, and keep a table of which keys are live vs. startup so the suffix is true.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 124,
+     "title": "`ainize config set` on a running node is silently reverted the next time anyone touches the console",
+     "surface": "`ainize config set` vs `deps.saveConfig()` (packages/node/src/server.ts:92)",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`config set` loads config.json from disk, mutates it and writes it back, then prints `(restart the node to apply)` — which reads as 'saved, it will take effect on restart'. But the running node holds its own in-memory `cfg` and writes the whole object back to config.json whenever the operator sets a password, adds or removes a peer, or saves account settings (`saveConfig: () => saveConfig(cfg, opts.home)`, server.ts:92, called from api.ts:97/358/438). Every `config set` made since the node started is overwritten, with no error and no event.",
+     "evidence": "packages/e2e/results/ux2/critic-19-clobber-peers.txt: node running, config.json `\"defaultPrice\": \"0.1\"` → `ainize config set market.defaultPrice 9.99` → `✓ market.defaultPrice = 9.99  (restart the node to apply)`, file now `9.99` → one `POST /api/peers` from the console (`{\"ok\":true}`) → file back to `\"0.1\"`. Reproduced in operator-day2-07-config-clobber.txt.",
+     "user_cost": "The documented way of configuring a node is a coin flip: the edit survives only if nobody uses the console before the restart. Prices, quorum, royalty share and stake can silently revert to the values from the last node start, and `config show` afterwards looks normal because it is showing the reverted value.",
+     "fix": "Two halves. (a) `configSet` should call the `runningPid(home)` helper that already exists at packages/cli/src/commands/node.ts:36 and refuse (or warn loudly) when a node is running for that home: `the node is running; this edit will be lost the next time it saves — stop it first, or use the console`. (b) Make the node re-read config.json and merge before every `saveConfig()` instead of dumping its startup snapshot over whatever is on disk.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 125,
+     "title": "`config set teach.enabled false` plus a full restart does not turn teach mode off — a console override wins invisibly",
+     "surface": "`ainize config set teach.*` vs `PATCH /api/me/teach/policy`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "Teach policy has two stores. config.json's `teach` block is the documented one (deploy/README.md, and the cluster script's own hint). The console's Teaching tab writes a `settings.teach` row into node.sqlite, and `market.teach()` lets every field of that row override the config file (packages/node/src/market.ts:946-961). Nothing reconciles them, and `ainize config show` prints the config value — the one that loses — without ever saying an override exists.",
+     "evidence": "packages/e2e/results/ux2/critic-23-teach-override.txt: `PATCH /api/me/teach/policy {\"enabled\":true}` → `{\"policy\":{\"enabled\":true},\"effective\":{\"enabled\":true,…}}`; then `ainize config set teach.enabled false` → `✓ teach.enabled = false  (restart the node to apply)`; then a full `stop` + `start -d`; then `config show` → `\"teach\": {\"enabled\": false, …}` while `GET /api/teach/policy` on the same running node returns `{\"enabled\": true, \"publish\": \"review\", …}`. Same in operator-day2-19.",
+     "user_cost": "The operator's only terminal-side switch for a feature that spends trainer GPUs and publishes lessons on the permanent record under the node's own identity is inert once the console has been used once. An operator shutting teach mode down in a hurry will read `\"enabled\": false`, restart, and still be accepting and auto-publishing lessons.",
+     "fix": "Have `config show` print the *effective* config (config.json merged with the store overrides) and mark every overridden field: `\"enabled\": false  // overridden to true by the console (settings.teach)`. Make `ainize config set teach.<k>` write through the same path as `PATCH /api/me/teach/policy` when a node is running, and let `config unset <key>` clear a console override.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 126,
+     "title": "A crash during verification or a live test leaves the knowledge loaded in the shared model, and nothing records it or ever removes it",
+     "surface": "`Runtime.verify()`, `Market.chat()`, the watchdog, `/api/info`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`Runtime.verify()` applies the .npz to the shared serving table (packages/node/src/runtime.ts:391), runs the benchmark (:396-414) and only restores at the end (:417-420); `Market.chat()` tracks what is on the table in an in-memory `loaded[]` array (market.ts:765-801). Neither writes a marker anywhere, so a SIGKILL between apply and restore leaves the table patched with nothing in the database that knows it. The watchdog (market.ts:653-664) walks `store.listApplied()` and only ever re-applies patches that reverted — it has no branch that un-applies. And `Runtime.status()` hardcodes `applied: []` (runtime.ts:302, :307), so `/api/info` and `ainize status` can never show what is physically in the model. The teach worker gets this exactly right by contrast: `lesson_applied` is persisted *before* the apply, with the comment `a crash from here on must restore the table` (teach.ts:1508) and a restore at the next start (teach.ts:349).",
+     "evidence": "Code path read end to end at this commit; live confirmation that the reporting side is blind: `GET /api/info` on a healthy node returns `runtime: {…, \"applied\": []}` (critique2-verify.txt §10) regardless of what is loaded, and `grep -n queueState packages/node/src` shows the only two consumers are the visitor chat endpoints.",
+     "user_cost": "After any unclean stop during a verification or a live test — the two things a verifier node does all day — the serving model silently knows the patch. Every later live test's \"before loading\" column and every later verification's `pre_apply` baseline is then measured against a contaminated model, so the product's central before/after proof quietly stops meaning anything and a buyer can be shown a base model that already answers correctly. No command, page or event would reveal it.",
+     "fix": "Copy the teach worker's pattern: write a `runtime_applied(sha256, reason, since)` row before `patch.py apply` inside `verify()` and `chat()`, delete it after the restore, and at start-up remove any row whose reason is `verify`/`chat` from the physical table before the verifier and chat queue come up. Make `Runtime.status().applied` return the real contents (`patch.py status` over the pinned set plus leftovers) so `ainize status` can print `loaded in the model: <ids>` and flag anything not in `store.listApplied()`.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 127,
+     "title": "The \"verifier deposit\" the product says makes verification trustworthy is never escrowed, transferred or slashed",
+     "surface": "`verifier.stake` config, attestation and challenge records, glossary, buyer page, publisher manage page",
+     "severity": "critical",
+     "effort": "L",
+     "problem": "`grep -rn 'slash\\|escrow' packages/{node,core,cli,web}/src` returns zero hits. The only writes are packages/node/src/verifier.ts:105 (`stake: m.cfg.verifier?.stake ?? '0'` copied into the attestation body) and market.ts:370 (the same into the challenge body); `AinLedger.stakeApp` stakes the *app* for chain bandwidth, not a verifier bond. No balance is debited at attest time, nothing is held, and no code path forfeits anything on a challenge. Three separate strings tell users otherwise: packages/web/src/i18n/glossary.ts:27 (\"A deposit a verifier loses if its verification turns out wrong — that is why the result can be trusted\"), i18n/pages/detail.ts on the buyer page, and i18n/pages/operator.ts:163 rendered under a column headed 'Deposit' on the publisher's own manage page (ManagePage.tsx:180).",
+     "evidence": "Live on my private cluster: three attestations on `adv-v1` each carried `\"stake\":\"5\"`; the seller's balance moved 100 → 103.25 CREDIT, exactly the seller's share of two sales — nothing was ever withheld at attest time, and node-c's 5-credit challenge stake never left node-c. The same is visible on the demo cluster right now: `adv-unfunded` carries three attestations with `stake 5` each and no matching balance movement anywhere.",
+     "user_cost": "An operator deciding whether to run the verifier role reads `stake: \"5\"` and a UI saying the deposit is what makes results trustworthy, and reasonably concludes money is at risk on every attestation. It is not. A buyer reads the same sentence and trusts a signature backed by nothing. The product's central trust claim is unimplemented, and nothing in the UI or the docs says so.",
+     "fix": "Pick one and make the words match. Either implement the bond (escrow `verifier.stake` on attest, release it when the patch settles, transfer it to the challenger when a re-verification quorum contradicts the attestation) or, until then, rename the field to `attestation_note` / drop it from the record, and rewrite all three strings to what is true: \"the verifier signs the result with its node identity; there is no deposit at risk yet.\" Do not ship a trust claim the code does not make.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 128,
+     "title": "Nothing in the product reports disk: a verifier accumulates ~1 GB of bodies with no bytes figure, no gc, and no retention on the event table or the log",
+     "surface": "`ainize status`, `/api/info`, data/blobs, the events table, node.log",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "Four stores grow without bound and none of them is reported. (1) Verification downloads every announced body over P2P into `<dataDir>/blobs` and keeps it forever — `blobs.remove()` (packages/node/src/blobs.ts:68) is reached only from the explicit `patch forget` path. (2) The `events` table has no retention: `grep 'DELETE FROM events' packages/node/src/store.ts` returns nothing. (3) `start -d` opens node.log with `'a'` (packages/cli/src/commands/node.ts:57) and nothing rotates it. (4) See item 129 for uploads. The only disk-ish number the operator gets is `blobs held N` in `ainize status` (node.ts:104) — a count, not bytes, computed from `publicBlobs`, so it excludes exactly the stale bodies worth deleting. `/api/info` carries no disk field at all, and `ainize --help | grep -i 'gc\\|blob'` returns nothing.",
+     "evidence": "Measured today on the running demo cluster (critique2-verify.txt §11): node-b and node-c, `roles: [\"verifier\"]`, each hold `932M …/data/blobs` (6 files, largest 347,829,014 bytes) while `ainize --home ~/.ngram-cluster/node-b status` prints `blobs held  4` — the two largest bodies are not in that 4. node-a's sqlite holds 4,678 event rows (3,027 of them `usage`). `/api/info`'s top-level keys are `[accepts_contributions, contributor_share, counts, currency, initial_credit, ledger, node, peers, quorum, royalty_share, runtime]` — no `disk`.",
+     "user_cost": "Verification duty costs about a gigabyte per node per handful of catalogue items and the operator is never told, has no way to ask, and has nothing the product will let them delete except one id at a time. The first symptom is ENOSPC, which takes the SQLite store and the ledger with it.",
+     "fix": "Report it first: add `disk: {blobs, uploads, sqlite, log, free}` to `/api/info` and render it in `ainize status` as `disk 1.1 GB (blobs 932 MB · uploads 115 MB · db 9 MB) · 12 GB free`, in yellow above a threshold. Then let the operator act: `ainize blobs ls` and `ainize gc [--keep-purchased] [--older-than 30d]` removing bodies this node neither authored nor purchased (they are re-fetchable from peers), an `events.retentionDays` config with a nightly delete on the existing watchdog, and size-capped rotation of node.log with two generations.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 129,
+     "title": "Every upload leaves a full copy in data/uploads forever — 115 MB of orphans on the demo node, and a rejected 350 MB publish costs 350 MB",
+     "surface": "`POST /api/patches` (multer), the console's publish form, data/uploads",
+     "severity": "major",
+     "effort": "S",
+     "problem": "multer is configured with `dest: join(market.cfg.dataDir, 'uploads')` and a 4 GiB per-file limit (packages/node/src/api.ts:45); the handler passes `req.file.path` into `createDraft`, which copies it into the blob store via `copyFileSync` (blobs.ts:37). The temp file is never unlinked — not on success, and not on any failure path (zod validation, npz parse, duplicate id). Nothing sweeps the directory at boot or on a timer; `grep -rn uploads packages/node/src` finds no cleanup. The teach dataset upload dir (api.ts:480) has the same shape.",
+     "evidence": "critique2-verify.txt §11, measured today: `~/.ngram-cluster/node-a/data/uploads` holds 31 files, 115 MB — twenty-three times the size of its actual blob store (5.0 MB). packages/e2e/results/ux2/operator-network-upload-leak.txt: two *rejected* uploads of a 20 MB file (`Too small: expected string to have >=2 characters`, then `npz: end of central directory not found`) left both bodies on disk, 39 MB.",
+     "user_cost": "The console's publish form is where a 350 MB knowledge file is uploaded and where an operator retries after a validation error. Each retry silently consumes another full copy in a directory nothing in the product ever mentions — not `status`, not `/api/info`, not `config show`, not the /docs reference.",
+     "fix": "Unlink `req.file?.path` in a `finally` around the handler (after `createDraft` has copied it, and on every throw), for both the patch route and the dataset route. Sweep `<dataDir>/uploads` and `<dataDir>/teach/incoming` for files older than an hour at start-up.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 130,
+     "title": "A model-server outage makes the verifier write the same warning ~13 times a minute per patch, into a table that is never pruned",
+     "surface": "the verifier round, `/api/events`, `ainize logs`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`Verifier.round` runs every `intervalMs` (default 5000, packages/core/src/config.ts:191) and, while the runtime is unavailable or incompatible, `verifyOne` throws once per patch per round; `round` catches and logs a `warn` each time (verifier.ts:57, :92-95). Nothing rate-limits and nothing deduplicates, because the message embeds the remaining minutes and so changes every 60 s. With no retention on the events table (item 128) the flood is permanent.",
+     "evidence": "packages/e2e/results/ux2/operator-network-grace-flood.txt: `x12 over 0.9 min (13.1/min)` for each distinct minute-variant of `verify o69-grace-… failed: runtime unavailable (serving API unreachable) — waiting up to 12 min before hash-only fallback`. Counted in the demo nodes' SQLite: node-b 2,646 events / 682 warn / 671 of them this one loop = 25.4 % of every stored event; node-c 2,804 / 830 / 819 = 29.2 %. `ainize logs`' default `--limit` is 100 (bin.ts:121) and `/api/events` defaults to 200.",
+     "user_cost": "During the exact incident an operator needs to read the log, the log *is* the incident: the default window is entirely consumed by one repeating line, hiding the payout failure or peer error they are actually looking for — and the rows stay forever.",
+     "fix": "Log the grace state once per patch per transition: on entering the grace period, once at the halfway mark, and once when it falls back to hash-only or recovers, keeping the retries silent — the pattern teach.ts:685 already uses with `BLOCKED_LOG_MS`. Better still, raise one node-level event: `model server unreachable — N patches waiting, grace expires at HH:MM`.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 131,
+     "title": "After a crash there is no supported way to read the node's own log, and nothing distinguishes a crash from a clean stop",
+     "surface": "`ainize logs`, the events table, `RunningNode.stop()`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`logs` fetches `/api/events` over HTTP (packages/cli/src/commands/node.ts:115-116), so it works only while the node is up — and a crash is precisely when it is needed. The events themselves are in `data/node.sqlite`, which no command will open. And the record has no shape: `startNode` logs `node started` (packages/node/src/server.ts:113) but `RunningNode.stop()` (server.ts:129-137) logs nothing, so a clean stop and a SIGKILL leave byte-identical histories — two consecutive `node started` lines. The detached log file also ends every run with `press Ctrl+C to stop`, a line bin.ts:114 writes for the *foreground* path into a file nobody can press Ctrl+C at.",
+     "evidence": "packages/e2e/results/ux2/critic-22-crash-logs.txt: after `kill -9`, `ainize status` and `ainize logs` both exit 2 with `error: cannot reach node at http://localhost:3581 (fetch failed). Is it running?`; `ainize stop` → `no background node running for this NGRAM_HOME`, exit 0, silently deleting the stale pid file. After restarting, the whole `logs --kind node` history is three identical `node started (local ledger, roles seller/verifier/serving)` lines.",
+     "user_cost": "The post-mortem is impossible from inside the product: the operator is left grepping a raw SQLite file or a node.log whose only content is a startup banner. And because no stop is ever recorded, nobody can tell whether a node was restarted deliberately last Tuesday or crashed — the first question in any incident.",
+     "fix": "Make `logs` fall back to `<home>/data/node.sqlite` read-only when the HTTP call fails, with a one-line note `node is not running — reading <path>`. Log `node stopping (clean shutdown)` at the top of `RunningNode.stop()`, and at start-up detect that the previous run's last event was not a stop and log `warn node: previous run ended without a clean shutdown (possible crash)`. Move the `press Ctrl+C to stop` line out of the detached child's stdout.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 132,
+     "title": "`ainize logs` never sends the operator token, so the operator's own terminal shows the redacted visitor stream — and `--kind patch` prints a blank screen",
+     "surface": "`ainize logs`, `publicEvents` (packages/node/src/api.ts:69-81)",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`logs` fetches `/api/events` with `{ auth: false }` (packages/cli/src/commands/node.ts:116), so even a logged-in operator is served `publicEvents(events, false)`: teach messages have draft ids replaced with 'a private draft' and addresses with 'a teaching key', and **every** `patch` event whose message starts with `draft ` is dropped outright (api.ts:73). The CLI prints what is left with no note that anything was withheld, and an empty result renders as one blank line with exit 0. `--level` is not a flag at all.",
+     "evidence": "packages/e2e/results/ux2/critic-20-logs-redaction.txt, logged in as the node's own operator: `ainize logs --kind patch --limit 20` printed one blank line, exit 0, while the same endpoint with the operator bearer token returned 5 events (`draft created: draft-test (600 rows, 0.8 MB)`, `draft deleted: throwaway-draft`, …). On node-a all 200 of the most recent `patch` events are `draft …` lines, so the operator's view of a busy node is empty. `ainize logs --level error` → `error: Unknown argument: level`.",
+     "user_cost": "The terminal tool for investigating your own node is the least informative view of it, and its blank screen is indistinguishable from an idle or broken node. The operator has to go find the web console for information their CLI session is already authenticated for.",
+     "fix": "Change node.ts:116 to `{ auth: true }` — the client already falls back to anonymous when there is no token. Render an explicit `(no events match)` for an empty result. Add `level` to `/api/events`, `store.events()` and a `--level` flag.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 133,
+     "title": "The operator console has no node-wide log screen at all — the event feed exists in the API and the CLI and is rendered by zero pages",
+     "surface": "/dashboard, /account, /network",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`/api/events` returns the whole node event stream and the RTK query `useEventsQuery` is defined and exported (packages/web/src/api/api.ts:236) — and used by no page: `grep -rn useEventsQuery packages/web/src` returns exactly one hit, the export list. The only log view in the app is `LogsPage`, routed as `/project/:author/:patchId/logs` (App.tsx:80) and driven by `usePatchEventsQuery({ id: patchId })` — one patch at a time, reachable only from a knowledge page.",
+     "evidence": "The greps above at this commit. Every node-scoped event produced during this review — p2p pushes, the challenge ingest, the verifier grace-period warnings, self-registration failure, payout failures, `trainer slot busy` — has no screen anywhere in the console.",
+     "user_cost": "An operator who runs the node from the browser — which is how the product presents itself (\"Open the operator console\") — cannot see that anything is wrong. They must know that a CLI exists, that it has a `logs` command, and have shell access to the node's host, none of which the console ever tells them. This is the same blind spot as the first review's item 10 (a failing API renders as a healthy, empty console), from the other side.",
+     "fix": "Add an operator-only `/logs` route rendering the existing `useEventsQuery`, with the level filter LogsPage already has plus a kind filter and follow-mode polling — LogsPage's row renderer is reusable verbatim. Put a badge in the console header counting warn/error events since the operator's last visit.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 134,
+     "title": "There is no health endpoint, and every unknown path answers 200 with the web app, so a default uptime check can never fail",
+     "surface": "HTTP surface (packages/node/src/server.ts:96-99), `ainize status --json`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "The SPA fallback `app.get(/^\\/(?!api\\/|x402\\/|p2p\\/).*/)` serves index.html for everything that is not an API route. `grep -n 'healthz\\|readyz' packages/node/src` finds nothing. `/api/info` is the only real signal and it returns 200 whether the runtime is up or down; `ainize status` has no failure branch and no `--check` flag.",
+     "evidence": "critique2-verify.txt §9, live against node-a: `/healthz`, `/readyz`, `/status` and `/this-node-is-on-fire` all return `200 text/html; charset=utf-8`. operator-day2-17: the same on a node whose `/api/info` reported `runtime.available = false`; `ainize status --json` on that node exited 0.",
+     "user_cost": "An operator who wires the node into Uptime Kuma, a Kubernetes probe or a load-balancer health check gets a permanently green light — including on a node whose model server is dead, whose ledger is unreachable and whose verifier can no longer produce a real attestation. The failure mode this product actually has (the node is up, the model is gone) is exactly the one the default monitoring cannot see.",
+     "fix": "Add `GET /healthz` (process alive, 200) and `GET /readyz` before the SPA fallback: 200 only when the ledger is reachable and, for a node with the `serving`/`verifier` role, the runtime is available; otherwise 503 with `{checks:{ledger,runtime,peers}}`. Return 404 rather than the SPA for paths that look like probes. Give `ainize status` a `--check` flag that exits 1 when any check fails.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 135,
+     "title": "The shared-model lock — the thing that makes verification and live tests block — is reported only to visitors, never to the operator",
+     "surface": "`/api/info`, `ainize status`, the /network Model server card",
+     "severity": "major",
+     "effort": "S",
+     "problem": "Several nodes on one host serialise on a cross-process lock in the shared patch dir, with a 20-minute wait before `acquireLock` gives up (packages/node/src/runtime.ts:146). `Runtime.queueState()` exposes the holder, the label and the queue depth (runtime.ts:142) but is wired only into the two visitor chat endpoints — `grep -n queueState packages/node/src` returns runtime.ts:142, api.ts:372 and api.ts:426 and nothing else. `/api/info` carries no lock or queue field, so `ainize status`, the /network card and any monitoring built on `/api/info` all say `runtime available` while the model is held by another process.",
+     "evidence": "critique2-verify.txt §10: `/api/info`'s runtime keys are exactly `[api, applied, available, hook, model, repo]`. packages/e2e/results/ux2/operator-network-sharedlock.txt: `/api/chat/patches` on :3404 returned `\"lock\": {\"owner\":\"pid:1859000\",\"label\":\"runtime\",\"since\":…,\"alive\":true,\"mine\":false}` while `ainize --home ~/.ngram-cluster/node-c status` printed `runtime  available · Qwen3.8-Flash-Next · hook ok`.",
+     "user_cost": "The most common cause of \"why is nothing happening\" on a multi-node host is invisible on every operator surface. An operator watching a verification that never completes cannot learn that another node holds the lock, who holds it, or for how long, unless they read a visitor-facing chat endpoint by hand.",
+     "fix": "Add `queue: { running, waiting, lock }` to `/api/info` — one call to the same `queueState()` — and render it in `ainize status` as `runtime  available · held by pid:1859000 (runtime) for 4m · 2 waiting`. Add the same line to the /network Model server card behind the operator session.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 136,
+     "title": "Gossip silently adds every endpoint any peer advertises, and the CLI labels the result \"configured peers\"",
+     "surface": "the p2p round, `ainize peers ls` / `ainize nodes`, config.json `peers`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "Each round the node fetches `<peer>/p2p/peers` and stores every endpoint it does not already know — `for (const ep of known.peers ?? []) { … if (!store.getPeer(n)) store.upsertPeer(n) }` (packages/node/src/p2p.ts:81-84) — with no cap, no allowlist, no operator event and no way to distinguish a learned peer from a configured one. The additions live only in the SQLite `peers` table; `cfg.peers` is touched only by `POST /api/peers` (api.ts:358). And the CLI prints the merged list under the heading `configured peers` (packages/cli/src/commands/node.ts:170).",
+     "evidence": "Live on the demo cluster: node-a's config.json `peers` is `[\"http://localhost:3404\"]`, while `ainize nodes` on the same node lists three peers — 3403, 3404 and 3410, the last being another reviewer's node this operator never configured. During this review node-a ended up gossiping with two unrelated private clusters on this host because a shared peer advertised them (operator-network-gossip-autoadd.txt).",
+     "user_cost": "An operator cannot answer \"who is my node talking to?\" from the config, cannot control it, and is shown other people's endpoints under a heading that says they configured them. On a public network this is an unbounded, operator-invisible connection list that any peer can inject into.",
+     "fix": "Log an `info`/`p2p` event for every peer learned by exchange (`learned peer http://… from node-c`), mark learned peers in the `peers` table, and add a SOURCE column (`configured` | `learned`) to `peers ls` — renaming the CLI heading to `peers`. Cap the learned set with LRU eviction by `last_seen` and add `p2p.acceptExchange` and `p2p.maxPeers` config keys.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 137,
+     "title": "`peers rm` prints `✓ peer removed` and the peer is back within one gossip round; peers are never pruned either",
+     "surface": "`ainize peers rm` → the p2p round",
+     "severity": "major",
+     "effort": "S",
+     "problem": "The gossip round re-adds any endpoint any peer advertises (packages/node/src/p2p.ts:81-84) with no deny-list, so a removal survives only until the next 4-second tick. There is no eviction in the other direction either: p2p.ts:99 only increments `failures`, `store.deletePeer` (store.ts:202) is called from nothing but the explicit `removePeer`, and no `maxPeers` key exists.",
+     "evidence": "packages/e2e/results/ux2/critic-19-clobber-peers.txt: `peers ls` showed `http://localhost:3581  critic-n6`; `peers rm http://localhost:3581` → `✓ peer removed: http://localhost:3581`; 12 s later `peers ls` listed it again with a fresh LAST SEEN. During cleanup of this review I had to loop the DELETE across all three demo nodes six times before they stopped re-teaching each other about my throwaway nodes.",
+     "user_cost": "There is no way to detach a node from a peer. An operator cutting off a misbehaving, spamming or dead peer runs the documented command, is told it worked, and is reconnected four seconds later by any third node that still lists it. The table only grows, so a long-lived node ends up dialling every endpoint that ever existed on the network, forever.",
+     "fix": "Persist removals: keep a `peers_blocked` set that `upsertPeer` consults so a removed endpoint stays removed until `peers add` re-admits it, and say so (`✓ peer removed and blocked from re-discovery`). Add eviction: drop a peer row after N consecutive failures or T days unseen, and log it.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 138,
+     "title": "A dead peer is completely silent — no event, no error text, no state — and `peers rm` reports success for a peer that was never there",
+     "surface": "the p2p round's failure path, `ainize peers ls`, `ainize peers rm`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "The round's failure path is a bare `catch` that only increments a counter (packages/node/src/p2p.ts:97-100): no event, no `last_error`, no state transition, no removal, and the counter grows without bound. `peers ls` shows only `FAILURES` and a `-` for LAST SEEN, so the operator must know to look and must interpret a raw integer. Meanwhile `peersRm` issues the DELETE and unconditionally prints `✓ peer removed: <url>` (packages/cli/src/commands/peers.ts:27-30) whether or not that peer existed.",
+     "evidence": "packages/e2e/results/ux2/operator-network-deadpeer.txt: after `peers add http://localhost:9999`, 40 s later `peers ls` shows `(unreached) … FAILURES 10` while `logs --kind p2p` shows only routine sync lines and `logs --limit 200 | grep -c 9999` = 0. `peers rm http://localhost:9999` twice and `peers rm http://not-a-peer-i-ever-had:1234` all print `✓ peer removed`, exit 0.",
+     "user_cost": "A peer that is down, moved or added with a typo produces exactly zero signal in the log an operator watches, forever, while the node keeps dialling it every gossip interval. And when the operator tries to clean up, a mistyped removal is confirmed as done, so they believe they fixed something they did not touch.",
+     "fix": "Store `last_error` and `last_attempt` on the peer row and log one `warn` on the transition to unreachable (and an `info` on recovery), not per round. Show a state column in `peers ls`: `ok` / `unreachable since 12m — connect ECONNREFUSED`. Make `peers rm` return whether a row was deleted and print `no such peer: <url> (\\`ainize peers ls\\`)` with exit 1 when it was not.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 139,
+     "title": "Two nodes with the same identity key are completely silent, and third parties silently pick one of them",
+     "surface": "`ainize init --private-key`, the node registry, `ainize nodes`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`init --private-key <hex>` imports a key with no check that it is already in use, and `knownNodes()` is a map keyed by address (packages/node/src/market.ts:947-954) — whichever node registered or gossiped most recently owns the entry. Neither node logs anything, neither `ainize status` nor `ainize nodes` mentions the collision, and the losing node simply disappears from every peer's registry.",
+     "evidence": "packages/e2e/results/ux2/critic-24-dup-identity.txt: `init --private-key <n6's key>` accepted with no check and no warning, printing the identical address `0xc9F3C742…AA98`. Both nodes peered to a third; sampling that third node's `/api/nodes` every 6 s for the shared address returned `critic-n6 -> http://localhost:3581`, then `critic-n6-clone -> http://localhost:3582` for the rest of the run. Neither node's `logs --kind p2p` mentioned it.",
+     "user_cost": "Cloning a VM, restoring a backup onto a new host without decommissioning the old one, or running a staging copy of a production home — three ordinary day-2 actions — silently produce two nodes with one identity. Buyers and verifiers fetching a blob from that seller are routed to whichever endpoint the registry currently holds, so downloads and verifications fail intermittently for reasons no log explains, and both nodes sign attestations and settlements as the same party.",
+     "fix": "On `init --private-key`, and on every `p2p/hello` where a peer presents an address already held at a different endpoint, log `warn p2p: address 0x… is claimed by two endpoints (<a>, <b>)` and surface a `DUPLICATE` flag on that row in `ainize nodes` and `/network`. Include a per-start instance id in `PeerInfo` so a collision can be distinguished from a legitimate endpoint change.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 140,
+     "title": "`ainize nodes` and /network render every node record ever written — 122 rows for a network of three running nodes, 47 of them called node-a",
+     "surface": "`ainize nodes`, `GET /api/nodes`, /network",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`knownNodes()` unions every `node` record the ledger ever held with the live peer table, keyed by address (packages/node/src/market.ts:947-954). Node records are permanent and every restart with a fresh key registers a new one, so the list only grows; nothing expires, nothing marks a node gone. `nodesTable` prints the array in API order with no limit, no recency filter, no sort and no flags (packages/cli/src/commands/node.ts:155-181), and the peers table — the only one carrying FAILURES, which is what actually diagnoses a gossip problem — is printed last. NetworkPage renders the same array with `known.filter(...)` (packages/web/src/pages/NetworkPage.tsx:61, :123) with no age cut-off, no paging and no sort.",
+     "evidence": "Measured today on node-a: `GET /api/nodes` returns 122 node records (name histogram: node-a ×47, node-d ×44, A ×12, B ×12, node-b ×1, node-c ×1) across 57 distinct endpoints; rows whose endpoint is currently listening: 3. `ainize nodes` prints 132 lines with `node-a (self)` at line 119 and the four-line peers table below it; sorted-by-last_seen check: false. Playwright at 1280 px: /network is 9,076 px tall with 122 and 30 tbody rows (operator-network-page-full.png).",
+     "user_cost": "The operator's answer to \"who is on my network?\" is a wall in which the three nodes that exist are invisible, discriminated only by an eighth-column timestamp, with 47 rows sharing the name of the node they are standing on. The same defect the first review found on /dashboard (item 31) is on the two surfaces that answer the network question, and on /network it is 120 dead rows deep.",
+     "fix": "Sort `knownNodes()` by `last_seen` descending, dedupe by `(name, endpoint)` keeping the newest, and stop returning records older than a configurable window unless `?all=1`. In the CLI, default to nodes seen within the last hour with self first, print `… and 118 nodes not seen for over an hour (--all to list them)`, add `--limit`/`--all` and a relative-age SEEN column, and print the peers table first. On /network, split online / last-seen sections with a live-stale-dead badge and page at 25 rows.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 141,
+     "title": "The version an operator and every peer sees is a string frozen into config.json at init, not the build that is running",
+     "surface": "`ainize status`, `/api/info`, `PeerInfo`, the generated OpenAPI document",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`VERSION` (packages/core/src/config.ts:7) is read exactly once, by `defaultConfig()` (config.ts:201), and copied into config.json. Everything afterwards reports `cfg.version`: `ainize status`, `/api/info`, `PeerInfo` — so every peer's node list — and the OpenAPI document. Nothing ever compares the config value with the code's constant, and `npm run build` does not touch config.json.",
+     "evidence": "packages/e2e/results/ux2/critic-18-auth-version.txt: `ainize config set version 0.0.1-from-2024` on a node built from this commit, then a full stop/start; `ainize status` prints `version  0.0.1-from-2024` and `GET /api/info` returns `node.version = 0.0.1-from-2024` to every caller and every peer.",
+     "user_cost": "After an upgrade there is no way to tell which build a node is running — from the CLI, the API, the console, or another node. Rolling an upgrade across a fleet, or asking a peer \"are you on the build with the payout fix?\", is guesswork, and a node initialised a year ago reports last year's version forever while running today's code.",
+     "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 142,
+     "title": "Joining the AIN chain misreports at two steps, and nothing prompts the operator to check the node's own balance",
+     "surface": "`ainize chain status`, `ainize chain setup`, `ainize init --ledger ain`, `ainize status`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "(a) `chainStatus` reports the health of the *configured* provider but the container state of the hard-coded `ngram-ain` name on the default port (packages/cli/src/commands/chain.ts:94), so a node pointed elsewhere is told `container ngram-ain: running` beside `reachable no`. (b) `chain setup` surfaces the raw driver error with no mention of which config key produced the URL and no `run \\`ainize chain up\\` first`. (c) `init --ledger ain` ends with `next: \\`ngram start\\`` and never mentions `chain up`, `chain setup` or funding; `ainize status` and `/api/info` carry no balance line, although `ainize wallet` does print one.",
+     "evidence": "packages/e2e/results/ux2/operator-network-chain-join.txt and my own re-run: with `ledger.ain.providerUrl = http://localhost:9099`, `ainize chain status` → `reachable  no` beside `container  ngram-ain: running`; `ainize chain setup` → `error: connect ECONNREFUSED 127.0.0.1:9099`, exit 1, naming no config key. `/api/info`'s top-level keys contain no balance (critique2-verify.txt §10).",
+     "user_cost": "The operator gets two confident-but-wrong signals in a row while onboarding, on the one path they must walk to join the real network, and is never pointed at the balance that funds every announce, attest and settle. (An earlier draft of this finding claimed an unfunded node fails silently at boot; I tested that against the dev chain and it did not reproduce — `registerSelf()` succeeded and the node listed a patch, so the residue is the reporting gap only.)",
+     "fix": "In `chainStatus`, report the container only when the provider host is local and the port matches; otherwise print `container  n/a (remote provider)`. Wrap the setup error: `cannot reach the AIN provider http://localhost:9099 (from ledger.ain.providerUrl) — start it with \\`ainize chain up\\` or fix the URL with \\`ainize config set ledger.ain.providerUrl …\\``. Make `init --ledger ain` print the chain next-steps, and add a `balance` line to `ainize status` and to `/api/info` for the signed-in operator.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 143,
+     "title": "The deploy README's own quickstart cannot run, and its error points at a web control that does not exist",
+     "surface": "deploy/README.md:19, `ainize seed`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "deploy/README.md:19 documents `ainize init … && ainize start -d && ainize login && ainize seed` as the multi-node demo setup. `seed` explicitly refuses when a node is reachable at the configured URL (packages/cli/src/commands/node.ts:137-138) — which is guaranteed, because the same `&&` chain started one two commands earlier. The error then offers two escapes: `` `ngram stop` `` (the wrong binary name, item 110) and \"seed from the web console\", where there is no seed control at all.",
+     "evidence": "packages/e2e/results/ux2/critic-09-seed-health.txt: `ainize seed` after `start -d` → ``error: a node is running at http://localhost:3580; seeding writes to its data directory — stop it first (`ngram stop`) or seed from the web console``, exit 1. `grep -rln seed packages/web/src` returns AccountPage.tsx and TeachingTab.tsx, both unrelated comments about form state seeded from the config. `scripts/cluster.mjs:104-111` seeds *before* start, so the shipped script contradicts the shipped doc.",
+     "user_cost": "The first command an operator copies out of the deployment documentation fails, and the failure message sends them to a button that does not exist. This is minute one of running a node.",
+     "fix": "Fix the doc to `ainize init … && ainize seed && ainize start -d`, matching what cluster.mjs does. Drop the phantom \"or seed from the web console\" from the error, use `PROG` instead of the hardcoded `ngram`, and offer the real escape: `stop the node first, or re-run with --node <other url>`.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 144,
+     "title": "Pointing a node at a different serving instance moves where it benchmarks but not where it writes patches, and `status` still says `hook ok`",
+     "surface": "`ainize init --runtime-api`, `runtime.patchDir`, `/api/info.runtime`, `hookApi`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`runtime.api` (which model to talk to) and `runtime.patchDir` (which mailbox to drop .npz files into, and where the cross-process lock lives) are independent, but `ainize init` exposes only `--runtime-api` and `--runtime-repo` (packages/cli/src/bin.ts:75-86) — there is no `--runtime-patch-dir`, so `patchDir` falls back to `<repo>/ple_patch` (packages/node/src/runtime.ts:114) while `runtime.repo` is auto-adopted from `/mnt/newdata/qwen3.8` if it exists (packages/core/src/config.ts:186) with no prompt. `hookAvailable()` only checks that the repo's python hook imports (runtime.ts:293-296), so it can report `hook ok` for a mailbox belonging to a different instance, and `/api/info.runtime` names no mailbox at all. Separately, `hookApi: 'http://localhost:8001'` is written into every config (config.ts:188) and typed (types.ts:332) and read by nothing — `grep -rn hookApi packages --include=*.ts` returns only those two lines.",
+     "evidence": "On this host my throwaway node, created with `--runtime-api http://localhost:8002` exactly as instructed, was pointed at `/mnt/newdata/qwen3.8/ple_patch` — the production instance's mailbox that scripts/cluster.mjs:31-33 goes out of its way to avoid (operator-day2-04-login-config.txt). `/api/info` returns `runtime: {available, api, model, hook, repo, applied}` with no mailbox field (critique2-verify.txt §10). The mailbox *can* be set — `NGRAM_RUNTIME_PATCH_DIR` (config.ts:233) and `ainize config set runtime.patchDir` both work, and that is how packages/e2e/helpers/ainize.ts:261 points test nodes at `ple_patch_e2e` — but `grep -rn NGRAM_RUNTIME_PATCH_DIR README.md docs deploy` returns nothing.",
+     "user_cost": "A node can benchmark against instance A and write its patches into instance B's mailbox, taking B's lock and mutating B's memory table, while `ainize status` reports `runtime available · Qwen3.8-Flash-Next · hook ok`. Nothing on any surface names the mailbox, so the operator cannot even check.",
+     "fix": "Add `--runtime-patch-dir` to `ainize init` and `ainize start`, and make `--runtime-api` without it print a warning naming the mailbox that will be used. Include `patch_dir` and the current lock holder in `/api/info.runtime` and in `ainize status` (`runtime available · Qwen3.8-Flash-Next · mailbox /mnt/newdata/qwen3.8/ple_patch_e2e`). Document `NGRAM_RUNTIME_PATCH_DIR` in deploy/README.md. Delete `hookApi` from `defaultConfig` and types.ts, or wire it up.",
+     "audience": "Node operator"
+    },
+    {
+     "n": 145,
+     "title": "The shipped demo cluster puts the teach trainer on the serving GPUs, which the deploy guide's own rule forbids — and invites the operator to switch it on",
+     "surface": "`teach.trainer.gpus` vs `runtime.api`, deploy/README.md",
+     "severity": "major",
+     "effort": "S",
+     "problem": "deploy/README.md:56 states the rule explicitly — \"Never let the two sets overlap: the trainer loads a second copy of the model's memory table and would starve vLLM\" — and its table (deploy/README.md:53) documents serving on GPUs 0–3 at `:8000`. `DEFAULT_TEACH_CONFIG.trainer.gpus` is `'4,5,6'` (packages/core/src/config.ts:61), and the shipped demo cluster runs its vLLM on GPUs 4,5 (scripts/cluster.mjs:31-34, `GPUS='\"device=4,5\"' PORT=8002`) with `runtimeApi` pointed at :8002. deploy/README.md:80 then invites the operator to \"flip it to gradient once GPUs 4–6 are free\". Nothing in the code cross-checks the two settings.",
+     "evidence": "Live: node-a's config has `runtime.api http://localhost:8002`, `teach.enabled true`, `teach.trainer.gpus 4,5,6`; nvidia-smi shows GPUs 4 and 5 at ~38.7 GB / 41 GB used and GPU 6 at 0 MiB. The deploy table still documents the serving port as `:8000` while every shipped config uses `:8002`. Today's `teach.backend` is `stub`, so nothing is starved yet — the damage lands exactly when an operator follows the README's own invitation.",
+     "user_cost": "An operator following the deploy guide and the cluster script's TODO turns on gradient training and either starves the serving model that every verification and live test depends on, or sits with lessons stuck at `blocked: \"slot\"` and a message about free megabytes that never names the real cause.",
+     "fix": "At start-up resolve the serving instance's GPUs (from the runtime repo's serve config or a new `runtime.gpus` key) and refuse to start the gradient trainer when `teach.trainer.gpus` intersects them, logging `error: teach.trainer.gpus 4,5,6 overlaps the serving GPUs 4,5 — training would starve the model server`. Change the default to a value that cannot collide, or leave it unset and require the operator to set it before `backend: 'gradient'`. Update the deploy table to `:8002`.",
+     "audience": "Node operator"
+    }
+   ]
+  },
+  {
+   "name": "Knowledge publisher",
+   "items": [
+    {
+     "n": 146,
+     "title": "Your own attestation counts toward the verification quorum, both the CLI and the console offer a one-click \"verify\" on your own knowledge, and the fraction is never clamped",
+     "surface": "`ainize patch verify <id>`, `POST /api/patches/:id/verify`, ManagePage \"Verify now (this node)\", `patch get` / `patch ls` / `chat --list`",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "`verifier.ts:45` honours the shipped `allowSelfAttest: false` (packages/core/src/config.ts:191) only inside the *automatic* round. The manual route `POST /api/patches/:id/verify` is `requireOperator` + `deps.verifier.verifyOne(e.anchor)` with no author check at all (packages/node/src/api.ts:315-319), and the console renders that button as \"Verify now (this node)\" on the author's own manage page (`canVerify = isVerifier && !!p && !isDraft && !alreadyAttested && p.status !== 'REJECTED'`, ManagePage.tsx:76 — no author test). `deriveCatalog` dedupes attestations by verifier but never excludes the anchor's author, and computes `e.passed = executed.length` with no clamp (packages/core/src/catalog.ts:59-67, :87-90), so `passed` can exceed `quorum` and every surface renders it raw.",
+     "evidence": "Code confirmed at this commit. Reproduced by the adversarial pass on a private cluster: `adv-v1` LISTED 2/2 → `ainize --home node-a patch verify adv-v1` (node-a is the author) → `PASS`, and the catalogue then read `passed 3 quorum 2`, `patch ls` printed `ATTEST 3/2`, `patch get` printed `verification 3/2 passed ✓ quorum`, and the author's own address appeared in the table headed \"Results left by independent verifier nodes\". The unclamped display is live on the demo cluster right now: `adv-unfunded` shows `3/2 ✓` in green in both `patch ls` and `chat --list` (critique2-verify.txt §6-7) — in that case from three genuinely independent verifiers, which is exactly why a reader cannot tell the two situations apart.",
+     "user_cost": "The \"Verified 2/2\" badge is the one thing the whole marketplace rests on, and a seller who runs two nodes can mint it for their own knowledge from one command or one button, against an explicit config setting that says not to. Every honest publisher's badge is worth less for it. And `3/2` is arithmetic no reader can interpret: a ratio whose numerator exceeds its denominator reads as a bug, which devalues the honest `2/2` beside it.",
+     "fix": "In api.ts:315 return 409 `cannot verify your own knowledge (verifier.allowSelfAttest is false)` when `e.anchor.author === market.address` and the flag is false. In catalog.ts:87 exclude the author from `executed` and count self-attestations into a separate `self_checks` field the UI never labels independent. Clamp the displayed fraction to `min(passed, quorum)/quorum` in patch.ts:31/:56 and chat.ts:83, and show the true count beside it (`2/2 ✓ (3 attestations)`). Hide the button in ManagePage.tsx:76 when `a.author === address`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 147,
+     "title": "`publish` promises \"verifiers will now attest\" without checking that a single reachable verifier exists — the advertised three-command setup produces knowledge that can never be LISTED",
+     "surface": "`ainize publish`, `ainize patch announce`, `ainize status`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`patchAnnounce` prints ``✓ announced <id> → ledger record … (verifiers will now attest; quorum lists it)`` unconditionally (packages/cli/src/commands/patch.ts:158). Nothing on the way checks whether any verifier can hear it. `ainize init` defaults `verifier: { quorum: 2, allowSelfAttest: false }` (packages/core/src/config.ts:191) and `peers: []`, `verifier.ts:45` refuses to attest your own anchor, and `market.ts:564` refuses every purchase until quorum is met — so a solo node's knowledge sits at ANNOUNCED 0/2 forever. The dead-peer case is worse: `/api/info.peers` is `store.listPeers().length`, which counts known peers whether or not any of them has ever answered, so `ainize status` reports a healthy peer count for a node whose every peer is unreachable.",
+     "evidence": "packages/e2e/results/ux2/critic-12-publisher-path.txt, solo node: `publish ./my-knowledge.npz --name \"KRX ticker codes\" --benchmark … --price 25` → `✓ draft created` + `✓ announced krx-ticker-codes → ledger record 85247293e202ed08… (verifiers will now attest; quorum lists it)`; immediately and 25 s later, `patch ls` → `krx-ticker-codes  ANNOUNCED  0/2`. On a node with two dead peers (:9998, :9997): `ainize status` → `peers 2 / quorum 2`, `publish … --id alone-1` → the same promise, 30 s later `ANNOUNCED 0/2` — while `ainize nodes` showed both endpoints at `FAILURES 10` and `logs --limit 200 | grep -c 999` was 0.",
+     "user_cost": "The publisher does exactly what the product's headline promises — one line to sell knowledge — gets two green ticks, and waits forever for a listing that cannot arrive. Nothing on any surface diagnoses it: `patch get` says `0/2`, `status` says `peers 0` (or a lying `peers 2`) and `quorum 2` on a different screen, and no message connects them.",
+     "fix": "Before printing the promise, count peers that carry the `verifier` role *and* have answered within a few gossip intervals. With fewer than `quorum`, print `! this node knows 0 reachable verifiers and quorum is 2 — nothing announced here can be LISTED or sold. Join a network with \\`ainize peers add <url>\\`, or set \\`ainize config set verifier.quorum 1 && ainize config set verifier.allowSelfAttest true\\` for a private node.` Show the same line in `ainize status` whenever reachable verifiers < quorum, and split `/api/info.peers` into `{known, reachable}`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 148,
+     "title": "There is no retire or unlist path; `patch forget` is advertised as the way to take knowledge down and does not — the gateway keeps charging for a body the node can no longer serve",
+     "surface": "ManagePage \"Delete draft\" section on a published item, `ainize patch forget`, `/x402/patch/:id`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "For any non-draft the manage page shows `op.manage.delete.sealed` — \"Published knowledge cannot be deleted — its record is permanent. To stop serving the file from this node, use the developer command below\" (packages/web/src/i18n/pages/operator.ts:217, rendered at ManagePage.tsx:302) — over a box containing `ainize patch forget <id>`. That command deletes the local blob only (`forgetBody`, packages/node/src/market.ts:420-433): it changes no status, appends no record, and does not close the x402 gateway, whose gate reads only `quorum_ok` (api.ts:814-817). `grep -rn 'retire' packages/node/src packages/core/src` finds no retire kind anywhere, and there is no unlist, withdraw or price-edit action in the CLI or the console.",
+     "evidence": "Reproduced twice. `ainize patch forget adv-v1` → the tick; `adv-share` (same body) then read `LISTED quorum_ok True has_body False`; `GET /x402/patch/adv-share` still returned 402 with a price; the node's own `GET /p2p/blob/62d0978c…` returned 404; and node-c's `patch buy adv-share` succeeded — `✓ bought adv-share for 2 (local-credit)` — crediting the seller. Same shape in packages/e2e/results/ux2/publisher-path-cli-12-forget-then-buy.txt.",
+     "user_cost": "A publisher who wants to withdraw a product follows the only instruction the product gives, believes it is withdrawn, and keeps selling it — now for a file the node provably cannot deliver, with /terms §2.4 leaving refunds to a seller the protocol does not mediate. Buyers keep paying for something the seller has decided to stop standing behind.",
+     "fix": "Add a `retire` ledger record kind (author-signed, like supersede) moving the anchor to a RETIRED status that `/api/catalog` excludes by default and that makes `/x402/patch/:id` answer 410. Give it a button in the manage page's delete section for LISTED items and a `ainize patch retire <id>` command. As a cheap interim, make the x402 route return 409/410 when `has_body` is false, and change `patch forget`'s help and the manage-page copy to say it deletes only your local copy.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 149,
+     "title": "`patch forget` un-serves every other knowledge that shares the same file, and only says so afterwards",
+     "surface": "`ainize patch forget <id>`, `POST /api/patches/:id/forget`",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "`forgetBody` deletes the blob by sha256, so every anchor pointing at that sha stops being served. It computes `alsoAffects` *before* `blobs.remove()` (packages/node/src/market.ts:427) — the API has the blast radius in hand — and deletes anyway; the CLI prints the warning after the deletion (packages/cli/src/commands/patch.ts:227-231). `bin.ts:186` declares `forget <id>` with no options: no `--force`, no dry run, no prompt, no undo, and its one-line help is \"deletes the local body; the public record stays\".",
+     "evidence": "`ainize patch forget adv-v1` → `✓ forgot adv-v1 body 62d0978ccbf0… — file left in place, no longer served from this node` followed by `! same body as adv-share — those are no longer served from here either`; adv-share was a separate LISTED product that had already sold. packages/e2e/results/ux2/publisher-path-cli-11-forget.txt shows a four-item blast radius from one command: `! same body as no-price, typo-model, pixelplus-fixed, pixelplus-ticker-code`.",
+     "user_cost": "A publisher withdrawing one version silently pulls the file out from under every other version and draft built from the same training output — the normal case, since v1/v2/v3 of a knowledge are usually the same .npz re-announced. One keystroke, no confirmation, no inverse command.",
+     "fix": "Make `forget` resolve `also_affects` first and refuse when it is non-empty: print the list with each item's status and sales count and require `--all-sharing` (or an interactive y/N naming each id). Return 409 with `also_affects` from the API unless the caller passes `all_sharing: true`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 150,
+     "title": "Publishing a new version silently retires your own listed, selling knowledge — the checklist flags the overlap and the button ignores it",
+     "surface": "/new-patch → ManagePage Publish, `ainize publish`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`market.ts:354` records `pending_supersede` at announce time from same-schema, same-branch overlaps in LISTED/VERIFYING/ANNOUNCED, and `reconcileSupersedes` (market.ts:378-392) writes a permanent `supersede` record as soon as the new anchor reaches quorum. The manage page's checklist does surface the overlap, but the Publish button is gated only on `disabled={!p.has_body || !a.benchmark.schema}` (ManagePage.tsx:159) — the overlap row is decorative — and there is no dialog, no list of what will be retired, and no undo. The CLI is worse: it prints nothing at all, although the node's own log records the count.",
+     "evidence": "packages/e2e/results/ux2/publisher-path-web-02.txt: the draft's checklist read \"✗ No overlap with verified knowledge on the same subject (1 overlap(s))\" with the overlap table showing `pixelplus-fixed · 2,992 memory entries · same subject yes · For sale`, and `publish button enabled? true`, `dialog after click: null`. Twelve seconds later pixelplus-fixed read \"Newer version available\" and the ledger carried `supersede  pixelplus-v2 supersedes pixelplus-fixed (2992 rows)`. On the CLI, `ainize publish … --id adv-share` printed only the two ✓ lines while the node logged `announced adv-share (conflicts: 1)` — the count exists and is never shown to the publisher.",
+     "user_cost": "The publisher's own catalogue silently becomes a graveyard: my throwaway node ended with three SUPERSEDED items, two of which had already made sales, all retired by later publishes I was never asked to confirm. Someone republishing to fix a typo in a description retires the version buyers are currently paying for. (The gate itself is the first review's item 32; what is new here is what publishing does to your existing listings.)",
+     "fix": "When same-schema overlaps exist, replace the Publish button with a confirm step naming each item it will retire, its status and its sales count, and require the publisher to type the new id — the friction the product already demands to delete a *draft*. Do the same in the CLI: `ainize patch announce` should refuse without `--supersede <id>…` when `conflicts > 0`, and `publish` should print the list before announcing.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 151,
+     "title": "A stranger's overlapping upload permanently marks your listing \"Newer version available\", with no notice and no appeal",
+     "surface": "`reconcileSupersedes` (packages/node/src/market.ts:378-392), /explore, the knowledge page",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`reconcileSupersedes` requires only that the *new* anchor belongs to this node and has reached LISTED. It never checks who owns the older anchor, whether the new one is better, or whether its benchmark executed. Any node can therefore supersede any other author's listing by publishing an overlapping .npz on the same schema.",
+     "evidence": "Reproduced end to end on a private cluster: node-a published `adv-share` (schema adv-other, 2 CREDIT); it reached LISTED and made a sale. node-c — a different author — then published `rival-adv` from the same .npz on the same schema at 1 CREDIT; node-c's log recorded `rival-adv supersedes adv-share (2992 shared rows)`, the ledger carries `supersede 0x0E587e…8C9C  rival-adv supersedes adv-share (2992 rows)`, and node-a's `patch ls --mine` now reads `adv-share  SUPERSEDED`. node-a's own log for adv-share contains only the announce and the sale.",
+     "user_cost": "A competitor — or anyone who bought your knowledge and re-published it — can retire your listing from the catalogue's default view and paint \"Newer version available\" on your product page, at a lower price, without your knowing. There is no notification, no dispute, and no way to undo a supersede.",
+     "fix": "Restrict automatic supersede to anchors with the same author. For a cross-author overlap, record it as a *conflict* (the data model already has `conflicts`) and surface it on both knowledge pages as \"another node published overlapping knowledge on this subject\" with links, leaving both LISTED — or require the older author's signature on a `supersede` record naming their anchor. Either way, log a `warn supersede` event on the node that owns the older anchor (see item 156).",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 152,
+     "title": "Two data providers declared 50 % / 50 % are paid 50 % and 25 % — the CLI prints both as 50 %",
+     "surface": "`ainize publish --contributor`, `royaltySplit` (packages/core/src/catalog.ts:228-238)",
+     "severity": "critical",
+     "effort": "S",
+     "problem": "Pass 2 of `royaltySplit` carves the seller remainder sequentially against a shrinking base: `const carve = Math.min(remainder, remainder * safeShare(c)); remainder -= carve;` (catalog.ts:235-237). With two contributors at 0.5 the second is paid half of what is left, not half of the slice. `validateContributors` only enforces Σ share ≤ 1 (catalog.ts:127) and `bin.ts:199` documents the flag as \"share = fraction of YOUR share of each sale (… Σ ≤ 1)\". The same file computes the *lineage* carve the other way — `carve = Math.min(rem, sub * safeShare(c))` against a fixed slice (catalog.ts:222) — so the codebase already does it both ways, which makes pass 2 a bug rather than a design choice.",
+     "evidence": "Reproduced with real money on a throwaway node: `ainize publish … --price 5 --contributor 0x1111…:Alice:0.5 --contributor 0x2222…:Bob:0.5` printed `✓ data providers on the record: Alice 50%, Bob 50% (of this node's share of each sale)`. The single 5 CREDIT sale settled as `{\"0x1111…\":\"2.5\",\"0x2222…\":\"1.25\",\"0x2C52…(seller)\":\"1.25\"}` — Alice 50 %, Bob 25 %, seller 25 %. A lineage carve for the same two 0.5 contributors on a 3.0 pool paid 1.5 and 1.5.",
+     "user_cost": "Data providers are paid a different number from the one the publisher agreed with them, the one printed on the receipt, and the one written on the public record — and the error grows with each additional contributor, always in the seller's favour. Nobody involved has any way to notice.",
+     "fix": "Compute pass 2 against the fixed slice like pass 1b: `const slice = amount - pool; const carve = Math.min(remainder, slice * safeShare(c));`. Add a unit test with two 0.5 contributors asserting an equal split, and print the resulting amounts (not just the percentages) in the publish confirmation and on the manage page.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 153,
+     "title": "A challenged knowledge is still sold at full price, and no verifier who has already attested can ever clear the challenge",
+     "surface": "`ainize patch challenge`, CHALLENGED status, `ainize patch verify`, `/x402/patch/:id`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "Two defects compound. (a) `deriveCatalog` sets CHALLENGED on top of a quorum-passing entry but leaves `quorum_ok` true (packages/core/src/catalog.ts:96-99), and both buy gates check only `quorum_ok` (market.ts:564; api.ts:814-817), so a disputed patch sells with the reassuring line \"2 attestation(s) ≥ quorum 2\". (b) An attestation is deduplicated by verifier and the *first* one wins unless it was hash-only (catalog.ts:59-66), so when an existing verifier re-runs `ainize patch verify` the new PASS is written to the ledger, costs real GPU time, prints PASS and is then discarded by every node's catalog — and `verifier.ts:47-52` skips a patch it has already attested, so the automatic round cannot re-list it either. With the shipped 3-node topology every verifier has already attested, so nothing can move the patch back to LISTED.",
+     "evidence": "Reproduced on a private cluster: after node-c challenged `adv-v1`, node-b's `patch buy adv-v1` printed `+0ms quorum 3 attestation(s) ≥ quorum 2 … ✓ bought adv-v1 for 5` and `GET /x402/patch/adv-v1` still returned 402. node-b then ran `patch verify adv-v1` → `PASS`, exit 0 — and the catalogue still shows CHALLENGED with node-b's attestation `created_at` unchanged (challenge timestamp is later). Same in packages/e2e/results/ux2/operator-network-challenge.txt across three nodes.",
+     "user_cost": "A buyer pays full price for knowledge a verifier has publicly disputed, with no warning at the point of sale. An author whose patch is challenged — correctly or maliciously — has no route back: re-verification is a no-op that costs GPU minutes and writes junk to the permanent record. One `patch challenge` from any node permanently de-lists a seller's inventory in the eyes of anyone who reads status, while leaving it fully purchasable.",
+     "fix": "Clear `quorum_ok` (or add an explicit `sellable` flag that CHALLENGED clears) so the 402 gate returns 423 with \"a verifier has challenged this knowledge — re-verification pending\". Make a later attestation from the same verifier replace the earlier one whenever its `created_at` is newer than the newest challenge, and let the automatic round re-verify a CHALLENGED patch it has already attested. Have `ainize patch verify` refuse with a clear message when the re-attestation would be discarded, instead of printing PASS.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 154,
+     "title": "A one-character typo in `--model` produces a permanent listing that never verifies, never fails, and never explains itself",
+     "surface": "`ainize publish --model`, `POST /api/patches`, the manage page status block",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`model_id` is accepted as free text. Verifiers find `runtimeCompatible` false and log `runtime unavailable (no model) — waiting up to N min before hash-only fallback` every 5 s for the 15-minute grace (packages/node/src/verifier.ts:16, :92-95), then attest hash-only — which catalog.ts:86-87 correctly refuses to count for an anchor that ships samples. The result is an anchor permanently stuck at ANNOUNCED. None of this reaches the author: the retry warnings are events on the *verifier's* node, and the publishing node already knows its own runtime model from `/api/info.runtime.model` and never compares.",
+     "evidence": "packages/e2e/results/ux2/publisher-path-cli-08-typo-model.txt and an independent re-run: `ainize publish … --model Qwen3-8-Flash-Next` on a node serving `Qwen3.8-Flash-Next` → `✓ announced typo-model … (verifiers will now attest; quorum lists it)`, exit 0. At T+0/30/60/90 s and again at 12 minutes: `ANNOUNCED 0/2`, `att []`. `ainize logs --patch typo-model` on the author's node has exactly one line, the announce. Only the verifier nodes carry `warn verifier [adv-typo] verify adv-typo failed: runtime unavailable (no model) — waiting up to 14 min before hash-only fallback`, every 5 s.",
+     "user_cost": "The publisher watches \"Registered · awaiting verification\" forever with no error to search for, and the id is burned: re-publishing it is refused with `patch id already exists` and an announced anchor cannot be deleted.",
+     "fix": "At publish time compare `model_id` with `/api/info.runtime.model` and refuse: `this node serves Qwen3.8-Flash-Next — pass --model Qwen3.8-Flash-Next, or --force to publish for a model this node cannot test`. Show the same as a form warning on /new-patch. Independently, have verifiers broadcast a `verify_blocked` note the author's node can render, and put a \"no verifier could run this — why\" line on the manage page after five minutes at 0 attestations.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 155,
+     "title": "When verification fails the publisher is told \"0/1\" and nothing else — the verifier saw the model's actual answer and threw it away",
+     "surface": "the Attestation record, ManagePage attestation table, `ainize patch get`",
+     "severity": "critical",
+     "effort": "M",
+     "problem": "`verifier.ts:85` logs the full comparison as a local event (`details: [{prompt, expect, got, hit}]` plus a `log` array), but the signed Attestation that travels to the author carries only `score`, `passed`, `verified_on`, `restarts_detected`, `stake` and `sig` (verifier.ts:100-106). So the author's node has FAIL rows reading accuracy `0/1` and no way to learn what the model answered on which prompt. The manage page adds no explanation of what \"Failed verification\" means or what to do next, and the section that would normally offer recovery is still titled \"Delete draft\".",
+     "evidence": "A deliberately wrong benchmark went REJECTED with two FAIL rows; the complete attestation the author receives is `{\"patch_id\":\"adv-fail\",\"verifier\":\"0x2d73b0…\",\"verifier_name\":\"node-b\",\"patch_sha256\":…,\"benchmark_hash\":…,\"score\":{\"free_generation\":\"0/2\"},\"passed\":false,\"verified_on\":\"vllm:Qwen3.8-Flash-Next\",\"restarts_detected\":0,\"stake\":\"5\",\"created_at\":…,\"sig\":…}` — no prompt, no expected answer, no model output. packages/e2e/results/ux2/publisher-path-web-05-rejected.txt: the manage page shows \"Failed verification / executed 0/2 passed · 3 result(s)\" and three FAIL · 0/1 rows with no reason anywhere on the page, while the *verifier's* own `/api/events` held `details: [{\"prompt\":\"capital of Mars? \",\"expect\":\"Olympus\",\"got\":\"\",\"hit\":false}]`.",
+     "user_cost": "The single most important moment in the publisher's life — my knowledge was rejected — hands them a fraction and no debugging information, on an anchor that is permanent and an id that is burned. The only way to see the model's answer is to self-verify on your own node, which is the trust hole of item 146.",
+     "fix": "Add `failures?: {prompt, expect, got}[]` (≤5 items, `got` truncated to 120 chars) to the Attestation body, sign it with the rest, and render it inline under each FAIL row and in `ainize patch get`. Retitle the section \"Failed verification\" with one sentence: \"Two verifiers ran your benchmark on the real model and the answers did not match. The anchor is permanent; publish a corrected version under a new id\" — with a button that opens /new-patch pre-filled.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 156,
+     "title": "A challenge against your knowledge is invisible to you and its reason is rendered nowhere",
+     "surface": "`Market.challenge`, record ingest, `ainize logs`, `ainize patch get`, ManagePage, the public knowledge page",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`Market.challenge` logs a `warn challenge` event on the *challenger's* node only (packages/node/src/market.ts:369-374) and broadcasts the record. The receiving node ingests it as a generic p2p push and emits nothing — nothing inspects `rec.kind`, so the author is never told one of their anchors just left LISTED. And nothing renders the reason: `ainize patch get` has branches for attestations, lineage, conflicts, branches and settlements but none for challenges (packages/cli/src/commands/patch.ts:47-90); ManagePage contains zero occurrences of `challenges`; the public page shows the chip without the text.",
+     "evidence": "Live on a private cluster: node-c challenged node-a's `adv-v1`. On node-a, `ainize logs --kind challenge` printed nothing (exit 0) and `logs --limit 15` showed only `info p2p received 1 record(s) via push`, while `ledger ls --kind challenge` did carry `adv-v1 · answers are wrong` from `0x0E587e…8C9C`. packages/e2e/results/ux2/publisher-path-web-07-challenged.txt: \"challenge reason present on manage page? false\", \"reason visible to buyer? false\". The same silence applies to the supersede in item 151.",
+     "user_cost": "Anyone can type one sentence and paint a red \"Re-verification requested\" chip on a competitor's product, and the owner is never told, cannot read the accusation, cannot answer it, and has no idea whether it is costing them sales. Buyers see a red chip with no explanation on an item they can still buy.",
+     "fix": "On ingest, inspect the record kind: when a `challenge` (or `supersede`, or a failing `attest`) names an anchor whose author is this node, log a `warn` with the challenger, reason and resulting status — those are the three events an author must never miss and all three currently arrive as an anonymous \"received 1 record(s)\". Render a banner at the top of the manage page and a line on the public page: who, when, why, and what happens next. Add a `challenges` block to `ainize patch get`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 157,
+     "title": "REJECTED is a dead end, and `patch rm` / `patch announce` answer \"draft not found\" for ids that plainly exist",
+     "surface": "`ainize patch rm`, `ainize patch announce`, ManagePage on a REJECTED item",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`market.deleteDraft` (packages/node/src/market.ts:313) and `market.announce` (:346) both throw `notFound('draft not found')` whenever the draft table misses, without consulting the catalogue — so a REJECTED item, a LISTED item, an ANNOUNCED item and an id that never existed all produce the identical string. Re-publishing under the same id is refused with `patch id already exists`, so the name is burned, and the manage page for a REJECTED item offers no recovery: its delete section keeps the heading \"Delete draft\" and says publishing is permanent.",
+     "evidence": "Reproduced on five paths against a REJECTED anchor: `patch rm adv-fail` → `error: draft not found` (exit 1); re-publish same id → `error: patch id already exists: adv-fail`; `patch announce adv-fail` → `draft not found`; `patch announce nope-xyz` (never existed) → the identical `draft not found`; `patch get nope-xyz` → `patch not found`. With `krx-ticker-codes ANNOUNCED` visible one line above in `patch ls`, `patch rm krx-ticker-codes` → `error: draft not found` and the row unchanged (packages/e2e/results/ux2/critic-13). The contrast is in the same file: `forgetBody` (market.ts:423) already throws `this is a draft — delete it instead (ainize patch rm <id>)`.",
+     "user_cost": "A publisher who names something wrong, prices it wrong, is rejected, or simply changes their mind gets the same four words for every attempt — words that say the thing does not exist while it is sitting in their own catalogue, which sends people looking for a sync bug instead of reading the status.",
+     "fix": "Look the id up in the catalogue first and throw the state, not a lookup failure: `krx-ticker-codes is ANNOUNCED — announced knowledge cannot be deleted (its record is public). Stop serving it with \\`ainize patch forget\\`, or publish a replacement with \\`ainize publish … --parents krx-ticker-codes\\`.` Keep `not found` for ids that really do not exist. On a REJECTED manage page, replace the delete section with \"Publish a corrected version\", opening /new-patch pre-filled from the rejected anchor with a suggested id.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 158,
+     "title": "Publishing a Korean-named knowledge fails with `invalid patch id` — for an `--id` the publisher never supplied",
+     "surface": "`ainize publish` / `POST /api/patches` without `--id`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "When `--id` is omitted the node derives it from the name: `(input.id ?? input.name).toLowerCase().replace(/[^a-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'')` (packages/node/src/market.ts:258). Every non-ASCII character is stripped, so a Korean or Japanese name collapses to the empty string and fails `SLUG` on the next line (:259). The CLI relays the server's message verbatim, so the user is told a rule about a flag they did not pass — and `--id` is one of the flags with no describe (item 111), so the help never says an id is derived from the name.",
+     "evidence": "packages/e2e/results/ux2/critic-11-publish-errors.txt: `ainize publish <file>.npz --name \"픽셀플러스 종목코드 (테스트)\" --model Qwen3.8-Flash-Next --benchmark ./bench.json --no-announce` → `error: invalid patch id (use 2-64 chars: a-z 0-9 . _ -)`, exit 1, in 0.7 s. The same command with `--id` added succeeds.",
+     "user_cost": "The product's flagship knowledge is Korean stock data, its examples are Korean and its glossary is bilingual — and the first `ainize publish` a Korean creator runs dies on a message that names neither the field that failed nor the fix. It also truncates silently: a name containing two ASCII letters produces a two-character id that means nothing.",
+     "fix": "Fall back when the slug is empty: `const slug = slugify(name); const id = input.id ?? (slug.length >= 2 ? slug : \\`patch-${sha256(name).slice(0,8)}\\`)`, or transliterate first. Either way name the cause: `could not derive an id from the name \"픽셀플러스 종목코드\" (ids are a-z 0-9 . _ -) — pass --id <slug>, e.g. --id pixelplus-ticker`. Give `--id` a describe saying it defaults to a slug of `--name`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 159,
+     "title": "The two most likely publish mistakes produce a message that names neither the file nor the mistake — one of them a zip-format internal",
+     "surface": "`ainize publish --benchmark <path>`, `ainize publish <not-an-npz>`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`patchPublish` tries `existsSync(a.benchmark)` and, failing that, `JSON.parse` of the string itself (packages/cli/src/commands/patch.ts:133-135), so a path typo lands in the inline-JSON catch and reports `--benchmark must be a JSON file path or inline JSON` without ever echoing the path it looked for — and malformed inline JSON produces the identical message, so three different mistakes are indistinguishable. Separately, a body that parses as a .npz name but is not a valid archive reaches the reader, which throws the raw zip error.",
+     "evidence": "critic-11-publish-errors.txt: `publish … --benchmark ./does-not-exist.json` → `error: --benchmark must be a JSON file path or inline JSON`, exit 1, path never named; `--benchmark '{\"schema\":'` → the identical message; publishing 4 KB of /dev/urandom renamed `.npz` → `error: npz: end of central directory not found`, exit 1, with no filename.",
+     "user_cost": "The publisher has done everything right except a path, and the CLI restates the flag's own grammar instead of saying \"that file is not there\". The npz case is worse: \"end of central directory\" is a ZIP structure term that gives no hint the file is the wrong kind, so the user re-runs the same command with the same file.",
+     "fix": "Branch on shape before parsing: if the value does not start with `{`, treat it as a path and report `benchmark file not found: <resolved absolute path>`; only `JSON.parse` values that look like JSON, and on failure print the parser's own message plus the expected keys. Wrap the npz read in a try/catch reporting `<path> is not a valid .npz (a knowledge file is a numpy archive with addrs/before/after arrays) — <underlying error>`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 160,
+     "title": "A verification failure reaches the operator as an eight-line Python traceback ending in a Korean sentence",
+     "surface": "`ainize patch verify <id>`, node.log",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`Runtime.verify` rethrows the applier's stderr verbatim (`throw new Error(\\`apply failed: ${ap.err || ap.out}\\`)`, packages/node/src/runtime.ts:391) and the client relays it unchanged, so what reaches the terminal is `scripts/patch.py` line numbers, `engram/live.py` internals and `RuntimeError: patch hook reported failure — 컨테이너 로그 확인`, with `(retrying for 15 more min before hash-only fallback)` (verifier.ts:87) appended after the command has already exited — so it is unclear who is retrying or where to look. And the manual route logs nothing: `POST /api/patches/:id/verify` (api.ts:315-319) records only `verifying <id>`, so `ainize logs` has no trace of the failure (the automatic loop does log it, at verifier.ts:57).",
+     "evidence": "packages/e2e/results/ux2/critic-16-draft-chat.txt: exit 1 with `error: Traceback (most recent call last): File \"/mnt/newdata/qwen3.8/scripts/patch.py\", line 29 … File \"…/engram/live.py\", line 45 … RuntimeError: patch hook reported failure — 컨테이너 로그 확인`. cli-firstrun-16: `ainize logs --limit 20` after a manual verify shows only `node started` and `announced`.",
+     "user_cost": "An operator whose verifier is failing — the duty that keeps the market honest — is handed a stack trace from a Python file they do not own, with the only actionable words in a language the rest of the product does not use, and their own log has no record of it.",
+     "fix": "Catch the applier failure and raise a one-line English CliError: `cannot apply to the serving runtime at <runtime.api> (the patch hook at <patchDir> refused the write) — check the model container's logs; the full trace is in <home>/node.log`, keeping the trace in the log only. Say who retries and when, in the present tense. Log a `verify` event on the manual route so `ainize logs --kind verify` shows it.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 161,
+     "title": "The licence is a free-text box with no guidance, no validation, and a silent default the publisher never sees",
+     "surface": "/new-patch License field, `ainize publish --license`, the knowledge page",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`NewPatchPage.tsx:144` renders License as `<TextField label={t('op.new.license')} placeholder=\"CC-BY-4.0\">` with no `helper` prop, and there is no `op.new.license.helper` key in packages/web/src/i18n/pages/operator.ts. `--license` in the CLI has an empty describe (bin.ts:197). Whatever string arrives is written into the immutable anchor and printed verbatim to buyers. If the field is left empty, PatchPage.tsx:287 substitutes `detail.ov.license_default` — \"Use on the identified model · no resale of raw data\" (i18n/pages/detail.ts:111) — terms that appear on neither publish surface.",
+     "evidence": "Live: `ainize publish … --license banana-9000` accepted with no warning, and `GET /api/patches/adv-v1` returns `\"license\":\"banana-9000\"` in the sealed anchor, served to anonymous callers. packages/e2e/results/ux2/publisher-path-web-02.txt: the License field probe returns `{\"found\":true,\"helperText\":\"License\"}` — the helper text is the label.",
+     "user_cost": "The one permanent legal decision in the flow is made with zero information. A publisher either types something meaningless that buyers read as terms of sale, or silently grants a licence whose text they have never seen. (The teach publish sheet has the opposite defect — the first review's item 40, five raw SPDX identifiers with no plain-language gloss — so the two publishing surfaces fail in opposite directions.)",
+     "fix": "Make it a Select with the same five options the teach sheet offers, each with a one-line plain-language gloss and an \"Other (free text)\" escape, and add `op.new.license.helper` saying the choice is permanent and shown to every buyer. Show the default's actual text inline when the field is empty (\"leave blank to use this node's standard terms: …\") instead of only on the buyer's page. Fill in the CLI describe with the accepted values.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 162,
+     "title": "Nothing helps the publisher pick a price, and the field's silent default is 30× off the version it replaces",
+     "surface": "/new-patch Price field, `ainize publish --price`",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`NewPatchPage.tsx:47` initialises price to `'0.1'`; `op.new.price.helper` (packages/web/src/i18n/pages/operator.ts:287) is exactly \"0 = free. Buyers pay automatically and you are settled per sale.\" — no market context, no unit meaning, no billing-mode explanation, and no mention of the creator share the Source-knowledge field two rows down activates. `ainize publish --help` shows `--price  price in the node currency (AIN or node credit)` with no default named; omitting it yields `market.defaultPrice` = '0.1' (packages/core/src/config.ts:194). Nothing on either surface reads the node's own catalogue for comparables, and nothing pre-fills from the item a same-schema overlap is about to supersede.",
+     "evidence": "Live on node-a, the catalogue the publisher would be pricing against: `krx-all-2761` 25 AIN, `krx-all-2761-ep12` 10 AIN, `krx-all-2761-ep6` 5 AIN, `pixelplus-087600` 0.1 AIN (critique2-verify.txt §7). A publisher replacing the 25 AIN flagship with a new version and not touching the price field ships it at 0.1.",
+     "user_cost": "Price is one of the three decisions frozen at announce, and the publisher makes it with no information at all: no idea what comparable knowledge sells for on this node, what the unit is worth, or that a default they never saw is about to undercut their own previous version by 250×.",
+     "fix": "Show the node's own price distribution beside the field (`this node: 0.1 – 25 AIN, median 7.5 · 4 listed`) from data `/api/catalog` already returns, and pre-fill from the superseded item when a same-schema overlap exists. State the unit and that the price cannot change after announce, in both the helper and the CLI describe. Name the default in `--help`.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 163,
+     "title": "Naming a parent gives away 30 % of every sale, and the number appears only on the buyer's page",
+     "surface": "/new-patch Source knowledge field, `ainize publish --parents`, ManagePage lineage note",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`op.new.parents.helper` (packages/web/src/i18n/pages/operator.ts:291) says \"…Their creators automatically get a share of every sale (creator revenue share)\" with no figure. `op.manage.lineage.note` has no figure. `ainize publish --help` says `comma list of source knowledge ids (creators get a revenue share)` — no figure. The rate lives in `/api/info.royalty_share` (0.3 on every node I checked) and the only string carrying a percentage is `detail.lin.note_share` (i18n/pages/detail.ts:165), rendered on the *buyer-facing* PatchPage.tsx:433.",
+     "evidence": "Live: `/api/info` returns `royalty_share` on the same document the publish form already fetches. A publish with `--parents adv-v1` printed nothing about the split, and the settlement then sent 30 % of a 10 CREDIT sale to third parties.",
+     "user_cost": "The publisher makes a permanent revenue decision — nearly a third of every future sale — from a field whose help never states the rate, while the person who benefits from not knowing is nobody and the person who does know is the buyer reading a different page. (The teach publish sheet has the sibling defect in the first review's item 41, where the contributor share is published beside your name and the consent never mentions it.)",
+     "fix": "Read `royalty_share` from `/api/info` — the page already has it — and render it inline as the publisher types: `2 source knowledges named — their creators will receive 30 % of every sale, split between them; you keep 70 %`. Print the same sentence in the CLI's publish confirmation. Put the figure in `op.new.parents.helper` and in the `--parents` describe.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 164,
+     "title": "\"Answers are sealed so nobody can peek\" — the answer key is in the public anchor and one unauthenticated curl reads it",
+     "surface": "the knowledge page benchmark note, `GET /api/patches/:id`, `/api/catalog`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`detail.ov.benchmark_note` (packages/web/src/i18n/pages/detail.ts:114), rendered at PatchPage.tsx:293, reads \"Verifier nodes score the knowledge with these questions. Answers are sealed so nobody can peek.\" The samples — prompt *and* expect — are part of the anchor and are served to anonymous callers by both `/api/patches/:id` and `/api/catalog`.",
+     "evidence": "Live, no credentials: `curl -s http://localhost:3402/api/patches/adv-unfunded` → `samples: [{\"prompt\": \"종목코드 픽셀플러스 \", \"expect\": \"087600\"}]` (critique2-verify.txt, sealed-answers section); `/api/catalog` carries the same for every entry.",
+     "user_cost": "This is a security claim, stated in the plainest language the product uses, that the API contradicts in one request. A publisher reading it believes their benchmark is a sealed exam; anyone can read the answer key, and a seller could train a patch to the exact strings that will be scored. Every \"verified\" badge on the network rests on questions the author knew in advance — which is a defensible design, but not the one the sentence describes.",
+     "fix": "Decide which it is and say it. If samples must stay public (they are what makes the live test's verdict checkable — first review item 20), change the string to the truth: \"Verifier nodes score the knowledge with these sample questions. They are published with the knowledge so anyone can re-run them.\" If the exam is meant to be sealed, publish only `benchmark_hash` plus a small public sample set and hold the scored set for verifiers behind the p2p auth the blob route already uses.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 165,
+     "title": "The publish form invents two public technical claims for you: the facts count is whatever you type, and the side-effect limit is a number the form chose",
+     "surface": "/new-patch \"Facts covered\" and the benchmark JSON box, the knowledge page",
+     "severity": "major",
+     "effort": "S",
+     "problem": "(a) `queries` is a free number the publisher types (`NewPatchPage.tsx:155`, `type=\"number\" min={0}`), validated against nothing, and PatchPage.tsx:217 renders it as a headline stat card labelled with the glossary term \"facts covered\". (b) `DEFAULT_BENCH` sets `collateral_bound_nat: 0.1` (NewPatchPage.tsx:31) with no plain field exposing it — the only way to see or change it is the raw Benchmark JSON DevBox at :167 — while packages/node/src/openapi.ts's own reference example uses 0.08, so the console's silent default is looser than the product's documented one.",
+     "evidence": "Live: `adv-unfunded` declares `queries: 1` and one sample; the same field on `krx-all-2761` declares 2,761. Nothing checks either against the .npz. The `collateral_bound_nat` value appears in the anchor and on the knowledge page as \"Limit declared (≤ 0.1 nat)\" although the publisher was never shown a control for it. (The rendering half of the side-effect claim was the first review's item 55 and is fixed — PatchPage.tsx:301-305 now says \"not yet measured by any verifier\" — so what remains is only the silent default.)",
+     "user_cost": "Two numbers the buyer reads as measured properties of the file are, respectively, a number the publisher typed with no cross-check and a number the form picked without telling them. The first review's central theme — the claims outrun the measurements — has its origin here: this is the form where the unmeasured claims are entered.",
+     "fix": "Derive a floor for `queries` from the .npz (rows, or the recipe's fact count) and warn when the declared value is wildly larger: `you declared 250,000 facts; this file contains 2,992 memory entries and 1 sample — buyers see 250,000 as a headline number`. Expose `collateral_bound_nat` as a real field with the glossary help and the reference default (0.08), or drop it from `DEFAULT_BENCH` so an unset limit is rendered as unset rather than as a declaration.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 166,
+     "title": "The \"Payout address\" field is stored and never used — every payment still goes to the node key",
+     "surface": "/account Payout address, `PATCH /api/me/settings`",
+     "severity": "major",
+     "effort": "M",
+     "problem": "`grep -rn payout_address packages/node/src packages/core/src` returns only the validator (api.ts:442), the settings read/write (market.ts:1007-1015), the OpenAPI schema (openapi.ts:300) and the separate, working teach-contributor field (teach.ts:1712-1718). No consumer. The payment destinations are hardcoded: `payTo: this.address` in the x402 requirement (market.ts:462) and in the signed intent hash (market.ts:498), and `royaltySplit` pays `entry.anchor.author`. Of the three fields on that form only `display_name` is actually consumed (market.ts:1015 sets `cfg.name`).",
+     "evidence": "The greps above at this commit. AccountPage.tsx:107 renders the field under `op.account.payout.helper` (i18n/pages/operator.ts:343): \"Where sales revenue and creator revenue share arrive. Defaults to this node's address.\"",
+     "user_cost": "A seller who separates their node's operational key from the wallet that receives money — the first thing anyone running real revenue would do — fills in the field, is told where the money will arrive, saves successfully, and the money keeps going to the node key. The failure is silent and it is about money.",
+     "fix": "Either wire it up — read `settings().payout_address` in `payTo` at market.ts:462/:498 and in the royalty split, and validate it as an AIN address the way teach.ts:1712 already does — or remove the field from AccountPage and the settings schema until it is. Do not ship a form field that promises where money arrives and does nothing.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 167,
+     "title": "The README badge is a 12-pixel tick linking to a 402 JSON body, and it is offered on drafts and rejected items",
+     "surface": "ManagePage badge section, the \"Knowledge page\" row",
+     "severity": "major",
+     "effort": "S",
+     "problem": "ManagePage.tsx:79-80 builds ``[![Ainize knowledge: <id>](${origin}/static/images/ic-certified.svg)](${gateway_url})``. The SVG is declared `width=\"12\" height=\"12\"` (packages/web/public/static/images/ic-certified.svg), so the badge renders as a 12-px tick with no text. The href is the x402 endpoint, which answers `402 Payment Required` with a JSON payment-requirements body — not a page. And the whole section (ManagePage.tsx:291-296) sits at the component's top level with no status guard, so it renders for DRAFT and REJECTED items under `op.manage.badge.desc` — \"…so people and AI agents can buy it\". Meanwhile the row that carries the real shareable link (ManagePage.tsx:125) is plain text with no CopyButton; the only CopyButton on the page is on the broken snippet.",
+     "evidence": "`curl -i /x402/patch/adv-share` → `HTTP/1.1 402 Payment Required` with a JSON body. The SVG header read at this commit. The badge section renders unconditionally — verified by reading the component tree around :291.",
+     "user_cost": "The publisher's one distribution asset — the thing they paste into a README to sell — is a tick a reader cannot see, labelled with alt text nobody reads, pointing at a machine endpoint that renders as JSON in a browser. On a draft it advertises something that does not exist yet. And the link that actually works is the one you cannot copy.",
+     "fix": "Ship a real badge: an SVG with an intrinsic width (a shields-style `Ainize | verified 2/2` at ~20 px height, or serve `/api/patches/:id/badge.svg` rendering live status), and point the markdown at the knowledge page, keeping the gateway URL as a separate \"for agents\" row. Guard the section on `status === 'LISTED'` and show drafts \"available once this is published and verified\". Put a CopyButton on the Knowledge page row.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 168,
+     "title": "`patch rm` deletes a draft on one keystroke while the console makes you type its full id",
+     "surface": "`ainize patch rm <id>` vs the manage page's delete dialog",
+     "severity": "major",
+     "effort": "S",
+     "problem": "`patchRm` issues `DELETE /api/patches/:id` and prints `✓ draft <id> deleted` (packages/cli/src/commands/patch.ts:219-222): no prompt, no `--yes`, no dry run, no report of what was deleted (rows, size, whether the body file went with it), and no undo. The console demands `confirmText !== a.id` for the same operation (ManagePage.tsx:317).",
+     "evidence": "packages/e2e/results/ux2/critic-13: `ainize patch rm throwaway-draft` → `✓ draft throwaway-draft deleted`, exit 0, one keystroke; re-running gives `draft not found`. cli-daily-16 shows the same on a draft imported with `patch import`, whose .npz lives outside the node.",
+     "user_cost": "The friction is inverted twice over. The first review's item 32 found the console making a *reversible* draft deletion demand the full id while irreversible publishing is one click; the CLI does the reversible half on one keystroke — and the draft it deletes may be the only record of a lesson imported from outside the node, whose recipe the operator may no longer have.",
+     "fix": "Print what will go before doing it (`draft pixelplus-ko · 2,992 rows · 3.7 MB · body <path> will be deleted`) and require `y` on a TTY or `--yes` otherwise. Report the outcome the way `forget` does, naming whether the body file was removed. Then relax the console's typed-id requirement to a plain confirm, so the two surfaces agree that deleting a draft is the cheap operation.",
+     "audience": "Knowledge publisher"
+    },
+    {
+     "n": 169,
+     "title": "Publish-surface polish: a duplicated label, a developer's absolute path as a placeholder, a `--branch` that files into nothing, a doubled word in the price error, and a checklist row that denies its own number",
+     "surface": "/new-patch, `ainize publish --branch`, `ainize branch ls`, client error composition",
+     "severity": "minor",
+     "effort": "S",
+     "problem": "Five small defects on the surfaces where knowledge is created. (a) `NewPatchPage.tsx:155` composes `{term('facts')} ({t('op.new.queries')})` and both resolve to the same words — glossary.ts:14 `facts covered` and operator.ts:298 `Facts covered` — rendering \"facts covered (Facts covered)\". (b) `NewPatchPage.tsx:184`'s placeholder is a developer's absolute path on this machine, `/mnt/newdata/qwen3.8/results/train-fact/픽셀플러스.npz`. (c) `--branch` accepts any string and creates nothing: the anchor records the track, `ainize branch ls` says there are no branches, and `ainize route` matches nothing. (d) `client.ts:37` joins the zod issue path onto a message that already starts with it, producing `price price must be a non-negative number`. (e) `op.manage.check.conflict` (operator.ts:149) is \"No overlap with verified knowledge on the same subject ({n} overlap(s))\", so a *failing* row renders as \"No overlap … (1 overlap(s))\" — a string that denies its own number (this one sharpens the first review's item 32).",
+     "evidence": "All five read or run at this commit: `ainize publish … --branch \"law/KR\"` accepted, `patch get` shows `branch law/KR`, `ainize branch ls` → ``no branches yet — `ngram branch create law/KR --context jurisdiction=KR --patch <id>` ``, `ainize route jurisdiction=KR` → `no branch matches {\"jurisdiction\":\"KR\"}`. `ainize publish … --price -5` → `error: invalid request: name Too small: expected string to have >=2 characters; price price must be a non-negative number`.",
+     "user_cost": "Individually small; together they are what a publisher meets in the first five minutes of the one flow that writes to a permanent record, and each one costs a little trust in the surface asking for irreversible decisions.",
+     "fix": "(a) Use the glossary term once. (b) Replace the placeholder with a relative example (`./my-knowledge.npz`). (c) Either create the track on first use, or validate `--branch` against `branch ls` and refuse with the create command. (d) Strip the leading path from the message in client.ts:37 when it already matches the issue path. (e) Reword to \"Overlap with verified knowledge on the same subject: {n}\" and colour by state.",
+     "audience": "Knowledge publisher"
+    }
+   ]
+  }
+ ],
+ "praise": "Six things are genuinely well made and should not be touched while the rest is fixed.\n\n**The error-design discipline is real, and it is better than most production CLIs.** Errors name the next command rather than the failure: `cannot reach node at http://localhost:39999 (fetch failed). Is it running? Try \\`ainize start\\` or pass --node <url>.` (client.ts:28, exit 2); `operator login required — run \\`ainize login\\` first` (exit 3); `patch is loaded in the model — unload it first (ainize patch remove <id>)`; `quiet-test is DRAFT (verification 0/2) — not verified yet; try \\`ainize patch get quiet-test\\``; `a node is running at http://localhost:3512; seeding writes to its data directory — stop it first`. Exit codes are distinct and meaningful. Colour is correctly suppressed when stdout is a pipe. Every read command emits clean, complete JSON. The gaps reported above are gaps in an otherwise consistent standard, which is why they are worth closing.\n\n**The purchase receipt is the best-designed output in the product.** `patch buy` prints a step timeline with millisecond offsets — `+ 0ms quorum 2 attestation(s) ≥ quorum 2 / + 8ms 402 Payment Required: 25 CREDIT → 0x9D99… / +14ms pay signed credit intent / +59ms settled seller confirmed; manifest sha256 044cbfa8… / +61ms download body already present; sha256 matches on-ledger anchor` — then the resolved body path and the exact next command. Every claim in the flow is shown being checked, in order, with its cost. That is the shape every long operation in this product should have.\n\n**The chat REPL was designed correctly against the bug the web shipped.** `chatRepl` keeps two independent transcripts and replays each column only its own answers (chat.ts:167-206), and says so on the first line: \"follow-ups: each column replays only its own earlier answers — the base model is never shown the patched one\". That is item 1 of the first review — the finding that most undermined the product's central demo — and the CLI never had it. The renderer is honest in the same way: it labels the verdict's provenance, prints `(no benchmark sample for this question)` rather than a tick when it has nothing to check, reports apply latency separately from generation latency, and explains and quantifies a truncated answer instead of just stopping.\n\n**Money and crashes are handled with real care where the code touches them directly.** The payout runner claims each row atomically (`pending|failed → paying`), writes the row *before* attempting the transfer, and marks a row found `paying` at boot as failed with the exact sentence the operator needs — \"node restarted during the transfer — confirm on chain whether it went through before retrying\" — and never auto-retries (packages/node/src/payouts.ts:79-85, :152-162). The cross-process runtime lock uses identical liveness checks to report a holder and to break a dead lease, with a comment recording the bug that taught it (runtime.ts:118-140). The teach worker persists `lesson_applied` before the apply with the comment \"a crash from here on must restore the table\" (teach.ts:1508) and re-queues an interrupted `CHECKING` job rather than reporting a measurement that was cut short. A `kill -9` cost nothing: WAL mode plus additive migrations brought the node back with ledger head, drafts, blobs and event history intact, first try.\n\n**The verifier refuses to invent evidence.** With no compatible runtime it attests `verified_on: 'hash-only'` with the score spelled out as \"not executed (no compatible runtime on this node)\" (verifier.ts:97-101), and `deriveCatalog` excludes hash-only attestations from quorum whenever the anchor ships samples while still counting them separately as `integrity_checks` (catalog.ts:85-90). The 15-minute grace exists precisely so a serving restart does not silently weaken an attestation. That is a principled design that would have been much easier to fudge — and it is why items 146, 153 and 127 are worth fixing rather than abandoning.\n\n**`ainize teach status <node-url>` is the best screen in the CLI and the model the rest should follow.** One unauthenticated request against someone else's node produces a single scannable answer to the question an outsider actually has: `accepting lessons`, `trainer ready · backend stub (no GPU training on this node)`, `publish auto — published lessons are announced at once`, `queue 0 / 10`, `typical lesson no measurement yet`, quotas on one line, `data-provider share 70 % of the node's share of each sale (lineage pool 30 %)` — every value carrying its own explanation rather than a bare enum — and it ends by handing you the next step as a URL. It refuses to invent a duration it has not measured. Also worth keeping: `ainize patch import` ends by printing the exact next three commands prefilled with the lesson's own first prompt; the table renderer counts Hangul as two cells so Korean and Latin align; and deploy/README.md's `server.trustProxy` section is a model of operator documentation, naming exactly what breaks and refusing the lazy answer.",
+ "order_of_work": "The first review proposed its own waves; these slot alongside it rather than replacing it. Everything here is CLI, node or publish-flow work, so wave 1 barely competes with the web fixes already in flight.\n\n**Wave A — stop the lying (about a week, mostly S).** Items 118, 119, 101, 123, 132, 116, 134, 141. These are the ones where a command reports a state that is not true, and they are cheap: a liveness poll after `spawn`, an address comparison in `status`, a null-config guard in `buildContext`, a zod pass in `configSet`, one boolean in `logs`, `choices` on `--kind`, two new routes, and reading `VERSION` from the code. Nothing below this line can be debugged while these are in place.\n\n**Wave B — stop the destroying (about a week, S/M).** Items 120, 122, 149, 168, 102, 129. Identity preserved on `--force` plus `keys backup`; `forget` refusing a non-empty blast radius; `patch rm` confirming; `use` quoting the price before it spends. All are small, all are irreversible-data-loss paths, and 120+122 together are the difference between a lost disk being an inconvenience and being the end of a node.\n\n**Wave C — make the trust claims true (two to three weeks, one L).** Items 146, 127, 153, 164, 152. Either implement the stake or rewrite the three strings that describe it; exclude and clamp self-attestation; make CHALLENGED stop the sale and be clearable; fix the contributor split arithmetic and its test; decide what \"sealed\" means. This is the wave that decides whether \"Verified 2/2\" is worth printing, and it pairs naturally with the first review's own trust-and-evidence wave.\n\n**Wave D — the publisher's dead ends (two weeks, M).** Items 147, 148, 150, 151, 154, 155, 156, 157. A retire record, a supersede confirmation and an ownership check, a model-id check at publish time, failure details in the attestation body, an ingest-side event for challenges and supersedes, and state-aware error messages instead of `draft not found`. Together these turn publishing from a one-way door into a flow someone can walk twice.\n\n**Wave E — day-2 operability (two weeks, S/M).** Items 128, 126, 130, 131, 133, 135, 136, 137, 138, 140, 124, 125. Disk reporting and a gc, the applied-set marker, log volume and retention, a console log screen, the lock in `/api/info`, peer provenance and pruning, the node registry. None of it is urgent on day 1 and all of it is what makes month 6 survivable.\n\n**Wave F — polish and help text (a few days, all S).** Items 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 117, 142, 143, 144, 145, 158, 159, 160, 161, 162, 163, 165, 166, 167, 169. Mostly strings, describes and one shared `withProgress` helper. Worth doing in one pass with the lint rules that stop items 110 and 111 from regressing.",
+ "dropped_as_already_reported": [
+  {
+   "title": "\"Before you publish\" is a five-item checklist of which three items do nothing",
+   "why": "Already reported as first-review item 32 (\"Irreversible publishing is one click; reversible draft deletion demands you type the full id\"), which cites the same gate `disabled={!p.has_body || !a.benchmark.schema}` at ManagePage.tsx:159 and the same consequence. Re-verified unchanged at this commit. Only the copy bug it noticed in passing survives, folded into item 169(e); the *consequence* of publishing over an overlap is a different defect and is item 150."
+  },
+  {
+   "title": "`ainize chat` blocks for up to 15 minutes with no output",
+   "why": "Merged into item 105, which makes the identical claim about `chat` and also covers `verify`, `buy`, `apply` and `use` and the `queue` field this version omitted."
+  },
+  {
+   "title": "\"The CLI hardcodes `ngram` in 31 strings\"",
+   "why": "Merged into item 110, which is the accurate version: 22 grep hits, 8 of them file-header doc comments no user sees, 13 user-facing sites in packages/cli/src plus core/src/ain-ledger.ts:457."
+  },
+  {
+   "title": "`ainize init --force` silently throws away the node identity (reported by three walks)",
+   "why": "One item, 120. The three reports are identical in command, code path, observable and fix."
+  },
+  {
+   "title": "\"With no config, every command targets :3402 — and `login` offers to set its operator password\"",
+   "why": "Merged: the fallback is item 101, and the login-hijack half is the client-side view of item 121 (the unauthenticated `/api/auth/setup`)."
+  },
+  {
+   "title": "\"Nothing in the CLI reports disk: `blobs held 4`\"",
+   "why": "Merged into item 128, a strict superset (blobs, events table, log rotation, `/api/info`), with the orphaned uploads split out as item 129 because the fix is a different one-line change."
+  },
+  {
+   "title": "\"`ainize status` for a dead node reports a different node as yours\"",
+   "why": "Merged into item 118, whose second half makes the identical claim with the same code citation; its \"say `not running` explicitly\" fix is folded in."
+  },
+  {
+   "title": "\"`config set` validates nothing and the node boots on 999.999.999.999\" (reported by three walks)",
+   "why": "One item, 123, with the unique observations folded in: `startNode` validates nothing on boot either, prices are stored as numbers, and the `(restart the node to apply)` suffix is printed uniformly even for keys the node reads live."
+  },
+  {
+   "title": "\"Every argument error is raw yargs text\" / \"Tables ignore the terminal width\" / \"`--json` prints prose on failure\"",
+   "why": "Each reported twice; merged into items 103, 115 and 104 respectively, keeping the sharper measurements (the 133-column footer hint, the 293-column overlaps line, the `--quiet` half)."
+  },
+  {
+   "title": "\"The network page renders 122 rows of dead node records\"",
+   "why": "Merged into item 140 as a second surface — same `knownNodes()` source, same absent expiry and sort. Related to but distinct from first-review item 31, which is /dashboard."
+  },
+  {
+   "title": "\"`patch forget` does not delist\" (reported twice) and \"The deposit is never taken\" (reported twice)",
+   "why": "Merged into items 148 and 127, keeping the sharper consequences from each duplicate: that the node keeps charging for a body its own `/p2p/blob` route returns 404 for, and that the deposit claim is made in three separate strings (glossary, buyer page, publisher manage page)."
+  },
+  {
+   "title": "\"A challenge is invisible / sells anyway / is never rendered\"",
+   "why": "Three overlapping reports resolved into two items with different owners: item 153 (the state machine — the buy gate and the un-clearable challenge) and item 156 (the notification and rendering gap)."
+  },
+  {
+   "title": "\"An unfunded node boots looking perfectly healthy\" (limb of the chain-joining finding)",
+   "why": "Dropped on evidence: tested against the dev chain on :8081, an identity holding 0 AIN registered successfully, published, and reached LISTED. The reporting residue — no balance line in `status` or `/api/info` — is kept in item 142."
+  },
+  {
+   "title": "\"The default config puts the teach trainer on the serving GPUs\"",
+   "why": "Kept but narrowed to item 145: the collision is in the shipped demo cluster (scripts/cluster.mjs on GPUs 4,5 vs `trainer.gpus 4,5,6`), not in `defaultConfig`, whose `runtime.api` default of :8000 does not overlap."
+  },
+  {
+   "title": "\"The side-effect limit is shown to buyers as your declaration and never measured\"",
+   "why": "The rendering half is first-review item 55, already fixed — PatchPage.tsx:301-305 now says \"Limit declared (≤ {n} nat) — not yet measured by any verifier\". Only the silent `DEFAULT_BENCH` default survives, as limb (b) of item 165."
+  }
+ ]
+}
