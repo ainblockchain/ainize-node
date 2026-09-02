@@ -332,7 +332,7 @@
      "fix": "Two halves. (a) `configSet` should call the `runningPid(home)` helper that already exists at packages/cli/src/commands/node.ts:36 and refuse (or warn loudly) when a node is running for that home: `the node is running; this edit will be lost the next time it saves — stop it first, or use the console`. (b) Make the node re-read config.json and merge before every `saveConfig()` instead of dumping its startup snapshot over whatever is on disk.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "The node now writes back only the keys it changed itself, merged onto config.json as it is at that moment, so a console save never reverts an `ainize config set`; the CLI also warns that a running node keeps using the value it started with."
+     "shipped": "The node now writes back only the keys it changed itself, merged onto config.json as it is at that moment, so a console save never reverts an `ainize config set`; the CLI also warns that a running node keeps using the value it started with. Re-verified: the node now diffs against what it last wrote rather than its boot snapshot, so a peer added and then removed reaches config.json as removed (it used to look like \"no change\" and the earlier save stood)."
     },
     {
      "n": 125,
@@ -544,7 +544,7 @@
      "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
+     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
     },
     {
      "n": 142,
