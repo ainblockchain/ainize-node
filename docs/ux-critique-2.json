@@ -217,7 +217,9 @@
      "evidence": "critic-17: `ainize --node localhost:3402 status` → `error: cannot reach node at localhost:3402 (fetch failed). Is it running? …`, exit 2, while node-a was serving on that port throughout. `ainize chat pixelplus-087600 \"x\" --max-tokens 5000` → `error: invalid request: max_tokens Too big: expected number to be <=1024`. critique2-verify.txt §8, live: `ainize ledger ls --kind bogus` → `records 1223 / height 167892` and then `ledger is empty`, exit 0; `ainize logs --kind chalenge` → no output, exit 0.",
      "user_cost": "The scheme-less case is the expensive one: the node is up, the user is told it is down, and they restart a healthy node. The `--kind` case is worse in kind: an operator checking \"have there been any challenges?\" with a mistyped kind is told the ledger is empty, two lines under a count that says 1,223 — and both commands exit 0, so a monitoring script built on them reports healthy.",
      "fix": "In `buildContext` run `new URL(nodeUrl)` and on failure throw `--node must be a full URL: did you mean http://localhost:3402?`. Add `.coerce`/`.check` on `--max-tokens` enforcing 1–1024 locally with the message the help already states. Declare `--kind` with yargs `choices` on both commands, and change the empty-table text to reflect the filter: `no records of kind 'challenge' (1,223 records in the ledger)`.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "status": "fixed",
+     "shipped": "`--node` without a scheme is now a typo with the URL spelled out, `--max-tokens` is range-checked locally against the range the help documents, and `--kind` is a choices list on both `ledger ls` and `logs` whose empty table names the filter and the real record count."
     },
     {
      "n": 117,

@@ -327,10 +327,20 @@ test.describe('operator: account / API / inspection', () => {
     const recordsANow = (await api<{ ledger: { records: number } }>(request, '/api/info')).body.ledger.records;
     expect(recordsB).toBe(recordsANow);
 
+    // an unrecognised kind is refused with the list, not answered with "ledger is empty" under a four-figure count
     r = await runCli(['ledger', 'ls', '--kind', 'bogus'], A);
-    expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout).toMatch(/^ledger\s+ain · ain:local/m);
-    expect(r.stdout.trim().endsWith('ledger is empty')).toBe(true);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('Argument: kind, Given: "bogus", Choices: "anchor", "attest", "settle", "challenge", "branch", "node", "supersede", "subscribe"');
+    // …and a real kind that matches nothing says so against the real record count
+    r = await runCli(['ledger', 'ls', '--kind', 'subscribe', '--limit', '1'], A);
+    expect(r.code, r.stderr).toBe(0);
+    const totalRecords = Number(/^records\s+(\d+)$/m.exec(r.stdout)![1]);
+    if (!r.stdout.includes('SUMMARY')) expect(r.stdout.trim().endsWith(`no records of kind 'subscribe' (${totalRecords} record(s) in the ledger)`)).toBe(true);
+
+    // a scheme-less --node is a typo, not a dead node
+    const typo = await runCli(['status'], { home: HOME_A, node: 'localhost:3402' });
+    expect(typo.code).toBe(2);
+    expect(typo.stderr.trim()).toBe('error: --node must be a full URL — did you mean http://localhost:3402?');
   });
 
   test('AZ-065 Operate the local AIN chain from the CLI: `chain status`, `chain up`, `chain fund`, `chain setup` and `wallet`', async ({ request }) => {
@@ -595,6 +605,11 @@ test.describe('operator: runtime', () => {
     let r = await runCli(['chat'], A);
     expect(r.code).toBe(1);
     expect(r.stderr.trim()).toBe('error: patch id required — `ainize chat --list` shows what this node can test');
+
+    // the help has always documented 1–1024: the CLI checks it itself instead of forwarding the node's zod sentence
+    r = await runCli(['chat', K.pixel, 'x', '--max-tokens', '5000'], A);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('error: --max-tokens must be a whole number between 1 and 1024 (got 5000)');
 
     r = await withRuntime(request, () => runCli(['chat', '--list'], A));
     expect(r.code, r.stderr || r.stdout).toBe(0);

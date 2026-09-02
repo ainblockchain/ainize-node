@@ -2191,6 +2191,7 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 7. Run `node packages/cli/dist/bin.js --home /tmp/ainize-anon --node http://localhost:3402 chat pixelplus-087600 --mode base "종목코드 픽셀플러스"`
 8. Run `$A chat krx-all-2761 --mode patched`; type `종목코드 삼성전자` Enter; type `/mode compare` Enter; `/help` Enter; `/reset` Enter; `/quit` Enter
 9. Run `printf '종목코드 삼성전자\n/quit\n' | $A chat krx-all-2761 --mode patched`
+10. Run `$A chat pixelplus-087600 "x" --max-tokens 5000`
 
 **Expected**
 
@@ -2203,6 +2204,7 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 7 (anonymous) ends with `free live tests left this hour: 19` (or one less per prior anonymous call from this IP in the hour)
 - Step 8: banner `live test of krx-all-2761 · mode patched · /quit to exit, /help for commands`, prompt `you> ` (in `compare` mode a second dim line says 'follow-ups: each column replays only its own earlier answers — the base model is never shown the patched one', because the REPL keeps one transcript per column); the answer block `after (krx-all-2761 loaded)` contains 005930 with `correct ✓ (benchmark)`; `/mode compare` → `mode → compare`; `/help` lists `/mode base|patched|compare  (now: compare)`, `/reset   forget the transcript`, `/quit    exit`; `/reset` → `transcript cleared`; `/quit` → `bye — 1 turn(s)`; exit 0
 - Step 9 works non-interactively (no prompt echo) and ends with `bye — 1 turn(s)`; after every call the shared table is restored (`curl -s http://localhost:3402/api/runtime` shows `"applied":[]`)
+- The last step fails locally with `error: --max-tokens must be a whole number between 1 and 1024 (got 5000)` — the range the help documents is checked before the request instead of being answered with the node's zod message; exit 1
 
 **Evidence**
 
@@ -2565,7 +2567,7 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 4. Run `$A ledger graph`
 5. Run `$A ledger export $OUT`; then `wc -l $OUT` and `head -1 $OUT | python3 -c "import sys,json; r=json.load(sys.stdin); print(sorted(r)[:6], r['kind'])"`
 6. Run `node packages/cli/dist/bin.js --node http://localhost:3403 --home /tmp/ainize-anon ledger ls --limit 1 | head -3` and compare the `records` count with node-a
-7. Run `$A ledger ls --kind bogus`
+7. Run `$A ledger ls --kind bogus`, then `$A ledger ls --kind subscribe --limit 1` and `$A --node localhost:3402 status`
 
 **Expected**
 
@@ -2575,7 +2577,7 @@ This document lists 233 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 4 prints `lineage (child → parent edges, royalties flow upward)` and the tree `krx-all-2761-ep6 [Qwen3.8-Flash-Next · krx-ticker-codes] SUPERSEDED` → `└─ krx-all-2761-ep12 … SUPERSEDED` → (indented one level further) `└─ krx-all-2761 … LISTED  supersedes krx-all-2761-ep12, krx-all-2761-ep6, pixelplus-087600`, plus a separate root `pixelplus-087600 … SUPERSEDED`
 - Step 5 prints `✓ exported <n> record(s) to /tmp/ainize-ledger.jsonl` where n is the node's whole `records` count — the CLI asks how big the ledger is and requests exactly that many (it used to ask for a fixed 1,000 and printed 'exported 1000 record(s)' once the chain grew past it). Past the node's per-request maximum (5,000) it says so instead: `exported the most recent 5000 of <n> record(s) … cannot page further back`. `wc -l` equals n; each line is one JSON record whose keys are `author, body, hash, kind, parents, sig, ts` (sorted(r)[:6] → ['author','body','hash','kind','parents','sig']), oldest first
 - Step 6: node-b reports the same `records` count and network `ain:local` — one shared chain, no divergence
-- Step 7 prints the header and `ledger is empty` (unknown kind matches nothing, no error)
+- Step 7 fails with `error: Invalid values:` / `  Argument: kind, Given: "bogus", Choices: "anchor", "attest", "settle", "challenge", "branch", "node", "supersede", "subscribe"`, exit 1 — an unrecognised kind is never answered with `ledger is empty` two lines under a four-figure record count. A kind that is real but matches nothing prints `no records of kind 'subscribe' (<n> record(s) in the ledger)`. And `--node localhost:3402` — a scheme-less URL — fails with `error: --node must be a full URL — did you mean http://localhost:3402?` (exit 2) instead of reporting a healthy node as unreachable
 
 **Evidence**
 
