@@ -1000,7 +1000,7 @@ test.describe('operator: fourth node', () => {
     // mailbox, so it queues on the one cross-process lock the other three share instead of driving a second instance.
     r = await runCli(['config', 'set', 'runtime.patchDir', RUNTIME_PATCH_DIR], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe(`✓ runtime.patchDir = ${JSON.stringify(RUNTIME_PATCH_DIR)}  (restart the node to apply)`);
+    expect(r.stdout.trim()).toBe(`✓ runtime.patchDir = ${JSON.stringify(RUNTIME_PATCH_DIR)}  (the node reads config.json when it starts)`);
 
     r = await runCli(['keys', 'show'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1288,7 +1288,7 @@ test.describe('operator: fourth node', () => {
     await runCli(['stop'], D);
     let r = await runCli(['config', 'set', 'runtime.api', 'http://localhost:8999'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe('✓ runtime.api = "http://localhost:8999"  (restart the node to apply)');
+    expect(r.stdout.trim()).toBe('✓ runtime.api = "http://localhost:8999"  (the node reads config.json when it starts)');
     r = await runCli(['config', 'set', 'roles', 'verifier'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     r = await startNodeD();
@@ -1354,7 +1354,7 @@ test.describe('operator: fourth node', () => {
 
     // Step 4 — restore node-d's serving API and restart it
     r = await runCli(['config', 'set', 'runtime.api', VLLM], D);
-    expect(r.stdout.trim()).toBe(`✓ runtime.api = ${JSON.stringify(VLLM)}  (restart the node to apply)`);
+    expect(r.stdout.trim()).toBe(`✓ runtime.api = ${JSON.stringify(VLLM)}  (the node reads config.json when it starts)`);
     r = await runCli(['stop'], D);
     expect(r.stdout.trim()).toMatch(/^✓ stopped node \(pid \d+\)$/);
     r = await startNodeD();
@@ -1746,6 +1746,36 @@ test.describe('operator: commands that report state', () => {
       expect(await httpUp(t.url, 60_000)).toBe(true);
       const logs = await pollUntil(() => t.cli(['logs', '--kind', 'config', '--limit', '10']), (r) => r.stdout.includes('strayKey'), 20_000, 1000);
       expect(logs.stdout).toContain('warn  config    strayKey: unknown config key');
+    } finally { await t.stop(); }
+  });
+
+  test('AZ-231 A `config set` made while the node runs survives the next console save, and says it needs a restart', async () => {
+    test.setTimeout(4 * 60_000);
+    const t = await throwawayNode('clobber');
+    try {
+      const cfgPath = join(t.home, 'config.json');
+      expect(JSON.parse(readFileSync(cfgPath, 'utf8')).market.defaultPrice).toBe('0.1');
+      const login = await t.cli(['login'], { env: { NGRAM_PASSWORD: 'clobber-pass-1234' } });
+      expect(login.code, login.stderr).toBe(0);
+      const token = JSON.parse(readFileSync(join(t.home, 'cli.json'), 'utf8')).token as string;
+
+      const set = await t.cli(['config', 'set', 'market.defaultPrice', '9.99']);
+      expect(set.code, set.stderr).toBe(0);
+      expect(set.stdout.trim()).toBe('✓ market.defaultPrice = "9.99"  (the node reads config.json when it starts)');
+      expect(set.stderr.trim()).toMatch(new RegExp(`^! the node in ${esc(t.home)} is running \\(pid \\d+\\) and keeps using the value it started with — restart it to apply this \\(\`ainize stop\` then \`ainize start -d\`\\)$`));
+      expect(JSON.parse(readFileSync(cfgPath, 'utf8')).market.defaultPrice).toBe('9.99');
+
+      // one console save (adding a peer) used to write the node's start-up snapshot over the whole file
+      const res = await fetch(`${t.url}/api/peers`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'http://localhost:9999' }),
+      });
+      expect(res.status).toBe(200);
+      const after = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      expect(after.market.defaultPrice, 'the CLI edit survived the console save').toBe('9.99');
+      expect(after.peers, "the node's own change was written too").toContain('http://localhost:9999');
+      expect(typeof after.operatorPasswordHash).toBe('string');
     } finally { await t.stop(); }
   });
 });

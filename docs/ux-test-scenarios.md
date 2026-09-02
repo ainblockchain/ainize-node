@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (232)
+# Ainize UX Test Scenarios (233)
 
-This document lists 232 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 233 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -28,8 +28,8 @@ This document lists 232 user-experience test scenarios for **Ainize** (ai-nize =
 | Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 2 | 2 | 0 | 0 |
-| **Total** | **232** | **99** | **112** | **21** |
+| Node operator | 3 | 3 | 0 | 0 |
+| **Total** | **233** | **100** | **112** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -37,7 +37,7 @@ This document lists 232 user-experience test scenarios for **Ainize** (ai-nize =
 | teach-dataset | 23 |
 | chat | 18 |
 | x402 | 14 |
-| cli | 12 |
+| cli | 13 |
 | api | 9 |
 | dashboard | 8 |
 | agent | 7 |
@@ -68,7 +68,7 @@ This document lists 232 user-experience test scenarios for **Ainize** (ai-nize =
 | Automation | Count |
 |---|---:|
 | e2e | 156 |
-| cli | 33 |
+| cli | 34 |
 | api | 32 |
 | manual | 11 |
 
@@ -2818,7 +2818,7 @@ This document lists 232 user-experience test scenarios for **Ainize** (ai-nize =
 - Step 1 shows `runtime     unavailable (serving API unreachable)`
 - Step 2 shows an info `verifier` line `verifying <id> (<name>)`, a `blob` line for the body fetch, then a `warn verifier` line `verify <id> failed: runtime unavailable (serving API unreachable) — waiting up to 15 min before hash-only fallback` (repo present + real model + benchmark samples ⇒ the node is expected to have a runtime, so it waits)
 - Step 3 shows the same warning repeated every ~5 s; the minute count is rounded (`waiting up to 15 min` for the first ~30 s, `14 min` after ~1 minute); no `attest` record from node-d exists (`patch records <id>` has no author = node-d)
-- Step 4 prints `✓ runtime.api = "http://localhost:8000"  (restart the node to apply)`, then `✓ stopped node` / `✓ node started in the background`
+- Step 4 prints `✓ runtime.api = "http://localhost:8000"  (the node reads config.json when it starts)` on stdout and, because node-d is still running at that moment, the warning `! the node in $H is running (pid N) and keeps using the value it started with — restart it to apply this (`ainize stop` then `ainize start -d`)` on stderr; then `✓ stopped node` / `✓ node started in the background`
 - Step 5 shows `attested <id>: PASS (vllm:Qwen3.8-Flash-Next)` — the pending patch was verified for real once the runtime came back, never as hash-only
 - Step 6 shows node-d's attestation row with `VERIFIED ON vllm:Qwen3.8-Flash-Next` (third attestation; status LISTED) and the verification line `2/2 passed ✓ quorum (+1 more independent attestation)` — the numerator is clamped to the quorum, so a third verifier can never make it read `3/2` (critique 2 item 146). If node-d had instead written `hash-only` with `benchmark: not executed …` within the first 15 minutes, the grace period is broken — report it
 
@@ -8356,3 +8356,35 @@ prompt,answer,alt_prompt
 - `packages/node/src/server.ts startNode() (refuses invalid values, warns about unknown keys)`
 - `packages/core/test/config.test.ts + packages/cli/test/operator.test.ts (item 123)`
 - `docs/ux-critique-2.json item 123`
+
+### AZ-231 - A `config set` made while the node runs survives the next console save, and says it needs a restart
+
+**Goal:** The documented way of configuring a node is not a coin flip: an edit is never silently reverted by someone clicking in the console, and the operator is told the running node still uses the old value.
+
+**Priority:** P0 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- A throwaway node of your own, started and logged in: `$N --home $S/m init --name m --port 3595 --ledger local --runtime-api http://127.0.0.1:1`, `$N --home $S/m start -d`, `NGRAM_PASSWORD=m-pass-1234 $N --home $S/m login`
+
+**Steps**
+
+1. Note `market.defaultPrice` in $S/m/config.json (0.1)
+2. Run `$N --home $S/m config set market.defaultPrice 9.99`
+3. Read config.json again
+4. Make the console save the config: `curl -s -X POST http://localhost:3595/api/peers -H "authorization: Bearer <operator token>" -H 'content-type: application/json' -d '{"endpoint":"http://localhost:9999"}'`
+5. Read config.json a third time
+
+**Expected**
+
+- Step 2 prints `✓ market.defaultPrice = "9.99"  (the node reads config.json when it starts)` on stdout and, on stderr, `! the node in $S/m is running (pid N) and keeps using the value it started with — restart it to apply this (\`ainize stop\` then \`ainize start -d\`)`
+- Step 3: config.json holds "9.99"
+- Step 4 answers {"ok":true} — the peer is added
+- Step 5: config.json still holds "9.99" AND the new peer — the node writes only the keys it changed itself (its password, its peers, its display name) on top of what is on disk now, instead of dumping its start-up snapshot over the file
+
+**Evidence**
+
+- `packages/core/src/config.ts mergeConfigChanges()`
+- `packages/node/src/server.ts persistConfig() (bootCfg → live diff applied to the current file)`
+- `packages/cli/src/commands/init.ts configSet() (runningHere warning)`
+- `docs/ux-critique-2.json item 124`

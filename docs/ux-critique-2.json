@@ -324,7 +324,9 @@
      "evidence": "packages/e2e/results/ux2/critic-19-clobber-peers.txt: node running, config.json `\"defaultPrice\": \"0.1\"` → `ainize config set market.defaultPrice 9.99` → `✓ market.defaultPrice = 9.99  (restart the node to apply)`, file now `9.99` → one `POST /api/peers` from the console (`{\"ok\":true}`) → file back to `\"0.1\"`. Reproduced in operator-day2-07-config-clobber.txt.",
      "user_cost": "The documented way of configuring a node is a coin flip: the edit survives only if nobody uses the console before the restart. Prices, quorum, royalty share and stake can silently revert to the values from the last node start, and `config show` afterwards looks normal because it is showing the reverted value.",
      "fix": "Two halves. (a) `configSet` should call the `runningPid(home)` helper that already exists at packages/cli/src/commands/node.ts:36 and refuse (or warn loudly) when a node is running for that home: `the node is running; this edit will be lost the next time it saves — stop it first, or use the console`. (b) Make the node re-read config.json and merge before every `saveConfig()` instead of dumping its startup snapshot over whatever is on disk.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "shipped": "The node now writes back only the keys it changed itself, merged onto config.json as it is at that moment, so a console save never reverts an `ainize config set`; the CLI also warns that a running node keeps using the value it started with."
     },
     {
      "n": 125,

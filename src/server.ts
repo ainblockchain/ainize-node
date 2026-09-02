@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, LocalLedger, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
+import { AinLedger, LocalLedger, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
 import { buildApi } from './api.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
@@ -100,7 +100,16 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: () => { if (opts.home) saveConfig(cfg, opts.home); } }));
+  // The node holds its own copy of the config. Writing that whole snapshot back — which is what every console
+  // save used to do — reverted every `ainize config set` made since start-up. Save only what THIS node changed,
+  // on top of whatever config.json says now (item 124).
+  const bootCfg = structuredClone(cfg);
+  const persistConfig = () => {
+    if (!opts.home) return;
+    const onDisk = loadConfig(opts.home);
+    saveConfig(onDisk ? mergeConfigChanges(onDisk, bootCfg, cfg) : cfg, opts.home);
+  };
+  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig }));
 
   const webDist = opts.webDist ?? defaultWebDist();
   if (opts.serveWeb !== false && existsSync(join(webDist, 'index.html'))) {
