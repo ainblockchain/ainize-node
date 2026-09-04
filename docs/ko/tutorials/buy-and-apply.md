@@ -2,7 +2,7 @@
 title: 남이 공개한 지식 사서 쓰기
 summary: 네트워크에서 지식을 찾고, 그 검증이 무엇을 뜻하는지 읽고, 공짜로 시험해 보고, HTTP 402로 결제하고, 내 모델에 넣기까지.
 source: en/tutorials/buy-and-apply.md
-source_sha256: 5973afb9c73406fd4fb3e52ebb577dc1abab51f0cac4914f1bc7147b42289159
+source_sha256: fcf6ce7710633f40f7546fbb332a83eaab5805594d677eb216f62a13d90edc92
 ---
 
 # 남이 공개한 지식 사서 쓰기
@@ -158,7 +158,6 @@ seoul-office-facts-after-the-move            2  yes → conflicting knowledge  L
 
 ## 3. 돈 내기 전에 써 보기
 
-<!-- unverified: needs a model runtime -->
 모든 노드는 방문자가 등록된 지식의 질문을, 넣기 전과 넣은 뒤로, 공짜로 물어볼 수 있게 합니다. 터미널에서는 먼저 이 노드가
 무엇을 시험할 수 있는지 봅니다.
 
@@ -177,7 +176,7 @@ seoul-office-facts  Seoul office facts  Qwen3.8-Flash-Next      4            4  
 가리키거나(`--node http://…`), 파는 쪽 사이트를 쓰세요. 거기서는 지식마다 `/chat/<id>`에 **라이브 테스트** 페이지가
 있습니다.
 
-<!-- unverified: needs a model runtime -->
+<!-- unverified: needs a model runtime — 라이브 테스트 자체는 실행할 수 없었습니다. 이 페이지를 기록한 노드는 runtime 줄이 unavailable이라 `ainize chat <id> "<question>"`이 위의 관문에서 거절당했습니다. 두 답이 어떻게 보이는지와 아래의 429는 packages/cli/src/commands/chat.ts와 packages/node/src/api.ts를 읽고 쓴 것이지, 붙여 넣은 출력이 아닙니다. -->
 노드 뒤에 모델이 있으면 시험은 명령 한 줄입니다.
 
 ```bash
@@ -327,9 +326,8 @@ ainize patch apply seoul-office-facts
 error: serving API unreachable
 ```
 
-<!-- unverified: needs a model runtime -->
-모델이 있으면 `apply`는 지식의 행들을 살아 있는 기억 테이블에 쓰고, 그 자리에 있던 것을 기록해 둡니다. 되돌릴 수 있게
-하기 위해서입니다. 지금 무엇이 올라가 있는지는 아래에서 위로 봅니다.
+지금 모델에 무엇이 올라가 있는지는 아래에서 위로 보는 별도의 명령입니다. 모델이 없는 노드에서도 답합니다. 모델이
+없는 노드는 아무것도 올린 적이 없기 때문입니다.
 
 ```bash
 ainize patch stack
@@ -339,11 +337,12 @@ ainize patch stack
 nothing is loaded in the serving model
 ```
 
-무언가 올라가면 층마다 아이디, 행 수, 홀로 서는 지식인지 아래에 다른 지식이 필요한 덧붙임인지, 그리고 깨끗하게 뺄 수
-있는지가 찍힙니다. 마지막 줄이 맨 위이고, **두 층이 공유하는 행에서는 그것이 이깁니다.** 같은 행을 건드리는 지식 둘을
-쌓기 전에 2단계의 겹침 표를 읽을 값이 있는 이유입니다.
+<!-- unverified: needs a model runtime — 이 줄 아래는 하나도 실행해 보지 못했습니다. runtime이 unavailable이라 패치를 올린 적이 없고, 그래서 층이 쌓인 stack도, `--with-base`도, `remove`도, `--cascade`도, 503도 본 적이 없습니다. 아래 설명은 packages/node/src/runtime.ts와 packages/node/src/api.ts를 읽고 쓴 것입니다. -->
+노드 뒤에 모델이 있으면 `apply`는 지식의 행들을 살아 있는 기억 테이블에 쓰고, 그 자리에 있던 것을 기록해 둡니다.
+되돌릴 수 있게 하기 위해서입니다. 무언가 올라가면 `patch stack`은 층마다 아이디, 행 수, 홀로 서는 지식인지 아래에
+다른 지식이 필요한 덧붙임인지, 그리고 깨끗하게 뺄 수 있는지를 찍습니다. 마지막 줄이 맨 위이고, **두 층이 공유하는
+행에서는 그것이 이깁니다.** 같은 행을 건드리는 지식 둘을 쌓기 전에 2단계의 겹침 표를 읽을 값이 있는 이유입니다.
 
-<!-- unverified: needs a model runtime -->
 나머지는 세 가지로 정리됩니다.
 
 | 명령 | 하는 일 |

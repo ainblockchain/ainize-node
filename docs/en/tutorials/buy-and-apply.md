@@ -158,7 +158,6 @@ sale, with the tx hash and what went to whom.
 
 ## 3. Try it before you pay
 
-<!-- unverified: needs a model runtime -->
 Every node lets a visitor ask a listed knowledge's questions for free, before and after it is loaded. From a terminal,
 first see what this node can test:
 
@@ -177,7 +176,7 @@ The first line is the precondition, and on this node it is not met: no model, no
 that has one (`--node http://…`), or use the seller's own site, where every knowledge has a **Live test** page at
 `/chat/<id>`.
 
-<!-- unverified: needs a model runtime -->
+<!-- unverified: needs a model runtime — the live test itself could not be run: on the node this page was recorded on the runtime line read `unavailable`, so `ainize chat <id> "<question>"` refused at the gate above. What the two answers look like, and the 429 below, are read from packages/cli/src/commands/chat.ts and packages/node/src/api.ts rather than pasted. -->
 With a model behind the node, the test is one command:
 
 ```bash
@@ -330,9 +329,8 @@ ainize patch apply seoul-office-facts
 error: serving API unreachable
 ```
 
-<!-- unverified: needs a model runtime -->
-With one, `apply` writes the knowledge's rows into the live memory table and records what was underneath, so it can be
-put back. What is loaded, bottom first:
+What is loaded into the model, bottom first, is its own command. It answers on a node with no model too, because a
+node with no model has loaded nothing:
 
 ```bash
 ainize patch stack
@@ -342,12 +340,13 @@ ainize patch stack
 nothing is loaded in the serving model
 ```
 
-Once something is loaded, each layer prints its id, its row count, whether it is a stand-alone build or an add-on that
-needs other knowledge underneath it, and whether it can be unloaded cleanly. The last line is on top: **it wins on any
-row two layers share**, which is why the overlaps table in step 2 is worth reading before you stack two knowledges that
-touch the same rows.
+<!-- unverified: needs a model runtime — nothing below this line could be exercised: with the runtime unavailable no patch was ever applied, so no stack with layers in it, no `--with-base`, no `remove`, no `--cascade` and no 503 was seen. The behaviour described is read from packages/node/src/runtime.ts and packages/node/src/api.ts. -->
+With a model behind the node, `apply` writes the knowledge's rows into the live memory table and records what was
+underneath, so it can be put back. Once something is loaded, each layer of `patch stack` prints its id, its row count,
+whether it is a stand-alone build or an add-on that needs other knowledge underneath it, and whether it can be unloaded
+cleanly. The last line is on top: **it wins on any row two layers share**, which is why the overlaps table in step 2 is
+worth reading before you stack two knowledges that touch the same rows.
 
-<!-- unverified: needs a model runtime -->
 Three flags cover the rest of the stack's life:
 
 | Command | What it does |
