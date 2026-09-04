@@ -183,9 +183,11 @@ export async function datasetRows(request: APIRequestContext, key: TeachKey, id:
 }
 
 export interface CreateJobBody {
-  patch_ids: string[]; builds_on_context: boolean; dataset_id: string; training?: Record<string, unknown>; name?: string; selected_indexes?: number[];
+  patch_ids: string[]; builds_on_context: boolean; dataset_id?: string; training?: Record<string, unknown>; name?: string; selected_indexes?: number[];
   /** lineage §12.1 — what the lesson is trained ON TOP OF, and the confirmation that differing answers replace its own */
-  base_ids?: string[]; context_ids?: string[]; mode?: 'scratch' | 'extend' | 'fork'; confirm_conflicts?: boolean;
+  base_ids?: string[]; context_ids?: string[]; mode?: 'scratch' | 'extend' | 'fork' | 'merge'; confirm_conflicts?: boolean;
+  /** merge §9 — what was chosen for each question the two knowledges answer differently, and how the result is built */
+  resolutions?: Record<string, 'a' | 'b' | 'drop' | { answer: string }>; tier?: 'union' | 'retrain' | 'rebuild';
 }
 
 export async function createJob(request: APIRequestContext, key: TeachKey, body: CreateJobBody): Promise<ApiResult<{ job: Job; quota: Record<string, number> }>> {
