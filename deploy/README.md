@@ -31,8 +31,9 @@ lessons under the node's identity. There is no way to take it back.
 
 Three things now stand between a fresh node and a stranger:
 
-- **`host` defaults to `127.0.0.1`.** Going public is a decision: `ainize init --host 0.0.0.0` (or `--public`), or
-  `ainize config set host 0.0.0.0`. The start-up banner prints the address it actually bound.
+- **`host` defaults to `127.0.0.1`.** Going public is a decision: `ainize init --host 0.0.0.0` (or `--public`),
+  `ainize config set host 0.0.0.0`, or `NGRAM_HOST=0.0.0.0` (what a container needs, since a process bound to
+  loopback inside a container is unreachable through a published port). The banner prints the address it bound.
 - **`ainize init --password …`** (or `NGRAM_PASSWORD`, or the prompt an interactive terminal gets) claims the node in
   config.json before it ever listens. `--no-password` leaves it unclaimed on purpose.
 - **Claiming is loopback-only.** From another machine, `POST /api/auth/setup` is refused unless the request carries the
