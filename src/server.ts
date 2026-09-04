@@ -79,6 +79,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
 
   const store = new Store(join(cfg.dataDir, 'node.sqlite'));
+  // item 131: what the LAST run did, read before this one overwrites it.
+  const lastStart = Number(store.get('node.started_at') ?? 0);
+  const lastStop = Number(store.get('node.stopped_at') ?? 0);
+  store.set('node.started_at', String(Date.now()));
   const runtime = new Runtime(cfg.runtime ?? {});
   const blobs = new BlobStore(store, cfg.dataDir);
 
@@ -209,6 +213,12 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     market.log('info', 'config', `host is ${cfg.host}: this node accepts connections from every interface. Bind it to 127.0.0.1 (\`ainize config set host 127.0.0.1\`) unless it is meant to be public.`);
   }
   market.log('info', 'node', `node started (${ledger.kind} ledger, roles ${cfg.roles.join('/')})`);
+  // Was the last run stopped, or killed? Two consecutive `node started` lines used to be the whole history, so
+  // nobody could tell a deliberate restart from a crash — the first question in any incident (item 131). `stop()`
+  // writes `node.stopped_at`; a start that finds it older than the last start says so, once, in the log.
+  if (lastStart > 0 && lastStop < lastStart) {
+    market.log('warn', 'node', `the previous run started ${new Date(lastStart).toISOString()} and never recorded a shutdown — it was killed or it crashed (a clean stop logs "node stopping"). The events just before that time are what it last saw.`, null, { previous_start: lastStart, last_clean_stop: lastStop || null });
+  }
   for (const p of problems) market.log('warn', 'config', `${p.key}: ${p.message}`);
   // `version` in config.json is the string the config was WRITTEN with; the running build is VERSION in the code.
   // Say so once when they differ — the natural hook for a future config migration (item 141).
@@ -280,6 +290,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   return {
     cfg, market, ledger, store, verifier, drive, teach, server, url,
     async stop() {
+      // The record of a clean shutdown (item 131): without this line a SIGKILL and a `ainize stop` left byte-identical
+      // histories, and the next start could not tell an operator which of the two had happened.
+      market.log('info', 'node', 'node stopping (clean shutdown)');
+      try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
       clearInterval(watchdog);
       clearInterval(retention);
       clearInterval(diskWatch);
