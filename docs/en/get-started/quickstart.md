@@ -47,7 +47,7 @@ ainize init --name quickstart --port 3694
 ```text
 ✓ node initialised at <NGRAM_HOME>/config.json
 name     quickstart
-address  0x67470AEa0c6d6877841D3c79e961d33A440225E3
+address  0x4079e607370cC79B00c6051204bDb5c67a54FB12
 port     3694
 ledger   local
 roles    seller, verifier, serving
@@ -63,9 +63,11 @@ which is the right choice while you are finding your feet. The three roles it st
 and `serving` says a model sits behind it, so live tests can run here. The last two are also what make a model
 *required* — which is why the readiness check in step 4 calls a node without one `NOT READY`.
 
-Ignore the `ainize seed` in that last line for now. It fills a node with demo knowledge built from files in a model
-checkout this page does not assume you have; on a machine without them it reports `missing 4 source file(s)` and
-creates nothing, and it refuses to run at all while the node is up. Step 6 is how this page gets something to buy.
+The `ainize seed` in that last line is not decoration: it fills a node with demo knowledge, and step 6 uses it to give
+this page something to buy. Two things to know before you reach for it. It refuses to run while the node is up, because
+seeding writes into the data directory the running process owns. And by default it looks for real patch files in the
+model checkout named by `runtime.repo` — on a machine without them it reports `missing source file(s)` and creates
+nothing. The `--synthetic --no-real` form used in step 6 needs no checkout and no model at all.
 
 ## 2. Point it at your model
 
@@ -88,9 +90,10 @@ step 4, and not now. The trailing note matters more than it looks: **the node re
 so a node that is already running keeps the value it started with until you restart it.
 
 > [!IMPORTANT]
-> The transcript for the rest of this page was recorded with `runtime.api` set to `http://127.0.0.1:9` — a closed
-> port — because the only model on that machine was reserved for a benchmark that a stray request would have ruined.
-> So what you see below from step 4 onward is exactly what a node with no model behind it does: correct in every
+> Type your own endpoint there. The transcript on the rest of this page was recorded with `runtime.api` set to
+> `http://127.0.0.1:9` — a closed port — because the only model on that machine was reserved for a benchmark that a
+> stray request would have ruined; the two lines above are the same command with the address a reader is more likely
+> to want. So everything from step 4 onward is exactly what a node with no model behind it does: correct in every
 > step but the last two, and honest about which two those are.
 
 ## 3. Start it
@@ -100,7 +103,7 @@ ainize start -d
 ```
 
 ```text
-✓ node started in the background (pid 730221) — port 3694
+✓ node started in the background (pid 766683) — port 3694
   logs: <NGRAM_HOME>/node.log   stop: ainize stop
 ```
 
@@ -116,8 +119,8 @@ ainize status
 ```
 
 ```text
-quickstart  http://localhost:3694  (pid 730221)
-address     0x67470AEa0c6d6877841D3c79e961d33A440225E3
+quickstart  http://localhost:3694  (pid 766683)
+address     0x4079e607370cC79B00c6051204bDb5c67a54FB12
 roles       seller, verifier, serving
 version     0.1.0 · built 2026-09-04 12:25:57
 ledger      local · local · 1 records · height 1
@@ -182,16 +185,9 @@ command keeps addressing the old one. Deleting `cli.json` and running `ainize lo
 
 ## 6. Find knowledge to test
 
-> [!IMPORTANT]
-> **This step needs something the first five did not: another node that has already published something.** There is
-> no central catalogue and no default peer. A node you have just created knows of no other node, so its catalogue
-> starts empty and stays empty until you give it an address — and steps 7 and 8 have nothing to act on until it
-> does. Where that address comes from is the one thing this page cannot hand you: either somebody on the network
-> gives you theirs, or you run the second node yourself and publish to it, which is what
-> [Use knowledge someone else published](../tutorials/buy-and-apply.md) walks through from both ends.
-
-A node's catalogue is what it has heard about from the nodes it talks to, so a node that talks to nobody has an
-empty one:
+This step needs something the first five did not: **another node that has already published something.** There is no
+central catalogue and no default peer, so a node that has just been created knows of no other node and its catalogue
+starts empty:
 
 ```bash
 ainize patch ls
@@ -201,15 +197,100 @@ ainize patch ls
 no patches match
 ```
 
-Give it a peer — a node already on the network, whose URL somebody gave you — and the announcements start arriving.
-The address below is the seller this transcript was recorded against; yours will be somebody else's:
+If somebody on the network has given you their node's URL, that is the address for the next command and you can skip
+the section below. If nobody has, build a practice network on this machine instead — it needs no model, no knowledge
+of your own, and about a minute.
+
+### If you have no peer: a practice network
+
+Three nodes, not two, and the reason is the whole point of the marketplace: knowledge is for sale only once
+**independent** nodes have attested to it, the default quorum is two, and **an author's node never attests its own
+work**. Your node from step 1 is one verifier. A seller and one more checker make up the other two. Build only a
+seller and everything it publishes sits at `1/2` for ever — verified once, by you, and never listed.
+
+`--home` picks which node a single command is for, so the next two can be run without disturbing the `NGRAM_HOME` you
+set in step 1. First the seller: create it, fill it with demo knowledge, start it.
 
 ```bash
-ainize peers add http://localhost:3690
+ainize --home ~/nodes/seller init --name seller --port 3692
+ainize --home ~/nodes/seller seed --synthetic --no-real
+ainize --home ~/nodes/seller start -d
 ```
 
 ```text
-✓ peer added: http://localhost:3690
+✓ node initialised at ~/nodes/seller/config.json
+name     seller
+address  0x9ef1F6e4E301CBd95C91556D3891BA9655B7eDB3
+port     3692
+ledger   local
+roles    seller, verifier, serving
+the private key lives in ~/nodes/seller/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+
+next: `ainize start`   (then `ainize login`, `ainize seed`)
+
+[2026-09-04T14:06:45.954Z] INFO  patch: draft created: law-common-base (2000 rows, 2.6 MB)
+[2026-09-04T14:06:45.962Z] INFO  publish: announced law-common-base (conflicts: 0)
+[2026-09-04T14:06:45.972Z] INFO  patch: draft created: law-kr-2025 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:45.980Z] INFO  publish: announced law-kr-2025 (conflicts: 1)
+[2026-09-04T14:06:45.990Z] INFO  patch: draft created: law-us-2025 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:45.998Z] INFO  publish: announced law-us-2025 (conflicts: 2)
+[2026-09-04T14:06:46.017Z] INFO  patch: draft created: law-kr-2026 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:46.025Z] INFO  publish: announced law-kr-2026 (conflicts: 3)
+✓ seeded: 4 patch(es), 2 branch(es), 0 prototype record(s) imported
+  created:  law-common-base, law-kr-2025, law-us-2025, law-kr-2026
+  branches: law/KR, law/US
+
+✓ node started in the background (pid 766562) — port 3692
+  logs: ~/nodes/seller/node.log   stop: ainize stop
+```
+
+The two flags on `seed` are what make it work with no model anywhere on the machine. `--synthetic` generates four
+small knowledge files of random rows — real files, real records, no real law in them — and `--no-real` turns off the
+default hunt for genuine patch files inside `runtime.repo`. Neither flag contacts a model. Seeding also has to happen
+before the node starts, because it writes into the data directory a running node owns.
+
+> [!WARNING]
+> `--home` chooses the node for the command it is written on, and for nothing else. The `stop: ainize stop` in that
+> last line is the CLI's stock hint, and typed as it stands it would stop the node from step 3 rather than this one.
+> Stopping the seller is `ainize --home ~/nodes/seller stop`.
+
+Then the third node — the second checker. It needs no seeding and no login: verifying is something a node does
+because it is running, not something you ask it for.
+
+```bash
+ainize --home ~/nodes/checker init --name checker --port 3691 --peer http://localhost:3692
+ainize --home ~/nodes/checker start -d
+```
+
+```text
+✓ node initialised at ~/nodes/checker/config.json
+name     checker
+address  0x0b088A365b5ff7311Db2a4b6157c76DF844376c3
+port     3691
+ledger   local
+roles    seller, verifier, serving
+the private key lives in ~/nodes/checker/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+
+next: `ainize start`   (then `ainize login`, `ainize seed`)
+
+✓ node started in the background (pid 766597) — port 3691
+  logs: ~/nodes/checker/node.log   stop: ainize stop
+```
+
+`--peer` at `init` writes that address into the new node's config, which is the same thing `ainize peers add` does
+afterwards. Step 9 stops all three.
+
+### Point your node at it
+
+Back to your own node — `NGRAM_HOME` still names it, so the `--home` prefix is gone again. Give it the seller's
+address and the announcements start arriving:
+
+```bash
+ainize peers add http://localhost:3692
+```
+
+```text
+✓ peer added: http://localhost:3692
 ```
 
 > [!WARNING]
@@ -229,7 +310,7 @@ ainize peers add http://localhost:3690
 > http://localhost:3611  -                -                           2
 > ```
 >
-> Only `3690` was added by hand there. `3691` and `3692` arrived on their own: peers trade their peer lists, so one
+> Only one of those was added by hand; the others arrived on their own, because peers trade their peer lists and one
 > good address is enough to meet the rest of a network. `3611` is a deliberately wrong address, and it is the row
 > that shows what a mistake looks like.
 
@@ -240,38 +321,41 @@ ainize patch ls
 ```
 
 ```text
-ID                 STATUS      AUTHOR              MODEL                  ROWS      SIZE       PRICE  ATTEST  SOLD  BENCHMARK
-─────────────────  ──────────  ──────────────────  ──────────────────  ───────  ────────  ──────────  ──────  ────  ────────────────
-law-kr-2026        LISTED      node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
-law-us-2025        LISTED      node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-kr-2025        SUPERSEDED  node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-common-base    LISTED      node-a 0x529B…85fd  demo-ngram-1b         2,000    2.5 MB    1 CREDIT     2/2     2  law-basics
-krx-all-2761       VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  270,053  331.7 MB   25 CREDIT     0/2     0  krx-ticker-codes
-krx-all-2761-ep12  VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  241,992  297.2 MB   10 CREDIT     0/2     0  krx-ticker-codes
-krx-all-2761-ep6   VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  241,992  297.2 MB    5 CREDIT     0/2     0  krx-ticker-codes
-pixelplus-087600   VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next    2,992    3.7 MB  0.1 CREDIT     0/2     0  krx-ticker-codes
+ID               STATUS      AUTHOR              MODEL           ROWS    SIZE       PRICE  ATTEST  SOLD  BENCHMARK
+───────────────  ──────────  ──────────────────  ─────────────  ─────  ──────  ──────────  ──────  ────  ────────────────
+law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
+law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
 ```
 
 Four columns carry the decision. `MODEL` has to match the model your node found in step 4, because a knowledge is
-rows of one specific model's memory table and means nothing in another — which is why a catalogue can hold rows for
-models you cannot use, as this one does. `ATTEST 2/2` is how many independent nodes have checked it, against the
-number this node insists on before it will treat it as sellable — and the author is never one of them, because a
-node refuses to count its own check. `PRICE` is what step 7 will pay, in this node's currency.
+rows of one specific model's memory table and means nothing in another — so a catalogue on a real network holds rows
+for models you cannot use, and those rows are not for you. `ATTEST 2/2` is how many independent nodes have checked
+it, against the number this node insists on before it will treat it as sellable — and the author is never one of
+them, because a node refuses to count its own check. `PRICE` is what step 7 will pay, in this node's currency.
 
 `STATUS` is the one to read first, because only two of its values can be bought. `LISTED` means the attestations
-reached the quorum. `VERIFYING` means checking is under way and has not got there — the four rows above sit at
-`0/2` — and buying one is refused before any money moves:
+reached the quorum. `SUPERSEDED` means the author has since published something newer; it is still buyable.
+
+The other two are the waiting room, and which one you see says how far along a knowledge is on *your* node.
+`ANNOUNCED` means your node has heard the announcement and nothing has attested to it yet — that is the first thing
+a new entry ever is, and a big file stays there for as long as the checking nodes take to fetch it. `VERIFYING` means
+at least one attestation exists but the quorum is not met. Both are refused before any money moves, and the message
+names the state it found:
 
 ```bash
 ainize use pixelplus-087600
 ```
 
 ```text
-error: pixelplus-087600 is VERIFYING (verification 0/2) — not verified yet; try `ainize patch get pixelplus-087600`
+error: pixelplus-087600 is ANNOUNCED (verification 0/2) — not verified yet; try `ainize patch get pixelplus-087600`
 ```
 
-`SUPERSEDED` means the author has since published something newer; it is still buyable, and
-[When it will not list](../how-to/failed-verification.md) is where the rest of the states are worked through.
+The same command on an entry one attestation short says `is VERIFYING (verification 1/2)` instead. Neither is an
+error you can pay your way past; both are worth waiting out, and
+[When it will not list](../how-to/failed-verification.md) is where the rest of the states are worked through and
+what to do when the count stops moving.
 
 What a check consists of is not fixed, and this is the one place a quickstart should not round off: a verifier with a
 compatible model loads the rows and runs the author's benchmark, while a verifier without one can only confirm that
@@ -280,10 +364,10 @@ the transcript above is the second kind — the network in it had no model — w
 not *scored*. The Concepts group has the page that draws that line properly.
 
 > [!NOTE]
-> The network in this transcript is three nodes on one machine, and its knowledge is synthetic — files generated to
-> record this page, with `[synthetic]` in their names. The commands and their output are real; the knowledge is not,
-> and `law-common-base` does not know any actual law. Peer with a node that has real knowledge on it and this table
-> fills with real rows.
+> The network in this transcript is the three nodes above, on one machine, and its knowledge is what `seed
+> --synthetic` makes: files of random rows, named `[synthetic]` in full. The commands and their output are real; the
+> knowledge is not, and `law-common-base` does not know any actual law. Peer with a node that has real knowledge on
+> it and this table fills with real rows instead.
 
 ## 7. Put it on your node
 
@@ -307,24 +391,29 @@ ainize logs --kind buy
 ```
 
 ```text
-2026-09-04 12:39:36 info  buy       [law-common-base] quorum: 2 attestation(s) ≥ quorum 2
-2026-09-04 12:39:36 info  buy       [law-common-base] 402: Payment Required: 1 CREDIT → 0x529B9b39… (local-credit)
-2026-09-04 12:39:36 info  buy       [law-common-base] pay: signed credit intent a0f57f34e69206…
-2026-09-04 12:39:36 info  buy       [law-common-base] settled: seller confirmed; manifest sha256 4fff05beaec02e…
-2026-09-04 12:39:36 info  buy       [law-common-base] download: 2.6 MB from http://localhost:3690; sha256 matches on-ledger anchor
+2026-09-04 14:07:35 info  buy       [law-common-base] quorum: 2 attestation(s) ≥ quorum 2
+2026-09-04 14:07:35 info  buy       [law-common-base] 402: Payment Required: 1 CREDIT → 0x9ef1F6e4… (local-credit)
+2026-09-04 14:07:35 info  buy       [law-common-base] pay: signed credit intent f126af6bb44f7b…
+2026-09-04 14:07:35 info  buy       [law-common-base] settled: seller confirmed; manifest sha256 7e8e8a1be950b2…
+2026-09-04 14:07:35 info  buy       [law-common-base] download: body already present; sha256 matches on-ledger anchor
 ```
 
 Read top to bottom that is the whole trade: the buyer checked the verification count itself, the seller answered the
 download with `402 Payment Required` and a price, the buyer signed a payment and sent it back, the seller settled,
-and the body arrived with its hash matching the one on the public record. No account was created and no card was
-entered — the node paid with the key it minted in step 1. The money moved:
+and the body's hash was checked against the one on the public record. No account was created and no card was entered
+— the node paid with the key it minted in step 1.
+
+The last line says `body already present` rather than a size and a URL because your node is a verifier as well as a
+buyer: it had already fetched this file to check it, minutes before it bought it. Holding the bytes was never the
+same as owning the knowledge, which is why the purchase still happened. A node that had not verified it downloads it
+at that step instead, and either way the hash is checked. The money moved:
 
 ```bash
 ainize wallet
 ```
 
 ```text
-address             0x67470AEa0c6d6877841D3c79e961d33A440225E3
+address             0x4079e607370cC79B00c6051204bDb5c67a54FB12
 ledger              local · local
 balance             99 CREDIT
 sales               0
@@ -365,17 +454,30 @@ ainize chat --list
 
 ```text
 runtime unavailable — serving API unreachable  (chat needs a serving node; pass --node <url> of one)
-ID               NAME                             MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
-───────────────  ───────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
-law-common-base  [synthetic] common legal basics  demo-ngram-1b     40        2,000     2/2 ✓  -
+overlapping memory entries: law-kr-2026 ∩ law-us-2025 = 600; law-kr-2026 ∩ law-kr-2025 = 600; law-kr-2026 ∩ law-common-base = 600; law-us-2025 ∩ law-kr-2025 = 600; law-us-2025 ∩ law-common-base = 600; law-kr-2025 ∩ law-common-base = 600
+ID               NAME                                           MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
+───────────────  ─────────────────────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
+law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ngram-1b     60        1,200     2/2 ✓  -
+law-us-2025      [synthetic] US federal law 2025                demo-ngram-1b     60        1,200     2/2 ✓  -
+law-kr-2025      [synthetic] Korean law revision 2025           demo-ngram-1b     60        1,200     2/2 ✓  -
+law-common-base  [synthetic] common legal basics                demo-ngram-1b     40        2,000     2/2 ✓  -
 
 ainize chat <ID> "<question>"   or   ainize chat <ID>   for an interactive session   (ainize chat --patch a,b loads up to 3 together)
 ```
 
-The list is of knowledge whose body this node holds — which is what step 7 arranged, and why the other seven rows of
-the catalogue are not in it. `FACTS` is how many question-and-answer pairs the author published with it, and `TRY`
-shows one of them where there is one, so you can start from a question with a known answer. On a node that has bought
-nothing the same command says so: `no testable patch on this node`.
+Four rows, and you bought one of them. **The list is of knowledge whose body this node holds, which is not the same
+as the knowledge it has bought**: a node with the `verifier` role — the default, and the role your node has had since
+step 1 — downloads a body in order to check it, and keeps it. So a knowledge can be testable here and still cost you
+money to use. `FACTS` is how many question-and-answer pairs the author published with it, and `TRY` shows one of them
+where there is one, so you can start from a question with a known answer. The `overlapping memory entries` line above
+the table is a warning about these four in particular: they were generated from one another, they write to many of
+the same rows, and loading two of them together means the second one wins where they collide.
+
+A node holding nothing at all answers with one line instead of the table:
+
+```text
+no testable patch on this node — its body must be held here (seller node, or `ainize patch buy <id>` first)
+```
 
 <!-- unverified: needs a model runtime — `ainize chat` was run and refused at the runtime gate; the before/after output below it is described from packages/cli/src/commands/chat.ts, never pasted -->
 
@@ -399,23 +501,36 @@ interactive session with the knowledge loaded; `/quit` ends it.
 If the two blocks are identical, the knowledge did not touch what you asked about, and that is a real answer too —
 it is the reason the live test exists and the reason to run it before paying rather than after.
 
-## 9. Stop the node
+## 9. Stop the nodes
+
+Every node you started is a background process, and each one is stopped by name. If you built the practice network in
+step 6, that is three:
 
 ```bash
 ainize stop
+ainize --home ~/nodes/seller stop
+ainize --home ~/nodes/checker stop
 ```
+
+```text
+✓ stopped node (pid 766683)
+✓ stopped node (pid 766562)
+✓ stopped node (pid 766597)
+```
+
+Sometimes a line arrives before that one, and it is still a successful stop:
 
 ```text
 ! node 730221 is still running 10 s after SIGTERM — sending SIGKILL
 ✓ stopped node (pid 730221) — it ignored SIGTERM, so it was killed
 ```
 
-A node that shuts down promptly prints only the second line, without the `it ignored SIGTERM` clause. Both are a
-successful stop; the ten-second pause is `ainize stop` waiting out a node that did not exit on its own, and it is
-what a node with peer connections open does on this build.
+The ten-second pause is `ainize stop` waiting out a node that did not exit on its own, and a node with peer
+connections open sometimes does that on this build.
 
-The node's home directory survives; starting it again picks up the same identity, the same balance and the same
-knowledge. Removing the directory destroys the key, and with it everything the node published.
+Each home directory survives; starting a node again picks up the same identity, the same balance and the same
+knowledge. Removing a directory destroys that node's key, and with it everything it published — the practice seller
+included, which is the tidy way to throw the practice network away when you are done with it.
 
 ## Where to go next
 

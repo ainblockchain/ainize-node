@@ -2,7 +2,7 @@
 title: 빠른 시작
 summary: 내 노드를 띄우고, 남이 공개한 지식을 내 모델에 넣고, 같은 질문을 넣기 전과 뒤에 던져 봅니다.
 source: en/get-started/quickstart.md
-source_sha256: 42ab353ab976a883a5a2e8934dd0f80a65c23b7df7b8efe84ebd0aa153d76fe3
+source_sha256: feb0d3f734087ca317890fa064a14b7996773a50ad7a51f6aeb1d082e7d48bd9
 ---
 
 # 빠른 시작
@@ -49,7 +49,7 @@ ainize init --name quickstart --port 3694
 ```text
 ✓ node initialised at <NGRAM_HOME>/config.json
 name     quickstart
-address  0x67470AEa0c6d6877841D3c79e961d33A440225E3
+address  0x4079e607370cC79B00c6051204bDb5c67a54FB12
 port     3694
 ledger   local
 roles    seller, verifier, serving
@@ -65,10 +65,12 @@ next: `ainize start`   (then `ainize login`, `ainize seed`)
 테스트를 여기서 돌릴 수 있게 합니다. 뒤의 두 역할이 모델을 *필수*로 만들기도 하는데, 4단계의 준비 상태 검사가 모델
 없는 노드를 `NOT READY`라고 부르는 이유가 그것입니다.
 
-마지막 줄의 `ainize seed`는 지금은 넘어가세요. 노드를 예시 지식으로 채워 주는 명령이지만, 그 재료는 이 페이지가
-있다고 가정하지 않는 모델 저장소 안의 파일들입니다. 그 파일이 없는 컴퓨터에서는 `missing 4 source file(s)`라고만
-찍고 아무것도 만들지 않으며, 노드가 떠 있는 동안에는 아예 실행을 거부합니다. 이 페이지가 살 것을 구하는 방법은
-6단계입니다.
+마지막 줄의 `ainize seed`는 장식이 아닙니다. 노드를 예시 지식으로 채워 주는 명령이고, 6단계에서 이 페이지가 살
+것을 마련하는 데 바로 이 명령을 씁니다. 손대기 전에 알아 둘 것이 둘 있습니다. 노드가 떠 있는 동안에는 실행을
+거부합니다. 시딩은 떠 있는 프로세스가 쥐고 있는 데이터 디렉터리에 쓰기 때문입니다. 그리고 아무 옵션 없이 부르면
+`runtime.repo`가 가리키는 모델 저장소에서 진짜 패치 파일을 찾습니다. 그 파일이 없는 컴퓨터에서는
+`missing source file(s)`라고 찍고 아무것도 만들지 않습니다. 6단계에서 쓰는 `--synthetic --no-real` 형태는 저장소도
+모델도 전혀 필요로 하지 않습니다.
 
 ## 2. 내 모델을 물리기
 
@@ -90,10 +92,11 @@ ainize config set runtime.repo ~/qwen3.8
 노드는 다시 띄우기 전까지 뜰 때 읽은 값을 그대로 씁니다.
 
 > [!IMPORTANT]
-> 이 페이지의 4단계 이후 기록은 `runtime.api`를 `http://127.0.0.1:9`, 즉 닫힌 포트로 두고 남겼습니다. 그 컴퓨터에
-> 있던 단 하나의 모델이 벤치마크에 잡혀 있었고, 요청 하나가 잘못 들어가면 측정을 버려야 했기 때문입니다. 그러니
-> 아래에 보이는 것은 뒤에 모델이 없는 노드가 실제로 하는 그대로입니다. 마지막 두 단계를 빼면 전부 정상이고, 어느
-> 둘이 안 되는지도 숨기지 않았습니다.
+> 여기에는 여러분의 엔드포인트를 넣으세요. 이 페이지의 나머지 기록은 `runtime.api`를 `http://127.0.0.1:9`, 즉 닫힌
+> 포트로 두고 남겼습니다. 그 컴퓨터에 있던 단 하나의 모델이 벤치마크에 잡혀 있었고, 요청 하나가 잘못 들어가면
+> 측정을 버려야 했기 때문입니다. 위의 두 줄은 같은 명령을 독자가 실제로 쓸 법한 주소로 적은 것입니다. 그러니
+> 4단계 이후에 보이는 것은 뒤에 모델이 없는 노드가 실제로 하는 그대로입니다. 마지막 두 단계를 빼면 전부 정상이고,
+> 어느 둘이 안 되는지도 숨기지 않았습니다.
 
 ## 3. 띄우기
 
@@ -102,7 +105,7 @@ ainize start -d
 ```
 
 ```text
-✓ node started in the background (pid 730221) — port 3694
+✓ node started in the background (pid 766683) — port 3694
   logs: <NGRAM_HOME>/node.log   stop: ainize stop
 ```
 
@@ -118,8 +121,8 @@ ainize status
 ```
 
 ```text
-quickstart  http://localhost:3694  (pid 730221)
-address     0x67470AEa0c6d6877841D3c79e961d33A440225E3
+quickstart  http://localhost:3694  (pid 766683)
+address     0x4079e607370cC79B00c6051204bDb5c67a54FB12
 roles       seller, verifier, serving
 version     0.1.0 · built 2026-09-04 12:25:57
 ledger      local · local · 1 records · height 1
@@ -184,16 +187,8 @@ ainize login
 
 ## 6. 시험해 볼 지식 찾기
 
-> [!IMPORTANT]
-> **이 단계에는 앞의 다섯 단계에 없던 것이 하나 필요합니다. 이미 무언가를 공개해 둔 다른 노드입니다.** 중앙 목록도
-> 없고 기본으로 붙는 피어도 없습니다. 방금 만든 노드는 다른 노드를 하나도 모르므로 목록이 빈 채로 시작하고, 주소를
-> 알려 주기 전까지 빈 채로 있습니다. 그동안 7단계와 8단계는 손댈 대상이 없습니다. 그 주소를 어디서 구하느냐는 이
-> 페이지가 대신 줄 수 없는 하나입니다. 네트워크에 있는 누군가가 자기 주소를 알려 주거나, 두 번째 노드를 직접 띄워
-> 거기에 공개하거나입니다. 뒤쪽은 [남이 공개한 지식 사서 쓰기](../tutorials/buy-and-apply.md)가 양쪽 모두를
-> 짚어 줍니다.
-
-노드의 목록은 자기가 말을 트고 있는 노드들에게서 전해 들은 것이 전부입니다. 그래서 아무와도 말을 트지 않은 노드의
-목록은 비어 있습니다.
+이 단계에는 앞의 다섯 단계에 없던 것이 하나 필요합니다. **이미 무언가를 공개해 둔 다른 노드**입니다. 중앙 목록도
+없고 기본으로 붙는 피어도 없어서, 방금 만든 노드는 다른 노드를 하나도 모르고 목록도 빈 채로 시작합니다.
 
 ```bash
 ainize patch ls
@@ -203,15 +198,100 @@ ainize patch ls
 no patches match
 ```
 
-피어를 하나 알려 주면 — 이미 네트워크에 있는 노드, 그 주소를 누군가에게서 받아서 — 공지가 들어오기 시작합니다.
-아래 주소는 이 기록을 남길 때 상대가 되어 준 판매 노드이고, 여러분의 주소는 다른 누군가의 것일 겁니다.
+네트워크에 있는 누군가가 자기 노드 주소를 알려 주었다면 그것이 다음 명령에 넣을 주소이고, 아래 절은 건너뛰어도
+됩니다. 알려 준 사람이 없다면 이 컴퓨터 안에 연습용 네트워크를 세우세요. 모델도, 여러분이 만든 지식도 필요 없고,
+1분쯤 걸립니다.
+
+### 피어가 없다면: 연습용 네트워크
+
+두 대가 아니라 세 대입니다. 그 이유가 이 장터의 핵심입니다. 지식은 **독립된** 노드들이 검사를 마쳐야 팔 수 있고,
+기본 정족수는 둘이며, **글쓴이의 노드는 자기 것을 검사할 수 없습니다.** 1단계에서 만든 여러분의 노드가 검사자 하나,
+판매 노드와 검사 노드 하나가 나머지 둘입니다. 판매 노드만 세우면 거기서 공개한 것은 영원히 `1/2`에 머뭅니다. 한
+번 — 여러분에 의해 — 검사되고, 끝내 목록에 오르지 않습니다.
+
+`--home`은 명령 하나가 어느 노드를 향하는지 정합니다. 그래서 다음 두 노드는 1단계에서 정한 `NGRAM_HOME`을 건드리지
+않고 다룰 수 있습니다. 먼저 판매 노드입니다. 만들고, 예시 지식으로 채우고, 띄웁니다.
 
 ```bash
-ainize peers add http://localhost:3690
+ainize --home ~/nodes/seller init --name seller --port 3692
+ainize --home ~/nodes/seller seed --synthetic --no-real
+ainize --home ~/nodes/seller start -d
 ```
 
 ```text
-✓ peer added: http://localhost:3690
+✓ node initialised at ~/nodes/seller/config.json
+name     seller
+address  0x9ef1F6e4E301CBd95C91556D3891BA9655B7eDB3
+port     3692
+ledger   local
+roles    seller, verifier, serving
+the private key lives in ~/nodes/seller/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+
+next: `ainize start`   (then `ainize login`, `ainize seed`)
+
+[2026-09-04T14:06:45.954Z] INFO  patch: draft created: law-common-base (2000 rows, 2.6 MB)
+[2026-09-04T14:06:45.962Z] INFO  publish: announced law-common-base (conflicts: 0)
+[2026-09-04T14:06:45.972Z] INFO  patch: draft created: law-kr-2025 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:45.980Z] INFO  publish: announced law-kr-2025 (conflicts: 1)
+[2026-09-04T14:06:45.990Z] INFO  patch: draft created: law-us-2025 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:45.998Z] INFO  publish: announced law-us-2025 (conflicts: 2)
+[2026-09-04T14:06:46.017Z] INFO  patch: draft created: law-kr-2026 (1200 rows, 1.5 MB)
+[2026-09-04T14:06:46.025Z] INFO  publish: announced law-kr-2026 (conflicts: 3)
+✓ seeded: 4 patch(es), 2 branch(es), 0 prototype record(s) imported
+  created:  law-common-base, law-kr-2025, law-us-2025, law-kr-2026
+  branches: law/KR, law/US
+
+✓ node started in the background (pid 766562) — port 3692
+  logs: ~/nodes/seller/node.log   stop: ainize stop
+```
+
+`seed`에 붙은 두 옵션이 이 컴퓨터에 모델이 하나도 없어도 되게 만드는 부분입니다. `--synthetic`은 무작위 행으로 된
+작은 지식 파일 넷을 만들고 — 파일도 기록도 진짜지만 그 안에 진짜 법은 없습니다 — `--no-real`은 `runtime.repo` 안의
+진짜 패치 파일을 찾는 기본 동작을 끕니다. 둘 다 모델에 접속하지 않습니다. 그리고 시딩은 노드를 띄우기 전에 끝나야
+합니다. 떠 있는 노드가 쥐고 있는 데이터 디렉터리에 쓰기 때문입니다.
+
+> [!WARNING]
+> `--home`은 그것이 적힌 명령 하나에만 적용됩니다. 마지막 줄의 `stop: ainize stop`은 CLI가 늘 붙이는 안내이고,
+> 그대로 치면 이 노드가 아니라 3단계에서 띄운 노드를 멈춥니다. 판매 노드를 멈추는 명령은
+> `ainize --home ~/nodes/seller stop`입니다.
+
+다음은 세 번째 노드, 두 번째 검사자입니다. 시딩도 로그인도 필요 없습니다. 검사는 부탁해서 하는 일이 아니라 노드가
+떠 있기 때문에 하는 일입니다.
+
+```bash
+ainize --home ~/nodes/checker init --name checker --port 3691 --peer http://localhost:3692
+ainize --home ~/nodes/checker start -d
+```
+
+```text
+✓ node initialised at ~/nodes/checker/config.json
+name     checker
+address  0x0b088A365b5ff7311Db2a4b6157c76DF844376c3
+port     3691
+ledger   local
+roles    seller, verifier, serving
+the private key lives in ~/nodes/checker/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+
+next: `ainize start`   (then `ainize login`, `ainize seed`)
+
+✓ node started in the background (pid 766597) — port 3691
+  logs: ~/nodes/checker/node.log   stop: ainize stop
+```
+
+`init`에 붙인 `--peer`는 그 주소를 새 노드의 설정에 적어 둡니다. 나중에 `ainize peers add`가 하는 일과 같습니다.
+세 대 모두 9단계에서 멈춥니다.
+
+### 내 노드를 그쪽으로 향하게 하기
+
+다시 내 노드입니다. `NGRAM_HOME`이 여전히 그 노드를 가리키므로 `--home` 접두어는 다시 없어집니다. 판매 노드의
+주소를 알려 주면 공지가 들어오기 시작합니다.
+
+```bash
+ainize peers add http://localhost:3692
+```
+
+```text
+✓ peer added: http://localhost:3692
 ```
 
 > [!WARNING]
@@ -231,9 +311,9 @@ ainize peers add http://localhost:3690
 > http://localhost:3611  -                -                           2
 > ```
 >
-> 저기서 손으로 넣은 것은 `3690` 하나뿐입니다. `3691`과 `3692`는 저절로 들어왔습니다. 피어끼리 서로의 피어 목록을
-> 주고받기 때문에, 쓸 만한 주소 하나면 나머지 네트워크를 만나기에 충분합니다. `3611`은 일부러 틀리게 넣은
-> 주소이고, 잘못됐을 때 어떻게 보이는지를 보여 주는 줄입니다.
+> 저기서 손으로 넣은 것은 하나뿐이고 나머지는 저절로 들어왔습니다. 피어끼리 서로의 피어 목록을 주고받기 때문에,
+> 쓸 만한 주소 하나면 나머지 네트워크를 만나기에 충분합니다. `3611`은 일부러 틀리게 넣은 주소이고, 잘못됐을 때
+> 어떻게 보이는지를 보여 주는 줄입니다.
 
 피어끼리 아는 것을 주고받는 일은 물어보는 즉시가 아니라 일정한 주기로 일어납니다. 몇 초 두었다가 다시 물어보세요.
 
@@ -242,37 +322,38 @@ ainize patch ls
 ```
 
 ```text
-ID                 STATUS      AUTHOR              MODEL                  ROWS      SIZE       PRICE  ATTEST  SOLD  BENCHMARK
-─────────────────  ──────────  ──────────────────  ──────────────────  ───────  ────────  ──────────  ──────  ────  ────────────────
-law-kr-2026        LISTED      node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
-law-us-2025        LISTED      node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-kr-2025        SUPERSEDED  node-a 0x529B…85fd  demo-ngram-1b         1,200    1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-common-base    LISTED      node-a 0x529B…85fd  demo-ngram-1b         2,000    2.5 MB    1 CREDIT     2/2     2  law-basics
-krx-all-2761       VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  270,053  331.7 MB   25 CREDIT     0/2     0  krx-ticker-codes
-krx-all-2761-ep12  VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  241,992  297.2 MB   10 CREDIT     0/2     0  krx-ticker-codes
-krx-all-2761-ep6   VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next  241,992  297.2 MB    5 CREDIT     0/2     0  krx-ticker-codes
-pixelplus-087600   VERIFYING   node-a 0x529B…85fd  Qwen3.8-Flash-Next    2,992    3.7 MB  0.1 CREDIT     0/2     0  krx-ticker-codes
+ID               STATUS      AUTHOR              MODEL           ROWS    SIZE       PRICE  ATTEST  SOLD  BENCHMARK
+───────────────  ──────────  ──────────────────  ─────────────  ─────  ──────  ──────────  ──────  ────  ────────────────
+law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
+law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
 ```
 
 결정을 좌우하는 칸은 넷입니다. `MODEL`은 4단계에서 내 노드가 찾아낸 모델과 같아야 합니다. 지식이란 특정 모델 기억
-테이블의 항목들이고, 다른 모델에서는 아무 뜻도 없기 때문입니다. 그래서 목록에는 내가 쓸 수 없는 모델의 것도 함께
-올라옵니다. 위의 표가 바로 그런 경우입니다. `ATTEST 2/2`는 독립된 노드 몇 곳이 검사를 마쳤는지를, 이 노드가 팔아도
+테이블의 항목들이고, 다른 모델에서는 아무 뜻도 없기 때문입니다. 그래서 진짜 네트워크의 목록에는 내가 쓸 수 없는
+모델의 것도 함께 올라오고, 그런 줄은 내 것이 아닙니다. `ATTEST 2/2`는 독립된 노드 몇 곳이 검사를 마쳤는지를, 이 노드가 팔아도
 된다고 보기까지 요구하는 수와 나란히 보여 줍니다. 그 수에 만든 사람은 절대 포함되지 않습니다. 노드는 자기 검사를
 세어 주지 않기 때문입니다. `PRICE`는 7단계에서 치를 값이고, 단위는 이 노드의 통화입니다.
 
-`STATUS`를 가장 먼저 보세요. 살 수 있는 값은 둘뿐입니다. `LISTED`는 검증 수가 정족수에 닿았다는 뜻입니다.
-`VERIFYING`은 검사가 진행 중이고 아직 닿지 않았다는 뜻이며 — 위의 네 줄이 `0/2`에 있습니다 — 이것을 사려고 하면
-돈이 움직이기 전에 거절당합니다.
+`STATUS`를 가장 먼저 보세요. 살 수 있는 값은 둘뿐입니다. `LISTED`는 검증 수가 정족수에 닿았다는 뜻이고,
+`SUPERSEDED`는 만든 사람이 그 뒤로 더 새 것을 냈다는 뜻이며 그래도 살 수는 있습니다.
+
+나머지 둘은 대기실이고, 어느 쪽이 보이느냐가 *내 노드에서* 그 지식이 어디까지 왔는지를 말해 줍니다. `ANNOUNCED`는
+공지는 들었지만 아직 아무도 검사하지 않았다는 뜻입니다. 새 항목이 처음 갖는 상태이고, 큰 파일은 검사할 노드들이
+내려받는 동안 계속 여기 머뭅니다. `VERIFYING`은 검사가 최소 하나는 있지만 정족수에 닿지 않았다는 뜻입니다. 둘 다
+돈이 움직이기 전에 거절당하고, 메시지에 찾아낸 상태가 그대로 적힙니다.
 
 ```bash
 ainize use pixelplus-087600
 ```
 
 ```text
-error: pixelplus-087600 is VERIFYING (verification 0/2) — not verified yet; try `ainize patch get pixelplus-087600`
+error: pixelplus-087600 is ANNOUNCED (verification 0/2) — not verified yet; try `ainize patch get pixelplus-087600`
 ```
 
-`SUPERSEDED`는 만든 사람이 그 뒤로 더 새 것을 냈다는 뜻이고, 그래도 살 수는 있습니다. 나머지 상태들은
+검사가 하나 모자란 항목에 같은 명령을 걸면 `is VERIFYING (verification 1/2)`라고 나옵니다. 어느 쪽도 돈으로 건너뛸
+수 있는 오류가 아니고, 둘 다 기다릴 만한 상태입니다. 나머지 상태들과 숫자가 멈춰 버렸을 때 할 일은
 [목록에 오르지 않을 때](../how-to/failed-verification.md)에서 차근히 다룹니다.
 
 검사가 무엇이었는지는 하나로 정해져 있지 않고, 빠른 시작이라도 이것만은 뭉뚱그리면 안 됩니다. 맞는 모델을 가진 검증
@@ -282,9 +363,10 @@ error: pixelplus-087600 is VERIFYING (verification 0/2) — not verified yet; tr
 페이지는 개념 묶음에 있습니다.
 
 > [!NOTE]
-> 이 기록의 네트워크는 한 컴퓨터에 띄운 노드 세 개이고, 거기 올라온 지식은 이 페이지를 남기려고 만들어 낸 합성물로
-> 이름에 `[synthetic]`이 붙어 있습니다. 명령과 출력은 진짜지만 지식은 진짜가 아니며, `law-common-base`는 실제 법을
-> 아무것도 알지 못합니다. 진짜 지식을 가진 노드와 피어를 맺으면 이 표가 진짜 항목들로 찹니다.
+> 이 기록의 네트워크는 위에서 만든 노드 셋을 한 컴퓨터에 띄운 것이고, 거기 올라온 지식은 `seed --synthetic`이
+> 만들어 낸 것 — 무작위 행으로 된 파일들이며 이름에 `[synthetic]`이 그대로 붙어 있습니다. 명령과 출력은 진짜지만
+> 지식은 진짜가 아니며, `law-common-base`는 실제 법을 아무것도 알지 못합니다. 진짜 지식을 가진 노드와 피어를 맺으면
+> 이 표가 대신 진짜 항목들로 찹니다.
 
 ## 7. 내 노드에 올리기
 
@@ -308,24 +390,28 @@ ainize logs --kind buy
 ```
 
 ```text
-2026-09-04 12:39:36 info  buy       [law-common-base] quorum: 2 attestation(s) ≥ quorum 2
-2026-09-04 12:39:36 info  buy       [law-common-base] 402: Payment Required: 1 CREDIT → 0x529B9b39… (local-credit)
-2026-09-04 12:39:36 info  buy       [law-common-base] pay: signed credit intent a0f57f34e69206…
-2026-09-04 12:39:36 info  buy       [law-common-base] settled: seller confirmed; manifest sha256 4fff05beaec02e…
-2026-09-04 12:39:36 info  buy       [law-common-base] download: 2.6 MB from http://localhost:3690; sha256 matches on-ledger anchor
+2026-09-04 14:07:35 info  buy       [law-common-base] quorum: 2 attestation(s) ≥ quorum 2
+2026-09-04 14:07:35 info  buy       [law-common-base] 402: Payment Required: 1 CREDIT → 0x9ef1F6e4… (local-credit)
+2026-09-04 14:07:35 info  buy       [law-common-base] pay: signed credit intent f126af6bb44f7b…
+2026-09-04 14:07:35 info  buy       [law-common-base] settled: seller confirmed; manifest sha256 7e8e8a1be950b2…
+2026-09-04 14:07:35 info  buy       [law-common-base] download: body already present; sha256 matches on-ledger anchor
 ```
 
 위에서 아래로 읽으면 거래 전체입니다. 산 쪽이 검증 수를 스스로 확인했고, 판 쪽이 내려받기 요청에 `402 Payment
-Required`와 값으로 답했고, 산 쪽이 결제에 서명해 돌려보냈고, 판 쪽이 정산했고, 본문이 도착해 그 해시가 공개 기록에
-적힌 것과 맞았습니다. 계정을 만든 적도 카드를 넣은 적도 없습니다. 노드는 1단계에서 만든 자기 키로 값을 치렀습니다.
-돈은 실제로 움직였습니다.
+Required`와 값으로 답했고, 산 쪽이 결제에 서명해 돌려보냈고, 판 쪽이 정산했고, 본문의 해시를 공개 기록에 적힌 것과
+맞춰 보았습니다. 계정을 만든 적도 카드를 넣은 적도 없습니다. 노드는 1단계에서 만든 자기 키로 값을 치렀습니다.
+
+마지막 줄이 크기와 주소 대신 `body already present`인 이유는, 내 노드가 사는 쪽이면서 동시에 검사하는 쪽이기
+때문입니다. 사기 몇 분 전에 이미 검사하려고 그 파일을 받아 두었던 것입니다. 바이트를 갖고 있는 것과 지식을 소유하는
+것은 처음부터 다른 일이고, 그래서 구매는 그대로 일어났습니다. 검사하지 않았던 노드라면 이 단계에서 실제로 내려받고,
+어느 쪽이든 해시는 확인합니다. 돈은 실제로 움직였습니다.
 
 ```bash
 ainize wallet
 ```
 
 ```text
-address             0x67470AEa0c6d6877841D3c79e961d33A440225E3
+address             0x4079e607370cC79B00c6051204bDb5c67a54FB12
 ledger              local · local
 balance             99 CREDIT
 sales               0
@@ -367,17 +453,29 @@ ainize chat --list
 
 ```text
 runtime unavailable — serving API unreachable  (chat needs a serving node; pass --node <url> of one)
-ID               NAME                             MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
-───────────────  ───────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
-law-common-base  [synthetic] common legal basics  demo-ngram-1b     40        2,000     2/2 ✓  -
+overlapping memory entries: law-kr-2026 ∩ law-us-2025 = 600; law-kr-2026 ∩ law-kr-2025 = 600; law-kr-2026 ∩ law-common-base = 600; law-us-2025 ∩ law-kr-2025 = 600; law-us-2025 ∩ law-common-base = 600; law-kr-2025 ∩ law-common-base = 600
+ID               NAME                                           MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
+───────────────  ─────────────────────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
+law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ngram-1b     60        1,200     2/2 ✓  -
+law-us-2025      [synthetic] US federal law 2025                demo-ngram-1b     60        1,200     2/2 ✓  -
+law-kr-2025      [synthetic] Korean law revision 2025           demo-ngram-1b     60        1,200     2/2 ✓  -
+law-common-base  [synthetic] common legal basics                demo-ngram-1b     40        2,000     2/2 ✓  -
 
 ainize chat <ID> "<question>"   or   ainize chat <ID>   for an interactive session   (ainize chat --patch a,b loads up to 3 together)
 ```
 
-여기 오르는 것은 이 노드가 본문을 갖고 있는 지식입니다. 7단계가 마련해 둔 것이 그것이고, 목록의 나머지 일곱 줄이 여기
-없는 이유도 그것입니다. `FACTS`는 만든 사람이 함께 공개한 질문·답 쌍의 개수이고, `TRY`는 그중 하나가 있으면 보여
-줍니다. 답을 이미 아는 질문부터 시작할 수 있게 하려는 것입니다. 아무것도 사지 않은 노드에서는 같은 명령이
-`no testable patch on this node`라고 답합니다.
+네 줄이고, 그중 하나를 샀습니다. **여기 오르는 것은 이 노드가 본문을 갖고 있는 지식이지, 이 노드가 산 지식이
+아닙니다.** `verifier` 역할을 가진 노드는 — 기본값이고, 1단계 이후로 내 노드가 줄곧 갖고 있는 역할입니다 — 검사하려고
+본문을 내려받고 그대로 갖고 있습니다. 그러니 여기서 시험할 수 있는 지식이라도 쓰려면 값을 치러야 할 수 있습니다.
+`FACTS`는 만든 사람이 함께 공개한 질문·답 쌍의 개수이고, `TRY`는 그중 하나가 있으면 보여 줍니다. 답을 이미 아는
+질문부터 시작할 수 있게 하려는 것입니다. 표 위의 `overlapping memory entries` 줄은 바로 이 넷에 대한 경고입니다.
+서로에게서 만들어진 것들이라 같은 항목을 많이 건드리고, 둘을 한꺼번에 올리면 겹치는 자리에서는 나중 것이 이깁니다.
+
+아무것도 갖고 있지 않은 노드는 표 대신 한 줄로 답합니다.
+
+```text
+no testable patch on this node — its body must be held here (seller node, or `ainize patch buy <id>` first)
+```
 
 <!-- unverified: needs a model runtime — `ainize chat`은 실행했지만 runtime 관문에서 거절당했습니다. 그 아래의 전후 출력 설명은 packages/cli/src/commands/chat.ts를 읽고 쓴 것이지, 붙여 넣은 출력이 아닙니다 -->
 
@@ -402,21 +500,33 @@ error: serving API unreachable
 
 ## 9. 노드 멈추기
 
+띄운 노드는 모두 배경 프로세스이고, 하나씩 이름을 대어 멈춥니다. 6단계에서 연습용 네트워크를 세웠다면 셋입니다.
+
 ```bash
 ainize stop
+ainize --home ~/nodes/seller stop
+ainize --home ~/nodes/checker stop
 ```
+
+```text
+✓ stopped node (pid 766683)
+✓ stopped node (pid 766562)
+✓ stopped node (pid 766597)
+```
+
+가끔 그 앞에 한 줄이 더 붙는데, 그래도 정상적으로 멈춘 것입니다.
 
 ```text
 ! node 730221 is still running 10 s after SIGTERM — sending SIGKILL
 ✓ stopped node (pid 730221) — it ignored SIGTERM, so it was killed
 ```
 
-곱게 내려가는 노드는 둘째 줄만, 그것도 `it ignored SIGTERM` 없이 찍습니다. 둘 다 정상적으로 멈춘 것입니다. 10초의
-멈칫거림은 스스로 끝나지 않은 노드를 `ainize stop`이 기다려 준 시간이고, 피어 연결을 열어 둔 노드가 이 빌드에서
-보이는 모습입니다.
+10초의 멈칫거림은 스스로 끝나지 않은 노드를 `ainize stop`이 기다려 준 시간이고, 피어 연결을 열어 둔 노드가 이
+빌드에서 가끔 보이는 모습입니다.
 
-노드의 홈 디렉터리는 그대로 남습니다. 다시 띄우면 같은 신원, 같은 잔액, 같은 지식을 그대로 이어받습니다. 디렉터리를
-지우면 키가 사라지고, 그 노드가 공개한 모든 것도 함께 사라집니다.
+홈 디렉터리는 각각 그대로 남습니다. 다시 띄우면 같은 신원, 같은 잔액, 같은 지식을 그대로 이어받습니다. 디렉터리를
+지우면 그 노드의 키가 사라지고, 그 노드가 공개한 모든 것도 함께 사라집니다. 연습용 판매 노드도 마찬가지라, 다 쓰고
+나서 연습용 네트워크를 깨끗이 버리는 방법이 그것입니다.
 
 ## 이다음에 읽을 것
 
