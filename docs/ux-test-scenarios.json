@@ -9883,5 +9883,28 @@
    "packages/node/src/teach.ts closeCoveredQuestions()",
    "docs/lineage-teach-design.md §10 issue lifecycle, §5.6"
   ]
+ },
+ {
+  "id": "AZ-299",
+  "persona": "Visitor (knowledge user)",
+  "title": "Knowledge kept for another context is a track of its parent, and the tree names the track",
+  "goal": "Two answers that are both right for different contexts must not be drawn as one replacing the other (claim 17) — the family tree is where a buyer decides which one is theirs.",
+  "preconditions": [
+   "A published knowledge, and a child of it published on a different track with a branch record."
+  ],
+  "steps": [
+   "GET the parent's tree"
+  ],
+  "expected": [
+   "The edge to the child is `track` — not `declared` and not `version`.",
+   "The child's node carries its branch and the track names it is on; the parent carries none."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-299)",
+   "docs/lineage-teach-design.md §5.5, §12.5"
+  ]
  }
 ]

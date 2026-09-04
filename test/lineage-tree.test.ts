@@ -341,3 +341,20 @@ test('AZ-296 a newer version sits beside the knowledge, not above it — and the
     (N.market as unknown as { entryMap?: unknown }).entryMap = Object.getPrototypeOf(N.market).entryMap;
   }
 });
+
+test('AZ-299 knowledge kept for another context is a track of its parent, and the tree says which track it is on', async () => {
+  // §5.5: a child on a different track is not a correction of its parent — the two are meant to coexist (claim 17),
+  // so the edge is `track` and the node carries the track's name rather than being drawn as a newer version.
+  const model = { id_M: 'demo-ngram-1b', row_dim: ROW_DIM };
+  await N.market.createDraft({ id: 'trk-child', name: 'For the KR desk', model, benchmark: bench('tk'), file: file('tk', 3000, 20), keepInPlace: true, parents: ['fam-a'], branch: 'kr-desk' });
+  await N.market.announce('trk-child');
+  await N.market.createBranch('kr-desk', 'the Korean desk’s answers', { desk: 'kr' }, ['trk-child']);
+
+  const t = (await api('GET', '/api/patches/fam-a/tree?depth=2')).json as unknown as LineageTree;
+  const edge = t.edges.find((e) => e.to === 'trk-child');
+  assert.equal(edge?.kind, 'track', 'a different context is a track, not a correction and not a plain declared parent');
+  const node = t.nodes.find((n) => n.id === 'trk-child')!;
+  assert.equal(node.branch, 'kr-desk');
+  assert.deepEqual(node.tracks, ['kr-desk'], 'and the tree names the track it is subscribed on');
+  assert.equal(t.nodes.find((n) => n.id === 'fam-a')!.tracks?.length ?? 0, 0);
+});
