@@ -349,7 +349,11 @@
      "evidence": "Reproduced with a stubbed answer: 1 turn -> tick a second knowledge -> empty state -> untick -> the turn returns. teach-chat-12-basket-lost-on-stack-change.png, guard-basket-lost.png, live-test-29-transcript-vanishes-1280-en.png.",
      "user_cost": "The natural next move - \"now add the second knowledge and ask again\" - appears to delete both the comparison the user spent scarce free tries on and the correction they were writing. The rational response is to retype it or give up.",
      "fix": "Keep one transcript and one basket per browser and stamp each turn and each correction with the patchIds it used (Turn already carries patchIds), showing a divider when the selection changes. If per-stack storage must stay, render \"You have N questions and 1 correction saved for the previous selection - untick <name> to see them\" instead of an empty state.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "10ea9ee",
+     "fixed_note": "One transcript for the whole conversation instead of one per selection, with each turn carrying the knowledge it was asked with and a divider where that changed; the lesson follows the tick (carryBasket) and anything left under another selection is named above the panel with one click back to it (strandedBaskets)."
     },
     {
      "n": 16,
@@ -382,7 +386,11 @@
      "evidence": "Basket before: \"A DIFFERENT correction I was still working on / keep me\". After: the failed job’s fact. guard-improve-retry.png, teach-chat-56-improve-retry.png; probe of basket item controls returned [\"Remove ×\"].",
      "user_cost": "The single remedy the product recommends after a failed lesson cannot be performed, and attempting it deletes unrelated work. The only real path costs another model call.",
      "fix": "Make basket items editable - clicking one reopens the teach drawer prefilled with prompt, answer and alt_prompt. Then Improve & retry can merge instead of replace and can open the first item focused on the \"Ask it another way\" field.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "f38d472",
+     "fixed_note": "Improve & retry now merges: the lesson keeps what it holds, the failed job's corrections come back beside it without duplicating, what does not fit the cap is named rather than dropped, and the drawer opens on the correction that missed with 'Ask it another way' focused so the phrasing the card asks for can actually be added (saving replaces it in place). A lesson too full to take any of them back is not marked retry_of that job."
     },
     {
      "n": 36,
@@ -1059,7 +1067,11 @@
      "evidence": "critic-chat-360-bottom.png (viewport shows only chips, mode buttons, composer, \"Free trial 16/20 left this hour\"), live-test-24-mobile-answer-offscreen-360-en.png.",
      "user_cost": "The user asks a question, sees nothing happen, and has spent one of twenty hourly free tries on an answer that never appeared. The only visible change is the counter going down.",
      "fix": "Keep a ref on the newest article and call scrollIntoView({block:\"nearest\"}) whenever turns.length or the turn status changes, falling back to the window when scrollRef.current.scrollHeight <= clientHeight (the single-column case).",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "d6ccf19",
+     "fixed_note": "The newest turn carries a ref and the effect calls scrollIntoView({block:'nearest'}) on it instead of scrollTo on the transcript box, so whichever ancestor actually scrolls does — the transcript at 1280, the window at 360 where the panel is un-clamped."
     },
     {
      "n": 90,
