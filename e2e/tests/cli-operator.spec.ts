@@ -1694,18 +1694,18 @@ test.describe('operator: commands that report state', () => {
     try {
       expect((await b.init()).code).toBe(0);
 
-      // step 1-2: the second node cannot bind, and says so with the log's own reason
+      // step 1-2: the port is another ainize node's — b says whose, before spawning anything (a holder that is
+      // not an ainize node is spawned against and reported from node.log: the unit test in operator.test.ts)
+      const addrA = nodeAddress(a.home);
+      const addrB = nodeAddress(b.home);
       const started = await b.cli(['start', '-d']);
       expect(started.code).toBe(1);
       expect(started.stdout).not.toContain('✓');
-      expect(started.stderr).toContain('error: node exited while starting (exit code 1) — it is not running.');
-      expect(started.stderr).toContain(`${join(b.home, 'node.log')} (last `);
-      expect(started.stderr).toContain(`error: listen EADDRINUSE: address already in use 0.0.0.0:${a.port}`);
+      expect(started.stderr.trim()).toBe(`error: port ${a.port} is already answered by "busy-a" (${shortAddr(addrA, 8)}), not the node in ${b.home} — stop that node, or move this one: \`ainize config set port <1-65535>\``);
       expect(existsSync(join(b.home, 'node.pid')), 'no pid file for a node that never answered').toBe(false);
+      expect(existsSync(join(b.home, 'node.log')), 'nothing was spawned').toBe(false);
 
       // step 3: status does not render node a as node b
-      const addrA = nodeAddress(a.home);
-      const addrB = nodeAddress(b.home);
       const st = await b.cli(['status']);
       expect(st.code).toBe(2);
       expect(st.stderr).toContain(`! ${a.url} is answered by "busy-a" (${shortAddr(addrA, 8)}), not the node in ${b.home} (${shortAddr(addrB, 8)}) — that node is not running.`);
@@ -1734,6 +1734,18 @@ test.describe('operator: commands that report state', () => {
       expect(again.code, again.stderr).toBe(0);
       expect(again.stdout).toContain(`✓ node started in the background (pid `);
       expect(await httpUp(a.url, 60_000)).toBe(true);
+
+      // step 9: a's own node serving with no pid file (foreground, or a supervisor) — the start-up probe used to
+      // match its identity and print the tick for a child that had just died on EADDRINUSE
+      const pidA = readFileSync(join(a.home, 'node.pid'), 'utf8');
+      rmSync(join(a.home, 'node.pid'));
+      try {
+        const dup = await a.cli(['start', '-d']);
+        expect(dup.code).toBe(1);
+        expect(dup.stdout).not.toContain('✓');
+        expect(dup.stderr.trim()).toBe(`error: this node is already serving on ${a.url} — it was not started by \`ainize start -d\` (foreground, or a supervisor), so stop it where it was started before starting it here`);
+        expect(existsSync(join(a.home, 'node.pid')), 'nothing was spawned').toBe(false);
+      } finally { writeFileSync(join(a.home, 'node.pid'), pidA); }
     } finally {
       await b.stop();
       await a.stop();

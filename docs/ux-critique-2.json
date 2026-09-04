@@ -250,7 +250,7 @@
      "fix": "In the detach branch, after `spawn`, poll `GET <url>/api/info` for up to ~10 s; on `child.exit` or timeout print the last 20 lines of node.log, delete the pid file and exit non-zero instead of the tick. In `status()` compare `d.node.address` with `requireConfig(ctx).identity.address` and, when they differ, print `! http://localhost:3402 is answered by \"node-a\" (0xF7A9…A1F5), not the node in <home> (0xd379…2AC3) — that node is not running` above the table and exit non-zero. When no pid is running for the home, say `not running (no process for this NGRAM_HOME)` explicitly.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`start -d` now polls /api/info until the child answers with this home's own identity and otherwise prints the tail of node.log, deletes the pid file and exits 1; `status` names the stranger answering the port and exits 2 instead of rendering their node as yours."
+     "shipped": "`start -d` now polls /api/info until the child answers with this home's own identity and otherwise prints the tail of node.log, deletes the pid file and exits 1; `status` names the stranger answering the port and exits 2 instead of rendering their node as yours. Re-verified on a throwaway node: when this home's own node was already serving with no pid file (foreground, or a supervisor), the start-up probe matched its identity and printed the tick for a child that had just died on EADDRINUSE — `start` now probes the port first and names whoever holds it, this node or a stranger, before spawning anything."
     },
     {
      "n": 119,

@@ -7853,22 +7853,24 @@
    "SIGSTOP node a: `kill -STOP $(cat $S/a/node.pid)` — it now ignores SIGTERM",
    "Run `NGRAM_STOP_GRACE_MS=3000 $N --home $S/a stop`",
    "Check the process is gone (`ps -o stat -p <pid>`) and $S/a/node.pid is removed",
-   "Run `$N --home $S/a start -d` again"
+   "Run `$N --home $S/a start -d` again",
+   "Remove $S/a/node.pid (node a keeps running — a foreground or supervisor-started node has no pid file) and run `$N --home $S/a start -d`; then put the pid file back"
   ],
   "expected": [
-   "Step 1 fails: `error: node exited while starting (exit code 1) — it is not running.` followed by `$S/b/node.log (last N lines):` and the log's own reason `error: listen EADDRINUSE: address already in use 0.0.0.0:3593`; exit code 1; no green tick and no pid",
-   "Step 2: $S/b/node.pid does not exist — a pid file is written only for a node that answered",
+   "Step 1 fails before anything is spawned: `error: port 3593 is already answered by \"a\" (0x…), not the node in $S/b — stop that node, or move this one: `ainize config set port <1-65535>``; exit code 1; no green tick, no pid file and no $S/b/node.log. (When the port is held by something that is not an ainize node the child is spawned and its death reported with the log's own reason: `error: node exited while starting (exit code 1) — it is not running.` followed by `$S/b/node.log (last N lines):` and `error: listen EADDRINUSE: address already in use 0.0.0.0:3593`.)",
+   "Step 2: $S/b/node.pid does not exist — a pid file is written only for a child that was spawned, and kept only for one that answered",
    "Step 3 prints on stderr, above the block, `! http://localhost:3593 is answered by \"a\" (0x…), not the node in $S/b (0x…) — that node is not running.` with the dim second line `everything below belongs to that other node.`; the block that follows is node a's; exit code 2 (not 0)",
    "Step 4 prints `no background node running for this NGRAM_HOME` and exits 0 — home b really has no node, and the node on the port is not b's, so nothing else is claimed",
    "Step 6 prints `! node <pid> is still running 3 s after SIGTERM — sending SIGKILL` and then `✓ stopped node (pid <pid>) — it ignored SIGTERM, so it was killed`; exit code 0",
    "Step 7: the process is gone and $S/a/node.pid is removed — the pid file survives only a stop that did not confirm the exit, in which case the command exits non-zero with `did not stop (still running after SIGTERM and SIGKILL)`",
-   "Step 8 succeeds with `✓ node started in the background (pid N) — port 3593`, printed only after the new node answered /api/info with home a's own address"
+   "Step 8 succeeds with `✓ node started in the background (pid N) — port 3593`, printed only after the new node answered /api/info with home a's own address",
+   "Step 9 fails with `error: this node is already serving on http://localhost:3593 — it was not started by `ainize start -d` (foreground, or a supervisor), so stop it where it was started before starting it here`; exit code 1; no tick — the start-up probe never mistakes the node already on the port for the child it spawned"
   ],
   "priority": "P0",
   "area": "cli",
   "automation": "cli",
   "evidence": [
-   "packages/cli/src/commands/node.ts start() (poll /api/info, identity match, startFailed + logTail), stop() (waitGone, SIGKILL escalation), status() (stranger warning + exit 2)",
+   "packages/cli/src/commands/node.ts start() (pre-flight /api/info probe naming whoever holds the port; poll /api/info, identity match, startFailed + logTail), stop() (waitGone, SIGKILL escalation), status() (stranger warning + exit 2)",
    "packages/cli/test/operator.test.ts (items 118/119 unit tests)",
    "docs/ux-critique-2.json items 118, 119"
   ]
