@@ -9,7 +9,7 @@ summary: Every endpoint an Ainize node serves, with parameters, bodies and respo
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src/openapi.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-114 operations on 99 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
+115 operations on 100 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
 
 ## How to read this page
 
@@ -62,6 +62,7 @@ See [Error codes](./errors.md) for the full list.
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | [`/api/patches/{id}/derive-intent`](#post-apipatchesidderive-intent) | teaching key | Say you are building on this knowledge, and get a token for its training set |
+| `POST` | [`/api/patches/{id}/fork`](#post-apipatchesidfork) | teaching key | Copy this knowledge’s questions into your own training set |
 | `GET` | [`/api/teach/policy`](#get-apiteachpolicy) | none | Teaching policy of this node (open / paused, queue, limits, measured timing, shares) |
 | `GET` | [`/api/teach/samples`](#get-apiteachsamples) | none | Example datasets this node ships (ko-facts, en-facts, mixed) |
 | `GET` | [`/api/teach/samples/{kind}`](#get-apiteachsampleskind) | none | Download an example dataset (.jsonl) |
@@ -533,6 +534,36 @@ A signed intent from a teaching key (lineage design §6.1). Counted on the knowl
 | `held` | `boolean` |
 | `holders` | `string`[] |
 
+### `POST /api/patches/{id}/fork`
+
+Copy this knowledge’s questions into your own training set
+
+Story B of the lineage design: the published training set becomes a dataset owned by the calling teaching key, with the knowledge recorded as its parent and every row carrying `from: '<patch>#<row>'`. Idempotent — copying twice returns the same dataset (200 instead of 201). Needs `teach.lineage`.
+
+**Auth** — teaching key
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | `path` | `string` | yes |   |
+| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+
+**Request body** — `application/json`, optional
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | (at most 80 characters) |
+
+**Responses**
+
+| Code | Description |
+|---|---|
+| `200` | you already have this copy |
+| `201` | copied |
+| `403` | dataset_private \| lineage_disabled |
+| `404` | base_unknown \| dataset_unavailable — no node here holds the questions |
+
 ### `GET /api/teach/policy`
 
 Teaching policy of this node (open / paused, queue, limits, measured timing, shares)
@@ -891,7 +922,7 @@ The `.jsonl` bytes are the sha256 subject: download it, re-upload it, and you ge
 
 Check what the model already knows (before queuing a lesson)
 
-Re-asks every correction with the chosen knowledge loaded; costs one live-test unit. Statuses: will_train · already_known · overlaps_listing · invalid.
+Re-asks every correction with the chosen knowledge loaded; costs one live-test unit. Statuses: will_train · already_known · overlaps_listing · invalid — and, when `base_ids` name a knowledge to build on: in_base (it already answers this the same way) · base_conflict (it answers this question differently, and your row would replace its answer).
 
 **Auth** — teaching key
 
@@ -908,6 +939,8 @@ either `facts` (v1) or `dataset_id` with an optional window
 | Field | Type | Description |
 |---|---|---|
 | `patch_ids` | `string`[] | (at most 3 items) |
+| `base_ids` | `string`[] | the knowledge these questions would be taught on top of (at most 2 items) |
+| `context_ids` | `string`[] | loaded for comparison only (at most 3 items) |
 | `facts` | [`TeachFact`](./schemas.md#teachfact)[] | (1–8 items) |
 | `dataset_id` | `string` |   |
 | `offset` | `integer` |   |
@@ -929,10 +962,12 @@ either `facts` (v1) or `dataset_id` with an optional window
 |---|---|
 | `facts` | `object`[] |
 | `facts[].index` | `integer` |
-| `facts[].status` | `"will_train"` \| `"already_known"` \| `"overlaps_listing"` \| `"invalid"` |
+| `facts[].status` | `"will_train"` \| `"already_known"` \| `"overlaps_listing"` \| `"invalid"` \| `"in_base"` \| `"base_conflict"` |
 | `facts[].base_answer` | `string` |
+| `facts[].base_id` | `string` |
 | `facts[].detail` | `string` |
 | `trainable` | `integer` |
+| `bases` | `string`[] |
 | `quota` | `object` |
 | `quota.key_remaining` | `integer` |
 | `quota.ip_remaining` | `integer` |

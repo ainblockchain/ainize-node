@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 25 top-level commands, 69 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 25 top-level commands, 70 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -434,6 +434,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch apply` — Apply a held patch to the serving runtime (no restart)
 - `ainize patch remove` — Unload it, putting back whatever was underneath
 - `ainize patch stack` — What is loaded in the serving model, bottom first
+- `ainize patch fork` — Copy this knowledge's questions into your own training set, and continue from there
 - `ainize patch conflicts` — Address-set overlaps with other patches
 - `ainize patch records` — Ledger records about a patch
 - `ainize patch rm` — Delete a draft
@@ -633,6 +634,33 @@ ainize patch stack
 ```
 
 What is loaded in the serving model, bottom first
+
+### `ainize patch fork`
+
+```bash
+ainize patch fork <id> [options]
+```
+
+Copy this knowledge's questions into your own training set, and continue from there
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--name`** (`string`) — name for your copy
+- **`--key-file`** (`string`) — teaching key file (default: \<home>/teaching-key.json)
+- **`--key`** (`string`) — teaching key as hex / json (or NGRAM_TEACH_KEY)
+
+**Examples**
+
+```bash
+# start from its questions
+ainize patch fork krx-all-2761 --name "KRX + biotech"
+# then teach your additions on top of it
+ainize teach train <dataset> --on krx-all-2761
+```
 
 ### `ainize patch conflicts`
 
@@ -904,7 +932,10 @@ Teach a lesson from a dataset id or a dataset file
 - **`--alt`** (`boolean`) — --no-alt trains only the wording in the file, not the second phrasing
 - **`--rows`** (`number`) — train only the first N questions of the dataset
 - **`--name`** (`string`) — name for the lesson (and for the dataset, when a file is uploaded here)
-- **`--patch`** (`string`) — knowledge id(s) loaded while teaching, comma-separated — the lesson then builds on them
+- **`--patch`** (`string`) — knowledge id(s) loaded while teaching, comma-separated — for comparison only
+- **`--on`** (`string`) — the knowledge this lesson is trained ON TOP OF: its questions are kept as known answers, it is recorded as the base, and buyers need it too
+- **`--inherit`** (`boolean`) — --no-inherit checks against the base without keeping its questions as known answers
+- **`--yes-change`** (`boolean`, default `false`) — my answers are meant to replace the base's where they differ
 - **`--wait`** (`boolean`, default `false`) — follow it until it is ready (prints each stage)
 
 **Examples**
@@ -914,6 +945,8 @@ Teach a lesson from a dataset id or a dataset file
 ainize teach train 6f2c1b2a-…
 # file → lesson in one line
 ainize teach train ./questions.csv --effort quick --wait
+# teach it on top of someone else's knowledge
+ainize teach train 6f2c1b2a-… --on krx-all-2761
 # the same questions again, harder
 ainize teach train 6f2c1b2a-… --effort thorough
 ```

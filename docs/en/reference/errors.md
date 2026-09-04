@@ -9,7 +9,7 @@ summary: The error envelope, and every machine-readable code a node can answer w
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-What an error body looks like, how a thrown error becomes an HTTP status, and the 41 codes a client can match on.
+What an error body looks like, how a thrown error becomes an HTTP status, and the 45 codes a client can match on.
 
 ## The error envelope
 
@@ -36,10 +36,11 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Codes
 
-41 codes are raised by name, in 92 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
+45 codes are raised by name, in 100 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
 
 | Code | HTTP | What it means | Raised in |
 |---|---|---|---|
+| `already_known` | `409` | … already answers every one of these questions the same way | `packages/node/src/teach.ts` |
 | `bad_license` | `400` | "\<license>" is not a licence this network knows (CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary) | `packages/node/src/teach.ts` |
 | `banned` | `403` | this node is not accepting lessons from this address | `packages/node/src/teach.ts` |
 | `banned` | `403` | this node is not accepting lessons from this key | `packages/node/src/teach.ts` |
@@ -52,6 +53,8 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `base_stack_too_deep` | `400` | \<stack.length> knowledges would have to be loaded under this lesson (at most 8) | `packages/node/src/teach.ts` |
 | `base_unknown` | `400` | \<b.patch_id> is no longer on this node | `packages/node/src/teach.ts` |
 | `base_unknown` | `400` | no knowledge called \<id> on this node | `packages/node/src/teach.ts` |
+| `base_unknown` | `404` | no knowledge called \<id> on this node | `packages/node/src/teach.ts` |
+| `base_unresolved_conflicts` | `400` | \<conflicts.length> of your answers differ from …'s answer to the same question — confirm that you mean to change them (they will be published as changes to it) or take them out | `packages/node/src/teach.ts` |
 | `checks_failed` | `409` | the side-effect check was turned off for this lesson — run the check now before publishing | `packages/node/src/teach.ts` |
 | `checks_failed` | `409` | this lesson changed answers to unrelated questions or to the knowledge it builds on | `packages/node/src/teach.ts` |
 | `consent_required` | `400` | both consent boxes are required | `packages/node/src/teach.ts` |
@@ -76,9 +79,12 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `dataset_private` | `403` | the creator kept the training set private | `packages/node/src/api.ts` |
 | `dataset_private` | `403` | the creator kept the training set private — only the verification questions on the record are public | `packages/node/src/api.ts` |
 | `dataset_private` | `403` | the creator kept the training set private, so nobody can build on it | `packages/node/src/api.ts` |
+| `dataset_private` | `403` | the creator of \<id> kept the questions private, so nobody can copy or build on them | `packages/node/src/teach.ts` |
 | `dataset_too_large` | `400` | this node teaches up to \<cap> questions in one lesson | `packages/node/src/teach.ts` |
 | `dataset_too_large` | `413` | this node accepts files up to … MB | `packages/node/src/teach-datasets.ts` |
+| `dataset_unavailable` | `404` | \<id> has no published training set — there is nothing to copy | `packages/node/src/teach.ts` |
 | `dataset_unavailable` | `404` | the training set of \<entry.anchor.id> is not on this node and no peer holds it (…) | `packages/node/src/teach.ts` |
+| `dataset_unavailable` | `404` | the training set of \<input.patchId> has no questions on this node | `packages/node/src/teach-datasets.ts` |
 | `dataset_unavailable` | `404` | this knowledge has no published training set | `packages/node/src/api.ts` |
 | `dataset_unavailable` | `404` | training set not available on this node (no peer holds it) | `packages/node/src/api.ts` |
 | `invalid` | `400` | \<bad> | `packages/node/src/teach.ts` |
@@ -87,7 +93,6 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `invalid` | `400` | at most 3 context knowledges | `packages/node/src/teach.ts` |
 | `invalid` | `400` | child_key must be the teaching key that signed this request | `packages/node/src/api.ts` |
 | `invalid` | `400` | declaration.source must be own, public or licensed | `packages/node/src/teach.ts` |
-| `invalid` | `400` | none of the selected questions exist in this dataset | `packages/node/src/teach.ts` |
 | `invalid` | `400` | payout_address cannot be this node's own address | `packages/node/src/teach.ts` |
 | `invalid` | `400` | payout_address must be an AIN address | `packages/node/src/teach.ts` |
 | `invalid` | `400` | price must be a non-negative number | `packages/node/src/teach.ts` |
@@ -109,6 +114,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `job_not_ready` | `409` | this lesson has not been measured in the live model yet — run a re-check first | `packages/node/src/teach.ts` |
 | `job_not_ready` | `409` | this lesson was already checked in the live model | `packages/node/src/teach.ts` |
 | `lineage_disabled` | `403` | building on top of another knowledge is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
+| `lineage_disabled` | `403` | copying another knowledge's questions is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
 | `merge_not_available` | `400` | combining two knowledges is not available on this node yet — build on one of them | `packages/node/src/teach.ts` |
 | `not_owner` | `403` | this lesson belongs to a different teaching key | `packages/node/src/api.ts` |
 | `parent_not_listed` | `400` | publish \<b.patch_id> first — it is the base of this lesson | `packages/node/src/teach.ts` |
@@ -122,6 +128,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `quota_ip` | `429` | daily lesson limit reached for this address | `packages/node/src/teach.ts` |
 | `quota_key` | `429` | daily lesson limit reached for this key | `packages/node/src/teach.ts` |
 | `quota_key` | `429` | you already have \<mineActive> lesson(s) in progress on this node — wait for them to finish | `packages/node/src/teach.ts` |
+| `quota_requests` | `429` | too many requests from here this hour | `packages/node/src/api.ts` |
 | `quota_rows` | `429` | this address has \<q.rows_ip_remaining> of … questions left to teach on this node today | `packages/node/src/teach.ts` |
 | `quota_rows` | `429` | you have \<q.rows_remaining> of … questions left to teach on this node today | `packages/node/src/teach.ts` |
 | `rate_limited` | `429` | too many datasets from this address in the last minute | `packages/node/src/teach-datasets.ts` |
@@ -132,12 +139,13 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `trainer_paused` | `503` | … | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | \<rowsWaiting> questions are already waiting on this node — try again later | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | the training queue is full — try again later | `packages/node/src/teach.ts` |
+| `turn_unknown` | `404` | that live test is not one this node remembers for you (it may have been restarted) | `packages/node/src/api.ts` |
 
 ## Messages without a code
 
 Not every error carries a code. 32 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
-A further 18 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
+A further 19 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
 | HTTP | Message | Raised in |
 |---|---|---|
