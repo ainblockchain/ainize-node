@@ -67,6 +67,9 @@ before(async () => {
   const api = `http://127.0.0.1:${(vllm.address() as { port: number }).port}`;
   mkdirSync(MAILBOX, { recursive: true });
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'N', port: PORT, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
+  // Never the shared model server: a test node built from defaultConfig() would otherwise use the shipped
+  // runtime.api (localhost:8002) and reach whatever engine is running on this machine.
+  cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   // patchDir = the mailbox of the instance `api` addresses → the cross-process lock lives under it (real code path)
   cfg.runtime = { repo: undefined, api, patchDir: MAILBOX };
   cfg.host = '127.0.0.1'; cfg.publicUrl = `http://127.0.0.1:${PORT}`;

@@ -43,6 +43,9 @@ const op = () => ({ authorization: `Bearer ${opToken}` });
 
 before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'TREE', port: PORT, peers: [], roles: ['seller'], ledger: 'local' });
+  // Never the shared model server: a test node built from defaultConfig() would otherwise use the shipped
+  // runtime.api (localhost:8002) and reach whatever engine is running on this machine.
+  cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.verifier = { ...(cfg.verifier ?? {}), auto: false } as NodeConfig['verifier'];
   N = await startNode(cfg, { quiet: true, serveWeb: false });
   const setup = await api('POST', '/api/auth/setup', { password: 'tree-pass' });

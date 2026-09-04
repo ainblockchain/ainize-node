@@ -2617,20 +2617,27 @@ export class Market {
     const ancestorAuthors = new Map(ancestors.map((n) => [(n.author ?? '').toLowerCase(), n]));
     const verifiers = new Set(Object.keys(plan.verification).map((a) => a.toLowerCase()));
     const contributorName = (addr: string) => (root.anchor.contributors ?? []).find((c) => c.address.toLowerCase() === addr || c.signer?.toLowerCase() === addr)?.name ?? null;
+    // One address can be paid twice for two different reasons — an ancestor author that also verified the child is
+    // the normal case on a small network — so the verification part is split out by amount, not by classifying the
+    // whole line as one kind or the other.
+    const verifiedPct = (lower: string) => Number(Object.entries(plan.verification).find(([a]) => a.toLowerCase() === lower)?.[1] ?? 0);
     const recipients = Object.entries(split)
       .filter(([a]) => a.toLowerCase() !== seller)
       .map(([address, amount]) => {
         const lower = address.toLowerCase();
         const from = ancestorAuthors.get(lower);
-        const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage' : verifiers.has(lower) ? 'verifier' : 'contributor';
+        const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage' : verifiers.has(lower) && verifiedPct(lower) >= Number(amount) - 1e-9 ? 'verifier' : 'contributor';
         return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.author_name ?? contributorName(lower), kind };
       });
+    // Rounded once, at the end: subtracting a rounded percentage from a rounded percentage put 100.1 % on the card.
+    const pctOf = (kind: 'lineage' | 'contributor') => Math.round(recipients.filter((r) => r.kind === kind)
+      .reduce((n, r) => n + Number(split[r.address] ?? 0) - verifiedPct(r.address.toLowerCase()), 0) * 10) / 10;
     return {
       seller_pct: Math.round(Number(split[root.anchor.author] ?? split[seller] ?? 0) * 10) / 10,
-      lineage_pct: Math.round(recipients.filter((r) => r.kind === 'lineage').reduce((n, r) => n + r.pct, 0) * 10) / 10,
-      contributor_pct: Math.round(recipients.filter((r) => r.kind === 'contributor').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      lineage_pct: pctOf('lineage'),
+      contributor_pct: pctOf('contributor'),
       /** what the verifiers keeping this knowledge on sale are paid out of the seller side (item 325) */
-      verifier_pct: Math.round(recipients.filter((r) => r.kind === 'verifier').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      verifier_pct: Math.round(Object.values(plan.verification).reduce((n, x) => n + Number(x), 0) * 10) / 10,
       verifier_count: Object.keys(plan.verification).length,
       /** the knowledges whose creators share `lineage_pct` — SC-9's "{names}" */
       lineage_names: ancestors.map((n) => n.name),
@@ -2756,6 +2763,30 @@ export class Market {
     if (!b) throw notFound('branch not found');
     const st = await this.runtime.status();
     const mine = new Set(await this.mySubscriptions());
+    const items = await this.resolveTrack(b);
+    const totals = new Map<string, number>();
+    for (const i of items) if (i.plan === 'buy') totals.set(i.currency, (totals.get(i.currency) ?? 0) + Number(i.price || 0));
+    const balance = this.ledger.kind === 'local' ? await this.creditBalance(this.address).catch(() => null) : null;
+    return {
+      branch: b.name, owner: b.owner, description: b.description, subscribed: mine.has(b.name),
+      items,
+      current: items.filter((i) => i.plan === 'buy' || i.plan === 'held' || i.plan === 'own').map((i) => i.patch_id),
+      retired: items.filter((i) => i.plan === 'retired').map((i) => i.patch_id),
+      buy: items.filter((i) => i.plan === 'buy').map((i) => i.patch_id),
+      total: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })),
+      currency: this.cfg.market.currency, balance,
+      runtime_available: st.available, runtime_error: st.error ?? null,
+    };
+  }
+
+  /** The ids a subscriber of this track would actually load: current, verified, runnable here. */
+  async currentTrackIds(b: BranchInfo): Promise<string[]> {
+    return (await this.resolveTrack(b)).filter((i) => i.plan === 'buy' || i.plan === 'held' || i.plan === 'own').map((i) => i.patch_id);
+  }
+
+  /** The one place the track resolution rules live (used by the quote, the subscribe, the sync and `branch ls`). */
+  private async resolveTrack(b: BranchInfo): Promise<TrackItem[]> {
+    const st = await this.runtime.status();
     const members = new Set(b.patch_ids);
     const items: TrackItem[] = [];
     for (const id of b.patch_ids) {
@@ -2772,19 +2803,7 @@ export class Market {
       if (this.hasLicense(e)) { items.push({ ...row, plan: 'held', reason: this.licenseOf(e)?.source === 'free' ? 'free — nothing to pay' : 'already bought by this node' }); continue; }
       items.push({ ...row, plan: 'buy', reason: `${a.price} ${a.currency} to ${a.author_name ?? a.author.slice(0, 10)}…` });
     }
-    const totals = new Map<string, number>();
-    for (const i of items) if (i.plan === 'buy') totals.set(i.currency, (totals.get(i.currency) ?? 0) + Number(i.price || 0));
-    const balance = this.ledger.kind === 'local' ? await this.creditBalance(this.address).catch(() => null) : null;
-    return {
-      branch: b.name, owner: b.owner, description: b.description, subscribed: mine.has(b.name),
-      items,
-      current: items.filter((i) => i.plan === 'buy' || i.plan === 'held' || i.plan === 'own').map((i) => i.patch_id),
-      retired: items.filter((i) => i.plan === 'retired').map((i) => i.patch_id),
-      buy: items.filter((i) => i.plan === 'buy').map((i) => i.patch_id),
-      total: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })),
-      currency: this.cfg.market.currency, balance,
-      runtime_available: st.available, runtime_error: st.error ?? null,
-    };
+    return items;
   }
 
   /**

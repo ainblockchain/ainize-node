@@ -87,11 +87,18 @@ test('x402: GET without payment → 402 with requirements; C buys with signed cr
   const setts = await A.ledger.settlements('law-kr-2026');
   assert.equal(setts.length, 1);
   const royalty = setts[0].body.royalty;
-  // law-kr-2026 → law-kr-2025 → law-common-base : all authored by A in the seed, so A receives the whole amount
-  assert.equal(Object.keys(royalty).length, 1);
-  assert.equal(Number(royalty[A.cfg.identity.address]), 2.5);
+  // law-kr-2026 → law-kr-2025 → law-common-base : all authored by A in the seed, so there is no lineage pool —
+  // A keeps the price minus the verification share its two verifiers earn for keeping it on sale (item 325).
+  const entry = (await A.market.catalogAll()).find((e) => e.anchor.id === 'law-kr-2026')!;
+  assert.equal(Object.keys(royalty).length, 1 + entry.verifiers.length);
+  const fee = 2.5 * 0.05;
+  assert.equal(Number(royalty[A.cfg.identity.address]), 2.5 - fee);
+  for (const v of entry.verifiers) assert.equal(Number(royalty[v]), fee / entry.verifiers.length);
+  assert.equal(Math.round(Object.values(royalty).reduce((n, x) => n + Number(x), 0) * 1e6) / 1e6, 2.5);
   const after = await waitFor(() => C.market.creditBalance(C.cfg.identity.address), (b) => b < before);
-  assert.equal(Math.round((before - after) * 1000) / 1000, 2.5);
+  // C paid the price and, having verified this knowledge itself, is paid its slice of the verification share back.
+  const backToC = Number(royalty[C.cfg.identity.address] ?? 0);
+  assert.equal(Math.round((before - after) * 1000) / 1000, Math.round((2.5 - backToC) * 1000) / 1000);
   // replay is rejected
   const replay = await fetch(`${A.url}/x402/patch/law-kr-2026`, { headers: { 'x-payment': 'garbage' } });
   assert.equal(replay.status, 402);
@@ -164,9 +171,17 @@ test('teach PR-1: contributors on a draft, catalog filters, /api/info fields, da
   await C.market.buy('taught-lesson');
   const setts = await A.ledger.settlements('taught-lesson');
   assert.equal(setts.length, 1);
-  assert.deepEqual(setts[0].body.royalty, { [TEACHER]: '7', [A.cfg.identity.address]: '3' });
+  // Item 325: the verifiers whose attestations keep it on sale are paid 5 % of the seller side first (B and C
+  // attested it), and the data provider's 0.7 is 0.7 of what is left — 6.65, not 7.
+  const entry = (await A.market.catalogAll()).find((e) => e.anchor.id === 'taught-lesson')!;
+  assert.equal(entry.verifiers.length, 2, 'both peers attested it');
+  const royalty = setts[0].body.royalty;
+  assert.equal(royalty[TEACHER], '6.65');
+  assert.equal(royalty[A.cfg.identity.address], '2.85');
+  for (const v of entry.verifiers) assert.equal(royalty[v], '0.25');
+  assert.equal(Object.values(royalty).reduce((n, x) => n + Number(x), 0), 10);
   const after = await waitFor(() => A.market.creditBalance(TEACHER), (b) => b > before, 10000);
-  assert.equal(Math.round((after - before) * 1000) / 1000, 7);
+  assert.equal(Math.round((after - before) * 1000) / 1000, 6.65);
 });
 
 test('visibility: hidden test anchors and private drafts never surface next to public knowledge; draft errors are 400/409; `forget` drops a body', async () => {

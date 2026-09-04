@@ -150,6 +150,9 @@ const npz = (path: string) => {
 
 before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'LIN', port: PORT, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
+  // Never the shared model server: a test node built from defaultConfig() would otherwise use the shipped
+  // runtime.api (localhost:8002) and reach whatever engine is running on this machine.
+  cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
   cfg.teach = {
     ...cfg.teach!, enabled: true, backend: 'stub', publish: 'auto', lineage: true, jobsPerKeyPerDay: 100, jobsPerIpPerDay: 400,
