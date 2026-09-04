@@ -696,7 +696,12 @@
      "fixed_note": "Web half: Publish now opens a confirm sheet naming every listing the announce will retire, with its status, its sales and revenue and the shared memory entries, and refuses to announce until the publisher types the new id; the checklist counts the items the node really supersedes (same schema, same branch, LISTED/VERIFYING/ANNOUNCED) instead of every same-subject overlap, and a cross-branch overlap is stated as one that coexists. The CLI half (`ainize patch announce` refusing without --supersede) is packages/cli and stays open.",
      "fixed": false,
      "status": "partial",
-     "remaining": "CLI: `ainize patch announce` must refuse without --supersede <id>… when conflicts > 0, and `publish` must print the list before announcing (packages/cli, packages/node — owned by the lineage workflow)."
+     "remaining": "CLI: `ainize patch announce` must refuse without --supersede <id>… when conflicts > 0, and `publish` must print the list before announcing (packages/cli, packages/node — owned by the lineage workflow).",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Web half re-tested 2026-09-04 on a real draft with a real same-schema overlap against a LISTED, selling knowledge: Publish opens \"What publishing retires\" naming ticker-v1 with its status, sales and 350 shared memory entries; the confirm stays disabled for an empty box and for the wrong id, and the knowledge is still DRAFT until the right id is typed. The CLI half is untouched and still open."
+     }
     },
     {
      "n": 151,

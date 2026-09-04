@@ -217,7 +217,12 @@
      "fixed": true,
      "fixed_by": "a5d2d3c",
      "fixed_note": "Web half only. \"Buy again\" is gone: a purchased knowledge now shows what was paid and when (amount, time, tx from /api/me/purchases), offers \"Load into the model\" as the primary action, and keeps a second payment behind a confirm that names the price and says the earlier tx hash will be overwritten. The idempotent market.buy, the append-only purchases table and the agent's ownership check remain open and belong to the node/agent packages.",
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Web half re-tested 2026-09-04 after a real purchase (5 node credit, real tx, through the UI): the Buy tab reads \"Already purchased\", states what was paid and when with the tx hash, offers \"Load into the model\" as the primary action, and puts a second payment behind a confirm that names the price and says the earlier tx hash is overwritten. The node-side idempotency is untouched and still open."
+     }
     },
     {
      "n": 272,
@@ -1370,7 +1375,12 @@
      "fixed_note": "Web half: the Dashboard track card quotes the spend before anything is bought — every item with its price and plan, the total, the balance — and says that the subscribe record is written and broadcast BEFORE the buying, that a failed item is a warning the node carries on from, and that a subscribed node is advertised as serving the track either way; afterwards the sheet reads the node's own blob and purchase lists back and says how many items really arrived instead of reporting success. The two-phase POST /api/branches/:name/quote, the record-before-buy ordering and the CLI's non-zero exit are packages/node + packages/cli and stay open.",
      "fixed": false,
      "status": "partial",
-     "remaining": "Node/CLI: the two-phase POST /api/branches/:name/quote, buying before the subscribe record is appended, the 409 {acquired, failed[]} answer and a non-zero CLI exit (packages/node, packages/cli — owned by the lineage workflow)."
+     "remaining": "Node/CLI: the two-phase POST /api/branches/:name/quote, buying before the subscribe record is appended, the 409 {acquired, failed[]} answer and a non-zero CLI exit (packages/node, packages/cli — owned by the lineage workflow).",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Web half re-tested 2026-09-04 (see finding 9): nothing is spent or broadcast before the confirm, the sheet states that the subscription record is written and broadcast BEFORE anything is bought, that failures are swallowed per item, and that unsubscribing refunds nothing. The two-phase quote, the ordering and the non-zero exit are node/CLI and still open."
+     }
     },
     {
      "n": 358,

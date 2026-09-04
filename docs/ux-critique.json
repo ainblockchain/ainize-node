@@ -17,7 +17,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "fcb7c66",
-     "fixed_note": "Below five listed the hero names the knowledge and the model it was verified on instead of printing a count; with nothing listed it says how many are in verification rather than “0 verified knowledge”; the count branch gained landing.hero.count_one and is passed a count."
+     "fixed_note": "Below five listed the hero names the knowledge and the model it was verified on instead of printing a count; with nothing listed it says how many are in verification rather than “0 verified knowledge”; the count branch gained landing.hero.count_one and is passed a count.",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 across the threshold: listed=1 names the knowledge and the model, listed=0 reads \"No knowledge is listed on this node yet\", listed=5 and 9 read \"5/9 verified knowledge\", and landing.hero.count_one exists. English and Korean."
+     }
     },
     {
      "n": 23,
@@ -107,7 +112,12 @@
      "fixed": true,
      "fixed_by": "0546447",
      "fixed_note": "The Buy tab now splits by audience: a signed-out visitor gets \"How to buy this knowledge\" with the two doors that need no account here — `ainize login && ainize use <id>` on their own node (with the install link) and the purchase address for an agent — the operator sign-in demoted to the last line, and the explainer rewritten to say there is no account on this site while a login is only for spending THIS node's wallet.",
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 as a signed-out visitor on a real node (:3790, knowledge ticker-v1/ticker-v2): the Buy tab renders \"How to buy this knowledge\" with `ainize login && ainize use <id>` and the x402 purchase address, the operator sign-in is one demoted line, and the explainer now reads \"there is no account to create on this site\". Verified in English and Korean."
+     }
     },
     {
      "n": 4,
@@ -122,7 +132,12 @@
      "fixed": true,
      "fixed_by": "a71b267",
      "fixed_note": "The Buy panel now opens with a warning above the price setting the two versions side by side — this one's price and accuracy against the successor's, with a link and both ids — and the buy control is demoted to an outlined \"Buy this older version anyway · <price>\" beside \"Open the newer version →\".",
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 on a genuinely SUPERSEDED knowledge (ticker-v1, superseded_by ticker-v2 after a real announce): the Buy panel opens with the two versions priced side by side above the price, and the operator control reads \"Buy this older version anyway · 5 node credit\" beside \"Open the newer version →\". English and Korean."
+     }
     },
     {
      "n": 25,
@@ -365,7 +380,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "10ea9ee",
-     "fixed_note": "One transcript for the whole conversation instead of one per selection, with each turn carrying the knowledge it was asked with and a divider where that changed; the lesson follows the tick (carryBasket) and anything left under another selection is named above the panel with one click back to it (strandedBaskets)."
+     "fixed_note": "One transcript for the whole conversation instead of one per selection, with each turn carrying the knowledge it was asked with and a divider where that changed; the lesson follows the tick (carryBasket) and anything left under another selection is named above the panel with one click back to it (strandedBaskets).",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 with a real selection change (ticking \"Company aliases\" beside the pre-selected knowledge, not the builds-on checkbox): the turn, the answer and the saved correction all survive the tick, the untick and a second question; no \"No questions yet\" and no \"No corrections yet\"; the \"From here: asked with … loaded\" divider marks where the selection changed."
+     }
     },
     {
      "n": 16,
@@ -380,7 +400,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "1b9966f",
-     "fixed_note": "SheetFooter is position:sticky at the bottom of the sheet body with an opaque background and a rule/shadow drawn only while content is still below the fold, so the publish submit moved from 919 to 869 at 1280x900 and from 1135 to 677 at 360x740; the credit, keep-private and every other sheet share the change."
+     "fixed_note": "SheetFooter is position:sticky at the bottom of the sheet body with an opaque background and a rule/shadow drawn only while content is still below the fold, so the publish submit moved from 919 to 869 at 1280x900 and from 1135 to 677 at 360x740; the credit, keep-private and every other sheet share the change.",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 on a READY lesson at 1280x900 and 360x740: the action bar is position:sticky inside the sheet body, opaque, with a rule and shadow while content is below the fold, and the Publish submit sits at 831-869 in a 900px viewport and 639-677 in a 740px one — on screen at both. Residual (deferred to lineage): the consent checkboxes are still in the scrolling body and nothing states why Publish is disabled."
+     }
     },
     {
      "n": 17,
@@ -406,7 +431,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "f38d472",
-     "fixed_note": "Improve & retry now merges: the lesson keeps what it holds, the failed job's corrections come back beside it without duplicating, what does not fit the cap is named rather than dropped, and the drawer opens on the correction that missed with 'Ask it another way' focused so the phrasing the card asks for can actually be added (saving replaces it in place). A lesson too full to take any of them back is not marked retry_of that job."
+     "fixed_note": "Improve & retry now merges: the lesson keeps what it holds, the failed job's corrections come back beside it without duplicating, what does not fit the cap is named rather than dropped, and the drawer opens on the correction that missed with 'Ask it another way' focused so the phrasing the card asks for can actually be added (saving replaces it in place). A lesson too full to take any of them back is not marked retry_of that job.",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 with an unrelated correction already in the lesson and a NEEDS_MORE job carrying hit:false on its second fact: after Improve & retry the unrelated correction is still there, both of the job's corrections are back, and the drawer opens on the fact the model got wrong with \"Ask it another way\" focused."
+     }
     },
     {
      "n": 36,
@@ -678,7 +708,12 @@
      "fixed_by": "dc1f19e",
      "fixed_note": "Approve now opens a confirm sheet (components/operator/ApproveLessonSheet.tsx) showing the lesson's own corrections, who taught them, the check result and the draft record — name, price, memory entries, licence, training-set access and the signed contributor share — plus the four things announcing cannot undo; nothing is announced until it is confirmed. Each publish option carries its consequence next to its radio, choosing “Automatically” raises a warning, and the queue intro no longer asks for a decision that cannot arrive in auto/never mode. The shipped default is already “review” (packages/core config.ts:66); the 'auto' the review probed live is the demo cluster's own override in scripts/cluster.mjs.",
      "fixed": true,
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 with a REAL lesson in the review queue (visitor teaching key → POST /api/teach/jobs → publish request → PENDING_REVIEW). Approve fires no request: the sheet opens showing both corrections with the before/after answers, the contributor, the check result, the draft record and the four things announcing cannot undo, and the job is still PENDING_REVIEW after the click. The three publish radios each carry their consequence and \"Automatically\" raises a warning. English and Korean."
+     }
     },
     {
      "n": 9,
@@ -693,7 +728,12 @@
      "fixed_by": "0d82cfb",
      "fixed_note": "The track card prices the spend before the click and Subscribe opens a sheet (components/operator/TrackCard.tsx) listing every item with what will happen to it under the node's own rules (already held / this node's own / cannot be bought / unknown), the total per currency, the node's balance, an alert when the balance is short, and the five consequences that cannot be undone — record broadcast first, model changed, per-item failures swallowed, routing, no refund. Afterwards it reads the node's blob and purchase lists back and reports how many items really arrived. Unsubscribe has its own sheet.",
      "fixed": true,
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 on a real track (kr-finance, 2 items) from a second node: no /subscribe request is made by the click, the card reads \"Subscribing buys 2 · 25.5 node credit\", the sheet lists each item with its plan and price, the balance, the five consequences, and the confirm reads \"Subscribe and spend 25.5 node credit\" — \"Subscribe anyway (25.5 node credit needed)\" with the balance short."
+     }
     },
     {
      "n": 31,
@@ -922,7 +962,12 @@
      "fixed_by": "e922194",
      "fixed_note": "Each of the three panels branches on isError before anything else: a role=alert naming which request failed, its HTTP status and the node's message, plus a Try again bound to that query's refetch; no empty state is rendered while its query is in error (copy follow-up 5d238b5). Verified with all three endpoints stubbed 500 at 1280 and 360, en + ko.",
      "fixed": true,
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 with /api/me/patches, /api/me/purchases and /api/branches all stubbed 500 while signed in on a node that really holds three knowledges: three role=alert nodes naming the failed request, its status and the node message, three Try again buttons bound to the refetch, and no empty state anywhere. Verified at 1280x900 and 360x740, English and Korean."
+     }
     },
     {
      "n": 11,
@@ -937,7 +982,12 @@
      "fixed": true,
      "fixed_by": "6677a71",
      "fixed_note": "Only a 404 from api/patches/:id renders NotFoundPage; any other status or a network failure keeps the knowledge page and shows the status, the node's error text and a Try again button wired to the query's refetch (a failed poll over data already on screen becomes an inline \"last answer this node gave\" banner instead).",
-     "status": "fixed"
+     "status": "fixed",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04: /api/patches/:id stubbed 503 renders \"This node could not answer for this knowledge\" with the status, the node message and a working Try again (the knowledge appears the moment the stub is lifted); a genuine 404 still renders NotFoundPage; a poll that fails over data already on screen shows the \"last answer this node gave\" banner instead."
+     }
     },
     {
      "n": 22,
@@ -1092,7 +1142,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "034c3f7",
-     "fixed_note": "Below breakpoint.sm the price leads the card's facts row instead of vanishing with PriceCol, and the currency note is rendered once per page by PriceUnitNote on /explore and /benchmarks/:schema instead of once per card."
+     "fixed_note": "Below breakpoint.sm the price leads the card's facts row instead of vanishing with PriceCol, and the currency note is rendered once per page by PriceUnitNote on /explore and /benchmarks/:schema instead of once per card.",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 at 360x740: every card shows its price as the first item of the facts row (measured 89-101px wide, computed ::after separator present), the currency note is rendered once per page, and at 1280 the inline price is display:none with the column back. English and Korean, no horizontal overflow."
+     }
     },
     {
      "n": 19,
@@ -1107,7 +1162,12 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "d6ccf19",
-     "fixed_note": "The newest turn carries a ref and the effect calls scrollIntoView({block:'nearest'}) on it instead of scrollTo on the transcript box, so whichever ancestor actually scrolls does — the transcript at 1280, the window at 360 where the panel is un-clamped."
+     "fixed_note": "The newest turn carries a ref and the effect calls scrollIntoView({block:'nearest'}) on it instead of scrollTo on the transcript box, so whichever ancestor actually scrolls does — the transcript at 1280, the window at 360 where the panel is un-clamped.",
+     "verified": {
+      "at": "2026-09-04",
+      "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
+      "note": "Re-tested 2026-09-04 at 360x740 behaving like a phone user (scrolled to the composer, then sent): the window scrolls itself and the answer bubble lands at top 285 in a 740px viewport — on screen. At 1280 the transcript still scrolls and the answer is at top 258."
+     }
     },
     {
      "n": 90,
