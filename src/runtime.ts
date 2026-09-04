@@ -21,6 +21,15 @@ export interface VerifyOutcome {
   log: string[];
 }
 
+/** What `patch.py check` measured on the live table (design §8.2). */
+export interface PatchCheck { rows: number; differ_before: number; differ_after: number; ok: boolean; applied: boolean }
+/** What `patch.py status` measured (journal-aware, bf16-exact per row). */
+export interface PatchStackStatus { applied: boolean; sampled: number; rows: number; at_after: number; at_prev: number; baseline: 'before' | 'journal' }
+/** A patch.py run plus the machine-readable line it printed last. */
+export interface PatchRun { code: number; out: string; err: string; json: Record<string, unknown> | null }
+export interface ApplyOpts { journal?: string; stackSha?: string; verifyBefore?: boolean }
+export interface RemoveOpts { journal?: string; keepJournal?: boolean }
+
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatResult {
   /** What to show: the answer after the degeneracy guard (identical to `raw_content` unless it was cut). */
@@ -312,12 +321,80 @@ export class Runtime {
   }
 
   info(npz: string) { return this.py(['scripts/patch.py', 'info', npz], 120_000); }
-  apply(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'apply', npz]), 'apply'); }
-  remove(npz: string) { return this.serial(() => this.py(['scripts/patch.py', 'remove', npz]), 'remove'); }
-  /** Unlocked variants — ONLY for use inside an `exclusive()` section that already holds the lock (calling apply()/remove() there would deadlock). */
-  applyRaw(npz: string) { return this.py(['scripts/patch.py', 'apply', npz]); }
-  removeRaw(npz: string) { return this.py(['scripts/patch.py', 'remove', npz]); }
-  async isApplied(npz: string): Promise<boolean | null> {
+  apply(npz: string, opts: ApplyOpts = {}) { return this.serial(() => this.applyRaw(npz, opts), 'apply'); }
+  remove(npz: string, opts: RemoveOpts = {}) { return this.serial(() => this.removeRaw(npz, opts), 'remove'); }
+
+  // ---------------------------------------------------------------- journalled stack (design §5.4, §8)
+
+  /** Where the journals live: one directory beside the hook mailbox this node writes into (§5.4). */
+  journalDir(): string | null { const d = this.patchDir(); return d ? join(d, 'journal') : null; }
+  /** The journal of one applied body: `<patchDir>/journal/<patch_sha256>.npz` — the `prev` values that apply overwrote. */
+  journalPath(sha256: string): string | null { const d = this.journalDir(); return d && /^[0-9a-f]{8,64}$/.test(sha256) ? join(d, `${sha256}.npz`) : null; }
+  hasJournal(sha256: string): boolean { const p = this.journalPath(sha256); return !!p && existsSync(p); }
+
+  /** The `--json` line patch.py prints last, or null when it printed none (old script, crash, hook missing). */
+  private static lastJson(out: string): Record<string, unknown> | null {
+    for (const line of out.split('\n').reverse()) {
+      const t = line.trim();
+      if (t.startsWith('{') && t.endsWith('}')) { try { return JSON.parse(t) as Record<string, unknown>; } catch { /* not the json line */ } }
+    }
+    return null;
+  }
+
+  /**
+   * Read-first verification (§8.2): compare the live rows to this body's `before` on ALL rows, bf16-exact.
+   * `ok` is the only evidence that a delta may be applied — its base stack is underneath, exactly.
+   * Nothing is written. `null` when the script could not answer (no hook, no repo, pre-L2 script).
+   */
+  async check(npz: string): Promise<PatchCheck | null> {
+    const r = await this.py(['scripts/patch.py', 'check', npz, '--json'], 900_000);
+    const j = Runtime.lastJson(r.out);
+    if (!j || typeof j.rows !== 'number') return null;
+    return { rows: j.rows as number, differ_before: j.differ_before as number, differ_after: j.differ_after as number, ok: !!j.ok, applied: !!j.applied };
+  }
+
+  /**
+   * Unlocked apply — ONLY inside an `exclusive()` section that already holds the lock (apply() would deadlock).
+   * With `journal` the hook's returned `prev` is saved so `remove` can put back exactly what was there (a parent's
+   * `after`, not the disk base). With `verifyBefore` the rows are read first and NOTHING is written on a mismatch.
+   */
+  async applyRaw(npz: string, opts: ApplyOpts = {}): Promise<PatchRun> {
+    const args = ['scripts/patch.py', 'apply', npz, '--json'];
+    if (opts.journal) args.push('--journal', opts.journal);
+    if (opts.stackSha) args.push('--stack', opts.stackSha);
+    if (opts.verifyBefore) args.push('--verify-before');
+    const r = await this.py(args);
+    return { ...r, json: Runtime.lastJson(r.out) };
+  }
+
+  /** Unlocked remove — replays `journal` when given (and deletes it), else writes `before` back. */
+  async removeRaw(npz: string, opts: RemoveOpts = {}): Promise<PatchRun> {
+    const args = ['scripts/patch.py', 'remove', npz, '--json'];
+    if (opts.journal) args.push('--journal', opts.journal);
+    if (opts.keepJournal) args.push('--keep-journal');
+    const r = await this.py(args);
+    return { ...r, json: Runtime.lastJson(r.out) };
+  }
+
+  /**
+   * Journal-aware status (§8.4): is this body's `after` on the table, or the value it displaced? Comparison is
+   * bf16-exact per row — the old 2,000-row majority test compared float distances and could not tell a child
+   * sitting on its parent from a child sitting on the bare table. `all: true` checks every row.
+   */
+  async statusOf(npz: string, opts: { journal?: string; all?: boolean } = {}): Promise<PatchStackStatus | null> {
+    const args = ['scripts/patch.py', 'status', npz, '--json'];
+    if (opts.journal) args.push('--journal', opts.journal);
+    if (opts.all) args.push('--all');
+    const r = await this.py(args, opts.all ? 900_000 : 120_000);
+    const j = Runtime.lastJson(r.out);
+    if (!j || typeof j.applied !== 'boolean') return null;
+    return { applied: j.applied as boolean, sampled: j.sampled as number, rows: j.rows as number, at_after: j.at_after as number, at_prev: j.at_prev as number, baseline: j.baseline as 'before' | 'journal' };
+  }
+
+  async isApplied(npz: string, journal?: string): Promise<boolean | null> {
+    const st = await this.statusOf(npz, { journal });
+    if (st) return st.applied;
+    // pre-L2 script (no --json): fall back to the human line it has always printed
     const r = await this.py(['scripts/patch.py', 'status', npz], 120_000);
     if (r.code !== 0) return null;
     return r.out.includes('끼워짐');

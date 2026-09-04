@@ -138,7 +138,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, created_at REAL NOT NULL, expires_at REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, resource TEXT NOT NULL, amount TEXT NOT NULL, pay_to TEXT NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
-      CREATE TABLE IF NOT EXISTS applied (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at REAL NOT NULL, reason TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS applied (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at REAL NOT NULL, reason TEXT NOT NULL,
+        position INTEGER, journal_path TEXT, stack_sha256 TEXT);
       CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, sha256 TEXT NOT NULL, issued_to TEXT NOT NULL, expires_at REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS teach_jobs (id TEXT PRIMARY KEY, contributor TEXT NOT NULL, contributor_name TEXT, ip TEXT, status TEXT NOT NULL,
         context TEXT NOT NULL, builds_on INTEGER NOT NULL DEFAULT 0, facts TEXT NOT NULL, job_dir TEXT, npz_path TEXT, sha256 TEXT, progress TEXT, checks TEXT,
@@ -195,6 +196,8 @@ export class Store {
     // teach mode v2 (design §D7): every visitor-facing p50/p90 filters on `backend`, so a stub node's 3-second jobs
     // can never be presented as measured gradient training. `sentences` = rows x renderings, what actually drives cost.
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
+    // lineage §5.4: `applied` becomes an ordered stack with a journal per patch (the values the apply overwrote).
+    add('applied', { position: 'INTEGER', journal_path: 'TEXT', stack_sha256: 'TEXT' });
   }
 
   private closed = false;
@@ -645,8 +648,36 @@ export class Store {
   }
   deleteDatasetBlob(sha: string) { this.db.prepare('DELETE FROM dataset_blobs WHERE sha256 = ?').run(sha); }
 
-  // applied
-  setApplied(patchId: string, sha: string, reason: string) { this.db.prepare('INSERT OR REPLACE INTO applied (patch_id, sha256, applied_at, reason) VALUES (?, ?, ?, ?)').run(patchId, sha, Date.now(), reason); }
+  // applied — an ORDERED stack, not a set (design §5.4): `position` is where a patch sits from the bottom up, so a
+  // delta child is always above the base it was trained on and the watchdog can re-assert the whole stack in order.
+  setApplied(patchId: string, sha: string, reason: string, extra: { position?: number; journal_path?: string | null; stack_sha256?: string | null } = {}) {
+    const pos = extra.position ?? ((this.db.prepare('SELECT COALESCE(MAX(position), -1) AS m FROM applied').get() as { m: number }).m + 1);
+    this.db.prepare('INSERT OR REPLACE INTO applied (patch_id, sha256, applied_at, reason, position, journal_path, stack_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(patchId, sha, Date.now(), reason, pos, extra.journal_path ?? null, extra.stack_sha256 ?? null);
+  }
   clearApplied(patchId: string) { this.db.prepare('DELETE FROM applied WHERE patch_id = ?').run(patchId); }
-  listApplied(): { patch_id: string; sha256: string; applied_at: number; reason: string }[] { return this.db.prepare('SELECT * FROM applied').all() as never; }
+  /** Bottom of the stack first. Rows written before L2 have no position; they sort by when they were applied. */
+  listApplied(): AppliedRow[] {
+    return this.db.prepare('SELECT * FROM applied ORDER BY COALESCE(position, 1e15), applied_at').all() as never;
+  }
+  getApplied(patchId: string): AppliedRow | null { return (this.db.prepare('SELECT * FROM applied WHERE patch_id = ?').get(patchId) as never) ?? null; }
+  /** Renumber the stack from 0 upwards in the given order — what apply/remove leave behind. */
+  reorderApplied(ids: string[]) {
+    const stmt = this.db.prepare('UPDATE applied SET position = ? WHERE patch_id = ?');
+    ids.forEach((id, i) => stmt.run(i, id));
+  }
+}
+
+/** One row of the runtime stack (`applied`). */
+export interface AppliedRow {
+  patch_id: string;
+  sha256: string;
+  applied_at: number;
+  reason: string;
+  /** 0 = bottom of the stack. Null on rows written before the ordered stack existed. */
+  position: number | null;
+  /** The `prev` values this apply overwrote — replaying it is what `remove` does (§5.4). Null = no journal. */
+  journal_path: string | null;
+  /** Fingerprint of the ordered stack this patch was applied on top of. */
+  stack_sha256: string | null;
 }
