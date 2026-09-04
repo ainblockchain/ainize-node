@@ -1069,13 +1069,19 @@ export class Market {
     const top = cur[cur.length - 1];
     const blob = this.blobs.get(top.sha256);
     if (!blob) return;
-    const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
-    if (!status || status.applied) return;
-    this.log('warn', 'runtime', `the table no longer holds ${top.patch_id} (restart?) → re-applying the whole stack of ${cur.length} in order`, top.patch_id);
     const target = await this.layersOfExact(cur.map((a) => a.patch_id)).catch((e) => { this.log('error', 'runtime', `cannot rebuild the stack: ${(e as Error).message}`); return null; });
-    if (!target) return;
-    await this.runtime.exclusive('watchdog', () => this.assertStack(target, 'watchdog', { rebuild: true }))
-      .catch((e) => this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`));
+    if (!target?.length) return;
+    // The probe itself happens INSIDE the lock. Reading the table while another operation is halfway through writing
+    // it would report "reverted" for a stack that is perfectly fine, and the rebuild would then discard live journals.
+    // When the lock is held by someone else there is nothing to fix yet — the next tick is 20 s away.
+    await this.runtime.exclusiveTry('watchdog', async () => {
+      const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
+      if (!status || status.applied) return;
+      this.log('warn', 'runtime', `the table no longer holds ${top.patch_id} (restart?) → re-applying the whole stack of ${cur.length} in order`, top.patch_id);
+      await this.assertStack(target, 'watchdog', { rebuild: true });
+    }, { waitMs: 5_000 }).catch((e) => {
+      if (!/shared runtime busy/.test((e as Error).message)) this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`);
+    });
   }
 
   // ------------------------------------------------------------------ ChatMode (live test of a knowledge patch)
