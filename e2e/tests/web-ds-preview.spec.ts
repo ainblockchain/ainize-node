@@ -616,14 +616,32 @@ test('AZ-151 After the first edit the report is rebuilt: rejected lines disappea
 
     // ---- remove the last question
     await U.rows(page).nth(4).getByTestId('row-remove').click();
-    await expect(U.rows(page)).toHaveCount(1, { timeout: 60_000 });
+    await expect(U.rows(page)).toHaveCount(4, { timeout: 60_000 });
     await expect(U.lineCell(U.rows(page).first())).toHaveText('1');
     await expect(U.questionCell(U.rows(page).first())).toHaveText('픽셀플러스 종목코드는?');
-    await expect(page.getByTestId('dropped')).toHaveCount(0);
-    await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 0 need a fix');
+    /*
+     * Item 5 — an edit rewrites the dataset from its ACCEPTED rows, and the report used to be re-derived from those
+     * alone: removing one good question made the two contradictions, the empty row and the unreadable line vanish
+     * from the screen with no message, and the pill read "0 need a fix". They are carried instead, marked with the
+     * line of the uploaded file they came from (never a position in the rewritten set), and still counted.
+     */
+    const kept = await U.rows(page).evaluateAll((trs) => trs.map((tr) => ({
+      line: tr.querySelector('td.n')!.textContent, status: tr.getAttribute('data-status'), carried: tr.getAttribute('data-carried'),
+    })));
+    expect(kept).toEqual([
+      { line: '1', status: 'ok', carried: null },
+      { line: 'file line 2', status: 'conflict', carried: '1' },
+      { line: 'file line 3', status: 'conflict', carried: '1' },
+      { line: 'file line 4', status: 'empty', carried: '1' },
+    ]);
+    await expect(page.getByTestId('dropped').locator('summary'), 'the unreadable line is still listed underneath')
+      .toContainText('1 line(s) could not be read and were left out.');
+    await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 4 need a fix');
+    await expect(page.getByTestId('carried-note')).toContainText('4 line(s)');
 
     const rejected = await N.getRows(request, key, dsId, '?status=rejected');
-    expect(rejected.body.items).toHaveLength(0);
+    expect(rejected.body.items, 'every refused source row is still readable from the API').toHaveLength(4);
+    expect(rejected.body.items.every((r) => r.carried === true)).toBe(true);
     const after = (await N.getDataset(request, key, dsId)).body.dataset;
     expect(after.revision).toBe(2);
     expect(after.sha256).not.toBe(before.sha256);

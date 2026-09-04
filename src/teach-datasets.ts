@@ -544,15 +544,20 @@ function assertText(parsed: ParseResult, forcedEncoding: string | undefined) {
  * resolve is carried into the new report, marked `carried` (its `line` is a line of the uploaded file, not a position
  * in the current set) and counted in the summary.
  *
- * "Resolved" = THIS edit made that question and answer trainable: it is accepted now and was not accepted before. The
- * `was not accepted before` half is what keeps a duplicate honest — its content was already in the set when it was
- * refused, so nothing about it changed and it is still one of the file's lines that did not train.
+ * "Resolved" has two shapes, and both have to count or the screen nags about something the visitor has already done:
+ *   - THIS edit made that exact question and answer trainable (accepted now, not accepted before — the second half is
+ *     what keeps a duplicate honest: its content was already in the set when it was refused, so nothing changed);
+ *   - it was one of a CONTRADICTION and the question now has an accepted answer. Picking one answer settles the whole
+ *     group, so the copies that lost must not keep saying "two answers for this question — pick one".
  */
 export function carryRejected(previous: TeachDatasetRow[], parsed: ParseResult): ParseResult {
   const key = (p: string | undefined, a: string | undefined) => `${p ?? ''}\u0000${a ?? ''}`;
   const now = new Set(parsed.rows.map((r) => key(r.prompt, r.answer)));
   const before = new Set(previous.filter((r) => isAcceptedRowStatus(r.status)).map((r) => key(r.prompt, r.answer)));
-  const resolved = (r: TeachDatasetRow) => now.has(key(r.prompt, r.answer)) && !before.has(key(r.prompt, r.answer));
+  const askedNow = new Set(parsed.rows.map((r) => r.prompt));
+  const askedBefore = new Set(previous.filter((r) => isAcceptedRowStatus(r.status)).map((r) => r.prompt ?? ''));
+  const resolved = (r: TeachDatasetRow) => (now.has(key(r.prompt, r.answer)) && !before.has(key(r.prompt, r.answer)))
+    || (r.status === 'conflict' && !!r.prompt && askedNow.has(r.prompt) && !askedBefore.has(r.prompt));
   const carried = previous
     .filter((r) => !isAcceptedRowStatus(r.status) && !resolved(r))
     .map((r): TeachDatasetRow => ({ ...r, index: null, carried: true }));

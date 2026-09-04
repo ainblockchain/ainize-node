@@ -461,11 +461,11 @@ test('item 5 \u2014 fixing one flagged row keeps the other four in the report in
 
   assert.equal(second.rows.length, 6, 'the kept answer trains');
   const carried = second.report.filter((r) => r.carried);
-  assert.equal(carried.length, 5, 'the four rows this edit did not touch, and the losing half of the pair, are still shown');
-  assert.equal(carried.some((r) => r.prompt === 'dup-q' && r.answer === 'one'), false, 'the row that was kept is resolved, not carried');
-  assert.ok(second.summary.rejected >= 5, 'the pill cannot read "0 need a fix" after fixing one of them');
-  assert.equal(second.summary.carried, 5);
-  assert.equal(second.summary.conflicts, 3);
+  assert.equal(carried.length, 4, 'the OTHER contradiction, the duplicate and the empty row are all still shown');
+  assert.equal(carried.some((r) => r.prompt === 'dup-q'), false, 'picking one answer settles that contradiction — both copies of it are resolved');
+  assert.ok(second.summary.rejected >= 4, 'the pill cannot read "0 need a fix" after fixing one of them');
+  assert.equal(second.summary.carried, 4);
+  assert.equal(second.summary.conflicts, 2, 'the contradiction the visitor did not touch');
   assert.equal(second.summary.duplicates, 1);
   assert.equal(second.summary.empty, 1);
   // and every carried row still points at the line of the file the visitor uploaded

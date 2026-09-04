@@ -79,10 +79,14 @@ export interface DatasetView {
 export interface RowSummary {
   source_rows: number; accepted: number; fixed: number; rejected: number; duplicates: number; conflicts: number;
   blocked: number; too_long: number; empty: number; not_parsed: number; over_cap: number; shared_ending: number;
+  /** item 5: how many of the counts above are rows carried over from an earlier revision of this dataset. */
+  carried?: number;
 }
 export interface ReportRow {
   index: number | null; line: number; status: string; detail?: string; prompt?: string; answer?: string;
   alt_prompt?: string; fixes?: string[]; advisory?: string[]; raw?: string;
+  /** item 5: a refused row carried over from an earlier revision — `line` is still a line of the uploaded file. */
+  carried?: true;
 }
 export interface RowsPage { total: number; source_rows: number; offset: number; limit: number; summary: RowSummary; items: ReportRow[] }
 
