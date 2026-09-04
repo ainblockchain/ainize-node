@@ -414,8 +414,19 @@ Log in as the node operator (sets the password on first use)
 
 **Options**
 
-- **`--password`** (`string`) — or NGRAM_PASSWORD env
+- **`--password`** (`string`) — the operator password, at least 4 characters — or NGRAM_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in
 - **`--setup-token`** (`string`) — claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)
+
+**Examples**
+
+```bash
+# asks for the password (it is not echoed)
+ainize login
+# in a script, a cron line or over ssh — as does --password, and so does piping it in
+NGRAM_PASSWORD="…" ainize login
+# claim a node that has no password yet, from another machine
+ainize login --setup-token "$(ssh host cat ~/.ngram/setup-token)"
+```
 
 ## `ainize password`
 
@@ -427,7 +438,7 @@ Change the operator password (--reset rewrites it in config.json when you have f
 
 **Options**
 
-- **`--password`** (`string`) — the new password (or NGRAM_NEW_PASSWORD)
+- **`--password`** (`string`) — the new password, at least 4 characters (or NGRAM_NEW_PASSWORD)
 - **`--current`** (`string`) — the current password (or NGRAM_PASSWORD)
 - **`--reset`** (`boolean`, default `false`) — forgotten password: write a new hash into config.json (the node must be stopped)
 
