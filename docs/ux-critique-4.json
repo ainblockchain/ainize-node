@@ -1361,7 +1361,12 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt (2 CREDIT: the cheapest item bought, 'insufficient credit: 0 < 3' for the rest, ✓ exit 0, wallet 0); chain-buy-agent-12-subscribe-peer-offline.txt (seller offline: ✓, purchases 0); chain-buy-human-28 (✓ with 0 CREDIT and the seller down).",
      "user_cost": "The buyer's last credits are spent on the first cheap item, they are told everything is fine, and the network routes requests to a node holding a third of the track — with no receipt and no way to know without reading the node log.",
      "fix": "Two-phase: `POST /api/branches/:name/quote` → `{items:[{id, price, seller, held, sellable}], total, balance}`, printed by the CLI and shown in a sheet before anything is spent; buy all items (ancestors first) and append the `subscribe` record only when every item is held, otherwise answer 409 `{acquired, failed:[{id,error}]}` and exit non-zero; record a partial subscription explicitly.",
-     "effort": "M"
+     "effort": "M",
+     "fixed_by": "0d82cfb",
+     "fixed_note": "Web half: the Dashboard track card quotes the spend before anything is bought — every item with its price and plan, the total, the balance — and says that the subscribe record is written and broadcast BEFORE the buying, that a failed item is a warning the node carries on from, and that a subscribed node is advertised as serving the track either way; afterwards the sheet reads the node's own blob and purchase lists back and says how many items really arrived instead of reporting success. The two-phase POST /api/branches/:name/quote, the record-before-buy ordering and the CLI's non-zero exit are packages/node + packages/cli and stay open.",
+     "fixed": false,
+     "status": "partial",
+     "remaining": "Node/CLI: the two-phase POST /api/branches/:name/quote, buying before the subscribe record is appended, the 409 {acquired, failed[]} answer and a non-zero CLI exit (packages/node, packages/cli — owned by the lineage workflow)."
     },
     {
      "n": 358,

@@ -691,7 +691,12 @@
      "evidence": "packages/e2e/results/ux2/publisher-path-web-02.txt: the draft's checklist read \"✗ No overlap with verified knowledge on the same subject (1 overlap(s))\" with the overlap table showing `pixelplus-fixed · 2,992 memory entries · same subject yes · For sale`, and `publish button enabled? true`, `dialog after click: null`. Twelve seconds later pixelplus-fixed read \"Newer version available\" and the ledger carried `supersede  pixelplus-v2 supersedes pixelplus-fixed (2992 rows)`. On the CLI, `ainize publish … --id adv-share` printed only the two ✓ lines while the node logged `announced adv-share (conflicts: 1)` — the count exists and is never shown to the publisher.",
      "user_cost": "The publisher's own catalogue silently becomes a graveyard: my throwaway node ended with three SUPERSEDED items, two of which had already made sales, all retired by later publishes I was never asked to confirm. Someone republishing to fix a typo in a description retires the version buyers are currently paying for. (The gate itself is the first review's item 32; what is new here is what publishing does to your existing listings.)",
      "fix": "When same-schema overlaps exist, replace the Publish button with a confirm step naming each item it will retire, its status and its sales count, and require the publisher to type the new id — the friction the product already demands to delete a *draft*. Do the same in the CLI: `ainize patch announce` should refuse without `--supersede <id>…` when `conflicts > 0`, and `publish` should print the list before announcing.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed_by": "e7f77a6",
+     "fixed_note": "Web half: Publish now opens a confirm sheet naming every listing the announce will retire, with its status, its sales and revenue and the shared memory entries, and refuses to announce until the publisher types the new id; the checklist counts the items the node really supersedes (same schema, same branch, LISTED/VERIFYING/ANNOUNCED) instead of every same-subject overlap, and a cross-branch overlap is stated as one that coexists. The CLI half (`ainize patch announce` refusing without --supersede) is packages/cli and stays open.",
+     "fixed": false,
+     "status": "partial",
+     "remaining": "CLI: `ainize patch announce` must refuse without --supersede <id>… when conflicts > 0, and `publish` must print the list before announcing (packages/cli, packages/node — owned by the lineage workflow)."
     },
     {
      "n": 151,

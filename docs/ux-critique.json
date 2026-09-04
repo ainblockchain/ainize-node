@@ -658,7 +658,11 @@
      "evidence": "Live probe of the radios: [{review,false},{auto,true},{never,false}]; guard-teaching.png, final-teaching-1280.png, adv-teaching-1280.png.",
      "user_cost": "An operator who never opens this tab is publishing anonymous visitors’ text to a permanent public record under their own identity, and the one who does open it can do so accidentally with a single click on a row whose content they have not seen.",
      "fix": "Default publish to \"Review each one\" and put the consequence in each option label (\"Automatically - anything trained here goes on the public record under this node, no review\"). Make Approve open a sheet showing the lesson’s facts, contributor and share before confirming.",
-     "effort": "M"
+     "effort": "M",
+     "fixed_by": "dc1f19e",
+     "fixed_note": "Approve now opens a confirm sheet (components/operator/ApproveLessonSheet.tsx) showing the lesson's own corrections, who taught them, the check result and the draft record — name, price, memory entries, licence, training-set access and the signed contributor share — plus the four things announcing cannot undo; nothing is announced until it is confirmed. Each publish option carries its consequence next to its radio, choosing “Automatically” raises a warning, and the queue intro no longer asks for a decision that cannot arrive in auto/never mode. The shipped default is already “review” (packages/core config.ts:66); the 'auto' the review probed live is the demo cluster's own override in scripts/cluster.mjs.",
+     "fixed": true,
+     "status": "fixed"
     },
     {
      "n": 9,
@@ -669,7 +673,11 @@
      "evidence": "DashboardPage.tsx track card (onClick -> subscribe({name, action:\"subscribe\"})); market.ts:853-865. Not clicked deliberately - it spends AIN and mutates the shared model.",
      "user_cost": "An operator can spend an unbounded amount of real balance and change what their model answers for every user, from a button that looks like a newsletter sign-up.",
      "fix": "Put the cost in the button and behind a confirm: \"Subscribe - buys 6 knowledge, 41.2 AIN\" opening a sheet that lists each item with price and status, with per-item opt-out, and say what unsubscribe does and does not refund.",
-     "effort": "M"
+     "effort": "M",
+     "fixed_by": "0d82cfb",
+     "fixed_note": "The track card prices the spend before the click and Subscribe opens a sheet (components/operator/TrackCard.tsx) listing every item with what will happen to it under the node's own rules (already held / this node's own / cannot be bought / unknown), the total per currency, the node's balance, an alert when the balance is short, and the five consequences that cannot be undone — record broadcast first, model changed, per-item failures swallowed, routing, no refund. Afterwards it reads the node's blob and purchase lists back and reports how many items really arrived. Unsubscribe has its own sheet.",
+     "fixed": true,
+     "status": "fixed"
     },
     {
      "n": 31,
@@ -894,7 +902,11 @@
      "evidence": "guard-dash-500.png.",
      "user_cost": "The operator is told their inventory is empty when the node cannot answer. The correct reaction (retry, check the node) is invisible; the invited reaction is to register everything again.",
      "fix": "Branch on isError in DashboardPage and every panel that uses ?? []: show an Alert with the status and a Try again button bound to the query refetch, and never render an empty state while a query is in error.",
-     "effort": "S"
+     "effort": "S",
+     "fixed_by": "e922194",
+     "fixed_note": "Each of the three panels branches on isError before anything else: a role=alert naming which request failed, its HTTP status and the node's message, plus a Try again bound to that query's refetch; no empty state is rendered while its query is in error (copy follow-up 5d238b5). Verified with all three endpoints stubbed 500 at 1280 and 360, en + ko.",
+     "fixed": true,
+     "status": "fixed"
     },
     {
      "n": 11,
