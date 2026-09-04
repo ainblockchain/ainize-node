@@ -6893,7 +6893,8 @@
    "Fork with rows_op → 201, created:true, a new id, rows = original + 1, parent_dataset = the source id, source 'derived', name 'az202 plus'",
    "Retention: after the lesson finishes, GET /api/teach/datasets/:id shows size_bytes 0 (status still 'ready') and GET …/download → 404 \"dataset_not_found: the questions of this dataset are no longer on this node\"",
    "The /teach/mine card for that dataset states the file is gone in its own words — [data-testid=dataset-file-gone] \"Your questions were deleted as soon as training finished, as you asked. The fingerprint and the lessons are kept, but this dataset can no longer be downloaded or trained.\" (never the deleted-by-its-owner sentence, which is a different thing) — and offers only \"Delete dataset\": no \"Download (.jsonl)\", \"Train again\" or \"Add questions\"",
-   "Every failing call answers with a JSON body carrying an `error` string, and one that says the questions are GONE rather than that the dataset is empty: POST /api/teach/jobs/:id/retrain and POST /api/teach/datasets/:id/fork both answer 404 \"dataset_not_found: the questions of this dataset are no longer on this node\" and create nothing (a 400 with an empty `{}` body, and a fork that silently became the appended rows alone, were what this scenario first found)"
+   "Every failing call answers with a JSON body carrying an `error` string, and one that says the questions are GONE rather than that the dataset is empty: POST /api/teach/jobs/:id/retrain and POST /api/teach/datasets/:id/fork both answer 404 \"dataset_not_found: the questions of this dataset are no longer on this node\" and create nothing (a 400 with an empty `{}` body, and a fork that silently became the appended rows alone, were what this scenario first found)",
+   "Since lineage L4 (docs/lineage-teach-design.md §14): this scenario is about MY OWN working dataset, which stays owner-scoped. A STRANGER copies a published knowledge's training set through POST /api/patches/:id/fork when its access is derivative or public — a different object, asserted in AZ-276 — and that copy de-duplicates per owner in exactly the same way."
   ],
   "priority": "P1",
   "area": "teach",
@@ -7370,7 +7371,8 @@
    "A replayed v2 header → 401 invalid_signature (single-use); a header 10 minutes old → 401 (±5 min skew)",
    "Operator bearer GET /api/teach/datasets/D → 200 with the full dataset (moderation read)",
    "Operator bearer PATCH /api/teach/datasets/D → 401 invalid_signature: the patch route requires the owner's teaching key; the dataset's name and revision are unchanged",
-   "K1 GET /api/teach/datasets/D → 200, name and revision exactly as before the whole sequence"
+   "K1 GET /api/teach/datasets/D → 200, name and revision exactly as before the whole sequence",
+   "Since lineage L4 (§14): the 404 wall is about the WORKING dataset. The published copy of a training set is a separate, immutable object served by its access level (AZ-240) and copied by strangers with POST /api/patches/:id/fork (AZ-276, AZ-277) — reading someone's published questions is a feature, reading their working dataset is still not."
   ],
   "priority": "P0",
   "area": "api",
