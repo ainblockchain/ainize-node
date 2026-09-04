@@ -13,9 +13,12 @@ This directory holds two different kinds of writing, and the difference decides 
 Hugging Face keeps design and internals in the repo but out of the published toctree. Ainize does the same. A `page:`
 entry that points at an internal document is a build error, not a shortcut.
 
-**This file is the plan, not a report on finished work.** The tree below does not exist yet; the commits after this one
-build it. What *is* settled — and verified against the running repo, see [§2](#2-how-markdown-becomes-docs) and
-[§4](#4-what-is-generated-and-from-what) — is the mechanism, the i18n strategy, the generator set, and the page list.
+**This file is part map, part plan, and it says which is which.** Built and running today: the loader, the renderer,
+the toctrees, the chrome, the `/docs/*` route, the five generated reference pages and the index — [§2](#2-how-markdown-becomes-docs)
+and [§4](#4-what-is-generated-and-from-what) describe things you can open. Planned and not yet written: the twelve
+guide pages of [§5.2](#52-the-guide-half--twelve-pages-in-four-modes), the subset-and-link checker of
+[§2.2](#22-rendering--a-small-in-repo-renderer-no-new-dependency), and the machine twin of [§2.5](#25-the-machine-twin--planned-not-built).
+Every future tense in this file is load-bearing: where it says *will*, the thing does not exist yet.
 
 ---
 
@@ -82,11 +85,14 @@ ATX headings `#`–`####` with GitHub-compatible slugs · paragraphs · fenced c
 blockquotes, setext headings. A page that needs one of these is a page that should be rewritten.
 
 > [!IMPORTANT]
-> A subset renderer is only safe if something enforces the subset. `scripts/docs-check.mjs` parses every file with the
-> same parser and **fails** on: a construct outside the subset; an internal link whose target page or `#anchor` does not
-> exist; a `_toctree.json` entry with no file; a file in `docs/{en,ko}` that no toctree lists. This is the mechanism that
-> stops the renderer and the prose from silently drifting apart. It is the same idea as doc-builder erroring on a
-> `local:` that points nowhere.
+> **A subset renderer is only safe if something enforces the subset, and today nothing does.** `npm run docs:check` is
+> `scripts/docs-gen.mjs --check`: it catches a *generated* page drifting from its source, and nothing else.
+> `scripts/docs-check.mjs` — which would parse every file with the same parser and fail on a construct outside the
+> subset, an internal link whose target page or `#anchor` does not exist, a `_toctree.json` entry with no file, or a
+> file in `docs/{en,ko}` that no toctree lists — **does not exist yet**. `buildSite()` in `docsTree.ts` already computes
+> `missing`, `orphans` and `mislabelled`; the missing piece is a script that reads them and exits non-zero. Until it
+> exists, "in nav means finished" is a rule people keep, not a rule the build keeps. Writing it is the natural companion
+> commit to the guide half, because twelve new pages of cross-links are exactly what it is for.
 
 ### 2.3 Navigation is a separate file from the pages
 
@@ -112,19 +118,21 @@ word of content — and it is the natural place to enforce **in nav = finished**
 - Search is a client-side filter over page title, group, summary and headings — honest at this size, and it needs no
   index-building step.
 
-`packages/web/src/App.tsx` is shared with three other workflows. The change there is **one line**:
+`packages/web/src/App.tsx` is shared with three other workflows, and the change there was **one line** — already made
+and already in `App.tsx`:
 
-```diff
--                <Route path="/docs" element={<Layout><DocsPage /></Layout>} />
-+                <Route path="/docs/*" element={<Layout><DocsPage /></Layout>} />
+```tsx
+<Route path="/docs/*" element={<Layout><DocsPage /></Layout>} />
 ```
 
-React Router 7 matches a splat against the empty remainder, so `/docs/*` serves `/docs` too. Re-read `App.tsx`
-immediately before making this edit; keep it to this one hunk.
+React Router 7 matches a splat against the empty remainder, so `/docs/*` serves `/docs` too. **The guide half needs no
+further edit to any shared file**: twelve new pages are twelve new markdown files and two toctree entries each. If a
+page seems to need a component, a route or a renderer feature, that is a signal the page is shaped wrong — say so
+rather than growing the shared surface.
 
-### 2.5 The machine twin
+### 2.5 The machine twin — planned, not built
 
-`scripts/docs-gen.mjs` also copies `docs/{en,ko}/**/*.md` into `packages/web/public/docs/` and writes
+`scripts/docs-gen.mjs` **will also** copy `docs/{en,ko}/**/*.md` into `packages/web/public/docs/` and write
 `packages/web/public/docs/llms.txt` (a flat list of `[Title](<page>.md)`). Vite copies `public/` into `dist/`, and the
 running nodes serve `packages/web/dist` directly, so `/docs/get-started/quickstart.md` is fetchable by an agent.
 `packages/web/public/` already exists (it holds `static/`), so `docs/` under it is a free slot; add it to `.gitignore`
@@ -158,12 +166,18 @@ source_sha256: <64 hex>
 ---
 ```
 
-`scripts/docs-check.mjs` recomputes it and fails when the English page has moved on. Fixing it is either a retranslation
-or a deliberate hash bump — both are visible in review.
+`docs/ko/index.md` already carries both fields. The checker that recomputes the hash and fails when the English page
+has moved on is the same unwritten `scripts/docs-check.mjs` as in [§2.2](#22-rendering--a-small-in-repo-renderer-no-new-dependency),
+so today the frontmatter is a promise a human keeps. Write it with the guide half; twelve pairs of pages is where
+hand-kept promises start failing quietly.
 
-**Scope for this workflow:** Get started and Concepts are written properly in Korean (7 pages). Guides and Reference
-ship with Korean nav titles and the untranslated banner. That is partial coverage, stated openly — HF ships 67 Korean
-pages against 110 English ones and is better for saying so than for machine-translating the gap.
+**Translation order for the guide half.** Korean is not a second pass over the whole tree, it is part of finishing each
+page — an English page whose Korean twin is missing is a page half done. But some pages are worth more in Korean than
+others, so the order is: Get started first (a reader who cannot install cannot start), then Concepts (prose, and the
+part a reader most wants in their own language), then How-to, then Tutorials — longest, most command output, and the
+commands themselves are English either way. A page that genuinely cannot be translated in a pass keeps its Korean
+toctree entry with `"untranslated": true` and the reader gets the English body under a Korean banner rather than a
+404. **That flag is a debt entry, not a destination**: every use of it belongs in the workflow's report with the reason.
 
 ---
 
@@ -203,64 +217,132 @@ Notes that will bite whoever writes the generator:
 
 ## 5. The tree
 
-Grouping follows the *object a node operator holds* rather than internal package names — the pattern HF uses for the
-Hub (a platform) rather than for a library. "Get started" is first and "Reference" is last regardless.
+The site has two halves and they were built in that order. The **reference half** exists: the index page and five
+generated pages, six files, live on `/docs` today. The **guide half** is what this section plans — twelve hand-written
+pages that take a reader from "what is this" to "I published a knowledge and somebody else bought it".
 
-Two jobs this shape has to do: **a cold reader gets a node answering a question inside ten minutes** (Get started, four
-pages, read in order), and **a reader who knows the product finds a flag or an endpoint in two clicks** (sidebar group →
-generated reference page, then Ctrl-F).
+Reference answers *what is `--ledger`'s default*. It cannot answer *why would I run a verifier*, and no amount of
+generating will make it. That is the gap.
 
-### Get started
+### 5.1 What is on the site today
 
-Read front to back. This is the ten-minute path.
+| Slug | Title | Written by |
+|---|---|---|
+| `index` | Ainize | hand · what the product is, the three surfaces, the vocabulary |
+| `reference/cli` | CLI reference | generated · 25 top-level commands, 69 runnable leaves |
+| `reference/http-api` | HTTP API reference | generated · 114 operations on 99 paths, 10 tag groups |
+| `reference/schemas` | Schemas | generated · 28 component schemas |
+| `reference/config` | Configuration reference | generated · 105 keys, the env overrides, the default file |
+| `reference/errors` | Error codes | generated · 41 codes in 92 messages, and how a throw becomes a status |
 
-| Slug | Title | Path | Covers | Drawn from |
+A developer arriving today can look up `--effort`'s three values and cannot find out what effort *is*.
+
+### 5.2 The guide half — twelve pages in four modes
+
+Four modes, four sidebar groups, and the mode is the group. This is the discipline the whole plan rests on: a page
+belongs to exactly one of them and does exactly that one job.
+
+- **Get started** is *paced*. It assumes nothing, states every precondition before the step that needs it, and its
+  success condition is a working node, not comprehension.
+- **Tutorials** are *paced too, but narrower*: one whole task, start to finish, with a result you can point at.
+- **Concepts** are *unpaced*. No commands to run — they are readable away from a keyboard and they end in a position:
+  what the design buys, and what it costs.
+- **How-to** is *direct*. It assumes the vocabulary the concepts pages taught and answers one operator question with
+  the shortest correct path.
+
+**Needs a model** below is the honest column, and it is why the order of writing matters. A node without a serving
+model still does most of this product: it publishes, announces, attests, reaches quorum, sells over x402, settles on
+the ledger, accepts a dataset and parses it. What it cannot do is *answer* — so a page marked yes has at least one
+step that no pass can verify until a model runtime is free ([§5.3](#53-what-was-run-to-write-this-plan)). Those steps
+still get written, marked in the source with `<!-- unverified: needs a model runtime -->`, and listed in the
+workflow's report.
+
+#### Get started — the ten-minute path
+
+Two pages, read in order. Nothing else in the tree is a prerequisite for them.
+
+| Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `index` | Ainize | `docs/en/index.md` | What Ainize is in four sentences; the three surfaces (web, CLI, MCP) and who each is for; how to read these docs; the vocabulary you will meet. Card list of the groups below, each blurbed with the question a reader would actually type. | `README.md`, `packages/web/src/i18n/glossary.ts` (26 terms) |
-| `install` | Installation | `docs/en/get-started/install.md` | Node 24 requirement; clone → `npm install` → `npm run build` → `npm link -w packages/cli`; the same one-line verification after each path; where `NGRAM_HOME` lives; **states plainly that there is no npm-registry package** and why. | root `package.json`, `packages/cli/package.json`, `packages/cli/src/context.ts` |
-| `quickstart` | Quickstart | `docs/en/get-started/quickstart.md` | Three-bullet contract — *run a node, load knowledge, watch the answer change* — then `ainize init` → `start` → `seed` → `chat` before/after → `use`. Expected output shown inside each block, from a real run. Closes with Next-steps bullets naming the sidebar groups. | `packages/cli/src/bin.ts`, `packages/node/src/seed.ts`, `POST /api/chat` in `packages/node/src/api.ts` |
-| `mcp` | Connect an agent | `docs/en/get-started/mcp.md` | The one `claude mcp add` line against your own node; the env vars that gate spending (`AINIZE_MCP_SESSION_BUDGET`, `MAX_PER_PURCHASE`, `ALLOW_PUBLISH`, `ALLOW_APPLY`); what the 20 tools can and cannot do without approval. Links to `packages/mcp/README.md` rather than restating it. | `packages/mcp/src/tools/{read,live,money,teach}.ts`, `packages/mcp/README.md`, `packages/mcp/src/context.ts` |
+| `get-started/install` | Installation | Node 24 and where the requirement is declared; clone → `npm install` → `npm run build` → `npm link -w packages/cli`, and `npx ainize` as the no-link alternative inside the repo; that **there is no npm-registry package** and `npm install -g ainize` cannot work ([§8](#8-defects-these-pages-must-not-repeat), H2); what `NGRAM_HOME` is and what `ainize init` writes into it; one verification line at the end. | no | root `package.json` (`engines`), `packages/cli/package.json`, `packages/cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
+| `get-started/quickstart` | Quickstart | The contract first — *run a node, load knowledge, watch the answer change*. `ainize init` → point `runtime.api` at your own serving model → `ainize start -d` → `ainize status`, reading the `runtime` line as the go/no-go gate → `ainize login` → join a peer or seed local knowledge → `ainize chat --list` → `ainize chat <id> "<question>"` for the before/after → `ainize use <id>`. Real pasted output for every step; the two model steps flagged. Ends with which group to read next and why. | **yes** — `chat` and the before/after are the last two steps | `packages/cli/src/bin.ts`, `packages/node/src/api.ts` (`POST /api/chat`), `packages/node/src/runtime.ts` |
 
-### Guides
+#### Tutorials — one whole task each
 
-Named for the thing you are holding when you need the page.
+Three, because there are three whole tasks a newcomer actually wants: make knowledge from a file, make knowledge from
+a conversation, use somebody else's. The first two are the two doors of teach mode and they are genuinely different
+experiences, not one page with a tab.
 
-| Slug | Title | Path | Covers | Drawn from |
+| Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `node` | Run a node | `docs/en/guides/node.md` | `init` options; `start`/`stop`/`status`/`logs`; roles (`seller`, `verifier`, `serving`, `gateway`); peers and gossip; ports and `publicUrl`; which commands work with no config; the node-URL precedence chain. | `packages/cli/src/bin.ts`, `packages/cli/src/context.ts`, `packages/core/src/config.ts`, `packages/node/src/server.ts` |
-| `publish` | Publish knowledge you already have | `docs/en/guides/publish.md` | Registering an existing `.npz`; writing `bench.json` (`schema` required, what the CLI defaults); `publish` vs `patch publish --announce`; pricing as a decimal string; what happens between ANNOUNCED and LISTED. | `packages/cli/src/commands/patch.ts`, `packages/node/src/market.ts`, `BenchmarkSpec` in `packages/core/src/types.ts` |
-| `teach` | Make knowledge from your own Q&A | `docs/en/guides/teach.md` | Turning teach mode on; the five accepted upload formats; what each row status means and which count as accepted; the job lifecycle QUEUED→READY; effort presets; the `TeachChecks.ok` publish gate; quotas and where to raise them. | `packages/node/src/teach.ts`, `packages/node/src/teach-dataset.ts`, `DEFAULT_TEACH_CONFIG` in `packages/core/src/config.ts` |
-| `buy-and-apply` | Buy, load and unload | `docs/en/guides/buy-and-apply.md` | Finding knowledge; the free live-test quota (20/hour/visitor) and its 429; `buy` over x402 and the headers involved; `apply`/`remove`; reading the stack; the shared-runtime lock and the 503 + `Retry-After` you will meet. | `packages/core/src/x402.ts`, `packages/node/src/market.ts`, `packages/node/src/runtime.ts`, `packages/node/src/api.ts` |
-| `verify` | Run as a verifier | `docs/en/guides/verify.md` | Turning the verifier on; what an attestation records and what `verified_on` values mean; quorum (default 2) and why self-attestations and hash-only checks are excluded; raising a challenge and what it stops. | `packages/node/src/verifier.ts`, `packages/core/src/catalog.ts`, `verifier.*` in `packages/core/src/config.ts` |
+| `tutorials/teach-from-a-file` | Teach from a file of questions | `teach.enabled` is **off by default** and how to turn it on (and that the node keeps the value it started with, so it must be restarted); `ainize teach status` as the precondition check — trainer state, publish mode, per-key and per-IP quotas, the three effort presets; the five accepted formats and the column-mapping escape hatches; `ainize teach dataset upload`, and reading the *lines that will not train* table row by row — `empty`, `duplicate`, `conflict`, `too_long`, `blocked`, `over_cap`; fixing the file and re-uploading onto the same dataset; `ainize teach train --effort … --wait` and what each stage means; the checks block — taught vs side effects — and `TeachChecks.ok` as the gate that decides whether it may be published at all; what `--no-check` costs you. | **yes** — everything from `teach train` on | `packages/node/src/teach.ts`, `packages/node/src/teach-datasets.ts`, `packages/core/src/config.ts` (`DEFAULT_TEACH_CONFIG`), [`reference/schemas`](en/reference/schemas.md) (`TeachJob`, `TeachChecks`, `TeachDataset`) |
+| `tutorials/teach-in-chat` | Teach by correcting the model | The browser door: `<node>/chat?teach=1`, no account. The **teaching key** minted on first use — the one thing a reader can lose irrecoverably, so it is stated before the first correction, not after; where it is kept (`<home>/teaching-key.json`) and how the CLI reads it back (`--key`, `--key-file`, `NGRAM_TEACH_KEY`). Collecting corrections up to `teach.factsPerJob`; the lesson page at `/teach/lesson/<jobId>`; following the same lesson from the CLI with `ainize teach status <lesson-url> --key-file …`; keeping it private versus publishing, and what `teach.publish: review` means for how long that takes. | **yes** — a correction is a correction *to an answer* | `packages/node/src/teach.ts`, `packages/node/src/teach-auth.ts`, `packages/web/src/pages/ChatPage.tsx`, `packages/web/src/pages/TeachLessonPage.tsx` |
+| `tutorials/buy-and-apply` | Use knowledge someone else published | Finding it — `ainize patch ls --q`, and `/explore` for the same catalog in a browser. Reading `ainize patch get`: price, verification count, lineage, address-set overlaps. Trying before buying: the free live test, **20 per visitor per hour**, and the `429 quota_chat` when it runs out. Then `ainize patch buy` with its x402 trace line by line, or `ainize use` as the one-liner — including why `use` refuses a patch that is not LISTED, which is the first error most readers will hit. Then `patch apply`, `patch stack`, `patch remove --cascade`, and the `503` + `retry-after: 30` that means another process holds the shared runtime. | **yes** — the live test and every `apply` | `packages/core/src/x402.ts`, `packages/node/src/market.ts`, `packages/node/src/runtime.ts`, `packages/node/src/api.ts` |
 
-### Concepts
+#### Concepts — four ideas you cannot proceed without
 
-Readable away from a keyboard. Each ends in a position, not a result.
+Four, and not one more. Each is an idea a reader hits in the first hour and cannot route around: what the thing being
+traded *is*, what the network's promise about it *is worth*, where the money goes, and how it moves.
 
-| Slug | Title | Path | Covers | Drawn from |
+| Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `knowledge` | What a knowledge patch actually is | `docs/en/concepts/knowledge.md` | The `.npz` as `addrs`/`before`/`after` over a memory table; why **rows are touched addresses, not sentences**; why comparison happens in bf16; what "size" and "facts covered" each measure; why this is not fine-tuning. | `packages/core/src/npz.ts`, `PatchAnchor` in `packages/core/src/types.ts`, `glossary.ts` |
-| `verification` | What "verified" means — and what it does not | `docs/en/concepts/verification.md` | Quorum among independent nodes; executed vs integrity-only; challenge takes an item off sale until re-verified; **no bond is escrowed anywhere**; verified is not a guarantee of correctness, so re-test with your own questions. | `packages/core/src/catalog.ts`, deprecations in `types.ts`, `glossary.ts`, `i18n/pages/public.ts` terms copy |
-| `lineage` | Lineage and royalties | `docs/en/concepts/lineage.md` | Ancestors as a relation; the two-pass split (lineage pool at `market.royaltyShare`, default 0.3, split among unique ancestor authors, then the seller's remainder carved for contributors); the depth-16 walk cap; `MAX_CONTRIBUTORS`. States up front that **lineage is off by default** and names the config key that turns it on. | `royaltySplit` in `packages/core/src/catalog.ts`, `Contributor` in `types.ts`, `docs/internal/lineage-teach-design.md` §11 (mined, not published) |
+| `concepts/knowledge-patch` | What a knowledge patch is | The `.npz` as `addrs` / `before` / `after` over the serving model's memory table. Why **a row is a touched address, not a sentence**, and why "4 rows" and "1 fact" are both true of the same file. Why it can be applied to a running model with no restart: a file-based hook writes the `after` values into the live table, and the journal records what was displaced so `remove` can put it back. Why comparison is bf16-exact. What this design costs: the patch is bound to one model id, and two patches that touch the same addresses conflict — which is what the overlap table on `patch get` is for. Why it is not fine-tuning, stated as a difference in kind rather than a boast. | no | `packages/core/src/npz.ts`, `packages/core/src/lineage.ts` (`bf16Bits`), `packages/node/src/runtime.ts`, `PatchAnchor` in `packages/core/src/types.ts` |
+| `concepts/verification` | What "verified" proves — and what it does not | An attestation is one node's run, signed and on the record. Quorum counts **independent** attestations only: the author's own never counts (`verifier.allowSelfAttest` is false and the node refuses the write outright), so a network of two can never list anything and the default `verifier.quorum: 2` means *two nodes besides the publisher*. Executed versus `hash-only`, and the rule that decides everything: a patch that declares benchmark samples is never listed on integrity checks alone. `REJECTED` when failures reach quorum. A challenge holds an entry off sale **only until a verifier re-runs it** — and the honest wording of that, because nothing is escrowed, transferred or slashed anywhere in this product ([§8](#8-defects-these-pages-must-not-repeat), H6). Ends on the position: verified means somebody independent loaded it and scored it, not that it is right, so live-test it with your own questions. | no | `packages/core/src/catalog.ts`, `packages/node/src/verifier.ts`, [`reference/config`](en/reference/config.md) (`verifier.*`) |
+| `concepts/lineage-and-royalties` | Lineage and royalties | Parents are a relation on the anchor, frozen at publish. The split in two passes: a lineage pool of `market.royaltyShare` (0.3) divided evenly among the **unique ancestor authors**, each author's slice divided again across their own anchors and carved for that anchor's contributors; then the seller keeps the remainder, out of which a data provider is paid `teach.contributorShare` (0.7 by default) — so "70 %" and "30 %" are percentages of different things, which is the sentence this page exists to get right. The depth-16 walk cap, the cycle guard, at most 4 contributors and Σ share ≤ 1. States plainly up front that **building on someone else's knowledge is off by default** (`teach.lineage: false`, H5), so today lineage is what `--parents` and `--contributor` record at publish, not something the teach pipeline produces. | no | `royaltySplit` in `packages/core/src/catalog.ts`, `Contributor` in `packages/core/src/types.ts`, `packages/core/src/lineage.ts` |
+| `concepts/payment` | Paying without an account | HTTP 402 as a quote, not an error: the node answers with `x-payment-required` carrying base64 requirements, the client retries the same URL with `X-PAYMENT`, and the 200 comes back with `x-payment-tx-hash`. The two schemes that exist — `local-credit`, an HMAC proof against one node's own credit book, and `ain-transfer`, a real transfer on the AIN chain — and how `market.currency` picks between `CREDIT` and `AIN`. Why the settle record on the ledger is the receipt and what it proves. That a sale only happens for an entry the catalog calls `sellable`, which is where this page hands back to verification. **USDC is not listed** even though a type allows it ([§8](#8-defects-these-pages-must-not-repeat), H4). | no | `packages/core/src/x402.ts`, `packages/node/src/market.ts`, `packages/core/src/local-ledger.ts`, [`reference/schemas`](en/reference/schemas.md) (`X402Requirement`, `X402Payload`) |
 
-### Reference
+#### How-to — the three operator questions
 
-Five of six are generated. Ctrl-F territory; nothing collapsed behind an expander.
+Direct, vocabulary assumed, one question each. These are the three that come up the moment a node stops being a toy:
+other people cannot reach it, it has no price, and it will not list.
 
-| Slug | Title | Path | Covers | Drawn from |
+| Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `cli` | CLI reference | `docs/en/reference/cli.md` | **Generated.** Every command and subcommand as nested headings, a usage synopsis, and arguments/options with real type, default and choices. 25 top-level commands, 69 runnable leaves. | `packages/cli/src/bin.ts` via AST |
-| `http-api` | HTTP API reference | `docs/en/reference/http-api.md` | **Generated.** Endpoints grouped by tag, with method, path, summary, parameters, response codes, and an auth column. Flat per-endpoint lists; nested request bodies link out to `schemas` rather than being indented into illegibility. | `buildOpenApi()` in `packages/node/src/openapi.ts` |
-| `schemas` | Schemas | `docs/en/reference/schemas.md` | **Generated.** One section per component schema, `$ref`s linked as anchors. | same |
-| `config` | Configuration reference | `docs/en/reference/config.md` | **Generated.** All 105 dotted keys with type, default and description; the protected keys `config set` refuses; the environment variables that override them. | `packages/core/src/config-schema.ts`, `packages/core/src/config.ts` |
-| `errors` | Error codes | `docs/en/reference/errors.md` | **Generated.** Every code with its HTTP status and sentence; the `{error: "<code>: <sentence>"}` envelope and the fact that the machine code is the prefix, not a separate field; the special statuses (499, 423, 503 + `Retry-After`). | `packages/node/src/**` via AST |
-| `file-formats` | File formats | `docs/en/reference/file-formats.md` | Hand-written. `.npz` member layout, dtypes and accepted ZIP methods; `bench.json` fields; `rows.jsonl` canonicalisation (fixed key order, LF, UTF-8 no BOM, one trailing LF — the sha256 over those bytes is the dataset's identity); ledger record hashing and canonical JSON. | `packages/core/src/npz.ts`, `packages/node/src/teach-dataset.ts`, `packages/core/src/canonical.ts`, `packages/core/src/local-ledger.ts` |
+| `how-to/reachable-node` | Run a node others can reach | `host` binds, `publicUrl` is what peers are told — the distinction that decides whether gossip works at all. Seeding peers with `--peer` at `init` or `start` versus `ainize peers add` later, and how to tell the difference between "not peered" and "peered and silent" from `ainize nodes`. Which of the four roles each job needs, and what dropping `serving` costs. Running detached: the pid file, `ainize logs -f --kind p2p`, and `ainize status --check` as the one line a monitor or a deploy script should call. | no | `packages/node/src/server.ts`, `packages/node/src/p2p.ts`, `packages/cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
+| `how-to/price-knowledge` | Set a price and get paid | `market.defaultPrice` versus `--price`, and that **money is a decimal string everywhere**, never a JSON number. What `market.currency` settles as in each of its two values. Crediting a data provider with `--contributor addr:name:share`, what that share is a share *of*, and the ≤ 4 / Σ ≤ 1 rule the node enforces. Where the money then shows up: `ainize wallet` for balance and sales, `ainize payouts ls` for what is owed, and the settle record for the buyer's side. What can still be changed after an anchor is on the record and what cannot. | no | `packages/node/src/market.ts`, `packages/node/src/payouts.ts`, `validateContributors` in `packages/core/src`, [`reference/cli`](en/reference/cli.md#ainize-publish) |
+| `how-to/failed-verification` | When it will not list | Reading the evidence first: `ainize patch get` for the count, `ainize patch records` for who attested what and when. Then the three reasons an entry sits at `VERIFYING` and the different fix for each — no peer has a compatible model, the only attester is the author, or quorum needs more nodes than the network has. The grace window before a verifier gives up on a real run and falls back to `hash-only`, and why that fallback lists some patches and not others. `ainize patch challenge --reason` from the other side of the table: what it stops, what lifts it, and when superseding is the better move than arguing. | no | `packages/node/src/verifier.ts`, `packages/core/src/catalog.ts`, [`reference/errors`](en/reference/errors.md) |
 
-**18 pages, 13 of them hand-written.** That is deliberately small. A complete 13-page site beats a hollow 40-page one,
-and every page above can be finished — and its commands actually run — inside this workflow.
+**Twelve hand-written pages, eighteen in the tree.** Four of the twelve need a model runtime and eight do not, which
+is also the order to write them in: the eight can be finished and verified today, and the four can be written today
+and verified the first time the engine is free.
 
-Each group also gets an `overview` entry rendered from the toctree's group blurbs rather than a separate file, so a
-group index cannot go stale against the pages it lists.
+### 5.3 What was run to write this plan
+
+None of the above is a guess about what the commands do. Three throwaway nodes were run on ports **3602 / 3612 / 3622**
+with `runtime.api` and `runtime.hookApi` pointed at `http://127.0.0.1:9`, `runtime.repo` unset, and homes under a
+scratch directory — never `node-a/b/c`, never the shared engine on `:8000`–`:8002`. All three were stopped afterwards.
+
+What ran, and therefore what a page-writing pass can paste as real output:
+
+| Ran for real | What it established |
+|---|---|
+| `init`, `config set/unset`, `start -d`, `status`, `stop`, `login`, `logs`, `nodes`, `peers`, `wallet`, `ledger ls`, `ledger verify` | The whole operator surface works with no model. `status` prints `runtime unavailable (serving API unreachable)` and everything else keeps working — which is exactly the shape the quickstart's go/no-go step needs. |
+| `publish` (a synthetic 4-row `.npz` + a `bench.json`) | Registering and announcing knowledge **needs no runtime at all**. `how-to/price-knowledge` and most of `tutorials/teach-from-a-file`'s tail are fully verifiable today. |
+| Two peer nodes attesting, reaching `2/2`, `LISTED` | Quorum is reachable without a model *for a patch that declares no benchmark samples* — the attestations come back `hash-only`. With samples declared it stays at `VERIFYING` for ever without a model. Both halves of that rule are what `concepts/verification` has to say. |
+| `patch buy` over x402, `wallet` on both sides, `patch records` | The full payment chain settles with no model: `quorum → 402 → pay → settled → download`, seller `+2 CREDIT`, buyer `−2`, a `settle` record on all three ledgers. `concepts/payment` and the buy half of `tutorials/buy-and-apply` can carry a real trace. |
+| `patch challenge --reason …` | The challenge records and propagates, and the CHALLENGED state is real — see H10 for what happened next. |
+| `teach dataset upload` (with `teach.enabled` on) | Parsing, deduplication and the *lines that will not train* table are entirely model-free. The first half of `tutorials/teach-from-a-file` is verifiable today. |
+| `patch verify` on the publisher's own node | Refused, by design: *"cannot verify your own knowledge … a self-check never counts toward the quorum"*. This is the sentence `concepts/verification` is built around, and it came from the program, not from reading the code. |
+| `use` on an unverified patch | Refused with the verification count in the message — the precondition `tutorials/buy-and-apply` must state before the step, not after it fails. |
+
+What could **not** run, and must therefore be written and flagged: `chat` in any mode, the before/after live test,
+`teach train` on the real gradient backend, `patch apply` / `remove` / `stack` against a live table, and an *executed*
+(non-`hash-only`) attestation.
+
+One near-miss worth recording so the next pass does not mistake it for verification: with `teach.backend: "stub"` and
+`NGRAM_TEACH_STUB_OFFLINE=1` the entire teach pipeline runs to completion without a GPU, and the node labels its own
+output honestly — `(stub model) I do not know:` in the before column and `note: stub backend (offline) — checks were
+simulated, not measured in a live model`. That is a good CI story and a bad documentation story. **Stub output must
+never be pasted into a page as if it were a training run.**
+
+### 5.4 Where each mode ends
+
+The failure this shape is built to avoid is the page that starts as a tutorial, remembers a caveat, and ends as a
+reference table nobody can follow. So each mode has an edge it does not cross:
+
+A tutorial that needs to explain *why* links to the concept page and keeps walking. A concept page that finds itself
+listing flags has drifted into reference and should link to the generated page instead. A how-to that has to teach a
+word before it can be used is missing a link to the concept page that defines it. And Get started never sends the
+reader anywhere mid-path — every precondition it needs is stated in it, before the step that needs it.
 
 ---
 
@@ -270,13 +352,22 @@ group index cannot go stale against the pages it lists.
    truthfully stays out of the toctree.
 2. **Never document a command you have not run.** Paste the command and its real output into the same fenced block, the
    way the quickstart does. Never print a number the system did not measure.
-3. **If the code does not do what a page says, that is a defect to report**, not prose to soften.
-4. **Callouts are GitHub alert syntax** (`> [!TIP]`, `> [!WARNING]`) so a page renders correctly in a GitHub blob view,
+3. **A step you could not run is written and marked, never dropped.** When the runtime a step needs is not available,
+   write the step as it will be, put `<!-- unverified: needs a model runtime -->` on the line above it in the source,
+   and list it in the workflow report so a later pass can execute it. Quietly ending a quickstart one step before the
+   model answers is worse than an honest mark: it turns a gap in the environment into a gap in the product.
+4. **If the code does not do what a page says, that is a defect to report**, not prose to soften.
+5. **Callouts are GitHub alert syntax** (`> [!TIP]`, `> [!WARNING]`) so a page renders correctly in a GitHub blob view,
    in an editor preview, and on the site.
-5. **Link between guide and reference in both directions.** A guide answers "how do I publish"; the reference answers
+6. **Link between guide and reference in both directions.** A guide answers "how do I publish"; the reference answers
    "what does `--ledger` default to". Neither can do the other's job.
-6. **Anchors are heading slugs.** Renaming a heading breaks inbound links; `docs-check.mjs` catches the internal ones.
-7. **Never hand-edit a generated file.** The banner says so and `npm run docs:check` enforces it.
+7. **One mode per page.** A tutorial that starts explaining the design should link to the concept page; a concept page
+   that starts listing flags should link to the generated reference. See [§5.4](#54-where-each-mode-ends).
+8. **Introduce a term before you use it, and link it to the page that defines it.** The first *quorum*, *anchor*,
+   *attestation* or *patch* on a page is a link, not an assumption.
+9. **Anchors are heading slugs.** Renaming a heading breaks inbound links, and nothing catches that yet
+   ([§2.2](#22-rendering--a-small-in-repo-renderer-no-new-dependency)) — so grep for the old slug before renaming.
+10. **Never hand-edit a generated file.** The banner says so and `npm run docs:check` enforces it.
 
 ---
 
@@ -346,6 +437,29 @@ are listed here so no page inherits them.
 - **H8 — `grep` silently skips `packages/node/src/teach-dataset.ts`** (raw NUL byte → treated as binary). Any CI check
   that greps `packages/node/src` loses 716 lines without an error. Read files, or use `grep -a`.
 
+The next three were found by running the product while writing [§5.3](#53-what-was-run-to-write-this-plan), not by
+reading it. H9 and H10 are code defects and belong in the workflow report as well as here.
+
+- **H9 — a `bench.json` whose `format` is a string is accepted at publish and then breaks `patch get` for ever.**
+  `BenchmarkSpec.format` is `string[]` (`packages/core/src/types.ts:33`), but `market.ts:352` only fills a default —
+  `format: input.benchmark.format ?? ['template']` — and validates nothing. Publishing with `"format": "exact"`
+  succeeded, announced, and anchored; `ainize patch get <id>` then died with
+  `error: a.benchmark.format.join is not a function` (`packages/cli/src/commands/patch.ts:65`), and since the anchor is
+  on the record the entry can never be inspected from the CLI again. Reproduced twice: the same file with
+  `"format": ["template"]` prints normally. The `--benchmark` help string — `{schema, queries, format, samples}` —
+  does not say `format` is an array, so a reader following the reference writes the broken form first. **Fix the
+  validation, not the docs**; until then no guide page may show a `bench.json` without the brackets.
+- **H10 — a challenge against a patch that declares no benchmark samples clears itself.** `catalog.ts:150` holds a
+  challenged entry "until a verifier re-runs it", and for a sample-less patch that re-run is a sha256 check that cannot
+  fail. Observed: `patch challenge` was recorded at `11:32:14`, the challenger's own verifier re-attested `hash-only` at
+  `11:32:15`, and the entry was back to `LISTED` before the next `patch ls`. So the dispute mechanism has real teeth
+  only where verification is executed — which is the same boundary as H6, and `concepts/verification` must draw it
+  rather than promise a challenge that holds.
+- **H11 — this file described a checker that does not exist.** §2.2 and §3 asserted `scripts/docs-check.mjs` in the
+  present tense; `npm run docs:check` is `docs-gen.mjs --check` and validates only the generated pages. Corrected in
+  place above. It is listed here because it is the same failure mode as H1: a document asserting a mechanism nobody
+  built, which is exactly what a reader cannot tell from the outside.
+
 One correction to the brief while I am here: the web design system is a **single light palette**
 (`packages/web/src/theme/theme.ts`). There is no dark theme — only `components/public/Lifecycle.tsx` carries a local
 `prefers-color-scheme` block. Docs pages use the same light theme as every other page.
@@ -354,13 +468,23 @@ One correction to the brief while I am here: the web design system is a **single
 
 ## 9. What is deliberately not documented yet
 
-Leaving a topic out is a decision, and each of these has a reason.
+Leaving a topic out is a decision, and each of these has a reason. Twelve pages that are finished are worth more than
+forty that are started, so the cut had to be real: the guide half covers **one path taken twice** — make knowledge,
+sell it; find knowledge, buy it — and everything that is not on that path waits. The eight rows added below are the
+cuts this plan makes; the rest were already settled.
 
 | Not documented | Why |
 |---|---|
+| **Knowledge branches** (`ainize branch`, `ainize route`, the `gateway` role) | Real, working, and off the path. A newcomer never meets a branch, and an operator who needs one has `--help` and the generated reference. It earns a how-to when somebody is running a gateway in anger. |
+| **`ainize drive`** (aindrive: files and change history) | A separate product surface bolted to the node. Documenting it inside a marketplace guide would teach the reader that it is part of the loop, and it is not. |
+| **`ainize chain`** (the local AIN docker chain) | It exists so `--ledger ain` has something to talk to on a developer machine. `deploy/README.md` owns host setup, and `concepts/payment` says what the AIN ledger *is* without teaching anyone to run one. |
+| **The dataset market** (`ainize dataset get`, access levels, dataset licences) | The access levels and licences are wired and the walk is real, but the reader who needs them is building on someone else's knowledge — which is off by default (H5). It follows lineage, whenever lineage lands. |
+| **A hand-written `file-formats` reference page** | An earlier draft of this plan listed one. It is the exact thing [§4](#4-what-is-generated-and-from-what) exists to stop multiplying — a hand-kept table of things the code defines. What a guide actually needs from it (the `.npz` members, the `bench.json` shape) belongs in `concepts/knowledge-patch`, where it is *explained* rather than tabulated, and the rest belongs in a generator when someone writes one. |
+| **A separate "run a verifier" how-to** | Verifying is a role, not a job: `verifier` is on by default and `verifier.auto` runs the rounds. What an operator needs is on `how-to/reachable-node` (roles) and `how-to/failed-verification` (what the rounds decided). A third page would be two paragraphs and a link. |
+| **A separate royalties/payouts operator page** | `ainize payouts` is one command with two subcommands and it belongs beside the price that produced the payout. It lives inside `how-to/price-knowledge`. |
+| **Anything about MCP or the agent** | `packages/mcp/**` is another session's ground in this workflow, and its own `README.md` (853 lines) plus `packages/mcp/references/` (7 files) are already good developer documentation. A *Connect an agent* page linking to them is the right page and the wrong workflow. Flagged for whoever takes it: `packages/mcp/references/cli.md` is a **third** hand-written CLI reference and should become a link into the generated one. |
 | The P2P compute market | `p2p-compute-market-design.md` is an unimplemented design. Documenting it would advertise a product that does not exist. |
 | `ainize-agent` (4 commands) | A demonstration harness for the x402 buyer loop, not a supported surface — and I have not run it. Add it when both are false. |
-| A full MCP tool reference | `packages/mcp/README.md` (853 lines) and `packages/mcp/references/` (7 files, 605 lines) are already good developer documentation. Forking them creates the drift this whole design exists to prevent. Get started → *Connect an agent* links to them. Flagged for a later pass: `packages/mcp/references/cli.md` is a **third** hand-written CLI reference and should be reduced to a link into the generated one. |
 | Building on someone else's knowledge (lineage how-to) | Off by default and returns 403 (H5). Concept page yes, how-to guide no. |
 | USDC, `CanonicalRow.from`/`.replaces`, stakes and bonds | H3, H4, H6 — the code does not do these things. |
 | Versioned doc URLs and a version selector | Nothing released is worth pinning to yet. The URL shape leaves room for a version segment; add the selector when there are versions. |
