@@ -85,7 +85,10 @@
      "user_cost": "The first thing a derivative creator does — start my own node and point it at the marketplace — ends in an empty catalogue and 'patch not found' with every health indicator green. There is no way to obtain the base on your own node without guessing that the fix is `init --ledger ain --ain-provider …`.",
      "fix": "In `peers add` / `init --peer` (packages/cli/src/commands/init.ts, peers.ts) and in every p2p round (p2p.ts), compare `info.ledger` with `this.deps.ledger.kind`; when they differ, log and surface in `ainize status`, `ainize nodes` and `ainize peers ls` one line: `node-a publishes on the AIN ledger; this node reads the local record DAG, so its knowledge will never appear here — re-init with \\`ainize init --force --ledger ain --ain-provider <url>\\` or pass --node http://localhost:3402`. Make `patch get/buy/use <id>` on a not-found id ask known peers' `/api/patches/:id` and print `krx-all-2761 exists on node-a (AIN ledger) — this node cannot read that ledger` instead of the bare not-found.",
      "effort": "M",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "fixed": true,
+     "fixed_by": "ef10e48, 1c936ef, 60f7477",
+     "fixed_note": "Every p2p round compares the peer's advertised ledger with this node's and logs the mismatch once; `/api/info.peer_status` and `/api/nodes.peer_status` carry {known, reachable, unreachable, verifiers, ledger_mismatch, mismatched[]}, and /api/nodes rows carry `reachable`, `ledger`, `ledger_mismatch` and `blobs_advertised` (the count that used to read 0 for a peer holding four). `ainize status` prints `peers N known · N answered · N verifiers`, `peers ls` and `nodes` mark the mismatched ledger, `peers add` and `init --peer` say it at the moment the peer is added, the Network page shows the same in EN and KO, and a 404 on GET /api/patches/:id names the peer that has the knowledge and why it can never appear here. Reproduced against a stand-in AIN peer."
     },
     {
      "n": 171,

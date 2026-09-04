@@ -302,7 +302,10 @@
      "evidence": "packages/e2e/results/ux2/critic-18-auth-version.txt, on a node I started with plain `ainize start -d`: `curl /api/auth/me` → `{\"signedIn\":false,…,\"needsSetup\":true}`; `curl -X POST /api/auth/setup -d '{\"password\":\"i-am-not-the-owner\"}'` → `{\"ok\":true,\"token\":\"3bc31853…\"}` with no credentials; that token then wrote operator state (`PATCH /api/me/teach/policy` succeeded). The real operator's `ainize login` → `error: wrong password — run \\`ainize login\\` first`, exit 3. Reproduced over a routable address in operator-network-open-claim.txt. deploy/README.md:19 makes `start` and `login` two commands in one `&&` chain, and starts bob and carol with no `login` at all.",
      "user_cost": "An operator who follows the shipped quickstart on any host that is not firewalled loses the node to whoever scans the port first: the claimant can announce, buy, subscribe, spend the wallet, change `payout_address`, and approve teach lessons under the node's identity. The real operator is locked out permanently — this is the other half of the first review's item 34 (no way to change or reset the operator password), and it is what makes that gap unrecoverable rather than merely annoying.",
      "fix": "Set the password at init time, not at first HTTP call: generate one (or take `--password`) in `ainize init`, write the hash to config.json and print it once. Default `host` to `127.0.0.1` and require an explicit `--host 0.0.0.0` / `--public`; print the real bind address in the banner. Until a hash exists, serve `POST /api/auth/setup` only to loopback callers (or gate it on a one-time token written to `NGRAM_HOME/setup-token` at first start) and drop `needsSetup` from the unauthenticated `/api/auth/me`.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "53198cf, 60f7477",
+     "fixed_note": "host now defaults to 127.0.0.1 and the banner prints the address actually bound; `POST /api/auth/setup` is refused unless the TCP peer is loopback or carries the one-time token startNode writes to NGRAM_HOME/setup-token (consumed by the claim); unauthenticated `/api/auth/me` no longer reports needsSetup to a caller that could not claim the node, and `/api/auth/login` says why instead of 401; `ainize init --password/--host/--public` claims the node before it listens; new `POST /api/auth/password` and `ainize password [--reset]` change or recover it and drop every other session. Reproduced and re-tested live on a throwaway node bound to 0.0.0.0: the remote claim is refused, the token claim works once, the reset takes effect."
     },
     {
      "n": 122,
@@ -365,7 +368,10 @@
      "evidence": "packages/e2e/results/ux2/critic-23-teach-override.txt: `PATCH /api/me/teach/policy {\"enabled\":true}` → `{\"policy\":{\"enabled\":true},\"effective\":{\"enabled\":true,…}}`; then `ainize config set teach.enabled false` → `✓ teach.enabled = false  (restart the node to apply)`; then a full `stop` + `start -d`; then `config show` → `\"teach\": {\"enabled\": false, …}` while `GET /api/teach/policy` on the same running node returns `{\"enabled\": true, \"publish\": \"review\", …}`. Same in operator-day2-19.",
      "user_cost": "The operator's only terminal-side switch for a feature that spends trainer GPUs and publishes lessons on the permanent record under the node's own identity is inert once the console has been used once. An operator shutting teach mode down in a hurry will read `\"enabled\": false`, restart, and still be accepting and auto-publishing lessons.",
      "fix": "Have `config show` print the *effective* config (config.json merged with the store overrides) and mark every overridden field: `\"enabled\": false  // overridden to true by the console (settings.teach)`. Make `ainize config set teach.<k>` write through the same path as `PATCH /api/me/teach/policy` when a node is running, and let `config unset <key>` clear a console override.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "1deaa6b, 86a9285",
+     "fixed_note": "`config show` and `config get` ask the running node for its `settings.teach` overrides and mark every overridden key in place, with a footer above the JSON naming each one; `config set teach.<k>` writes config.json AND the running node's override, so the terminal switch is the switch again; `config unset teach.<k>` clears the override (`PATCH /api/me/teach/policy` now accepts null on every field, TeachPolicyPatch). Re-tested with the review's exact repro: PATCH enabled:true, `config set teach.enabled false`, stop/start — the file, `config show` and GET /api/teach/policy now all say false."
     },
     {
      "n": 126,
@@ -406,7 +412,10 @@
      "evidence": "Measured today on the running demo cluster (critique2-verify.txt §11): node-b and node-c, `roles: [\"verifier\"]`, each hold `932M …/data/blobs` (6 files, largest 347,829,014 bytes) while `ainize --home ~/.ngram-cluster/node-b status` prints `blobs held  4` — the two largest bodies are not in that 4. node-a's sqlite holds 4,678 event rows (3,027 of them `usage`). `/api/info`'s top-level keys are `[accepts_contributions, contributor_share, counts, currency, initial_credit, ledger, node, peers, quorum, royalty_share, runtime]` — no `disk`.",
      "user_cost": "Verification duty costs about a gigabyte per node per handful of catalogue items and the operator is never told, has no way to ask, and has nothing the product will let them delete except one id at a time. The first symptom is ENOSPC, which takes the SQLite store and the ledger with it.",
      "fix": "Report it first: add `disk: {blobs, uploads, sqlite, log, free}` to `/api/info` and render it in `ainize status` as `disk 1.1 GB (blobs 932 MB · uploads 115 MB · db 9 MB) · 12 GB free`, in yellow above a threshold. Then let the operator act: `ainize blobs ls` and `ainize gc [--keep-purchased] [--older-than 30d]` removing bodies this node neither authored nor purchased (they are re-fetchable from peers), an `events.retentionDays` config with a nightly delete on the existing watchdog, and size-capped rotation of node.log with two generations.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "1c936ef, 60f7477",
+     "fixed_note": "`/api/info.disk` reports blobs/datasets/uploads/db/log/total plus free and total bytes of the volume and what gc could reclaim; `ainize status` and the Network page render it (yellow under 2 GB or 5% free), `ainize blobs ls` lists every body with why it is held, and `ainize gc [--dry-run --older-than --no-keep-purchased --allow-sole-copy]` deletes verification copies after showing the plan. `start -d` rolls node.log at 32 MB keeping two generations, `events.retentionDays` (default 90) drives the existing hourly purge, and the node warns hourly in its event log while the volume is tight. Measured on a throwaway verifier: 975 MB in four bodies reclaimed, every one re-fetchable from the seller."
     },
     {
      "n": 129,
