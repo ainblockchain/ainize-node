@@ -97,7 +97,9 @@
    "problem": "It is unclear whether the whole method card is clickable or only the button inside; hover/feedback states do not resolve it.",
    "fix": "Make the whole card the click target with a clear hover/focus state, or visually demote the card to a plain container with only the button interactive — not both.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "Each door is now one link — the whole card is the click target (its accessible name is heading + label, the 'button' at its foot is a visual label of that same link), with a hover lift and darker border, a 3 px keyboard focus ring, Enter activation, and an aria-disabled flat state when the node is not teaching."
   },
   {
    "n": "O-10",

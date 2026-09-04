@@ -200,20 +200,39 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   await expect(entry.getByText('Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.', { exact: true })).toBeVisible();
   await expect(entry.getByText('No account, no server of your own, no code.', { exact: true })).toBeVisible();
 
-  const chatCard = page.getByTestId('door-chat-card');
-  const fileCard = page.getByTestId('door-file-card');
+  // O-9: each door is ONE link — the whole card is the click target, the "button" at its foot is a visual label of the same link
+  const chatCard = page.getByTestId('door-chat');
+  const fileCard = page.getByTestId('door-file');
+  for (const [card, name] of [[chatCard, 'Teach it in a conversation Start a conversation'], [fileCard, 'Upload a dataset file Choose a file']] as const) {
+    expect(await card.evaluate((el) => el.tagName)).toBe('A');
+    await expect(card).toHaveAccessibleName(name);
+    await expect(card.getByRole('button')).toHaveCount(0);
+    await expect(card.getByRole('link')).toHaveCount(0);
+  }
+  await expect(chatCard).toHaveAttribute('href', '/chat?teach=1');
+  await expect(fileCard).toHaveAttribute('href', '/teach/upload');
   await expect(chatCard.getByRole('heading', { level: 2 })).toHaveText('Teach it in a conversation');
   await expect(chatCard.locator('p')).toHaveText('Ask the model something and correct it when the answer is wrong. Your corrections collect into a dataset. Best when you do not have a file yet.');
-  await expect(page.getByTestId('door-chat')).toHaveText('Start a conversation');
+  await expect(page.getByTestId('door-chat-cta')).toHaveText('Start a conversation');
   await expect(fileCard.getByText('Already have a file?', { exact: true })).toBeVisible();
   await expect(fileCard.getByRole('heading', { level: 2 })).toHaveText('Upload a dataset file');
   await expect(fileCard.locator('p')).toHaveText('Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.');
-  await expect(page.getByTestId('door-file')).toHaveText('Choose a file');
-  // O-1: the conversation card leads — the primary border (#8b3eeb) and the contained button are its; the file card keeps the grey border and the outlined button
+  await expect(page.getByTestId('door-file-cta')).toHaveText('Choose a file');
+  // O-1: the conversation card leads — the primary border (#8b3eeb) and the contained label are its; the file card keeps the grey border and the outlined label
   expect(await chatCard.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe('rgb(139, 62, 235)');
   expect(await fileCard.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe('rgb(218, 218, 218)');
-  expect(await page.getByTestId('door-chat').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(139, 62, 235)');
-  expect(await page.getByTestId('door-file').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  expect(await page.getByTestId('door-chat-cta').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(139, 62, 235)');
+  expect(await page.getByTestId('door-file-cta').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  // O-9: hover and keyboard focus both resolve the affordance — the border darkens under the pointer, and Tab reaches the card with a 3 px ring
+  await chatCard.hover();
+  await expect.poll(() => chatCard.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe('rgb(91, 28, 168)');
+  await page.mouse.move(2, 2);
+  await page.locator('body').click({ position: { x: 2, y: 2 } });
+  for (let i = 0; i < 12 && !(await chatCard.evaluate((el) => document.activeElement === el)); i++) await page.keyboard.press('Tab');
+  expect(await chatCard.evaluate((el) => document.activeElement === el), 'Tab reaches the chat door').toBe(true);
+  expect(await chatCard.evaluate((el) => `${getComputedStyle(el).outlineStyle} ${getComputedStyle(el).outlineWidth}`)).toBe('solid 3px');
+  await page.keyboard.press('Tab');
+  expect(await fileCard.evaluate((el) => document.activeElement === el), 'then the file door').toBe(true);
 
   // the small print quotes the DATASET row cap, not the 4 MB the upload page shows
   await expect(fileCard.locator('small')).toHaveText('jsonl, csv, tsv or plain text · up to 2000 questions');
@@ -224,12 +243,19 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   await expect(entry.locator('ol > li')).toHaveText(['1Dataset', '2Check', '3Settings', '4Training', '5Result']);
   await expect(entry.getByText('Whichever door you pick, these five steps are the same.', { exact: true })).toBeVisible();
 
-  // both doors really go somewhere
-  await page.getByTestId('door-chat').click();
+  // both doors really go somewhere — pressed on the card itself (top-left corner, nowhere near the label), and by keyboard
+  await chatCard.click({ position: { x: 12, y: 12 } });
   await page.waitForURL(/\/chat\?teach=1$/);
   await page.goBack();
-  await page.getByTestId('door-file').click();
+  await expect(fileCard).toBeVisible();
+  await fileCard.click({ position: { x: 12, y: 12 } });
   await page.waitForURL(/\/teach\/upload$/);
+  await page.goBack();
+  await expect(chatCard).toBeVisible();
+  await chatCard.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\/chat\?teach=1$/);
+  await page.goBack();
 
   // ---- operator variant: a node that is not teaching says so and disables both doors
   const off = await api(request, '/api/me/teach/policy', { node: NODE, token: opToken, method: 'PATCH', data: { enabled: false } });
@@ -242,6 +268,10 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
     await expect(p2.getByTestId('teach-entry')).toBeVisible();
     await expect(p2.getByTestId('door-chat')).toBeDisabled();
     await expect(p2.getByTestId('door-file')).toBeDisabled();
+    await expect(p2.getByTestId('door-chat')).toHaveAttribute('tabindex', '-1');   // a disabled door is not in the Tab order either
+    await p2.getByTestId('door-file').click({ position: { x: 12, y: 12 }, force: true });   // force: Playwright refuses to click a disabled control on its own
+    await p2.waitForTimeout(500);
+    expect(new URL(p2.url()).pathname, 'a disabled door does not navigate').toBe('/teach');
     const alert = p2.getByTestId('teach-policy');
     await expect(alert).toHaveText('This node does not accept lessons. Try another node or run your own.');
     expect(await alert.evaluate((el) => getComputedStyle(el).backgroundColor), 'warning tone').toBe('rgb(255, 243, 224)');
@@ -1494,15 +1524,15 @@ test('AZ-237 /teach hierarchy: the conversation door is the one primary action a
   await page.goto(`${NODE}/teach`);
   const entry = page.getByTestId('teach-entry');
   await expect(entry).toBeVisible();
-  const chat = page.getByTestId('door-chat-card');
-  const file = page.getByTestId('door-file-card');
+  const chat = page.getByTestId('door-chat');
+  const file = page.getByTestId('door-file');
   await expect(chat).toBeVisible();
   await expect(file).toBeVisible();
 
   // order: the primary door comes first in the document — it is what a screen reader and the Tab key reach first
   expect(await entry.evaluate((el) => {
-    const c = el.querySelector('[data-testid=door-chat-card]');
-    const f = el.querySelector('[data-testid=door-file-card]');
+    const c = el.querySelector('[data-testid=door-chat]');
+    const f = el.querySelector('[data-testid=door-file]');
     return !!(c && f && (c.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING));
   }), 'chat card precedes file card').toBe(true);
 
@@ -1517,9 +1547,9 @@ test('AZ-237 /teach hierarchy: the conversation door is the one primary action a
   expect(await style(chat.getByRole('heading', { level: 2 }), 'font-size')).toBe('22px');
   expect(await style(file.getByRole('heading', { level: 2 }), 'font-size')).toBe('16px');
 
-  // buttons: contained (white on purple) vs. outlined (purple on transparent)
-  const chatBtn = page.getByTestId('door-chat');
-  const fileBtn = page.getByTestId('door-file');
+  // labels: contained (white on purple) vs. outlined (purple on transparent) — visual labels of the card links, not buttons (O-9)
+  const chatBtn = page.getByTestId('door-chat-cta');
+  const fileBtn = page.getByTestId('door-file-cta');
   expect(await style(chatBtn, 'background-color')).toBe('rgb(139, 62, 235)');
   expect(await style(chatBtn, 'color')).toBe('rgb(255, 255, 255)');
   expect(await style(fileBtn, 'background-color')).toBe('rgba(0, 0, 0, 0)');
@@ -1528,7 +1558,7 @@ test('AZ-237 /teach hierarchy: the conversation door is the one primary action a
   // size and position: 3:2 side by side on desktop; stacked, primary first, nothing overflowing on a phone.
   // Both boxes are read in one call after the policy has arrived, so a late layout shift cannot split the measurement.
   await expect(page.getByTestId('teach-policy')).toBeVisible();
-  const [cb, fb] = await entry.evaluate((el) => ['door-chat-card', 'door-file-card'].map((id) => {
+  const [cb, fb] = await entry.evaluate((el) => ['door-chat', 'door-file'].map((id) => {
     const r = el.querySelector(`[data-testid=${id}]`)!.getBoundingClientRect();
     return { x: r.x, y: r.y, width: r.width, height: r.height };
   }));
@@ -1541,7 +1571,7 @@ test('AZ-237 /teach hierarchy: the conversation door is the one primary action a
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth), 'no horizontal scroll').toBeLessThanOrEqual(width);
 
-  // the secondary door stays one click away
-  await fileBtn.click();
+  // the secondary door stays one click away — and the click lands on the card, not on its label (O-9)
+  await file.click({ position: { x: 12, y: 12 } });
   await page.waitForURL(/\/teach\/upload$/);
 });
