@@ -2809,12 +2809,15 @@ export class TeachWorker {
     };
     walk(anchor.parents ?? [], 0);
     const nameOf = (addr: string): string | undefined => byAddr.get(addr.toLowerCase());
-    const shares = Object.entries(split).map(([address, amount]) => ({
-      address, share: Number(amount),
-      kind: address.toLowerCase() === seller.toLowerCase() ? 'node' as const
-        : address.toLowerCase() === contributorAddress.toLowerCase() ? 'you' as const : 'lineage' as const,
-      ...(nameOf(address) ? { name: nameOf(address) } : {}),
-    })).filter((x) => x.share > 0 || x.kind === 'node').sort((a, b) => b.share - a.share);
+    const shares = Object.entries(split).map(([address, amount]) => {
+      const kind = address.toLowerCase() === seller.toLowerCase() ? 'node' as const
+        : address.toLowerCase() === contributorAddress.toLowerCase() ? 'you' as const : 'lineage' as const;
+      // The ancestor name exists to say WHICH knowledge a lineage payee is being paid for. It must never be attached
+      // to the creator's own line: a creator who also authored one of the parents (every merge of one's own work, and
+      // every second lesson on a teaching node) then read "70% to you" above a list in which "you" did not appear —
+      // their own share was labelled with the title of one of their earlier knowledges.
+      return { address, share: Number(amount), kind, ...(kind === 'lineage' && nameOf(address) ? { name: nameOf(address) } : {}) };
+    }).filter((x) => x.share > 0 || x.kind === 'node').sort((a, b) => b.share - a.share);
     const parents = (anchor.parents ?? []).map((id) => {
       const e = all.get(id);
       return { id, name: e?.anchor.name ?? id, ...(e ? { author: e.anchor.author, price: e.anchor.price ?? '0' } : {}) };
