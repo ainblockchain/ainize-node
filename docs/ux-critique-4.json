@@ -899,7 +899,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-07-payouts-under-teaching-en-1280.png ('No payouts yet — they appear when a taught lesson sells · Owed 0' after three sales owing 12.3 CREDIT to two other nodes); seller-royalties-anc-03-who-sees-what.txt (`payouts ls` → '(none)').",
      "user_cost": "A seller with no teaching activity has no idea the node owes other creators anything, and an operator on a local ledger is told money is pending that was in fact credited instantly.",
      "fix": "Move Payouts to Account → Wallet under 'What this node owes creators and data providers', with a 'why' column ('creator of p-mid' / 'data provider of p-mid'), and keep a filtered copy in Teaching. On a local ledger, derive the same rows from settle records and say 'credited the moment the sale was recorded — nothing to send'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5075436",
+     "fixed_note": "Account → Wallet gained \"What this node owes creators and data providers\", folded per payee/knowledge/state with a why column read off the sold anchor (verifier, data provider, or upstream creator); on a local ledger the rows are derived from the settle records and say \"credited with the sale\", and the Teaching tab’s local-ledger alert no longer claims a transfer is pending."
     },
     {
      "n": 316,
@@ -1462,7 +1465,10 @@
      "evidence": "critic-buytab-nodeb-en-1280.png (the note IS on the buy tab); AccountPage.tsx:133; public.ts:183.",
      "user_cost": "The largest number a node operator sees — their balance — is the one with no provenance label, on a chain whose tokens are worth nothing.",
      "fix": "Derive `network_kind` (local / testnet / mainnet) from the provider and apply one consistent label to every AIN figure, including the wallet total and the terms.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": false,
+     "fixed_by": "5075436",
+     "fixed_note": "PARTIAL — the wallet balance now carries a label derived from the ledger provider (local dev chain / testnet / mainnet / unknown) with the endpoint beside it, instead of price.ain_note in a title=. The landing figures and /terms 2.4 are LandingPage/TermsPage/public.ts and are untouched."
     }
    ]
   },
@@ -1532,7 +1538,10 @@
      "evidence": "api.ts:301; detail.ts:49-50; market.ts:576-627. Not reported in any earlier review.",
      "user_cost": "A seller picks a revenue model the product does not implement, and a buyer is told they are paying by the hour when they paid once — the two models that would make serving other people's knowledge profitable exist only as words.",
      "fix": "Either implement metering (a `usage` record per applied hour or per answered request, settled in batches against the buyer's balance) or remove both options from the form and the labels until it exists.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": false,
+     "fixed_by": "94449c5",
+     "fixed_note": "PARTIAL — the /new-patch billing select is gone and the sale is described as one payment per download. The identical select on the draft-edit form (ManagePage.tsx:360-365) and detail.ts’s f.billingLabel for anchors already carrying those models are other groups’ files and still offer/print them."
     },
     {
      "n": 361,

@@ -891,7 +891,10 @@
      "evidence": "Live: `ainize publish … --license banana-9000` accepted with no warning, and `GET /api/patches/adv-v1` returns `\"license\":\"banana-9000\"` in the sealed anchor, served to anonymous callers. packages/e2e/results/ux2/publisher-path-web-02.txt: the License field probe returns `{\"found\":true,\"helperText\":\"License\"}` — the helper text is the label.",
      "user_cost": "The one permanent legal decision in the flow is made with zero information. A publisher either types something meaningless that buyers read as terms of sale, or silently grants a licence whose text they have never seen. (The teach publish sheet has the opposite defect — the first review's item 40, five raw SPDX identifiers with no plain-language gloss — so the two publishing surfaces fail in opposite directions.)",
      "fix": "Make it a Select with the same five options the teach sheet offers, each with a one-line plain-language gloss and an \"Other (free text)\" escape, and add `op.new.license.helper` saying the choice is permanent and shown to every buyer. Show the default's actual text inline when the field is empty (\"leave blank to use this node's standard terms: …\") instead of only on the buyer's page. Fill in the CLI describe with the accepted values.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "94449c5",
+     "fixed_note": "License is a select carrying the teach sheet’s five identifiers with a plain-language gloss each, an \"Other\" free-text escape, and the node’s default terms (detail.ov.license_default itself) shown inline while the field is left empty."
     },
     {
      "n": 162,
@@ -903,7 +906,10 @@
      "evidence": "Live on node-a, the catalogue the publisher would be pricing against: `krx-all-2761` 25 AIN, `krx-all-2761-ep12` 10 AIN, `krx-all-2761-ep6` 5 AIN, `pixelplus-087600` 0.1 AIN (critique2-verify.txt §7). A publisher replacing the 25 AIN flagship with a new version and not touching the price field ships it at 0.1.",
      "user_cost": "Price is one of the three decisions frozen at announce, and the publisher makes it with no information at all: no idea what comparable knowledge sells for on this node, what the unit is worth, or that a default they never saw is about to undercut their own previous version by 250×.",
      "fix": "Show the node's own price distribution beside the field (`this node: 0.1 – 25 AIN, median 7.5 · 4 listed`) from data `/api/catalog` already returns, and pre-fill from the superseded item when a same-schema overlap exists. State the unit and that the price cannot change after announce, in both the helper and the CLI describe. Name the default in `--help`.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "94449c5",
+     "fixed_note": "The price field now shows this node’s own range, median and count from /api/catalog, plus the item on the same subject this one would replace with a button that matches its price; the helper says the price is paid once and frozen at publish."
     },
     {
      "n": 163,
@@ -915,7 +921,10 @@
      "evidence": "Live: `/api/info` returns `royalty_share` on the same document the publish form already fetches. A publish with `--parents adv-v1` printed nothing about the split, and the settlement then sent 30 % of a 10 CREDIT sale to third parties.",
      "user_cost": "The publisher makes a permanent revenue decision — nearly a third of every future sale — from a field whose help never states the rate, while the person who benefits from not knowing is nobody and the person who does know is the buyer reading a different page. (The teach publish sheet has the sibling defect in the first review's item 41, where the contributor share is published beside your name and the consent never mentions it.)",
      "fix": "Read `royalty_share` from `/api/info` — the page already has it — and render it inline as the publisher types: `2 source knowledges named — their creators will receive 30 % of every sale, split between them; you keep 70 %`. Print the same sentence in the CLI's publish confirmation. Put the figure in `op.new.parents.helper` and in the `--parents` describe.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "94449c5",
+     "fixed_note": "Naming parents renders the split as you type — \"2 source knowledge named — 30% of every sale goes to their creators… you keep 70%\" — computed like createDraft (this node’s share, floored by each parent’s promised royalty_share), and an id this node does not know is flagged before the upload."
     },
     {
      "n": 164,
@@ -944,7 +953,10 @@
      "evidence": "Live: `adv-unfunded` declares `queries: 1` and one sample; the same field on `krx-all-2761` declares 2,761. Nothing checks either against the .npz. The `collateral_bound_nat` value appears in the anchor and on the knowledge page as \"Limit declared (≤ 0.1 nat)\" although the publisher was never shown a control for it. (The rendering half of the side-effect claim was the first review's item 55 and is fixed — PatchPage.tsx:301-305 now says \"not yet measured by any verifier\" — so what remains is only the silent default.)",
      "user_cost": "Two numbers the buyer reads as measured properties of the file are, respectively, a number the publisher typed with no cross-check and a number the form picked without telling them. The first review's central theme — the claims outrun the measurements — has its origin here: this is the form where the unmeasured claims are entered.",
      "fix": "Derive a floor for `queries` from the .npz (rows, or the recipe's fact count) and warn when the declared value is wildly larger: `you declared 250,000 facts; this file contains 2,992 memory entries and 1 sample — buyers see 250,000 as a headline number`. Expose `collateral_bound_nat` as a real field with the glossary help and the reference default (0.08), or drop it from `DEFAULT_BENCH` so an unset limit is rendered as unset rather than as a declaration.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "94449c5",
+     "fixed_note": "collateral_bound_nat is out of DEFAULT_BENCH and is a real optional field (reference 0.08, empty = declared nothing); the declared facts count is weighed in the browser against the .npz addrs member, so 250,000 facts in a 2,761-entry file is caught before the anchor is written."
     },
     {
      "n": 166,
@@ -992,7 +1004,10 @@
      "evidence": "All five read or run at this commit: `ainize publish … --branch \"law/KR\"` accepted, `patch get` shows `branch law/KR`, `ainize branch ls` → ``no branches yet — `ngram branch create law/KR --context jurisdiction=KR --patch <id>` ``, `ainize route jurisdiction=KR` → `no branch matches {\"jurisdiction\":\"KR\"}`. `ainize publish … --price -5` → `error: invalid request: name Too small: expected string to have >=2 characters; price price must be a non-negative number`.",
      "user_cost": "Individually small; together they are what a publisher meets in the first five minutes of the one flow that writes to a permanent record, and each one costs a little trust in the surface asking for irreversible decisions.",
      "fix": "(a) Use the glossary term once. (b) Replace the placeholder with a relative example (`./my-knowledge.npz`). (c) Either create the track on first use, or validate `--branch` against `branch ls` and refuse with the create command. (d) Strip the leading path from the message in client.ts:37 when it already matches the issue path. (e) Reword to \"Overlap with verified knowledge on the same subject: {n}\" and colour by state.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": false,
+     "fixed_by": "94449c5",
+     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (c) `--branch` filing into nothing and (d) the doubled word from packages/cli/src/client.ts:37 are CLI work and untouched."
     }
    ]
   }

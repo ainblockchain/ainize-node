@@ -814,7 +814,10 @@
      "evidence": "final-account-1280.png; live page text quoted above.",
      "user_cost": "The operator cannot reconcile revenue at all: 92% of their settlement history is unreachable from the only screen that shows it, and nothing tells them rows are missing.",
      "fix": "Add \"showing 20 of 244\" with paging (or infinite scroll) over the existing endpoint, show absolute timestamps on hover, and add a CSV export - this is the accounting surface.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "5075436",
+     "fixed_note": "Both wallet tables say \"Showing 20 of 244\", page in twenties or open in full, and export the whole table as CSV with ISO timestamps, buyer, scheme and tx hash; the When cell already carried the absolute date on hover."
     },
     {
      "n": 95,
@@ -825,7 +828,10 @@
      "evidence": "DOM probe on /new-patch; multer limit; blob sizes from /api/info.",
      "user_cost": "The operator cannot tell a stalled upload from a slow one, cannot cancel, and can lose a filled-in registration form with no draft.",
      "fix": "Upload with XHR or fetch with a ReadableStream so onprogress can drive a determinate bar with bytes and an estimated time, add a Cancel that aborts the request, and keep the form in sessionStorage until submission succeeds.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "94449c5",
+     "fixed_note": "The .npz goes up over XHR: a role=progressbar with bytes, percent and an ETA measured from the transfer, a Cancel that aborts it, and the form kept in sessionStorage so a refresh only costs the file."
     },
     {
      "n": 96,
