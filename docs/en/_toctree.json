@@ -37,6 +37,7 @@
     "pages": [
       { "page": "reference/cli", "title": "CLI reference" },
       { "page": "reference/http-api", "title": "HTTP API reference" },
+      { "page": "reference/x402", "title": "Paying from your own client" },
       { "page": "reference/schemas", "title": "Schemas" },
       { "page": "reference/config", "title": "Configuration reference" },
       { "page": "reference/errors", "title": "Error codes" }

@@ -37,6 +37,7 @@
     "pages": [
       { "page": "reference/cli", "title": "CLI 명령 레퍼런스", "untranslated": true },
       { "page": "reference/http-api", "title": "HTTP API 레퍼런스", "untranslated": true },
+      { "page": "reference/x402", "title": "내 클라이언트로 결제하기" },
       { "page": "reference/schemas", "title": "데이터 구조", "untranslated": true },
       { "page": "reference/config", "title": "설정 레퍼런스", "untranslated": true },
       { "page": "reference/errors", "title": "오류 코드", "untranslated": true }
