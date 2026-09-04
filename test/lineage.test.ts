@@ -6,7 +6,7 @@
  * overlapping address, the anchor says what it was built on, and the training set becomes a content-addressed blob
  * that is served (or refused) by its access level.
  *
- * Scenarios AZ-238 … AZ-244 (docs/ux-test-scenarios.json).
+ * Scenarios AZ-238 … AZ-245 and AZ-252 (docs/ux-test-scenarios.json).
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';

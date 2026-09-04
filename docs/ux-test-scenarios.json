@@ -8471,7 +8471,7 @@
   "area": "cli",
   "automation": "cli",
   "evidence": [
-   "packages/cli/test/cli.test.ts (dataset get)",
+   "packages/cli/test/cli.test.ts (AZ-248)",
    "packages/cli/src/commands/dataset.ts",
    "docs/lineage-teach-design.md §13, §12.3"
   ]
