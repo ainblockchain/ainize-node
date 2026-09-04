@@ -5400,11 +5400,12 @@ just prose, nothing else
 
 **Expected**
 
-- Order badges 1/2/3, counter '3/3 selected', remaining checkboxes disabled with 'Up to 3 — untick one first.'; URL /chat/krx-all-2761,pixelplus-087600,<third>
+- Order badges 1/2/3, counter '3/3 selected', remaining checkboxes disabled with 'Up to 3 — untick one first.'; URL /chat/krx-all-2761,pixelplus-087600,<third>. REVISED (docs/lineage-teach-design.md §8, §14): tick order no longer decides load order — an add-on's base is added with it (*Loaded with {name}*) and the applied order is derived from the base stacks, ancestors first, so a parent can never end up on top of its child.
 - Overlap alert names krx-all-2761 and pixelplus-087600 with '2,170 memory entries' and says the one ticked last wins
 - 'After loading 3' bubble lists three load times and per-knowledge ✓/✗ chips; the answer contains 087600; POST /api/chat response has patch_ids (3), applied[] (3 entries with applied_ms/was_applied), applied_ms = sum, benchmark_hits per id
 - Three new usage events, one per patch_id, each with data.patch_ids and data.position 1..3; GET /api/runtime applied unchanged afterwards
 - 400 for both malformed bodies (exactly one of patch_id / patch_ids; at most 3 ids)
+- REVISED (docs/lineage-teach-design.md §8.4, §14): "last wins" is still true for two unrelated knowledges that overlap, and the overlap warning still says so — but unloading is no longer a write of the file's own `before`. Every apply journals the value the hook returned, and a remove replays that journal, so taking one knowledge off leaves whatever was under it standing instead of reverting the neighbour to the bare model.
 
 **Evidence**
 
@@ -5412,6 +5413,7 @@ just prose, nothing else
 - `packages/node/src/market.ts chat(), chatOverlaps(); packages/node/src/api.ts POST /api/chat (patch_id | patch_ids refine)`
 - `packages/web/src/components/chat/KnowledgePicker.tsx; packages/web/src/i18n/pages/chat.ts chat.picker.*`
 - `packages/e2e/tests/web-chat-multi.spec.ts 'TM-090 …'`
+- `docs/lineage-teach-design.md §8; packages/node/test/runtime-stack.test.ts (AZ-253 … AZ-257); packages/e2e/scripts/bundle-buy-proof.mjs (AZ-315)`
 
 ### AZ-102 - Contamination banner when the operator has knowledge persistently applied
 
@@ -5527,12 +5529,14 @@ just prose, nothing else
 - 'Checking what the model already knows'; row 1 data-status will_train 'Wrong today — will train' with 'Model said: …'; row 2 already_known 'Already correct — skipped'
 - Quota line 'N of <jobs_per_key_per_day> lessons left today for this key'; after queueing the URL gains ?lesson=<uuid>, the basket is empty again and ainize.teach.jobs mirrors the job id
 - All known → 'Nothing to teach' and no job is created (POST /api/teach/preflight trainable=0)
+- REVISED (docs/lineage-teach-design.md §12.1, §14): when the lesson is being trained ON TOP OF a base, the pre-flight is judged WITH THAT BASE'S QUESTIONS in hand. Two statuses join the two above — `in_base` ("{name} already answers this", decided from the base's own training set, not from a lucky model answer) and `base_conflict` ("{name} answers this differently: …"), which blocks queueing until the creator confirms the change is deliberate.
 
 **Evidence**
 
 - `packages/node/src/api.ts POST /api/teach/preflight (costs one chat-quota unit); packages/node/src/teach.ts preflight`
 - `packages/web/src/components/chat/PreflightList.tsx; packages/web/src/i18n/pages/teach.ts teach.preflight.*`
 - `packages/e2e/tests/web-teach.spec.ts 'AZ-105 …' (formerly AZ-103)`
+- `docs/lineage-teach-design.md §4 SC-6, §12.1; packages/node/src/teach.ts (preflight in_base / base_conflict)`
 
 ### AZ-106 - Job lifecycle with backend 'stub': QUEUED → TRAINING → CHECKING → READY; events kind teach; card copy per state
 
@@ -5587,12 +5591,14 @@ just prose, nothing else
 - URL becomes /chat/pixelplus-087600,taught-<slug>-<hex>?lesson=<id>; the draft is listed under 'Your lessons' and the header says '2 knowledges loaded together'
 - The reply 'After loading 2' contains 087600 (the 픽셀플러스 fixture really teaches the fact)
 - The draft id is NOT in the anonymous picker list (private, visibility test); it only appears in lessons[] for the owner's signed request
+- REVISED (docs/lineage-teach-design.md §14, Story A3): a private draft may be LOADED for comparison and may even be trained ON TOP OF by its own owner — what it may not do is be published as a parent while it is still a draft. Publishing a lesson whose base is an unlisted draft is refused `400 parent_not_listed { id }` naming the draft; announcing the draft first and publishing again succeeds, and `parents` then names it.
 
 **Evidence**
 
 - `packages/node/src/teach.ts lessonsFor(); packages/node/src/api.ts GET /api/chat/patches lessons[] (signed)`
 - `packages/web/src/pages/ChatPage.tsx (Try it now → refetch chat/patches, add draft to the route)`
 - `packages/e2e/tests/web-teach.spec.ts 'AZ-107 …' (formerly AZ-105)`
+- `docs/lineage-teach-design.md §12.1 (base_not_available / parent_not_listed), §14`
 
 ### AZ-108 - Locality gate: a lesson that changes a locality prompt → publish disabled with the gated copy; save still works
 
@@ -5726,10 +5732,12 @@ just prose, nothing else
 **Expected**
 
 - Pass 1: 30% lineage pool to the parent's author (the node); pass 1b: that slice is shared 70/30 with the parent's contributor; pass 2: the child's own contributors (if any) carve the seller remainder; zero-valued lines omitted
+- UNCHANGED by the lineage work (docs/lineage-teach-design.md §11, §14) — with one arithmetic correction beside it: pass 2 now carves EACH seller-side contributor from the fixed remainder `(amount − pool) × share` instead of from a shrinking one, so two 0.5 data providers get 0.5 each of the same base rather than 0.5 and 0.25. Σ payouts ≤ price still holds by construction, and the verification fee (§11, item 325) is taken from the seller side before the contributors.
 
 **Evidence**
 
 - `packages/core/src/catalog.ts royaltySplit pass 1b; packages/core/test/core.test.ts worked examples (spec §7.3)`
+- `docs/lineage-teach-design.md §11 worked examples 1–10; packages/core/test/lineage.test.ts`
 
 ### AZ-115 - Quotas: 4th lesson/day by the same key → 429 quota_key; different key same IP up to 5 → 429 quota_ip
 
@@ -5850,11 +5858,13 @@ just prose, nothing else
 
 - Card: 'This lesson belongs to a different teaching key — only its status is visible' and no question text
 - GET returns {id, status, position?, eta_s?}; save/publish → 403 'not_owner: …'; the web maps it to 'This lesson belongs to a different teaching key. Restore that key to manage it.'
+- REVISED (docs/lineage-teach-design.md §12.1, §14): a stranger's draft cannot be used as a base either — `POST /api/teach/jobs` with someone else's draft in `base_ids` is refused `403 base_not_available`, told apart from `400 base_private` (a published knowledge whose training set is private) and `409 base_not_held` (nothing here holds the body). The redaction rule above is unchanged.
 
 **Evidence**
 
 - `packages/node/src/teach.ts view() (owner/operator vs stranger); packages/node/src/api.ts requireOwner`
 - `packages/e2e/tests/web-teach.spec.ts 'AZ-120 …' (formerly AZ-108)`
+- `docs/lineage-teach-design.md §12.1 (base_not_available / parent_not_listed), §14`
 
 ### AZ-121 - ainize patch import of a downloaded lesson creates a DRAFT and patch apply works
 
@@ -7810,12 +7820,14 @@ Who founded Ainize?,Comcom
 - The response is {facts:[{index, status:'will_train'|'already_known'|'overlaps_listing'|'invalid', base_answer}], trainable, sampled:{checked:3, of:3}, quota:{key_remaining, ip_remaining}} and the checked note reads 'Checked: <trainable> of 3 are wrong today and will train.' — with [data-testid=checks-simulated] absent, because on this run nothing was simulated
 - With the model server down the page shows 'The model server is off or restarting — try again in a minute. Your corrections are kept in this browser.' (the pre-flight wording, not the lesson wording), the API answers 503 'runtime unavailable: …', and every row stays 'Not checked yet' — no fabricated verdict
 - After restoring stubOffline true the same dataset checks again with stub answers, proving the mode switch is what changed
+- REVISED (docs/lineage-teach-design.md §12.1, §14): with `base_ids` in the request the same run also answers `in_base` / `base_conflict` for every question the base already owns, and the parent's questions are sampled inside the same call budget. The rule above still holds without a base, and an unreachable model still gives NO row a verdict.
 
 **Evidence**
 
 - `packages/node/src/teach.ts:514-547 preflight (runtime.status → 503, askChat per fact, known = normAnswer(base).includes(normAnswer(answer)))`
 - `packages/node/src/runtime.ts:162 spawn env (only ENGRAM_API forwarded), :181-198 hookAvailable/status`
 - `packages/web/src/components/chat/teachUtil.ts:28 preflight stage → teach.pre.err_runtime; packages/web/src/i18n/pages/teach.ts:77,380`
+- `docs/lineage-teach-design.md §4 SC-6, §12.1; packages/node/src/teach.ts (preflight in_base / base_conflict)`
 
 ### AZ-160 - 'Already known' from the preview to the settings promise to the result
 
@@ -8555,6 +8567,7 @@ not json at all
 - jobB.training = {effort:"thorough", max_steps:40, eval_every:4, lr:0.002, …}, jobB.parent_job = jobA.id, jobB.dataset.id and dataset.sha256 identical to jobA's (no fork, no re-upload), and jobA is left exactly as it was
 - Re-training a thorough lesson keeps thorough (the bump saturates) rather than failing or silently dropping to balanced
 - The label matches what happens: "Change settings and re-train" / "설정 바꿔 다시 학습" shows the settings screen before anything runs (a lesson with no dataset of its own has no settings screen and re-trains directly)
+- UNCHANGED by the lineage work (docs/lineage-teach-design.md §14): `parent_job` records that this is another ATTEMPT at the same questions, and an attempt is not lineage — no `parents[]` entry, no `base.stack`, no royalty line. Only `--on` / *Build on this* makes a knowledge somebody else's derivative.
 
 **Evidence**
 
@@ -8563,6 +8576,7 @@ not json at all
 - `packages/node/src/api.ts:604-610 (POST /:id/retrain); packages/node/src/teach.ts:754-765 (bump map, parentJob, same dataset)`
 - `packages/web/src/i18n/pages/teach.ts:511-513`
 - `Observed on node-u 2026-09-01 after the fix: clicking it on a balanced READY lesson opens /teach/dataset/<ds>/settings?retrain=<jobA>&effort=thorough with Thorough pre-selected and nothing sent yet; pressing Train there POSTs /api/teach/jobs/<jobA>/retrain and creates a job with training.effort=thorough, max_steps=40, parent_job=<jobA> and the same dataset id + sha256`
+- `docs/lineage-teach-design.md §14 (scenarios whose expectations change)`
 
 ### AZ-181 - The queue: waiting behind another lesson, and being turned away when the trainer has no room
 
@@ -8820,12 +8834,14 @@ prompt,answer,alt_prompt
 - [data-testid=skipped-overlap] reads "{n} more were left out because the same knowledge is already on sale on this node." with n = job.preflight.overlaps
 - job.facts.length equals the questions actually trained, and job.dataset.rows the full upload — the learned/missed tables never claim rows that were skipped
 - On the /teach/dataset/:id pre-flight step the same verdicts read "Already correct — skipped" and "Too close to \"{name}\", which is already on this node — skipped"
+- REVISED (docs/lineage-teach-design.md §12.1, §14): a lesson trained on top of a base accounts for two more groups on the same screen — the base's questions kept as known answers (inherited, never re-trained) and the base answers this lesson deliberately replaced. The rule is unchanged: every question the visitor uploaded is accounted for somewhere on the result screen.
 
 **Evidence**
 
 - `packages/web/src/pages/TeachLessonPage.tsx:232-238 (skipped-known / skipped-overlap, comment: "the node drops questions the model already answers; without this line 24 of 40 simply vanish")`
 - `packages/web/src/i18n/pages/teach.ts:516-517 (teach.res.skipped_known / skipped_overlap), :teach.pre.known / teach.pre.overlap`
 - `packages/node/src/teach.ts:93-96 (job.preflight {known, of, overlaps}), :502-516 preflightSlice()`
+- `docs/lineage-teach-design.md §4 SC-6, §12.1; packages/node/src/teach.ts (preflight in_base / base_conflict)`
 
 ### AZ-189 - Demo-node honesty: the headline says nothing was trained, and "checks were simulated" stays a different admission from "training was fake"
 
@@ -9079,7 +9095,8 @@ prompt,answer,alt_prompt
 - [data-testid=pub-submit] is still disabled with only the two standard consents ticked, and becomes enabled only when all three are ticked
 - The count in the sentence is job.dataset.rows (the whole dataset), not job.facts.length — a 120-row dataset trained down to 100 questions still says 120
 - With a 3-row dataset the third checkbox is absent and two consents are enough
-- The published anchor carries no copy of the questions beyond the benchmark samples the visitor consented to; the dataset content itself is never published (only anchor.dataset = {sha256, rows, source})
+- REVISED by docs/lineage-teach-design.md §14 (D12 overturned): the anchor still carries hashes and ids only (anchor.dataset = {sha256, rows, source, access, license, parents}) plus the ≤ 32 benchmark samples the visitor consented to — but the dataset BYTES are now pinned in the blob store and served under the access level chosen on this same sheet (public / derivative / private). What the publisher picks here is what strangers may read; `private` serves nothing to anybody.
+- The publish sheet's dataset section states the choice in the same breath as the declaration: who may read the questions, under which licence, and that a lesson published with `derivative` access can be built on by other creators (design §4 SC-8).
 
 **Evidence**
 
@@ -9087,6 +9104,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/i18n/pages/teach.ts:154 teach.pub.declaration`
 - `packages/node/src/teach.ts:409-413 policy() → limits.declaration_rows = c.dataset.declarationRows (100 on node-u), :1571 anchor dataset is hash-only`
 - `Observed on node-u: a 120-row lesson rendered the declaration checkbox and Publish stayed disabled at 2/3 consents`
+- `docs/lineage-teach-design.md §6.1, §14 (D12 revision); docs/teachable-dataset-design.md §2 D12 revision note`
 
 ### AZ-197 - Credit: the display name shown in "Shown as" must be the name the public record carries (file door)
 
@@ -9177,8 +9195,8 @@ prompt,answer,alt_prompt
 
 - The header shows the chip "Taught lesson" followed by "Creator node: teachable-u · Data provider: {name or 'Taught by a visitor'} (70%)", the link "This data provider's page →" (→ /teacher/<signer address>) and the button "Use it yourself →" (switches to the Buy tab)
 - The catalog card [data-testid=taught-chip] shows the same chip plus "Taught by {name}" / "Taught by a visitor" and its own "Use it yourself →" (→ /chat/<id>)
-- The page shows the dataset provenance the anchor carries — dataset fingerprint (sha256), question count and where it came from (uploaded file / a conversation / a sample) — labelled so a buyer understands the dataset content itself was never published
-- GET /api/patches/<patch_id> confirms anchor.origin = 'teach', anchor.dataset = {sha256, rows, source} and anchor.recipe.dataset = {sha256, rows, revision, source, name}; the two sha256 values are identical, and neither carries any question text beyond the benchmark samples
+- The page shows the dataset provenance the anchor carries — fingerprint (sha256), question count, where it came from — and, since the D12 revision (docs/lineage-teach-design.md §14), WHO MAY READ IT: the access level and licence, with the training-set block offering the questions themselves when access is public or derivative (SC-10). A private set says so and names the only thing that is public in every case: the benchmark samples on the record.
+- GET /api/patches/<patch_id> confirms anchor.origin = 'teach' and anchor.dataset = {sha256, rows, source, access, license, parents} (access/license/parents added by the lineage work); anchor.recipe.dataset = {sha256, rows, revision, source, name} and the two sha256 values are identical. The anchor still carries no question text beyond the benchmark samples — the bytes live in the blob store, served under `access`, not on the record.
 - Clicking "This data provider's page →" lands on /teacher/<address>, which lists the lesson with its status and earnings (Earned / Paid / Pending) from GET /api/teacher/:address
 
 **Evidence**
@@ -9188,6 +9206,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/i18n/pages/teach.ts:229-236 (detail.taught_by / taught_by_anon / people / taught_badge / use_yourself / published_by / teacher_page)`
 - `packages/core/src/types.ts:112-119 PatchAnchor.dataset (hash-only provenance) and :136-137 PatchRecipe.dataset; packages/node/src/teach.ts:1556-1571 sets both at draft creation`
 - `Observed on node-u 2026-09-01 after the fix: the Overview tab renders “The data it was taught from” with Dataset fingerprint <12 hex>, “3 questions” and “Uploaded file”, above the note “The questions and answers themselves were never published — only the sample questions below are on the record.”`
+- `docs/lineage-teach-design.md §5.1, §6.1, §12.3 (GET /api/patches/:id/dataset)`
 
 ### AZ-200 - "My datasets and lessons": dataset-first cards with fingerprint, source, retention and the four actions
 
