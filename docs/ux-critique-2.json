@@ -790,7 +790,10 @@
      "evidence": "A deliberately wrong benchmark went REJECTED with two FAIL rows; the complete attestation the author receives is `{\"patch_id\":\"adv-fail\",\"verifier\":\"0x2d73b0…\",\"verifier_name\":\"node-b\",\"patch_sha256\":…,\"benchmark_hash\":…,\"score\":{\"free_generation\":\"0/2\"},\"passed\":false,\"verified_on\":\"vllm:Qwen3.8-Flash-Next\",\"restarts_detected\":0,\"stake\":\"5\",\"created_at\":…,\"sig\":…}` — no prompt, no expected answer, no model output. packages/e2e/results/ux2/publisher-path-web-05-rejected.txt: the manage page shows \"Failed verification / executed 0/2 passed · 3 result(s)\" and three FAIL · 0/1 rows with no reason anywhere on the page, while the *verifier's* own `/api/events` held `details: [{\"prompt\":\"capital of Mars? \",\"expect\":\"Olympus\",\"got\":\"\",\"hit\":false}]`.",
      "user_cost": "The single most important moment in the publisher's life — my knowledge was rejected — hands them a fraction and no debugging information, on an anchor that is permanent and an id that is burned. The only way to see the model's answer is to self-verify on your own node, which is the trust hole of item 146.",
      "fix": "Add `failures?: {prompt, expect, got}[]` (≤5 items, `got` truncated to 120 chars) to the Attestation body, sign it with the rest, and render it inline under each FAIL row and in `ainize patch get`. Retitle the section \"Failed verification\" with one sentence: \"Two verifiers ran your benchmark on the real model and the answers did not match. The anchor is permanent; publish a corrected version under a new id\" — with a button that opens /new-patch pre-filled.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "19d01e1, 25856eb",
+     "fixed_note": "The attestation body now carries up to five of the questions the run got wrong with the model's own answer, signed with the rest, and `ainize patch get` and the knowledge page print them under the FAIL row with what to do next."
     },
     {
      "n": 156,

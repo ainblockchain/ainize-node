@@ -408,7 +408,10 @@
      "user_cost": "A base creator's 'automatic 30 %' is a courtesy of the person selling on top of her: any derivative seller can zero it in one config line. On an AIN ledger this is real money, and the 'public record' shows nothing wrong because the record was written by the party who chose 0.",
      "fix": "Make the share part of the anchor, not the node: at `createDraft` write `royalty_share` (a network minimum from a shared constant, or the max of every parent anchor's declared share) into the child anchor; `settlePayment` uses `entry.anchor.royalty_share`; verifiers/peers reject a settle record whose `royalty` map ≠ `royaltySplit(anchor, map, amount, anchor.royalty_share)` (log `settle_split_mismatch`, exclude from balances). Render the share on the lineage tab from the anchor.",
      "effort": "M",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "45d3134, 60f7477",
+     "fixed_note": "`royalty_share` is written into the anchor at createDraft as max(network floor 0.3, this node's config, every parent's promise), royaltyPlan reads it from the record instead of the selling node's config, and the lineage tab prints the anchor's promise rather than the viewing node's setting."
     },
     {
      "n": 192,
@@ -422,7 +425,10 @@
      "user_cost": "A base creator whose knowledge underpins a daily feed is paid half from day 2 and nothing from day 18, with every screen still saying 'the original creators automatically receive a share'. Data providers are paid amounts they cannot reconcile with the one percentage they were shown.",
      "fix": "Decide and document the chain rule in one place (docs/lineage-teach-design.md §11) and make the code match it: exclude same-author ancestors from the *count* when folding them back (so a version chain does not dilute outsiders), replace the depth-16 cut with a visited-set walk over the whole chain or an explicit `ancestors_truncated` flag that is rendered, and add the two-parent, 20-deep and provider-on-ancestor cases to packages/core/test/core.test.ts. Print the provider rule where the share is set (`data-provider share 50 % of this node's share — also of this node's lineage share from knowledge built on it`).",
      "effort": "M",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "45d3134",
+     "fixed_note": "The lineage walk lost the depth-16 cut for a cycle-safe queue and no longer counts the seller's own ancestors as payees or divisors, so a 20-day chain still pays the base creator 3 of 10 on day 20; a provider credited on the seller's own earlier version is paid from the seller side instead, docs/lineage-teach-design.md §11 was rewritten to match and the two-parent, 20-deep and provider-on-ancestor cases are in core.test.ts."
     },
     {
      "n": 193,
@@ -1155,7 +1161,10 @@
      "user_cost": "After item 241 the publisher follows the product's own advice, files a challenge, reads a green tick, and waits for a re-run that never comes; the day's bake stays VERIFYING until a third verifier appears.",
      "fix": "verifier.ts:52: re-run when the newest challenge record is newer than this node's attestation, for any status in ANNOUNCED/VERIFYING/LISTED/CHALLENGED; catalog.ts: set `open_challenge` on non-listed entries too. CLI: when the target is not sellable print `krx-codes-2026-09-02 is VERIFYING (1/2) — asking node-c to re-run` instead of `off sale`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "45d3134, 19d01e1, 25856eb",
+     "fixed_note": "deriveCatalog sets `open_challenge` on entries that were never LISTED and the verifier round answers an open challenge whatever the status is, so a bake stuck at 1/2 with one FAIL can be re-verified; the CLI reports 'VERIFYING (1/2) — the verifiers are asked to run it again' instead of 'off sale' for something that was never on sale."
     },
     {
      "n": 243,

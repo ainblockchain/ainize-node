@@ -76,7 +76,10 @@
    "n": 326,
    "title": "Anyone who says they are a verifier downloads every knowledge body for free — the claim is an unsigned POST, and 91 of 132 node records on the demo chain already make it",
    "flow": "D",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "45d3134, 60f7477, 473d2bc",
+   "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded."
   },
   {
    "n": 327,
@@ -94,25 +97,37 @@
    "n": 325,
    "title": "Verifying is unpaid work: 501 attestations and 2,765 AIN of sales on the demo chain, and not one credit has ever reached a verifier",
    "flow": "D",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "45d3134, 25856eb",
+   "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns."
   },
   {
    "n": 309,
    "title": "One creator spelled two ways is paid once: 3 of 4.5 AIN never leaves the seller, and on a local ledger the rest lands on a string no wallet matches",
    "flow": "C",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "45d3134, 19d01e1",
+   "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount."
   },
   {
    "n": 311,
    "title": "The ancestor's wallet reports the seller's promises as money received: 34 payments and 102 AIN on one screen, 29 payout rows on the seller's, 8 transfers on the chain",
    "flow": "C",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "25856eb, 473d2bc",
+   "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt."
   },
   {
    "n": 310,
    "title": "A sale whose lineage does not resolve on the seller's node pays the seller 100 % and no record says why — 3 of 37 demo sales did exactly that",
    "flow": "C",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "45d3134, 60f7477",
+   "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price."
   },
   {
    "n": 271,
@@ -139,13 +154,19 @@
    "n": 328,
    "title": "A challenge costs nothing, needs no reason, has no limit, and takes a rival off sale for as long as you keep filing them",
    "flow": "D",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "60f7477, 25856eb",
+   "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live."
   },
   {
    "n": 329,
    "title": "'2/2 independent verifiers' can be two processes on one host sharing one model server, and the record cannot tell the difference",
    "flow": "D",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "45d3134, 19d01e1, 25856eb",
+   "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification."
   },
   {
    "n": 357,
@@ -743,7 +764,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-02-buy-chain-x402.txt (one sale's map: `{0x538b…ee43: 1.5, 0x538b…Ee43: 3}`); seller-royalties-anc-04-payout-case-collapse.txt (real Store+Payouts with a fake wallet: 'node-c owed 4.5 AIN … would receive 1.5 AIN'); seller-royalties-anc-03-who-sees-what.txt (owed 26.15, balance +19.15, wallet lists 9.15). Re-verified at HEAD after the §11 pass-2 fix.",
      "user_cost": "The person who contributed the data is paid a third of what the public record says they are owed, and no screen on either node shows a discrepancy.",
      "fix": "Normalise at the boundary: lower-case (or EIP-55) `c.address` in `validateContributors` and `entry.anchor.author` inside `add()`; compare case-insensitively in `creditBalance`, `/api/me/wallet` and `teacherProfile`; sum folded keys in `payouts.enqueue` before inserting; fold keys when reading historical settle records. Unit test: a royalty map with one address in two cases produces one payout row with the summed amount.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "45d3134, 19d01e1",
+     "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount."
     },
     {
      "n": 310,
@@ -756,7 +780,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-16-demo-ain-reconciliation.txt (the first three qa-royalty-child sales, 08-31 06:37–07:33, settled `{node-c: 10}`; all 34 later ones `{node-a: 3, node-c: 7}`) — 9 AIN of the ancestor's money, silently; commit 76d106d fixed one trigger (visibility:test anchors), not the silent fall-through.",
      "user_cost": "An ancestor loses their share whenever the seller's node is briefly out of sync with the parent's anchor, and nothing — not the record, not the wallet, not an event — marks those sales as unresolved.",
      "fix": "Resolve every id in `anchor.parents` before pricing: if any is missing, either refuse with `503 lineage_unresolved: [ids]` or settle with `royalty_unresolved: {id: amount}` and enqueue those amounts against `parent_authors[i]` (the anchor carries the author). Make the over-distribution branch write an `error` event and a failed payout row instead of rewriting the split, and show both states on the seller's payouts screen.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "45d3134, 60f7477",
+     "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price."
     },
     {
      "n": 311,
@@ -769,7 +796,10 @@
      "evidence": "Reproduced today on the demo cluster: qa-royalty-child has 37 settles (34 with a 3 AIN line to node-a); node-a's wallet lists 34 royalty rows = 102 AIN; node-c's `/api/me/payouts` has 29 rows, all 'paid'; the chain's `/transfer/<node-c>/<node-a>` path holds 8 entries; `ain_getTransactionByHash` on node-c's stored hashes returns null. packages/e2e/results/ux4/seller-royalties-anc-16-demo-ain-reconciliation.txt, critic-b-02/03.",
      "user_cost": "The one number that tells a creator whether sharing pays is a claim written by the party that owes the money, with no paid/pending/unverifiable state — and no screen anywhere can reconcile the three totals.",
      "fix": "Reuse `teacherProfile`'s logic for `market.address` in `/api/me/wallet` and `ainize wallet`: per row `{patch_id, via: <my ancestor id>, seller, buyer, amount, state}` where state is `credited` (local), `confirmed` (a matching chain transfer from that seller), `reported` (the seller's payout endpoint says paid) or `unconfirmed (N days)`; totals for owed / confirmed / unconfirmed; add a public signed `GET /p2p/payouts/:settle_hash` so the ancestor's node can ask.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "25856eb, 473d2bc",
+     "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt."
     },
     {
      "n": 312,
@@ -960,7 +990,10 @@
      "evidence": "Recounted from node-b today: 501 attestations (node-b 209, node-c 203), 462 settlements, 2,765.8 AIN of volume, 0 royalty lines naming node-b; packages/e2e/results/ux4/verifier-economy-nodeb-demo-worktime.txt (184 benchmark runs = 54.9 min of exclusive model lock); verifier-economy-demo-nodeb-account-en-1280.png ('0 sale(s) · 0 creator-share payment(s) received' after 203 verifications).",
      "user_cost": "The role every default node takes (config.ts:188) costs a GPU, ~1 GB of other people's bodies and minutes of model lock per item, and earns nothing. A rational operator turns it off, and the quorum every listing needs disappears with it; the economy has a producer, a buyer, an ancestor, and a fourth party that only pays.",
      "fix": "Add `market.verifierShare` (default 0.05–0.1) and a third pass in `royaltySplit(entry, all, amount, share, verifierShare, executed)`: carve it from the seller remainder and split it equally among the addresses of the attestations that currently count for that entry (`deriveCatalog` already computes `executed`, catalog.ts:136). They then land in `settle.royalty`, so `payouts` pays them on AIN and `creditBalance` credits them locally with no new code. Surface it: `verification: [...]` in `/api/me/wallet`, an 'earned from verifying' line in `ainize wallet` and on Account, and the rate on /docs and the verification tab. docs/p2p-compute-market-design.md §7.5 already designs the fee and its strikes — this is that design's first half.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "45d3134, 25856eb",
+     "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns."
     },
     {
      "n": 326,
@@ -973,7 +1006,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-freerider.txt + .mjs (throwaway key 0x313ec2… → `POST /p2p/hello` 200 → `GET /p2p/blob/<sha>` 200, 3,854,446 bytes for a 5-CREDIT body; control without the hello → 402); verifier-economy-chain-nodes.txt ('nodes on chain 132, claiming verifier 91, distinct endpoints 59'); incentives-network-ns-06 (a never-attesting identity fetching a LISTED 20-credit body).",
      "user_cost": "Every seller's paid inventory is downloadable for the cost of one HTTP POST, with no record on any ledger. Honest verifiers are the disguise.",
      "fix": "Sign the hello (require `x-ngram-auth` for purpose `hello:<endpoint>` and use the recovered address, not the body's), and replace the blanket role exemption with a verification lease: a verifier may fetch a body only while the entry is ANNOUNCED/VERIFYING/CHALLENGED and only until it has written a counted attestation for that sha — one fetch per verifier per anchor, logged as an event on the seller. Drop the exemption from the 402 text.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "45d3134, 60f7477, 473d2bc",
+     "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded."
     },
     {
      "n": 327,
@@ -999,7 +1035,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (challenge at 11:54:50 → 423 within a second; challenger's balance unchanged; 75 s off sale; a second challenge posted with an empty body `{}` accepted as 'manual challenge'); demo chain today: 0 challenges in 1,3xx records.",
      "user_cost": "Any node can stop any sale at zero cost, indefinitely; verifiers pay the GPU time; buyers see 'Re-verification requested' on a good item — while an honest challenger who is right gets nothing.",
      "fix": "Make the deterrent procedural: require `reason.length >= 20`, refuse a second challenge by the same address on the same anchor while one is open or within 24 h of a PASS quorum answering it; record the outcome (`upheld` / `dismissed`) and expose per-address counts on `/api/nodes` and the Network page; log a `challenge upheld` event and count it toward the verifier reputation (337); and make the CLI print what a challenge costs others before sending it.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "60f7477, 25856eb",
+     "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live."
     },
     {
      "n": 329,
@@ -1012,7 +1051,10 @@
      "evidence": "All three demo nodes' `/api/info` runtime = http://localhost:8002 (checked today); packages/e2e/results/ux4/verifier-economy-patch-verification-en-1280.png ('2/2 · independent · independent'); verifier-economy-challenge.txt (one attestation carries no `pre_apply` because the patch was already applied by the other run — `wasApplied`, runtime.ts:382-390).",
      "user_cost": "The buyer's only trust signal — the thing the 402 gate checks before taking money — costs a fraudulent seller one extra process, and honest verifiers' work is indistinguishable from it.",
      "fix": "Put an executor fingerprint on every attestation: `executor: {api, model, instance: sha256(api+model+mailbox).slice(0,16)}` from `runtime.status()`; count `passed` per distinct instance in `deriveCatalog`, expose `executors`, and render 'Verified 2/2 (1 executor — both ran on the same model server)'. Refuse to attest when `wasApplied` was true unless the verifier can restore first: a result with no baseline of its own should not count.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "45d3134, 19d01e1, 25856eb",
+     "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification."
     },
     {
      "n": 330,
