@@ -133,3 +133,16 @@ test('AZ-292 Explore shows what is being built on, with the number it is made of
   await expect(fresh).toContainText(CHILD.name);
   await expect(fresh).toContainText(`Needs ${BASE.name}`);
 });
+
+test('AZ-290 @mobile the family is a list on a phone, not a picture of a third of it', async ({ page }) => {
+  await page.goto(`${NODE}/${encodeURIComponent(author.address)}/${encodeURIComponent(BASE.id)}`);
+  await page.getByRole('tab', { name: 'Family tree' }).click();
+  // the drawing is hidden by CSS under 600 px and the same tree is rendered as rows — no viewport probing, so it
+  // also survives a desktop window dragged narrow
+  await expect(page.getByTestId('tree-svg')).toBeHidden();
+  const list = page.getByTestId('tree-list');
+  await expect(list).toBeVisible();
+  await expect(list).toContainText(CHILD.name);
+  await expect(list).toContainText('+2 questions');
+  await expect(page.getByTestId('tree-family')).toBeVisible();
+});
