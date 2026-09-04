@@ -698,6 +698,21 @@ export class TeachWorker {
         const price = entry.anchor.price && Number(entry.anchor.price) > 0 ? `${entry.anchor.price} ${this.market.cfg.market.currency}` : 'free';
         throw new TeachError(400, `knowledge_not_held: "${id}" is listed on this node but its file is not here — get it first (${price}), then teach on top of it`, { id, hint: 'buy', price: entry.anchor.price ?? '0', currency: this.market.cfg.market.currency, name: entry.anchor.name });
       }
+      /**
+       * Holding the file is not the right to use it (item 327). A verifier fetches every body it scores, and this
+       * door was the last one still deciding on blob presence alone: `teach train --patch <someone-else's>` loaded a
+       * verification copy into the model, trained on top of it, and published a lesson whose lineage names it —
+       * without the base ever being bought. The other four doors (apply, the chat picker, chat itself, subscribe)
+       * check the licence; this one now does too, in the same words.
+       */
+      if (caller !== 'worker' && !this.market.hasLicense(entry)) {
+        const price = `${entry.anchor.price} ${entry.anchor.currency}`;
+        const verified = this.market.licenseOf(entry)?.source === 'verification';
+        throw new TeachError(400, verified
+          ? `knowledge_not_licensed: this node holds "${id}" because it verified it — scoring a knowledge is not a licence to teach on top of it. Buy it first (${price}): ainize patch buy ${id}`
+          : `knowledge_not_licensed: "${id}" has not been bought on this node — buy it first (${price}), then teach on top of it: ainize patch buy ${id}`,
+          { id, hint: 'buy', price: entry.anchor.price ?? '0', currency: entry.anchor.currency, name: entry.anchor.name });
+      }
       targets.push({ id, entry, path: blob.path });
     }
     return targets;
@@ -711,13 +726,16 @@ export class TeachWorker {
    * may not see answers `not_listed`, which is deliberately the same answer a typo gets: the check must not be a way
    * to discover that someone else has a private draft.
    */
-  async knowledgeFor(id: string, caller: Caller): Promise<{ id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held'; price?: string; currency?: string; status?: string }> {
+  async knowledgeFor(id: string, caller: Caller): Promise<{ id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held' | 'not_licensed'; price?: string; currency?: string; status?: string }> {
     const entry = await this.market.entry(id).catch(() => null);
     if (!entry || !this.market.mayUseEntry(entry, caller)) return { id, usable: false, reason: 'not_listed' };
     const held = !!this.market.blobs.get(entry.anchor.patch_sha256);
+    // Held is not licensed (item 327): a body this node fetched only to SCORE it may not be taught on top of.
+    const licensed = this.market.hasLicense(entry);
     return {
-      id, name: entry.anchor.name, usable: held, ...(held ? {} : { reason: 'not_held' as const }),
-      price: entry.anchor.price ?? '0', currency: this.market.cfg.market.currency, status: entry.status,
+      id, name: entry.anchor.name, usable: held && licensed,
+      ...(held ? (licensed ? {} : { reason: 'not_licensed' as const }) : { reason: 'not_held' as const }),
+      price: entry.anchor.price ?? '0', currency: entry.anchor.currency, status: entry.status,
     };
   }
 
