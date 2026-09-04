@@ -88,7 +88,7 @@
      "theme": "Obtaining a base",
      "fixed": true,
      "fixed_by": "ef10e48, 1c936ef, 60f7477",
-     "fixed_note": "Every p2p round compares the peer's advertised ledger with this node's and logs the mismatch once; `/api/info.peer_status` and `/api/nodes.peer_status` carry {known, reachable, unreachable, verifiers, ledger_mismatch, mismatched[]}, and /api/nodes rows carry `reachable`, `ledger`, `ledger_mismatch` and `blobs_advertised` (the count that used to read 0 for a peer holding four). `ainize status` prints `peers N known · N answered · N verifiers`, `peers ls` and `nodes` mark the mismatched ledger, `peers add` and `init --peer` say it at the moment the peer is added, the Network page shows the same in EN and KO, and a 404 on GET /api/patches/:id names the peer that has the knowledge and why it can never appear here. Reproduced against a stand-in AIN peer."
+     "fixed_note": "Every p2p round compares the peer's advertised ledger with this node's and logs the mismatch once; `/api/info.peer_status` and `/api/nodes.peer_status` carry {known, reachable, unreachable, verifiers, ledger_mismatch, mismatched[]}, and /api/nodes rows carry `reachable`, `ledger`, `ledger_mismatch` and `blobs_advertised` (the count that used to read 0 for a peer holding four). `ainize status` prints `peers N known · N answered · N verifiers`, `peers ls` and `nodes` mark the mismatched ledger, `peers add` and `init --peer` say it at the moment the peer is added, the Network page shows the same in EN and KO, and a 404 on GET /api/patches/:id names the peer that has the knowledge and why it can never appear here. Reproduced against a stand-in AIN peer. ADVERSARIAL RE-CHECK: reproduced live by starting an AIN-ledger node against the local-ledger cluster — /api/info.peer_status.mismatched names it, all three nodes logged the warning with the remedy, and `peers ls` shows the LEDGER column."
     },
     {
      "n": 171,
@@ -105,7 +105,7 @@
      "theme": "Obtaining a base",
      "fixed": true,
      "fixed_by": "69c17fa",
-     "fixed_note": "contextTargets now answers `unknown_knowledge` (typo or a knowledge this node has never seen — deliberately also what a stranger gets for a private draft) or `knowledge_not_held` (listed here, file missing), each with a hint the browser and the CLI render as a remedy; `teach train` resolves every --patch/--on id through the new GET /api/teach/bases/:id BEFORE uploading and exits 2 without the side effect. Node 473d2bc, CLI 69c17fa."
+     "fixed_note": "contextTargets now answers `unknown_knowledge` (typo or a knowledge this node has never seen — deliberately also what a stranger gets for a private draft) or `knowledge_not_held` (listed here, file missing), each with a hint the browser and the CLI render as a remedy; `teach train` resolves every --patch/--on id through the new GET /api/teach/bases/:id BEFORE uploading and exits 2 without the side effect. Node 473d2bc, CLI 69c17fa. ADVERSARIAL RE-CHECK: reproduced live — a typo’d id is refused before anything is uploaded with its own sentence and remedy. (The third case, a base held only for verification, was still open and is closed in 6955ba1 under item 327.)"
     },
     {
      "n": 172,
@@ -337,8 +337,8 @@
      "effort": "M",
      "theme": "Licence, consent and the publish sheet",
      "fixed": true,
-     "fixed_by": "473d2bc",
-     "fixed_note": "GET /api/teach/jobs/:id/publish-challenge returns `split_preview`: the node runs the same royaltySplit that settles a sale, on a unit price, with the parents named and priced. The sheet renders the real percentages and the amounts at the typed price, drops the 'if you ticked' hedge on a job whose parents it knows, and defaults the price to the parent's; `ainize teach publish` prints the same numbers. Node/web 473d2bc, CLI 69c17fa."
+     "fixed_by": "473d2bc, 7b16d04",
+     "fixed_note": "The publish sheet prices the real split from royaltySplit’s own output (split_preview on the publish challenge), names the parents, and drops the \"if you ticked\" hedge. ADVERSARIAL RE-CHECK confirmed the preview is the settle function’s output and fixed the trap underneath it (7b16d04): royaltyPlan read the sold anchor from the catalogue map rather than from the entry handed in, so any caller passing an un-gossiped anchor — a draft, a fork — walked no lineage and paid the whole pool to the seller."
     },
     {
      "n": 187,
@@ -732,7 +732,7 @@
      "theme": "The runtime stack: apply, remove, watchdog",
      "fixed": true,
      "fixed_by": "86a9285",
-     "fixed_note": "POST /api/patches/:id/apply|remove accept {async:true} and answer 202 with a job the CLI polls (printing what holds the shared model), and a client-side timeout is no longer reported as `cannot reach node` with exit 2 but as \"the node did not answer… it may still be running\" with exit 4."
+     "fixed_note": "POST /api/patches/:id/apply|remove accept {async:true} and answer 202 with a job the CLI polls (printing what holds the shared model), and a client-side timeout is no longer reported as `cannot reach node` with exit 2 but as \"the node did not answer… it may still be running\" with exit 4. ADVERSARIAL RE-CHECK: reproduced live — POST /api/patches/:id/apply {async:true} answers 202 with a job, and GET /api/runtime/jobs reports it failed with the real reason instead of \"cannot reach node\" followed by a silent execution."
     },
     {
      "n": 213,
@@ -1108,7 +1108,7 @@
      "theme": "The publisher's loop: script, train, verify, publish, supersede",
      "fixed": true,
      "fixed_by": "69c17fa",
-     "fixed_note": "`ainize teach publish <job-id> --name … [--price --license --payout --access] --consent-permanent --consent-rights` fetches the challenge, signs the claim with the teaching key the CLI already holds, posts the publish and prints the patch id, the real split, the ledger and the verifier reach; the two consents are never defaulted, and the READY hint and the CLI reference name the command."
+     "fixed_note": "`ainize teach publish <job-id> --name … [--price --license --payout --access] --consent-permanent --consent-rights` fetches the challenge, signs the claim with the teaching key the CLI already holds, posts the publish and prints the patch id, the real split, the ledger and the verifier reach; the two consents are never defaulted, and the READY hint and the CLI reference name the command. ADVERSARIAL RE-CHECK: reproduced live — `ainize teach publish <job>` exists, refuses without both consent flags, and publishes with the split and the verifier reach printed."
     },
     {
      "n": 239,
@@ -1125,7 +1125,7 @@
      "theme": "The publisher's loop: script, train, verify, publish, supersede",
      "fixed": true,
      "fixed_by": "69c17fa",
-     "fixed_note": "`teach train --wait` maps the terminal status to an exit code (0 ready · 4 NEEDS_MORE · 5 failed/cancelled/expired · 6 rejected · 7 timeout · 8 ready-but-unmeasured), --json carries `ok`, and the rendered line no longer prints a green `checks passed` over `taught 0/18`: whether the LESSON stuck is stated first, and `checks.ok` is labelled `side-effect check`."
+     "fixed_note": "`teach train --wait` maps the terminal status to an exit code (0 ready · 4 NEEDS_MORE · 5 failed/cancelled/expired · 6 rejected · 7 timeout · 8 ready-but-unmeasured), --json carries `ok`, and the rendered line no longer prints a green `checks passed` over `taught 0/18`: whether the LESSON stuck is stated first, and `checks.ok` is labelled `side-effect check`. ADVERSARIAL RE-CHECK: the exit table is in EXIT_FOR_STATUS and the READY path exits 0 live. A failing bake could not be produced without an engine, so the non-zero branches stay unexercised."
     },
     {
      "n": 240,
@@ -1142,7 +1142,7 @@
      "theme": "The publisher's loop: script, train, verify, publish, supersede",
      "fixed": true,
      "fixed_by": "84cebf6",
-     "fixed_note": "createDraft refuses `duplicate_body` when a non-DRAFT anchor by this node already carries the same patch_sha256 on the same benchmark schema and branch, naming the existing id, its publish date and its status, with --force to register the bytes again. A forced duplicate cannot retire what came after it either: the supersede cut-off is the date those BYTES first went on the record, not the date of the new anchor. Verified live: the same .npz republished under a new id on the same schema is refused, --force lets it through, and a different schema or branch (deliberately) still coexists."
+     "fixed_note": "createDraft refuses `duplicate_body` when a non-DRAFT anchor by this node already carries the same patch_sha256 on the same benchmark schema and branch, naming the existing id, its publish date and its status, with --force to register the bytes again. A forced duplicate cannot retire what came after it either: the supersede cut-off is the date those BYTES first went on the record, not the date of the new anchor. Verified live: the same .npz republished under a new id on the same schema is refused, --force lets it through, and a different schema or branch (deliberately) still coexists. ADVERSARIAL RE-CHECK: reproduced live — re-publishing the author’s own identical bytes is refused with `duplicate_body` naming the existing id and offering --force."
     },
     {
      "n": 241,
@@ -1176,7 +1176,7 @@
      "theme": "The publisher's loop: script, train, verify, publish, supersede",
      "fixed": true,
      "fixed_by": "45d3134, 19d01e1, 25856eb",
-     "fixed_note": "deriveCatalog sets `open_challenge` on entries that were never LISTED and the verifier round answers an open challenge whatever the status is, so a bake stuck at 1/2 with one FAIL can be re-verified; the CLI reports 'VERIFYING (1/2) — the verifiers are asked to run it again' instead of 'off sale' for something that was never on sale."
+     "fixed_note": "deriveCatalog sets `open_challenge` on entries that were never LISTED and the verifier round answers an open challenge whatever the status is, so a bake stuck at 1/2 with one FAIL can be re-verified; the CLI reports 'VERIFYING (1/2) — the verifiers are asked to run it again' instead of 'off sale' for something that was never on sale. ADVERSARIAL RE-CHECK: reproduced live — a challenge is open whatever the status, the verifiers re-ran it and the challenge_log records dismissed/answered_by; the item returned to sale."
     },
     {
      "n": 243,
@@ -1193,7 +1193,7 @@
      "theme": "The publisher's loop: script, train, verify, publish, supersede",
      "fixed": true,
      "fixed_by": "84cebf6",
-     "fixed_note": "market.announce() refuses a draft with origin 'teach' unless it comes through teach.announceJob(), which is the only path that has checked that the person who taught the lesson published it and that their signed claim verifies; the operator door answers 409 lesson_draft pointing at the lesson page and the Teaching review. Verified live: a draft flipped to origin=teach and announced with `ainize patch announce` was refused with that message and nothing reached the ledger."
+     "fixed_note": "market.announce() refuses a draft with origin 'teach' unless it comes through teach.announceJob(), which is the only path that has checked that the person who taught the lesson published it and that their signed claim verifies; the operator door answers 409 lesson_draft pointing at the lesson page and the Teaching review. Verified live: a draft flipped to origin=teach and announced with `ainize patch announce` was refused with that message and nothing reached the ledger. ADVERSARIAL RE-CHECK: reproduced in packages/node/test/cluster.test.ts — announcing an origin:teach draft through the operator path is refused with `lesson_draft`, and only the teach path (fromTeach) may publish it."
     },
     {
      "n": 244,
@@ -1364,7 +1364,7 @@
      "theme": "The consumer's loop: subscribe, receive, stay current",
      "fixed": true,
      "fixed_by": "17542cd",
-     "fixed_note": "reconcileSubscriptions() runs on the 20-second tick and `ainize branch sync` / POST /api/branches/:name/sync do it on demand: a live cluster showed node-b buying a knowledge added to the track minutes earlier with nobody touching it, and the console, OpenAPI and README copy now describes that instead of promising it."
+     "fixed_note": "reconcileSubscriptions() runs on the 20-second tick and `ainize branch sync` / POST /api/branches/:name/sync do it on demand: a live cluster showed node-b buying a knowledge added to the track minutes earlier with nobody touching it, and the console, OpenAPI and README copy now describes that instead of promising it. ADVERSARIAL RE-CHECK: reproduced live — subscribing to a track bought the item published today and reported it."
     },
     {
      "n": 256,
@@ -1381,7 +1381,7 @@
      "theme": "The consumer's loop: subscribe, receive, stay current",
      "fixed": true,
      "fixed_by": "17542cd",
-     "fixed_note": "subscribe() decides per item from the catalogue (LISTED and sellable, not blob presence), returns what it skipped and why, and the CLI/console print it — a REJECTED or VERIFYING bake this node already held can no longer walk into the serving model."
+     "fixed_note": "subscribe() decides per item from the catalogue (LISTED and sellable, not blob presence), returns what it skipped and why, and the CLI/console print it — a REJECTED or VERIFYING bake this node already held can no longer walk into the serving model. ADVERSARIAL RE-CHECK: reproduced live — `branch add` refuses a DRAFT with `not_listed` naming the verification state and offering --force."
     },
     {
      "n": 257,
@@ -1398,7 +1398,7 @@
      "theme": "The consumer's loop: subscribe, receive, stay current",
      "fixed": true,
      "fixed_by": "17542cd",
-     "fixed_note": "the track resolves to its current set (a version superseded by another member is history: not bought, not loaded), `branch add` refuses anything that is not LISTED without --force, and `branch ls` / the console card show current against the whole history."
+     "fixed_note": "the track resolves to its current set (a version superseded by another member is history: not bought, not loaded), `branch add` refuses anything that is not LISTED without --force, and `branch ls` / the console card show current against the whole history. ADVERSARIAL RE-CHECK: reproduced live — a retired member of a track is not bought and not loaded; the quote prices it at nothing and says why."
     },
     {
      "n": 258,

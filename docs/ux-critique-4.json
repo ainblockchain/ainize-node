@@ -70,7 +70,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "84cebf6",
-   "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one."
+   "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one. ADVERSARIAL RE-CHECK: reproduced live — publishing another node’s exact bytes is refused with duplicate_body, and --force does not override it."
   },
   {
    "n": 326,
@@ -79,7 +79,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "45d3134, 60f7477, 473d2bc",
-   "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded."
+   "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded. ADVERSARIAL RE-CHECK: reproduced live — an unsigned POST /p2p/hello claiming the verifier role is recorded as an endpoint with address null, and GET /p2p/blob/:sha answers 402."
   },
   {
    "n": 327,
@@ -87,8 +87,8 @@
    "flow": "D",
    "severity": "critical",
    "fixed": true,
-   "fixed_by": "86a9285",
-   "fixed_note": "a `licenses` table records where the right to use a body came from and apply/live-test/chat/subscribe require it — a verifier that holds a body because it scored it is refused with \"scoring a knowledge is not a licence to serve it. Buy it first (400 CREDIT)\", verified live and in AZ-260."
+   "fixed_by": "86a9285, 6955ba1",
+   "fixed_note": "A `licenses` row records where the right to use a body came from, and a ’verification’ row is possession only — refused at apply, in the chat picker, in chat and in subscribe. ADVERSARIAL RE-CHECK found the fifth door still open: Teacher.contextTargets decided on blob presence alone, so on a verifier node `teach train --patch <someone-else’s>` loaded a verification copy, trained on top of it and would have published a lesson naming an unbought base. Reproduced live and closed in 6955ba1 (`knowledge_not_licensed`, GET /api/teach/bases/:id gains the matching reason, CLI + browser copy in EN+KO)."
   },
   {
    "n": 344,
@@ -97,7 +97,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "60f7477",
-   "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently."
+   "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently. ADVERSARIAL RE-CHECK: reproduced live against the AIN dev chain — packages/node/test/ain.test.ts now passes end to end, so a real transfer carrying the quote’s transfer_key and a proof over sha256(\"x402-ain:<tx>:<nonce>\") is what redeems the manifest."
   },
   {
    "n": 325,
@@ -106,7 +106,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "45d3134, 25856eb",
-   "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns."
+   "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns. ADVERSARIAL RE-CHECK: reproduced live on the local cluster AND on the AIN dev chain — every settlement’s royalty map names the two verifiers at 0.1 of a 4 CREDIT sale beside the seller’s 3.8."
   },
   {
    "n": 309,
@@ -115,7 +115,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "45d3134, 19d01e1",
-   "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount."
+   "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount. ADVERSARIAL RE-CHECK: covered by the named core test and by creditBalance folding case on the live cluster."
   },
   {
    "n": 311,
@@ -124,7 +124,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "25856eb, 473d2bc",
-   "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt."
+   "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt. ADVERSARIAL RE-CHECK: reproduced live — GET /api/me/wallet separates owed/credited/paid/unconfirmed, names the state per row and reports verification income apart from lineage."
   },
   {
    "n": 310,
@@ -133,13 +133,16 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "45d3134, 60f7477",
-   "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price."
+   "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price. ADVERSARIAL RE-CHECK: covered by the named core test (an unresolved ancestor is paid through parent_authors or held back on the record)."
   },
   {
    "n": 271,
    "title": "A purchase is not idempotent: a retry, a second click or a lost response pays the full price again — and the second payment overwrites the first purchase row",
    "flow": "A",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "a2b3426",
+   "fixed_note": "ADVERSARIAL RE-CHECK: the earlier fixed:true (a5d2d3c) was optimistic and one of the two copies still read open. Reproduced live at HEAD — node-c bought adv-base, then `ainize patch buy adv-base` ran the whole 402 loop again and moved a second 4 CREDIT (96.425 -> 92.525) for a body already on disk. Market.buy now reads this node’s own receipt first (paidFor(): the ledger settlement, else the purchase row) and collects on it; `again: true` / `--again` / the web’s \"pay a second time\" control is the only way to pay twice. Verified live: the second buy leaves the balance untouched, --again still pays, POST /api/patches/:id/buy answers redeemed with total 0."
   },
   {
    "n": 312,
@@ -156,8 +159,8 @@
    "flow": "A",
    "severity": "critical",
    "fixed": true,
-   "fixed_by": "60f7477",
-   "fixed_note": "The 402 and GET /api/patches/:id now carry `requires[]` — the whole base stack, deepest first, each with price, currency, seller, gateway and whether this node is LICENSED for it (holding the bytes is not) — plus `total` and `self_contained`; GET /api/patches/:id/quote answers the same question without buying. market.buy({withRequired}) buys the bases first, one settlement each, and {maxTotal} refuses the family before any money moves. Rendered on the Buy tab ('needs underneath it', 'Buy all 2 · 8 node credit'), printed by `patch buy`/`use`, and compared with the agent's --max-price. Verified live: a delta child of a 5-CREDIT base quoted 8 for the family and bought both."
+   "fixed_by": "60f7477, a2b3426",
+   "fixed_note": "requires[]/total/self_contained on the 402, GET /api/patches/:id and /quote; buy({withRequired,maxTotal}); rendered on the Buy tab and printed by `patch buy`/`use`. ADVERSARIAL RE-CHECK found one residual, fixed in a2b3426: the 402’s `total` came from quoteFor, which subtracts what the ASKING node holds — and the asking node there is the seller, which owns its own bases, so a 5-CREDIT delta over a 4-CREDIT base quoted total 5 with self_contained false to every non-ainize x402 client. The 402 now carries the family LIST price (verified live: total 9); the buyer’s own /quote still subtracts its holdings."
   },
   {
    "n": 328,
@@ -166,7 +169,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "60f7477, 25856eb",
-   "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live."
+   "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live. ADVERSARIAL RE-CHECK: reproduced live — a 3-character reason is refused (400), a second challenge while one is open is refused (409), and a real challenge is logged and answered."
   },
   {
    "n": 329,
@@ -175,7 +178,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "45d3134, 19d01e1, 25856eb",
-   "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification."
+   "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification. ADVERSARIAL RE-CHECK: the counting half is reproduced live — `patch get` prints \"2 attestations without an engine fingerprint\" and the entry carries executors/executors_unknown. The fingerprint against a real engine stays deferred (no engine available)."
   },
   {
    "n": 357,
@@ -184,7 +187,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "17542cd",
-   "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb."
+   "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb. ADVERSARIAL RE-CHECK: reproduced live — `branch subscribe` prints the per-item plan and the total, asks before spending, refuses a non-terminal without --yes, and reports what was actually bought."
   },
   {
    "n": 364,
@@ -193,7 +196,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "60f7477",
-   "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3."
+   "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3. ADVERSARIAL RE-CHECK: reproduced live — GET /api/credit/<never-seen address> answers balance 0 with would_grant, and a grant is recorded, capped and attributed once the address first signs a payment."
   },
   {
    "n": 275,
@@ -201,8 +204,8 @@
    "flow": "A",
    "severity": "critical",
    "fixed": true,
-   "fixed_by": "60f7477",
-   "fixed_note": "The gateway is resolved at buy time instead of trusted from the immutable anchor: the peers this node currently sees first, then the node records, then `gateway_url` as the hint it is, trying each until one answers and saying which did not. GET /api/patches/:id also returns `gateway {url, via, source, last_seen}`, and the Buy tab shows that address (and says the record's is stale, with when the seller last answered) so the purchase address a visitor is told to call is a live one. The agent asks the market node the same question. Verified live: a knowledge announced under http://localhost:3999 was bought from a node listening on 3810 after the record's address failed."
+   "fixed_by": "60f7477, c54a8e2",
+   "fixed_note": "gatewaysFor() resolves the seller from the peer table and the node records, tries the candidates in order, and the frozen address on the record is the last of them. VERIFIED LIVE by moving a publisher from :3895 to :3896 after it announced: the buy went through the peer entry and the dead frozen URL was never reached. ADVERSARIAL RE-CHECK added the two surfaces that still printed the frozen address (requires[] in the 402 and the quote, and elsewhere[] in the chat picker) — c54a8e2."
   },
   {
    "n": 297,
@@ -211,7 +214,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "86a9285",
-   "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table."
+   "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table. ADVERSARIAL RE-CHECK: reproduced live — a body held only because this node verified it appears under elsewhere[] with reason verify_only, not in items[]."
   },
   {
    "n": 314,
@@ -226,7 +229,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "473d2bc",
-   "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa."
+   "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa. ADVERSARIAL RE-CHECK: reproduced live — `teach publish` prints \"settles in CREDIT on this node’s own ledger — development play money, not withdrawable\", and the sheet renders price.credit_note."
   },
   {
    "n": 358,
@@ -235,7 +238,7 @@
    "severity": "critical",
    "fixed": true,
    "fixed_by": "17542cd",
-   "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner."
+   "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner. ADVERSARIAL RE-CHECK: reproduced live — node-b creating node-a’s track name is refused with branch_exists naming the owner."
   }
  ],
  "flows": [
@@ -256,8 +259,8 @@
      "fix": "In `requirementsFor` and `GET /api/patches/:id` return `requires: [{id, name, price, currency, gateway_url, author, held}]` computed from `anchor.parents` (walk to depth 16 like `royaltySplit`) plus `derivation.kind` and `base.export`, and render one sentence from them on the Buy tab (`packages/web/src/pages/PatchPage.tsx:494-506`): 'complete on its own — includes its base's 2,992 rows' or 'needs pixel-parent (5 CREDIT, node-a) — buy both'. `market.buy({withRequired:true})` buys ancestors deepest-first with one settle record each and returns `purchases[]` + `total`; `patchUse` prints the quote and asks (or `--yes`); the agent compares the TOTAL with `--max-price`.",
      "effort": "L",
      "fixed": true,
-     "fixed_by": "60f7477",
-     "fixed_note": "The 402 and GET /api/patches/:id now carry `requires[]` — the whole base stack, deepest first, each with price, currency, seller, gateway and whether this node is LICENSED for it (holding the bytes is not) — plus `total` and `self_contained`; GET /api/patches/:id/quote answers the same question without buying. market.buy({withRequired}) buys the bases first, one settlement each, and {maxTotal} refuses the family before any money moves. Rendered on the Buy tab ('needs underneath it', 'Buy all 2 · 8 node credit'), printed by `patch buy`/`use`, and compared with the agent's --max-price. Verified live: a delta child of a 5-CREDIT base quoted 8 for the family and bought both."
+     "fixed_by": "60f7477, a2b3426",
+     "fixed_note": "requires[]/total/self_contained on the 402, GET /api/patches/:id and /quote; buy({withRequired,maxTotal}); rendered on the Buy tab and printed by `patch buy`/`use`. ADVERSARIAL RE-CHECK found one residual, fixed in a2b3426: the 402’s `total` came from quoteFor, which subtracts what the ASKING node holds — and the asking node there is the seller, which owns its own bases, so a 5-CREDIT delta over a 4-CREDIT base quoted total 5 with self_contained false to every non-ainize x402 client. The 402 now carries the family LIST price (verified live: total 9); the buyer’s own /quote still subtracts its holdings."
     },
     {
      "n": 271,
@@ -272,8 +275,8 @@
      "fix": "Short-circuit in `market.buy`: if `store.getPurchase(id)` exists or `entry.settlements.some(s => s.buyer === this.address)`, fetch the manifest through the free signed path and record no new settle (return `{already:true}` from `POST /api/patches/:id/buy` unless `{force:true}`). Make `putPurchase` append rather than replace (a `purchases` history keyed by tx). In the web replace 'Buy again' with 'Download again (free)' / 'Load into model' (PatchPage.tsx:529) and keep a second licence behind an explicit confirm. In the agent, check `patches/<sha>.npz` and the purchases file (289) before touching the gateway.",
      "effort": "M",
      "fixed": true,
-     "fixed_by": "a5d2d3c",
-     "fixed_note": "Web half only. \"Buy again\" is gone: a purchased knowledge now shows what was paid and when (amount, time, tx from /api/me/purchases), offers \"Load into the model\" as the primary action, and keeps a second payment behind a confirm that names the price and says the earlier tx hash will be overwritten. The idempotent market.buy, the append-only purchases table and the agent's ownership check remain open and belong to the node/agent packages.",
+     "fixed_by": "a2b3426",
+     "fixed_note": "ADVERSARIAL RE-CHECK: the earlier fixed:true (a5d2d3c) was optimistic and one of the two copies still read open. Reproduced live at HEAD — node-c bought adv-base, then `ainize patch buy adv-base` ran the whole 402 loop again and moved a second 4 CREDIT (96.425 -> 92.525) for a body already on disk. Market.buy now reads this node’s own receipt first (paidFor(): the ledger settlement, else the purchase row) and collects on it; `again: true` / `--again` / the web’s \"pay a second time\" control is the only way to pay twice. Verified live: the second buy leaves the balance untouched, --again still pays, POST /api/patches/:id/buy answers redeemed with total 0.",
      "status": "fixed",
      "verified": {
       "at": "2026-09-04",
@@ -295,7 +298,7 @@
      "effort": "S",
      "fixed": true,
      "fixed_by": "60f7477",
-     "fixed_note": "settlePayment validates amount, nonce, signature and balance BEFORE it spends the nonce, so a rejected attempt no longer burns the quote; a nonce that a settlement did consume answers 'nonce … was consumed by an earlier attempt — GET <resource> again for a new quote' instead of 'unknown or expired nonce', and the requirement says `single_use: true`. Verified live: an under-payment and a bad signature on one nonce, then the correct payment on that same nonce → 200."
+     "fixed_note": "settlePayment validates amount, nonce, signature and balance BEFORE it spends the nonce, so a rejected attempt no longer burns the quote; a nonce that a settlement did consume answers 'nonce … was consumed by an earlier attempt — GET <resource> again for a new quote' instead of 'unknown or expired nonce', and the requirement says `single_use: true`. Verified live: an under-payment and a bad signature on one nonce, then the correct payment on that same nonce → 200. ADVERSARIAL RE-CHECK: reproduced live — a bad signature and an under-price attempt both left the nonce spendable, and the good payment on that same nonce went through."
     },
     {
      "n": 273,
@@ -311,7 +314,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "60f7477",
-     "fixed_note": "A payment presented again by the payer is redeemed again — same settlement, fresh manifest, `x-payment-response {replayed:true}`, no second charge — and only a stranger's replay is refused. The recovery path has a name now: `ainize patch download <id>` / POST /api/patches/:id/collect re-presents the recorded payment, or fetches the body over the signed /p2p/blob path the settlement already unlocks, and the Buy tab's 'no free re-download exists' warning is now a 'Download again (free)' button. Verified live: manifest re-issued after a dropped response, and a forgotten 3.9 MB body collected back, with one settle record throughout."
+     "fixed_note": "A payment presented again by the payer is redeemed again — same settlement, fresh manifest, `x-payment-response {replayed:true}`, no second charge — and only a stranger's replay is refused. The recovery path has a name now: `ainize patch download <id>` / POST /api/patches/:id/collect re-presents the recorded payment, or fetches the body over the signed /p2p/blob path the settlement already unlocks, and the Buy tab's 'no free re-download exists' warning is now a 'Download again (free)' button. Verified live: manifest re-issued after a dropped response, and a forgotten 3.9 MB body collected back, with one settle record throughout. ADVERSARIAL RE-CHECK: reproduced live — the payer replayed the identical X-PAYMENT and got the manifest back with x-payment-response {replayed:true} and no second charge."
     },
     {
      "n": 274,
@@ -327,7 +330,7 @@
      "effort": "S",
      "fixed": true,
      "fixed_by": "60f7477",
-     "fixed_note": "The intent is written before the money: a `pending_payments` row exists from the moment the node has a quote, carries the tx hash the instant the transfer returns and is only marked settled when a manifest is in hand; the next buy re-presents that payment instead of paying again, the buy error names the row and `ainize patch download`, and GET /api/me/pending-payments shows what is owed. The agent does the same in <home>/pending-payments.jsonl and prints the partial result with `--json` (error, tx hash, pending file) instead of one red line. Verified live against a proxy that settled upstream and dropped the response: two runs, one settle record, one body, on both the node and the agent path."
+     "fixed_note": "The intent is written before the money: a `pending_payments` row exists from the moment the node has a quote, carries the tx hash the instant the transfer returns and is only marked settled when a manifest is in hand; the next buy re-presents that payment instead of paying again, the buy error names the row and `ainize patch download`, and GET /api/me/pending-payments shows what is owed. The agent does the same in <home>/pending-payments.jsonl and prints the partial result with `--json` (error, tx hash, pending file) instead of one red line. Verified live against a proxy that settled upstream and dropped the response: two runs, one settle record, one body, on both the node and the agent path. ADVERSARIAL RE-CHECK: reproduced live — after deleting the body, `ainize patch download` collected it on the recorded settlement with no new payment and the seller-side balance did not move."
     },
     {
      "n": 275,
@@ -342,8 +345,8 @@
      "fix": "Resolve the gateway at buy time instead of trusting the anchor: prefer the peer-table endpoint for `anchor.author` (`store.listPeers()` / `ledger.nodes()`), fall back to `anchor.gateway_url`, and treat the anchor field as a hint. Add an `endpoint` record kind (or reuse the node record, already keyed by address) that a node re-publishes on start, and show 'seller last seen …' on the Buy tab (276). Add `ainize patch relist <id>` for the case where the identity itself changed.",
      "effort": "M",
      "fixed": true,
-     "fixed_by": "60f7477",
-     "fixed_note": "The gateway is resolved at buy time instead of trusted from the immutable anchor: the peers this node currently sees first, then the node records, then `gateway_url` as the hint it is, trying each until one answers and saying which did not. GET /api/patches/:id also returns `gateway {url, via, source, last_seen}`, and the Buy tab shows that address (and says the record's is stale, with when the seller last answered) so the purchase address a visitor is told to call is a live one. The agent asks the market node the same question. Verified live: a knowledge announced under http://localhost:3999 was bought from a node listening on 3810 after the record's address failed."
+     "fixed_by": "60f7477, c54a8e2",
+     "fixed_note": "gatewaysFor() resolves the seller from the peer table and the node records, tries the candidates in order, and the frozen address on the record is the last of them. VERIFIED LIVE by moving a publisher from :3895 to :3896 after it announced: the buy went through the peer entry and the dead frozen URL was never reached. ADVERSARIAL RE-CHECK added the two surfaces that still printed the frozen address (requires[] in the 402 and the quote, and elsewhere[] in the chat picker) — c54a8e2."
     },
     {
      "n": 276,
@@ -638,7 +641,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "86a9285",
-     "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table."
+     "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table. ADVERSARIAL RE-CHECK: reproduced live — a body held only because this node verified it appears under elsewhere[] with reason verify_only, not in items[]."
     },
     {
      "n": 298,
@@ -654,7 +657,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "473d2bc",
-     "fixed_note": "GET /api/teach/policy, the publish challenge and the teacher profile now carry `verification {quorum, peers, reachable, verifiers}` (peers that answered a recent p2p round and advertise the verifier role; this node's own attestation is reported separately and never counted). Below quorum the publish sheet replaces the 'goes on sale when 2 agree' promise with what will really happen and requires an explicit 'publish anyway', the done state says it too, and the teacher page and `teach status` show per-lesson waiting time and verifier count. Node/web 473d2bc, CLI 69c17fa."
+     "fixed_note": "GET /api/teach/policy, the publish challenge and the teacher profile now carry `verification {quorum, peers, reachable, verifiers}` (peers that answered a recent p2p round and advertise the verifier role; this node's own attestation is reported separately and never counted). Below quorum the publish sheet replaces the 'goes on sale when 2 agree' promise with what will really happen and requires an explicit 'publish anyway', the done state says it too, and the teacher page and `teach status` show per-lesson waiting time and verifier count. Node/web 473d2bc, CLI 69c17fa. ADVERSARIAL RE-CHECK: reproduced live — GET /api/teach/policy carries verification {quorum, peers, reachable, verifiers, self_verifier} and `teach publish` prints \"3 verifier peer(s) reachable — it goes on sale when 2 of them agree\"."
     },
     {
      "n": 299,
@@ -670,7 +673,7 @@
      "effort": "S",
      "fixed": true,
      "fixed_by": "473d2bc",
-     "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa."
+     "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa. ADVERSARIAL RE-CHECK: reproduced live — `teach publish` prints \"settles in CREDIT on this node’s own ledger — development play money, not withdrawable\", and the sheet renders price.credit_note."
     },
     {
      "n": 300,
@@ -809,7 +812,7 @@
      "effort": "S",
      "fixed": true,
      "fixed_by": "45d3134, 19d01e1",
-     "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount."
+     "fixed_note": "royaltyPlan sums addresses case-insensitively under their first-seen spelling, payouts.enqueue folds the spellings before inserting a row, and creditBalance and /api/me/wallet compare case-insensitively — one person in two spellings is now one payee with the summed amount. ADVERSARIAL RE-CHECK: covered by the named core test and by creditBalance folding case on the live cluster."
     },
     {
      "n": 310,
@@ -825,7 +828,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "45d3134, 60f7477",
-     "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price."
+     "fixed_note": "An unresolved parent is paid through `parent_authors[i]`, or held back and written onto the settlement as `royalty_unresolved` with an error event on the seller — never folded into the seller's own line — and an over-distribution is scaled proportionally instead of paying the seller the whole price. ADVERSARIAL RE-CHECK: covered by the named core test (an unresolved ancestor is paid through parent_authors or held back on the record)."
     },
     {
      "n": 311,
@@ -841,7 +844,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "25856eb, 473d2bc",
-     "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt."
+     "fixed_note": "Every wallet royalty row carries its own state — credited / paid / pending / failed / unconfirmed — asked of the seller's node through the new public GET /p2p/payouts/:hash, with owed / in-balance / transferred / unconfirmed totals on Account and in `ainize wallet`, so a promise can no longer be read as a receipt. ADVERSARIAL RE-CHECK: reproduced live — GET /api/me/wallet separates owed/credited/paid/unconfirmed, names the state per row and reports verification income apart from lineage."
     },
     {
      "n": 312,
@@ -1035,7 +1038,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "45d3134, 25856eb",
-     "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns."
+     "fixed_note": "The attestations that count for an entry are paid `verifier_share` (0.05 network floor) of the seller side of every sale: verified live on a throwaway cluster, where a 10-CREDIT sale settled {verifier 0.25, verifier 0.25, seller 9.5} and a lineage sale settled {parent author 3.175, verifier 0.175, seller 6.65}; the wallet, `ainize wallet` and the family-tree money card print what verifying earns. ADVERSARIAL RE-CHECK: reproduced live on the local cluster AND on the AIN dev chain — every settlement’s royalty map names the two verifiers at 0.1 of a 4 CREDIT sale beside the seller’s 3.8."
     },
     {
      "n": 326,
@@ -1051,7 +1054,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "45d3134, 60f7477, 473d2bc",
-     "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded."
+     "fixed_note": "POST /p2p/hello records an address and its roles only when the caller signs `hello:<endpoint>`, and the blanket verifier exemption became a verification lease — the entry must be waiting for that verifier, the lease ends when its attestation lands, at most three fetches, each logged on the seller. Verified live: a throwaway key claiming the role gets 402 instead of the body, and its claim is not recorded. ADVERSARIAL RE-CHECK: reproduced live — an unsigned POST /p2p/hello claiming the verifier role is recorded as an endpoint with address null, and GET /p2p/blob/:sha answers 402."
     },
     {
      "n": 327,
@@ -1066,8 +1069,8 @@
      "fix": "Separate possession from licence: a `licenses` table (`patch_id`, source: purchase | author | verification) written by `putPurchase`, `announce` and the verifier; `applyPatch`, `testablePatches`, `chat` and `subscribe` require `hasLicense(patch_id)`, with verification-sourced copies usable only inside `runtime.verify`. Keep the message that already exists ('buy it first') but make it true, and show sellers 'held by N verifier nodes (verify-only)' on Manage.",
      "effort": "M",
      "fixed": true,
-     "fixed_by": "86a9285",
-     "fixed_note": "a `licenses` table records where the right to use a body came from and apply/live-test/chat/subscribe require it — a verifier that holds a body because it scored it is refused with \"scoring a knowledge is not a licence to serve it. Buy it first (400 CREDIT)\", verified live and in AZ-260."
+     "fixed_by": "86a9285, 6955ba1",
+     "fixed_note": "A `licenses` row records where the right to use a body came from, and a ’verification’ row is possession only — refused at apply, in the chat picker, in chat and in subscribe. ADVERSARIAL RE-CHECK found the fifth door still open: Teacher.contextTargets decided on blob presence alone, so on a verifier node `teach train --patch <someone-else’s>` loaded a verification copy, trained on top of it and would have published a lesson naming an unbought base. Reproduced live and closed in 6955ba1 (`knowledge_not_licensed`, GET /api/teach/bases/:id gains the matching reason, CLI + browser copy in EN+KO)."
     },
     {
      "n": 328,
@@ -1083,7 +1086,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "60f7477, 25856eb",
-     "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live."
+     "fixed_note": "A challenge needs a 20-character reason, one address may hold only one open challenge per anchor and cannot re-file for 24 h after a re-run dismissed one, every challenge records upheld/dismissed on the entry, and the CLI prints what a challenge costs other operators before it sends. All three refusals reproduced live. ADVERSARIAL RE-CHECK: reproduced live — a 3-character reason is refused (400), a second challenge while one is open is refused (409), and a real challenge is logged and answered."
     },
     {
      "n": 329,
@@ -1099,7 +1102,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "45d3134, 19d01e1, 25856eb",
-     "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification."
+     "fixed_note": "Every executed attestation carries an executor fingerprint (API origin, served model and the engine's own start time), deriveCatalog counts distinct engines and unknown ones separately, the knowledge page and `patch get` say how many model servers were behind the attestations, and a run on a node that already has the knowledge applied is refused rather than recorded as a verification. ADVERSARIAL RE-CHECK: the counting half is reproduced live — `patch get` prints \"2 attestations without an engine fingerprint\" and the entry carries executors/executors_unknown. The fingerprint against a real engine stays deferred (no engine available)."
     },
     {
      "n": 330,
@@ -1303,7 +1306,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "60f7477",
-     "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently."
+     "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently. ADVERSARIAL RE-CHECK: reproduced live against the AIN dev chain — packages/node/test/ain.test.ts now passes end to end, so a real transfer carrying the quote’s transfer_key and a proof over sha256(\"x402-ain:<tx>:<nonce>\") is what redeems the manifest."
     },
     {
      "n": 345,
@@ -1480,7 +1483,7 @@
      "fix": "Two-phase: `POST /api/branches/:name/quote` → `{items:[{id, price, seller, held, sellable}], total, balance}`, printed by the CLI and shown in a sheet before anything is spent; buy all items (ancestors first) and append the `subscribe` record only when every item is held, otherwise answer 409 `{acquired, failed:[{id,error}]}` and exit non-zero; record a partial subscription explicitly.",
      "effort": "M",
      "fixed_by": "17542cd",
-     "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb.",
+     "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb. ADVERSARIAL RE-CHECK: reproduced live — `branch subscribe` prints the per-item plan and the total, asks before spending, refuses a non-terminal without --yes, and reports what was actually bought.",
      "fixed": true,
      "status": "closed",
      "verified": {
@@ -1503,7 +1506,7 @@
      "effort": "S",
      "fixed": true,
      "fixed_by": "17542cd",
-     "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner."
+     "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner. ADVERSARIAL RE-CHECK: reproduced live — node-b creating node-a’s track name is refused with branch_exists naming the owner."
     },
     {
      "n": 359,
@@ -1577,7 +1580,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "84cebf6",
-     "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one."
+     "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one. ADVERSARIAL RE-CHECK: reproduced live — publishing another node’s exact bytes is refused with duplicate_body, and --force does not override it."
     },
     {
      "n": 364,
@@ -1593,7 +1596,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "60f7477",
-     "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3."
+     "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3. ADVERSARIAL RE-CHECK: reproduced live — GET /api/credit/<never-seen address> answers balance 0 with would_grant, and a grant is recorded, capped and attributed once the address first signs a payment."
     },
     {
      "n": 365,

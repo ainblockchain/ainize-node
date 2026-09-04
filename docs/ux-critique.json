@@ -557,7 +557,7 @@
      "effort": "L",
      "fixed": true,
      "fixed_by": "c3433ec",
-     "fixed_note": "teach-datasets.patch() now carries every refused source row into the new revision's report (marked `carried`, keeping its line in the uploaded file) unless THIS edit made it trainable or settled its contradiction, so fixing one flagged row no longer reports the other four as fixed; rendered in the preview table, the counts pill, the CLI table and the API. Node 5bc7bb8, web 473d2bc, CLI 69c17fa, rule + AZ-151 c3433ec."
+     "fixed_note": "teach-datasets.patch() now carries every refused source row into the new revision's report (marked `carried`, keeping its line in the uploaded file) unless THIS edit made it trainable or settled its contradiction, so fixing one flagged row no longer reports the other four as fixed; rendered in the preview table, the counts pill, the CLI table and the API. Node 5bc7bb8, web 473d2bc, CLI 69c17fa, rule + AZ-151 c3433ec. ADVERSARIAL RE-CHECK: reproduced live — settling ONE contradiction on a 6-refusal dataset left the other four in the report (carried: 4); accepted went 2 -> 3 and rejected 6 -> 4, with nothing dropped silently."
     },
     {
      "n": 6,
@@ -587,7 +587,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "473d2bc",
-     "fixed_note": "parseDataset measures whether what came out of the decoder is text at all (NUL bytes, C0/C1 controls, U+FFFD, private-use) and create()/reparse() refuse the upload with the encoding tried, the measured ratio and the first two rows as read; the browser makes the same measurement before uploading, and a latin1 fallback is now a warning rather than a neutral note. Node 5bc7bb8, web 473d2bc."
+     "fixed_note": "parseDataset measures whether what came out of the decoder is text at all (NUL bytes, C0/C1 controls, U+FFFD, private-use) and create()/reparse() refuse the upload with the encoding tried, the measured ratio and the first two rows as read; the browser makes the same measurement before uploading, and a latin1 fallback is now a warning rather than a neutral note. Node 5bc7bb8, web 473d2bc. ADVERSARIAL RE-CHECK: reproduced live — 4 KB of /dev/urandom renamed .csv is refused with `dataset_not_text` naming the encoding tried."
     },
     {
      "n": 45,
