@@ -2,7 +2,7 @@
 title: 설치
 summary: 이 저장소를 받아서 `ainize` 명령을 내 컴퓨터에 올리고, 노드가 자기 자신을 어디에 두는지 익힙니다.
 source: en/get-started/install.md
-source_sha256: 6dce78c5c77160f7273f472885ee2d7485371c8d4fdb72573efb445ea119b0e1
+source_sha256: 2de2ad21d0bbf462c6900f2c574811263f2a0b1fd01828e1d8d8c5a463884a8b
 ---
 
 # 설치
@@ -136,11 +136,19 @@ export NGRAM_HOME=~/nodes/quickstart
 페이지의 기록이 실제로 그렇게 만들어졌습니다. 명령 하나에만 적용하고 싶으면 `--home` 옵션이 같은 일을 합니다
 (`ainize --home ~/nodes/other status`). 모든 명령이 이 옵션을 받습니다.
 
-`ainize init`이 디렉터리를 만들고 처음 두 항목을 씁니다. 나머지는 노드를 쓰면서 하나씩 생깁니다.
+`ainize init`이 디렉터리를 만들고 나면, 그 직후에는 `init`이 직접 쓴 것만 들어 있습니다.
 
 ```bash
 ls -1 "$NGRAM_HOME"
 ```
+
+```text
+config.json
+data
+```
+
+나머지는 노드를 쓰면서 하나씩 생깁니다. 그래서 한 번 띄우고 로그인까지 마친 노드에서 같은 명령을 실행하면 항목이
+둘이 아니라 다섯입니다.
 
 ```text
 cli.json

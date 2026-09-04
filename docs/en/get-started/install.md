@@ -135,11 +135,19 @@ One directory is one node. Two nodes on one machine means two directories and tw
 transcript on the next page was recorded. The `--home` option does the same thing for a single command
 (`ainize --home ~/nodes/other status`), and every command accepts it.
 
-`ainize init` creates the directory and writes the first two entries; the rest appear as you use the node:
+`ainize init` creates the directory, and straight afterwards it holds only what `init` itself wrote:
 
 ```bash
 ls -1 "$NGRAM_HOME"
 ```
+
+```text
+config.json
+data
+```
+
+The rest arrive as the node is used, so the same listing on a node that has been started and logged in to has five
+entries rather than two:
 
 ```text
 cli.json
