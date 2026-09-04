@@ -324,3 +324,28 @@ test('AZ-281 an answer that contradicts the base is refused until it is meant, t
   assert.equal(pc.overridden, 1);
   assert.equal(job.checks!.parent_regression.ok, true, 'a change the creator declared is not a regression of the base');
 });
+
+// ---------------------------------------------------------------- AZ-293: the keep-set is not a deletion (found by L6's tree)
+test('AZ-293 a lesson taught on top WITHOUT copying keeps the base’s questions by reference — the family tree does not report them as deleted', async () => {
+  const base = await publishBase(3, 'derivative', 'Kept by reference');
+  // the plain path a creator takes from the chat door: my own questions, someone else's knowledge underneath, no copy
+  const ds = await upload(rows(2, 'mine', 40), 'own-questions.jsonl', stranger);
+  const job = await train({ dataset_id: ds.id, base_ids: [base] }, stranger, { teaches: 'mine' });
+  assert.equal(job.inherited_rows, 3, 'the base’s three questions are the keep-set');
+  assert.equal(job.changed_rows, 0);
+
+  const pub = await publish(job, { access: 'derivative', license: 'CC-BY-4.0' }, { name: 'On top, no copy' }, stranger);
+  assert.equal(pub.status, 200, pub.text);
+  const child = (await N.market.entry(String(pub.json.patch_id)))!.anchor;
+  assert.equal(child.derivation?.added_rows, 2);
+  assert.equal(child.derivation?.changed_rows, 0);
+  assert.equal(child.derivation?.removed_rows, 0, 'questions kept as known answers were never held, and so were never dropped');
+  assert.equal(child.derivation?.bases[0].rows, 3);
+  assert.deepEqual(N.market.datasets.manifest(child.dataset!.sha256)!.removed, []);
+
+  // and the number the family tree prints is the same one
+  const tree = await api('GET', `/api/patches/${child.id}/tree`, undefined, null);
+  assert.equal(tree.status, 200, tree.text);
+  const node = (tree.json.nodes as { id: string; added: { questions: number; changed: number; removed: number } }[]).find((n) => n.id === child.id)!;
+  assert.deepEqual(node.added, { questions: 2, changed: 0, removed: 0, rows: node.added.rows, new: (node.added as { new: number }).new } as never);
+});

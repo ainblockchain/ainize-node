@@ -2201,7 +2201,7 @@ export class TeachWorker {
   /**
    * What this lesson's training set did with the base's questions (design §6.3): which rows are still the base's and
    * which of ITS rows they are (`row_origin`), which answers were changed (`changed`), and which of the base's
-   * questions are not here any more (`removed`). Computed from the snapshot — the bytes that will be published — and
+   * questions this set once held and dropped (`removed`). Computed from the snapshot — the bytes that will be published — and
    * from the base's own set, so a verifier recomputes exactly these numbers instead of trusting the publisher.
    */
   private inheritance(rows: CanonicalRow[], baseId: string, parentRows: number): { row_origin: (string | null)[]; changed: number[]; removed: number[]; inherited: number } {
@@ -2213,7 +2213,11 @@ export class TeachWorker {
       row_origin.push(r.from && rowRefPatch(r.from) === baseId ? r.from : null);
       if (from) { const at = rowRefIndex(from); if (at !== null) seen.add(at); if (r.from) inherited++; else changed.push(i); }
     }
-    const removed = parentRows ? Array.from({ length: parentRows }, (_, i) => i).filter((i) => !seen.has(i)) : [];
+    // A base row is REMOVED only by a set that once held it: a lesson that took the base's questions as known
+    // answers (the keep-set, no copy) carries no pointer at any of them, and reporting its base's whole set as
+    // "removed" told the family tree that a creator had deleted questions they had in fact kept and been measured
+    // against. No pointer at this base anywhere => nothing was dropped, only inherited by reference.
+    const removed = seen.size && parentRows ? Array.from({ length: parentRows }, (_, i) => i).filter((i) => !seen.has(i)) : [];
     return { row_origin, changed, removed, inherited };
   }
 
