@@ -103,7 +103,11 @@
      "evidence": "browse-buy-detail-krx-all-2761-buy.png, critic-detail-buy-final.png; PatchPage.tsx:415-439.",
      "user_cost": "The person the marketplace is built for cannot buy, and is told two opposite things about whether an account is needed. There is no path from \"I want this\" to \"I have this\".",
      "fix": "Split the section by audience in PatchPage.tsx. Signed out: replace the operator sentence with the visitor path - the gateway address, one line of ainize patch buy <id>, and a Docs link - and drop \"no sign-up\" from detail.buy.explain (it describes the machine flow, not this page). Keep the operator button under isSignedIn.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "0546447",
+     "fixed_note": "The Buy tab now splits by audience: a signed-out visitor gets \"How to buy this knowledge\" with the two doors that need no account here — `ainize login && ainize use <id>` on their own node (with the install link) and the purchase address for an agent — the operator sign-in demoted to the last line, and the explainer rewritten to say there is no account on this site while a login is only for spending THIS node's wallet.",
+     "status": "fixed"
     },
     {
      "n": 4,
@@ -114,7 +118,11 @@
      "evidence": "Diffed live: browse-buy-detail-krx-all-2761-ep6-buy.png vs browse-buy-detail-krx-all-2761-buy.png differ only in \"5 AIN\" vs \"25 AIN\" and the gateway id; warning only in browse-buy-detail-krx-all-2761-ep6-lineage.png.",
      "user_cost": "A buyer can pay for a retired version without ever being shown that a better one exists, what it costs, or how it differs. It is the most expensive mistake this UI permits.",
      "fix": "In the Buy panel, when d.superseded_by.length > 0 render a warning Alert above the price naming the successor with its price and accuracy, make it the primary link, and demote the buy control to a secondary \"Buy this older version anyway\". Reuse detail.lin.superseded_by so no new string is needed.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "a71b267",
+     "fixed_note": "The Buy panel now opens with a warning above the price setting the two versions side by side — this one's price and accuracy against the successor's, with a link and both ids — and the buy control is demoted to an outlined \"Buy this older version anyway · <price>\" beside \"Open the newer version →\".",
+     "status": "fixed"
     },
     {
      "n": 25,
@@ -925,7 +933,11 @@
      "evidence": "browse-buy-detail-error.png, critic-detail-503.png.",
      "user_cost": "Someone following a shared link during a node hiccup is told the knowledge does not exist and leaves; the seller’s link looks broken and the buyer has no reason to try again.",
      "fix": "Only a 404 from api/patches/:id may render NotFoundPage. For any other status or a network failure keep the page shell and show an inline error Alert with the status plus a Try again button wired to the refetch already returned by usePatchQuery.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "6677a71",
+     "fixed_note": "Only a 404 from api/patches/:id renders NotFoundPage; any other status or a network failure keeps the knowledge page and shows the status, the node's error text and a Try again button wired to the query's refetch (a failed poll over data already on screen becomes an inline \"last answer this node gave\" banner instead).",
+     "status": "fixed"
     },
     {
      "n": 22,

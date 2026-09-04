@@ -213,7 +213,11 @@
      "evidence": "critic-03-nodeb-rebuy-pixelplus.txt (node-b, already a buyer, `patch buy pixelplus-087600` → another 0.1 AIN moved, balance 1342.0 → 1341.9, purchases count still 1 — no local trace of two payments); chain-buy-agent-15-pay-again-for-held-body.txt (187 settle records from one agent identity for one 3.8 MB file = 18.7 AIN); chain-buy-human-19-demo-web-ain-buy-notes.json ('Buy again' → real transfer, 'body already present').",
      "user_cost": "Real money for nothing, repeatedly: a mis-click, a dropped connection, a cron'd agent or a cautious 'let me get it again' each costs the full price, and the buyer's own node cannot even show that it happened twice. At 25 AIN per item a nightly agent loop is a subscription nobody signed.",
      "fix": "Short-circuit in `market.buy`: if `store.getPurchase(id)` exists or `entry.settlements.some(s => s.buyer === this.address)`, fetch the manifest through the free signed path and record no new settle (return `{already:true}` from `POST /api/patches/:id/buy` unless `{force:true}`). Make `putPurchase` append rather than replace (a `purchases` history keyed by tx). In the web replace 'Buy again' with 'Download again (free)' / 'Load into model' (PatchPage.tsx:529) and keep a second licence behind an explicit confirm. In the agent, check `patches/<sha>.npz` and the purchases file (289) before touching the gateway.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "a5d2d3c",
+     "fixed_note": "Web half only. \"Buy again\" is gone: a purchased knowledge now shows what was paid and when (amount, time, tx from /api/me/purchases), offers \"Load into the model\" as the primary action, and keeps a second payment behind a confirm that names the price and says the earlier tx hash will be overwritten. The idempotent market.buy, the append-only purchases table and the agent's ownership check remain open and belong to the node/agent packages.",
+     "status": "fixed"
     },
     {
      "n": 272,
