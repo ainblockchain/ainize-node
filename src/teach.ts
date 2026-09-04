@@ -612,8 +612,10 @@ export class TeachWorker {
         const f = input.facts[i];
         const known = normAnswer(answer).includes(normAnswer(f.answer));
         const owned = baseRows.get(f.prompt);
-        if (lineage && known) out.push({ index: i, status: 'in_base', base_answer: answer, base_id: owned?.base ?? lineage.direct[0].id });
-        else if (owned && !normAnswer(owned.row.answer).includes(normAnswer(f.answer))) out.push({ index: i, status: 'base_conflict', base_answer: owned.row.answer, base_id: owned.base });
+        // `in_base` is a claim ABOUT THE BASE, so it is made from the base's own questions — with the base loaded the
+        // model answering correctly could just as well be the plain model knowing it, which is `already_known`.
+        if (owned && normAnswer(owned.row.answer).includes(normAnswer(f.answer))) out.push({ index: i, status: 'in_base', base_answer: owned.row.answer, base_id: owned.base });
+        else if (owned) out.push({ index: i, status: 'base_conflict', base_answer: owned.row.answer, base_id: owned.base });
         else out.push({ index: i, status: known ? 'already_known' : 'will_train', base_answer: answer });
       }
       out.sort((a, b) => a.index - b.index);

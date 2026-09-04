@@ -123,7 +123,7 @@ test('AZ-283 the dataset door starts from a knowledge’s questions: the copy is
   await expect(page.getByTestId('ds-copied-from').first()).toContainText(BASE.id);
 
   // and training it on top records the base, keeps its questions, and adds only mine
-  const created = await createJob(api, visitor, { patch_ids: [], builds_on_context: false, dataset_id: copiedId, base_ids: [BASE.id], name: `On top ${TAG}` } as never);
+  const created = await createJob(api, visitor, { patch_ids: [], builds_on_context: false, dataset_id: copiedId, base_ids: [BASE.id], name: `On top ${TAG}` });
   expect(created.status, JSON.stringify(created.body)).toBe(202);
   const job = await waitForTerminal(api, visitor, created.body.job.id);
   expect(job.status).toBe('READY');
