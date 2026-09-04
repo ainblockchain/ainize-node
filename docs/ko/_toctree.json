@@ -8,6 +8,15 @@
     ]
   },
   {
+    "group": "개념",
+    "pages": [
+      { "page": "concepts/knowledge-patch",       "title": "지식이란 무엇인가" },
+      { "page": "concepts/verification",          "title": "검증 완료가 증명하는 것" },
+      { "page": "concepts/lineage-and-royalties", "title": "계보와 수익 분배" },
+      { "page": "concepts/payment",               "title": "계정 없이 결제하기" }
+    ]
+  },
+  {
     "group": "레퍼런스",
     "pages": [
       { "page": "reference/cli", "title": "CLI 명령 레퍼런스", "untranslated": true },

@@ -8,6 +8,15 @@
     ]
   },
   {
+    "group": "Concepts",
+    "pages": [
+      { "page": "concepts/knowledge-patch",       "title": "What a knowledge patch is" },
+      { "page": "concepts/verification",          "title": "What \"verified\" proves" },
+      { "page": "concepts/lineage-and-royalties", "title": "Lineage and royalties" },
+      { "page": "concepts/payment",               "title": "Paying without an account" }
+    ]
+  },
+  {
     "group": "Reference",
     "pages": [
       { "page": "reference/cli", "title": "CLI reference" },
