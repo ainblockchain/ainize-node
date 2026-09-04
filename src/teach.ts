@@ -91,7 +91,9 @@ export interface TeachChecks {
 }
 /** One knowledge the lesson was trained on top of (design §5.3): the ordered stack, ancestors first. */
 export interface TeachBaseView { patch_id: string; sha256: string; name?: string; status?: string }
-interface BaseTarget { id: string; entry: CatalogEntry; path: string; sha256: string; datasetSha256?: string; datasetRows?: number }
+interface BaseTarget { id: string; entry: CatalogEntry; path: string; sha256: string; datasetSha256?: string; datasetRows?: number;
+  /** The base's own questions, in ITS order — the index is what a `from` / `replaces` pointer names. */
+  rows?: CanonicalRow[] }
 /** `POST /api/teach/jobs/:id/publish` body (design §12.1): the v1 fields plus the training-set section. */
 export interface PublishBody {
   name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string;
@@ -270,7 +272,14 @@ function seededOrder(seed: string, n: number): number[] {
   return idx.sort((a, b) => score[a] - score[b] || a - b);
 }
 
-interface PreflightFactResult { index: number; status: 'will_train' | 'already_known' | 'overlaps_listing' | 'invalid'; base_answer?: string; detail?: string }
+interface PreflightFactResult {
+  index: number;
+  /** `in_base` / `base_conflict` only appear when a base was chosen (design §12.1, SC-6). */
+  status: 'will_train' | 'already_known' | 'overlaps_listing' | 'invalid' | 'in_base' | 'base_conflict';
+  base_answer?: string; detail?: string;
+  /** Which knowledge already answers it / answers it differently. */
+  base_id?: string;
+}
 
 // ------------------------------------------------------------------ the worker
 export class TeachWorker {
@@ -551,26 +560,47 @@ export class TeachWorker {
     return { facts: slice.map((r) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}) })), sampled: { checked: Math.min(rows.length, start + slice.length), of: rows.length }, offset: start };
   }
 
-  async preflight(input: { address: string; ip?: string; patchIds: string[]; facts: { prompt: string; answer: string; alt_prompt?: string }[]; sampled?: { checked: number; of: number } }): Promise<{ facts: PreflightFactResult[]; trainable: number; quota: { key_remaining: number; ip_remaining: number }; sampled?: { checked: number; of: number } }> {
+  /**
+   * What would happen to each of these questions, measured before anything is trained (design §12.1, SC-6).
+   *
+   * With a base chosen, the probe runs with the BASE LOADED, which is the only honest place to ask "does this need
+   * teaching at all": `in_base` = the base already answers it the same way (dropped, and counted for the base as
+   * coverage), `base_conflict` = the base answers this question differently and this row would replace its answer,
+   * `will_train` = neither. The base's own training set decides a conflict — the model's answer alone cannot tell
+   * "it says something else" from "it does not know".
+   */
+  async preflight(input: { address: string; ip?: string; patchIds: string[]; baseIds?: string[]; facts: { prompt: string; answer: string; alt_prompt?: string }[]; sampled?: { checked: number; of: number } }): Promise<{ facts: PreflightFactResult[]; trainable: number; quota: { key_remaining: number; ip_remaining: number }; bases?: string[]; sampled?: { checked: number; of: number } }> {
     const caller: Caller = { address: input.address };
     const out: PreflightFactResult[] = [];
     const todo: number[] = [];
+    const baseIds = [...new Set((input.baseIds ?? []).map((x) => String(x).trim()).filter(Boolean))];
+    if (baseIds.length && !this.cfg.lineage) throw new TeachError(403, 'lineage_disabled: building on top of another knowledge is not enabled on this node yet (config teach.lineage)');
+    if (baseIds.length > 2) throw new TeachError(400, 'too_many_bases: one base to build on (two only for a merge)', { max: 2 });
+    // resolved with `inherit`, because the base's own questions are what tells a conflict from a gap
+    const lineage = baseIds.length ? await this.resolveBases(baseIds, caller, { inherit: true, force: true }) : null;
+    const baseRows = new Map<string, { row: CanonicalRow; base: string }>();
+    for (const b of lineage?.direct ?? []) for (const r of b.rows ?? []) if (!baseRows.has(r.prompt)) baseRows.set(r.prompt, { row: r, base: b.id });
     for (const [i, f] of input.facts.entries()) {
       const bad = this.staticFactCheck(f);
       if (bad) { out.push({ index: i, status: 'invalid', detail: bad }); continue; }
       const ov = await this.overlapsListing(f);
+      // overlapping the knowledge you are building ON is not "someone already sells this": it is the base already
+      // teaching it, which is the whole point of `in_base` (design §12.1, SC-6)
+      if (ov && baseIds.includes(ov.anchor.id)) { out.push({ index: i, status: 'in_base', base_id: ov.anchor.id, detail: ov.anchor.name }); continue; }
       if (ov) { out.push({ index: i, status: 'overlaps_listing', detail: ov.anchor.name }); continue; }
       todo.push(i);
     }
     if (todo.length) {
       let answers: Map<number, string>;
+      const contextIds = input.patchIds.filter((id) => !baseIds.includes(id));
       if (this.offline) {
-        await this.contextTargets(input.patchIds, caller);   // still validates the ids (and the draft ownership)
+        await this.contextTargets(contextIds, caller);   // still validates the ids (and the draft ownership)
         answers = new Map(todo.map((i) => [i, this.stubAnswer(input.facts[i].prompt, input.facts[i].answer)] as const));
       } else {
         const st = await this.market.runtime.status();
         if (!st.available) throw new TeachError(503, `runtime unavailable: ${st.error ?? 'model server is off or restarting'}`);
-        const targets = await this.contextTargets(input.patchIds, caller);
+        // the base goes on FIRST and the comparison loads after it — the order a buyer would run (design §7.6)
+        const targets = [...(lineage?.stack ?? []).map((b) => ({ id: b.id, path: b.path })), ...(await this.contextTargets(contextIds, caller))];
         answers = await this.withStack('teach:preflight', targets, async () => {
           const res = new Map<number, string>();
           for (const i of todo) res.set(i, await this.askChat(input.facts[i].prompt));
@@ -578,13 +608,26 @@ export class TeachWorker {
         });
       }
       for (const i of todo) {
-        const base = answers.get(i) ?? '';
-        const known = normAnswer(base).includes(normAnswer(input.facts[i].answer));
-        out.push({ index: i, status: known ? 'already_known' : 'will_train', base_answer: base });
+        const answer = answers.get(i) ?? '';
+        const f = input.facts[i];
+        const known = normAnswer(answer).includes(normAnswer(f.answer));
+        const owned = baseRows.get(f.prompt);
+        if (lineage && known) out.push({ index: i, status: 'in_base', base_answer: answer, base_id: owned?.base ?? lineage.direct[0].id });
+        else if (owned && !normAnswer(owned.row.answer).includes(normAnswer(f.answer))) out.push({ index: i, status: 'base_conflict', base_answer: owned.row.answer, base_id: owned.base });
+        else out.push({ index: i, status: known ? 'already_known' : 'will_train', base_answer: answer });
       }
       out.sort((a, b) => a.index - b.index);
     }
-    return { facts: out, trainable: out.filter((f) => f.status === 'will_train').length, quota: this.quota(input.address, input.ip), ...(input.sampled ? { sampled: input.sampled } : {}) };
+    // what the base's page shows as "what to add on top of this" is made of these three counters (design §10)
+    for (const b of lineage?.direct ?? []) {
+      const visitor = this.market.visitorId(`key:${input.address.toLowerCase()}`);
+      const n = (st: string) => out.filter((f) => f.status === st).length;
+      this.store.bumpSignals(b.id, { preflight_wrong_today: n('will_train'), preflight_in_base: n('in_base'), preflight_base_conflict: n('base_conflict') }, { visitor });
+    }
+    return {
+      facts: out, trainable: out.filter((f) => f.status === 'will_train' || f.status === 'base_conflict').length,
+      quota: this.quota(input.address, input.ip), ...(lineage ? { bases: lineage.direct.map((b) => b.id) } : {}), ...(input.sampled ? { sampled: input.sampled } : {}),
+    };
   }
 
   /**
@@ -688,6 +731,8 @@ export class TeachWorker {
     exportMode?: 'delta' | 'squash';
     /** Build on a superseded base anyway (warned). */
     force?: boolean;
+    /** The visitor saw "this changes {base}'s answer" and meant it (design §12.1 `base_unresolved_conflicts`). */
+    confirmConflicts?: boolean;
   }): Promise<TeachJob> {
     const c = this.cfg;
     this.assertEnabled();
@@ -794,8 +839,12 @@ export class TeachWorker {
       const base = knownAt.get(i) ?? known.get(`${r.prompt}\u0000${r.answer}`);
       if (base && normAnswer(base).includes(normAnswer(r.answer))) { alreadyKnown++; continue; }
       // the catalog scan is O(listings x samples) per question — bounded to the sampled head; the worker preflight
-      // re-checks the rest against the live model anyway
-      if (n < c.preflight.sampleRows && await this.overlapsListing(r)) { overlaps++; continue; }
+      // re-checks the rest against the live model anyway. Overlapping the knowledge you build ON is not "already sold
+      // here": it is judged below, against that knowledge's own questions (in_base / a conflict you have to mean).
+      if (n < c.preflight.sampleRows) {
+        const ov = await this.overlapsListing(r);
+        if (ov && !baseSet.has(ov.anchor.id)) { overlaps++; continue; }
+      }
       kept.push({ prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(base ? { base_answer: base } : {}), ...(overrideOf.has(i) ? { replaces: overrideOf.get(i) } : {}) });
       keptIndexes.push(i);
     }
@@ -805,6 +854,35 @@ export class TeachWorker {
     // ---- 4) the base (lineage): resolved BEFORE the quotas are charged, so a refused base costs nothing
     const targets = await this.contextTargets(input.patchIds.filter((id) => !baseIds.includes(id)), { address: input.address });
     const lineage = baseIds.length ? await this.resolveBases(baseIds, { address: input.address }, { force: input.force, inherit: input.inherit !== false }) : null;
+    /*
+     * The chat door has no `from` pointers to go by, so a question that is ALREADY one of the base's is found here, by
+     * the parser's key (F13/R1): the same question with the same answer is dropped (the base already teaches it), the
+     * same question with a DIFFERENT answer is a conflict the visitor has to mean — confirmed, it becomes an override
+     * (`replaces`, trained, never counted as a regression of the base); unconfirmed, it is refused with the rows named
+     * (design §12.1 `base_unresolved_conflicts`) instead of quietly training an answer over someone else's.
+     */
+    if (lineage?.direct.length) {
+      const byPrompt = new Map<string, { i: number; row: CanonicalRow; base: string }>();
+      for (const b of lineage.direct) (b.rows ?? []).forEach((r, i) => { if (!byPrompt.has(r.prompt)) byPrompt.set(r.prompt, { i, row: r, base: b.id }); });
+      const conflicts: { index: number; prompt: string; your_answer: string; base_answer: string; base_id: string }[] = [];
+      const nextKept: TeachFactRow[] = []; const nextIndexes: number[] = [];
+      for (const [n, f] of kept.entries()) {
+        const hit = f.replaces ? undefined : byPrompt.get(f.prompt);
+        if (hit && normAnswer(hit.row.answer).includes(normAnswer(f.answer))) { alreadyKnown++; continue; }   // in_base: the base teaches this already
+        if (hit) {
+          if (!input.confirmConflicts) { conflicts.push({ index: keptIndexes[n], prompt: f.prompt, your_answer: f.answer, base_answer: hit.row.answer, base_id: hit.base }); continue; }
+          f.replaces = `${hit.base}#${hit.i}`;
+        }
+        nextKept.push(f); nextIndexes.push(keptIndexes[n]);
+      }
+      if (conflicts.length) {
+        throw new TeachError(400, `base_unresolved_conflicts: ${conflicts.length} of your answers differ from ${lineage.direct[0].id}'s answer to the same question — confirm that you mean to change them (they will be published as changes to it) or take them out`, { rows: conflicts });
+      }
+      if (!nextKept.length) throw new TeachError(409, `already_known: ${lineage.direct[0].id} already answers every one of these questions the same way`);
+      kept.length = 0; kept.push(...nextKept);
+      keptIndexes.length = 0; keptIndexes.push(...nextIndexes);
+      training.selected_indexes = keptIndexes;
+    }
     const q = this.jobQuota(input.address, input.ip);
     if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
     if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
@@ -896,7 +974,7 @@ export class TeachWorker {
         if (sha) {
           const rows = await this.ensureDatasetBlob(base.entry, caller);
           for (const r of rows) known.push(r);
-          base.datasetSha256 = sha; base.datasetRows = rows.length;
+          base.datasetSha256 = sha; base.datasetRows = rows.length; base.rows = rows;
         }
       }
     }

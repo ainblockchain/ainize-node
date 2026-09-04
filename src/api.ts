@@ -759,6 +759,8 @@ export function buildApi(deps: ApiDeps): Router {
     const address = requireTeacher(req); const t = visitorGate(req, address);
     const raw = z.object({
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]),
+      // lineage §12.1: the knowledge these questions would be taught ON TOP OF vs the ones loaded for comparison
+      base_ids: z.array(z.string().min(1)).max(2).optional(), context_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       facts: z.array(factSchema).min(1).max(8).optional(),
       dataset_id: z.string().min(1).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(8).optional(),
     }).parse(req.body);
@@ -771,13 +773,15 @@ export function buildApi(deps: ApiDeps): Router {
       facts = slice.facts; sampled = slice.sampled;
     }
     if (!facts?.length) throw bad('send either `facts` or a `dataset_id` with questions in it');
-    const body = { patch_ids: raw.patch_ids, facts };
+    // the base is loaded too, so `patch_ids` here is "everything the probe runs with" for quota purposes
+    const baseIds = raw.base_ids ?? [];
+    const body = { patch_ids: [...new Set([...(raw.context_ids ?? raw.patch_ids), ...baseIds])], facts };
     // Preflight spends live-test units in proportion to the model calls it drives (facts + context blobs), charged to the
     // IP AND the teaching key — one of them alone is free to spoof / mint (security review: preflight DoS).
     const units = t.preflightUnits({ patchIds: body.patch_ids, facts: body.facts });
     const buckets = [`ip:${req.ip}`, `key:${address.toLowerCase()}`];
     for (const b of buckets) if (market.chatQuota(b, 20, 3600_000, false, units) < 0) throw new HttpError(429, `quota_chat: free live-test quota exhausted for this hour (this pre-flight needs ${units} unit(s)) — try again later`);
-    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, facts: body.facts, sampled });
+    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, baseIds, facts: body.facts, sampled });
     for (const b of buckets) market.chatQuota(b, 20, 3600_000, true, units);
     return out;
   }));
@@ -795,6 +799,8 @@ export function buildApi(deps: ApiDeps): Router {
       // lineage (design §12.1): what the lesson is trained ON TOP OF (≤ 2; two = merge, later) vs `patch_ids` / `context_ids` loaded for comparison
       base_ids: z.array(z.string().min(1)).max(2).optional(), context_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['scratch', 'extend', 'fork', 'merge']).optional(), inherit: z.boolean().optional(), export: z.enum(['delta', 'squash']).optional(), force: z.boolean().optional(),
+      // "yes, these answers are meant to replace the base's" (§12.1 base_unresolved_conflicts)
+      confirm_conflicts: z.boolean().optional(),
       facts: z.array(factSchema).min(1).max(8).optional(),
       dataset_id: z.string().min(1).optional(), selected_indexes: z.array(z.number().int().min(0)).max(2000).optional(),
       // what an interactive pre-flight measured on those rows; the node re-checks each claim against the row's answer
@@ -816,7 +822,7 @@ export function buildApi(deps: ApiDeps): Router {
     const job = await t.createJob({
       address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: contextIds, buildsOn,
       facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, known: body.known, training: body.training,
-      baseIds, inherit: body.inherit, exportMode: body.export, force: body.force, mode: body.mode,
+      baseIds, inherit: body.inherit, exportMode: body.export, force: body.force, mode: body.mode, confirmConflicts: body.confirm_conflicts,
     });
     res.status(202);
     return { job, quota: t.jobQuota(address, req.ip) };

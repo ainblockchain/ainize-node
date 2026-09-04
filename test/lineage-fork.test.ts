@@ -262,3 +262,50 @@ test('AZ-279 a copy with nothing of my own in it cannot be trained on top of its
   assert.equal(r.status, 400, r.text);
   assert.match(String(r.json.error), /^nothing_to_add:/);
 });
+
+// ---------------------------------------------------------------- AZ-280: pre-flight with a base
+test('AZ-280 pre-flight judged with the base loaded: in_base, base_conflict with the base’s own answer, will_train — and the counters the base’s page is made of', async () => {
+  const base = await publishBase(3, 'derivative', 'Judged');
+  const its = readCanonicalJsonl(readFileSync(join(N.market.datasets.dirFor((await N.market.entry(base))!.anchor.dataset!.sha256), 'rows.jsonl'), 'utf8'));
+  const facts = [
+    { prompt: its[0].prompt, answer: its[0].answer },                    // the base already answers this, the same way
+    { prompt: its[1].prompt, answer: 'something else entirely' },        // the base answers this question differently
+    { prompt: 'mine9 — what is it?', answer: 'answer-mine-9' },          // nobody answers this
+  ];
+  const before = N.store.signals(base, 30);
+  const r = await api('POST', '/api/teach/preflight', { base_ids: [base], context_ids: [], facts }, stranger);
+  assert.equal(r.status, 200, r.text);
+  const got = r.json.facts as { index: number; status: string; base_id?: string; base_answer?: string }[];
+  assert.deepEqual(got.map((f) => f.status), ['in_base', 'base_conflict', 'will_train']);
+  assert.equal(got[0].base_id, base);
+  assert.equal(got[1].base_id, base);
+  assert.equal(got[1].base_answer, its[1].answer, 'the conflict shows the base’s OWN answer, not a guess from the model');
+  assert.equal(r.json.trainable, 2, 'a conflict is trainable — as a change — and an in_base row is not');
+  assert.deepEqual(r.json.bases, [base]);
+  const after = N.store.signals(base, 30);
+  assert.equal(after.preflight_in_base - before.preflight_in_base, 1);
+  assert.equal(after.preflight_base_conflict - before.preflight_base_conflict, 1);
+  assert.equal(after.preflight_wrong_today - before.preflight_wrong_today, 1);
+});
+
+// ---------------------------------------------------------------- AZ-281: an answer that changes the base's answer
+test('AZ-281 an answer that contradicts the base is refused until it is meant, then trained as a change to it', async () => {
+  const base = await publishBase(3, 'derivative', 'Contradicted');
+  const its = readCanonicalJsonl(readFileSync(join(N.market.datasets.dirFor((await N.market.entry(base))!.anchor.dataset!.sha256), 'rows.jsonl'), 'utf8'));
+  const ds = await upload([{ prompt: its[0].prompt, answer: 'the corrected answer' }, ...rows(1, 'mine', 20)], 'contradiction.jsonl', stranger);
+
+  const refused = await api('POST', '/api/teach/jobs', { patch_ids: [], dataset_id: ds.id, base_ids: [base] }, stranger);
+  assert.equal(refused.status, 400, refused.text);
+  assert.match(String(refused.json.error), /^base_unresolved_conflicts:/);
+  const conflict = (refused.json.rows as { prompt: string; base_answer: string; base_id: string }[])[0];
+  assert.equal(conflict.prompt, its[0].prompt);
+  assert.equal(conflict.base_answer, its[0].answer);
+  assert.equal(conflict.base_id, base);
+
+  const job = await train({ dataset_id: ds.id, base_ids: [base], confirm_conflicts: true }, stranger, { teaches: 'mine' });
+  assert.equal(job.changed_rows, 1, 'the confirmed row is recorded as a change to the base, not as a new question');
+  assert.equal(job.facts.find((f) => f.answer === 'the corrected answer')?.replaces, `${base}#0`);
+  const pc = job.checks!.parent_check![0];
+  assert.equal(pc.overridden, 1);
+  assert.equal(job.checks!.parent_regression.ok, true, 'a change the creator declared is not a regression of the base');
+});
