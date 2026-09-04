@@ -1353,6 +1353,44 @@ export class Market {
     return { settlement };
   }
 
+  /**
+   * Ask the sellers what actually happened to the royalties they owe this node (item 311). A settle record naming
+   * this address is the seller's PROMISE; whether the money moved lives in the seller's own `payouts` table, which
+   * it publishes for one settle hash at `GET /p2p/payouts/:hash`. Best-effort and cached for PAYOUT_REPORT_TTL_MS:
+   * a seller that is offline or too old to answer leaves the row `unconfirmed`, which is the honest state.
+   */
+  static readonly PAYOUT_REPORT_TTL_MS = 10 * 60_000;
+  static readonly PAYOUT_REPORT_MAX = 12;
+  async payoutReports(rows: { hash: string; seller: string }[]): Promise<Map<string, { status: 'paid' | 'pending' | 'failed' | 'credited' | 'unconfirmed'; tx_hash: string | null; at: number; last_error: string | null }>> {
+    type Report = { status: 'paid' | 'pending' | 'failed' | 'credited' | 'unconfirmed'; tx_hash: string | null; at: number; last_error: string | null };
+    const out = new Map<string, Report>();
+    const now = Date.now();
+    const peers = this.store.listPeers();
+    const endpointOf = (seller: string) => peers.find((p) => sameAddr(p.address ?? '', seller))?.endpoint ?? null;
+    let asked = 0;
+    for (const r of [...rows].reverse()) {
+      const key = `payout_report:${r.hash}`;
+      const cached = JSON.parse(this.store.get(key) ?? 'null') as Report | null;
+      if (cached && now - cached.at < Market.PAYOUT_REPORT_TTL_MS) { out.set(r.hash, cached); continue; }
+      if (asked >= Market.PAYOUT_REPORT_MAX) continue;
+      const ep = endpointOf(r.seller);
+      if (!ep) continue;
+      asked++;
+      try {
+        const res = await fetch(`${ep}/p2p/payouts/${encodeURIComponent(r.hash)}`, { signal: AbortSignal.timeout(4000) });
+        if (!res.ok) continue;
+        const body = await res.json() as { scheme?: string | null; items?: { address: string; status: string; tx_hash: string | null; last_error: string | null }[] };
+        const mine = (body.items ?? []).find((x) => sameAddr(x.address, this.address));
+        const status: Report['status'] = body.scheme === 'local-credit' ? 'credited'
+          : !mine ? 'unconfirmed' : mine.status === 'paid' ? 'paid' : mine.status === 'failed' ? 'failed' : 'pending';
+        const rep: Report = { status, tx_hash: mine?.tx_hash ?? null, at: now, last_error: mine?.last_error ?? null };
+        this.store.set(key, JSON.stringify(rep));
+        out.set(r.hash, rep);
+      } catch { /* offline seller: the row stays unconfirmed, which is the truth */ }
+    }
+    return out;
+  }
+
   /** The gated content: a manifest (text) whose sha256 is what ain-js verifies against the on-chain content_hash. */
   issueManifest(entry: CatalogEntry, buyer: string): PatchManifest {
     const token = randomBytes(24).toString('hex');
@@ -1832,18 +1870,18 @@ export class Market {
    * Load `ids` in one ordered sequence under ONE runtime lock (§8.1): each id's bases go on first, then the id.
    * Unrelated patches already on the table stay where they are, underneath.
    */
-  async applyStack(ids: string[], reason: string, opts: { withBase?: boolean } = {}): Promise<{ applied: string[]; removed: string[]; stack: string[] }> {
+  async applyStack(ids: string[], reason: string, opts: { withBase?: boolean; onEnter?: () => void } = {}): Promise<{ applied: string[]; removed: string[]; ms: Record<string, number>; stack: string[] }> {
     const st = await this.runtime.status();
     if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
     const layers = await this.layersFor(ids, { withBase: opts.withBase, requireBaseApplied: true });
     const current = this.store.listApplied().map((a) => a.patch_id);
     // What is already on the table stays exactly where it is (§8.3 allows an unrelated patch between a base and its
     // child); only the layers that are missing go on top, ancestors first.
-    const target: Layer[] = [...(await this.layersOfExact(current)), ...layers.filter((l) => !current.includes(l.id))];
+    const target: Layer[] = [...(await this.layersOfExact(current)), ...layers.filter((l) => !current.includes(l.id)).map((l) => ({ ...l, reason }))];
     return this.runtime.exclusive(`apply:${ids.join('+')}`, async () => {
       const res = await this.assertStack(target, reason);
       return { ...res, stack: target.map((t) => t.id) };
-    });
+    }, { onEnter: opts.onEnter });
   }
 
   /** Load one knowledge (and, with `with_base`, everything it was trained on top of). */
@@ -1908,7 +1946,7 @@ export class Market {
    * Unload one knowledge (§8.4). Refuses while something built on it is loaded, unless `cascade`. What comes back is
    * the journal — whatever was under it — so removing a child leaves its parent standing, not the bare model.
    */
-  async removePatch(patchId: string, opts: { cascade?: boolean } = {}): Promise<string> {
+  async removePatch(patchId: string, opts: { cascade?: boolean; onEnter?: () => void } = {}): Promise<string> {
     const entry = await this.entry(patchId);
     if (!entry) throw notFound('patch not found');
     const current = this.store.listApplied();
@@ -1928,7 +1966,7 @@ export class Market {
     }
     const drop = new Set([patchId, ...(opts.cascade ? dependents : [])]);
     const target = await this.layersOfExact(current.map((a) => a.patch_id).filter((id) => !drop.has(id)));
-    const res = await this.runtime.exclusive(`remove:${patchId}`, () => this.assertStack(target, 'remove'));
+    const res = await this.runtime.exclusive(`remove:${patchId}`, () => this.assertStack(target, 'remove'), { onEnter: opts.onEnter });
     this.log('info', 'runtime', `unloaded ${res.removed.join(', ')}${res.applied.length ? `; re-asserted ${res.applied.join(' → ')}` : ''}`, patchId);
     return `unloaded ${res.removed.join(', ')}${res.applied.length ? ` (re-asserted ${res.applied.join(' → ')})` : ''}`;
   }
@@ -2164,7 +2202,10 @@ export class Market {
         const onTable = await this.runtime.isApplied(t.path, this.runtime.journalPath(t.entry.anchor.patch_sha256) ?? undefined);
         if (onTable === true) dirty.push(t.id);
       }
-      for (const id of dirty) this.log('warn', 'runtime', `${id} is on the shared model but not in this node's stack — something else left it there. It is removed for the "before" answer and NOT put back.`, id, { visitor: opts.visitor });
+      for (const id of dirty) {
+        this.dirtySeen.set(id, Date.now());
+        this.log('warn', 'runtime', `${id} is on the shared model but not in this node's stack — something else left it there. It is removed for the "before" answer and NOT put back.`, id, { visitor: opts.visitor });
+      }
       const appliedMs: (number | null)[] = targets.map(() => null);
       let base: ChatResult | null = null; let patched: ChatResult | null = null;
       // The stack this test writes over, so an interrupted test is undone at the next start (item 126).
@@ -2315,6 +2356,15 @@ export class Market {
 
   /** Ids the operator keeps loaded in the serving model (they colour the "before" answer of every live test). */
   pinnedPatchIds(): string[] { return this.store.listApplied().map((a) => a.patch_id); }
+
+  /** Bodies a live test found on the shared model that this node never loaded (item 211), and when. */
+  private dirtySeen = new Map<string, number>();
+  /** What the picker warns about: leftovers seen in the last `windowMs`, newest first. */
+  recentDirty(windowMs = 10 * 60_000): string[] {
+    const cut = Date.now() - windowMs;
+    for (const [id, at] of this.dirtySeen) if (at < cut) this.dirtySeen.delete(id);
+    return [...this.dirtySeen.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  }
 
   // ------------------------------------------------------------------ chat turns kept for feedback (SC-13)
   /**

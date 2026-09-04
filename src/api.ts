@@ -12,7 +12,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
-  DATASET_ACCESS_LEVELS, accessOf, isDatasetLicense, preStateSha256, readNpzMember,
+  DATASET_ACCESS_LEVELS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -41,6 +41,8 @@ export interface ApiDeps {
 class HttpError extends Error { constructor(public status: number, message: string, /** extra fields merged into the JSON body — e.g. quota_reset on a 429 */ public body?: Record<string, unknown>) { super(message); } }
 const bad = (msg: string) => new HttpError(400, msg);
 const notFound = (msg = 'not found') => new HttpError(404, msg);
+/** Addresses are compared case-insensitively everywhere money or identity is decided (item 309). */
+const sameAddr = (a: string | undefined | null, b: string | undefined | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
 
 type Handler = (req: Request, res: Response) => Promise<unknown> | unknown;
 const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
@@ -153,7 +155,8 @@ export function buildApi(deps: ApiDeps): Router {
     if (market.cfg.operatorPasswordHash) throw new HttpError(409, 'operator password already set');
     if (!mayClaim(req)) {
       market.log('warn', 'auth', `refused a remote attempt to claim this unclaimed node from ${req.socket?.remoteAddress ?? 'an unknown address'}`);
-      throw new HttpError(403, `setup_local_only: this node has no operator password yet, and it can only be claimed from the machine it runs on — run \`ainize login\` there, or send the one-time token in ${deps.home ? setupTokenPath(deps.home) : 'NGRAM_HOME/setup-token'} as the x-setup-token header`);
+      // the path is deliberately NOT named: a remote caller has no business learning where this node's home is
+      throw new HttpError(403, 'setup_local_only: this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its NGRAM_HOME/setup-token as the x-setup-token header');
     }
     const { password } = z.object({ password: z.string().min(4) }).parse(req.body);
     market.cfg.operatorPasswordHash = hashPassword(password);
@@ -652,12 +655,50 @@ export function buildApi(deps: ApiDeps): Router {
     const map = await market.entryMap();
     return { items: market.store.listPurchases().map((p) => ({ ...p, entry: map.get(p.patch_id) ?? null, applied: market.isApplied(p.patch_id) })) };
   }));
+  /**
+   * The wallet. Its royalty lines used to be the SELLER's promise reported as money received (item 311): a settle
+   * record naming this address became a row on "creator revenue share received" whether or not anything ever moved,
+   * and the only place the truth lived was the seller's own `payouts` table, which the ancestor cannot see. Each row
+   * now carries its own state — `credited` (local play money, already in the balance derived here), `paid`/`pending`
+   * /`failed` (asked the seller's node, which answers `GET /p2p/payouts/:settle_hash`), or `unconfirmed` (nothing
+   * but the record) — plus the totals for each, so the three numbers can be reconciled on one screen.
+   *
+   * `verification` is the same money seen by the other party (item 325): what this node earned by verifying.
+   */
   router.get('/api/me/wallet', requireOperator, wrap(async () => {
     const setts = await market.ledger.settlements();
-    const sales = setts.filter((s) => s.body.seller === market.address).map((s) => s.body);
-    const royalties = setts.filter((s) => s.body.seller !== market.address && s.body.royalty[market.address]).map((s) => ({ patch_id: s.body.patch_id, amount: s.body.royalty[market.address], created_at: s.body.created_at }));
+    const me = market.address.toLowerCase();
+    const sales = setts.filter((s) => sameAddr(s.body.seller, market.address)).map((s) => s.body);
+    const map = await market.entryMap();
+    const mineIn = (r: Record<string, string> | undefined) => Object.entries(r ?? {}).find(([a]) => a.toLowerCase() === me);
+    const rows = setts.filter((s) => !sameAddr(s.body.seller, market.address) && mineIn(s.body.royalty));
+    const reports = await market.payoutReports(rows.map((s) => ({ hash: s.hash, seller: s.body.seller })));
+    const royalties = rows.map((s) => {
+      const [, amount] = mineIn(s.body.royalty)!;
+      const e = map.get(s.body.patch_id);
+      const kind = e?.verifiers.some((v) => v.toLowerCase() === me) ? 'verification' as const : 'lineage' as const;
+      const rep = reports.get(s.hash);
+      const state = s.body.scheme === 'local-credit' ? 'credited' as const : (rep?.status ?? 'unconfirmed' as const);
+      return {
+        patch_id: s.body.patch_id, amount, created_at: s.body.created_at,       // the shape every older client reads
+        kind, state, settle_hash: s.hash, seller: s.body.seller, seller_name: e?.anchor.author_name ?? null,
+        buyer: s.body.buyer, currency: s.body.currency, scheme: s.body.scheme,
+        tx_hash: rep?.tx_hash ?? null, reported_at: rep?.at ?? null, last_error: rep?.last_error ?? null,
+        days: Math.floor((Date.now() - s.body.created_at) / 86_400_000),
+      };
+    });
+    const sum = (xs: typeof royalties) => String(Math.round(xs.reduce((n, r) => n + Number(r.amount || 0), 0) * 1e6) / 1e6);
     const summary = market.payouts.summary();
     return { ...(await market.chainStatus()), sales, royalties, purchases: market.store.listPurchases().length,
+      royalty_totals: {
+        owed: sum(royalties),
+        credited: sum(royalties.filter((r) => r.state === 'credited')),
+        paid: sum(royalties.filter((r) => r.state === 'paid')),
+        unconfirmed: sum(royalties.filter((r) => r.state === 'unconfirmed' || r.state === 'pending' || r.state === 'failed')),
+      },
+      verification: royalties.filter((r) => r.kind === 'verification'),
+      verification_total: sum(royalties.filter((r) => r.kind === 'verification')),
+      verifier_share: effectiveVerifierShare(undefined, market.cfg.market.verifierShare),
       payouts: { ...summary, items: market.store.listPayouts({ status: ['pending', 'failed'], limit: 50 }) } };
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
@@ -768,7 +809,13 @@ export function buildApi(deps: ApiDeps): Router {
     if (!e) throw notFound();
     return { attestation: await deps.verifier.verifyOne(e.anchor) };
   }));
-  router.post('/api/patches/:id/challenge', requireOperator, wrap(async (req) => { await market.challenge(req.params.id as string, String(req.body?.reason ?? 'manual challenge')); return { ok: true }; }));
+  // A challenge stops every sale of a knowledge and spends another operator's GPU minutes on the re-run, so the API
+  // no longer invents a reason for a caller that did not give one (item 328): `market.challenge` refuses a body
+  // without one, an address may hold only one open challenge per anchor, and a dismissed one has a cool-down.
+  router.post('/api/patches/:id/challenge', requireOperator, wrap(async (req) => {
+    const challenge = await market.challenge(req.params.id as string, String(req.body?.reason ?? ''));
+    return { ok: true, challenge, record: await market.challengeRecord(market.address) };
+  }));
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => {
     const b = z.object({ apply: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional() }).parse(req.body ?? {});
     // `with_required` buys the bases underneath first (item 270); `max_total` refuses the whole family before any
@@ -821,13 +868,31 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/me/credit', requireOperator, wrap(async () => creditOf(market.address)));
   // §12.4 — `with_base` loads everything the knowledge was trained on top of, in order, under one runtime lock;
   // without it an add-on whose base is not loaded is refused (409 needs_base) instead of writing rows over the wrong table.
-  router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => {
-    const { with_base } = z.object({ with_base: z.boolean().optional() }).parse(req.body ?? {});
-    return { result: await market.applyPatch(req.params.id as string, 'manual', { withBase: with_base }), stack: await market.stack() };
+  // Item 212 — with `async: true` the POST answers 202 with a job and the caller polls GET /api/runtime/jobs/:id.
+  // The shared model lock has no upper bound on how long it is held (another node's live test, a verification), and
+  // a synchronous POST that outlived the HTTP client's header timeout was reported as "cannot reach node", exit 2,
+  // minutes before the node ran it anyway.
+  router.post('/api/patches/:id/apply', requireOperator, wrap(async (req, res) => {
+    const { with_base, async: wantJob } = z.object({ with_base: z.boolean().optional(), async: z.boolean().optional() }).parse(req.body ?? {});
+    const id = req.params.id as string;
+    if (!(await market.entry(id))) throw notFound('patch not found');
+    if (wantJob) {
+      const job = market.startRuntimeJob('apply', id, (onEnter) => market.applyPatch(id, 'manual', { withBase: with_base, onEnter }));
+      res.status(202);
+      return { job: market.runtimeJob(job.id) };
+    }
+    return { result: await market.applyPatch(id, 'manual', { withBase: with_base }), stack: await market.stack() };
   }));
-  const unload = async (req: { params: Record<string, unknown>; body?: Record<string, unknown> }) => {
-    const { cascade } = z.object({ cascade: z.boolean().optional() }).parse(req.body ?? {});
-    return { result: await market.removePatch(req.params.id as string, { cascade }), stack: await market.stack() };
+  const unload = async (req: { params: Record<string, unknown>; body?: Record<string, unknown> }, res: { status: (n: number) => unknown }) => {
+    const { cascade, async: wantJob } = z.object({ cascade: z.boolean().optional(), async: z.boolean().optional() }).parse(req.body ?? {});
+    const id = req.params.id as string;
+    if (!(await market.entry(id))) throw notFound('patch not found');
+    if (wantJob) {
+      const job = market.startRuntimeJob('remove', id, (onEnter) => market.removePatch(id, { cascade, onEnter }));
+      res.status(202);
+      return { job: market.runtimeJob(job.id) };
+    }
+    return { result: await market.removePatch(id, { cascade }), stack: await market.stack() };
   };
   router.post('/api/patches/:id/remove', requireOperator, wrap(unload as never));
   router.delete('/api/patches/:id/apply', requireOperator, wrap(unload as never));
@@ -848,9 +913,19 @@ export function buildApi(deps: ApiDeps): Router {
     const b = z.object({ name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]) }).parse(req.body);
     return { branch: await market.createBranch(b.name, b.description, b.context, b.patch_ids) };
   }));
-  router.post('/api/branches/:name/patches', requireOperator, wrap(async (req) => ({ branch: await market.addToBranch(decodeURIComponent(req.params.name as string), String(req.body.patch_id)) })));
-  router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => { await market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe'); return { ok: true }; }));
-  router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => { await market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe'); return { ok: true }; }));
+  router.post('/api/branches/:name/patches', requireOperator, wrap(async (req) => {
+    const { patch_id, force } = z.object({ patch_id: z.string().min(1), force: z.boolean().optional() }).parse(req.body ?? {});
+    return { branch: await market.addToBranch(decodeURIComponent(req.params.name as string), patch_id, { force }) };
+  }));
+  /** Item 357 — what subscribing would spend, item by item, before anything is spent. */
+  const quoteBranch = async (req: { params: Record<string, unknown> }) => ({ quote: await market.quoteBranch(decodeURIComponent(req.params.name as string)) });
+  router.post('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
+  router.get('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
+  // The answer says what was bought, loaded and skipped; a partial acquisition is a 409 and nothing is broadcast.
+  router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe')));
+  router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe')));
+  /** Item 255 — bring a subscribed track up to date now (the 20-second tick does the same thing). */
+  router.post('/api/branches/:name/sync', requireOperator, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string))));
 
   router.post('/api/runtime/complete', requireOperator, wrap(async (req) => {
     const { prompt, max_tokens, raw } = z.object({
@@ -873,6 +948,13 @@ export function buildApi(deps: ApiDeps): Router {
     return { ...(await market.runtime.status(true)), applied: stack.map((l) => l.patch_id), stack, journal_dir: market.runtime.journalDir() };
   }));
   router.get('/api/runtime/stack', wrap(async () => ({ stack: await market.stack(), journal_dir: market.runtime.journalDir() })));
+  /** Item 212 — where a queued apply/remove is, and what the shared model is doing while it waits. */
+  router.get('/api/runtime/jobs', requireOperator, wrap(async () => ({ jobs: market.listRuntimeJobs().slice(0, 50) })));
+  router.get('/api/runtime/jobs/:id', requireOperator, wrap(async (req) => {
+    const job = market.runtimeJob(req.params.id as string);
+    if (!job) throw notFound('no such runtime job (a node restart forgets queued jobs — check `ainize patch stack`)');
+    return { job };
+  }));
   /** What `patch.py check` measures against the live table for one knowledge: is its base underneath, row for row? */
   router.get('/api/patches/:id/check', requireOperator, wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
@@ -894,18 +976,43 @@ export function buildApi(deps: ApiDeps): Router {
   // ------------------------------------------------------------ ChatMode (live test)
   router.get('/api/chat/patches', wrap(async (req) => {
     // hidden contributor names are redacted here too (public response), like /api/catalog and /api/patches/:id
-    const items = (await market.testablePatches()).map(redactContributors);
+    const rows = await market.chatCatalog();
+    const items = rows.filter((r) => r.testable).map((r) => redactContributors(r.entry));
+    // Item 297 — knowledge this node's model could run but cannot load: it used to be absent from the picker
+    // entirely (no row, no price, no seller), so the chained purchase the product is built on had no first step.
+    const elsewhere = rows.filter((r) => !r.testable).map((r) => {
+      const a = redactContributors(r.entry).anchor;
+      return {
+        patch_id: a.id, name: a.name, author: a.author, author_name: a.author_name ?? null,
+        price: a.price, currency: a.currency, status: r.entry.status, rows: a.rows, queries: a.benchmark.queries,
+        reason: r.reason, buyable: r.buyable, requests: r.requests,
+        gateway_url: (a as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
+      };
+    });
     // `lessons`: the caller's private drafts (teach mode), only with a verified teaching-key signature
     const teacher = teachAuth.verify(req);
     const q = market.runtime.queueState();
     return {
-      items, runtime: await market.runtime.status(), lock: q.lock,
+      items, elsewhere, runtime: await market.runtime.status(), lock: q.lock,
       // D3: `now` is the node's clock — the client measures "held for 40s" against it instead of the browser's,
       // and `queue` says how many live tests of this node are waiting behind the shared model.
       now: Date.now(), queue: { running: q.running, waiting: market.chatQueue.waiting() },
-      applied: market.pinnedPatchIds(), overlaps: market.chatOverlaps(items),
+      // `applied` is what this node keeps loaded; `dirty` is what a live test found on the shared model that this
+      // node never loaded — a leftover from another process, which the next test unloads and does not put back.
+      applied: market.pinnedPatchIds(), dirty: market.recentDirty(), overlaps: market.chatOverlaps(items),
+      operator: isOperator(req),
       ...(teacher ? { lessons: deps.teach ? await deps.teach.lessonsFor(teacher) : ([] as CatalogEntry[]), teacher } : {}),
     };
+  }));
+  /**
+   * Item 297 — "I want to test or build on this and it is not on this node". Buying is operator-only, so this is the
+   * only first step a visitor has: it writes one `demand` event the operator sees in the log, with the price and the
+   * command that would satisfy it.
+   */
+  router.post('/api/chat/patches/:id/request', wrap(async (req) => {
+    const operator = isOperator(req);
+    const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
+    return market.requestPatch(req.params.id as string, visitor);
   }));
   router.post('/api/chat', wrap(async (req) => {
     const history = z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24);
@@ -1442,10 +1549,41 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ p2p protocol
   router.get('/p2p/info', wrap(async () => market.selfInfo()));
+  /**
+   * Peer hello. The body is a CLAIM — `address`, `roles`, `blobs` — and before this route checked a signature the
+   * claim was enough to become a "verifier" on this node and download every paid body for free (item 326). The
+   * endpoint is still remembered from an unsigned hello (that is only gossip, and it costs nothing to be wrong
+   * about), but the address and the roles are recorded only when the caller signs `hello:<its endpoint>` with the
+   * key it claims — so a role claim is now as accountable as an attestation.
+   */
   router.post('/p2p/hello', wrap(async (req) => {
     const info = req.body as { endpoint?: string; address?: string };
-    if (info?.endpoint && info.address && info.address !== market.address) market.store.upsertPeer(info.endpoint.replace(/\/+$/, ''), { address: info.address, info: info as never, last_seen: Date.now(), failures: 0 });
+    const endpoint = (info?.endpoint ?? '').replace(/\/+$/, '');
+    if (!endpoint || !info?.address || sameAddr(info.address, market.address)) return market.selfInfo();
+    const signer = verifyAuthHeader(req.header('x-ngram-auth'), `hello:${endpoint}`);
+    if (signer && sameAddr(signer, info.address)) {
+      market.store.upsertPeer(endpoint, { address: info.address, info: info as never, last_seen: Date.now(), failures: 0 });
+    } else {
+      market.store.upsertPeer(endpoint);
+      market.log('debug', 'p2p', `unsigned hello from ${endpoint} claiming ${info.address.slice(0, 10)}…${(info as { roles?: string[] }).roles?.length ? ` and the roles ${(info as { roles?: string[] }).roles!.join(', ')}` : ''} — endpoint remembered, claim not recorded (it must sign hello:<endpoint>)`, null, { endpoint, claimed: info.address });
+    }
     return market.selfInfo();
+  }));
+
+  /**
+   * What this node DID about one settlement's royalties — the public half of item 311. An ancestor's node can see
+   * the settle record naming it, but whether the money moved lived only in the seller's private `payouts` table;
+   * this route answers for one settle hash, so the ancestor's wallet can say `paid` / `pending` / `failed` with the
+   * seller's own tx hash instead of reporting the seller's promise as money received.
+   */
+  router.get('/p2p/payouts/:hash', wrap(async (req) => {
+    const hash = String(req.params.hash ?? '');
+    const items = market.store.listPayouts({ limit: 5000 }).filter((r) => r.settle_hash === hash)
+      .map((r) => ({ address: r.address, amount: r.amount, currency: r.currency, status: r.status, tx_hash: r.tx_hash, attempts: r.attempts, last_error: r.last_error, updated_at: r.updated_at }));
+    // A local-credit sale is settled by the record itself: there is no transfer to report, and saying so is not the
+    // same as "we have no rows for you".
+    const settle = (await market.ledger.settlements()).find((x) => x.hash === hash);
+    return { settle_hash: hash, seller: market.address, scheme: settle?.body.scheme ?? null, known: !!settle, items };
   }));
   router.get('/p2p/peers', wrap(async () => ({ peers: [market.publicUrl, ...market.p2p.peers().map((p) => p.endpoint)] })));
   router.get('/p2p/records', wrap(async (req) => {
@@ -1472,7 +1610,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (!blob) throw notFound('blob not held by this node');
     const requester = verifyAuthHeader(req.header('x-ngram-auth'), `blob:${sha}`);
     const token = typeof req.query.token === 'string' ? req.query.token : undefined;
-    if (!(await market.mayDownload(sha, requester, token))) throw new HttpError(402, 'payment required: buy the patch via /x402/patch/:id (verifiers and authors are exempt)');
+    if (!(await market.mayDownload(sha, requester, token))) throw new HttpError(402, 'payment required: buy the patch via /x402/patch/:id (its author, a buyer holding a download token, and a verifier while it is being verified can fetch it)');
     const size = statSync(blob.path).size;
     // The save sheet and RUN-LOCALLY.md both name the file `lesson-<slug>-<id>.npz`, and every command in that document
     // is written against that name — so a browser download that lands as `<sha>.npz` breaks the copy-paste. `?name=` is

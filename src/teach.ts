@@ -837,6 +837,20 @@ export class TeachWorker {
     // They are NOT new facts: they are the keep-set the trainer trains as known answers so the lesson does not undo
     // them. A row whose answer the owner changed (`replaces`) IS trained, and is never counted against X afterwards.
     const baseSet = new Set(baseIds);
+    /*
+     * Item 312 — the promise that bought the questions is checked here, once, before anything is trained.
+     *
+     * A training set copied out of a published knowledge carries that knowledge in `parent_patch` and every copied row
+     * carries `from: '<id>#<i>'`. Training it WITHOUT naming that knowledge as the base produced a lesson with no
+     * parents, which is an anchor that pays the creator of the material nothing — the exact way an honest derivative
+     * (declares it, pays the 30 % lineage pool) was undercut by a silent copy of the same file. The refusal names the
+     * flag that fixes it, so the remedy is one word long.
+     */
+    if (dataset.parent_patch && !baseSet.has(dataset.parent_patch)) {
+      const parent = await this.market.entry(dataset.parent_patch).catch(() => null);
+      throw new TeachError(400, `undeclared_parent: these questions came from ${parent?.anchor.name ?? dataset.parent_patch} — a lesson trained on them has to say so, or its creator is paid nothing. Train it on top of that knowledge (\`--on ${dataset.parent_patch}\`, or "builds on" in the browser).`,
+        { id: dataset.parent_patch, ...(parent ? { name: parent.anchor.name } : {}), dataset_id: dataset.id });
+    }
     const inheritedIdx = new Set<number>();
     const overrideOf = new Map<number, string>();
     if (baseIds.length) {
@@ -2429,6 +2443,8 @@ export class TeachWorker {
       ...(dataset ? { dataset } : {}),
     });
     this.store.touchContributor(signer, { published: true, payout_address: body.payout_address ?? null });
+    // Item 312: the promise this key made when it took a parent's questions is now kept, and recorded as kept.
+    for (const b of j.bases ?? []) this.store.markDeriveDeclared(b.patch_id, signer, d.id);
     this.store.updateTeachJob(j.id, { name: body.name, dataset_pub: { access: pub.access, license: pub.license, include_notes: pub.include_notes, declaration: pub.declaration, published_sha256: pinned?.sha256 ?? '' } });
     if (this.cfg.publish === 'auto') return this.announceJob(this.store.getTeachJob(j.id)!, { fromPublish: true });
     this.store.updateTeachJob(j.id, { status: 'PENDING_REVIEW', publish_status: 'pending_review' });
@@ -2446,6 +2462,12 @@ export class TeachWorker {
     const license = ds.license ?? (isDatasetLicense(body.license) ? body.license : undefined) ?? 'CC-BY-4.0';
     if (!isDatasetLicense(license)) throw new TeachError(400, `bad_license: "${license}" is not a licence this network knows (CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary)`, { license });
     const dataset = j.dataset_id ? this.store.getTeachDataset(j.dataset_id) : null;
+    // Item 312, second gate: `createJob` refuses an undeclared parent, but a lesson queued before that rule (or by an
+    // older client) must not reach the permanent record either — an anchor whose training set is someone else's has
+    // to name them, or the lineage pool is 0 and the creator of the material is paid nothing.
+    if (dataset?.parent_patch && !(j.bases ?? []).some((b) => b.patch_id === dataset.parent_patch)) {
+      throw new TeachError(400, `undeclared_parent: the questions of this lesson came from ${dataset.parent_patch}; a lesson built on them must name it as its base. Re-train the dataset with that knowledge as the base before publishing.`, { id: dataset.parent_patch });
+    }
     let access: DatasetAccess = ds.access ?? 'derivative';
     let forcedPrivate: string | null = null;
     if (dataset?.retention === 'delete_after_training' && access !== 'private') { access = 'private'; forcedPrivate = 'delete_after_training'; }
@@ -2561,9 +2583,17 @@ export class TeachWorker {
     // A lesson is listed under the key that SIGNED the claim. A declared payout wallet only receives money — it never
     // agreed to be shown as the teacher of anything (security review: attribution without consent).
     const mine = cat.filter((e) => e.status !== 'DRAFT' && (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === addr));
-    const lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string }[] = mine.map((e) => ({ id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue }));
+    /*
+     * Item 298: "Registered · awaiting verification" with no age and no verifier count was the whole story a teacher
+     * was told on a node that has no verifier peers at all — 136 lessons, up to 75 hours old, none of which could ever
+     * be sold, because self-attestation does not count towards quorum. `created_at`, `passed` and `quorum` are what
+     * turn that line into a fact the teacher can act on, and the page pairs them with `verification` below.
+     */
+    const lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string; created_at?: number; attestations?: number; quorum?: number }[] =
+      mine.map((e) => ({ id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue,
+        created_at: e.anchor.created_at, attestations: e.passed, quorum: e.quorum }));
     // pending lessons are referenced by JOB id: the private draft id must not appear on a public page
-    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0' });
+    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0', created_at: j.created_at });
     // Earnings: OWED comes from settle records (any node can read them), PAID from this node's payouts rows (§7.6).
     // A settle from another seller node shows as `pending` with `paid_by: null` — the settle record is the evidence.
     const setts = await this.market.ledger.settlements();
@@ -2594,6 +2624,9 @@ export class TeachWorker {
     const name = contributor && !contributor.hidden ? contributor.name ?? undefined : undefined;
     const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
     return { address, ...(name ? { name } : {}), hidden: !!contributor?.hidden, lessons,
+      // item 298 / 299: whether anything published here can ever be sold, and in what money it would be paid
+      verification: this.verificationReach(),
+      ledger: { kind: this.market.cfg.ledger.kind, currency: this.market.cfg.market.currency },
       earnings: { currency: this.market.cfg.market.currency, owed: String(r6(owed)), paid: String(r6(paid)), pending: String(r6(owed - paid)), failed: String(r6(failed)), sales: items.length, items: items.sort((a, b) => b.created_at - a.created_at) } };
   }
 
