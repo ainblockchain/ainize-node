@@ -3145,16 +3145,72 @@ export class Market {
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
       blobs: this.blobs.list().map((b) => b.sha256), datasets: this.datasets.list().map((b) => b.sha256).slice(0, 40),
       version: VERSION, build: buildStamp(), config_version: this.cfg.version, instance: Market.INSTANCE, last_seen: Date.now(),
+      // What this node offers a person who publishes through it, so the terms can be compared across nodes (item 307).
+      // The split a teacher is shown was the local operator's config value with nothing to compare it against.
+      shares: {
+        ...(this.acceptsContributions() ? { teach: this.teach().contributorShare } : {}),
+        royalty: effectiveRoyaltyShare(undefined, this.cfg.market.royaltyShare),
+        verifier: effectiveVerifierShare(undefined, this.cfg.market.verifierShare),
+      },
     };
   }
 
+  /** Two endpoints must be the same box before one is allowed to hide the other. */
+  private static sameEndpoint(a: string | undefined, b: string | undefined): boolean {
+    return (a ?? '').replace(/\/+$/, '') === (b ?? '').replace(/\/+$/, '');
+  }
+
+  /**
+   * Every node this one has heard of — deduped, and newest first (item 140).
+   *
+   * Node records are permanent and every start with a fresh key writes another one, so the union used to grow
+   * without limit: 122 records for a network of three running nodes, 47 of them called node-a, in API order, with
+   * this node's own row 119 lines down. Now: the newest record per address wins, rows that are the same box under a
+   * new key (same name AND endpoint) collapse into the newest, and the list comes back self first then by last_seen.
+   * Nothing is dropped here — `GET /api/nodes` decides what is recent enough to show, and `?all=1` asks for all of it.
+   */
   async knownNodes(): Promise<PeerInfo[]> {
     const recs = await this.ledger.nodes();
-    const byAddr = new Map<string, PeerInfo>();
-    for (const r of recs) byAddr.set(r.body.address, r.body);
-    for (const p of this.store.listPeers()) if (p.info) byAddr.set(p.info.address, { ...p.info, last_seen: p.last_seen });
-    byAddr.set(this.address, await this.selfInfo());
-    return [...byAddr.values()];
+    // Keyed by address AND endpoint: an address answering at two endpoints is two nodes on one identity (item 139),
+    // and collapsing them by address is exactly how the loser used to disappear from every registry without a word.
+    const key = (n: PeerInfo) => `${n.address?.toLowerCase()}|${(n.endpoint ?? '').replace(/\/+$/, '')}`;
+    const byNode = new Map<string, PeerInfo>();
+    for (const r of recs) {
+      const cur = byNode.get(key(r.body));
+      if (!cur || (r.body.last_seen ?? 0) >= (cur.last_seen ?? 0)) byNode.set(key(r.body), r.body);
+    }
+    for (const p of this.store.listPeers()) if (p.info) byNode.set(key(p.info), { ...p.info, last_seen: p.last_seen });
+    const self = await this.selfInfo();
+    byNode.set(key(self), self);
+    const byBox = new Map<string, PeerInfo>();
+    for (const n of byNode.values()) {
+      const key = `${n.name}|${(n.endpoint ?? '').replace(/\/+$/, '')}`;
+      const cur = byBox.get(key);
+      if (!cur || n.address === this.address || (n.last_seen ?? 0) > (cur.last_seen ?? 0)) byBox.set(key, n);
+    }
+    return [...byBox.values()].sort((a, b) =>
+      (a.address === this.address ? -1 : b.address === this.address ? 1 : (b.last_seen ?? 0) - (a.last_seen ?? 0)));
+  }
+
+  /**
+   * One address answering at two endpoints, right now (item 139): a cloned VM, a backup restored beside the original,
+   * a staging copy of a production home. `knownNodes()` is keyed by address, so the loser silently disappears from
+   * every registry and buyers are routed to whichever spoke last — for reasons no log ever explained. Only endpoints
+   * seen inside `windowMs` count, so a node that simply MOVED does not report itself as a collision forever.
+   */
+  static readonly DUPLICATE_WINDOW_MS = 10 * 60_000;
+  duplicateNodeAddresses(nodes: PeerInfo[], windowMs = Market.DUPLICATE_WINDOW_MS): Map<string, string[]> {
+    const now = Date.now();
+    const byAddr = new Map<string, string[]>();
+    for (const n of nodes) {
+      if (!n.address || !n.endpoint) continue;
+      if (n.address !== this.address && now - (n.last_seen ?? 0) > windowMs) continue;
+      const k = n.address.toLowerCase();
+      const eps = byAddr.get(k) ?? [];
+      if (!eps.some((e) => Market.sameEndpoint(e, n.endpoint))) eps.push(n.endpoint);
+      byAddr.set(k, eps);
+    }
+    return new Map([...byAddr].filter(([, eps]) => eps.length > 1));
   }
 
   async registerSelf(): Promise<void> {

@@ -1379,6 +1379,8 @@ export function buildApi(deps: ApiDeps): Router {
   const rowSchema = z.object({ prompt: z.string().min(1).max(PROMPT_MAX), answer: z.string().min(1).max(ANSWER_MAX), alt_prompt: z.string().max(PROMPT_MAX).optional(), note: z.string().max(500).optional() });
   const rowsOpSchema = z.union([
     z.object({ op: z.literal('remove'), indexes: z.array(z.number().int().min(0)).min(1).max(2000) }),
+    // finding 48 — take out a row the parser REFUSED, by the source line the report carries it under
+    z.object({ op: z.literal('drop_rejected'), lines: z.array(z.number().int().min(0)).min(1).max(2000) }),
     z.object({ op: z.literal('append'), rows: z.array(rowSchema).min(1).max(2000) }),
     z.object({ op: z.literal('replace'), index: z.number().int().min(0), row: rowSchema }),
   ]);

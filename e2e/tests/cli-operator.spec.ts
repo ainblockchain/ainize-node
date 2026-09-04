@@ -1002,7 +1002,9 @@ test.describe('operator: fourth node', () => {
       const tokens = new Map<string, string>();
       for (const n of [NODE_A, NODE_B, NODE_C]) tokens.set(n, await operatorToken(ctx, n));
       for (let i = 0; i < 6; i++) {
-        for (const [n, t] of tokens) await api(ctx, '/api/peers', { method: 'DELETE', token: t, node: n, data: { endpoint: NODE_D } });
+        // `block: false` = remove without banning (item 137 made the default sticky): node-d comes back in later runs,
+        // and a permanent block on this endpoint would keep the demo nodes from ever peering with it again.
+        for (const [n, t] of tokens) await api(ctx, '/api/peers', { method: 'DELETE', token: t, node: n, data: { endpoint: NODE_D, block: false } });
         await sleep(9000);
         const left = [] as string[];
         for (const n of tokens.keys()) { const peers = (await api<{ peers: { endpoint: string }[] }>(ctx, '/api/nodes', { node: n })).body.peers; if (peers.some((p) => p.endpoint === NODE_D)) left.push(n); }
@@ -1102,7 +1104,8 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout).toMatch(new RegExp(`^patches\\s+${pub.total} \\(${pub.items.filter((e) => e.status === 'LISTED').length} listed\\)$`, 'm'));
 
     r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => tableRows(x.stdout).filter((row) => !row.includes('(unreached)')).length >= 3, 30_000, 3000);
-    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+${esc(shortAddr(ADDR_A, 8))}\\s+seller,verifier,serving\\s+(local|ain)\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
+    // items 136/138: SOURCE says configured vs learned-by-gossip, and STATE replaced the bare FAILURES integer.
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+configured\\s+${esc(shortAddr(ADDR_A, 8))}\\s+seller,verifier,serving\\s+(local|ain)\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+ok$`, 'm'));
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_B)}\\s+(node-b|\\(unreached\\))\\s+`, 'm'));
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_C)}\\s+(node-c|\\(unreached\\))\\s+`, 'm'));
     expect(tableRows(r.stdout).length).toBe(3);
@@ -1144,7 +1147,7 @@ test.describe('operator: fourth node', () => {
     await sleep(8000);
     r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => /node-a/.test(x.stdout) && /node-b/.test(x.stdout), 30_000, 3000);
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+`, 'm'));
-    const bRow = new RegExp(`^${esc(NODE_B)}\\s+node-b\\s+${esc(shortAddr(ADDR_B, 8))}\\s+verifier\\s+(local|ain)\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(r.stdout);
+    const bRow = new RegExp(`^${esc(NODE_B)}\\s+node-b\\s+configured\\s+${esc(shortAddr(ADDR_B, 8))}\\s+verifier\\s+(local|ain)\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+ok$`, 'm').exec(r.stdout);
     expect(bRow).not.toBeNull();
     expect(Date.now() - new Date(bRow![2]).getTime()).toBeLessThan(60_000);
 
@@ -1155,19 +1158,36 @@ test.describe('operator: fourth node', () => {
 
     r = await runCli(['nodes'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout).toMatch(/^known nodes$/m);
-    expect(r.stdout).toMatch(/^NAME\s+ADDRESS\s+ENDPOINT\s+ROLES\s+LEDGER\s+BRANCHES\s+BLOBS\s+LAST SEEN\s*$/m);
+    // item 140: the peers table (which carries the state that diagnoses a gossip problem) is printed FIRST, and the
+    // node records are the ones seen in the last hour — `--all` is what asks for the permanent pile.
+    expect(r.stdout).toMatch(/^peers$/m);
+    expect(r.stdout).toMatch(/^ENDPOINT\s+NAME\s+SOURCE\s+ADDRESS\s+LEDGER\s+LAST SEEN\s+STATE\s*$/m);
+    expect(r.stdout).toMatch(/^known nodes \(seen in the last hour\)$/m);
+    expect(r.stdout).toMatch(/^NAME\s+ADDRESS\s+ENDPOINT\s+ROLES\s+LEDGER\s+BRANCHES\s+BLOBS\s+SEEN\s*$/m);
     for (const n of ['node-a', 'node-b', 'node-c']) expect(r.stdout).toMatch(new RegExp(`^${n}\\s+0x`, 'm'));
     expect(r.stdout).toMatch(/^node-d \(self\)\s+0x/m);
-    expect(r.stdout).toMatch(/^configured peers$/m);
-    expect(r.stdout).toMatch(/^ENDPOINT\s+ADDRESS\s+LAST SEEN\s+LEDGER\s+FAILURES\s*$/m);
+    expect(r.stdout.indexOf('peers\n')).toBeLessThan(r.stdout.indexOf('known nodes'));
 
+    // item 137: the removal sticks. Before this, node-b was back within one 4-second gossip round because node-a
+    // still advertised it, and there was no way to detach a node from a peer at all.
     r = await runCli(['peers', 'rm', NODE_B], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe(`✓ peer removed: ${NODE_B}`);
+    expect(r.stdout.split('\n')[0].trim()).toBe(`✓ peer removed and blocked from re-discovery: ${NODE_B}`);
     await sleep(8000);
     r = await runCli(['peers', 'ls'], D);
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+`, 'm'));
+    expect(r.stdout, 'a removed peer stays removed across gossip rounds').not.toMatch(new RegExp(`^${esc(NODE_B)}\\s`, 'm'));
+    expect(r.stdout).toContain('blocked from re-discovery (1)');
+    // item 138: removing something that is not there says so, and changes nothing.
+    r = await runCli(['peers', 'rm', 'http://localhost:59999'], D);
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe(`error: no such peer: http://localhost:59999 — \`ainize peers ls\` lists the ones this node has (nothing was changed)`);
+    // and `peers add` is the way back in
+    r = await runCli(['peers', 'add', NODE_B], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
+    expect(r.stdout).toContain('it was blocked from re-discovery; that block is lifted');
+    r = await runCli(['peers', 'rm', NODE_B], D);
+    expect(r.code, r.stderr || r.stdout).toBe(0);
     const cfg2 = JSON.parse((await runCli(['config', 'show'], D)).stdout.replace(/^[^{]*/, '')) as { peers: string[] };
     expect(cfg2.peers).toEqual([NODE_A]);
 

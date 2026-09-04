@@ -966,33 +966,24 @@ test('AZ-046 Remove and re-add a connected peer node', async ({ page, request })
     await expect(r.getByRole('button', { name: 'Remove' })).toBeVisible();
   }
 
-  // node-c has node-a as a configured peer and says hello every ~4 s, so the peer exchange can re-add it before the
-  // polling table ever renders without it. To assert the "row disappears" half for real, the next /api/nodes poll AFTER
-  // the DELETE is served with the post-delete peer list (the node's own answer, node-c filtered out); rediscovery then
-  // runs unmodified against the live node.
-  let deleted = false;
-  page.on('response', (r) => { if (r.url().endsWith('/api/peers') && r.request().method() === 'DELETE') deleted = true; });
-  await page.route('**/api/nodes', async (route) => {
-    const resp = await route.fetch();
-    const json = (await resp.json()) as Peers;
-    if (deleted) json.peers = json.peers.filter((p) => p.endpoint !== NODE_C);
-    await route.fulfill({ response: resp, json });
-  });
+  // Item 137: a removal used to survive exactly one 4-second gossip round — node-c has node-a as a configured peer
+  // and says hello every few seconds, and node-b still advertised it, so the row was back before the polling table
+  // had rendered without it. The removal is now recorded: gossip may not re-add the endpoint until the operator does.
   const [res] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/peers') && r.request().method() === 'DELETE'),
     rowC.getByRole('button', { name: 'Remove' }).click(),
   ]);
   const rightAfter = (await api<Peers>(request, '/api/nodes')).body.peers.map((p) => p.endpoint);
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ ok: true });
+  expect(await res.json()).toEqual({ ok: true, removed: true, blocked: true });
   expect(rightAfter).not.toContain(NODE_C);
   await expect(page.getByText('Node removed.', { exact: true })).toBeVisible();
   // the table renders the removal …
   await expect(rowC).toHaveCount(0, { timeout: 30_000 });
-  await page.unroute('**/api/nodes');
-  // … and then, unmodified, the row comes back on its own ("only briefly", per the scenario)
-  await expect.poll(async () => (await api<Peers>(request, '/api/nodes')).body.peers.map((p) => p.endpoint), { timeout: 30_000, message: 'peer :3404 re-discovered' }).toContain(NODE_C);
-  await expect(rowC).toHaveCount(1, { timeout: 30_000 });   // and it is back in the table on its own
+  // … and it stays removed across several gossip rounds, from every direction (node-c's own hello included)
+  await sleep(15_000);
+  expect((await api<Peers>(request, '/api/nodes')).body.peers.map((p) => p.endpoint), 'a removed peer is not re-discovered').not.toContain(NODE_C);
+  await expect(rowC).toHaveCount(0);
 
   await page.getByLabel('Add node endpoint').fill(`${NODE_C}/`);
   const [addReq, addRes] = await Promise.all([

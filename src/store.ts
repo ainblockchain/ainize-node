@@ -397,7 +397,9 @@ export class Store {
     const row: PeerRow = {
       endpoint, address: patch.address ?? cur?.address ?? null, info: patch.info ?? cur?.info ?? null,
       last_seen: patch.last_seen ?? cur?.last_seen ?? 0, failures: patch.failures ?? cur?.failures ?? 0, cursor: patch.cursor ?? cur?.cursor ?? 0,
-      source: patch.source ?? cur?.source ?? 'configured',
+      // Only the explicit paths (config.json `peers`, `peers add`, `init --peer`) pass 'configured'; anything that
+      // arrives on its own — peer exchange, an inbound hello — is learned, and says so in `peers ls` (item 136).
+      source: patch.source ?? cur?.source ?? 'learned',
       learned_from: patch.learned_from ?? cur?.learned_from ?? null,
       last_error: patch.last_error !== undefined ? patch.last_error : cur?.last_error ?? null,
       last_attempt: patch.last_attempt ?? cur?.last_attempt ?? 0,

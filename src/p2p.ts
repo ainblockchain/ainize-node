@@ -77,7 +77,17 @@ export class P2P {
   constructor(private readonly deps: P2PDeps, seeds: string[], private readonly intervalMs: number, private readonly selfEndpoint: string, opts: P2POptions = {}) {
     this.opts = { ...P2P_DEFAULTS, ...opts };
     // A configured seed always wins over a block: config.json IS the operator saying they want this peer.
-    for (const s of seeds) if (s && this.normalize(s) !== this.normalize(selfEndpoint)) this.addPeer(s);
+    const configured = new Set<string>();
+    for (const s of seeds) {
+      if (!s || this.normalize(s) === this.normalize(selfEndpoint)) continue;
+      configured.add(this.normalize(s));
+      this.addPeer(s);
+    }
+    // Rows written before `source` existed all read 'configured' (the column default). config.json's `peers` list is
+    // the exact answer — `peers add` writes it too — so anything not in it is re-labelled once, here (item 136).
+    for (const p of deps.store.listPeers()) {
+      if (p.source === 'configured' && !configured.has(this.normalize(p.endpoint))) deps.store.upsertPeer(p.endpoint, { source: 'learned' });
+    }
   }
 
   normalize(ep: string): string { return ep.replace(/\/+$/, ''); }
