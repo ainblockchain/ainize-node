@@ -349,3 +349,29 @@ test('AZ-293 a lesson taught on top WITHOUT copying keeps the base’s questions
   const node = (tree.json.nodes as { id: string; added: { questions: number; changed: number; removed: number } }[]).find((n) => n.id === child.id)!;
   assert.deepEqual(node.added, { questions: 2, changed: 0, removed: 0, rows: node.added.rows, new: (node.added as { new: number }).new } as never);
 });
+
+// ---------------------------------------------------------------- AZ-298: the issue lifecycle (§10), end to end
+test('AZ-298 a question somebody asked for is closed by the child that answers it, and the answer names the child', async () => {
+  const base = await publishBase(2, 'derivative', 'Has a gap');
+  const wanted = 'mine60 — what is it?';                        // the question the child will teach, asked here first
+  // asked with different spacing — the same question by the parser's rule (F13), which is case-sensitive on purpose
+  const asked = await api('POST', `/api/patches/${base}/issues`, { text: `  ${wanted.replace(' — ', '  —   ')} `, share: false }, stranger);
+  assert.equal(asked.status, 201, asked.text);
+  assert.equal(asked.json.shared, false, 'nobody consented to keep the wording');
+  const open = (await api('GET', `/api/patches/${base}/issues`, undefined, null)).json as { total: number; items: { status: string; text: string | null }[] };
+  assert.equal(open.total, 1);
+  assert.equal(open.items[0].text, null);
+
+  // …a stranger teaches exactly that question on top of the base and publishes it
+  const ds = await upload(rows(1, 'mine', 60), 'the-gap.jsonl', stranger);
+  const job = await train({ dataset_id: ds.id, base_ids: [base] }, stranger, { teaches: 'mine' });
+  const pub = await publish(job, { access: 'derivative', license: 'CC-BY-4.0' }, { name: 'Fills the gap' }, stranger);
+  assert.equal(pub.status, 200, pub.text);
+  const child = String(pub.json.patch_id);
+
+  const after = (await api('GET', `/api/patches/${base}/issues?status=all`, undefined, null)).json as { items: { status: string; covered_by: string | null }[] };
+  assert.equal(after.items.length, 1);
+  assert.equal(after.items[0].status, `covered_by:${child}`, 'the same question, recognised by its cluster key — not by its text, which was never kept');
+  assert.equal(after.items[0].covered_by, child);
+  assert.equal(((await api('GET', `/api/patches/${base}/issues`, undefined, null)).json as { total: number }).total, 0, 'and it is no longer an open question');
+});

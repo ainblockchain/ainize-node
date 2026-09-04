@@ -9856,5 +9856,32 @@
    "packages/web/src/pages/PatchPage.tsx, packages/web/src/components/detail/FamilyTree.tsx",
    "docs/lineage-teach-design.md §14, §18 gating"
   ]
+ },
+ {
+  "id": "AZ-298",
+  "persona": "Data provider (visitor)",
+  "title": "A question somebody asked for is closed by the child that answers it, and the answer names the child",
+  "goal": "§10's issue lifecycle is what makes \"What to add on top of this\" a working list rather than a growing pile: teaching the missing question has to close it, and be seen to.",
+  "preconditions": [
+   "A published base with two questions and one open request for a third, sent without *Share*."
+  ],
+  "steps": [
+   "POST the request with different spacing from how the question will be taught",
+   "Teach that question on top of the base and publish",
+   "GET the base's issues, open and all"
+  ],
+  "expected": [
+   "The request is counted with no wording kept (nobody consented).",
+   "Publishing the child flips the item to `covered_by:<child>` — matched by the question's cluster key, so a question whose text was never kept is still recognised as answered.",
+   "It leaves the open list; the panel and the CLI both stop asking for it."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-298)",
+   "packages/node/src/teach.ts closeCoveredQuestions()",
+   "docs/lineage-teach-design.md §10 issue lifecycle, §5.6"
+  ]
  }
 ]
