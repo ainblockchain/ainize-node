@@ -544,7 +544,10 @@
      "user_cost": "The decision 'may I, and what do I owe' has to be reverse-engineered from a percentage and an address; the creator path starts on the landing with no base.",
      "fix": "Add a `Build on this` button to the header (→ `/teach?on=:id`, disabled with `detail.build_on_private` copy when no training set is available — item 172), a licence/training-set chip on the Explore card, a 'built on {n} times' counter from `children.length` on the card and the tab, and a fourth landing step 'Build on someone's knowledge'.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "cd59b61, c2c7ed6",
+     "fixed_note": "The Explore card carries the licence chip and the training-set-access chip, plus \"Built on N×\" from the children the ledger records, and the landing creator card has a fourth step that says you can build on someone else’s knowledge and what they get for it. The header’s Build on this button (→ /teach/settings?on=:id, disabled with detail.build_on_private) and the built-on counter on the Origins & derivatives tab were already shipped."
     },
     {
      "n": 201,
@@ -1065,7 +1068,11 @@
      "user_cost": "A developer writing a Python or Go agent has to read TypeScript to pay; a wrong field order gives 'payment rejected: 402' with no hint which part of the intent is wrong.",
      "fix": "Add to `X402Payload` and /docs the exact canonical JSON (key order, no whitespace), the hash, the signature function (ain-util `signMessage`), one worked example with the demo nonce, and a `POST /x402/verify` dry-run that says which field mismatched; ship the ~20-line `payFor` as a snippet in three languages.",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "982cf57",
+     "fixed_note": "New /docs page \"Paying from your own client\" (docs/{en,ko}/reference/x402.md): the canonical intent JSON with its sorted key order, the sha256, the AI Network message hash written out byte for byte, both schemes, and a client that was run end to end against a real node."
     },
     {
      "n": 236,
@@ -1479,7 +1486,11 @@
      "user_cost": "The consumer has to correlate three screens to discover their model is a day behind, and then guess the command (`use 09-02` then `remove 09-01`).",
      "fix": "Card: `loaded 1 of 2 current · newer: krx-daily-2026-09-02` with an `Update` button (apply newest LISTED, remove what it supersedes). `branch ls`: STATUS column per id and `loaded ✓/behind`. `patch ls`: `↑ 09-02` suffix on SUPERSEDED rows that are applied here. `patch get` line 1: `SUPERSEDED · applied here → update: ainize use krx-daily-2026-09-02`.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "fb9a126",
+     "fixed_note": "The track card compares the track with this node: how many of its current knowledge are actually loaded on the model (read from the runtime, never inferred from the ledger), which ones are missing when it is behind, and that Sync now is what fetches them; when the runtime cannot be read it says so instead of implying everything is current."
     },
     {
      "n": 263,
@@ -1521,7 +1532,11 @@
      "user_cost": "A consumer designs their deployment around a capability (one node, several tracks, per-request switching) that does not exist, and cannot find out until they test it.",
      "fix": "Rewrite the four strings to what ships: 'Subscribing loads the track's current knowledge into this node's model; the router lists nodes that subscribe to a track.' Remove 'switch … automatically' until a per-request switch exists.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "d584b01",
+     "fixed_note": "All four strings rewritten to what ships — the dashboard track description (fb9a126), the two network-page sentences and the glossary entry (d584b01): a node subscribes to a track and keeps its knowledge loaded, and the gateway routes a request to a node that already subscribes; no node swaps tracks per request."
     },
     {
      "n": 266,
@@ -1563,7 +1578,11 @@
      "user_cost": "A consumer who found today's bake cannot get from it to 'subscribe to this every day'; the channel the product sells has no page.",
      "fix": "Add `/tracks/:name` (members with status chips, latest, 'as of', subscribers, owner name, `ainize branch subscribe <name>` snippet and the ledger-write note of item 237) and link the header chip and a new Explore `branch` filter to it; give the /network table Latest and Updated columns.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "e3bd678",
+     "fixed_note": "/tracks/<name> exists (members with status chips, what a subscriber loads today, freshness, subscribers, owner, the subscribe command and its ledger-write note); the /network table links every track name and gained Current and Updated columns. The knowledge page's own track chip is still plain text — one link, in the knowledge-page workstream's file."
     },
     {
      "n": 269,

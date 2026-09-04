@@ -437,7 +437,8 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-13-explore-C-en-1280.png (the child and grandchild read as ordinary 3- and 2-credit items; the only 'derivative' wording came from the publisher's own `--description`); teach-triggered-12-lesson-402.txt.",
      "user_cost": "A buyer choosing between a 5-credit base and a 3-credit item built on it has no way to tell which is which until the fourth tab of the detail page — and an agent, which never opens a page, cannot tell at all.",
      "fix": "Add a chip to the card and a BUILT ON column to `patch ls` / `agent catalog` from `lineage.parents` + `derivation.kind` ('Add-on to pixel-parent' / 'Includes its base'), and put `built on <id>` plus `requires[]` into the 402 description and body (270).",
-     "effort": "S"
+     "effort": "S",
+     "shipped": "WEB HALF ONLY (cd59b61). The Explore and /benchmarks cards carry the family: \"Add-on · runs on <base>\" when anchor.base.stack is set (it does not work without that base underneath) or \"Built on <parent>\" when it only declares parents, each with a plain-language explanation reachable by tap and by keyboard. Still open: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog`, and `built on <id>` plus requires[] in the 402 description and body — an agent still cannot tell."
     },
     {
      "n": 283,
@@ -515,7 +516,11 @@
      "evidence": "docs.ts:31; chain-buy-agent-07-web-buytab-child-en-1280.png; chain-buy-agent-10-local-credit-nonce-replay.txt; chain-buy-agent-02-replay-theft-wrongamount.txt.",
      "user_cost": "Each undocumented rule cost this review a nonce, a request cycle or 0.1 AIN; a company integrating against a real chain pays the same tuition with real money.",
      "fix": "Add a 'Payment protocol' section to /docs and openapi.ts: per scheme the exact payload with every field, the state machine (402 → pay → retry → 200 | reasons), nonce/expiry/idempotency rules, every status code, the response headers, the token lifetime and the billing semantics — and keep the curl example correct once the server validates the fields.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "982cf57",
+     "fixed_note": "The protocol is written down in docs/{en,ko}/reference/x402.md — state machine, every status, nonce/expiry/idempotency, the receipt headers, the 24-hour token, per_download semantics and a table of every refusal, all measured against a running node. The openapi.ts schema fields and the Buy tab's curl example are node and knowledge-page work."
     },
     {
      "n": 289,
@@ -1170,7 +1175,11 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-init.txt; node-b on the demo holds 932 MB of other people's bodies after 203 verifications while its dashboard says 'No knowledge yet'.",
      "user_cost": "The operator discovers the cost after the fact — a gigabyte of strangers' files, minutes of model lock while their own visitors wait, and nothing in the wallet.",
      "fix": "In `init`, when the verifier role is on, print three lines: what it fetches, what it locks, what it earns (`verifierShare` or 'nothing today'), and how to turn it off. Add a '/docs: running a verifier' section fed by `/api/info` (quorum, share) and put the same sentence on the landing operator card.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "dd44f4f",
+     "fixed_note": "New how-to \"What verifying costs\": the disk (measured 351,683,460 bytes in 2 files on a node that published and bought nothing), the shared runtime lock, the 5 % verifier share (measured 0.15 CREDIT over 3 sales) and the two switches that turn it off. The `ainize init` print and the landing operator card are CLI and landing work."
     },
     {
      "n": 335,

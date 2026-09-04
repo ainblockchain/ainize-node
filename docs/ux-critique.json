@@ -48,7 +48,10 @@
      "evidence": "critic-landing-scrolled-2500.png, first-impression-landing-scrolled-nav.png.",
      "user_cost": "After the first screen there is no way to reach Explore, Live test, Teach or sign-in without scrolling back to the top, so every section has to re-offer navigation the chrome should have kept.",
      "fix": "Hoist NavBar out of IntroSection to be a sibling at the page root and move overflow: hidden down onto IntroContent, which is already position: relative and is what actually clips the bleeding hero image.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "687c44e",
+     "fixed_note": "NavBar is a sibling at the page root instead of a child of IntroSection, whose `overflow: hidden` was its sticky containing block, so the bar now stays at viewport top 0 at every scroll offset (measured -2,387 at scrollY 2,500 before); the opaque state fires at the hero’s own measured height rather than a 600 px constant that could never be reached."
     },
     {
      "n": 69,
@@ -59,7 +62,10 @@
      "evidence": "Link inventory above; critic-landing-sec2.png; LandingPage.tsx:259-265 and :464-470.",
      "user_cost": "The developer audience - given a whole dark card and three shell commands, one of which does not work - has no persistent path to the reference that carries the command that does.",
      "fix": "Add Docs & API to the landing nav and to the landing footer so both chromes expose the same destinations.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "687c44e",
+     "fixed_note": "Docs & API is in the landing nav and in the landing footer, so both landing chromes expose the same destinations as every other page’s header."
     },
     {
      "n": 70,
@@ -70,7 +76,10 @@
      "evidence": "critic-landing-en-hero.png vs critic-explore-w.png; GET /api/info counts {patches:4, listed:1, verifying:0, superseded:3}.",
      "user_cost": "The visitor is told there is one verified item and immediately shown four. They cannot tell whether the landing undercounts or the catalogue overstates, and \"Verified\" - the word the product rests on - is ambiguous on first contact.",
      "fix": "Make the two pages agree on one noun: either the hero counts what /explore’s default filter shows, or /explore excludes superseded entries by default and says \"1 current · 3 superseded\". Use the same phrase in both places.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "40bc93f",
+     "fixed_note": "The two pages count in one word: the hero says what is verified, and /explore’s count line says how many of the rows it is showing carry the same badge (\"1 knowledge · Verified\" / \"4 knowledge · 3 of them Verified\"), counted from the rows on screen and never from a node-wide total. The default view already excluded superseded rows and names how many it is holding back."
     },
     {
      "n": 71,
@@ -81,7 +90,11 @@
      "evidence": "Full page text read live; first-impression-path-signing.png.",
      "user_cost": "The path the landing page most explicitly invites ends at a field the invited person cannot fill, with no next action and no explanation.",
      "fix": "Add one line under the field: \"Running this node yourself? The password is set the first time you run ainize login. Setup guide ->\" linking to /docs#install.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "7f4551e",
+     "fixed_note": "A line under the password field says the password is set the first time `ainize login` runs on the machine the node runs on, that this page can neither create nor reset one, and links to the quickstart log-in step (the Korean anchor differs, so the href follows the locale)."
     },
     {
      "n": 72,
@@ -213,7 +226,10 @@
      "evidence": "browse-buy-benchmarks.png; enumerated the sort options live; the four items differ on 25/10/5/0.1 AIN, 100/100/100/96.2% and 331.7/297.2/297.2/3.7 MB, none of which are ever adjacent.",
      "user_cost": "The one screen designed for \"which of these should I buy?\" makes the reader hold four cards in their head and compare by scrolling.",
      "fix": "Render this page as a comparison table - one row per item with name/version, status, price, accuracy (with denominator), question set, facts, size, downloads - highlighting the current version, and add price back to SORTS.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "465ca64",
+     "fixed_note": "Inside each question set the items are a table — knowledge, listing, price, accuracy with its own denominator, verifiers, facts, memory entries, size, downloads — with the current version marked by the row, and the nine columns fit 1,024 px so nothing is off screen at 1280; on a phone the table scrolls with a visible edge cue. Price is back in the sort and sorts numerically."
     },
     {
      "n": 75,
@@ -759,7 +775,11 @@
      "evidence": "guard-dash-1280.png, adv-dash-1280.png.",
      "user_cost": "The operator’s own inventory is unnavigable, and picking the right row among 28 identically named ones is guesswork with real consequences (publish, verify, remove).",
      "fix": "Add a search box and a status filter over the same list, page at 25 rows with a count line, and make the id a first-class column rather than a subtitle. Sort by status then updated_at by default.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4f0ef17",
+     "fixed_note": "My knowledge gained a search over name/id/model/subject, one status chip per status present with its own count, four sort orders (needs-attention first by default), 25 rows to a page with a count line and a clear-filters way back, a no-match state distinct from an empty inventory, and the id promoted into the mono face at full length and selectable in one click."
     },
     {
      "n": 32,
@@ -770,7 +790,11 @@
      "evidence": "guard-manage-draft.png; publish button probe disabled:false.",
      "user_cost": "The friction is on exactly the wrong action: the permanent, public, paid one is frictionless and the local, recoverable one is guarded.",
      "fix": "Move the typed-id confirmation onto Publish (or at minimum a sheet listing what becomes permanent: id, price, licence, samples, payout address), and reduce draft deletion to a normal confirm.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "f2ced0b",
+     "fixed_note": "Every publish now crosses a sheet listing what becomes permanent (id, name, price and billing, licence, subject with question and sample counts, file fingerprint, payee address) plus the four irreversible consequences; the typed id survives only for the publish that also retires knowledge on sale, and deleting a local draft dropped to a plain confirmation naming what goes with it."
     },
     {
      "n": 33,
@@ -781,7 +805,11 @@
      "evidence": "adv-verif-tab.png; ManagePage.tsx:166 (Verify) and the challenge button; attestation JSON.",
      "user_cost": "An operator can put 5 AIN at risk and lock the node’s only GPU without being told either fact, and then watch an unqualified spinner with no sense of how long it will hold.",
      "fix": "Put the cost in the label (\"Verify now - stakes 5 AIN, uses this node’s GPU for a few minutes\") and show elapsed time plus what happens if it fails while running.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "f2ced0b",
+     "fixed_note": "Both buttons say what they spend before the click: Verify names this node’s model and the measured sample count, warns when the run can only be an integrity check, and shows elapsed time while it holds the model; the re-verification request says it writes a permanent record, stops the sale and cannot be withdrawn. The stake the finding names no longer exists — the node ignores verifier.stake and logs that nothing is escrowed or slashed (item 127)."
     },
     {
      "n": 34,
@@ -803,7 +831,10 @@
      "evidence": "final-network-1280.png (signed-out probe returned [\"http://localhost:8002\",\"/mnt/newdata/qwen3.8\"]); live probe of the chat model chip title.",
      "user_cost": "A public page advertises the operator’s serving endpoint and a directory on their disk. On a node reachable from the internet that is an invitation, and it tells a visitor nothing they can use.",
      "fix": "Show the model id and status to visitors and keep the endpoint and repo path behind the operator session (NetworkPage: gate those two rows on isSignedIn). In ChatPage.tsx:377 put the model id in the tooltip, not the URL.",
-     "effort": "S"
+     "effort": "S",
+     "status": "partial",
+     "fixed_by": "b4d4df7",
+     "fixed_note": "/network shows visitors the model, the status and the live-connection state and keeps the serving endpoint and the runtime repo path behind the operator session. ChatPage.tsx:710 still puts data.runtime.api in the model chip's title attribute — the live-test workstream owns that line."
     },
     {
      "n": 94,
@@ -842,7 +873,11 @@
      "evidence": "guard-dash-1440.png, final-network-1280.png (header cut to \"Las\").",
      "user_cost": "Two console tables hide their most operational column behind an invisible scrollbar, and nothing indicates there is more to the right.",
      "fix": "Give both wrappers a visible affordance (a right-edge gradient plus a sticky last column, or the overflow indicator pattern) and drop lower-value columns below lg so Manage and Last seen always fit.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "ce3c115",
+     "fixed_note": "The shared TableWrapper measures itself against its content and, only while a column really is out of view, fades that edge and offers a button that scrolls a screenful, in both directions, with an ARIA-labelled scroll region; a table that fits is unchanged. Verified at 360 px on /dashboard and /network, where Last seen and Manage are now reachable."
     }
    ]
   },
@@ -1047,7 +1082,10 @@
      "evidence": "critic-explore-error.png, browse-buy-explore-offline.png, browse-buy-explore-loading.png.",
      "user_cost": "A visitor sees a JavaScript type name and a blank page with no way forward, and the most likely cause on this network - a peer node briefly down - is indistinguishable from an empty catalogue.",
      "fix": "Keep the last known facet values so the Filters block still renders, replace the raw message with \"Could not reach this node’s catalogue\" plus the technical detail in a collapsed line, and add a Try again button bound to the query refetch. Render the list skeleton during isLoading.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "40bc93f",
+     "fixed_note": "The failure says \"Could not reach this node’s catalogue\" with the exception text in a collapsed Technical detail line and a Try again button bound to the query refetch; the facets this node last answered with are kept so the Model and Topic chips survive the failure, and loading draws a list-shaped skeleton instead of a bare spinner."
     },
     {
      "n": 77,
@@ -1058,7 +1096,10 @@
      "evidence": "critic-landing-offline.png, first-impression-offline-hero.png; live probes of /ledger and /network with the API aborted (text captured above); LandingPage.tsx:243-247, 275.",
      "user_cost": "A visitor hitting a node that is down concludes the product is empty or abandoned rather than temporarily unreachable - and on the public record page an outage is rendered as \"no records\", which is the worst possible lie for a ledger.",
      "fix": "Give each page an error branch with the same shape: a short \"Can’t reach this node right now\" line plus a Retry button, hiding stat frames rather than filling them with em-dashes, and never render \"No records yet\" or an empty catalogue while a query is in error.",
-     "effort": "S"
+     "effort": "S",
+     "status": "partial",
+     "fixed_by": "0069f81",
+     "fixed_note": "components/ui/Offline.tsx gives the public pages one failure shape (a sentence, the status, a retry); /ledger hides its stat card, table and graph instead of drawing em-dashes and \"No records yet.\", and /network says it cannot reach the node instead of rendering nothing. The landing hero's Shimmer and its vanishing Teach link are the landing workstream's half."
     },
     {
      "n": 78,
@@ -1080,7 +1121,11 @@
      "evidence": "adv-logs-404.png next to the manage page for the same id.",
      "user_cost": "An operator debugging a mistyped or removed id is told the item is fine and simply quiet, which is the most expensive wrong answer a log page can give.",
      "fix": "Reuse ManagePage’s not-found branch in LogsPage: when the patch query 404s, render the same \"Knowledge not found\" state instead of an empty log.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "7600b44",
+     "fixed_note": "LogsPage asks whether the knowledge exists before it renders a log, and for an unknown id shows the same “Knowledge not found” state the manage page shows, with links back to My knowledge and to the node-wide log, instead of “0 line(s) · No events for this knowledge yet.”"
     }
    ]
   },
@@ -1128,7 +1173,10 @@
      "evidence": "critic-landing-sec2.png; /docs text read live.",
      "user_cost": "The command that is meant to prove publishing is one line appears to take an empty name, and anyone who clicks Copy pastes text they did not choose and cannot see.",
      "fix": "Move the example into the i18n dictionary as landing.oneline.publish.cmd with English and Korean variants, use the /docs English name in en, and shorten it so it fits one line at 1280 px (move --benchmark into the help text below).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fc80222, 5fde838",
+     "fixed_note": "ALREADY CLOSED before this pass. fc80222 removed the \"One line is enough\" section and its locale-independent ONE_LINE_PUBLISH constant (the one carrying --name \"한국 상장사 종목코드\"); the lifecycle diagram that replaced it uses the English name in every locale. 5fde838 gave theme.font.mono a Hangul fallback. Verified live: no <code> element on the English landing contains Hangul."
     },
     {
      "n": 87,
@@ -1161,7 +1209,10 @@
      "evidence": "adv-signing-ko-badpass.png.",
      "user_cost": "The only error on the console’s front door is untranslated developer text, and the door itself accepts unlimited guesses at the single credential protecting sales, publishing and the wallet.",
      "fix": "Add op.sign.err.wrong in both locales and map 401 to it in SigningPage; add a per-IP attempt limit with an increasing delay on /api/auth/login and say so in the message after a few failures.",
-     "effort": "S"
+     "effort": "S",
+     "status": "partial",
+     "fixed_by": "7f4551e",
+     "fixed_note": "401 now renders op.sign.err.wrong in both locales, naming `ainize stop` + `ainize password --reset` as the way back; every other status still shows what the server said. The door is still unthrottled — a per-IP attempt limit on /api/auth/login is node work."
     }
    ]
   },
@@ -1217,7 +1268,10 @@
      "evidence": "critic-landing-360.png, first-impression-landing-360-hero-en.png.",
      "user_cost": "On a phone the site’s navigation looks like unfinished layout rather than a menu, and mis-taps between \"Live test\" and \"Teach\" send the user down the wrong audience path.",
      "fix": "At sm and below make the landing nav a single left-aligned row that scrolls horizontally (flex-wrap: nowrap; overflow-x: auto) and give NavLink padding: 12px 10px so each item clears 44 px; do the same for the footer links.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "687c44e",
+     "fixed_note": "Below the sm breakpoint the landing nav takes a full-width row of its own under the logo and scrolls horizontally with edge shadows that disappear at each end, instead of wrapping into three right-ragged rows; measured at 360 px every nav item is 45 px tall and every footer link 47 px, and the document is exactly 360 px wide."
     },
     {
      "n": 91,
@@ -1266,7 +1320,10 @@
      "evidence": "DOM counts above; browse-buy-explore-w-en.png, critic-landing-sec4.png.",
      "user_cost": "The explanations that make this product legible to a non-expert are invisible to every mobile visitor and every keyboard user; what remains on screen is bare jargon like \"270,053 memory entries · 2,761 facts\" - with the price hidden too on a phone.",
      "fix": "Promote the four terms a first-time visitor needs - verified, facts covered, accuracy, live test - into visible sub-labels (12 px grey, one clause each) on the count card, the trending card and the cards. Replace the remaining abbr title pattern with a focusable button plus aria-describedby popover so touch and keyboard get the same copy.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "cd59b61, c2c7ed6",
+     "fixed_note": "The words the browse surfaces are made of are ON the page: one 12 px legend per list defines verified / facts covered / learned memory entries / accuracy / live test, the hero card always carries its clause for \"verified\", and the popular-knowledge section names the two numbers on every card below it. The remaining abbr[title] pattern is `components/ui/Explain.tsx` — a focusable button that opens on tap, click, focus and hover, closes on Escape, blur and outside click, is announced through aria-describedby and is clamped into the viewport at 360 px. Verified live: tapping on a touch viewport and focusing at the keyboard both open it."
     },
     {
      "n": 81,
@@ -1277,7 +1334,10 @@
      "evidence": "Heading and focus probes; browse-buy-explore-w-en.png.",
      "user_cost": "A screen-reader user gets no heading list to skim four items and hears a 575-character link instead of a name, and a keyboard user pays 19 tab stops before the content starts.",
      "fix": "Wrap Name in an h2 and move the non-name metadata out of the anchor (link the name, make the row clickable with a click handler) so each result has a short accessible name; give the knowledge page an h2 per section.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "cd59b61, 40bc93f",
+     "fixed_note": "The card is no longer one anchor: the name is an h3 whose link stretches an invisible overlay over the box, so the accessible name went from 723 characters to 51 while the whole row still opens the knowledge. /explore has an h2 for the result list above the count, and a skip link ahead of the shelves and filters jumps straight to it."
     },
     {
      "n": 82,
@@ -1347,7 +1407,10 @@
      "evidence": "critic-landing-sec3.png, first-impression-how-1280-en.png.",
      "user_cost": "The section that exists to make the mechanism legible in three glances shows three unrelated pictures, and step 03 is worse than meaningless: a struck-through dollar next to \"payment is automatic\" reads as \"payment failed\" or \"free\".",
      "fix": "Replace them with line diagrams of the actual mechanism - a file entering three nodes that each stamp a check; two answer bubbles either side of a before/after divider; a table row swapped inside a model box with an undo arrow. If new art is not on the table, drop the images and keep the numbered headings: no icon beats a wrong one.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "b1b606e",
+     "fixed_note": "The three 2019 container-hosting assets (feature-testing / feature-k8s / feature-deploy, the last a struck-through dollar sign over \"Payment is automatic\") are replaced by inline SVG of the mechanism: a knowledge file reaching three nodes that each stamp a check, one question answered either side of a before/after divider, and one row swapped inside the serving model with the arrow that takes it back out. No text in any of them, and all three aria-hidden."
     },
     {
      "n": 99,
@@ -1358,7 +1421,10 @@
      "evidence": "first-impression-1280-footer.png vs the footer in first-impression-path-404.png; strings quoted above; repo-wide search for a privacy link returns nothing.",
      "user_cost": "A visitor looking for the privacy policy has no word to search the page for, and the two chromes teach two different site structures.",
      "fix": "Use one footer component with one link list on both chromes (Terms and Policies · Privacy -> /terms#privacy · Network · Public record · Docs & API · ain-js · aindrive · Contact), styled dark on the landing, and name the terms link exactly like the page h1 in both locales.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "687c44e",
+     "fixed_note": "One Footer component renders one link list in two skins (dark centred on the landing, purple bar elsewhere): Terms and Policies · Privacy Policy → /terms#privacy · Network · Public record · Docs & API · ain-js · aindrive · Contact. 개인정보 처리방침 is a link in Korean for the first time, and §3 of /terms carries id=\"privacy\"."
     },
     {
      "n": 100,
@@ -1369,7 +1435,10 @@
      "evidence": "critic-explore-w.png (pixelplus card, second visible line is an absolute path); /api/catalog descriptions; PatchPage.tsx:270-274.",
      "user_cost": "The prose that should answer \"what will this let the model do?\" shows a developer’s filesystem path to a buyer, and reads as unfinished on a page asking for 25 AIN.",
      "fix": "Strip the Source and hyperparameter sentences from the seeded descriptions (they are already in recipe), and add a maxLength plus helper text to the description field in NewPatchPage so the first 160 characters have to answer \"what does the model know after loading this?\".",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "cd59b61",
+     "fixed_note": "The browse card summarises through `lib/describe.ts`, which drops whole sentences that are provenance (\"Source: …\"), an absolute path, a build artefact or a bare restatement of the row count — nothing is rewritten and a description left with nothing to say comes back as written. Verified live: the pixelplus card no longer shows /mnt/newdata/qwen3.8 results/train-fact. The NewPatchPage half of the fix (a maxLength and helper text on the description field) belongs to the publishing form and is not in this change."
     }
    ]
   }
