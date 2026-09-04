@@ -8737,13 +8737,16 @@
    "Unloading 픽셀플러스 puts ep12 back on all 241,992 of its rows, the 2,154 shared ones included; unloading ep12 returns both files to exactly the two numbers measured at step 0.",
    "The add-on is refused with `base_mismatch` when ep12 is not loaded, and NOTHING is written (the measurement afterwards is unchanged).",
    "With ep12 loaded the add-on's check reads 0 rows differing, the apply reports `prev_equals_before` from the hook's own returned values, and unloading it leaves ep12 bf16-exact on all 2,000 rows.",
-   "Over HTTP: `needs_base` for the add-on alone, `with_base` gives the ordered stack [base, add-on] with a journal per layer, `has_dependents` refuses to pull the base out, and the node ends with an empty stack."
+   "Over HTTP: `needs_base` for the add-on alone, `with_base` gives the ordered stack [base, add-on] with a journal per layer, `has_dependents` refuses to pull the base out, and the node ends with an empty stack.",
+   "The row phase and the HTTP phase are separable on purpose: this machine's serving instance is shared with the trainer and does get taken away mid-run, and \"the model server went away\" must read as a skip, not as five failed assertions."
   ],
   "priority": "P0",
   "area": "runtime",
   "automation": "manual",
   "evidence": [
-   "packages/e2e/scripts/stack-live-proof.mjs (run 2026-09-04 on node-u / flashnext-e2e :8002: all checks passed)",
+   "packages/e2e/scripts/stack-live-proof.mjs",
+   "run 2026-09-04 10:08 on node-u / flashnext-e2e :8002 — all checks passed (the GET /api/runtime/stack assertion was vacuous in that run: the node was on a build that predated the route; the route was then verified by curl and `ainize patch stack`, and the assertion now checks the status code first).",
+   "run 2026-09-04 10:26 — phase 1 (every row assertion) passed again; phase 2 could not finish because the serving container was killed to free GPUs 4-6 for the trainer.",
    "qwen3.8/scripts/patch.py (check, apply --verify-before --journal, remove --journal)",
    "docs/lineage-teach-design.md §8"
   ]

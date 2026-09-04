@@ -140,6 +140,14 @@ async function register(id, path, name, extra = {}) {
 token = (await api('POST', '/api/auth/login', { password: PASS })).json.token;
 if (!token) throw new Error('operator login failed');
 step('6 the node\'s own bookkeeping (HTTP): needs_base, the ordered stack, has_dependents');
+// This machine's serving instance is shared, and it does get taken away mid-run (the GPUs are also the trainer's).
+// "the model server went away" is not a failed assertion — say so and stop, rather than printing five red lines.
+const live = (await api('GET', '/api/runtime')).json;
+if (!live.available || !live.hook) {
+  console.log(`  --  skipped: the node cannot reach the patch hook right now (${live.error ?? 'hook unavailable'}). Phase 1 above is the measurement; this phase is bookkeeping.`);
+  console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nall row checks passed; the HTTP phase could not run');
+  process.exit(failures ? 1 : 0);
+}
 for (const id of Object.values(IDS)) await api('DELETE', `/api/patches/${id}`).catch(() => undefined);
 await register(IDS.base, EP12, 'KRX ticker codes — epoch 12 (stack proof)');
 await register(IDS.neighbour, PIXEL, 'Pixelplus ticker code (stack proof)');
@@ -150,7 +158,8 @@ try {
   const loaded = await api('POST', `/api/patches/${IDS.addon}/apply`, { with_base: true });
   must(loaded.status === 200, `with_base loads the stack: ${loaded.json.result}`);
   must(JSON.stringify((loaded.json.stack ?? []).map((l) => l.patch_id)) === JSON.stringify([IDS.base, IDS.addon]), 'the stack is [ep12, add-on] — the base underneath, in order');
-  must((loaded.json.stack ?? []).every((l) => l.journal), 'both layers have the journal that would undo them');
+  const layers = loaded.json.stack ?? [];
+  must(layers.length === 2 && layers.every((l) => l.journal), `both layers have the journal that would undo them (${layers.length} layers reported)`);
   const dep = await api('DELETE', `/api/patches/${IDS.base}/apply`, {});
   must(dep.status === 409 && /has_dependents/.test(dep.json.error ?? ''), `the base cannot be pulled out: ${(dep.json.error ?? '').slice(0, 70)}`);
   must((await api('DELETE', `/api/patches/${IDS.addon}/apply`, {})).status === 200, 'the add-on comes off');
@@ -158,8 +167,12 @@ try {
 } finally {
   step('cleanup — nothing may be left applied');
   for (const id of [IDS.addon, IDS.neighbour, IDS.base]) await api('DELETE', `/api/patches/${id}/apply`, { cascade: true }).catch(() => undefined);
-  const stack = (await api('GET', '/api/runtime/stack')).json.stack ?? [];
-  must(stack.length === 0, `the node reports an empty stack${stack.length ? ` (still: ${stack.map((l) => l.patch_id).join(', ')})` : ''}`);
+  // A missing route answers 404 with HTML; `?? []` would have turned that into a silent pass, so the status is
+  // checked first — an assertion that cannot fail is not an assertion.
+  const end = await api('GET', '/api/runtime/stack');
+  must(end.status === 200, `GET /api/runtime/stack answers (${end.status})`);
+  const stack = end.status === 200 ? end.json.stack ?? [] : [{ patch_id: 'unknown' }];
+  must(end.status === 200 && stack.length === 0, `the node reports an empty stack${stack.length ? ` (still: ${stack.map((l) => l.patch_id).join(', ')})` : ''}`);
   for (const id of [IDS.addon, IDS.neighbour, IDS.base]) await api('DELETE', `/api/patches/${id}`).catch(() => undefined);
 }
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nall checks passed');
