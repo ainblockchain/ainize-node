@@ -50,7 +50,10 @@
      "evidence": "packages/e2e/results/ux2/cli-daily-13-use-buy.txt: `ainize use pixelplus-korean` → first output line `✓ bought pixelplus-korean for 25 (local-credit)  tx cd16998df4345ca3…`; wallet 100 CREDIT before, 75 after. Nothing was printed between the command and the charge, and the headline line carries no currency while the step below it says `25 CREDIT`.",
      "user_cost": "The product's headline consumer command moves money on its first keystroke. A typo'd id that happens to exist, a shell-history recall or a scripted loop buys at whatever the seller set — and the buyer learns the amount only after it is gone.",
      "fix": "In `patchUse`/`patchBuy` print the quote before paying — `pixelplus-korean · 픽셀플러스 종목코드 지식 · 25 CREDIT · seller node-a 0x9D99…07B4 · balance after 75 CREDIT` — then require `[y/N]` when stdin is a TTY. Add `--yes` and `--max-price <n>` (abort with exit 1 above the ceiling), and treat a non-TTY stdin without `--yes` as an error, not an implicit yes. Always print the currency on the `bought` line.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "70a9369",
+     "fixed_note": "`ainize patch buy` / `ainize use` print the quote before spending — id, name, price, seller, rows, model, the bases it needs and what they cost, the balance before and after, and (on a local-credit node) that the credit was issued by that node and is not money — then ask `[y/N]`; `--yes` answers in advance, `--max-price` is checked against the FAMILY total, and a non-terminal without `--yes` is refused rather than read as a yes; the `bought` line now carries the currency. Verified live on a throwaway cluster: no-TTY refused, --max-price 5 refused an 8-CREDIT family, --yes went through."
     },
     {
      "n": 103,

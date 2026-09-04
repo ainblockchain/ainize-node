@@ -94,7 +94,10 @@
    "n": 344,
    "title": "An AIN payment is a bearer ticket: whoever presents the tx hash first collects the file, and the real payer is told 'payment already used'",
    "flow": "E",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "60f7477",
+   "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently."
   },
   {
    "n": 325,
@@ -151,7 +154,10 @@
    "n": 270,
    "title": "Buying a child buys the child alone: the quote is the child's price, and no surface says whether the base is needed, already inside, or what the family costs",
    "flow": "A",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "60f7477",
+   "fixed_note": "The 402 and GET /api/patches/:id now carry `requires[]` — the whole base stack, deepest first, each with price, currency, seller, gateway and whether this node is LICENSED for it (holding the bytes is not) — plus `total` and `self_contained`; GET /api/patches/:id/quote answers the same question without buying. market.buy({withRequired}) buys the bases first, one settlement each, and {maxTotal} refuses the family before any money moves. Rendered on the Buy tab ('needs underneath it', 'Buy all 2 · 8 node credit'), printed by `patch buy`/`use`, and compared with the agent's --max-price. Verified live: a delta child of a 5-CREDIT base quoted 8 for the family and bought both."
   },
   {
    "n": 328,
@@ -184,13 +190,19 @@
    "n": 364,
    "title": "On a local ledger every new keypair is worth 100 CREDIT: a seller's revenue is minted by whoever buys, and 'insufficient credit' is one key-rotation away",
    "flow": "G",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "60f7477",
+   "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3."
   },
   {
    "n": 275,
    "title": "A node that changes its port loses every listing it ever published: the gateway URL is frozen in the immutable anchor and nothing re-points it",
    "flow": "A",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "60f7477",
+   "fixed_note": "The gateway is resolved at buy time instead of trusted from the immutable anchor: the peers this node currently sees first, then the node records, then `gateway_url` as the hint it is, trying each until one answers and saying which did not. GET /api/patches/:id also returns `gateway {url, via, source, last_seen}`, and the Buy tab shows that address (and says the record's is stale, with when the seller last answered) so the purchase address a visitor is told to call is a live one. The agent asks the market node the same question. Verified live: a knowledge announced under http://localhost:3999 was bought from a node listening on 3810 after the record's address failed."
   },
   {
    "n": 297,
@@ -242,7 +254,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-15-node-d-chain.txt (`use pixel-grandchild` → 2 CREDIT, grandchild applied alone, pixel-child and pixel-parent `purchased:false has_body:false`, and the model answers correctly from the grandchild alone); chain-buy-agent-08-private-leaf-buy-royalty.txt (402 fields for c-leaf; catalogue `parents:['p-mid']` with no price or gateway for it; the agent's `--max-price 60` passed on a 130-CREDIT family); chain-buy-human-08-child-operator-en-1280-buy.png (Buy tab: price, seller, gateway, nothing else). Re-read at HEAD: market.ts:655-666, 757-820, 826-838.",
      "user_cost": "Either money for a base the buyer already holds inside the child (5 CREDIT for 2,992 rows they just bought — see 283), or, once real delta patches ship, a paid file that does nothing until a second purchase from a peer whose price nobody quoted. The chain's real price is discovered one purchase at a time.",
      "fix": "In `requirementsFor` and `GET /api/patches/:id` return `requires: [{id, name, price, currency, gateway_url, author, held}]` computed from `anchor.parents` (walk to depth 16 like `royaltySplit`) plus `derivation.kind` and `base.export`, and render one sentence from them on the Buy tab (`packages/web/src/pages/PatchPage.tsx:494-506`): 'complete on its own — includes its base's 2,992 rows' or 'needs pixel-parent (5 CREDIT, node-a) — buy both'. `market.buy({withRequired:true})` buys ancestors deepest-first with one settle record each and returns `purchases[]` + `total`; `patchUse` prints the quote and asks (or `--yes`); the agent compares the TOTAL with `--max-price`.",
-     "effort": "L"
+     "effort": "L",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "The 402 and GET /api/patches/:id now carry `requires[]` — the whole base stack, deepest first, each with price, currency, seller, gateway and whether this node is LICENSED for it (holding the bytes is not) — plus `total` and `self_contained`; GET /api/patches/:id/quote answers the same question without buying. market.buy({withRequired}) buys the bases first, one settlement each, and {maxTotal} refuses the family before any money moves. Rendered on the Buy tab ('needs underneath it', 'Buy all 2 · 8 node credit'), printed by `patch buy`/`use`, and compared with the agent's --max-price. Verified live: a delta child of a 5-CREDIT base quoted 8 for the family and bought both."
     },
     {
      "n": 271,
@@ -277,7 +292,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-10-local-credit-nonce-replay.txt (step 3 HTTP 200 → step 4, the identical payload, 'unknown or expired nonce'; steps 1-2: 'amount below price' then the same nonce → 'unknown or expired nonce'). Re-read at HEAD: market.ts:694-703.",
      "user_cost": "Full price lost per timeout, with an error that reads like clock skew. The developer must write their own signed download client to collect what they paid for, and every learning mistake costs a round trip and a nonce.",
      "fix": "Make the payment idempotent and the nonce consumed last: compute the intent hash first, and if `store.paymentSeen(h)` and the recorded settlement's buyer is `payload.from`, re-issue a manifest with no new settle (see 273); validate amount, signature and balance before `takeNonce`; add `\"single_use\": true` to the requirement and phrase the error as 'nonce … was consumed by an earlier attempt — GET the resource again for a new quote'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "settlePayment validates amount, nonce, signature and balance BEFORE it spends the nonce, so a rejected attempt no longer burns the quote; a nonce that a settlement did consume answers 'nonce … was consumed by an earlier attempt — GET <resource> again for a new quote' instead of 'unknown or expired nonce', and the requirement says `single_use: true`. Verified live: an under-payment and a bad signature on one nonce, then the correct payment on that same nonce → 200."
     },
     {
      "n": 273,
@@ -290,7 +308,10 @@
      "evidence": "critic-01-recover-blob-signed.txt (settled buyer node-b, signed header, no token → HTTP 200, 3,854,446 bytes, from the seller and from a peer holder; a stranger gets 402); p2p-trust-12-replay-used-payment.txt (the payer's own replay → 402 'payment already used'). Code at HEAD: market.ts:651, 699, 706.",
      "user_cost": "The buyer has paid, the seller has the money and the settle record, and the product's only sentence to them is 'payment already used'. The one honest next step exists in the code and is invisible; the visible next step (Buy again) charges again.",
      "fix": "On presentation of a payment already settled for this patch and this buyer, re-issue the manifest (idempotent redemption) instead of rejecting it. Add `ainize patch download <id>` and a Buy-tab action 'You paid on <date> — download again (free)' that uses the signed `/p2p/blob` path, and document that path in /docs and openapi.ts (288).",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "A payment presented again by the payer is redeemed again — same settlement, fresh manifest, `x-payment-response {replayed:true}`, no second charge — and only a stranger's replay is refused. The recovery path has a name now: `ainize patch download <id>` / POST /api/patches/:id/collect re-presents the recorded payment, or fetches the body over the signed /p2p/blob path the settlement already unlocks, and the Buy tab's 'no free re-download exists' warning is now a 'Download again (free)' button. Verified live: manifest re-issued after a dropped response, and a forgotten 3.9 MB body collected back, with one settle record throughout."
     },
     {
      "n": 274,
@@ -303,7 +324,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-05-partial-failure-tx-lost.txt (proxy answers 503 to the retry; 196.5 → 196.3 AIN over two attempts; `ls ~/.ngram-agent` shows identity.json and patches/ only); code at HEAD: market.ts:781-812, agent.ts:141-214.",
      "user_cost": "The evidence needed to recover or dispute a lost payment exists only on the chain, and only if you know to scrape `/transfer/<me>/<seller>/`. On a 25 AIN item each attempt is a real loss.",
      "fix": "Write the intent before the money: log `paid tx <hash> → <payTo> for <resource> (nonce …)` and append it to `<home>/pending-payments.jsonl` (agent) / a `pending_payments` row (node) BEFORE the retry; on the next run re-present a pending payment instead of transferring again; with `--json` print the partial result with `error` and `tx_hash` and exit non-zero.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "The intent is written before the money: a `pending_payments` row exists from the moment the node has a quote, carries the tx hash the instant the transfer returns and is only marked settled when a manifest is in hand; the next buy re-presents that payment instead of paying again, the buy error names the row and `ainize patch download`, and GET /api/me/pending-payments shows what is owed. The agent does the same in <home>/pending-payments.jsonl and prints the partial result with `--json` (error, tx hash, pending file) instead of one red line. Verified live against a proxy that settled upstream and dropped the response: two runs, one settle record, one body, on both the node and the agent path."
     },
     {
      "n": 275,
@@ -316,7 +340,10 @@
      "evidence": "packages/e2e/results/ux4/critique4-04-node-moved-gateway-frozen.txt (node-d publishes ux4-moving on :3692, restarts on :3693, answers `/api/info` as the same address; node-c's `patch ls` still says LISTED 6 CREDIT; `patch buy ux4-moving` → `error: fetch failed`; the anchor still says gateway http://localhost:3692/…, status LISTED, sellable true).",
      "user_cost": "A seller loses their whole catalogue permanently for changing a port, and can only recover by republishing every item under new ids — which then supersedes the originals and restarts verification. Buyers see a shop that is open and cannot be entered.",
      "fix": "Resolve the gateway at buy time instead of trusting the anchor: prefer the peer-table endpoint for `anchor.author` (`store.listPeers()` / `ledger.nodes()`), fall back to `anchor.gateway_url`, and treat the anchor field as a hint. Add an `endpoint` record kind (or reuse the node record, already keyed by address) that a node re-publishes on start, and show 'seller last seen …' on the Buy tab (276). Add `ainize patch relist <id>` for the case where the identity itself changed.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "The gateway is resolved at buy time instead of trusted from the immutable anchor: the peers this node currently sees first, then the node records, then `gateway_url` as the hint it is, trying each until one answers and saying which did not. GET /api/patches/:id also returns `gateway {url, via, source, last_seen}`, and the Buy tab shows that address (and says the record's is stale, with when the seller last answered) so the purchase address a visitor is told to call is a live one. The agent asks the market node the same question. Verified live: a knowledge announced under http://localhost:3999 was bought from a node listening on 3810 after the record's address failed."
     },
     {
      "n": 276,
@@ -1273,7 +1300,10 @@
      "evidence": "Reproduced live today with 0.1 AIN (critic-04-ain-bearer-token.txt): node-b transferred and did not redeem; a request carrying node-b's tx hash with `x-ngram-buyer` set to node-c and no signature got HTTP 200, a manifest `issued_to` node-b, and 3,854,446 bytes with the returned token; node-b's own redemption then got 402 'payment already used'. Also packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt §E3.",
      "user_cost": "The buyer loses the price and gets nothing; the ledger records them as the buyer of a file someone else took. 'Pay and you get it' — the whole point of x402 — is broken for every AIN sale, and a watcher of `/transfer/*` can front-run all of them.",
      "fix": "Bind the payment to the quote: put `transfer_key: transferKeyFor(resource, nonce)` in the requirement, have the client transfer with that key, and require `tr.key === transferKeyFor(resource, payload.nonce)` plus `takeNonce(payload.nonce)` in `settlePayment`; require a signature over `sha256(txHash+nonce)` by `tr.from` and reject a requester who is not the payer. Bind the download token to the buyer (`checkToken(token, sha, address)`), or drop it and rely on the signed-buyer path `mayDownload` already implements.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "An AIN payment is bound to the quote it answers: the 402 carries `transfer_key = transferKeyFor(resource, nonce)`, AinLedger.transfer writes at that key instead of a random push id, and settlePayment requires tr.key to match, the nonce to be this node's and unused, and a `proof` over sha256(\"x402-ain:<tx>:<nonce>\") signed by tr.from — so the manifest can only go to the address that paid. Verified live on the dev chain: a transfer with no quote key bought nothing; a watcher presenting the payer's tx hash was refused for want of a proof, and refused again when it signed with its own key; the payer redeemed, and redeemed again idempotently."
     },
     {
      "n": 345,
@@ -1560,7 +1590,10 @@
      "evidence": "critique4-01 helper (mint.mjs): a keypair created 200 ms earlier and funded by nothing signed an intent and bought an 8-CREDIT knowledge — `x-payment-response {\"settled\":true, \"royalty\":{\"0x7025…\":\"8\"}}`, a manifest, and the body; the seller's wallet now reads 'sales 2' and a balance of 108. teach-triggered-23 shows the same with a fresh browser key buying a lesson.",
      "user_cost": "Every number in the local economy — a seller's balance, a teacher's 'Paid', an ancestor's royalties — is denominated in money the buyer minted, and any spend limit can be bypassed by generating a key. It also makes the play-money disclosure (299) the only thing standing between a teacher and a false belief that they earned something.",
      "fix": "Make the grant explicit and finite: record it as a `grant` ledger record written once per address by the node that grants it (so `creditBalance` sums real records), cap it per node, and show 'starting credit granted by node-a' in the wallet; refuse to grant to an address with no history on a node that sells for AIN. Say on every local-credit surface that the credit is issued by this node and is not money.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "Local credit is issued, not assumed: creditBalance sums a recorded `credit_grants` row plus royalties minus purchases, one grant per address written only after the buyer's signature proves the key exists, capped at market.creditGrants (default 100 addresses), never on a node that sells for AIN, and the node grants itself the same way at startup. GET /api/credit/:address says where the credit came from, how many grants are gone and that it is not money; the CLI quote and the Buy tab print that sentence where the money is about to be spent. Addresses are compared case-insensitively there too. Verified live: a fresh keypair's balance came from a recorded grant with a reason, and the issuance count moved 1 → 3."
     },
     {
      "n": 365,

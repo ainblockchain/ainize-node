@@ -984,7 +984,10 @@
      "user_cost": "An agent that 'checks then restores' un-teaches part of the operator's pinned set on every run (item 208's mechanism), competes with the node's own writes, and — with the default `--api` — may measure before/after on a model that is not the one it patched. The developer reading the node's console sees nothing.",
      "fix": "Give the agent two modes: (a) 'own node' — call `POST /api/patches/:id/buy {apply:true}` on `--node` (the buyer's node does lock, journal and watchdog); (b) 'raw' — only with an explicit `--repo`, taking the same lock dir (`<patchDir>/.ainize-runtime.lock`, runtime.ts:115-160) and defaulting to `--keep`. Read `api` from `GET <market>/api/runtime` when `--api` is absent; refuse to apply when the market's model id differs from `/v1/models`.",
      "effort": "M",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "5a66e7c",
+     "fixed_note": "The agent no longer touches a shared model nobody told: `--repo` has no default, and with one it takes the node's own cross-process lease (<repo>/ple_patch/.ainize-runtime.lock, 15-minute stale break) for the whole apply → ask → restore window, leaves the patch loaded unless `--restore` is passed (the old default removal wrote the model's own rows back over the operator's), and refuses a serving model whose id is not the anchor's; `--api` is read from the market node's GET /api/runtime instead of defaulting to localhost:8000. Verified live: the agent measured against the node's own runtime url and printed the load command instead of writing."
     },
     {
      "n": 231,
