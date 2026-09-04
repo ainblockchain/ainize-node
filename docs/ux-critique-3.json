@@ -151,7 +151,11 @@
      "user_cost": "The creator has just paid and has no next step toward building on it; the one affordance offered spends the money again.",
      "fix": "Replace the purchased block with the file sha + path (or `Download .npz` via `/p2p/blob/:sha?name=`) and three actions — `Live test with it loaded` (/chat/:id), `Teach on top of this` (/teach?on=:id, pre-selecting the base — item 176), `Load into model` — and demote `Buy again` to a text link `Buy another copy`.",
      "effort": "S",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "fixed": true,
+     "fixed_by": "a5d2d3c",
+     "fixed_note": "The purchased block now offers \"Load into model\", a link to the console and a collect path, with \"Buy again\" demoted to a text link behind a confirmation.",
+     "status": "fixed"
     },
     {
      "n": 175,
@@ -802,7 +806,11 @@
      "user_cost": "The operator cannot answer 'what is my model serving right now' from any screen, cannot see that a rejected bake is live, and cannot tell which of three overlapping purchases their model is actually answering from.",
      "fix": "Add an 'In the model now' table above purchases fed by `/api/runtime.applied` joined with the catalog: position, name, status chip (with 'Newer version: …'), reason (`subscription daily/krx` / `purchase` / `manual`), shared rows with the item above (reuse `chatOverlaps`), applied_at, Unload; add a total of amounts paid; replace the purchases table's yes/no cell with the position number.",
      "effort": "S",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "fixed": true,
+     "fixed_by": "ace3f08",
+     "fixed_note": "The console renders the loaded set in model order (data-testid=\"ops-stack\") above the purchases table, so the purchases table is no longer the only view of it.",
+     "status": "fixed"
     },
     {
      "n": 218,

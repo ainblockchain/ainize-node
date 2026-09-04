@@ -161,7 +161,10 @@
      "fix": "Add a third chip group \"Show: Current only | All versions\" defaulting to Current only, wired to the existing status query param, with a line under the count: \"3 older versions hidden - show\".",
      "effort": "S",
      "status": "fixed",
-     "shipped": "Explore gained a third chip group \"Show: Current only | All versions\", default Current only, sent as the catalogue's own `status` param, with \"3 older versions hidden · show\" under the count. The default hides nothing from the operator who owns those versions — the dashboard and each item's own page are unchanged."
+     "shipped": "Explore gained a third chip group \"Show: Current only | All versions\", default Current only, sent as the catalogue's own `status` param, with \"3 older versions hidden · show\" under the count. The default hides nothing from the operator who owns those versions — the dashboard and each item's own page are unchanged.",
+     "fixed": true,
+     "fixed_by": "10eaaa8",
+     "fixed_note": "Explore defaults to a \"Current only\" chip that sends the catalogue status filter and prints \"{n} older versions hidden · show\"."
     },
     {
      "n": 27,
@@ -174,7 +177,10 @@
      "fix": "Make status the first key of the popular sorter in packages/node/src/api.ts:151 - LISTED before SUPERSEDED and REJECTED, then downloads. One line.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "`sort=popular` ranks by status first (LISTED 0, in-flight 1, SUPERSEDED 2, REJECTED 3) and only then by downloads and passed count, so the flagship heads the marketplace and the retired single-fact item with 251 downloads does not."
+     "shipped": "`sort=popular` ranks by status first (LISTED 0, in-flight 1, SUPERSEDED 2, REJECTED 3) and only then by downloads and passed count, so the flagship heads the marketplace and the retired single-fact item with 251 downloads does not.",
+     "fixed": true,
+     "fixed_by": "10eaaa8",
+     "fixed_note": "sort=popular ranks by status first, so a SUPERSEDED item no longer heads the ranked list."
     },
     {
      "n": 30,
@@ -912,7 +918,10 @@
      "fix": "Add a Before column to the verification table beside Accuracy, and put the pair in the hero stat: replace the bare \"100%\" StatValue with \"1/8 -> 26/26\" and keep the percentage as the StatNote.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "The baseline every attestation already carried (`score.pre_apply`) is rendered: a Before column in the Verification table, the hero stat as \"1/8 → 26/26\" with the percentage as its note, and a line under the Overview score bar naming the pair as one run scored twice."
+     "shipped": "The baseline every attestation already carried (`score.pre_apply`) is rendered: a Before column in the Verification table, the hero stat as \"1/8 → 26/26\" with the percentage as its note, and a line under the Overview score bar naming the pair as one run scored twice.",
+     "fixed": true,
+     "fixed_by": "9054f9d",
+     "fixed_note": "The accuracy stat renders the pair the attestations already carried — \"1/8 → 26/26\" with the percentage as its note — and the Verification table gained a Before column."
     },
     {
      "n": 29,
@@ -925,7 +934,10 @@
      "fix": "Rename status.LISTED to \"For sale\" (ko 판매 중) and reserve \"Verified\" for the attestation badge; change bench.stats from \"{listed} verified\" to \"{listed} current version(s)\". The pairs then read \"Verified ✓ · For sale\" and \"Verified ✓ · Newer version available\", both true.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "`status.LISTED` is \"For sale\" / \"판매 중\" and \"Verified\" is reserved for the attestation badge, so the pairs read \"Verified · For sale\" and \"Verified · Newer version: …\". `bench.stats` counts current versions and question sets instead of \"{listed} verified\"."
+     "shipped": "`status.LISTED` is \"For sale\" / \"판매 중\" and \"Verified\" is reserved for the attestation badge, so the pairs read \"Verified · For sale\" and \"Verified · Newer version: …\". `bench.stats` counts current versions and question sets instead of \"{listed} verified\".",
+     "fixed": true,
+     "fixed_by": "4f4281b",
+     "fixed_note": "status.LISTED reads \"For sale\" / \"판매 중\" and \"Verified\" is reserved for the attestation badge, so the row no longer says the same word twice."
     },
     {
      "n": 55,
@@ -938,7 +950,10 @@
      "fix": "When no attestation reports collateral_nat, render the Overview row in warning tone as \"Limit declared (<= 0.08 nat) - not yet measured by any verifier\" and link it to the Verification tab.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "The Overview side-effect row counts what verifiers actually reported: \"Threshold set — measured by {n} of {of} verifiers\" when someone measured it, and otherwise \"Limit declared (≤ 0.08 nat) — not yet measured by any verifier\" in warning tone (#8a4b00) with a button that opens the Verification tab, where the same fact reads \"not reported\"."
+     "shipped": "The Overview side-effect row counts what verifiers actually reported: \"Threshold set — measured by {n} of {of} verifiers\" when someone measured it, and otherwise \"Limit declared (≤ 0.08 nat) — not yet measured by any verifier\" in warning tone (#8a4b00) with a button that opens the Verification tab, where the same fact reads \"not reported\".",
+     "fixed": true,
+     "fixed_by": "9054f9d",
+     "fixed_note": "The Overview side-effect row now reports how many verifiers measured it, or says \"not yet measured by any verifier\" in warning tone with a link to the Verification tab."
     },
     {
      "n": 56,
@@ -951,7 +966,10 @@
      "fix": "Drive the icon from the entry: seal for quorum_ok && status === \"LISTED\", an outline/greyed variant for SUPERSEDED, the pulsing treatment already in StatusChip for VERIFYING. If per-item art is out of scope, drop the icon and give the 56 px back to the content.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "The 56 px certified seal is drawn from the entry instead of unconditionally: full colour for `quorum_ok && LISTED`, greyed (grayscale(1), opacity .45) for SUPERSEDED, pulsing for VERIFYING / ANNOUNCED, and absent for anything that never reached quorum — each with its own tooltip."
+     "shipped": "The 56 px certified seal is drawn from the entry instead of unconditionally: full colour for `quorum_ok && LISTED`, greyed (grayscale(1), opacity .45) for SUPERSEDED, pulsing for VERIFYING / ANNOUNCED, and absent for anything that never reached quorum — each with its own tooltip.",
+     "fixed": true,
+     "fixed_by": "4f4281b",
+     "fixed_note": "The certified seal is drawn from the entry — full colour only for a quorum-passed LISTED item, greyed for SUPERSEDED, pulsing while verifying, absent otherwise."
     }
    ]
   },
@@ -1074,7 +1092,10 @@
      "fix": "Append the Hangul fallbacks to both stacks in theme/theme.ts so they match font.body: display gains Apple SD Gothic Neo and Noto Sans KR, mono gains Noto Sans KR before monospace. One line each.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "`theme.font.display` gains 'Apple SD Gothic Neo','Noto Sans KR' and `theme.font.mono` gains 'Noto Sans KR' before monospace — the Hangul faces index.html already downloads. Latin rendering is untouched: Mulish is still the first family and the Hangul names are appended after it."
+     "shipped": "`theme.font.display` gains 'Apple SD Gothic Neo','Noto Sans KR' and `theme.font.mono` gains 'Noto Sans KR' before monospace — the Hangul faces index.html already downloads. Latin rendering is untouched: Mulish is still the first family and the Hangul names are appended after it.",
+     "fixed": true,
+     "fixed_by": "5fde838",
+     "fixed_note": "theme.font.display/body/mono end in 'Apple SD Gothic Neo','Noto Sans KR', the Hangul faces index.html already downloads."
     },
     {
      "n": 85,
@@ -1087,7 +1108,10 @@
      "fix": "Set document.documentElement.lang = locale in an effect in LocaleProvider, and add a small useTitle(text) hook called once per page (\"Explore knowledge · Ainize\", \"Live test · Ainize\", \"<patch name> · Ainize\", \"404 · Ainize\") sourced from the existing i18n keys.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "LocaleProvider sets `document.documentElement.lang` from the locale, and a new `useTitle(text)` hook names each of the 18 pages from its existing dictionary key, so ten routes now report ten distinct titles and the title and lang follow the language toggle without a reload."
+     "shipped": "LocaleProvider sets `document.documentElement.lang` from the locale, and a new `useTitle(text)` hook names each of the 18 pages from its existing dictionary key, so ten routes now report ten distinct titles and the title and lang follow the language toggle without a reload.",
+     "fixed": true,
+     "fixed_by": "5fde838",
+     "fixed_note": "LocaleProvider sets document.documentElement.lang and a useTitle hook names each page, so the title and lang follow the language toggle."
     },
     {
      "n": 86,
@@ -1303,7 +1327,10 @@
      "fix": "Give SUPERSEDED the warning palette already used by KindChip (#8a4b00 on #fff3e0, 6.4:1) and put the successor id in the chip text: \"Newer version: krx-all-2761\".",
      "effort": "S",
      "status": "fixed",
-     "shipped": "`STATUS_META.SUPERSEDED` uses the warning palette KindChip already used (#8a4b00 on #fff3e0 — measured 6.20:1 in the live page, was 2.96:1) and the chip names its successor: \"Newer version: krx-all-2761\"."
+     "shipped": "`STATUS_META.SUPERSEDED` uses the warning palette KindChip already used (#8a4b00 on #fff3e0 — measured 6.20:1 in the live page, was 2.96:1) and the chip names its successor: \"Newer version: krx-all-2761\".",
+     "fixed": true,
+     "fixed_by": "46d8afa",
+     "fixed_note": "STATUS_META.SUPERSEDED uses the warning palette and the chip names its successor (\"Newer version: krx-all-2761\")."
     },
     {
      "n": 98,

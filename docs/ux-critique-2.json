@@ -151,7 +151,10 @@
      "fix": "Import `PROG` in each of the seven command modules and interpolate it at the thirteen sites; pass the program name into `core/src/ain-ledger.ts:457` or drop the command from that message; template the node's banner. Add an ESLint `no-restricted-syntax` rule banning the literal `` `ngram `` inside a string or template under packages/cli/src so it cannot regress.",
      "audience": "CLI user",
      "status": "fixed",
-     "shipped": "Every hint now interpolates PROG, so the binary the user typed is the binary the hint names; the node banner and the two hints outside the CLI say `ainize`, and a CLI unit test fails on any new hardcoded `ngram <cmd>` literal."
+     "shipped": "Every hint now interpolates PROG, so the binary the user typed is the binary the hint names; the node banner and the two hints outside the CLI say `ainize`, and a CLI unit test fails on any new hardcoded `ngram <cmd>` literal.",
+     "fixed": true,
+     "fixed_by": "8402e35",
+     "fixed_note": "Every hint interpolates PROG so the binary the user typed is the binary the hint names, and a CLI unit test fails on any new hardcoded literal."
     },
     {
      "n": 111,
@@ -225,7 +228,10 @@
      "fix": "In `buildContext` run `new URL(nodeUrl)` and on failure throw `--node must be a full URL: did you mean http://localhost:3402?`. Add `.coerce`/`.check` on `--max-tokens` enforcing 1–1024 locally with the message the help already states. Declare `--kind` with yargs `choices` on both commands, and change the empty-table text to reflect the filter: `no records of kind 'challenge' (1,223 records in the ledger)`.",
      "audience": "CLI user",
      "status": "fixed",
-     "shipped": "`--node` without a scheme is now a typo with the URL spelled out, `--max-tokens` is range-checked locally against the range the help documents, and `--kind` is a choices list on both `ledger ls` and `logs` whose empty table names the filter and the real record count."
+     "shipped": "`--node` without a scheme is now a typo with the URL spelled out, `--max-tokens` is range-checked locally against the range the help documents, and `--kind` is a choices list on both `ledger ls` and `logs` whose empty table names the filter and the real record count.",
+     "fixed": true,
+     "fixed_by": "a07a511",
+     "fixed_note": "--node without a scheme, --max-tokens out of range and an unknown --kind are all refused locally with the range or choices spelled out."
     },
     {
      "n": 117,
@@ -471,7 +477,10 @@
      "fix": "Change node.ts:116 to `{ auth: true }` — the client already falls back to anonymous when there is no token. Render an explicit `(no events match)` for an empty result. Add `level` to `/api/events`, `store.events()` and a `--level` flag.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`logs` now sends the operator token, so the operator's terminal shows the operator stream; an empty result names the filter that emptied it (and says when the missing rows are the ones a visitor never sees), and `--level` filters by severity floor."
+     "shipped": "`logs` now sends the operator token, so the operator's terminal shows the operator stream; an empty result names the filter that emptied it (and says when the missing rows are the ones a visitor never sees), and `--level` filters by severity floor.",
+     "fixed": true,
+     "fixed_by": "d4f3cef",
+     "fixed_note": "`logs` sends the operator token, so the operator terminal shows the operator stream, and an empty result names the filter that emptied it."
     },
     {
      "n": 133,
@@ -497,7 +506,10 @@
      "fix": "Add `GET /healthz` (process alive, 200) and `GET /readyz` before the SPA fallback: 200 only when the ledger is reachable and, for a node with the `serving`/`verifier` role, the runtime is available; otherwise 503 with `{checks:{ledger,runtime,peers}}`. Return 404 rather than the SPA for paths that look like probes. Give `ainize status` a `--check` flag that exits 1 when any check fails.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "The node now answers GET /healthz (liveness) and GET /readyz (503 with the failing check when the ledger is unreachable or a serving/verifier node has no runtime), returns 404 for the other probe paths instead of the web app, documents both in the OpenAPI document and deploy/README.md, and `ainize status --check` exits 1 when a check fails."
+     "shipped": "The node now answers GET /healthz (liveness) and GET /readyz (503 with the failing check when the ledger is unreachable or a serving/verifier node has no runtime), returns 404 for the other probe paths instead of the web app, documents both in the OpenAPI document and deploy/README.md, and `ainize status --check` exits 1 when a check fails.",
+     "fixed": true,
+     "fixed_by": "68e7111",
+     "fixed_note": "The node answers GET /healthz and GET /readyz, returns 404 for other probe paths instead of the web app, and documents both."
     },
     {
      "n": 135,
@@ -583,7 +595,10 @@
      "fix": "Have `selfInfo()`, `/api/info` and the OpenAPI builder read `VERSION` from @ngram/core plus a build sha injected at build time, and keep `cfg.version` only as `config_version`, the schema version used for migrations. Print both in `ainize status` (`version 0.2.0 (config written by 0.1.0)`) and log a line at start-up when they differ — the natural hook for future config migrations.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded."
+     "shipped": "/api/info, PeerInfo, the OpenAPI document and `ainize status` now report VERSION from the running code plus a measured build stamp, with config.json's own string demoted to config_version and named as such when it differs. Re-verified: the build stamp is measured once when the code is loaded — a rebuild under a running node no longer makes it report a build it never loaded.",
+     "fixed": true,
+     "fixed_by": "8820de2",
+     "fixed_note": "/api/info, PeerInfo and `ainize status` report VERSION from the running code plus a measured build stamp, with config.json’s string demoted to config_version."
     },
     {
      "n": 142,
@@ -813,7 +828,10 @@
      "fix": "On ingest, inspect the record kind: when a `challenge` (or `supersede`, or a failing `attest`) names an anchor whose author is this node, log a `warn` with the challenger, reason and resulting status — those are the three events an author must never miss and all three currently arrive as an anonymous \"received 1 record(s)\". Render a banner at the top of the manage page and a line on the public page: who, when, why, and what happens next. Add a `challenges` block to `ainize patch get`.",
      "audience": "Knowledge publisher",
      "status": "fixed",
-     "shipped": "All three events reach the author now. The author's node now derives them from the catalogue instead of hoping to see the record go past — so it works on the local ledger AND on the chain — and logs each exactly once (`Market.noticeOwnEvents`): `warn challenge` with the challenger, the reason and “it is off sale until a verifier re-runs the benchmark and passes it”; `warn publish` when someone's newer knowledge supersedes yours; `warn verify` when a verifier's result on your knowledge is a FAIL, with its score. `ainize logs --kind challenge` finds them. The reason is rendered everywhere it was missing: a banner at the top of the public knowledge page and of the manage page (who, when, why, what happens next), the Buy tab refusal, and a `challenges` block in `ainize patch get` that marks which challenge is the open one. Verified live on a private cluster: `ainize logs --kind challenge` on the author's node prints `0xCf71F1c8… challenged your knowledge trust-probe: \"two of the ticker codes are wrong\" — it is off sale until a verifier re-runs the benchmark and passes it`, where before the author saw only `p2p received 1 record(s) via push`."
+     "shipped": "All three events reach the author now. The author's node now derives them from the catalogue instead of hoping to see the record go past — so it works on the local ledger AND on the chain — and logs each exactly once (`Market.noticeOwnEvents`): `warn challenge` with the challenger, the reason and “it is off sale until a verifier re-runs the benchmark and passes it”; `warn publish` when someone's newer knowledge supersedes yours; `warn verify` when a verifier's result on your knowledge is a FAIL, with its score. `ainize logs --kind challenge` finds them. The reason is rendered everywhere it was missing: a banner at the top of the public knowledge page and of the manage page (who, when, why, what happens next), the Buy tab refusal, and a `challenges` block in `ainize patch get` that marks which challenge is the open one. Verified live on a private cluster: `ainize logs --kind challenge` on the author's node prints `0xCf71F1c8… challenged your knowledge trust-probe: \"two of the ticker codes are wrong\" — it is off sale until a verifier re-runs the benchmark and passes it`, where before the author saw only `p2p received 1 record(s) via push`.",
+     "fixed": true,
+     "fixed_by": "166e842",
+     "fixed_note": "The author's own node derives challenge, supersede and failed-verification events from the catalogue and logs each exactly once."
     },
     {
      "n": 157,
@@ -911,7 +929,10 @@
      "fix": "Decide which it is and say it. If samples must stay public (they are what makes the live test's verdict checkable — first review item 20), change the string to the truth: \"Verifier nodes score the knowledge with these sample questions. They are published with the knowledge so anyone can re-run them.\" If the exam is meant to be sealed, publish only `benchmark_hash` plus a small public sample set and hold the scored set for verifiers behind the p2p auth the blob route already uses.",
      "audience": "Knowledge publisher",
      "status": "fixed",
-     "shipped": "Told the truth instead: the samples stay public — they are what makes the live test's ✓/✗ checkable (first review item 20) and what lets anyone re-run a verifier's score — so the page no longer calls them sealed. The note now reads “Verifier nodes score the knowledge with these questions. They are published with the knowledge — not sealed — so anyone can re-run the same scoring and check the verdict. It also means the author knew these questions in advance; read the accuracy with that in mind.”, and “Sealed answers hash” became “Answer-set hash”. Swept the rest of the product for evidence described as withheld: the terms' “question sets whose sealed answers differ from the revealed answers” became “whose stated answers are not what the knowledge actually answers”; every other use of “sealed” in the UI means immutable (“name, price and benchmark are sealed”, “these fields can no longer change”) and is accurate; no other string claims anything is hidden that the API serves. AZ-006/AZ-015 assert the new wording, and AZ-006 now also proves the samples are readable anonymously in the same test."
+     "shipped": "Told the truth instead: the samples stay public — they are what makes the live test's ✓/✗ checkable (first review item 20) and what lets anyone re-run a verifier's score — so the page no longer calls them sealed. The note now reads “Verifier nodes score the knowledge with these questions. They are published with the knowledge — not sealed — so anyone can re-run the same scoring and check the verdict. It also means the author knew these questions in advance; read the accuracy with that in mind.”, and “Sealed answers hash” became “Answer-set hash”. Swept the rest of the product for evidence described as withheld: the terms' “question sets whose sealed answers differ from the revealed answers” became “whose stated answers are not what the knowledge actually answers”; every other use of “sealed” in the UI means immutable (“name, price and benchmark are sealed”, “these fields can no longer change”) and is accurate; no other string claims anything is hidden that the API serves. AZ-006/AZ-015 assert the new wording, and AZ-006 now also proves the samples are readable anonymously in the same test.",
+     "fixed": true,
+     "fixed_by": "f310d9c",
+     "fixed_note": "The page stops calling the samples sealed and says instead that they are public so anyone can re-run a verifier’s score."
     },
     {
      "n": 165,
