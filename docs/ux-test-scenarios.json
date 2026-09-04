@@ -8579,5 +8579,169 @@
    "packages/node/src/teach.ts (datasetPublication, publish)",
    "docs/lineage-teach-design.md §6.1, §4 SC-8"
   ]
+ },
+ {
+  "id": "AZ-253",
+  "persona": "Operator",
+  "title": "An add-on is only written when the knowledge it was trained on is underneath it, row for row",
+  "goal": "A delta knowledge is meaningless on the wrong table. Before anything is written the live rows are read and compared to the add-on's `before` on EVERY row (lineage design §8.2), and a knowledge whose base is not loaded is refused rather than applied over the model's own values.",
+  "preconditions": [
+   "A base knowledge and an add-on trained on top of it (`base.stack` names the base, `base.export` is 'delta').",
+   "A patch hook (the fake hook in the unit test, or a live vLLM with ENGRAM_HOOK=1 for the [hook] run)."
+  ],
+  "steps": [
+   "With nothing loaded, GET /api/patches/<child>/check (or runtime.check on the body).",
+   "POST /api/patches/<child>/apply with no `with_base`.",
+   "Load the base, check again, then POST /api/patches/<child>/apply { with_base: true }."
+  ],
+  "expected": [
+   "The bare check reports `differ_before` = the number of rows the add-on shares with its base, and `ok: false` — the values it was trained on are not on the table.",
+   "The apply is refused 409 `needs_base` naming the missing base; nothing is written.",
+   "With the base loaded the check reports `differ_before: 0` and `ok: true`.",
+   "`with_base` applies base then add-on under ONE runtime lock; GET /api/runtime reports them in that order with positions 0 and 1, and a journal file per layer under <patchDir>/journal/<patch_sha256>.npz."
+  ],
+  "priority": "P0",
+  "area": "runtime",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/runtime-stack.test.ts (AZ-253)",
+   "qwen3.8/scripts/patch.py (check, apply --verify-before)",
+   "packages/node/src/market.ts (resolveStack, layersFor, assertStack)",
+   "docs/lineage-teach-design.md §8.1-§8.3"
+  ]
+ },
+ {
+  "id": "AZ-254",
+  "persona": "Operator",
+  "title": "Unloading an add-on puts its base back — not the bare model",
+  "goal": "The reversibility the whole lineage rests on: `remove` replays the journal (the values the apply overwrote), so taking a child off a chain leaves its parent standing. Before this, removing a child wrote the child's `before` and silently reverted the parent's rows too (design F4/F5).",
+  "preconditions": [
+   "Base and add-on loaded in order (AZ-253)."
+  ],
+  "steps": [
+   "Read the live rows for an address the two share, one only the base owns, and one only the add-on owns.",
+   "DELETE /api/patches/<child>/apply, read the same rows.",
+   "DELETE /api/patches/<base>/apply, read them again."
+  ],
+  "expected": [
+   "Loaded: the shared row holds the add-on's value, the base-only row the base's value.",
+   "After removing the add-on the shared row holds the BASE's trained value (bf16-exact), not the model's own; the add-on's own rows are back to the model; the base-only row was never touched.",
+   "After removing the base every row is back to the model's own values and the stack is empty."
+  ],
+  "priority": "P0",
+  "area": "runtime",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/runtime-stack.test.ts (AZ-254)",
+   "qwen3.8/scripts/patch.py (apply --journal, remove --journal)",
+   "docs/lineage-teach-design.md §5.4, §8.4"
+  ]
+ },
+ {
+  "id": "AZ-255",
+  "persona": "Operator",
+  "title": "A base cannot be pulled out from under a loaded add-on",
+  "goal": "Removing a knowledge that something else is standing on would leave the add-on writing over the model's own rows. It is refused by name, and only an explicit cascade takes both off (design §8.4).",
+  "preconditions": [
+   "Base and add-on loaded."
+  ],
+  "steps": [
+   "DELETE /api/patches/<base>/apply.",
+   "DELETE /api/patches/<base>/apply { cascade: true }."
+  ],
+  "expected": [
+   "409 `has_dependents` listing the add-on; nothing is unloaded (the stack still has both layers).",
+   "With cascade both come off, top first, and the table is back to the model's own values."
+  ],
+  "priority": "P1",
+  "area": "runtime",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/runtime-stack.test.ts (AZ-255)",
+   "packages/node/src/market.ts (dependentsOf, removePatch)",
+   "docs/lineage-teach-design.md §8.4"
+  ]
+ },
+ {
+  "id": "AZ-256",
+  "persona": "Operator",
+  "title": "The serving model restarted: the WHOLE stack goes back on, in order",
+  "goal": "The old watchdog re-applied each patch on its own and could put a parent back on top of its own child (design F5). The stack is re-asserted as a unit, ancestors first.",
+  "preconditions": [
+   "Base and add-on loaded; the table then reverts (vLLM restart, simulated in the unit test by clearing the fake table)."
+  ],
+  "steps": [
+   "Clear the live table.",
+   "Run the watchdog.",
+   "Read a shared row and a base-only row."
+  ],
+  "expected": [
+   "The watchdog tests only the TOP of the stack — if that is still there, everything under it is.",
+   "On a revert it re-applies every layer bottom-up: the base-only row holds the base's value and the shared row holds the ADD-ON's value (the child is on top, not underneath).",
+   "The recorded stack keeps its order, and the stale journals of the vanished table state are discarded rather than replayed."
+  ],
+  "priority": "P0",
+  "area": "runtime",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/runtime-stack.test.ts (AZ-256)",
+   "packages/node/src/market.ts (watchdog, assertStack rebuild)",
+   "docs/lineage-teach-design.md §8.5"
+  ]
+ },
+ {
+  "id": "AZ-257",
+  "persona": "Operator",
+  "title": "Two knowledges published before lineage existed: unloading the top one leaves the other standing",
+  "goal": "Every anchor gains a journal on its next apply, so the improvement is not limited to lineage anchors (design §14). Two overlapping pre-lineage knowledges used to destroy each other on unload, because `remove` wrote the file's own `before` (the bare model) over rows the other one owned.",
+  "preconditions": [
+   "Two knowledges with no `base` whose address sets overlap."
+  ],
+  "steps": [
+   "Load the first, then the second.",
+   "Unload the second and read a shared address and an address only the second owns."
+  ],
+  "expected": [
+   "While both are loaded the top one wins on the shared rows (list order, last wins — unchanged).",
+   "Unloading it restores the FIRST one's values on the shared rows, and the model's own values on the rows only it owned.",
+   "No `prev == before` gate is applied to a pre-lineage anchor (its `before` is the disk base and may legitimately differ under another patch) — it still gets a journal."
+  ],
+  "priority": "P1",
+  "area": "runtime",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/runtime-stack.test.ts (AZ-257)",
+   "packages/node/src/market.ts (assertStack)",
+   "docs/lineage-teach-design.md §8.2, §14"
+  ]
+ },
+ {
+  "id": "AZ-258",
+  "persona": "Operator",
+  "title": "The same reversibility, measured on the live PLE hook with the shipped demo knowledge files",
+  "goal": "The unit tests use a fake hook; this is the run on a served model. Two real files that overlap are stacked and unwound on the live table, and the rows are read back through the hook — no simulation anywhere (production-verification-plan: nothing is announced that was not measured).",
+  "preconditions": [
+   "node-u on http://localhost:3422 with runtime.api http://localhost:8002 and runtime.patchDir /mnt/newdata/qwen3.8/ple_patch_e2e (never :8000/:8001, never ple_patch).",
+   "results/train-all/rows-ep12.npz (241,992 rows) registered as the base and results/train-fact/픽셀플러스.npz (2,992 rows) as the layer above it."
+  ],
+  "steps": [
+   "Apply the base, then read the shared addresses through the hook.",
+   "Apply the second file on top (as a delta whose `before` is the base's `after` on the shared rows), read them again.",
+   "Remove the top file, read the shared addresses; remove the base, read them once more."
+  ],
+  "expected": [
+   "The two files share a measured number of addresses (2,154 for ep12 ∩ 픽셀플러스 on 2026-09-04) — the count is read from the files, never quoted.",
+   "With both loaded the shared rows hold the top file's values.",
+   "After removing the top file the shared rows hold the BASE's values, bf16-exact on every shared row — not the model's own.",
+   "After removing the base every row is back to the model's own values and nothing is left applied on the node."
+  ],
+  "priority": "P0",
+  "area": "runtime",
+  "automation": "manual",
+  "evidence": [
+   "packages/e2e/scripts/stack-live-proof.mjs",
+   "qwen3.8/scripts/patch.py",
+   "docs/lineage-teach-design.md §8"
+  ]
  }
 ]
