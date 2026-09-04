@@ -1391,7 +1391,7 @@ export class Market {
         revenue: sales.reduce((n, s) => n + Number(s.amount || 0), 0).toFixed(6).replace(/\.?0+$/, '') || '0',
         loads: this.holderCount(e.anchor.patch_sha256),
         dataset_loads: e.anchor.dataset?.sha256 ? new Set([...(this.datasets.has(e.anchor.dataset.sha256) ? [this.publicUrl] : []), ...this.p2p.datasetHolders(e.anchor.dataset.sha256)]).size : 0,
-        built_on: e.children.filter((c) => all.has(c)).length,
+        built_on: this.publicChildren(e, all).length,
         versions: e.superseded_by.length + e.supersedes.length,
         subscribers: subs,
         passed: e.passed, quorum: e.quorum,
@@ -1429,7 +1429,15 @@ export class Market {
 
   /** "Most built on" (§10) — children on the ledger plus this node's derive intents, all-time. */
   builtOnCount(e: CatalogEntry, map: Map<string, CatalogEntry>): number {
-    return e.children.filter((c) => map.has(c)).length + this.store.signals(e.anchor.id, 36_500).derive_fetches;
+    return this.publicChildren(e, map).length + this.store.signals(e.anchor.id, 36_500).derive_fetches;
+  }
+
+  /**
+   * Children a public number may count. A private draft is a child on this node's disk and nowhere else, so counting
+   * it in "built on 3×" would publish the existence of an unannounced lesson as an integer.
+   */
+  private publicChildren(e: CatalogEntry, map: Map<string, CatalogEntry>): string[] {
+    return e.children.filter((c) => { const x = map.get(c); return !!x && x.status !== 'DRAFT'; });
   }
 
   /**
@@ -1444,7 +1452,10 @@ export class Market {
     const map = await this.entryMap();
     const root = map.get(rootId);
     if (!root) throw notFound('patch not found');
-    const visible = opts.visible ?? (() => true);
+    // `!!e` first, always: an ancestor id nobody here holds is a PLACEHOLDER, and a caller-supplied filter that
+    // happens to accept `undefined` must not be able to turn it into a node with no anchor behind it.
+    const canSee = opts.visible ?? (() => true);
+    const visible = (e: CatalogEntry | undefined): e is CatalogEntry => !!e && canSee(e);
     const branchOf = await this.branches();
     const trackOf = (id: string) => branchOf.filter((b) => b.patch_ids.includes(id)).map((b) => b.name);
     const nodes = new Map<string, TreeNode>();
@@ -1571,7 +1582,7 @@ export class Market {
       },
       signals: {
         sales_all: sales.length, sales_30d: sales.filter((s) => s.created_at >= since30).length,
-        loads: this.holderCount(a.patch_sha256), built_on: e.children.filter((c) => map.has(c)).length,
+        loads: this.holderCount(a.patch_sha256), built_on: this.publicChildren(e, map).length,
         tests: node.tests, hits: node.hits, passed: e.passed, quorum: e.quorum,
         open_questions: this.store.listIssues(a.id, { limit: 500 }).length,
       },
