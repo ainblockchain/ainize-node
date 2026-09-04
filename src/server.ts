@@ -95,7 +95,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
   market = new Market(cfg, ledger, store, blobs, runtime);
   const selfUrl = cfg.publicUrl ?? `http://localhost:${cfg.port}`;
-  const p2p = new P2P({ identity: cfg.identity, ledger, store, selfInfo: () => market.selfInfo(), log: (l, k, m, d) => market.log(l, k, m, null, d) }, cfg.peers, cfg.gossipIntervalMs, selfUrl);
+  const p2p = new P2P({ identity: cfg.identity, ledger, store, selfInfo: () => market.selfInfo(), log: (l, k, m, d) => market.log(l, k, m, null, d) }, cfg.peers, cfg.gossipIntervalMs, selfUrl, cfg.p2p ?? {});
   market.p2p = p2p;
   const drive = new Drive(market);
   market.drive = drive;

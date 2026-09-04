@@ -22,7 +22,24 @@ export const EVENT_KINDS = [
 ] as const;
 
 export interface EventRow { seq: number; ts: number; level: (typeof EVENT_LEVELS)[number]; kind: string; patch_id: string | null; message: string; data: unknown; }
-export interface PeerRow { endpoint: string; address: string | null; info: PeerInfo | null; last_seen: number; failures: number; cursor: number; }
+/**
+ * One peer this node talks to. `source` is the fact an operator could not get anywhere before (item 136): gossip
+ * silently adds every endpoint any peer advertises, and the CLI printed the merged list under "configured peers".
+ * `last_error` / `last_attempt` are the other half (item 138): a dead peer used to produce no event, no error text
+ * and no state at all — only a raw integer nobody was told to read.
+ */
+export interface PeerRow {
+  endpoint: string; address: string | null; info: PeerInfo | null; last_seen: number; failures: number; cursor: number;
+  /** 'configured' = config.json `peers` or `peers add`; 'learned' = peer exchange. */
+  source: 'configured' | 'learned';
+  /** Which peer advertised this endpoint, when it was learned by exchange. */
+  learned_from: string | null;
+  /** Why the last round failed, and when it was tried — null while the peer is answering. */
+  last_error: string | null;
+  last_attempt: number;
+}
+/** An endpoint `peers rm` took out: gossip must not put it back (item 137). */
+export interface BlockedPeerRow { endpoint: string; blocked_at: number; reason: string | null; }
 /** One recorded promise to build on a knowledge (item 312): the key that asked, when, and the child that kept it. */
 export interface DeriveIntentRow { parent_id: string; child_key: string; dataset_sha256: string; first_at: number; last_at: number; fetches: number; declared_by: string | null; }
 /** Starting local credit issued by THIS node to one address (item 364) — the grant a balance is derived from. */
@@ -174,7 +191,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS blobs (sha256 TEXT PRIMARY KEY, path TEXT NOT NULL, size_bytes INTEGER NOT NULL, rows INTEGER NOT NULL, row_dim INTEGER NOT NULL, imported_at REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS addrsets (sha256 TEXT PRIMARY KEY, addrs BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS purchases (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, tx_hash TEXT NOT NULL, scheme TEXT NOT NULL, amount TEXT NOT NULL, manifest TEXT, path TEXT, created_at REAL NOT NULL);
-      CREATE TABLE IF NOT EXISTS peers (endpoint TEXT PRIMARY KEY, address TEXT, info TEXT, last_seen REAL NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, cursor REAL NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS peers (endpoint TEXT PRIMARY KEY, address TEXT, info TEXT, last_seen REAL NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, cursor REAL NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'configured', learned_from TEXT, last_error TEXT, last_attempt REAL NOT NULL DEFAULT 0);
+      -- item 137: "peers rm" survived exactly one gossip round. An endpoint the operator removed stays removed
+      -- until they add it back, whoever advertises it in the meantime.
+      CREATE TABLE IF NOT EXISTS peers_blocked (endpoint TEXT PRIMARY KEY, blocked_at REAL NOT NULL, reason TEXT);
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, level TEXT NOT NULL, kind TEXT NOT NULL, patch_id TEXT, message TEXT NOT NULL, data TEXT);
       CREATE INDEX IF NOT EXISTS idx_events_patch ON events(patch_id);
       CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, created_at REAL NOT NULL, expires_at REAL NOT NULL);
@@ -270,6 +291,8 @@ export class Store {
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
     // lineage §5.4: `applied` becomes an ordered stack with a journal per patch (the values the apply overwrote).
     add('applied', { position: 'INTEGER', journal_path: 'TEXT', stack_sha256: 'TEXT' });
+    // Items 136/138: where a peer came from, who advertised it, and what the last round actually said when it failed.
+    add('peers', { source: "TEXT NOT NULL DEFAULT 'configured'", learned_from: 'TEXT', last_error: 'TEXT', last_attempt: 'REAL NOT NULL DEFAULT 0' });
   }
 
   private closed = false;
@@ -354,23 +377,63 @@ export class Store {
   clearLicense(patchId: string) { this.db.prepare('DELETE FROM licenses WHERE patch_id = ?').run(patchId); }
 
   // peers
-  upsertPeer(endpoint: string, patch: Partial<PeerRow> = {}) {
+  private static peerRow(r: Record<string, unknown>): PeerRow {
+    return {
+      endpoint: r.endpoint as string, address: (r.address as string) ?? null, info: r.info ? JSON.parse(r.info as string) : null,
+      last_seen: r.last_seen as number, failures: r.failures as number, cursor: r.cursor as number,
+      source: ((r.source as string) === 'learned' ? 'learned' : 'configured'),
+      learned_from: (r.learned_from as string) ?? null,
+      last_error: (r.last_error as string) ?? null, last_attempt: (r.last_attempt as number) ?? 0,
+    };
+  }
+  /**
+   * Add or update a peer. A blocked endpoint is NOT re-added (item 137): `peers rm` used to survive exactly one
+   * gossip round, because any third node that still listed the peer taught it back four seconds later. Returns
+   * false when the endpoint is blocked and nothing was written.
+   */
+  upsertPeer(endpoint: string, patch: Partial<PeerRow> = {}): boolean {
+    if (this.isPeerBlocked(endpoint)) return false;
     const cur = this.getPeer(endpoint);
-    const row: PeerRow = { endpoint, address: patch.address ?? cur?.address ?? null, info: patch.info ?? cur?.info ?? null,
-      last_seen: patch.last_seen ?? cur?.last_seen ?? 0, failures: patch.failures ?? cur?.failures ?? 0, cursor: patch.cursor ?? cur?.cursor ?? 0 };
-    this.db.prepare(`INSERT INTO peers (endpoint, address, info, last_seen, failures, cursor) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(endpoint) DO UPDATE SET address = excluded.address, info = excluded.info, last_seen = excluded.last_seen, failures = excluded.failures, cursor = excluded.cursor`)
-      .run(row.endpoint, row.address, row.info ? JSON.stringify(row.info) : null, row.last_seen, row.failures, row.cursor);
+    const row: PeerRow = {
+      endpoint, address: patch.address ?? cur?.address ?? null, info: patch.info ?? cur?.info ?? null,
+      last_seen: patch.last_seen ?? cur?.last_seen ?? 0, failures: patch.failures ?? cur?.failures ?? 0, cursor: patch.cursor ?? cur?.cursor ?? 0,
+      source: patch.source ?? cur?.source ?? 'configured',
+      learned_from: patch.learned_from ?? cur?.learned_from ?? null,
+      last_error: patch.last_error !== undefined ? patch.last_error : cur?.last_error ?? null,
+      last_attempt: patch.last_attempt ?? cur?.last_attempt ?? 0,
+    };
+    this.db.prepare(`INSERT INTO peers (endpoint, address, info, last_seen, failures, cursor, source, learned_from, last_error, last_attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET address = excluded.address, info = excluded.info, last_seen = excluded.last_seen, failures = excluded.failures, cursor = excluded.cursor,
+        source = excluded.source, learned_from = excluded.learned_from, last_error = excluded.last_error, last_attempt = excluded.last_attempt`)
+      .run(row.endpoint, row.address, row.info ? JSON.stringify(row.info) : null, row.last_seen, row.failures, row.cursor, row.source, row.learned_from, row.last_error, row.last_attempt);
+    return true;
   }
   getPeer(endpoint: string): PeerRow | null {
     const r = this.db.prepare('SELECT * FROM peers WHERE endpoint = ?').get(endpoint) as Record<string, unknown> | undefined;
-    return r ? { endpoint: r.endpoint as string, address: (r.address as string) ?? null, info: r.info ? JSON.parse(r.info as string) : null, last_seen: r.last_seen as number, failures: r.failures as number, cursor: r.cursor as number } : null;
+    return r ? Store.peerRow(r) : null;
   }
   listPeers(): PeerRow[] {
-    return (this.db.prepare('SELECT * FROM peers ORDER BY last_seen DESC').all() as Record<string, unknown>[])
-      .map((r) => ({ endpoint: r.endpoint as string, address: (r.address as string) ?? null, info: r.info ? JSON.parse(r.info as string) : null, last_seen: r.last_seen as number, failures: r.failures as number, cursor: r.cursor as number }));
+    return (this.db.prepare('SELECT * FROM peers ORDER BY last_seen DESC').all() as Record<string, unknown>[]).map(Store.peerRow);
   }
-  deletePeer(endpoint: string) { this.db.prepare('DELETE FROM peers WHERE endpoint = ?').run(endpoint); }
+  /** True when a row was actually deleted — `peers rm` used to report success for a peer that was never there (item 138). */
+  deletePeer(endpoint: string): boolean {
+    return (this.db.prepare('DELETE FROM peers WHERE endpoint = ?').run(endpoint).changes ?? 0) > 0;
+  }
+  blockPeer(endpoint: string, reason: string | null = null) {
+    this.db.prepare('INSERT INTO peers_blocked (endpoint, blocked_at, reason) VALUES (?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason')
+      .run(endpoint, Date.now(), reason);
+  }
+  /** True when the endpoint was blocked and now is not — what `peers add` reports. */
+  unblockPeer(endpoint: string): boolean {
+    return (this.db.prepare('DELETE FROM peers_blocked WHERE endpoint = ?').run(endpoint).changes ?? 0) > 0;
+  }
+  isPeerBlocked(endpoint: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM peers_blocked WHERE endpoint = ?').get(endpoint);
+  }
+  listBlockedPeers(): BlockedPeerRow[] {
+    return (this.db.prepare('SELECT * FROM peers_blocked ORDER BY blocked_at DESC').all() as Record<string, unknown>[])
+      .map((r) => ({ endpoint: r.endpoint as string, blocked_at: r.blocked_at as number, reason: (r.reason as string) ?? null }));
+  }
 
   // events
   event(level: EventRow['level'], kind: string, message: string, patchId: string | null = null, data: unknown = null) {

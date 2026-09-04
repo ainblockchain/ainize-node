@@ -254,7 +254,38 @@ export function buildApi(deps: ApiDeps): Router {
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
     accepts_contributions: market.acceptsContributions(), contributor_share: market.teach().contributorShare,
     counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
+    // item 338: the product says "any node can challenge a wrong one" and points at challenges as the safeguard that
+    // replaced the deposit. On the demo chain that mechanism had fired zero times in 501 attestations, and no screen
+    // said so — a reader inferred oversight that had never once happened. Keep the sentence, attach the number.
+    verification_stats: verificationStats(),
+    // What this node itself spends verifying for others, and what it gives back (items 332 / 333 / 336).
+    verifier_work: deps.verifier?.work() ?? null,
   })));
+
+  /**
+   * How often the safeguard has actually fired on everything this node can see (item 338). Derived from the catalogue,
+   * cached for as long as the catalogue is (a few seconds) — it walks every attestation of every anchor.
+   */
+  let statsCache: { at: number; value: VerificationStats } | null = null;
+  const verificationStats = (): VerificationStats => {
+    if (statsCache && Date.now() - statsCache.at < 15_000) return statsCache.value;
+    const cat = market.catalogSync().filter((e) => e.status !== 'DRAFT');
+    const value: VerificationStats = { attestations: 0, failed: 0, hash_only: 0, challenges: 0, upheld: 0, open: 0, disputed_items: 0, rechecks: 0 };
+    for (const e of cat) {
+      for (const a of e.attestations) {
+        value.attestations++;
+        if (!a.passed) value.failed++;
+        if (a.verified_on === 'hash-only') value.hash_only++;
+        if (a.recheck) value.rechecks++;
+      }
+      value.challenges += e.challenge_log.length;
+      value.upheld += e.challenge_log.filter((c) => c.state === 'upheld').length;
+      value.open += e.challenge_log.filter((c) => c.state === 'open').length;
+      if (e.challenge_log.length) value.disputed_items++;
+    }
+    statsCache = { at: Date.now(), value };
+    return value;
+  };
 
   /**
    * Bytes on disk (item 128). Recomputed at most every 30 s: `/api/info` is polled by the console every few seconds
@@ -904,7 +935,11 @@ export function buildApi(deps: ApiDeps): Router {
     if (!deps.verifier) throw bad('this node is not a verifier');
     const e = await market.entry(req.params.id as string);
     if (!e) throw notFound();
-    return { attestation: await deps.verifier.verifyOne(e.anchor) };
+    // `recheck` (item 339): measure again on purpose and put the result on the record, WITHOUT taking the seller off
+    // sale. A verifier with a doubt used to have only two options — stay silent, or challenge — and most operators
+    // will not attack a listing to record a measurement.
+    const b = z.object({ recheck: z.boolean().optional() }).parse(req.body ?? {});
+    return { attestation: await deps.verifier.verifyOne(e.anchor, { recheck: b.recheck }) };
   }));
   // A challenge stops every sale of a knowledge and spends another operator's GPU minutes on the re-run, so the API
   // no longer invents a reason for a caller that did not give one (item 328): `market.challenge` refuses a body

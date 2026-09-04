@@ -51,7 +51,7 @@ These are accepted by every command.
 | [`ainize logout`](#ainize-logout) | Forget the operator session |
 | [`ainize peers`](#ainize-peers) | Manage peers |
 | [`ainize patch`](#ainize-patch) | Publish, inspect, verify, buy and apply knowledge patches |
-| [`ainize publish`](#ainize-publish) | One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale) |
+| [`ainize publish`](#ainize-publish) | One line to sell knowledge: register a .npz + benchmark and announce it at once — the network verifies, you get paid per sale (`ainize patch publish` is the same operation, stopping at a draft) |
 | [`ainize teach`](#ainize-teach) | Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (\<node>/chat?teach=1) |
 | [`ainize dataset`](#ainize-dataset) | Training sets: the questions a published knowledge was taught from (lineage design §13) |
 | [`ainize use`](#ainize-use) | One line to use knowledge: check it is verified → quote the price → pay → download → load into your model |
@@ -506,7 +506,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 
 - `ainize patch ls` — List patches in the catalog
 - `ainize patch get` — Show a patch in detail
-- `ainize patch publish` — Register a .npz patch body as a draft (and optionally announce it)
+- `ainize patch publish` — Register a .npz patch body as a draft — it stays a DRAFT until --announce (`ainize publish` is the same operation, announcing at once)
 - `ainize patch import` — Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record
 - `ainize patch announce` — DRAFT → ANNOUNCED (anchor on the ledger)
 - `ainize patch retire` — Take your published knowledge off sale for good (the record stays; buyers keep their copy)
@@ -566,36 +566,40 @@ Show a patch in detail
 ainize patch publish <file> --name <value> --model <value> --benchmark <value> [options]
 ```
 
-Register a .npz patch body as a draft (and optionally announce it)
+Register a .npz patch body as a draft — it stays a DRAFT until --announce (`ainize publish` is the same operation, announcing at once)
 
 **Arguments**
 
-- **`<file>`** (`string`, required) — path to .npz on the node machine
+- **`<file>`** (`string`, required) — path to the learned knowledge (.npz: addrs/before/after) on the node machine
 
 **Options**
 
 - **`--name`** (`string`, required) — what buyers see in the catalogue
-- **`--model`** (`string`, required) — target model id_M
-- **`--benchmark`** (`string`, required) — benchmark JSON file or inline JSON ({schema, queries, format, samples})
+- **`--model`** (`string`, required) — target model id_M (e.g. Qwen3.8-Flash-Next)
+- **`--benchmark`** (`string`, required) — bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}
 - **`--id`** (`string`) — catalog id — permanent (default: a slug of --name)
-- **`--price`** (`string`) — price per download in this node's currency (default: `ainize config get market.defaultPrice`); editable while it is a draft, fixed for good at announce
+- **`--price`** (`string`) — price per download in this node's currency, AIN or node credit (default: `ainize config get market.defaultPrice`); editable while it is a draft, fixed for good at announce
 - **`--description`** (`string`) — one or two sentences about what it knows
-- **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) of every sale of this one
+- **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) out of every sale of this one
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
 - **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`) — how buyers are charged (default: per_download)
-- **`--contributor`** (`string[]`) — data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)
+- **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
-- **`--announce`** (`boolean`, default `false`) — announce to the network immediately
 - **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this publish may retire (required when it would retire any)
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
+- **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
+- **`--announce`** (`boolean`, default `false`) — announce to the network immediately — the permanent record, and the one step with no undo (default here: no. `ainize publish` announces by default)
 
 **Examples**
 
 ```bash
+# a draft nobody can see yet
+ainize patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25
+# draft and announce in one line — the same thing `ainize publish` does
 ainize patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce
 ```
 
@@ -970,7 +974,7 @@ Delete this node's copy of the knowledge file. NOT a takedown: it stays listed a
 ainize publish <file> --name <value> --model <value> --benchmark <value> [options]
 ```
 
-One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale)
+One line to sell knowledge: register a .npz + benchmark and announce it at once — the network verifies, you get paid per sale (`ainize patch publish` is the same operation, stopping at a draft)
 
 **Arguments**
 
@@ -978,21 +982,25 @@ One line to sell knowledge: register a .npz + benchmark and announce it (the net
 
 **Options**
 
-- **`--name`** (`string`, required) — human name of the knowledge
+- **`--name`** (`string`, required) — what buyers see in the catalogue
 - **`--model`** (`string`, required) — target model id_M (e.g. Qwen3.8-Flash-Next)
 - **`--benchmark`** (`string`, required) — bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}
-- **`--price`** (`string`) — price per download in the node currency, AIN or node credit (default: `ainize config get market.defaultPrice`); it can be changed while it is a draft and is fixed for good at announce
 - **`--id`** (`string`) — catalog id — permanent (default: a slug of --name)
+- **`--price`** (`string`) — price per download in this node's currency, AIN or node credit (default: `ainize config get market.defaultPrice`); editable while it is a draft, fixed for good at announce
 - **`--description`** (`string`) — one or two sentences about what it knows
 - **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) out of every sale of this one
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
-- **`--announce`** (`boolean`, default `true`) — announce immediately (--no-announce keeps a draft)
-- **`--supersede`** (`string[]`) — the listing(s) of yours this publish may retire (required when it would retire any)
+- **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`) — how buyers are charged (default: per_download)
+- **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
+- **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
+- **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
+- **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
+- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this publish may retire (required when it would retire any)
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
-- **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
+- **`--announce`** (`boolean`, default `true`) — announce immediately — the permanent record, and the one step with no undo (--no-announce keeps a draft, which is what `ainize patch publish` does by default)
 
 **Examples**
 
