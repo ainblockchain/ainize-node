@@ -9908,5 +9908,283 @@
    "packages/node/test/lineage-tree.test.ts (AZ-299)",
    "docs/lineage-teach-design.md §5.5, §12.5"
   ]
+ },
+ {
+  "id": "AZ-300",
+  "persona": "Node (developer)",
+  "title": "Two knowledge files are combined only when they cannot contradict each other — and no row is ever averaged",
+  "goal": "§9's whole rule in one place (F8): a merged row that neither parent measured is not knowledge. The union is arithmetic on the bytes; everything else has to be trained.",
+  "preconditions": [
+   "No node and no model — pure functions over .npz files."
+  ],
+  "steps": [
+   "compareNpz on disjoint files, on files that agree on a shared row, on files that disagree, and on a delta whose `before` is the other file's `after`.",
+   "unionNpz on each of those pairs."
+  ],
+  "expected": [
+   "Disjoint: shared 0; the union holds every row of both and each value is bit-identical to the file it came from.",
+   "A shared row both files write with the SAME value is written once; `opposing` counts only rows both moved away from the same base.",
+   "A shared row they disagree about throws `union_refused: rows_disagree` — never an average, never a sum.",
+   "Files that disagree about what was UNDER a row throw `union_refused: before_differs` (a stand-alone build has no value to write as `before`).",
+   "The union carries the members it is given (`teach_job`, `meta`) and hashes the state it expects underneath."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/core/test/npz-merge.test.ts (AZ-300)",
+   "packages/core/src/npz.ts (compareNpz, unionNpz)",
+   "docs/lineage-teach-design.md §9 steps 2-3"
+  ]
+ },
+ {
+  "id": "AZ-301",
+  "persona": "Visitor (creator)",
+  "title": "The merge preview counts both sides — questions and rows — before anything is built",
+  "goal": "SC-14's first screen is two independent measurements: what the two training sets have in common, and what the two files do to the model. A creator decides from those, not from a promise.",
+  "preconditions": [
+   "node-u (teach.lineage true, stub backend) or the in-process node the suite starts.",
+   "Two published knowledges with shareable training sets and no rows in common."
+  ],
+  "steps": [
+   "POST /api/teach/merge/preview {a, b}."
+  ],
+  "expected": [
+   "`questions` reports a_only / b_only / same / conflicts by the parser key (NFC, whitespace collapsed, case-sensitive).",
+   "`rows` reports a_only / b_only / shared / disagree from the two files themselves.",
+   "`tiers.union.allowed` is true with `export: 'squash'` when neither was built on anything; `tiers.required` is null.",
+   "Estimated minutes are null on a node that has never timed a gradient lesson — no invented hours."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-301)",
+   "packages/node/src/teach-merge.ts",
+   "docs/lineage-teach-design.md §12.2"
+  ]
+ },
+ {
+  "id": "AZ-302",
+  "persona": "Visitor (creator)",
+  "title": "Combining two knowledges that cannot contradict each other takes seconds, no GPU, and the anchor names both creators",
+  "goal": "T0 answers the owner's question with the cheapest honest build there is: the row union of the two files, published as one knowledge whose sale pays both lines.",
+  "preconditions": [
+   "Two published knowledges with disjoint rows."
+  ],
+  "steps": [
+   "POST /api/teach/jobs {mode:'merge', base_ids:[a,b], tier:'union'}; wait for the lesson; publish it."
+  ],
+  "expected": [
+   "The lesson's file holds every row of both parents and agrees with each of them on every row it took (valuesEqualCount differ = 0).",
+   "recipe.trainer = 'union', max_steps 0 — nothing was trained, and the record says so.",
+   "The anchor: parents [a, b], derivation.kind 'merge', tier 'union', bases carrying each parent's contributed rows, export 'squash' with an empty stack, dataset.parents naming both training sets."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-302)",
+   "packages/e2e/tests/web-merge.spec.ts (AZ-308)",
+   "docs/lineage-teach-design.md §9 T0"
+  ]
+ },
+ {
+  "id": "AZ-303",
+  "persona": "Visitor (creator)",
+  "title": "A question two knowledges answer differently stops the build until a person chooses, and the choice is what the merged set carries",
+  "goal": "§9 step 1: no build while a question has two answers. The resolution is recorded in the bytes, so the published set proves whose answer won.",
+  "preconditions": [
+   "Two published knowledges that answer one question differently."
+  ],
+  "steps": [
+   "Preview; POST a merge job with no resolutions; then with {key: 'b'} and tier 'retrain'."
+  ],
+  "expected": [
+   "Without resolutions: 409 `merge_unresolved` listing the questions.",
+   "With keep-B: the merged row is B's answer and carries `replaces` naming A's row; the job's facts are only the resolved questions.",
+   "known.jsonl is the merged set MINUS those questions (§7.3 — the trainer is never asked to hold two answers to one question).",
+   "job.json: both parents in `parents[]` in order, `mask.mode: 'only'`, export 'delta', and a `merge` block naming the tier and the two parents."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-303)",
+   "docs/lineage-teach-design.md §9 step 1, T1"
+  ]
+ },
+ {
+  "id": "AZ-304",
+  "persona": "Visitor (creator)",
+  "title": "Write my own / Drop: an answer the creator wrote is trained, a question they dropped is in neither the set nor the lesson",
+  "goal": "The four resolutions of SC-14 are four different outcomes in the published bytes, not four labels on the same thing.",
+  "preconditions": [
+   "Two published knowledges that answer two questions differently."
+  ],
+  "steps": [
+   "POST a merge job resolving one conflict with {answer} and the other with 'drop'."
+  ],
+  "expected": [
+   "The written answer is a target of the lesson, carries `replaces` and no `from` (it is nobody else's row).",
+   "The dropped question is absent from the snapshot and from the lesson; job.merge.dropped counts it."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-304)",
+   "docs/lineage-teach-design.md §9 step 1"
+  ]
+ },
+ {
+  "id": "AZ-305",
+  "persona": "Visitor (creator)",
+  "title": "A knowledge and something built on top of it disagree about the rows themselves: no combine, no retrain — a rebuild or nothing",
+  "goal": "The measured case (pin/pixel 96 %, ep6/ep12 99.9 %): above a fifth of disagreeing shared rows, stacking and masked retraining are both dishonest, and §9 requires a full rebuild.",
+  "preconditions": [
+   "A published knowledge, and a child trained on top of it that changes one of its answers."
+  ],
+  "steps": [
+   "Preview the pair; POST a merge job with tier 'retrain'; then with tier 'rebuild'."
+  ],
+  "expected": [
+   "`rows.disagree` equals `rows.shared`, `tiers.required` is 'rebuild', and retrain is refused with reason 'rows_disagree'.",
+   "The retrain job is refused 400 `tier_not_allowed` naming the required tier.",
+   "The rebuild job trains the whole combined set with NO parent in job.json, export 'squash', and no keep-set."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-305)",
+   "packages/e2e/tests/web-merge.spec.ts (AZ-309)",
+   "docs/lineage-teach-design.md §9 T2"
+  ]
+ },
+ {
+  "id": "AZ-306",
+  "persona": "Visitor (creator)",
+  "title": "A private training set can still be combined when the rows do not overlap — and never retrained or rebuilt",
+  "goal": "SC-14 `merge.private_parent`: a creator who kept their questions private is still a parent whose file can be combined, and nothing about their questions is ever counted or shown.",
+  "preconditions": [
+   "One published knowledge with a shareable training set, one with a private one, rows disjoint."
+  ],
+  "steps": [
+   "Preview the pair; POST a merge job with tier 'retrain'; then with tier 'union'."
+  ],
+  "expected": [
+   "`questions` is null and `private_parent` names the sealed knowledge; only the rows are reported.",
+   "Retrain and rebuild are refused with reason 'private_parent'; union is allowed while the rows are disjoint.",
+   "The combine builds: the child's training set holds only the readable side's questions, and the file holds every row of both."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-306)",
+   "docs/lineage-teach-design.md §9 (private parent)"
+  ]
+ },
+ {
+  "id": "AZ-307",
+  "persona": "Buyer / creator",
+  "title": "One sale of a combined knowledge pays both lines of creators, once each, and adds up to the price",
+  "goal": "§11 worked example 3 on the anchor a merge really publishes: inheriting from two knowledges without paying both is impossible by construction.",
+  "preconditions": [
+   "Two taught anchors, each with its own teacher credited, and a merge anchor listing both as parents."
+  ],
+  "steps": [
+   "royaltyPlan on the merge anchor at price 10, share 0.3.",
+   "The same sale with one parent missing from this node."
+  ],
+  "expected": [
+   "The 30 % pool splits equally between the two lines (1.5 each), and each line's slice is shared with that anchor's teacher (1.05 / 0.45).",
+   "The creator of the combined knowledge keeps the seller side; Σ payouts = the price.",
+   "A parent this node cannot resolve is still paid, to the author its anchor names."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/core/test/lineage.test.ts (AZ-307)",
+   "docs/lineage-teach-design.md §11"
+  ]
+ },
+ {
+  "id": "AZ-308",
+  "persona": "Visitor (creator)",
+  "title": "The merge screen in a browser: what overlaps, no training needed, and both creators named before anything is built",
+  "goal": "SC-14 in the product: a creator who has never read the design must be able to see what combining two knowledges means, and what it will cost whom.",
+  "preconditions": [
+   "node-u on http://localhost:3422 with teach.lineage true.",
+   "Two published knowledges with nothing in common."
+  ],
+  "steps": [
+   "Open /teach/merge?a=&b= and read the overlap; press Build it."
+  ],
+  "expected": [
+   "Both counts are on screen (questions and rows), 'Just combine — no training' is offered, and the rule that a disagreeing row is never blended or added is stated.",
+   "The money line names both creators and says buyers need both, before the build.",
+   "Building lands on the lesson page; the lesson is mode 'merge', tier 'union', bases [a, b], and its file has as many rows as the two parents together."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-merge.spec.ts (AZ-308)",
+   "packages/web/src/pages/MergePage.tsx",
+   "docs/lineage-teach-design.md §4 SC-14"
+  ]
+ },
+ {
+  "id": "AZ-309",
+  "persona": "Visitor (creator)",
+  "title": "The merge screen shows the disagreement in the creator's own words and refuses the builds the rows forbid",
+  "goal": "A conflict is a decision only a person can make, and the screen must not let the build start without it — nor offer a tier the measurement rules out.",
+  "preconditions": [
+   "node-u.",
+   "A published knowledge and a child of it that changes one of its answers."
+  ],
+  "steps": [
+   "Open /teach/merge for the pair; try to build; choose an answer; send the forbidden tier through the API anyway."
+  ],
+  "expected": [
+   "Both answers are shown, attributed by name; 'n questions still need a choice' is displayed and Build it is disabled.",
+   "The share of disagreeing shared rows is stated and the rebuild is marked required; 'just combine' says why it is not available.",
+   "Choosing an answer enables the build; the node still refuses tier 'retrain' with `tier_not_allowed`."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-merge.spec.ts (AZ-309)",
+   "docs/lineage-teach-design.md §4 SC-14, §9"
+  ]
+ },
+ {
+  "id": "AZ-310",
+  "persona": "Operator (CLI)",
+  "title": "`ainize patch merge` measures first, and unresolved questions come back as JSON with exit 3",
+  "goal": "§13: an operator with no browser gets the same measurement and the same refusal — and a machine-readable one, so a script can fill in the answers and run again.",
+  "preconditions": [
+   "node-u.",
+   "Two published knowledges that answer one question differently."
+  ],
+  "steps": [
+   "`ainize patch merge <a> <b> --preview`; then without --preview and without --resolve."
+  ],
+  "expected": [
+   "The preview prints the question counts, the row counts, which builds are possible and which is required, and each disagreement with both answers, named by knowledge.",
+   "Without resolutions the command exits 3 and stdout is the JSON object `--resolve` reads back, one entry per open question."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-merge.spec.ts (AZ-310)",
+   "packages/cli/src/commands/teach-dataset.ts (patchMerge)",
+   "docs/lineage-teach-design.md §13"
+  ]
  }
 ]
