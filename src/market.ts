@@ -60,6 +60,26 @@ export interface LineageTree {
   };
 }
 
+/** Why an announced knowledge has not reached its quorum yet, assembled from what THIS node has seen (item 154). */
+export interface VerificationStall {
+  patch_id: string;
+  /** When the anchor was announced. */
+  since: number;
+  waited_minutes: number;
+  counted: number;
+  quorum: number;
+  /** Attestations that exist but are hash-only — they cannot count for an anchor that ships samples. */
+  hash_only: number;
+  /** True when the benchmark ships sample questions, so a hash-only attestation can never list it. */
+  needs_benchmark: boolean;
+  /** The model this knowledge names. */
+  model: string;
+  /** The verifier peers that answered this node's last gossip round, and what each has done about this anchor. */
+  verifiers: { name: string | null; endpoint: string; address: string | null; model: string | null; attested: 'no' | 'hash-only' | 'executed' }[];
+  /** One sentence naming the cause, built only from the fields above. */
+  reason: string;
+}
+
 export interface CreateDraftInput {
   id?: string;
   name: string;
@@ -1437,6 +1457,56 @@ export class Market {
     };
   }
 
+  /**
+   * Why an announced knowledge is still not verified (item 154, second half).
+   *
+   * The publish-time model check can only fire on a node whose own serving API answers — and the node that most
+   * often mistypes `--model` is the one whose engine is not up yet. When it cannot fire, the author is left with
+   * `ANNOUNCED 0/2` and, as the review found, no error anywhere on their own machine: the retry warnings are events
+   * on the VERIFIERS' nodes. This assembles what the author's node knows for certain and says it in one sentence.
+   *
+   * Every number here is measured on this node: the attestations it has replicated, the peers that answered its
+   * last gossip round, and the models those peers advertise in their own `PeerInfo`. Nothing is inferred about a
+   * peer that has not spoken. Returns null before `afterMs` — a verification legitimately takes minutes.
+   */
+  verificationStall(e: CatalogEntry, afterMs = 5 * 60_000): VerificationStall | null {
+    if (!['ANNOUNCED', 'VERIFYING'].includes(e.status)) return null;
+    if (e.passed >= e.quorum) return null;
+    const since = e.anchor.created_at;
+    const waited = Date.now() - since;
+    if (waited < afterMs) return null;
+    const needsBenchmark = (e.anchor.benchmark.samples?.length ?? 0) > 0;
+    const model = e.anchor.model.id_M;
+    const mine = this.address.toLowerCase();
+    const attestedBy = new Map(e.attestations.map((a) => [a.verifier.toLowerCase(), a]));
+    const peers = this.store.listPeers().filter((pr) => pr.failures === 0 && pr.last_seen > 0 && pr.info?.roles?.includes('verifier') && pr.address?.toLowerCase() !== mine);
+    const verifiers = peers.map((pr) => {
+      const att = attestedBy.get((pr.address ?? '').toLowerCase());
+      return {
+        name: pr.info?.name ?? null, endpoint: pr.endpoint, address: pr.address,
+        model: pr.info?.model ?? null,
+        attested: (att ? (att.verified_on === 'hash-only' ? 'hash-only' : 'executed') : 'no') as 'no' | 'hash-only' | 'executed',
+      };
+    });
+    const hashOnly = e.attestations.filter((a) => a.verified_on === 'hash-only').length;
+    const canRun = verifiers.filter((v) => v.model && v.model === model).length;
+    const knownModels = [...new Set(verifiers.map((v) => v.model).filter(Boolean))] as string[];
+    const mins = Math.floor(waited / 60_000);
+    let reason: string;
+    if (!verifiers.length) {
+      reason = `no other node on this network has answered this one, and a verification needs ${e.quorum}. Add a peer (\`ainize peers add <url>\`) or lower verifier.quorum on a private network.`;
+    } else if (needsBenchmark && hashOnly > 0 && canRun === 0) {
+      reason = `${hashOnly} verifier(s) checked the file's hash but none could run its benchmark, and a hash-only check never lists an anchor that ships sample questions. This knowledge names model ${model}; the verifiers that answer serve ${knownModels.length ? knownModels.join(', ') : 'no model at all'}. Re-publish for a model one of them serves, or drop the samples from the benchmark.`;
+    } else if (needsBenchmark && canRun === 0) {
+      reason = `this knowledge names model ${model} and ships ${e.anchor.benchmark.samples?.length} sample question(s), so a verifier has to run it — and the ${verifiers.length} verifier(s) that answer serve ${knownModels.length ? knownModels.join(', ') : 'no model at all'}. Nothing on this network can score it as published.`;
+    } else if (hashOnly > 0) {
+      reason = `${hashOnly} of ${e.quorum} needed attestations exist and are hash-only; the rest have not arrived yet.`;
+    } else {
+      reason = `${verifiers.length} verifier(s) answer this node and none has attested yet. Their own logs say why (\`ainize logs --patch ${e.anchor.id}\` on those nodes).`;
+    }
+    return { patch_id: e.anchor.id, since, waited_minutes: mins, counted: e.passed, quorum: e.quorum, hash_only: hashOnly, needs_benchmark: needsBenchmark, model, verifiers, reason };
+  }
+
   // ------------------------------------------------------------------ x402 (buyer side: this node buys)
   /**
    * Where a knowledge is actually sold right now (item 275).
@@ -2549,7 +2619,9 @@ export class Market {
    * it in "built on 3×" would publish the existence of an unannounced lesson as an integer.
    */
   private publicChildren(e: CatalogEntry, map: Map<string, CatalogEntry>): string[] {
-    return e.children.filter((c) => { const x = map.get(c); return !!x && x.status !== 'DRAFT'; });
+    // …and a test anchor is not a child either: fixtures are announced, hidden from every listing and from the
+    // family tree, so counting them in "built on 3×" would put a number on the page nothing on it explains.
+    return e.children.filter((c) => { const x = map.get(c); return !!x && x.status !== 'DRAFT' && (x.anchor.visibility !== 'test' || !!this.cfg.includeTestAnchors); });
   }
 
   /**

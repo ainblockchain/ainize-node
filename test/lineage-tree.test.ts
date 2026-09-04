@@ -72,6 +72,9 @@ before(async () => {
   for (const id of ['fam-a', 'fam-b', 'fam-c', 'fam-d', 'fam-legacy']) await N.market.announce(id);
   // and one that stays a private draft — a stranger must not learn it exists
   await N.market.createDraft({ id: 'fam-secret', name: 'Unannounced child', model, benchmark: bench('s'), file: file('s', 1100, 40), keepInPlace: true, parents: ['fam-a'] });
+  // …and an announced FIXTURE: a test anchor is public on the ledger but is not part of anybody's family picture
+  await N.market.createDraft({ id: 'fam-fixture', name: 'Test fixture child', model, benchmark: bench('f'), file: file('f', 1120, 40), keepInPlace: true, parents: ['fam-a'], visibility: 'test' });
+  await N.market.announce('fam-fixture');
 });
 
 after(async () => {
@@ -128,6 +131,10 @@ test('AZ-285 the tree is depth-capped and cycle-safe, and hides what the caller 
   assert.ok(!anon.nodes.some((n) => n.id === 'fam-secret'), 'a stranger is not told an unannounced child exists');
   const operator = (await api('GET', '/api/patches/fam-a/tree?depth=4', undefined, op())).json as unknown as LineageTree;
   assert.ok(operator.nodes.some((n) => n.id === 'fam-secret'), 'the operator sees their own draft');
+  // a test anchor is announced and readable by id, and still not in the family picture of a public knowledge
+  assert.ok(!anon.nodes.some((n) => n.id === 'fam-fixture'), 'a fixture is not somebody’s child on a public page');
+  const ownTree = (await api('GET', '/api/patches/fam-fixture/tree?depth=4')).json as unknown as LineageTree;
+  assert.ok(ownTree.nodes.some((n) => n.id === 'fam-fixture'), '…but asking about the fixture itself answers about it');
 
   // a cycle, and an ancestor this node has never heard of — both from a peer's anchors, so both are built by hand
   const real = await N.market.entryMap();
@@ -155,7 +162,7 @@ test('AZ-286 signals keep their scope, and a sale that was not a sale is not cou
   assert.equal(s.network.scope, 'network');
   assert.equal(s.node.scope, 'node');
   assert.equal(s.node.window_days, 30, 'the node half says how far back it looks');
-  assert.equal(s.network.built_on, 3, 'B, the merge and the declared child — the unannounced draft is NOT counted');
+  assert.equal(s.network.built_on, 3, 'B, the merge and the declared child — neither the unannounced draft nor the announced test fixture is counted');
   assert.equal(s.network.sales_all, 0, 'nothing was bought — and that is reported as 0, not as the network average');
 
   // the exclusion rule itself (§10): a free download and the author buying from itself are not demand

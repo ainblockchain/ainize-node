@@ -9510,7 +9510,8 @@
   "title": "The tree is depth-capped and cycle-safe, and hides what the caller may not see",
   "goal": "A family tree is a walk over anchors written by strangers: it must terminate, and it must not leak the existence of an unannounced lesson.",
   "preconditions": [
-   "The same family, plus a private draft child, and a hand-built pair of anchors that name each other as parents."
+   "The same family, plus a private draft child, and a hand-built pair of anchors that name each other as parents.",
+   "An announced test-visibility fixture child of the same knowledge."
   ],
   "steps": [
    "GET /api/patches/fam-a/tree?depth=1",
@@ -9521,7 +9522,8 @@
   "expected": [
    "depth=1 returns one hop in each direction and says `truncated: true`; depth=9 is refused with 400 rather than silently clamped (the cap is 8).",
    "A stranger's tree does not contain the unannounced draft; the operator's does.",
-   "A cycle terminates, and an ancestor no node here holds is a `{ missing: true }` placeholder, not a hole and not a fabricated node."
+   "A cycle terminates, and an ancestor no node here holds is a `{ missing: true }` placeholder, not a hole and not a fabricated node.",
+   "An announced test anchor is not in a public knowledge's family picture, though asking about the fixture itself still answers — and it is not counted in \"built on N times\" either."
   ],
   "priority": "P0",
   "area": "teach-lineage",
@@ -9545,7 +9547,7 @@
   ],
   "expected": [
    "`network.scope = 'network'`, `node.scope = 'node'`, `node.window_days = 30` — the two halves are labelled and never summed.",
-   "`built_on` counts the three public children and NOT the unannounced draft (an integer must not publish the existence of a private lesson).",
+   "`built_on` counts the three public children and NOT the unannounced draft or the announced test fixture (an integer must not publish the existence of a private lesson, and a fixture is not demand).",
    "A price-0 settlement and the author buying from itself are not sales; the 40-day-old one is in `sales_all` and not in `sales_30d`."
   ],
   "priority": "P0",
