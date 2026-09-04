@@ -12,7 +12,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
-  DATASET_ACCESS_LEVELS, accessOf, isDatasetLicense,
+  DATASET_ACCESS_LEVELS, accessOf, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -370,6 +370,11 @@ export function buildApi(deps: ApiDeps): Router {
       // lineage (design §12.4): an operator may publish the training set beside the body — a local jsonl/csv path,
       // pinned under its canonical sha with the chosen access and licence
       dataset_file: z.string().optional(), dataset_access: z.enum(DATASET_ACCESS_LEVELS).optional(), dataset_license: z.string().optional(),
+      // §12.4: an operator may register a knowledge that was trained ON TOP of others — the ordered stack that has to
+      // be loaded underneath it. `pre_state_sha256` is never taken on trust: it is recomputed from the file here.
+      base_stack: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
+      export: z.enum(['delta', 'squash']).optional(),
+      derivation: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()).optional(),
     }).parse(req.body);
     const file = req.file?.path ?? body.path;
     if (!file) throw bad('upload a .npz file or give a local `path`');
@@ -386,10 +391,26 @@ export function buildApi(deps: ApiDeps): Router {
       const pinned = market.datasets.pin(canonicalBytes(parsed.rows), { source: 'upload', license, access, parents: [], row_origin: [], changed: [], removed: [], contrast_used: [], pii_scan: { ok: parsed.summary.pii === 0, rows: parsed.report.filter((r) => r.status === 'pii' && r.index !== null).map((r) => r.index!) }, declaration: { source: 'own', license, no_pii: parsed.summary.pii === 0 }, include_notes: false, model_id: body.model_id }, samples);
       dataset = { sha256: pinned.sha256, rows: pinned.rows, source: 'upload', access, license };
     }
+    let base: PatchAnchor['base'] | undefined;
+    if (body.base_stack.length) {
+      const stack: { patch_id: string; patch_sha256: string }[] = [];
+      for (const id of body.base_stack) {
+        const e = await market.entry(id);
+        if (!e) throw bad(`base_unknown: ${id} is not a knowledge on this node`);
+        stack.push({ patch_id: id, patch_sha256: e.anchor.patch_sha256 });
+      }
+      const a = readNpzMember(file, 'addrs'), b = readNpzMember(file, 'before');
+      const dim = b.header.shape[1] ?? 1;
+      base = {
+        stack, export: body.export ?? 'delta',
+        pre_state_sha256: preStateSha256(new BigInt64Array(a.body.buffer, a.body.byteOffset, a.body.length / 8), new Float32Array(b.body.buffer, b.body.byteOffset, b.body.length / 4), dim),
+      };
+    }
     const anchor = await market.createDraft({
       id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
       price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
       file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, ...(dataset ? { dataset } : {}),
+      ...(base ? { base } : {}), ...(body.derivation ? { derivation: body.derivation as never } : {}),
     });
     return { anchor };
   }));
@@ -475,7 +496,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (!e) throw new HttpError(404, 'patch not found');
     const blob = market.blobs.get(e.anchor.patch_sha256);
     if (!blob) throw new HttpError(409, 'patch body not present on this node');
-    const check = await market.runtime.check(blob.path);
+    const check = await market.runtime.exclusive(`check:${e.anchor.id}`, () => market.runtime.check(blob.path));
     if (!check) throw new HttpError(503, 'the patch hook could not be reached (ENGRAM_HOOK=1?)');
     return { patch_id: e.anchor.id, export: e.anchor.base?.export ?? null, base_stack: (e.anchor.base?.stack ?? []).map((b) => b.patch_id), ...check };
   }));
