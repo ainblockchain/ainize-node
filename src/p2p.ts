@@ -32,9 +32,27 @@ export function verifyAuthHeader(header: string | undefined, purpose: string, ma
   return verifyMessage(`${purpose}:${ts}`, sig, address) ? address : null;
 }
 
+/**
+ * What this node actually knows about its peers, as opposed to "peers: 3" (item 170). `reachable` is peers whose
+ * last gossip round succeeded; `verifiers` is how many of THOSE advertise the verifier role — the fact an operator
+ * needs before believing "verifiers will now attest"; `mismatched` is the peers publishing on a different ledger,
+ * whose knowledge can never appear in this node's catalogue however green every other indicator looks.
+ */
+export interface PeerHealth {
+  known: number;
+  reachable: number;
+  unreachable: number;
+  verifiers: number;
+  ledger_mismatch: number;
+  ledger: 'local' | 'ain';
+  mismatched: { endpoint: string; name: string | null; ledger: string }[];
+}
+
 export class P2P {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  /** Endpoints already told about (once per ledger value) so the mismatch warning is not repeated every 4 s. */
+  private readonly warnedLedger = new Map<string, string>();
   constructor(private readonly deps: P2PDeps, seeds: string[], private readonly intervalMs: number, private readonly selfEndpoint: string) {
     for (const s of seeds) if (s && this.normalize(s) !== this.normalize(selfEndpoint)) deps.store.upsertPeer(this.normalize(s));
   }
@@ -74,9 +92,22 @@ export class P2P {
       const self = await this.deps.selfInfo();
       for (const peer of this.peers()) {
         try {
-          // 1) hello / info exchange
-          const info = await this.fetchJson<PeerInfo>(`${peer.endpoint}/p2p/hello`, { method: 'POST', body: JSON.stringify(self) });
+          // 1) hello / info exchange. The hello is SIGNED for this node's own endpoint (item 326): the body claims an
+          // address and a set of roles, and `verifier` in that list used to be enough to download every paid body on
+          // the peer for free. An unsigned hello still registers the endpoint on the other side; only the claim needs
+          // the signature.
+          const info = await this.fetchJson<PeerInfo>(`${peer.endpoint}/p2p/hello`, {
+            method: 'POST', body: JSON.stringify(self),
+            headers: { 'x-ngram-auth': authHeader(this.deps.identity, `hello:${this.normalize(self.endpoint ?? this.selfEndpoint)}`) },
+          });
           this.deps.store.upsertPeer(peer.endpoint, { address: info.address, info, last_seen: Date.now(), failures: 0 });
+          // A peer on the OTHER ledger answers hello, peer-exchange and blob requests perfectly — and serves an empty
+          // record set forever, so its knowledge never reaches this catalogue. Nothing used to say so (item 170).
+          if (info.ledger && info.ledger !== this.deps.ledger.kind && this.warnedLedger.get(peer.endpoint) !== info.ledger) {
+            this.warnedLedger.set(peer.endpoint, info.ledger);
+            this.deps.log('warn', 'p2p', `${info.name} (${peer.endpoint}) publishes on the ${info.ledger === 'ain' ? 'AIN' : 'local'} ledger; this node reads the ${this.deps.ledger.kind === 'ain' ? 'AIN chain' : 'local record DAG'}, so its knowledge will never appear here — re-init with \`ainize init --force --ledger ${info.ledger}${info.ledger === 'ain' ? ' --ain-provider <url>' : ''}\`, or trade with it directly (--node ${peer.endpoint})`, { endpoint: peer.endpoint, peer_ledger: info.ledger, own_ledger: this.deps.ledger.kind });
+          }
+          if (info.ledger === this.deps.ledger.kind) this.warnedLedger.delete(peer.endpoint);
           // 2) peer exchange
           const known = await this.fetchJson<{ peers: string[] }>(`${peer.endpoint}/p2p/peers`);
           for (const ep of known.peers ?? []) {
@@ -108,6 +139,27 @@ export class P2P {
   async broadcast(record: LedgerRecord): Promise<void> {
     await Promise.allSettled(this.peers().map((p) =>
       this.fetchJson(`${p.endpoint}/p2p/records`, { method: 'POST', body: JSON.stringify({ records: [record] }) }, 5000)));
+  }
+
+  /**
+   * The peer facts every operator surface needs (`ainize status`, `ainize nodes`, `ainize peers ls`, /api/info).
+   * "Reachable" is not "configured": a peer counts only when its last round actually succeeded.
+   */
+  health(): PeerHealth {
+    const peers = this.peers();
+    const reachable = peers.filter((p) => p.failures === 0 && p.last_seen > 0);
+    const mismatched = peers
+      .filter((p) => p.info?.ledger && p.info.ledger !== this.deps.ledger.kind)
+      .map((p) => ({ endpoint: p.endpoint, name: p.info?.name ?? null, ledger: p.info!.ledger as string }));
+    return {
+      known: peers.length,
+      reachable: reachable.length,
+      unreachable: peers.length - reachable.length,
+      verifiers: reachable.filter((p) => p.info?.roles?.includes('verifier')).length,
+      ledger_mismatch: mismatched.length,
+      ledger: this.deps.ledger.kind,
+      mismatched,
+    };
   }
 
   /** Peers advertising a blob (from their last info). */
