@@ -911,6 +911,23 @@ export class Market {
     return layers;
   }
 
+  /**
+   * The layers of an EXACT ordered list of ids — no base expansion. This is how the stack that is already on the
+   * table is described: it is a record of what was written, not a plan, and re-deriving it from base stacks could
+   * silently reorder it. A row whose knowledge or body has gone is dropped with a warning, and `assertStack` then
+   * unwinds from there.
+   */
+  private async layersOfExact(ids: string[]): Promise<Layer[]> {
+    const out: Layer[] = [];
+    for (const id of ids) {
+      const entry = await this.entry(id).catch(() => null);
+      const blob = entry ? this.blobs.get(entry.anchor.patch_sha256) : null;
+      if (!entry || !blob) { this.log('warn', 'runtime', `${id} is recorded as loaded but ${entry ? 'its body is' : 'it is'} no longer here`, id); continue; }
+      out.push({ id, sha256: blob.sha256, path: blob.path, delta: entry.anchor.base?.export === 'delta', requested: false });
+    }
+    return out;
+  }
+
   /** Fingerprint of an ordered stack — what the journal records as "this is the table state I was written over". */
   private static stackFingerprint(layers: { id: string; sha256: string }[]): string {
     return sha256Hex(layers.map((l) => `${l.id}:${l.sha256}`).join('\n'));
@@ -972,9 +989,9 @@ export class Market {
     if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
     const layers = await this.layersFor(ids, { withBase: opts.withBase, requireBaseApplied: true });
     const current = this.store.listApplied().map((a) => a.patch_id);
-    const wanted = new Set(layers.map((l) => l.id));
-    const below = current.filter((id) => !wanted.has(id));
-    const target: Layer[] = [...(await this.layersFor(below)).filter((l) => !wanted.has(l.id)), ...layers];
+    // What is already on the table stays exactly where it is (§8.3 allows an unrelated patch between a base and its
+    // child); only the layers that are missing go on top, ancestors first.
+    const target: Layer[] = [...(await this.layersOfExact(current)), ...layers.filter((l) => !current.includes(l.id))];
     return this.runtime.exclusive(`apply:${ids.join('+')}`, async () => {
       const res = await this.assertStack(target, reason);
       return { ...res, stack: target.map((t) => t.id) };
@@ -1033,7 +1050,7 @@ export class Market {
       throw conflict(`has_dependents: ${dependents.join(', ')} ${dependents.length > 1 ? 'are' : 'is'} loaded on top of ${patchId} and would stop working — unload ${dependents.length > 1 ? 'them' : 'it'} first, or ask for cascade`, { ids: dependents });
     }
     const drop = new Set([patchId, ...(opts.cascade ? dependents : [])]);
-    const target = (await this.layersFor(current.map((a) => a.patch_id).filter((id) => !drop.has(id)))).filter((l) => !drop.has(l.id));
+    const target = await this.layersOfExact(current.map((a) => a.patch_id).filter((id) => !drop.has(id)));
     const res = await this.runtime.exclusive(`remove:${patchId}`, () => this.assertStack(target, 'remove'));
     this.log('info', 'runtime', `unloaded ${res.removed.join(', ')}${res.applied.length ? `; re-asserted ${res.applied.join(' → ')}` : ''}`, patchId);
     return `unloaded ${res.removed.join(', ')}${res.applied.length ? ` (re-asserted ${res.applied.join(' → ')})` : ''}`;
@@ -1055,7 +1072,7 @@ export class Market {
     const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
     if (!status || status.applied) return;
     this.log('warn', 'runtime', `the table no longer holds ${top.patch_id} (restart?) → re-applying the whole stack of ${cur.length} in order`, top.patch_id);
-    const target = await this.layersFor(cur.map((a) => a.patch_id)).catch((e) => { this.log('error', 'runtime', `cannot rebuild the stack: ${(e as Error).message}`); return null; });
+    const target = await this.layersOfExact(cur.map((a) => a.patch_id)).catch((e) => { this.log('error', 'runtime', `cannot rebuild the stack: ${(e as Error).message}`); return null; });
     if (!target) return;
     await this.runtime.exclusive('watchdog', () => this.assertStack(target, 'watchdog', { rebuild: true }))
       .catch((e) => this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`));
