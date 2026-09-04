@@ -95,6 +95,9 @@ test('AZ-284 the tree names every relation for what it is, and what each knowled
   assert.ok(tree.nodes.find((n) => n.id === 'fam-a')!.depth < 0, 'an ancestor is above');
   assert.ok(tree.nodes.find((n) => n.id === 'fam-c')!.depth > 0, 'a derivative is below');
   assert.equal(tree.family.knowledges, 4);
+  // the money line is the real splitter's answer, and it does not fold a credited teacher into "the lineage"
+  assert.equal(tree.money.seller_pct + tree.money.lineage_pct + tree.money.contributor_pct, 100, 'a unit sale is fully accounted for');
+  assert.deepEqual(tree.money.lineage_names, ['Base A'], 'the names in the line are the ancestors, not every address on the split');
   // the diamond: D reaches A through C, and A appears ONCE
   const fromA = await api('GET', '/api/patches/fam-a/tree?depth=8');
   const t2 = fromA.json as unknown as LineageTree;

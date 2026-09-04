@@ -50,7 +50,11 @@ export interface LineageTree {
   /** true when the walk stopped at the depth cap with more to see. */
   truncated: boolean;
   family: { sales: number; knowledges: number; authors: number };
-  money: { seller_pct: number; lineage_pct: number; seller_name: string | null; recipients: { address: string; pct: number; name: string | null }[] };
+  money: {
+    seller_pct: number; lineage_pct: number; contributor_pct: number;
+    seller_name: string | null; lineage_names: string[];
+    recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' }[];
+  };
 }
 
 export interface CreateDraftInput {
@@ -1538,22 +1542,39 @@ export class Market {
     return {
       root: rootId, depth, dir, nodes: list, edges, truncated,
       family: { sales, knowledges: family.length, authors: authors.size },
-      money: this.treeMoney(root, map),
+      money: this.treeMoney(root, map, list.filter((n) => n.depth < 0 && !n.missing)),
     };
   }
 
-  /** SC-9 *Money*: what one sale of the root pays, computed by the real splitter on a unit price (§11). */
-  private treeMoney(root: CatalogEntry, map: Map<string, CatalogEntry>): LineageTree['money'] {
+  /**
+   * SC-9 *Money*: what one sale of the root pays, computed by the REAL splitter on a unit price (§11) — so the line
+   * a creator reads is produced by the code that will move the money, never by a second implementation of the rule.
+   *
+   * The two shares are kept apart, because they are two different promises: `lineage_pct` is what the ancestors'
+   * authors share for having been built on, `contributor_pct` is what this knowledge's own data provider was
+   * credited on its record. Adding them into one "70% to others" would tell a creator that teaching on top of
+   * someone costs them what crediting a teacher costs.
+   */
+  private treeMoney(root: CatalogEntry, map: Map<string, CatalogEntry>, ancestors: TreeNode[]): LineageTree['money'] {
     const share = this.cfg.market.royaltyShare ?? 0;
     const split = royaltySplit(root, map, 100, share);
     const seller = root.anchor.author.toLowerCase();
-    const sellerPct = Number(split[root.anchor.author] ?? split[seller] ?? 0);
-    const others = Object.entries(split).filter(([a]) => a.toLowerCase() !== seller);
+    const ancestorAuthors = new Map(ancestors.map((n) => [(n.author ?? '').toLowerCase(), n]));
+    const contributorName = (addr: string) => (root.anchor.contributors ?? []).find((c) => c.address.toLowerCase() === addr || c.signer?.toLowerCase() === addr)?.name ?? null;
+    const recipients = Object.entries(split)
+      .filter(([a]) => a.toLowerCase() !== seller)
+      .map(([address, amount]) => {
+        const lower = address.toLowerCase();
+        const from = ancestorAuthors.get(lower);
+        return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.author_name ?? contributorName(lower), kind: (from ? 'lineage' : 'contributor') as 'lineage' | 'contributor' };
+      });
     return {
-      seller_pct: Math.round(sellerPct * 10) / 10,
-      lineage_pct: Math.round(others.reduce((n, [, v]) => n + Number(v), 0) * 10) / 10,
-      recipients: others.map(([address, amount]) => ({ address, pct: Math.round(Number(amount) * 10) / 10, name: map.get([...map.keys()].find((k) => map.get(k)!.anchor.author.toLowerCase() === address.toLowerCase()) ?? '')?.anchor.author_name ?? null })),
-      seller_name: root.anchor.author_name ?? null,
+      seller_pct: Math.round(Number(split[root.anchor.author] ?? split[seller] ?? 0) * 10) / 10,
+      lineage_pct: Math.round(recipients.filter((r) => r.kind === 'lineage').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      contributor_pct: Math.round(recipients.filter((r) => r.kind === 'contributor').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      /** the knowledges whose creators share `lineage_pct` — SC-9's "{names}" */
+      lineage_names: ancestors.map((n) => n.name),
+      recipients, seller_name: root.anchor.author_name ?? null,
     };
   }
 
