@@ -28,6 +28,8 @@ const scratchHome = (name: string) => join(SCRATCH, `agent-${name}-${Date.now().
 const NODE_A_ADDR = nodeAddress(HOME_A);
 const NODE_C_ADDR = nodeAddress(HOME_C);
 const HEX24 = /^[0-9a-f]{24}$/;
+/** Escape a value for use inside a RegExp (prices carry `.`). */
+const esc = (v: string): string => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const TX = /0x[0-9a-fA-F]{64}/;
 
 /** Lines of an agent log in order. */
@@ -562,11 +564,13 @@ test.describe('autonomous buyer (runtime)', () => {
       const expectedKey = `${NODE_A_ADDR}_${(dA.anchor.topic_path ?? 'patches').replace(/\//g, '|')}_${dA.anchor.entry_id}`;
 
       // 1-2: one-line consumer path
-      const r = await cli(['use', id, '--no-apply'], buyer.home, { timeoutMs: 10 * 60_000 });
+      // `--yes` answers the quote's confirmation in advance (item 102): a non-terminal without it is refused.
+      const r = await cli(['use', id, '--no-apply', '--yes'], buyer.home, { timeoutMs: 10 * 60_000 });
       expect(r.stderr, r.stderr).toBe('');
       expect(r.code).toBe(0);
       const out = r.stdout;
-      const m = new RegExp(`✓ bought ${id} for ${dA.anchor.price} \\(ain-transfer\\)  tx (0x[0-9a-fA-F]{14})…`).exec(out);
+      expect(out, 'the quote is printed before anything is spent').toMatch(new RegExp(`^Pay ${esc(dA.anchor.price)} AIN\\? \\[y/N\\] --yes$`, 'm'));
+      const m = new RegExp(`✓ bought ${id} for ${dA.anchor.price} AIN \\(ain-transfer\\)  tx (0x[0-9a-fA-F]{14})…`).exec(out);
       expect(m, out).toBeTruthy();
       const txPrefix = m![1];
       expect(out).toMatch(/quorum {4}\d+ attestation\(s\) ≥ quorum \d+/);

@@ -1191,10 +1191,15 @@ test.describe('operator: fourth node', () => {
     const soldBefore = (await api<{ downloads: number }>(request, `/api/patches/${K.final}`)).body.downloads;
     const settleBefore = (await api<{ records: unknown[] }>(request, '/api/ledger?kind=settle&limit=1000')).body.records.length;
 
-    let r = await withRuntime(request, () => runCli(['use', K.final], { ...D, timeoutMs: 20 * 60_000 }), NODE_D);
+    // Item 102: the price is quoted and confirmed before anything is spent, so an unattended buy passes `--yes`
+    // (without it, and without a terminal, the command refuses rather than reading silence as consent).
+    let r = await withRuntime(request, () => runCli(['use', K.final, '--yes'], { ...D, timeoutMs: 20 * 60_000 }), NODE_D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     const out = r.stdout;
-    expect(out).toMatch(/^✓ bought krx-all-2761 for 25 \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/m);
+    expect(out).toMatch(/^krx-all-2761 · KRX ticker codes for 2,761 listed companies \(final\) {2}25 AIN$/m);
+    expect(out).toMatch(/^ {2}seller node-a 0x[0-9a-fA-F]{10}… · [\d,]+ rows · .+$/m);
+    expect(out).toMatch(/^Pay 25 AIN\? \[y\/N\] --yes$/m);
+    expect(out).toMatch(/^✓ bought krx-all-2761 for 25 AIN \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/m);
     const step = (name: string, detail: string) => new RegExp(`^ {2}\\+ *\\d+ms {2}${esc(name.padEnd(9))} ${detail}$`, 'm');
     expect(out).toMatch(step('quorum', '2 attestation\\(s\\) ≥ quorum 2'));
     expect(out).toMatch(step('402', `Payment Required: 25 AIN → ${esc(ADDR_A.slice(0, 10))}… \\(ain-transfer\\)`));
@@ -1268,11 +1273,14 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout.split('\n')[0]).not.toContain('purchased');
     expect(r.stdout).toMatch(/^ {2}superseded by: krx-all-2761/m);
 
-    r = await withRuntime(request, () => runCli(['use', K.pixel, '--no-apply'], { ...D, timeoutMs: 10 * 60_000 }), NODE_D);
+    r = await withRuntime(request, () => runCli(['use', K.pixel, '--no-apply', '--yes'], { ...D, timeoutMs: 10 * 60_000 }), NODE_D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     const lines = r.stdout.split('\n').filter(Boolean);
     expect(lines[0]).toMatch(/^✓ note: a newer version exists on the same subject → krx-all-2761.* \(newer version available\)$/);
-    expect(lines[1]).toMatch(/^✓ bought pixelplus-087600 for 0\.1 \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/);
+    // Then the quote (item 102), then the purchase — the price is never spent before it is shown.
+    expect(r.stdout).toMatch(/^pixelplus-087600 · .* {2}0\.1 AIN$/m);
+    expect(r.stdout).toMatch(/^Pay 0\.1 AIN\? \[y\/N\] --yes$/m);
+    expect(r.stdout).toMatch(/^✓ bought pixelplus-087600 for 0\.1 AIN \(ain-transfer\) {2}tx 0x[0-9a-f]{14}…$/m);
     const step = (name: string, detail: string) => new RegExp(`^ {2}\\+ *\\d+ms {2}${esc(name.padEnd(9))} ${detail}$`, 'm');
     expect(r.stdout).toMatch(step('quorum', '2 attestation\\(s\\) ≥ quorum 2'));
     expect(r.stdout).toMatch(step('402', 'Payment Required: 0\\.1 AIN → 0x[0-9a-fA-F]{8}… \\(ain-transfer\\)'));
