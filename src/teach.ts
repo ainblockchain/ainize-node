@@ -19,7 +19,7 @@ import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFile
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, sha256Hex, validateContributors, verifyMessage, writeNpz,
+import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, validateContributors, verifyMessage, writeNpz,
   type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
@@ -168,6 +168,20 @@ export interface TeachPolicyView {
   simulated_checks: boolean;
   /** Feature flag `teach.lineage` (design §18): base selection ("Build on this", `--on`) is offered only while true. */
   lineage: boolean;
+  /**
+   * Can a lesson published HERE actually reach quorum and go on sale? (item 298)
+   *
+   * The publish sheet used to promise "it goes on sale when {quorum} agree" without ever asking, and the node it is
+   * actually deployed on has no verifier peers at all: 136 lessons sat in VERIFYING for up to 75 hours, 62 of them
+   * priced, because self-attestation does not count towards quorum. `verifiers` is the number of peers that answered
+   * recently AND advertise the verifier role — the only number from which "this can be sold here" follows.
+   */
+  verification: { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean };
+  /**
+   * How a sale here is settled. `local` is development play money: the price the sheet asks for is denominated in
+   * credit this node mints for every address it sees, and no wallet can spend it (item 299).
+   */
+  ledger: { kind: 'local' | 'ain'; currency: string };
 }
 
 export { TeachError };
@@ -470,9 +484,31 @@ export class TeachWorker {
       samples: this.datasets.samples().map((x) => ({ kind: x.kind, name: x.name, rows: x.rows })),
       shares: { contributor: c.contributorShare, lineage: this.market.cfg.market.royaltyShare },
       model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline, lineage: !!c.lineage,
+      verification: this.verificationReach(),
+      ledger: { kind: this.market.cfg.ledger.kind, currency: this.market.cfg.market.currency },
     };
     this.policyCache = { at: Date.now(), value };
     return value;
+  }
+
+  /**
+   * Who could actually attest a lesson published here (item 298).
+   *
+   * `reachable` = a peer that answered a `/p2p/hello` round recently (the round runs on `p2p.intervalMs`, so a
+   * 15-minute window is several missed rounds, not one slow one); `verifiers` = those of them that advertise the
+   * verifier role. A node's OWN verifier role is reported separately and never counted: `deriveCatalog` excludes
+   * self-attestations from quorum, so counting it would reproduce exactly the promise this number exists to stop.
+   */
+  verificationReach(now = Date.now()): { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean } {
+    const peers = this.market.p2p.peers();
+    const fresh = peers.filter((p) => p.last_seen > now - 15 * 60_000);
+    return {
+      quorum: this.market.cfg.verifier?.quorum ?? 2,
+      peers: peers.length,
+      reachable: fresh.length,
+      verifiers: fresh.filter((p) => p.info?.roles?.includes('verifier')).length,
+      self_verifier: (this.market.cfg.roles ?? []).includes('verifier'),
+    };
   }
 
   /**
@@ -642,14 +678,26 @@ export class TeachWorker {
    * Resolve context ids to blobs. `caller` = the visitor asking (a private DRAFT is only usable as context by its owner or
    * the operator — anyone else gets the same "unknown knowledge" as for a non-existent id); `'worker'` = the node's own
    * job steps (the ids were already checked when the job was created).
+   *
+   * The two refusals are DIFFERENT problems and used to share one sentence (`invalid: unknown knowledge <id>`), so a
+   * typo and "this node does not have that knowledge yet" read identically and neither named a remedy (item 171). They
+   * now carry their own code and a `hint` the CLI and the browser turn into the next command:
+   *   `unknown_knowledge` — no such id here (a typo, or a knowledge this node has never seen). Deliberately also what a
+   *     stranger gets for someone else's private draft: the refusal must not confirm that the draft exists.
+   *   `knowledge_not_held` — it is listed here, but its file is not on this node; teaching on top of it needs the body.
    */
   private async contextTargets(ids: string[], caller: Caller | 'worker'): Promise<{ id: string; entry: CatalogEntry; path: string }[]> {
     const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
     for (const id of [...new Set(ids)]) {
       const entry = await this.market.entry(id);
-      if (!entry || (caller !== 'worker' && !this.market.mayUseEntry(entry, caller))) throw new TeachError(400, `invalid: unknown knowledge ${id}`);
+      if (!entry || (caller !== 'worker' && !this.market.mayUseEntry(entry, caller))) {
+        throw new TeachError(400, `unknown_knowledge: this node does not have "${id}" — check the id, or teach on a node that holds it`, { id, hint: 'not_listed' });
+      }
       const blob = this.market.blobs.get(entry.anchor.patch_sha256);
-      if (!blob) throw new TeachError(400, `invalid: this node does not hold the body of ${id}`);
+      if (!blob) {
+        const price = entry.anchor.price && Number(entry.anchor.price) > 0 ? `${entry.anchor.price} ${this.market.cfg.market.currency}` : 'free';
+        throw new TeachError(400, `knowledge_not_held: "${id}" is listed on this node but its file is not here — get it first (${price}), then teach on top of it`, { id, hint: 'buy', price: entry.anchor.price ?? '0', currency: this.market.cfg.market.currency, name: entry.anchor.name });
+      }
       targets.push({ id, entry, path: blob.path });
     }
     return targets;
@@ -2270,7 +2318,75 @@ export class TeachWorker {
     if (payoutAddress && payoutAddress.toLowerCase() === this.market.address.toLowerCase()) throw new TeachError(400, 'invalid: payout_address cannot be this node\'s own address');
     const share = payoutAddress === null ? 0 : this.cfg.contributorShare;
     const address = payoutAddress || signer;
-    return { patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share, claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }) };
+    return {
+      patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share,
+      claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }),
+      split_preview: this.splitPreview(d.anchor, address, share),
+      verification: this.verificationReach(),
+      ledger: { kind: this.market.cfg.ledger.kind, currency: this.market.cfg.market.currency },
+    };
+  }
+
+  /**
+   * What one sale of this lesson would ACTUALLY pay, and to whom (item 186).
+   *
+   * The sheet used to render the contributor share straight off the policy — "You receive 70 % of every sale" — while
+   * the money is split by `royaltySplit`, which takes the lineage pool off the top and carves the contributor's share
+   * out of what is LEFT: 0.7 x 0.7 = 49 % on a lesson with a parent, not 70 %. It also hedged with "if you ticked
+   * builds on" on a job that did tick it, and named no parent and no parent price.
+   *
+   * So the split is computed here, by the same function that will settle the sale, on a UNIT price: every branch of
+   * `royaltySplit` is proportional to `amount`, so the shares scale exactly and the sheet can price a live figure
+   * against whatever the creator types without asking the node again on every keystroke.
+   */
+  splitPreview(anchor: PatchAnchor, contributorAddress: string, contributorShare: number) {
+    const all = new Map(this.market.catalogSync().map((e) => [e.anchor.id, e] as const));
+    const royaltyShare = this.market.cfg.market.royaltyShare;
+    const seller = anchor.author;
+    const contributors: Contributor[] = contributorShare > 0 && contributorAddress.toLowerCase() !== seller.toLowerCase()
+      ? [{ address: contributorAddress, share: contributorShare, role: 'data_provider', proof: 'declared' }] : [];
+    const base = all.get(anchor.id);
+    // an entry shaped for royaltySplit: it reads author, parents and contributors, and the ancestors out of `all`
+    const entry: CatalogEntry = {
+      ...(base ?? { status: 'DRAFT', attestations: [], passed: 0, integrity_checks: 0, self_checks: 0, quorum: 0, quorum_ok: false, sellable: false,
+        settlements: [], downloads: 0, revenue: '0', challenges: [], superseded_by: [], supersedes: [], children: [], record_hash: '' } as unknown as CatalogEntry),
+      anchor: { ...anchor, contributors },
+    };
+    const split = royaltySplit(entry, all, 1, royaltyShare);
+    // Names for the lineage lines: walk the same ancestor chain royaltySplit walks, so "30 % to the creators of
+    // pixel-base, pixel-sa" names the knowledge that is actually being paid and not the first anchor by that author.
+    const byAddr = new Map<string, string>();
+    const seen = new Set<string>([anchor.id]);
+    const walk = (parents: string[], depth: number) => {
+      if (depth > 16) return;
+      for (const id of parents) {
+        const e = all.get(id);
+        if (!e || seen.has(id)) continue;
+        seen.add(id);
+        const k = e.anchor.author.toLowerCase();
+        byAddr.set(k, byAddr.has(k) ? `${byAddr.get(k)}, ${e.anchor.name}` : e.anchor.name);
+        for (const c of e.anchor.contributors ?? []) if (!byAddr.has(c.address.toLowerCase())) byAddr.set(c.address.toLowerCase(), c.name ?? e.anchor.name);
+        walk(e.anchor.parents ?? [], depth + 1);
+      }
+    };
+    walk(anchor.parents ?? [], 0);
+    const nameOf = (addr: string): string | undefined => byAddr.get(addr.toLowerCase());
+    const shares = Object.entries(split).map(([address, amount]) => ({
+      address, share: Number(amount),
+      kind: address.toLowerCase() === seller.toLowerCase() ? 'node' as const
+        : address.toLowerCase() === contributorAddress.toLowerCase() ? 'you' as const : 'lineage' as const,
+      ...(nameOf(address) ? { name: nameOf(address) } : {}),
+    })).filter((x) => x.share > 0 || x.kind === 'node').sort((a, b) => b.share - a.share);
+    const parents = (anchor.parents ?? []).map((id) => {
+      const e = all.get(id);
+      return { id, name: e?.anchor.name ?? id, ...(e ? { author: e.anchor.author, price: e.anchor.price ?? '0' } : {}) };
+    });
+    // a child priced at 0 pays its parents 0: default to what the direct parent asks, and to this node's default otherwise
+    const parentPrice = parents.length ? parents[parents.length - 1].price : undefined;
+    return {
+      currency: this.market.cfg.market.currency, royalty_share: royaltyShare, contributor_share: contributorShare,
+      parents, shares, suggested_price: parentPrice && Number(parentPrice) > 0 ? parentPrice : this.market.cfg.market.defaultPrice,
+    };
   }
   async publish(j: TeachJobRow, signer: string, body: PublishBody): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
     this.assertEnabled();
@@ -2397,7 +2513,9 @@ export class TeachWorker {
     else if (j.status !== 'PENDING_REVIEW' || j.publish_status !== 'pending_review') throw new TeachError(409, `job_not_ready: the owner has not published this lesson (it is ${j.status}) — only lessons submitted for review can be approved`);
     const claims = (d.anchor.contributors ?? []).filter((c) => c.sig && verifyMessage(hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address: c.address, share: c.share }), c.sig, c.signer ?? c.address));
     if (!claims.length || !claims.some((c) => (c.signer ?? c.address).toLowerCase() === j.contributor.toLowerCase())) throw new TeachError(409, 'job_not_ready: the draft carries no verified claim by the owner\'s teaching key');
-    const rec = await this.market.announce(j.draft_id);
+    // `fromTeach` is the consent gate's only key (item 243): every check above ran, so this is the one door a teach
+    // draft may go through — `ainize patch announce` on the same draft is refused.
+    const rec = await this.market.announce(j.draft_id, { fromTeach: true });
     this.store.updateTeachJob(j.id, { status: 'ANNOUNCED', patch_id: j.draft_id, publish_status: 'announced', reject_reason: null });
     await this.closeCoveredQuestions(j, d.anchor).catch((e) => this.log('warn', `open questions of the bases could not be closed: ${(e as Error).message}`, j.id));
     this.log('info', `lesson ${j.id} announced as ${j.draft_id} (record ${rec.hash.slice(0, 12)}…)`, j.id);

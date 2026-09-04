@@ -12,15 +12,15 @@ import {
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
-  type SubscriptionRecord, type SupersedeRecord,
+  type RetireRecord, type SubscriptionRecord, type SupersedeRecord,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
-import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
+import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
-import type { Store, BlobRow, EventRow } from './store.js';
+import type { Store, BlobRow, EventRow, LicenseRow, LicenseSource } from './store.js';
 import { Payouts } from './payouts.js';
 
 /** Depth cap of the family tree walk (design §12.5 asks for ≤ 8 hops in either direction). */
@@ -77,6 +77,12 @@ export interface CreateDraftInput {
   contributors?: Contributor[];
   /** 'teach' for visitor-taught knowledge; omitted for operator-registered drafts. */
   origin?: PatchOrigin;
+  /**
+   * Publish anyway past the two refusals that are judgement calls, not corruption: a body this node already
+   * published on the same subject (`duplicate_body`), and a `model.id_M` this node's own runtime does not serve
+   * (`model_mismatch`). Never lets one node publish ANOTHER author's bytes — that refusal has no override.
+   */
+  force?: boolean;
   /** Provenance of the training set (hashes, counts, access, licence, parents — lineage design §5.1); the bytes live in the dataset blob store. */
   dataset?: PatchAnchor['dataset'];
   /** What this knowledge did to its bases (lineage design §5.1); absent = declared parents only. */
@@ -89,7 +95,12 @@ export interface CreateDraftInput {
 export const MAX_CHAT_PATCHES = 3;
 
 /** One layer of the runtime stack while it is being asserted (internal). */
-interface Layer { id: string; sha256: string; path: string; delta: boolean; requested: boolean }
+interface Layer {
+  id: string; sha256: string; path: string; delta: boolean; requested: boolean;
+  /** Why this layer is on the table (`manual`, `subscription:<track>`, `chat:<visitor>`, …); kept across a restore so
+   * putting the stack back does not relabel every layer as 'restore'. */
+  reason?: string;
+}
 
 /** One layer of the runtime stack as reported (`GET /api/runtime`, `ainize patch stack`). */
 export interface StackLayer {
@@ -116,7 +127,22 @@ export interface TeachSettings {
   rowsPerKeyPerDay?: number; rowsPerIpPerDay?: number; datasetsPerKeyPerDay?: number; datasetTtlDays?: number;
   declarationRows?: number; queuedRowsMax?: number; checkCallBudget?: number;
 }
-export interface ConflictInfo { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean; }
+/**
+ * An address-set overlap with another knowledge. `author` / `created_at` / `sales` are what the publisher has to see
+ * before announcing (item 150) and what the supersede rule reads (items 151, 240, 363): only an OLDER knowledge by
+ * the SAME author is ever superseded — a competitor's listing never is.
+ */
+export interface ConflictInfo {
+  patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean;
+  /** Address of the node that published the overlapping knowledge. */
+  author: string;
+  author_name?: string | null;
+  /** true when that knowledge belongs to this node (the only kind an announce may retire). */
+  same_author: boolean;
+  created_at: number;
+  /** Settled sales of the overlapping knowledge — what retiring it would end. */
+  sales: number;
+}
 
 export interface PurchaseResult {
   patch_id: string;
@@ -142,16 +168,31 @@ export class ConflictError extends MarketError { constructor(message: string, de
 const notFound = (msg: string) => new NotFoundError(msg);
 const conflict = (msg: string, details?: Record<string, unknown>) => new ConflictError(msg, details);
 
+/**
+ * A catalog entry as THIS node reports it: the derived entry plus the author's own takedown (item 148). `retired_at`
+ * is set only from a `retire` record signed by the anchor's author; a retired entry is never `sellable`.
+ */
+export type MarketEntry = CatalogEntry & { retired_at?: number; retire_reason?: string };
+
 /** Another knowledge item on this node whose body is the same file — what `patch forget` would take down with it. */
 export interface SharedBody { id: string; name: string; status: string; sales: number }
 export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: SharedBody[] }
 
-/** Why a verified entry is still not for sale: the one sentence the 402 gate, `patch buy` and the web all show. */
+/**
+ * Why a verified entry is still not for sale: the one sentence the 402 gate, `patch buy` and the web all show.
+ * Two reasons reach it — an open challenge, and the author's own `retire` record (item 148); a retired knowledge is
+ * not disputed, it is withdrawn, and saying "a verifier has challenged this" about it would be a lie.
+ */
 export function challengedMessage(e: CatalogEntry): string {
+  const r = (e as MarketEntry).retire_reason;
+  if (e.status === 'RETIRED') return `the publisher has retired this knowledge — it is no longer for sale${r ? ` ("${r}")` : ''}. The record stays on the ledger and buyers who already paid keep their copy.`;
   const c = e.open_challenge;
   const who = c ? `${c.challenger.slice(0, 10)}…` : 'a verifier node';
   return `a verifier has challenged this knowledge — re-verification pending, so it is not for sale${c ? ` (${who}: "${c.reason}")` : ''}`;
 }
+
+/** Case-insensitive address compare — `0xAbC…` and `0xabc…` are one node, and a supersede rule that misses that is a takeover. */
+const sameAddr = (a: string | undefined | null, b: string | undefined | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
 const badInput = (msg: string, details?: Record<string, unknown>) => new MarketError(400, msg, details);
 const unavailable = (msg: string) => new MarketError(503, msg);
 
@@ -228,6 +269,9 @@ export class Market {
   ) {
     this.payouts = new Payouts(store, (l, k, m, pid, d) => this.log(l, k, m, pid ?? null, d ?? null), ledger instanceof AinLedger ? ledger : null, { selfAddress: cfg.identity.address });
     this.datasets = new DatasetBlobStore(store, cfg.dataDir);
+    // Item 126: `runtime.status().applied` was a hard-coded [] — `/api/info` and `ainize status` could not show what
+    // was in the model. It reads the node's own stack rows now, live (never from the 30-second status cache).
+    runtime.setAppliedSource(() => store.listApplied().map((a) => a.patch_id));
   }
   /** Published training sets held by this node (lineage design §5.2, §6.6). */
   readonly datasets: DatasetBlobStore;
@@ -284,8 +328,9 @@ export class Market {
 
   async catalogAll(force = false): Promise<CatalogEntry[]> {
     if (!force && this.catalogCache && Date.now() - this.catalogCache.at < 1500) return this.catalogCache.value;
-    const [anchors, atts, setts, chals, sups] = await Promise.all([
+    const [anchors, atts, setts, chals, sups, retires] = await Promise.all([
       this.ledger.anchors(), this.ledger.attestations(), this.ledger.settlements(), this.ledger.challenges(), this.ledger.supersedes(),
+      this.ledger.list({ kind: 'retire' }),
     ]);
     // Only well-formed anchors/attestations enter the catalog — nothing is synthesised or defaulted server-side.
     const wellFormed = (anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[]).map((r) => Market.sanitizeAnchorRecord(r));
@@ -299,6 +344,19 @@ export class Market {
         if (b) { e.anchor.rows = b.rows; e.anchor.size_bytes = b.size_bytes; e.anchor.model.row_dim ??= b.row_dim; }
       }
     }
+    // The author's own takedown (item 148), applied over the derived status: RETIRED is terminal and outranks
+    // LISTED / SUPERSEDED / CHALLENGED. Only a record signed by the anchor's author counts, so a stranger's
+    // `retire` record cannot take a listing down the way a stranger's `supersede` record used to.
+    for (const r of retires) {
+      const b = r.body as Partial<RetireRecord> | null;
+      if (!b || typeof b.patch_id !== 'string') continue;
+      const e = value.find((x) => x.anchor.id === b.patch_id);
+      if (!e || e.status === 'DRAFT' || !sameAddr(r.author, e.anchor.author)) continue;
+      const at = typeof b.created_at === 'number' && b.created_at > 0 ? b.created_at : r.ts;
+      const cur = e as MarketEntry;
+      if (cur.retired_at !== undefined && cur.retired_at <= at) continue;
+      cur.status = 'RETIRED'; cur.sellable = false; cur.retired_at = at; cur.retire_reason = typeof b.reason === 'string' ? b.reason : '';
+    }
     this.catalogCache = { at: Date.now(), value };
     this.noticeOwnEvents(value);
     return value;
@@ -311,9 +369,18 @@ export class Market {
    * why and what it means. Derived here rather than at ingest so it works on both ledgers.
    */
   private noticeOwnEvents(entries: CatalogEntry[]): void {
+    // A byte-identical republish of one of our knowledges by another node (item 363) is the fourth notable thing:
+    // it is not a supersede any more, but the author still has to hear about it — with the copy's id, its author
+    // and its price, which is the whole of what they need to answer it.
+    const bySha = new Map<string, CatalogEntry[]>();
     for (const e of entries) {
-      if (e.anchor.author.toLowerCase() !== this.address.toLowerCase()) continue;
-      if (!e.open_challenge && !e.superseded_by.length && !e.attestations.some((a) => !a.passed)) continue;   // nothing notable: no store read
+      if (e.status === 'DRAFT') continue;
+      bySha.set(e.anchor.patch_sha256, [...(bySha.get(e.anchor.patch_sha256) ?? []), e]);
+    }
+    for (const e of entries) {
+      if (!sameAddr(e.anchor.author, this.address)) continue;
+      const copies = e.status === 'DRAFT' ? [] : (bySha.get(e.anchor.patch_sha256) ?? []).filter((x) => !sameAddr(x.anchor.author, this.address) && x.anchor.created_at > e.anchor.created_at);
+      if (!e.open_challenge && !e.superseded_by.length && !copies.length && !e.attestations.some((a) => !a.passed)) continue;   // nothing notable: no store read
       const key = `owner_notified:${e.anchor.id}`;
       const seen = new Set<string>(JSON.parse(this.store.get(key) ?? '[]') as string[]);
       const before = seen.size;
@@ -326,6 +393,9 @@ export class Market {
       if (c) once(`challenge:${c.challenger}:${c.created_at}`, 'warn', 'challenge',
         `${c.challenger.slice(0, 10)}… challenged your knowledge ${e.anchor.id}: "${c.reason}" — it is off sale until a verifier re-runs the benchmark and passes it`,
         { challenger: c.challenger, reason: c.reason, created_at: c.created_at });
+      for (const cp of copies) once(`copy:${cp.anchor.id}`, 'warn', 'publish',
+        `${cp.anchor.author_name ?? cp.anchor.author.slice(0, 10)}… published ${cp.anchor.id} — the same knowledge file as your ${e.anchor.id}, byte for byte (sha ${e.anchor.patch_sha256.slice(0, 12)}…), at ${cp.anchor.price} ${cp.anchor.currency}. It cannot retire your listing, and you are not paid for it.`,
+        { copy_id: cp.anchor.id, copy_author: cp.anchor.author, price: cp.anchor.price, sha256: e.anchor.patch_sha256 });
       for (const newer of e.superseded_by) once(`supersede:${newer}`, 'warn', 'publish',
         `${newer} supersedes your knowledge ${e.anchor.id} — buyers now see "Newer version available" on it`, { superseded_by: newer });
       for (const a of e.attestations) {
@@ -387,6 +457,8 @@ export class Market {
     const price = input.price === undefined ? this.cfg.market.defaultPrice : validatePrice(input.price);
     const { blob, sketch } = await this.blobs.importFile(input.file, { copy: !input.keepInPlace });
     const benchmark: BenchmarkSpec = { ...input.benchmark, format: input.benchmark.format ?? ['template'] };
+    await this.refuseDuplicateBody(blob.sha256, benchmark.schema, input.branch, !!input.force);
+    await this.refuseUnservableModel(input.model?.id_M, !!input.force);
     const parents = (input.parents ?? []).filter(Boolean);
     const map = await this.entryMap();
     for (const p of parents) if (!map.has(p)) throw badInput(`unknown parent patch: ${p}`);
@@ -413,6 +485,49 @@ export class Market {
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
     return anchor;
+  }
+
+  /**
+   * The bytes are the product, so the ledger may not carry them twice (items 240, 363).
+   *  - another author's body: refused outright, with no override. Buying a knowledge does not make you its publisher;
+   *    a byte-identical resale used to list as a new root at any price AND retire the original (363).
+   *  - our own body on the same subject and branch: refused unless `force`. A re-bake that changed nothing used to
+   *    become a fresh anchor that superseded the genuinely newer version of the same knowledge (240). The same bytes
+   *    benchmarked on a DIFFERENT schema, or kept on another branch, coexist by design and stay allowed.
+   */
+  private async refuseDuplicateBody(sha: string, schema: string, branch: string | undefined, force: boolean): Promise<void> {
+    const same = (await this.catalogAll()).filter((e) => e.anchor.patch_sha256 === sha && e.status !== 'DRAFT');
+    if (!same.length) return;
+    const foreign = same.find((e) => !sameAddr(e.anchor.author, this.address));
+    if (foreign) {
+      throw conflict(
+        `duplicate_body: these exact bytes are already on the record as ${foreign.anchor.id} by ${foreign.anchor.author_name ?? foreign.anchor.author} — you cannot publish another node's knowledge as your own. Build on it instead (--parents ${foreign.anchor.id}, and train your own rows on top), and its author keeps earning from every sale of yours.`,
+        { code: 'duplicate_body', existing_id: foreign.anchor.id, existing_status: foreign.status, existing_author: foreign.anchor.author, sha256: sha },
+      );
+    }
+    if (force) return;
+    const mine = same.find((e) => e.anchor.benchmark.schema === schema && (e.anchor.branch ?? '') === (branch ?? ''));
+    if (!mine) return;
+    throw conflict(
+      `duplicate_body: identical to ${mine.anchor.id} (published ${new Date(mine.anchor.created_at).toISOString().slice(0, 10)}, ${mine.status}) — the file has not changed, so this would publish the same knowledge twice and retire your newer versions of it. Publish the new bake, or pass --force to register these bytes again anyway.`,
+      { code: 'duplicate_body', existing_id: mine.anchor.id, existing_status: mine.status, existing_author: mine.anchor.author, sha256: sha },
+    );
+  }
+
+  /**
+   * A one-character typo in `--model` used to produce a permanent anchor no verifier could ever execute: verifiers
+   * find no compatible runtime, fall back to hash-only, and catalog.ts refuses to count that for an anchor shipping
+   * samples — so it sits at ANNOUNCED 0/2 for ever, and the id is burned (item 154). This node knows which model it
+   * serves; compare before writing anything. Unknown (serving API unreachable) never blocks a publish.
+   */
+  private async refuseUnservableModel(modelId: string | undefined, force: boolean): Promise<void> {
+    if (!modelId || force) return;
+    const rt = await this.runtime.status().catch(() => null);
+    if (!rt?.model || rt.model === modelId) return;
+    throw badInput(
+      `model_mismatch: this node serves ${rt.model}, and nothing here can test knowledge for ${modelId} — verifiers would fall back to a hash-only check, which never lists an anchor that ships samples. Pass --model ${rt.model}, or --force to publish for a model this node cannot test.`,
+      { code: 'model_mismatch', runtime_model: rt.model, requested: modelId },
+    );
   }
 
   /** validateContributors + "the publishing node cannot be its own data provider" (its slice is the seller remainder already). */
@@ -477,13 +592,21 @@ export class Market {
         patch_id: e.anchor.id, overlap_rows: n, same_schema: e.anchor.benchmark.schema === me.anchor.benchmark.schema, status: e.status, branch: e.anchor.branch,
         // contradictory knowledge kept on different branches coexists (청구항 17) — never a supersede candidate
         cross_branch: !!(e.anchor.branch && me.anchor.branch && e.anchor.branch !== me.anchor.branch),
+        author: e.anchor.author, author_name: e.anchor.author_name ?? null, same_author: sameAddr(e.anchor.author, me.anchor.author),
+        created_at: e.anchor.created_at, sales: e.settlements.length,
       });
     }
     return out.sort((a, b) => b.overlap_rows - a.overlap_rows);
   }
 
-  /** DRAFT → ANNOUNCED: pre-checks, anchor record (gateway_url = this node's x402 endpoint), broadcast. */
-  async announce(id: string): Promise<LedgerRecord<PatchAnchor>> {
+  /**
+   * DRAFT → ANNOUNCED: pre-checks, anchor record (gateway_url = this node's x402 endpoint), broadcast.
+   *
+   * `fromTeach` is set only by teach.announceJob(), which has already checked that the person who taught the lesson
+   * published it and that their signed claim verifies. Without it a teach draft is refused here (item 243): the
+   * operator door used to walk a failed lesson — visitor's data, no consent, price 0 — straight onto the ledger.
+   */
+  async announce(id: string, opts: { fromTeach?: boolean } = {}): Promise<LedgerRecord<PatchAnchor>> {
     const draftEntry = await this.entry(id);
     if (draftEntry && this.drive) this.drive.pullDraftEdits(draftEntry);
     const d = this.store.getDraft(id);
@@ -491,16 +614,39 @@ export class Market {
     const blob = this.blobs.get(d.anchor.patch_sha256);
     if (!blob) throw conflict('patch body missing from blob store');
     if (!d.anchor.benchmark.schema) throw badInput('benchmark.schema is required');
+    if (d.anchor.origin === 'teach' && !opts.fromTeach) {
+      throw conflict(
+        `lesson_draft: ${id} was taught by a visitor, and only they can publish it — announcing it here would put their data and their name on the permanent record without consent. Publish it from the lesson page (the teacher signs the claim), or approve it in the console's Teaching tab once they have submitted it for review.`,
+        { code: 'lesson_draft', patch_id: id, origin: 'teach' },
+      );
+    }
     await this.validateLineageForAnnounce(d.anchor);
     const conflicts = await this.conflicts(id);
     const anchor: PatchAnchor & { gateway_url: string } = { ...d.anchor, gateway_url: `${this.publicUrl}/x402/patch/${id}`, created_at: Date.now() };
     const rec = await this.ledger.append('anchor', anchor);
     this.store.deleteDraft(id);
-    this.store.set(`pending_supersede:${id}`, JSON.stringify(conflicts.filter((c) => c.same_schema && !c.cross_branch && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status))));
+    this.store.set(`pending_supersede:${id}`, JSON.stringify(await this.supersedable(anchor, conflicts)));
     this.invalidate();
     this.log('info', 'publish', `announced ${id} (conflicts: ${conflicts.length})`, id, { conflicts });
     await this.p2p?.broadcast(rec).catch(() => undefined);
     return rec;
+  }
+
+  /**
+   * Which of an announce's overlaps this anchor may retire. Three rules, each one a way the old "every same-schema
+   * overlap" list took knowledge down that it had no right to:
+   *  - same author only (items 151, 363): a supersede is a publisher retiring their OWN earlier version. Any node
+   *    could otherwise mark a competitor's listing "Newer version available" by publishing an overlapping .npz.
+   *  - older than these bytes (item 240): a re-bake of an old file is not a new version of the newer knowledge it
+   *    overlaps, so the cut-off is the date this BODY first went on the record, not the date of this anchor.
+   *  - same schema, same branch, still tradeable — as before.
+   */
+  private async supersedable(anchor: PatchAnchor, conflicts: ConflictInfo[]): Promise<ConflictInfo[]> {
+    const firstSeen = (await this.catalogAll())
+      .filter((e) => e.anchor.patch_sha256 === anchor.patch_sha256 && e.anchor.id !== anchor.id && e.status !== 'DRAFT' && sameAddr(e.anchor.author, anchor.author))
+      .reduce((min, e) => Math.min(min, e.anchor.created_at), anchor.created_at);
+    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && c.created_at < firstSeen
+      && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
   /**
@@ -533,12 +679,17 @@ export class Market {
   /** When one of our announced patches gets LISTED and overlapped an older same-schema patch, mark supersede (§14 [0072]). */
   async reconcileSupersedes(): Promise<void> {
     const cat = await this.catalog(true);
+    const byId = new Map(cat.map((x) => [x.anchor.id, x]));
     for (const e of cat) {
-      if (e.anchor.author !== this.address || e.status !== 'LISTED') continue;
+      if (!sameAddr(e.anchor.author, this.address) || e.status !== 'LISTED') continue;
       const raw = this.store.get(`pending_supersede:${e.anchor.id}`);
       if (!raw) continue;
       const pending = JSON.parse(raw) as ConflictInfo[];
       for (const c of pending) {
+        // Re-checked at write time, not just at announce: a pending list written before this rule existed (or by a
+        // peer's record arriving late) must never take another author's listing down (items 151, 363).
+        const old = byId.get(c.patch_id);
+        if (!old || !sameAddr(old.anchor.author, this.address) || old.anchor.created_at >= e.anchor.created_at) continue;
         const s: SupersedeRecord = { old_patch_id: c.patch_id, new_patch_id: e.anchor.id, overlap_rows: c.overlap_rows, reason: 'newer patch on same benchmark schema overlaps address set', created_at: Date.now() };
         const rec = await this.ledger.append('supersede', s);
         await this.p2p?.broadcast(rec).catch(() => undefined);
@@ -547,6 +698,45 @@ export class Market {
       this.store.set(`pending_supersede:${e.anchor.id}`, '[]');
     }
     this.invalidate();
+  }
+
+  /**
+   * Take a published knowledge off sale (item 148). The anchor is immutable and stays on the record — this appends a
+   * signed `retire` record, which is what the catalogue, the x402 gateway (410) and every buy path read. It is the
+   * exit `patch forget` was mistaken for: forgetting deletes this node's copy of the file and keeps selling it.
+   *
+   * Only the author may retire their own knowledge; a retire record signed by anyone else is ignored when the
+   * catalogue is derived. Buyers who already paid keep their download rights (`mayDownload` reads settlements).
+   */
+  async retire(id: string, reason = ''): Promise<{ ok: true; patch_id: string; retired_at: number; reason: string }> {
+    const e = await this.entry(id);
+    if (!e) throw notFound('patch not found');
+    if (e.status === 'DRAFT') throw conflict(`${id} is still a private draft — delete it instead (ainize patch rm ${id})`);
+    if (!sameAddr(e.anchor.author, this.address)) throw conflict(`${id} was published by ${e.anchor.author_name ?? e.anchor.author} — only its author can retire it`);
+    if (e.status === 'RETIRED') { const cur = e as MarketEntry; return { ok: true, patch_id: id, retired_at: cur.retired_at ?? Date.now(), reason: cur.retire_reason ?? '' }; }
+    const body: RetireRecord = { patch_id: id, reason: reason.slice(0, 500), created_at: Date.now() };
+    const rec = await this.ledger.append('retire', body);
+    this.invalidate();
+    this.log('warn', 'publish', `retired ${id} — off sale from now on${reason ? `: ${reason}` : ''}; the anchor stays on the record and past buyers keep their copy`, id, { reason });
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    return { ok: true, patch_id: id, retired_at: body.created_at, reason: body.reason };
+  }
+
+  /**
+   * Who could actually verify what this node announces. `ainize publish` used to promise "verifiers will now attest"
+   * on a solo node with no peers, where nothing announced can ever be LISTED (item 147). Reachable = answered a
+   * gossip round recently, not merely known: two dead endpoints used to read as a healthy peer count.
+   */
+  async verifierReach(freshMs = 5 * 60_000): Promise<{ known: number; reachable: number; verifiers: number; quorum: number; self_attest: boolean; endpoints: string[] }> {
+    const peers = this.store.listPeers().filter((p) => p.endpoint !== this.publicUrl);
+    const fresh = peers.filter((p) => (p.last_seen ?? 0) > Date.now() - freshMs);
+    const verifiers = fresh.filter((p) => p.info?.roles?.includes('verifier'));
+    const selfAttest = !!this.cfg.verifier?.allowSelfAttest && (this.cfg.roles ?? []).includes('verifier');
+    return {
+      known: peers.length, reachable: fresh.length, verifiers: verifiers.length + (selfAttest ? 1 : 0),
+      quorum: this.cfg.verifier?.quorum ?? 2, self_attest: selfAttest,
+      endpoints: verifiers.map((p) => p.endpoint),
+    };
   }
 
   /**
@@ -641,7 +831,10 @@ export class Market {
 
   // ------------------------------------------------------------------ blobs
   /** Make sure we hold the body for an anchor (author/verifier/purchaser path). */
-  async ensureBlob(anchor: PatchAnchor, token?: string): Promise<BlobRow> {
+  async ensureBlob(anchor: PatchAnchor, token?: string, source: LicenseSource = 'verification'): Promise<BlobRow> {
+    // A body fetched to be SCORED is possession, not a licence (item 327): the row says so, and `hasLicense` refuses
+    // it everywhere outside the verifier's own run. `putLicense` never downgrades a purchase into a verification copy.
+    this.store.putLicense(anchor.id, anchor.patch_sha256, source, source === 'verification' ? 'fetched to verify it' : null);
     const have = this.blobs.get(anchor.patch_sha256);
     if (have) {
       this.log('info', 'blob', `fetched ${anchor.id} body from local blob store (already held, ${(have.size_bytes / 1e6).toFixed(1)} MB)`, anchor.id);
@@ -662,6 +855,9 @@ export class Market {
    * inside our blob dir — in-place files are just deregistered). Bodies are content-addressed, so every id sharing the
    * same sha256 loses its local body too; the ids are reported. Refused while the patch is loaded in the model or is
    * still a draft (delete the draft instead) — nothing on the ledger changes.
+   *
+   * This is NOT a takedown (item 148): the listing stays for sale and the x402 gateway keeps charging for a file this
+   * node can no longer deliver. `retire()` is the exit; forgetting a knowledge that is still on sale says so.
    */
   async forgetBody(id: string, opts: { allSharing?: boolean } = {}): Promise<ForgetResult> {
     const e = await this.entry(id);
@@ -684,6 +880,8 @@ export class Market {
     const inStore = blob.path.startsWith(this.blobs.dir);
     this.blobs.remove(blob.sha256);
     this.invalidate();
+    if (e.sellable && sameAddr(e.anchor.author, this.address)) this.log('warn', 'blob',
+      `${id} is STILL FOR SALE and this node no longer holds its file — buyers pay and get nothing. Take it off sale with \`ainize patch retire ${id}\`, or fetch the body back before the next sale`, id);
     this.log('info', 'blob', `forgot ${id} body (${blob.sha256.slice(0, 12)}…, ${(blob.size_bytes / 1e6).toFixed(1)} MB${inStore ? ', file deleted' : ', file left in place'}) — no longer served from this node${alsoAffects.length ? `; same body as ${alsoAffects.map((x) => x.id).join(', ')}` : ''}`, id);
     return { ok: true, patch_id: id, sha256: blob.sha256, deleted_file: inStore, also_affects: alsoAffects };
   }
@@ -709,26 +907,130 @@ export class Market {
   }
 
   // ------------------------------------------------------------------ x402 (seller side)
-  requirementsFor(entry: CatalogEntry, resource: string): X402Requirement[] {
+  /** How deep the required-base walk goes before it stops (a cycle or a very long chain cannot hang a quote). */
+  static readonly MAX_REQUIRED_DEPTH = 16;
+
+  /**
+   * What a buyer must ALSO hold for this knowledge to work, deepest first (item 270).
+   *
+   * `base.stack` — not `parents` — is the table state the body was trained against: a `delta` export writes rows
+   * that only mean anything on top of it, while a `squash` carries its bases' rows itself and lists no stack. So a
+   * knowledge that is "built on" something can still be complete on its own, and the quote has to say which it is
+   * instead of leaving the buyer to discover a second, unbudgeted purchase after paying.
+   *
+   * Bases this node has never seen are still listed (`known: false`) with no price — silently dropping them would
+   * quote a family total that is not the family's price.
+   */
+  requiredBases(entry: CatalogEntry, map: Map<string, CatalogEntry>): X402Required[] {
+    const out: X402Required[] = [];
+    const seen = new Set<string>([entry.anchor.id]);
+    const walk = (stack: { patch_id: string }[] | undefined, depth: number) => {
+      if (!stack?.length || depth > Market.MAX_REQUIRED_DEPTH) return;
+      for (const b of stack) {
+        if (seen.has(b.patch_id)) continue;
+        seen.add(b.patch_id);
+        const e = map.get(b.patch_id);
+        walk(e?.anchor.base?.stack, depth + 1);            // its own bases go under it
+        const gw = e ? (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null : null;
+        out.push({
+          id: b.patch_id, name: e?.anchor.name ?? b.patch_id, price: e?.anchor.price ?? '', currency: e?.anchor.currency ?? this.cfg.market.currency,
+          author: e?.anchor.author ?? '', author_name: e?.anchor.author_name ?? null, gateway_url: gw, depth, known: !!e,
+        });
+      }
+    };
+    walk(entry.anchor.base?.stack, 1);
+    return out;
+  }
+
+  /**
+   * The whole price of a purchase: this knowledge plus every base under it that the buyer does not already hold
+   * (item 270). `held` is answered from THIS node's blob store and purchase table, so it is the answer for the node
+   * asking — the seller's 402 carries the family and its list price, and the buyer's own node subtracts what it has.
+   */
+  async quoteFor(entry: CatalogEntry, map?: Map<string, CatalogEntry>): Promise<PatchQuote> {
+    const m = map ?? await this.entryMap();
+    const requires = this.requiredBases(entry, m).map((r) => ({
+      ...r,
+      held: !!m.get(r.id) && this.blobs.has(m.get(r.id)!.anchor.patch_sha256),
+      purchased: !!this.store.getPurchase(r.id),
+      mine: !!m.get(r.id) && m.get(r.id)!.anchor.author === this.address,
+    }));
+    const missing = requires.filter((r) => !r.held && !r.mine);
+    const priced = missing.filter((r) => r.known);
+    const total = Number(entry.anchor.price) + priced.reduce((a, r) => a + Number(r.price || 0), 0);
+    return {
+      patch_id: entry.anchor.id, price: entry.anchor.price, currency: entry.anchor.currency,
+      requires, missing: missing.map((r) => r.id), unknown: missing.filter((r) => !r.known).map((r) => r.id),
+      total: String(Math.round(total * 1e6) / 1e6),
+      self_contained: requires.length === 0,
+      export: entry.anchor.base?.export ?? null,
+      derivation: entry.anchor.derivation?.kind ?? null,
+    };
+  }
+
+  async requirementsFor(entry: CatalogEntry, resource: string, opts: { buyer?: string | null } = {}): Promise<X402Requirement[]> {
     const nonce = newNonce();
     const scheme = this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit';
     this.store.putNonce(nonce, resource, entry.anchor.price, this.address, 10 * 60_000);
+    const map = await this.entryMap();
+    const quote = await this.quoteFor(entry, map);
+    // A local-credit buyer is funded by THIS node, once, on the record (item 364) — the quote is the moment the
+    // node decides whether it is willing to, so the answer is written before the balance is ever read.
+    if (scheme === 'local-credit' && opts.buyer) this.grantCredit(opts.buyer, `quote ${resource}`);
     return [{
       scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
       payTo: this.address, maxAmountRequired: entry.anchor.price, resource,
       description: `Knowledge patch ${entry.anchor.id} (${entry.anchor.rows} rows, ${entry.anchor.model.id_M})`,
       nonce, expires_at: Date.now() + 10 * 60_000,
+      // What the family costs, and what binds a payment to THIS quote (items 270, 272, 344).
+      ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
+      requires: this.requiredBases(entry, map),
+      total: quote.total, self_contained: quote.self_contained, single_use: true,
     }];
   }
 
-  /** Local-credit balance = initial credit + received − paid, derived from settlements (dev money). */
+  /**
+   * Starting local credit is ISSUED by this node (item 364), and this is the only place it is created: one grant
+   * per address, capped at `market.creditGrants` addresses, recorded so `creditBalance` sums records that exist
+   * instead of assuming every keypair is born with money. An AIN node issues nothing — it sells for real AIN.
+   */
+  grantCredit(address: string, reason: string): { grant: CreditGrantRow | null; granted: boolean; refused?: string } {
+    const have = this.store.getGrant(address);
+    if (have) return { grant: have, granted: false };
+    if (this.ledger.kind === 'ain') return { grant: null, granted: false, refused: 'this node sells for AIN and issues no local credit' };
+    const amount = this.cfg.market.initialCredit;
+    if (!(Number(amount) > 0)) return { grant: null, granted: false, refused: 'this node issues no starting credit (market.initialCredit is 0)' };
+    const cap = this.cfg.market.creditGrants ?? 100;
+    const totals = this.store.grantTotals();
+    if (totals.addresses >= cap) return { grant: null, granted: false, refused: `this node has issued all ${cap} starting-credit grants (${totals.amount} ${this.cfg.market.currency}) — ask the operator to raise market.creditGrants` };
+    const grant = this.store.putGrant(address, amount, reason);
+    this.log('info', 'trade', `issued ${amount} ${this.cfg.market.currency} starting credit to ${address.slice(0, 10)}… (${reason}; ${totals.addresses + 1}/${cap} grants made)`, null, { address, amount });
+    return { grant, granted: true };
+  }
+
+  /** What this node has issued and to whom (item 364) — every local-credit balance is derived from these rows. */
+  creditIssuance(): { cap: number; addresses: number; amount: number; per_address: string; currency: string; issues: boolean } {
+    const totals = this.store.grantTotals();
+    return {
+      cap: this.cfg.market.creditGrants ?? 100, addresses: totals.addresses, amount: totals.amount,
+      per_address: this.cfg.market.initialCredit, currency: this.cfg.market.currency, issues: this.ledger.kind !== 'ain',
+    };
+  }
+
+  /**
+   * Local-credit balance = what this node granted this address + royalties received − purchases paid (item 364).
+   * An address this node never funded has no balance: credit is issued here, not conjured by owning a keypair.
+   * Addresses are compared case-insensitively — an AIN address is the same address in either case, and a royalty
+   * map keyed in the other case used to pay nobody (item 309).
+   */
   async creditBalance(address: string): Promise<number> {
     const setts = await this.ledger.settlements();
-    let bal = Number(this.cfg.market.initialCredit);
+    const me = address.toLowerCase();
+    let bal = Number(this.store.getGrant(address)?.amount ?? 0);
     for (const s of setts) {
       if (s.body.scheme !== 'local-credit') continue;
-      if (s.body.buyer === address) bal -= Number(s.body.amount);
-      for (const [addr, amt] of Object.entries(s.body.royalty)) if (addr === address) bal += Number(amt);
+      if (s.body.buyer.toLowerCase() === me) bal -= Number(s.body.amount);
+      for (const [addr, amt] of Object.entries(s.body.royalty)) if (addr.toLowerCase() === me) bal += Number(amt);
     }
     return Math.round(bal * 1e6) / 1e6;
   }
@@ -866,6 +1168,8 @@ export class Market {
     }
     const path = this.blobs.get(manifest.patch_sha256)!.path;
     this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: txHash, scheme, amount, manifest, path, created_at: Date.now() });
+    // The purchase is what turns a held body into a body this node may load and serve (item 327).
+    this.grantLicense(entry, scheme === 'free' ? 'free' : 'purchase', `${amount} ${entry.anchor.currency} · tx ${txHash.slice(0, 14)}…`);
     if (this.ledger instanceof AinLedger && scheme === 'ain-transfer') {
       const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, amount, entry.anchor.currency, txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
       if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
@@ -876,6 +1180,54 @@ export class Market {
       step('apply', res);
     }
     return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme };
+  }
+
+  // ------------------------------------------------------------------ licences: the right to use a body (item 327)
+  /**
+   * Holding the file is not the right to use it. A verifier fetches every body it scores (verifier.ts `ensureBlob`)
+   * and a node that verified an item is never charged for it by `subscribe`, so before this check one `patch apply`
+   * turned a verification copy into production use for free. `licenses` records where the right came from; a
+   * 'verification' row is possession only and is refused everywhere except inside the verifier's own run.
+   *
+   * Nothing here is retroactive punishment: a body this node authored, bought (settlement on the ledger or a local
+   * purchase row) or that is priced at zero is licensed the moment it is looked at, and the row is written then.
+   */
+  licenseOf(entry: CatalogEntry): LicenseRow | null {
+    const id = entry.anchor.id;
+    const me = this.address.toLowerCase();
+    const sha = entry.anchor.patch_sha256;
+    const grant = (source: LicenseSource, detail: string | null = null): LicenseRow => {
+      this.store.putLicense(id, sha, source, detail);
+      return this.store.getLicense(id) ?? { patch_id: id, sha256: sha, source, detail, created_at: Date.now() };
+    };
+    if (entry.anchor.author.toLowerCase() === me) return grant('author', 'published by this node');
+    const settled = entry.settlements.find((s) => s.buyer?.toLowerCase() === me);
+    if (settled) return grant('purchase', `settlement ${settled.tx_hash.slice(0, 14)}…`);
+    const bought = this.store.getPurchase(id);
+    if (bought) return grant('purchase', `tx ${bought.tx_hash.slice(0, 14)}…`);
+    if (Number(entry.anchor.price || 0) <= 0) return grant('free', 'price 0 — the x402 gate hands it over without payment');
+    return this.store.getLicense(id);
+  }
+
+  /** Is this node allowed to load / serve / teach on `entry`? A verification-only copy is not (`verifyOnly`). */
+  hasLicense(entry: CatalogEntry): boolean {
+    const l = this.licenseOf(entry);
+    return !!l && l.source !== 'verification';
+  }
+
+  /** Why a knowledge cannot be used here, in the words the CLI and the console print. */
+  licenseError(entry: CatalogEntry): MarketError {
+    const l = this.licenseOf(entry);
+    const price = `${entry.anchor.price} ${entry.anchor.currency}`;
+    return conflict(l?.source === 'verification'
+      ? `not_licensed: this node holds the body of ${entry.anchor.id} because it verified it — scoring a knowledge is not a licence to serve it. Buy it first (${price}): ainize patch buy ${entry.anchor.id}`
+      : `not_licensed: ${entry.anchor.id} has not been bought on this node — buy it first (${price}): ainize patch buy ${entry.anchor.id}`,
+      { patch_id: entry.anchor.id, license: l?.source ?? null, price: entry.anchor.price, currency: entry.anchor.currency });
+  }
+
+  /** Record a licence explicitly (the buy path, the publisher path, the verifier's possession-only copy). */
+  grantLicense(entry: CatalogEntry, source: LicenseSource, detail: string | null = null) {
+    this.store.putLicense(entry.anchor.id, entry.anchor.patch_sha256, source, detail);
   }
 
   // ------------------------------------------------------------------ runtime stack (design §5.4, §8)
@@ -928,7 +1280,7 @@ export class Market {
   }
 
   /** The layers `ids` turn into: bodies resolved, duplicates by body dropped (the same bytes twice is a no-op). */
-  private async layersFor(ids: string[], opts: { withBase?: boolean; requireBaseApplied?: boolean } = {}): Promise<Layer[]> {
+  private async layersFor(ids: string[], opts: { withBase?: boolean; requireBaseApplied?: boolean; verifyOnly?: boolean } = {}): Promise<Layer[]> {
     const plan = await this.resolveStack(ids);
     const alreadyApplied = new Set(this.store.listApplied().map((a) => a.patch_id));
     const missingBases = plan.filter((p) => !p.requested && !alreadyApplied.has(p.id)).map((p) => p.id);
@@ -937,6 +1289,12 @@ export class Market {
     }
     const notHeld = plan.filter((p) => !this.blobs.has(p.entry.anchor.patch_sha256)).map((p) => p.id);
     if (notHeld.length) throw conflict(`base_not_held: this node does not have the body of ${notHeld.join(', ')} — buy it first`, { missing: notHeld });
+    // Item 327 — holding the file is not the right to use it. Inside a verification run (`verifyOnly`) the bases may
+    // be verification copies; everywhere else every layer, base included, needs a licence.
+    if (!opts.verifyOnly) {
+      const unlicensed = plan.filter((p) => !this.hasLicense(p.entry));
+      if (unlicensed.length) throw this.licenseError(unlicensed[0].entry);
+    }
     const seen = new Set<string>();
     const layers: Layer[] = [];
     for (const p of plan) {
@@ -960,7 +1318,7 @@ export class Market {
       const entry = await this.entry(id).catch(() => null);
       const blob = entry ? this.blobs.get(entry.anchor.patch_sha256) : null;
       if (!entry || !blob) { this.log('warn', 'runtime', `${id} is recorded as loaded but ${entry ? 'its body is' : 'it is'} no longer here`, id); continue; }
-      out.push({ id, sha256: blob.sha256, path: blob.path, delta: entry.anchor.base?.export === 'delta', requested: false });
+      out.push({ id, sha256: blob.sha256, path: blob.path, delta: entry.anchor.base?.export === 'delta', requested: false, reason: this.store.getApplied(id)?.reason });
     }
     return out;
   }
@@ -1008,7 +1366,7 @@ export class Market {
           { patch_id: t.id, rows_differ: r.json.rows_differ, rows: r.json.rows });
       }
       if (r.code !== 0) throw new Error(`applying ${t.id} failed: ${r.err || r.out}`);
-      this.store.setApplied(t.id, t.sha256, reason, { position: i, journal_path: journal ?? null, stack_sha256: stackSha });
+      this.store.setApplied(t.id, t.sha256, t.reason ?? reason, { position: i, journal_path: journal ?? null, stack_sha256: stackSha });
       applied.push(t.id);
       this.log('info', 'runtime', `loaded ${t.id} at position ${i}${t.delta ? ' (add-on: its base was verified row by row underneath)' : ''}: ${r.out}`, t.id);
     }
@@ -1101,6 +1459,7 @@ export class Market {
   async watchdog(): Promise<void> {
     const st = await this.runtime.status();
     if (!st.available) return;
+    await this.recoverRuntime();
     const cur = this.store.listApplied();
     if (!cur.length) return;
     const top = cur[cur.length - 1];
@@ -1114,10 +1473,90 @@ export class Market {
     await this.runtime.exclusiveTry('watchdog', async () => {
       const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
       if (!status || status.applied) return;
-      this.log('warn', 'runtime', `the table no longer holds ${top.patch_id} (restart?) → re-applying the whole stack of ${cur.length} in order`, top.patch_id);
+      // Item 258: this line used to say "(restart?)" — a diagnosis nothing had checked. Every node on this machine
+      // shares one serving model, so the usual cause is another node's verification or live test writing these very
+      // rows; name this node's last runtime operation and leave the reader to see whether it was one of ours.
+      const last = this.runtime.lastOperation();
+      const ago = last ? `${Math.round((Date.now() - last.at) / 1000)} s ago` : 'never';
+      this.log('warn', 'runtime', `${top.patch_id} is no longer on the shared model — its rows were overwritten (this node's last runtime operation: ${last ? `${last.label}, ${ago}` : 'none since start'}; the serving model is shared with every node on this machine, and a restart writes the base back too) → re-applying the whole stack of ${cur.length} in order`, top.patch_id, { last_operation: last, stack: cur.map((a) => a.patch_id) });
       await this.assertStack(target, 'watchdog', { rebuild: true });
     }, { waitMs: 5_000 }).catch((e) => {
       if (!/shared runtime busy/.test((e as Error).message)) this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`);
+    });
+  }
+
+  /** kv key holding the stack an interrupted verification / live test has to put back (item 126). */
+  static readonly RESTORE_KEY = 'runtime.restore';
+  private recovered = false;
+
+  /**
+   * First tick after a start: undo whatever an interrupted verification or live test left on the shared model
+   * (item 126). Those two are the only operations that load a body the node does not serve, and until now they
+   * wrote no marker at all — a SIGKILL between apply and restore left the table patched with nothing in the
+   * database that knew it, so every later "before" answer and every later `pre_apply` baseline was measured
+   * against a contaminated model. `applied` rows whose reason is `verify:`/`chat:` are exactly that marker, and
+   * `runtime.restore` holds the stack the run took off before it started.
+   */
+  async recoverRuntime(): Promise<void> {
+    if (this.recovered) return;
+    this.recovered = true;
+    const raw = this.store.get(Market.RESTORE_KEY);
+    const cur = this.store.listApplied();
+    const transient = cur.filter((a) => /^(verify|chat):/.test(a.reason));
+    let snapshot: string[] | null = null;
+    if (raw) { try { snapshot = (JSON.parse(raw) as { ids?: string[] }).ids ?? null; } catch { snapshot = null; } }
+    if (!snapshot && !transient.length) return;
+    const wanted = snapshot ?? cur.filter((a) => !/^(verify|chat):/.test(a.reason)).map((a) => a.patch_id);
+    this.log('warn', 'runtime', `a ${transient[0]?.reason.startsWith('chat') ? 'live test' : 'verification'} was interrupted with ${transient.map((a) => a.patch_id).join(', ') || 'nothing'} still on the shared model — putting the table back to ${wanted.length ? wanted.join(' → ') : 'the base model'}`, transient[0]?.patch_id ?? null);
+    await this.runtime.exclusive('recover', async () => {
+      const top = cur[cur.length - 1];
+      const blob = top ? this.blobs.get(top.sha256) : null;
+      // If the model itself restarted while we were gone the journals describe values that no longer exist: rebuild.
+      const status = blob ? await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined }) : null;
+      const rebuild = !!status && !status.applied;
+      await this.assertStack(await this.layersOfExact(wanted), 'recover', { rebuild });
+    }).catch((e) => this.log('error', 'runtime', `could not put the table back after an interrupted run: ${(e as Error).message}`));
+    this.store.set(Market.RESTORE_KEY, '');
+  }
+
+  /**
+   * Run a benchmark on the shared model with NOTHING on the table but the candidate's own declared base stack
+   * (items 241, 258), then put this node's stack back exactly as it was found.
+   *
+   * Before this, a verifier that also served a track ran the benchmark on top of whatever it was serving: yesterday's
+   * bake was under today's candidate, the `pre_apply` baseline was measured through it, and the restore then wrote
+   * the candidate's `before` over rows the subscription owned — which is why the subscriber flapped
+   * "reverted (restart?)" all morning while the network verified. Both are one bug: a verification is a measurement
+   * of ONE knowledge, so it happens on a table holding exactly that knowledge and its declared bases.
+   */
+  async verifyIsolated(anchor: PatchAnchor, npz: string, opts: { below?: { id: string; path: string; sha256: string }[]; journal?: string; delta?: boolean; maxSamples?: number } = {}): Promise<VerifyOutcome> {
+    const below = opts.below ?? [];
+    const label = `verify:${anchor.id}`;
+    const sha = anchor.patch_sha256;
+    return this.runtime.exclusive(label, async () => {
+      const snapshot = this.store.listApplied().map((a) => a.patch_id);
+      // Written BEFORE anything moves: if this process dies mid-run the next start knows what to put back (item 126).
+      this.store.set(Market.RESTORE_KEY, JSON.stringify({ ids: snapshot, reason: label, at: Date.now() }));
+      const removedForRun = snapshot.filter((id) => !below.some((b) => b.id === id) && id !== anchor.id);
+      if (removedForRun.length) this.log('info', 'verifier', `taking ${removedForRun.join(', ')} off the shared model for the duration of the ${anchor.id} benchmark — a verification measures one knowledge, not whatever this node happens to serve`, anchor.id);
+      try {
+        // The candidate's declared bases go on (verification copies are allowed here and only here), nothing else.
+        const baseLayers = below.length ? await this.layersFor(below.map((b) => b.id), { withBase: true, verifyOnly: true }) : [];
+        await this.assertStack(baseLayers.map((l) => ({ ...l, reason: label })), label);
+        return await this.runtime.verifyInLock(npz, anchor.benchmark, {
+          below, journal: opts.journal, delta: opts.delta, label: anchor.id,
+          ...(opts.maxSamples ? { maxSamples: opts.maxSamples } : {}),
+          mark: {
+            applying: () => this.store.setApplied(anchor.id, sha, label, { journal_path: opts.journal ?? null }),
+            restored: () => this.store.clearApplied(anchor.id),
+          },
+        });
+      } finally {
+        // Whatever happened above — pass, fail, throw, base_mismatch — the node is left serving what it was serving.
+        await this.assertStack(await this.layersOfExact(snapshot), 'restore')
+          .catch((e) => this.log('error', 'runtime', `could not put this node's stack back after verifying ${anchor.id}: ${(e as Error).message}`, anchor.id));
+        this.store.set(Market.RESTORE_KEY, '');
+      }
     });
   }
 
