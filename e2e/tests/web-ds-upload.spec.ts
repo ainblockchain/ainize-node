@@ -189,6 +189,7 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the file card lead
   await expect(page.getByTestId('teach-exit')).toHaveText('Exit');
   expect(new URL((await page.getByTestId('teach-exit').getAttribute('href'))!, NODE).pathname).toBe('/explore');
   await expect(header.getByRole('button', { name: 'language' })).toHaveText('한국어');
+  await expect(entry.getByRole('button', { name: 'language' })).toHaveCount(0);   // O-8: a system setting lives in the header, not in the content
   const footer = page.getByTestId('focused-footer');
   await expect(footer.getByRole('link', { name: 'Terms and Policies' })).toHaveAttribute('href', '/terms');
   await expect(footer.getByRole('link', { name: 'Contact us' })).toBeVisible();
@@ -256,6 +257,16 @@ test('AZ-124 /teach/upload first look: three ways in are all present at once, an
   await page.goto(`${NODE}/teach/upload`);
   const up = page.getByTestId('teach-upload');
   await expect(up).toBeVisible();
+
+  // O-8: the language toggle is a header control in the top-right corner at both widths; at 360 px it shares the logo row
+  const lang = page.getByTestId('focused-header').getByRole('button', { name: 'language' });
+  await expect(lang).toHaveText('한국어');
+  await expect(up.getByRole('button', { name: 'language' })).toHaveCount(0);
+  const logoBox = (await page.getByRole('link', { name: 'Ainize home' }).boundingBox())!;
+  const langBox = (await lang.boundingBox())!;
+  expect(langBox.y, 'the toggle sits on the logo row').toBeLessThan(logoBox.y + logoBox.height);
+  // the header column is centred (944 px on desktop, full width less 16 px margins on a phone): the toggle ends where the column ends
+  expect(langBox.x + langBox.width, 'top-right corner of the header column').toBeGreaterThanOrEqual(width - logoBox.x - 4);
 
   await expect(page.getByTestId('teach-stepper')).toHaveAttribute('aria-label', 'Step 1 of 5 · Dataset');
   await expect(up.getByRole('heading', { level: 1 })).toHaveText('Upload your dataset');

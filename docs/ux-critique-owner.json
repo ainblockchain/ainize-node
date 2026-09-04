@@ -83,7 +83,9 @@
    "problem": "Placed below the nav at the start of content, it unbalances the layout and does not read as a system setting.",
    "fix": "Move the language toggle into the header (system-setting area), consistently across pages.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The language toggle is a header control on every page — the full header's last child outside the nav (top-right; on a phone it stays on the logo row while the nav wraps beneath), the same corner in the teach flow's slim header and on the landing bar — and no page renders one inside its content."
   },
   {
    "n": "O-9",
