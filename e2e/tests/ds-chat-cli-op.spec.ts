@@ -1652,7 +1652,8 @@ test('AZ-222 The dataset-era limits are operator-settable only through the API, 
     expect(pol.body.limits.dataset_ttl_days).toBe(3);
 
     await page.goto(`${NODE}/teach`);
-    await expect(page.getByTestId('door-file-limits').locator('li')).toHaveText(['jsonl · json · csv · tsv · txt', 'up to 4 questions']);
+    // Finding 50 — the lesson cap leads (it decides what is taught); the dataset cap is the number in brackets
+    await expect(page.getByTestId('door-file-limits').locator('li')).toHaveText(['jsonl · json · csv · tsv · txt', 'up to 2 questions per lesson (4 stored)']);
     await page.goto(`${NODE}/teach/upload`);
     await expect(page.getByTestId('drop-zone')).toContainText('jsonl, csv, tsv or txt · up to 1 MB');
 

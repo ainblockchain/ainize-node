@@ -347,13 +347,16 @@ test('AZ-124 /teach/upload first look: three ways in are all present at once, an
   const zone = page.getByTestId('drop-zone');
   await expect(zone).toHaveAttribute('role', 'button');
   await expect(zone).toHaveAttribute('tabindex', '0');
-  await expect(zone).toHaveAttribute('aria-label', 'Drop a file here');
-  await expect(zone.getByText('or', { exact: true })).toBeVisible();
+  await expect(zone).toHaveAttribute('aria-label', 'Choose a file');
+  await expect(zone.getByText('Drop a file here, or', { exact: true })).toBeVisible();
   const input = page.getByTestId('file-input');
   await expect(input).toHaveAttribute('type', 'file');
   await expect(input).toHaveAttribute('accept', '.jsonl,.json,.csv,.tsv,.txt');
-  await expect(input).toHaveAttribute('aria-label', 'Choose a file');
   expect(await input.evaluate((el) => el.closest('[data-testid=drop-zone]') !== null), 'the input lives inside the drop zone').toBe(true);
+  // Finding 93 — the thing to tap is a real button of the app's own, never the browser's 21 px "Choose File"
+  const browse = page.getByTestId('file-browse');
+  await expect(browse).toHaveText('Choose a file');
+  expect((await browse.boundingBox())!.height, 'the file button meets the 44 px target').toBeGreaterThanOrEqual(44);
   const maxMb = Math.round(policy.limits.dataset_max_bytes / 1e6);
   expect(maxMb).toBe(4);
   await expect(zone.getByText(`jsonl, csv, tsv or txt · up to ${maxMb} MB`, { exact: true })).toBeVisible();
@@ -368,7 +371,7 @@ test('AZ-124 /teach/upload first look: three ways in are all present at once, an
   await expect(retention).not.toBeChecked();
   await expect(retention.locator('xpath=..')).toHaveText('Delete my file as soon as training finishes');
 
-  await expect(page.getByTestId('privacy')).toHaveText('Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.');
+  await expect(page.getByTestId('privacy-text')).toHaveText('Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.');
   // …and it is above the format help and the samples in the DOM, i.e. before the reader has to scroll past them
   const order = await page.evaluate(() => {
     const at = (sel: string) => [...document.querySelectorAll('[data-testid]')].findIndex((e) => e.matches(sel));
@@ -1360,7 +1363,7 @@ test('AZ-140 Privacy notice and retention: "Delete my file as soon as training f
   await page.goto(`${NODE}/teach/upload`);
   const privacy = page.getByTestId('privacy');
   await expect(privacy).toBeVisible();
-  await expect(privacy).toHaveText('Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.');
+  await expect(page.getByTestId('privacy-text')).toHaveText('Your file is stored on this node while it trains, and the node operator can see it. Do not upload personal data or anything you are not allowed to share.');
   expect(await privacy.evaluate((el) => getComputedStyle(el).backgroundColor), 'a standing warning, not a neutral note').toBe('rgb(255, 243, 224)');
   await expect(page.getByTestId('file-chip')).toHaveCount(0);
   expect(await page.evaluate(() => {
@@ -1368,6 +1371,12 @@ test('AZ-140 Privacy notice and retention: "Delete my file as soon as training f
     const help = document.querySelector('[data-testid=format-help]')!;
     return !!(p.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING);
   })).toBe(true);
+  // Finding 45 — the retention choice governs the upload, so it has to come BEFORE the control that uploads
+  expect(await page.evaluate(() => {
+    const r = document.querySelector('[data-testid=retention]')!;
+    const zone = document.querySelector('[data-testid=drop-zone]')!;
+    return !!(r.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }), 'the retention checkbox is above the drop zone').toBe(true);
   await expect(page.getByTestId('retention')).not.toBeChecked();
 
   const posts = await recordPosts(page);
@@ -1515,7 +1524,7 @@ test('AZ-142 한국어 toggle: the file door, the format examples and the error 
   await expect(zone.getByText('jsonl, csv, tsv, txt · 최대 4 MB', { exact: true })).toBeVisible();
   await expect(page.getByTestId('paste-table').locator('summary')).toHaveText('표를 붙여넣기');
   await expect(page.getByTestId('retention').locator('xpath=..')).toHaveText('학습이 끝나면 내 파일 삭제하기');
-  await expect(page.getByTestId('privacy')).toHaveText('학습하는 동안 파일이 이 노드에 저장되고 노드 운영자가 볼 수 있습니다. 개인정보나 공유할 수 없는 내용은 올리지 마세요.');
+  await expect(page.getByTestId('privacy-text')).toHaveText('학습하는 동안 파일이 이 노드에 저장되고 노드 운영자가 볼 수 있습니다. 개인정보나 공유할 수 없는 내용은 올리지 마세요.');
 
   // the EXAMPLES themselves switch language; the box headings and the file extensions do not
   const help = page.getByTestId('format-help');
