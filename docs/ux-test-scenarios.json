@@ -9775,5 +9775,34 @@
    "packages/e2e/tests/web-tree.spec.ts (AZ-290)",
    "docs/lineage-teach-design.md §4 SC-9, §11"
   ]
+ },
+ {
+  "id": "AZ-295",
+  "persona": "Node operator",
+  "title": "The family, the open questions and the two scopes are the same from a terminal",
+  "goal": "An operator with no browser must be able to see what a knowledge was built on, what people asked it for, and how it is doing — with the same privacy rule the page keeps.",
+  "preconditions": [
+   "node-u (:3422) serving this build, a published base and an add-on trained on top of it (stub backend — nothing here is a measurement)."
+  ],
+  "steps": [
+   "ainize --node http://localhost:3422 patch tree <child>",
+   "… patch tree <child> --json",
+   "… patch missing <base> before and after a buyer request sent with share:false",
+   "… patch signals <base>"
+  ],
+  "expected": [
+   "`patch tree` prints the base above the knowledge, '+1 questions' per node, the family line, and a money line naming the knowledge whose creators the lineage share is paid to.",
+   "`--json` is the tree endpoint's own answer: root, an `extend` edge from base to child, and the same `added` counts.",
+   "`patch missing` says 'nothing reported yet' while nothing is reported; after an unshared request it prints 'a buyer asked for it' as 'not shared — counted only', with the wording nowhere in the output.",
+   "`patch signals` prints the network scope and 'this node — last 30 days, this node only' as two labelled blocks, never one total."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/cli-tree.spec.ts (AZ-295)",
+   "packages/cli/src/commands/patch.ts",
+   "docs/lineage-teach-design.md §13"
+  ]
  }
 ]
