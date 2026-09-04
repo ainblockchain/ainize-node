@@ -375,3 +375,32 @@ test('AZ-298 a question somebody asked for is closed by the child that answers i
   assert.equal(after.items[0].covered_by, child);
   assert.equal(((await api('GET', `/api/patches/${base}/issues`, undefined, null)).json as { total: number }).total, 0, 'and it is no longer an open question');
 });
+
+// ---------------------------------------------------------------- AZ-319: the money line names knowledges, never you
+test('AZ-319 a creator who also authored a parent still reads "you" in the split, not the title of their own earlier knowledge', async () => {
+  // the same address publishes a base and then a lesson on top of it — the case every teaching node produces on its
+  // second lesson, and every merge of one's own two knowledges
+  const base = await publishBase(2, 'derivative', 'Mine already');
+  const ds = await upload(rows(1, 'mine', 70), 'on-my-own.jsonl', teacher);
+  const job = await train({ dataset_id: ds.id, base_ids: [base] }, teacher, { teaches: 'mine' });
+  const ch = await api('GET', `/api/teach/jobs/${job.id}/publish-challenge`, undefined, teacher);
+  assert.equal(ch.status, 200, ch.text);
+  const shares = (ch.json.split_preview as { shares: { address: string; share: number; kind: string; name?: string }[] }).shares;
+  const you = shares.find((s) => s.kind === 'you');
+  assert.ok(you, `no "you" line in ${JSON.stringify(shares)}`);
+  // the sheet renders `m.name ?? "you"`, so a name here is what erased the word "you" from the amounts
+  assert.equal(you.name, undefined, 'the creator\'s own share must not wear the title of a knowledge they authored');
+  // …while a lineage payee keeps the name, which is what tells two ancestors apart
+  for (const l of shares.filter((s) => s.kind === 'lineage')) assert.equal(typeof l.name, 'string', `a lineage payee says which knowledge it is paid for: ${JSON.stringify(l)}`);
+  assert.ok(shares.every((s) => s.kind !== 'node' || s.name === undefined), 'the node\'s own line is the node, not a knowledge');
+  assert.ok(Math.abs(shares.reduce((n, s) => n + s.share, 0) - 1) < 1e-9, `the shares of one sale add up to the price: ${JSON.stringify(shares)}`);
+
+  // …and the ancestor was actually resolved. The preview read a 1.5 s catalogue cache, so a lesson published moments
+  // after the knowledge it is built on found no ancestor at all: the parent came back as its own id with no author
+  // and no price, and the split it printed was not the split the sale would pay.
+  const parents = (ch.json.split_preview as { parents: { id: string; name: string; author?: string; price?: string }[] }).parents;
+  assert.equal(parents.length, 1, JSON.stringify(parents));
+  assert.notEqual(parents[0].name, parents[0].id, 'the parent was found in the catalogue, not printed as a bare id');
+  assert.equal(typeof parents[0].author, 'string', 'and with the author whose price the suggestion comes from');
+  assert.ok(shares.every((s) => s.kind !== 'node' || s.name === undefined), 'the node\'s own line is the node, not a knowledge');
+});

@@ -2745,7 +2745,7 @@ export class TeachWorker {
     return d;
   }
   /** What the browser signs: hashCanonical({patch_sha256, benchmark_hash, address (paid), share}); `signer` is the teaching key. */
-  publishChallenge(j: TeachJobRow, signer: string, payoutAddress: string | null | undefined) {
+  async publishChallenge(j: TeachJobRow, signer: string, payoutAddress: string | null | undefined) {
     const d = this.draftFor(j);
     if (this.cfg.publish === 'never') throw new TeachError(403, 'publish_disabled: this node accepts lessons but does not publish them');
     if (payoutAddress && !/^0x[0-9a-fA-F]{40}$/.test(payoutAddress)) throw new TeachError(400, 'invalid: payout_address must be an AIN address');
@@ -2755,7 +2755,11 @@ export class TeachWorker {
     return {
       patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share,
       claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }),
-      split_preview: this.splitPreview(d.anchor, address, share),
+      // the catalogue this reads is a 1.5 s cache, and a lesson published moments after the knowledge it is built on
+      // would find no ancestor there — and report the lineage share going to the node rather than to the base's
+      // creator. What a sale pays is computed from the real catalogue; a preview that disagrees with it is worse
+      // than no preview, so it is refreshed here.
+      split_preview: this.splitPreview(d.anchor, address, share, await this.market.catalog(true)),
       verification: this.verificationReach(),
       ledger: { kind: this.market.cfg.ledger.kind, currency: this.market.cfg.market.currency },
     };
@@ -2773,8 +2777,8 @@ export class TeachWorker {
    * `royaltySplit` is proportional to `amount`, so the shares scale exactly and the sheet can price a live figure
    * against whatever the creator types without asking the node again on every keystroke.
    */
-  splitPreview(anchor: PatchAnchor, contributorAddress: string, contributorShare: number) {
-    const all = new Map(this.market.catalogSync().map((e) => [e.anchor.id, e] as const));
+  splitPreview(anchor: PatchAnchor, contributorAddress: string, contributorShare: number, catalog = this.market.catalogSync()) {
+    const all = new Map(catalog.map((e) => [e.anchor.id, e] as const));
     const royaltyShare = this.market.cfg.market.royaltyShare;
     const seller = anchor.author;
     const contributors: Contributor[] = contributorShare > 0 && contributorAddress.toLowerCase() !== seller.toLowerCase()
@@ -2831,7 +2835,7 @@ export class TeachWorker {
   }
   async publish(j: TeachJobRow, signer: string, body: PublishBody): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
     this.assertEnabled();
-    const ch = this.publishChallenge(j, signer, body.payout_address);
+    const ch = await this.publishChallenge(j, signer, body.payout_address);
     // the sheet sends the REAL checkbox state (lineage design §6.5); a publish without both consents is refused, never assumed
     if (!body.consent?.permanent || !body.consent?.rights) throw new TeachError(400, 'consent_required: both consent boxes are required');
     if (!verifyMessage(ch.claim, body.claim_sig, signer)) throw new TeachError(401, 'invalid_signature: the claim signature does not verify for this teaching key');

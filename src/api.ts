@@ -1453,7 +1453,7 @@ export function buildApi(deps: ApiDeps): Router {
     const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
     const raw = req.query.payout_address;
     const payout = raw === 'none' || raw === 'null' ? null : typeof raw === 'string' && raw ? raw : undefined;
-    return t.publishChallenge(j, address!, payout);
+    return await t.publishChallenge(j, address!, payout);
   }));
   router.post('/api/teach/jobs/:id/publish', wrap(async (req) => {
     const { t, j, address } = ownerJob(req, req.params.id as string, { operator: false });
