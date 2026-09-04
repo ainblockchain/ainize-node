@@ -28,11 +28,13 @@ Two routes to the same fact, so use whichever you already have open.
 
 :::tabs
 ::tab CLI
-Point the CLI at a node — with `NGRAM_HOME` set to that node's home directory, or with `--node <url>` — and ask it
-for its own summary:
+This route needs the `ainize` command, and there is no package to install it from — `npm install -g ainize` cannot
+work, because the name is not on npm. It is built from a checkout, which is what [Installation](./get-started/install.md)
+does; start there if you have not. With the command on your machine, point it at a node — with `NGRAM_HOME` set to that
+node's home directory, or with `--node <url>` — and ask it for its own summary:
 
 ```bash
-NGRAM_HOME=~/.ngram npx ainize status
+NGRAM_HOME=~/.ngram ainize status
 ```
 
 ```text
@@ -52,6 +54,13 @@ blobs held  160
 
 Those numbers are one particular node's; yours will differ. The line that decides whether anything else will work is
 `runtime` — `available` means the model is up and knowledge can actually be loaded into it.
+
+Before you have made a node there is nothing at that address to summarise, and the same command says so rather than
+failing obscurely:
+
+```text
+error: no node configured in ~/.ngram — run `ainize init` to create one, or pass --node <url> to talk to an existing node
+```
 ::tab Browser
 Open the node's own address, `http://localhost:3402` unless you moved it. If the page loads, that node is answering:
 it is the one serving the page you are reading.
@@ -78,6 +87,6 @@ meeting a memory table. The technical name is given here once, and then these pa
 
 > [!NOTE]
 > **These pages are being written one at a time, and nothing empty is listed in the navigation on the left.** Where a
-> topic has no page yet, the software still documents itself: `npx ainize --help` prints every command and every
+> topic has no page yet, the software still documents itself: `ainize --help` prints every command and every
 > option, a running node serves its own API specification at `/api/openapi.json`, and the MCP server is documented
 > next to its code in `packages/mcp/README.md`.

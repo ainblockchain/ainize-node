@@ -2,7 +2,7 @@
 title: Ainize
 summary: Ainize가 무엇이고, 어떤 세 가지 방법으로 쓸 수 있으며, 이 문서가 어떤 말을 쓰는지.
 source: en/index.md
-source_sha256: 6ac3ed6f93ef1c05a0d0ac39b4f65b22dc96039c7cb8a2352575ee7e561ff9da
+source_sha256: 21fe30470420972bf9e778134a4db49d41e5caf4ab2a40e285e6ad1e84cdc673
 ---
 
 # Ainize
@@ -29,11 +29,13 @@ source_sha256: 6ac3ed6f93ef1c05a0d0ac39b4f65b22dc96039c7cb8a2352575ee7e561ff9da
 
 :::tabs
 ::tab CLI
-CLI가 볼 노드를 정해 주고 — 그 노드의 홈 디렉터리를 `NGRAM_HOME`에 넣거나 `--node <주소>`를 붙입니다 — 노드에게 스스로를
-요약하게 합니다.
+이 길에는 `ainize` 명령이 필요한데, 이 명령을 받아 올 패키지는 없습니다. 이름이 npm에 등록되어 있지 않아서
+`npm install -g ainize`는 되지 않습니다. 저장소를 받아 직접 빌드하는 것이 [설치](./get-started/install.md)가 하는
+일이니, 아직이라면 거기서 시작하세요. 명령이 준비되었다면 CLI가 볼 노드를 정해 주고 — 그 노드의 홈 디렉터리를
+`NGRAM_HOME`에 넣거나 `--node <주소>`를 붙입니다 — 노드에게 스스로를 요약하게 합니다.
 
 ```bash
-NGRAM_HOME=~/.ngram npx ainize status
+NGRAM_HOME=~/.ngram ainize status
 ```
 
 ```text
@@ -53,6 +55,12 @@ blobs held  160
 
 여기 적힌 숫자는 어떤 한 노드의 것이고, 여러분의 노드는 다릅니다. 나머지가 되느냐 마느냐를 가르는 줄은 `runtime`입니다.
 `available`이면 모델이 떠 있고 지식을 실제로 넣을 수 있다는 뜻입니다.
+
+노드를 아직 만들지 않았다면 그 자리에 요약할 것이 없고, 같은 명령이 알 수 없는 오류 대신 그렇다고 말해 줍니다.
+
+```text
+error: no node configured in ~/.ngram — run `ainize init` to create one, or pass --node <url> to talk to an existing node
+```
 ::tab 웹사이트
 노드의 주소를 브라우저로 엽니다. 옮기지 않았다면 `http://localhost:3402`입니다. 페이지가 뜨면 그 노드는 살아 있습니다.
 지금 읽고 있는 이 페이지를 띄워 주는 것이 바로 그 노드입니다.
@@ -79,5 +87,5 @@ Ainize는 기계 장치의 이름을 그대로 쓰지 않습니다. 기억 테�
 
 > [!NOTE]
 > **이 문서는 한 쪽씩 쓰이는 중이고, 비어 있는 페이지는 왼쪽 목차에 올리지 않습니다.** 아직 페이지가 없는 주제라도
-> 소프트웨어가 스스로를 설명합니다. `npx ainize --help`는 모든 명령과 옵션을 찍고, 켜져 있는 노드는 `/api/openapi.json`
+> 소프트웨어가 스스로를 설명합니다. `ainize --help`는 모든 명령과 옵션을 찍고, 켜져 있는 노드는 `/api/openapi.json`
 > 에서 자기 API 명세를 직접 제공하며, MCP 서버는 코드 옆 `packages/mcp/README.md`에 정리돼 있습니다.
