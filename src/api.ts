@@ -415,8 +415,18 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.post('/api/patches/:id/challenge', requireOperator, wrap(async (req) => { await market.challenge(req.params.id as string, String(req.body?.reason ?? 'manual challenge')); return { ok: true }; }));
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => market.buy(req.params.id as string, { apply: !!req.body?.apply })));
-  router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => ({ result: await market.applyPatch(req.params.id as string, 'manual') })));
-  router.post('/api/patches/:id/remove', requireOperator, wrap(async (req) => ({ result: await market.removePatch(req.params.id as string) })));
+  // §12.4 — `with_base` loads everything the knowledge was trained on top of, in order, under one runtime lock;
+  // without it an add-on whose base is not loaded is refused (409 needs_base) instead of writing rows over the wrong table.
+  router.post('/api/patches/:id/apply', requireOperator, wrap(async (req) => {
+    const { with_base } = z.object({ with_base: z.boolean().optional() }).parse(req.body ?? {});
+    return { result: await market.applyPatch(req.params.id as string, 'manual', { withBase: with_base }), stack: await market.stack() };
+  }));
+  const unload = async (req: { params: Record<string, unknown>; body?: Record<string, unknown> }) => {
+    const { cascade } = z.object({ cascade: z.boolean().optional() }).parse(req.body ?? {});
+    return { result: await market.removePatch(req.params.id as string, { cascade }), stack: await market.stack() };
+  };
+  router.post('/api/patches/:id/remove', requireOperator, wrap(unload as never));
+  router.delete('/api/patches/:id/apply', requireOperator, wrap(unload as never));
   router.post('/api/patches/:id/forget', requireOperator, wrap(async (req) => {
     const { all_sharing } = z.object({ all_sharing: z.boolean().optional() }).parse(req.body ?? {});
     return market.forgetBody(req.params.id as string, { allSharing: all_sharing });
@@ -452,7 +462,23 @@ export function buildApi(deps: ApiDeps): Router {
       ...(out.raw_content !== undefined ? { raw_text: out.raw_content } : {}),
     };
   }));
-  router.get('/api/runtime', wrap(async () => ({ ...(await market.runtime.status(true)), applied: market.store.listApplied() })));
+  // `applied` is an ORDERED stack now (bottom first), and `stack` says what each layer sits on and whether the
+  // journal that would undo it is still there (design §5.4, §8).
+  router.get('/api/runtime', wrap(async () => {
+    const stack = await market.stack();
+    return { ...(await market.runtime.status(true)), applied: stack.map((l) => l.patch_id), stack, journal_dir: market.runtime.journalDir() };
+  }));
+  router.get('/api/runtime/stack', wrap(async () => ({ stack: await market.stack(), journal_dir: market.runtime.journalDir() })));
+  /** What `patch.py check` measures against the live table for one knowledge: is its base underneath, row for row? */
+  router.get('/api/patches/:id/check', requireOperator, wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e) throw new HttpError(404, 'patch not found');
+    const blob = market.blobs.get(e.anchor.patch_sha256);
+    if (!blob) throw new HttpError(409, 'patch body not present on this node');
+    const check = await market.runtime.check(blob.path);
+    if (!check) throw new HttpError(503, 'the patch hook could not be reached (ENGRAM_HOOK=1?)');
+    return { patch_id: e.anchor.id, export: e.anchor.base?.export ?? null, base_stack: (e.anchor.base?.stack ?? []).map((b) => b.patch_id), ...check };
+  }));
 
   router.post('/api/peers', requireOperator, wrap(async (req) => { market.p2p.addPeer(String(req.body.endpoint)); market.cfg.peers = [...new Set([...market.cfg.peers, String(req.body.endpoint)])]; deps.saveConfig(); return { ok: true }; }));
   router.delete('/api/peers', requireOperator, wrap(async (req) => { market.p2p.removePeer(String(req.body.endpoint)); market.cfg.peers = market.cfg.peers.filter((p) => p !== req.body.endpoint); deps.saveConfig(); return { ok: true }; }));
