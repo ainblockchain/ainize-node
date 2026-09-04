@@ -403,7 +403,9 @@ test('AZ-110/111 Publish: consents, signed claim → announced (or review + oper
   await page.goto(`${NODE}/${encodeURIComponent(nodeAddress)}/${encodeURIComponent(patchId)}`);
   const taught = page.getByTestId('taught-by');
   await expect(taught).toContainText('Taught lesson');
-  await expect(taught).toContainText(`Data provider: ${TEACHER_NAME} (${Math.round(policy.shares.contributor * 100)}%)`);
+  // Finding 41 — the share is in the ledger record, not published next to the contributor's name
+  await expect(taught).toContainText(`Taught by ${TEACHER_NAME}`);
+  await expect(taught).not.toContainText('%');
   await taught.getByRole('button', { name: /Use it yourself/ }).click();
   await expect(page.getByRole('tab', { name: 'Buy' })).toHaveAttribute('aria-selected', 'true');
   await page.screenshot({ path: 'results/az-107-patch-page.png', fullPage: true });

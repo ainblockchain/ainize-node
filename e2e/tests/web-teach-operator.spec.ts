@@ -315,7 +315,7 @@ test('AZ-116 contributors: Hide name → "Taught by a visitor" on the knowledge 
   try {
     const p2 = await visitor.newPage();
     await p2.goto(`${NODE}/${encodeURIComponent(info.body.node.address)}/${encodeURIComponent(patchId)}`);
-    await expect(p2.getByTestId('taught-by')).toContainText('Data provider: Taught by a visitor', { timeout: 30_000 });
+    await expect(p2.getByTestId('taught-by')).toContainText('Taught by a visitor', { timeout: 30_000 });
     await expect(p2.getByTestId('taught-by')).not.toContainText(TEACHER);
   } finally { await visitor.close(); }
   await row.getByTestId('contrib-toggle-hidden').click();

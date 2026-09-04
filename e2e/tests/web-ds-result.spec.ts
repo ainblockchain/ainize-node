@@ -738,7 +738,8 @@ test.describe('stub node', () => {
     const detail = await tapi<{ anchor: { contributors: { name?: string; share: number; role: string; proof: string }[] } }>(request, `/api/patches/${out.patch_id}`);
     expect.soft(detail.body.anchor.contributors[0].name, 'the anchor must carry the display name').toBe('AZ197 Teacher');
     await page.goto(`${NODE}/${encodeURIComponent(nodeAddress)}/${encodeURIComponent(out.patch_id)}`);
-    await expect.soft(page.getByTestId('taught-by'), 'the knowledge page must credit the teacher by name').toContainText('Creator node: teachable-u · Data provider: AZ197 Teacher (70%)');
+    // Finding 41 — one word for this person across the product, and no revenue share printed beside their name
+    await expect.soft(page.getByTestId('taught-by'), 'the knowledge page must credit the teacher by name').toContainText('Taught by AZ197 Teacher');
     await page.goto(`${NODE}/explore`);
     const card = page.getByRole('link', { name: new RegExp(name) }).first();
     await expect(card).toBeVisible({ timeout: 30_000 });
@@ -846,7 +847,7 @@ test.describe('stub node', () => {
     await page.goto(`${NODE}/${encodeURIComponent(nodeAddress)}/${encodeURIComponent(pub.patchId)}`);
     const taught = page.getByTestId('taught-by');
     await expect(taught).toContainText('Taught lesson');
-    await expect(taught).toContainText(`Creator node: teachable-u · Data provider: ${pub.providerName} (70%)`);
+    await expect(taught).toContainText(`Taught by ${pub.providerName}`);
     await expect(taught.getByRole('link', { name: /This data provider's page/ })).toHaveAttribute('href', `/teacher/${encodeURIComponent(pub.key.address)}`);
     // the provenance a buyer can verify — hash, count and where it came from — on the Overview tab the page opens on
     const prov = page.getByTestId('dataset-provenance');
