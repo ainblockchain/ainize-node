@@ -368,7 +368,7 @@ export class TeachWorker {
       if (!j) { this.pendingRestore.delete(id); continue; }
       try {
         await rt.exclusiveTry(`teach:${id}:restore`, async () => {
-          if (j.npz_path && existsSync(j.npz_path) && (await rt.isApplied(j.npz_path)) !== false) await rt.removeRaw(j.npz_path);
+          if (j.npz_path && existsSync(j.npz_path) && (await rt.isApplied(j.npz_path)) !== false) await rt.removeRaw(j.npz_path, { journal: j.sha256 ? rt.journalPath(j.sha256) ?? undefined : undefined });
           for (const cid of j.context) { const e = await this.market.entry(cid); const b = e && this.market.blobs.get(e.anchor.patch_sha256); if (b && !this.market.isApplied(cid)) await rt.removeRaw(b.path).catch(() => undefined); }
           await this.reassertPinned();
         }, { waitMs: 30_000 });
@@ -1708,6 +1708,9 @@ export class TeachWorker {
     const targets = [...baseTargets, ...contextTargets];
     const samples = (recipe.benchmark_samples?.length ? recipe.benchmark_samples : facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA: `, expect: f.answer })));
     const lesson = job.npz_path!;
+    // One journal per lesson body, beside the hook mailbox (§5.4). Without a sha (a job whose export never finished)
+    // there is no content address to name it by, and the remove falls back to the file's own `before`.
+    const lessonJournal = job.sha256 ? this.market.runtime.journalPath(job.sha256) ?? undefined : undefined;
     try {
       const out = await rt.exclusiveTry(`teach:${job.id}:check`, async () => {
         const wasApplied = new Map<string, boolean>();
@@ -1745,7 +1748,9 @@ export class TeachWorker {
           for (let attempt = 0; attempt < 2; attempt++) {
             if (this.stopped) throw new Error(STOPPING);
             this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
-            const ap = await rt.applyRaw(lesson); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
+            // The journal records the values this apply overwrote (the base stack's, when there is one), so removing
+            // the lesson afterwards restores THEM — and so reversibility can be measured rather than assumed (§8, SC-7).
+            const ap = await rt.applyRaw(lesson, { journal: lessonJournal }); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
             checks.taught = { hits: 0, total: 0 }; checks.heldout = { hits: 0, total: 0 };
             let spent = 0; let measured = 0;
             for (const [n, i] of sample.entries()) {
@@ -1817,8 +1822,17 @@ export class TeachWorker {
         } finally {
           // never leave the lesson applied; put the table back the way we found it: the lesson first, then the
           // stack in reverse, then whatever was applied before us and the operator-pinned set
-          const removed = await rt.removeRaw(lesson).then(() => true).catch((e) => { this.log('error', `could not remove the lesson after checking: ${(e as Error).message}`, job.id); return false; });
-          if (removed) this.store.updateTeachJob(job.id, { lesson_applied: false }); else this.pendingRestore.add(job.id);
+          const removed = await rt.removeRaw(lesson, { journal: lessonJournal }).then(() => true).catch((e) => { this.log('error', `could not remove the lesson after checking: ${(e as Error).message}`, job.id); return false; });
+          if (removed) {
+            this.store.updateTeachJob(job.id, { lesson_applied: false });
+            // SC-7 `teach.res.reversible`: the lesson is reversible when EVERY row it wrote is back at the value it
+            // was written over — read from the live table, before the stack underneath comes off.
+            const back = await rt.check(lesson).catch(() => null);
+            if (back) {
+              checks.reversibility_ok = back.differ_before === 0;
+              if (!back.ok) this.log('warn', `after removing the lesson ${back.differ_before} of ${back.rows} rows are not back where they were`, job.id);
+            }
+          } else this.pendingRestore.add(job.id);
           for (const t of [...targets].reverse()) await rt.removeRaw(t.path).catch(() => undefined);
           for (const t of targets) if (wasApplied.get(t.path)) await rt.applyRaw(t.path).catch(() => undefined);
           await this.reassertPinned();

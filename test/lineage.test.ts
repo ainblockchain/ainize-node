@@ -27,7 +27,7 @@ import { decodeBenchmarkJsonl } from '../src/dataset-blobs.js';
 import type { TeachJob } from '../src/teach.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-lineage-test-'));
-const PORT = 34051;
+const PORT = 34065;   // payouts.test.ts already owns 34051 — sharing it made both files fail with EADDRINUSE when the suite runs as one process pool
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 const teacher = createIdentity();
