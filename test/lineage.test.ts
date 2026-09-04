@@ -404,6 +404,32 @@ test('AZ-244 announce validation: a base that is still a draft, an unknown paren
   assert.equal(hashCanonical(anchor) === hashCanonical(anchor), true);
 });
 
+// ---------------------------------------------------------------- delete_after_training keeps its promise
+test('AZ-252 "delete the file after training" forces private and keeps no copy at all — the record keeps the fingerprint', async () => {
+  const buf = Buffer.from(canonicalJsonl(rows(3, 'gone')), 'utf8');
+  const hex = sha256(buf);
+  const form = new FormData();
+  form.set('file', new Blob([new Uint8Array(buf)]), 'gone.jsonl');
+  form.set('retention', 'delete_after_training');
+  const res = await fetch(`${url}/api/teach/datasets`, {
+    method: 'POST',
+    headers: { 'x-ngram-dataset-sha256': hex, 'x-ngram-auth': teachAuthHeaderFor(teacher, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
+    body: form,
+  });
+  const ds = ((await res.json()) as { dataset: TeachDataset }).dataset;
+  assert.equal(ds.retention, 'delete_after_training');
+  const job = await train(ds);
+  const pub = await publish(job, { access: 'derivative', license: 'CC-BY-4.0' }, { name: 'Deleted after training' });
+  assert.equal(pub.status, 200, pub.text);
+  const anchor = (await N.market.entry(String(pub.json.patch_id)))!.anchor;
+  assert.equal(anchor.dataset!.access, 'private', 'the choice to delete the file wins over the choice to share it');
+  assert.equal(N.market.datasets.has(anchor.dataset!.sha256), false, 'no copy is kept anywhere — that was the promise');
+  assert.match(anchor.dataset!.sha256, /^[0-9a-f]{64}$/, 'the fingerprint stays on the record, so a re-train can still be proven identical');
+  const asked = await api('GET', `/api/patches/${pub.json.patch_id}/dataset`, undefined, stranger);
+  assert.equal(asked.status, 403);
+  assert.match(asked.json.error!, /^dataset_private/);
+});
+
 // ---------------------------------------------------------------- the published copy is immutable
 test('AZ-245 the published training set survives the owner deleting the dataset it came from', async () => {
   const p = await published('keep', 3, { access: 'public', license: 'CC-BY-4.0' });

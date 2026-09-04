@@ -2047,10 +2047,16 @@ export class TeachWorker {
     const d = this.draftFor(j);
     // Pin the published copy (design §5.2): promoted from the job's snapshot, immutable, exempt from the sweep and
     // the owner's delete; the anchor names its sha. Done before the draft changes so a failed pin publishes nothing.
-    const pinned = this.pinDataset(j, d.anchor, pub);
+    // A creator who asked for the file to be deleted after training gets no copy kept at all — the record keeps the
+    // fingerprint and says `private`, which is exactly what SC-8 promised them.
+    const pinned = pub.forced_private ? null : this.pinDataset(j, d.anchor, pub);
+    const existing = d.anchor.dataset;
+    const dataset = pinned || existing
+      ? { ...(existing ?? { source: (j.dataset_source ?? 'chat') as TeachDatasetSource }), ...(pinned ? { sha256: pinned.sha256, rows: pinned.rows } : {}), access: pub.access, license: pub.license } as PatchAnchor['dataset']
+      : undefined;
     this.market.updateDraft(d.id, {
       name: body.name, description: body.description ?? '', price, license: body.license ?? pub.license, visibility: 'public', contributors, origin: 'teach',
-      ...(pinned ? { dataset: { ...(d.anchor.dataset ?? { sha256: pinned.sha256, rows: pinned.rows, source: (j.dataset_source ?? 'chat') as TeachDatasetSource }), sha256: pinned.sha256, rows: pinned.rows, access: pub.access, license: pub.license } } : {}),
+      ...(dataset ? { dataset } : {}),
     });
     this.store.touchContributor(signer, { published: true, payout_address: body.payout_address ?? null });
     this.store.updateTeachJob(j.id, { name: body.name, dataset_pub: { access: pub.access, license: pub.license, include_notes: pub.include_notes, declaration: pub.declaration, published_sha256: pinned?.sha256 ?? '' } });

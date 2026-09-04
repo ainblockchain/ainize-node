@@ -8551,5 +8551,33 @@
    "packages/node/src/teach-dataset.ts (detectPii)",
    "docs/lineage-teach-design.md §6.5"
   ]
+ },
+ {
+  "id": "AZ-252",
+  "persona": "Dataset uploader (visitor)",
+  "title": "\"Delete the file after training\" keeps its promise: the training set is forced private and no copy is kept",
+  "goal": "Two promises could contradict each other — 'the file is deleted after training' and 'people building on this can have the questions'. The first wins, and nothing is kept anywhere (lineage design §6.1, SC-8 `teach.pub.ds_retention`).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A dataset uploaded with retention 'delete_after_training'."
+  ],
+  "steps": [
+   "Train it, then publish asking for dataset access 'derivative'.",
+   "Read the anchor, the dataset blob store and GET /api/patches/<id>/dataset with another key."
+  ],
+  "expected": [
+   "The anchor's `dataset.access` is 'private' — the retention choice overrules the sharing choice, and the sheet says so before publishing.",
+   "No copy is pinned in the dataset blob store: nothing was kept.",
+   "The anchor still carries the sha256, so a re-train from the same questions can still be proven identical.",
+   "Asking for the questions answers `dataset_private`, the same as any other private set."
+  ],
+  "priority": "P1",
+  "area": "teach-dataset",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-252)",
+   "packages/node/src/teach.ts (datasetPublication, publish)",
+   "docs/lineage-teach-design.md §6.1, §4 SC-8"
+  ]
  }
 ]

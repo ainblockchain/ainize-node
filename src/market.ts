@@ -530,10 +530,14 @@ export class Market {
         const ok = licenseCompatible({ license: base?.dataset?.license, access: accessOf(base) }, { license, access: a.dataset.access ?? 'private' });
         if (!ok.ok) throw badInput(ok.reason, { parent: id, parent_license: base?.dataset?.license ?? null });
       }
-      // the pinned copy IS the record: recompute the sha over the bytes this node will serve
-      const bytes = this.datasets.rowsBytes(a.dataset.sha256);
-      if (!bytes) throw conflict(`dataset_inheritance_mismatch: the training set ${a.dataset.sha256.slice(0, 12)}… is not pinned on this node`);
-      if (sha256Hex(bytes) !== a.dataset.sha256) throw conflict('dataset_inheritance_mismatch: the pinned training set does not hash to the sha the record names');
+      // the pinned copy IS the record: recompute the sha over the bytes this node will serve. A `private` set is
+      // served to nobody, so nothing has to be held for it (that is also every pre-lineage anchor, and every creator
+      // who asked for the file to be deleted after training) — the sha stays on the record as the fingerprint.
+      if (accessOf(a) !== 'private') {
+        const bytes = this.datasets.rowsBytes(a.dataset.sha256);
+        if (!bytes) throw conflict(`dataset_inheritance_mismatch: the training set ${a.dataset.sha256.slice(0, 12)}… is not pinned on this node`);
+        if (sha256Hex(bytes) !== a.dataset.sha256) throw conflict('dataset_inheritance_mismatch: the pinned training set does not hash to the sha the record names');
+      }
     }
   }
 
