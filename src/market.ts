@@ -1672,9 +1672,17 @@ export class Market {
       step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches on-ledger anchor`);
     } else step('download', 'body already present; sha256 matches on-ledger anchor');
     const path = this.blobs.get(sha)!.path;
-    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: settled.tx_hash, scheme: settled.scheme, amount: settled.amount, manifest: have?.manifest ?? null, path, created_at: settled.created_at });
+    // No new manifest was issued (none was needed — the settlement is the right, and the body was fetched on a
+    // signature), so the one reported here is the recorded one if there is one, else the anchor's own facts with an
+    // empty download token: nothing is invented, and nothing pretends a token was handed out.
+    const manifest: PatchManifest = have?.manifest ?? {
+      id: patchId, patch_sha256: sha, size_bytes: entry.anchor.size_bytes, rows: entry.anchor.rows,
+      model: entry.anchor.model, benchmark_hash: entry.anchor.benchmark_hash,
+      blob_urls: origins.map((o) => `${o}/p2p/blob/${sha}`), issued_to: this.address, issued_at: settled.created_at, download_token: '',
+    };
+    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: settled.tx_hash, scheme: settled.scheme, amount: settled.amount, manifest, path, created_at: settled.created_at });
     this.grantLicense(entry, 'purchase', `${settled.amount} ${settled.currency} · tx ${settled.tx_hash.slice(0, 14)}…`);
-    return { patch_id: patchId, steps, manifest: (have?.manifest ?? null) as PatchManifest, path, tx_hash: settled.tx_hash, amount: settled.amount, scheme: settled.scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
+    return { patch_id: patchId, steps, manifest, path, tx_hash: settled.tx_hash, amount: settled.amount, scheme: settled.scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
   }
 
   // ------------------------------------------------------------------ licences: the right to use a body (item 327)

@@ -854,7 +854,9 @@ export function buildApi(deps: ApiDeps): Router {
    * body: this is where an operator sees it, and `POST /api/patches/:id/collect` is how it is finished.
    */
   router.get('/api/me/pending-payments', requireOperator, wrap(async () => ({
-    items: market.store.listPending({ status: ['quoted', 'paid'], limit: 200 }).map((r) => ({ ...r, payload: undefined })),
+    // Only rows that COST something: a 'quoted' row is a 402 this node answered and never paid, which owes nobody
+    // anything. `paid` means the money left and no manifest came back.
+    items: market.store.listPending({ status: ['paid'], limit: 200 }).map((r) => ({ ...r, payload: undefined })),
   })));
   /**
    * Where an address's local credit came from (item 364). Local credit is ISSUED by this node — one recorded,
