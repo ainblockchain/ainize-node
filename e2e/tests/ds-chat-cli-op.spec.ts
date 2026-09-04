@@ -691,14 +691,18 @@ test('AZ-210 `ainize teach train ./file --effort quick --wait` goes from a file 
     jobId = /^lesson\s+([0-9a-f-]{36})\s*$/m.exec(r.stdout)![1];
     madeJobs.push(jobId);
     expect(r.stdout).toContain('az-cli  READY  — ready — try it, keep it private or publish it');
-    expect(r.stdout).toMatch(/^node\s+http:\/\/localhost:3422$/m);
+    // the node this suite was pointed at, not the one it usually runs on: AINIZE_URL is what NODE is built from
+    expect(r.stdout).toMatch(new RegExp(`^node\\s+${NODE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
     expect(r.stdout).toMatch(/^taught by\s+0x[0-9a-fA-F]{6}…[0-9a-fA-F]{4}$/m);
     expect(r.stdout).toMatch(/^dataset\s+az-cli · trained 3 of 3 questions · revision 1 · [0-9a-f]{12}…$/m);
-    expect(r.stdout).toContain(`  its questions  ainize teach dataset get ${dsId} -o questions.jsonl`);
+    // the gap is the key column, which widens whenever the block gains a longer key: assert the sentence, not the padding
+    expect(r.stdout).toMatch(new RegExp(`^ {2}its questions\\s+ainize teach dataset get ${dsId} -o questions\\.jsonl$`, 'm'));
     expect(r.stdout).toMatch(/^effort\s+quick · 8 passes, evaluated every 2 · another wording trained too$/m);
     expect(r.stdout).toMatch(/^progress\s+/m);
     expect(r.stdout).toMatch(/^knowledge file\s+3 rows · [\d.]+ [kKMG]?B · sha256 [0-9a-f]{16}…$/m);
-    expect(r.stdout).toMatch(/^checks\s+passed$/m);
+    // item 239 renamed this line: `checks passed` said nothing about WHICH check, and whether the lesson stuck is
+    // now its own line above it
+    expect(r.stdout).toMatch(/^side-effect check\s+passed — it did not change unrelated answers$/m);
     expect(r.stdout).toMatch(/^ {2}taught\s+\d+\/\d+ trained sentences answer right/m);
     expect(r.stdout).toMatch(/^ {2}side effects\s+12\/12 unrelated answers unchanged ✓$/m);
     expect(r.stdout).toContain('stub backend (offline) — checks were simulated, not measured in a live model');
@@ -710,7 +714,10 @@ test('AZ-210 `ainize teach train ./file --effort quick --wait` goes from a file 
     expect(r.stdout).toContain('corrections');
     expect(r.stdout).toMatch(/QUESTION\s+RIGHT ANSWER\s+BEFORE\s+AFTER\s+HIT/);
     expect((r.stdout.match(/✓/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    expect(r.stdout).toContain(`ready: open ${NODE}/teach/lesson/${jobId} to try it, keep it private or publish it`);
+    // the closing block was rewritten: it now offers BOTH ways on (the publish command, and the page), so the link
+    // is one of two lines instead of the whole sentence
+    expect(r.stdout).toContain(`ainize teach publish ${jobId} --name`);
+    expect(r.stdout).toMatch(new RegExp(`^or in the browser:\\s+${NODE.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}/teach/lesson/${jobId}\\s+\\(try it, keep it private, publish it\\)$`, 'm'));
     expect(r.stdout).toContain(`train the same questions harder: ainize teach train ${dsId} --effort thorough`);
 
     // ---- more rows than this node teaches in one lesson
