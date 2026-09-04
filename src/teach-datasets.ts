@@ -270,7 +270,7 @@ export class TeachDatasets {
     try { return JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>; } catch { return null; }
   }
   /** Paginated report (§6.7): the per-row report is never inlined into the dataset row. */
-  reportPage(d: TeachDatasetRecord, opts: { offset?: number; limit?: number; status?: string } = {}): { summary: TeachDatasetSummary; rows: TeachDatasetRow[]; total: number; source_rows: number; offset: number; limit: number } {
+  reportPage(d: TeachDatasetRecord, opts: { offset?: number; limit?: number; status?: string; origin?: string } = {}): { summary: TeachDatasetSummary; rows: TeachDatasetRow[]; total: number; source_rows: number; offset: number; limit: number; origins: { mine: number; inherited: number; changed: number; conflicts: number } } {
     const rep = this.reportJson(d);
     const all = ((rep?.rows as TeachDatasetRow[]) ?? []);
     const filter = opts.status && opts.status !== 'all'
@@ -278,13 +278,27 @@ export class TeachDatasets {
         : opts.status === 'rejected' ? (r: TeachDatasetRow) => !isAcceptedRowStatus(r.status)
           : (r: TeachDatasetRow) => r.status === opts.status
       : () => true;
-    const rows = all.filter(filter);
+    // SC-5 Mine / Inherited / Changed / Conflicts — counted over the WHOLE set, so the filter chips never say "3"
+    // about a page of 50; `conflicts` is the parser's D11 status, the rows that ask a question two ways.
+    const origins = {
+      mine: all.filter((r) => isAcceptedRowStatus(r.status) && !r.from && !r.replaces).length,
+      inherited: all.filter((r) => !!r.from).length,
+      changed: all.filter((r) => !!r.replaces).length,
+      conflicts: all.filter((r) => r.status === 'conflict').length,
+    };
+    const byOrigin = opts.origin && opts.origin !== 'all'
+      ? opts.origin === 'mine' ? (r: TeachDatasetRow) => isAcceptedRowStatus(r.status) && !r.from && !r.replaces
+        : opts.origin === 'inherited' ? (r: TeachDatasetRow) => !!r.from
+          : opts.origin === 'changed' ? (r: TeachDatasetRow) => !!r.replaces
+            : (r: TeachDatasetRow) => r.status === 'conflict'
+      : () => true;
+    const rows = all.filter((r) => filter(r) && byOrigin(r));
     const offset = Math.max(0, opts.offset ?? 0);
     const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
     return {
       summary: (rep?.summary as TeachDatasetSummary) ?? d.summary ?? emptySummary(),
       rows: rows.slice(offset, offset + limit), total: rows.length,
-      source_rows: (rep?.source_rows as number) ?? d.rows + d.invalid_rows, offset, limit,
+      source_rows: (rep?.source_rows as number) ?? d.rows + d.invalid_rows, offset, limit, origins,
     };
   }
   /** `format=csv` renders the same questions as RFC 4180 so a spreadsheet round-trips; `jsonl` is the sha256 subject. */

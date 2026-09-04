@@ -719,9 +719,13 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/teach/datasets/:id/rows', wrap(async (req) => {
     const t = needTeach();
     const d = t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req));
-    const q = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(50), status: z.string().max(20).default('all') }).parse(req.query);
+    const q = z.object({
+      offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(50), status: z.string().max(20).default('all'),
+      // SC-5: which rows are mine, which came from the knowledge this set was copied from, which of its answers I changed
+      origin: z.enum(['all', 'mine', 'inherited', 'changed', 'conflicts']).default('all'),
+    }).parse(req.query);
     const page = t.datasets.reportPage(d, q);
-    return { total: page.total, source_rows: page.source_rows, offset: page.offset, limit: page.limit, summary: page.summary, items: page.rows };
+    return { total: page.total, source_rows: page.source_rows, offset: page.offset, limit: page.limit, summary: page.summary, origins: page.origins, items: page.rows };
   }));
   router.post('/api/teach/datasets/:id/reparse', wrap(async (req) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
