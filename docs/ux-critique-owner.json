@@ -57,7 +57,9 @@
    "problem": "'Teaching on this node: open · 0 waiting …' does not tell an ordinary person whether they can start training right now.",
    "fix": "Replace with a plain-language readiness line ('You can start now — no queue' / 'N lessons ahead of you, about M minutes') with the technical detail behind a disclosure.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The entry page now opens with a plain readiness line built from the policy — 'You can start now — nobody is waiting.' / '… N lessons are ahead of you.' / 'The queue is full right now — try again in a little while.' — appending a measured 'Recent lessons took about N min each.' only from ≥ 3 real gradient samples on a non-simulated node; the node's own status sentence, the queue and the percentiles sit behind a collapsed 'Details' disclosure, and a demo node prints no minutes anywhere (the chat basket's line follows the same rule)."
   },
   {
    "n": "O-6",

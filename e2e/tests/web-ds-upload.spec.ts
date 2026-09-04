@@ -38,6 +38,7 @@ const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ngram-teach
 
 interface Policy {
   enabled: boolean; publish: string; backend: string; trainer: string;
+  queue: { depth: number; max: number };
   limits: { dataset_max_bytes: number; dataset_max_rows: number; rows_per_job: number; dataset_ttl_days: number; prompt_max: number; answer_max: number; formats: string[] };
   timing: { samples: number; simulated: boolean };
 }
@@ -255,7 +256,22 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   const [limitsBox, ctaBox] = await Promise.all([limits.boundingBox(), page.getByTestId('door-file-cta').boundingBox()]);
   expect(limitsBox!.y + limitsBox!.height, 'the chips sit directly above the picker label').toBeLessThanOrEqual(ctaBox!.y);
 
-  await expect(page.getByTestId('teach-policy')).toHaveText('Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes');
+  // O-5: the readiness line is plain language, above the doors; the node's own sentence sits behind "Details"
+  const ready = page.getByTestId('teach-policy');
+  expect(policy.timing.simulated, 'node-u is a demo node: no minutes may appear').toBe(true);
+  await expect(page.getByTestId('teach-ready')).toHaveText('You can start now — nobody is waiting.');
+  expect(await ready.evaluate((el) => getComputedStyle(el).backgroundColor), 'info tone').toBe('rgb(245, 238, 252)');
+  const readyBox = (await ready.boundingBox())!;
+  const chatBox = (await page.getByTestId('door-chat').boundingBox())!;
+  expect(readyBox.y + readyBox.height, 'the line sits above the doors').toBeLessThanOrEqual(chatBox.y);
+  const detail = page.getByTestId('teach-ready-detail');
+  await expect(detail.locator('summary')).toHaveText('Details');
+  expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open), 'collapsed by default').toBe(false);
+  await expect(detail.locator('p').first()).toBeHidden();
+  await detail.locator('summary').click();
+  await expect(detail.locator('p')).toHaveText(['Teaching on this node: open · 0 waiting · demo node — lessons are simulated, nothing is trained', `Queue: 0 of ${policy.queue.max} lessons`]);
+  await expect(ready).not.toContainText(/\bmin\b/);
+  await detail.locator('summary').click();
 
   // O-2: "what happens next" is a sentence, not a stepper — no list, no numbered discs, no current step, nothing to press
   const next = page.getByTestId('teach-next');
@@ -295,7 +311,8 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
     await p2.waitForTimeout(500);
     expect(new URL(p2.url()).pathname, 'a disabled door does not navigate').toBe('/teach');
     const alert = p2.getByTestId('teach-policy');
-    await expect(alert).toHaveText('This node does not accept lessons. Try another node or run your own.');
+    await expect(alert).toHaveText('This node does not accept lessons. Try another node or run your own.');   // the sentence alone — no "Details" on a node that is off
+    await expect(alert.locator('details')).toHaveCount(0);
     expect(await alert.evaluate((el) => getComputedStyle(el).backgroundColor), 'warning tone').toBe('rgb(255, 243, 224)');
     await ctx.close();
   } finally {
