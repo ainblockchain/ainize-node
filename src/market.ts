@@ -1889,9 +1889,11 @@ export class Market {
    * Unrelated patches already on the table stay where they are, underneath.
    */
   async applyStack(ids: string[], reason: string, opts: { withBase?: boolean; onEnter?: () => void } = {}): Promise<{ applied: string[]; removed: string[]; ms: Record<string, number>; stack: string[] }> {
+    // What is wrong with the REQUEST is decided before what is wrong with the machine: a knowledge this node has no
+    // licence for (item 327) or a missing base is the same answer whether or not the model happens to be up.
+    const layers = await this.layersFor(ids, { withBase: opts.withBase, requireBaseApplied: true });
     const st = await this.runtime.status();
     if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
-    const layers = await this.layersFor(ids, { withBase: opts.withBase, requireBaseApplied: true });
     const current = this.store.listApplied().map((a) => a.patch_id);
     // What is already on the table stays exactly where it is (§8.3 allows an unrelated patch between a base and its
     // child); only the layers that are missing go on top, ancestors first.
@@ -2864,7 +2866,8 @@ export class Market {
    * `supersede` record — while the console, the OpenAPI description and the README all promised a node that keeps
    * up. Runs on the 20-second tick and on demand (`ainize branch sync`, POST /api/branches/:name/sync).
    */
-  async syncSubscription(branch: string): Promise<SubscribeResult> {
+  async syncSubscription(branch: string, opts: { retryNow?: boolean } = {}): Promise<SubscribeResult> {
+    if (opts.retryNow) for (const k of [...this.syncFailures.keys()]) if (k.startsWith(`${branch}|`)) this.syncFailures.delete(k);
     const quote = await this.quoteBranch(branch);
     const loaded = this.store.listApplied().filter((a) => a.reason === `subscription:${branch}`).map((a) => a.patch_id);
     const want = quote.current;
@@ -2877,13 +2880,21 @@ export class Market {
     for (const id of missing) {
       const item = quote.items.find((i) => i.patch_id === id);
       if (item?.plan !== 'buy') continue;
+      // An item this node cannot afford (or whose seller is down) must not be re-attempted every 20 seconds for ever:
+      // that is a payment request to the seller and a warning in the log three times a minute, indefinitely.
+      const key = `${branch}|${id}`;
+      const prev = this.syncFailures.get(key);
+      if (prev && Date.now() - prev.at < Market.syncBackoffMs(prev.tries)) continue;
       try {
         const r = await this.buy(id);
         acquired.push(id);
+        this.syncFailures.delete(key);
         spent.set(item.currency, (spent.get(item.currency) ?? 0) + Number(r.amount || 0));
       } catch (err) {
+        const tries = (prev?.tries ?? 0) + 1;
+        this.syncFailures.set(key, { at: Date.now(), tries, error: (err as Error).message });
         failed.push({ patch_id: id, error: (err as Error).message });
-        this.log('warn', 'branch', `${branch} has a new item this node could not buy — ${id}: ${(err as Error).message}`, id);
+        this.log('warn', 'branch', `${branch} has an item this node could not buy — ${id}: ${(err as Error).message} (attempt ${tries}; next try in ${Math.round(Market.syncBackoffMs(tries) / 60_000)} min)`, id);
       }
     }
     const ready = want.filter((id) => !failed.some((f) => f.patch_id === id));
@@ -2905,6 +2916,11 @@ export class Market {
     }
     return { ok: true, branch, action: 'sync', acquired, failed, applied, skipped: [], removed, spent: [...spent.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })) };
   }
+
+  /** Items a sync could not buy, so the next tick does not try again immediately: `${branch}|${id}` → when and how often. */
+  private syncFailures = new Map<string, { at: number; tries: number; error: string }>();
+  /** 1 min, 2, 4, 8 … capped at an hour. A `branch sync` by hand ignores this and tries at once. */
+  private static syncBackoffMs(tries: number): number { return Math.min(60_000 * 2 ** Math.max(0, tries - 1), 3600_000); }
 
   /** Every subscribed track, brought up to date (the 20-second tick). Failures are logged, never thrown. */
   async reconcileSubscriptions(): Promise<void> {

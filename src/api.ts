@@ -931,7 +931,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe')));
   router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe')));
   /** Item 255 — bring a subscribed track up to date now (the 20-second tick does the same thing). */
-  router.post('/api/branches/:name/sync', requireOperator, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string))));
+  router.post('/api/branches/:name/sync', requireOperator, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string), { retryNow: true })));
 
   router.post('/api/runtime/complete', requireOperator, wrap(async (req) => {
     const { prompt, max_tokens, raw } = z.object({
