@@ -11,7 +11,7 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
 import { buildApi, setupTokenPath } from './api.js';
-import { diskReport, humanBytes } from './disk.js';
+import { diskReport, humanBytes, sweepTemp } from './disk.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
 import { P2P } from './p2p.js';
@@ -49,6 +49,13 @@ export interface StartOptions {
 
 /** How long raw event rows are kept (lineage design §5.6) when `events.retentionDays` is not set (item 128). */
 export const EVENTS_RETENTION_MS = DEFAULT_EVENTS_RETENTION_DAYS * 86_400_000;
+
+/**
+ * How long an upload temp file may sit in `<dataDir>/uploads` or `<dataDir>/teach/incoming` before the sweep takes
+ * it (item 129). The routes unlink their own file; this only ever catches what a crash or a SIGKILL left behind,
+ * and `mtime` is the test, so an upload that is still streaming in is never touched.
+ */
+export const UPLOAD_TEMP_TTL_MS = 3600_000;
 
 /** Warn about the volume below this share of free space, or below this many bytes, whichever bites first (item 128). */
 export const DISK_WARN_FRACTION = 0.05;
@@ -254,6 +261,18 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const diskWatch = setInterval(checkDisk, 3600_000);
   diskWatch.unref?.();
   setTimeout(checkDisk, 8000).unref?.();
+  // Orphaned upload bodies (item 129). Every upload route now unlinks its own temp file, but a node killed mid-request
+  // leaves one behind, and a node upgrading from an older build starts with a directory full of them — 115 MB on the
+  // demo node, twenty-three times its blob store. Swept at start-up and hourly, and said out loud when it takes anything.
+  const sweepUploads = () => {
+    for (const dir of [join(cfg.dataDir, 'uploads'), join(cfg.dataDir, 'teach', 'incoming')]) {
+      const r = sweepTemp(dir, UPLOAD_TEMP_TTL_MS);
+      if (r.files) market.log('info', 'node', `removed ${r.files} abandoned upload file(s) (${humanBytes(r.bytes)}) from ${dir} — nothing had written to them for over an hour`);
+    }
+  };
+  const uploadSweep = setInterval(sweepUploads, 3600_000);
+  uploadSweep.unref?.();
+  setTimeout(sweepUploads, 3000).unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
   driveSync.unref?.();
   setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
@@ -264,6 +283,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(watchdog);
       clearInterval(retention);
       clearInterval(diskWatch);
+      clearInterval(uploadSweep);
       clearInterval(driveSync);
       market.payouts.stop();
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);

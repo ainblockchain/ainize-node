@@ -7,7 +7,7 @@
  * ENOSPC, which takes the SQLite store and the ledger with it. `/api/info.disk` and `ainize status` answer instead,
  * and `ainize gc` is what an operator does about it.
  */
-import { readdirSync, statSync, statfsSync } from 'node:fs';
+import { readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface DiskReport {
@@ -86,4 +86,34 @@ export function humanBytes(n: number): string {
   let i = 0;
   while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+/**
+ * Delete files under `dir` that nothing has written to for `olderThanMs` (item 129).
+ *
+ * multer writes every upload — a 350 MB knowledge body, a spreadsheet of questions — into a temp directory and
+ * hands the handler a path; the handler copies what it needs into the blob store. Nothing ever deleted the temp
+ * copy, on success or on any of the rejection paths, and no sweep existed: a demo node held 115 MB of orphans,
+ * twenty-three times its actual blob store. The routes now unlink their own file; this is the sweep for what a
+ * crash, a SIGKILL or a build older than this one left behind. `mtime` is the test, so an upload still streaming
+ * in is never taken.
+ */
+export function sweepTemp(dir: string, olderThanMs: number): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  const cutoff = Date.now() - olderThanMs;
+  let entries: import('node:fs').Dirent[];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return { files: 0, bytes: 0 }; }
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    const p = join(dir, e.name);
+    try {
+      const st = statSync(p);
+      if (st.mtimeMs > cutoff) continue;
+      rmSync(p, { force: true });
+      files++;
+      bytes += st.size;
+    } catch { /* gone under us, or not ours to delete */ }
+  }
+  return { files, bytes };
 }

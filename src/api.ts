@@ -68,6 +68,13 @@ export function buildApi(deps: ApiDeps): Router {
   const router = express.Router();
   const upload = multer({ dest: join(market.cfg.dataDir, 'uploads'), limits: { fileSize: 4 * 1024 ** 3 } });
   mkdirSync(join(market.cfg.dataDir, 'uploads'), { recursive: true });
+  /**
+   * The temp file multer wrote for this request (item 129). Every upload route unlinks its own body in a `finally`,
+   * on the success path (the handler has copied what it needs into the blob store by then) and on every rejection —
+   * a failed zod parse, an unreadable npz, a duplicate id. Before this, a rejected 350 MB publish cost 350 MB and a
+   * retry cost it again; the boot/hourly sweep in server.ts only catches what a crash leaves behind.
+   */
+  const dropTemp = (req: Request) => { const f = req.file?.path; if (f && existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* already gone */ } } };
 
   // ------------------------------------------------------------ auth (operator)
   const isOperator = (req: Request): boolean => {
@@ -731,63 +738,68 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.post('/api/patches', requireOperator, upload.single('file'), wrap(async (req) => {
-    const body = z.object({
-      id: z.string().optional(), name: z.string().min(2), description: z.string().optional(), model_id: z.string().min(1),
-      benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(),
-      billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
-      parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
-      branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
-      visibility: z.enum(['public', 'test']).optional(),
-      contributors: z.string().transform((s) => JSON.parse(s)).or(z.array(z.object({}).passthrough())).optional(),
-      // lineage (design §12.4): an operator may publish the training set beside the body — a local jsonl/csv path,
-      // pinned under its canonical sha with the chosen access and licence
-      dataset_file: z.string().optional(), dataset_access: z.enum(DATASET_ACCESS_LEVELS).optional(), dataset_license: z.string().optional(),
-      // §12.4: an operator may register a knowledge that was trained ON TOP of others — the ordered stack that has to
-      // be loaded underneath it. `pre_state_sha256` is never taken on trust: it is recomputed from the file here.
-      base_stack: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
-      export: z.enum(['delta', 'squash']).optional(),
-      derivation: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()).optional(),
-      // publish past `duplicate_body` (bytes this node already published on this subject) and `model_mismatch`
-      // (a model this node cannot test) — never past another author's body (items 154, 240, 363)
-      force: z.coerce.boolean().optional(),
-    }).parse(req.body);
-    const file = req.file?.path ?? body.path;
-    if (!file) throw bad('upload a .npz file or give a local `path`');
-    if (!req.file && !existsSync(file)) throw bad(`path not found on node: ${file}`);
-    let dataset: PatchAnchor['dataset'] | undefined;
-    if (body.dataset_file) {
-      if (!existsSync(body.dataset_file)) throw bad(`dataset_file not found on node: ${body.dataset_file}`);
-      const license = body.dataset_license ?? body.license ?? 'CC-BY-4.0';
-      if (!isDatasetLicense(license)) throw bad(`bad_license: "${license}" is not one of CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary`);
-      const parsed = parseDataset(readFileSync(body.dataset_file), { filename: body.dataset_file, maxRows: 100_000, maxSourceLines: 500_000 });
-      if (!parsed.rows.length) throw bad('dataset_empty: that file has no usable questions');
-      const access = body.dataset_access ?? 'private';
-      const samples = ((body.benchmark as { samples?: { prompt: string; expect: string }[] }).samples ?? []);
-      const pinned = market.datasets.pin(canonicalBytes(parsed.rows), { source: 'upload', license, access, parents: [], row_origin: [], changed: [], removed: [], contrast_used: [], pii_scan: { ok: parsed.summary.pii === 0, rows: parsed.report.filter((r) => r.status === 'pii' && r.index !== null).map((r) => r.index!) }, declaration: { source: 'own', license, no_pii: parsed.summary.pii === 0 }, include_notes: false, model_id: body.model_id }, samples);
-      dataset = { sha256: pinned.sha256, rows: pinned.rows, source: 'upload', access, license };
-    }
-    let base: PatchAnchor['base'] | undefined;
-    if (body.base_stack.length) {
-      const stack: { patch_id: string; patch_sha256: string }[] = [];
-      for (const id of body.base_stack) {
-        const e = await market.entry(id);
-        if (!e) throw bad(`base_unknown: ${id} is not a knowledge on this node`);
-        stack.push({ patch_id: id, patch_sha256: e.anchor.patch_sha256 });
+    // item 129: multer has already written the whole body into <dataDir>/uploads. `createDraft` copies it into the
+    // blob store, so the temp copy is dead the moment this handler returns — and on every rejection below it is dead
+    // immediately. Nothing used to unlink it, on either path.
+    try {
+      const body = z.object({
+        id: z.string().optional(), name: z.string().min(2), description: z.string().optional(), model_id: z.string().min(1),
+        benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(),
+        billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
+        parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
+        branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
+        visibility: z.enum(['public', 'test']).optional(),
+        contributors: z.string().transform((s) => JSON.parse(s)).or(z.array(z.object({}).passthrough())).optional(),
+        // lineage (design §12.4): an operator may publish the training set beside the body — a local jsonl/csv path,
+        // pinned under its canonical sha with the chosen access and licence
+        dataset_file: z.string().optional(), dataset_access: z.enum(DATASET_ACCESS_LEVELS).optional(), dataset_license: z.string().optional(),
+        // §12.4: an operator may register a knowledge that was trained ON TOP of others — the ordered stack that has to
+        // be loaded underneath it. `pre_state_sha256` is never taken on trust: it is recomputed from the file here.
+        base_stack: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
+        export: z.enum(['delta', 'squash']).optional(),
+        derivation: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()).optional(),
+        // publish past `duplicate_body` (bytes this node already published on this subject) and `model_mismatch`
+        // (a model this node cannot test) — never past another author's body (items 154, 240, 363)
+        force: z.coerce.boolean().optional(),
+      }).parse(req.body);
+      const file = req.file?.path ?? body.path;
+      if (!file) throw bad('upload a .npz file or give a local `path`');
+      if (!req.file && !existsSync(file)) throw bad(`path not found on node: ${file}`);
+      let dataset: PatchAnchor['dataset'] | undefined;
+      if (body.dataset_file) {
+        if (!existsSync(body.dataset_file)) throw bad(`dataset_file not found on node: ${body.dataset_file}`);
+        const license = body.dataset_license ?? body.license ?? 'CC-BY-4.0';
+        if (!isDatasetLicense(license)) throw bad(`bad_license: "${license}" is not one of CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary`);
+        const parsed = parseDataset(readFileSync(body.dataset_file), { filename: body.dataset_file, maxRows: 100_000, maxSourceLines: 500_000 });
+        if (!parsed.rows.length) throw bad('dataset_empty: that file has no usable questions');
+        const access = body.dataset_access ?? 'private';
+        const samples = ((body.benchmark as { samples?: { prompt: string; expect: string }[] }).samples ?? []);
+        const pinned = market.datasets.pin(canonicalBytes(parsed.rows), { source: 'upload', license, access, parents: [], row_origin: [], changed: [], removed: [], contrast_used: [], pii_scan: { ok: parsed.summary.pii === 0, rows: parsed.report.filter((r) => r.status === 'pii' && r.index !== null).map((r) => r.index!) }, declaration: { source: 'own', license, no_pii: parsed.summary.pii === 0 }, include_notes: false, model_id: body.model_id }, samples);
+        dataset = { sha256: pinned.sha256, rows: pinned.rows, source: 'upload', access, license };
       }
-      const a = readNpzMember(file, 'addrs'), b = readNpzMember(file, 'before');
-      const dim = b.header.shape[1] ?? 1;
-      base = {
-        stack, export: body.export ?? 'delta',
-        pre_state_sha256: preStateSha256(new BigInt64Array(a.body.buffer, a.body.byteOffset, a.body.length / 8), new Float32Array(b.body.buffer, b.body.byteOffset, b.body.length / 4), dim),
-      };
-    }
-    const anchor = await market.createDraft({
-      id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
-      price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
-      file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, force: body.force, ...(dataset ? { dataset } : {}),
-      ...(base ? { base } : {}), ...(body.derivation ? { derivation: body.derivation as never } : {}),
-    });
-    return { anchor };
+      let base: PatchAnchor['base'] | undefined;
+      if (body.base_stack.length) {
+        const stack: { patch_id: string; patch_sha256: string }[] = [];
+        for (const id of body.base_stack) {
+          const e = await market.entry(id);
+          if (!e) throw bad(`base_unknown: ${id} is not a knowledge on this node`);
+          stack.push({ patch_id: id, patch_sha256: e.anchor.patch_sha256 });
+        }
+        const a = readNpzMember(file, 'addrs'), b = readNpzMember(file, 'before');
+        const dim = b.header.shape[1] ?? 1;
+        base = {
+          stack, export: body.export ?? 'delta',
+          pre_state_sha256: preStateSha256(new BigInt64Array(a.body.buffer, a.body.byteOffset, a.body.length / 8), new Float32Array(b.body.buffer, b.body.byteOffset, b.body.length / 4), dim),
+        };
+      }
+      const anchor = await market.createDraft({
+        id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
+        price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
+        file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, force: body.force, ...(dataset ? { dataset } : {}),
+        ...(base ? { base } : {}), ...(body.derivation ? { derivation: body.derivation as never } : {}),
+      });
+      return { anchor };
+    } finally { dropTemp(req); }
   }));
   router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
     const patch = z.object({
@@ -1182,7 +1194,6 @@ export function buildApi(deps: ApiDeps): Router {
    */
   const datasetUpload = multer({ dest: join(market.cfg.dataDir, 'teach', 'incoming'), limits: { fileSize: DATASET_MAX_BYTES_CEILING, files: 1, fields: 12 } });
   mkdirSync(join(market.cfg.dataDir, 'teach', 'incoming'), { recursive: true });
-  const dropTemp = (req: Request) => { const f = req.file?.path; if (f && existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* already gone */ } } };
   const isMultipart = (req: Request) => (req.header('content-type') ?? '').toLowerCase().startsWith('multipart/');
 
   /**
