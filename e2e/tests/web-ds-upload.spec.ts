@@ -242,9 +242,18 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   await page.keyboard.press('Tab');
   expect(await fileCard.evaluate((el) => document.activeElement === el), 'then the file door').toBe(true);
 
-  // the small print quotes the DATASET row cap, not the 4 MB the upload page shows
-  await expect(fileCard.locator('small')).toHaveText('jsonl, csv, tsv or plain text · up to 2000 questions');
-  await expect(fileCard.locator('small')).not.toContainText('MB');
+  // O-4: the file door's limits are two chips beside the picker label — the node's own format list and the DATASET row cap
+  // (not the 4 MB the upload page shows); nothing is small print any more
+  const limits = fileCard.getByTestId('door-file-limits');
+  await expect(limits).toHaveAttribute('aria-label', 'File limits');
+  await expect(limits.locator('li')).toHaveText([policy.limits.formats.join(' · '), 'up to 2000 questions']);
+  await expect(limits.locator('li').first()).toHaveText('jsonl · json · csv · tsv · txt');
+  await expect(limits).not.toContainText('MB');
+  await expect(fileCard.locator('small')).toHaveCount(0);
+  const chipStyle = await limits.locator('li').first().evaluate((el) => { const cs = getComputedStyle(el); return { size: cs.fontSize, weight: cs.fontWeight, bg: cs.backgroundColor }; });
+  expect(chipStyle, 'a badge, not helper text').toEqual({ size: '12px', weight: '600', bg: 'rgb(245, 238, 252)' });
+  const [limitsBox, ctaBox] = await Promise.all([limits.boundingBox(), page.getByTestId('door-file-cta').boundingBox()]);
+  expect(limitsBox!.y + limitsBox!.height, 'the chips sit directly above the picker label').toBeLessThanOrEqual(ctaBox!.y);
 
   await expect(page.getByTestId('teach-policy')).toHaveText('Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes');
 

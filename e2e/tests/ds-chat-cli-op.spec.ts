@@ -1633,7 +1633,7 @@ test('AZ-222 The dataset-era limits are operator-settable only through the API, 
     expect(pol.body.limits.dataset_ttl_days).toBe(3);
 
     await page.goto(`${NODE}/teach`);
-    await expect(page.getByTestId('teach-entry')).toContainText('jsonl, csv, tsv or plain text · up to 4 questions');
+    await expect(page.getByTestId('door-file-limits').locator('li')).toHaveText(['jsonl · json · csv · tsv · txt', 'up to 4 questions']);
     await page.goto(`${NODE}/teach/upload`);
     await expect(page.getByTestId('drop-zone')).toContainText('jsonl, csv, tsv or txt · up to 1 MB');
 

@@ -45,7 +45,9 @@
    "problem": "'jsonl, csv, tsv … up to 2000 questions' is a hard constraint shown as tiny auxiliary text, so users upload a non-conforming file and hit an error late.",
    "fix": "Show the accepted formats and the question cap prominently on the upload card (badge/row near the picker) and validate on file selection before upload.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The file door shows its limits as two badges directly above the picker label — the node's own format list ('jsonl · json · csv · tsv · txt') and the question cap ('up to 2000 questions'), both from the policy — and the upload page already refuses a wrong type or an oversized file the moment it is selected, before any upload."
   },
   {
    "n": "O-5",
