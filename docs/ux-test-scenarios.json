@@ -9804,5 +9804,29 @@
    "packages/cli/src/commands/patch.ts",
    "docs/lineage-teach-design.md §13"
   ]
+ },
+ {
+  "id": "AZ-296",
+  "persona": "Visitor (knowledge user)",
+  "title": "A newer version sits beside the knowledge, not above it — and the knowledge asked about is always depth 0",
+  "goal": "The tree's rows are the reader's bearings: what is above me, where I am, what is below. A version edge is not a hop, and must not move anyone.",
+  "preconditions": [
+   "The demo cluster's own shape: a knowledge that lists its previous epoch as a parent AND supersedes it, plus a knowledge it replaced that was never its parent."
+  ],
+  "steps": [
+   "Walk the tree from the newest version"
+  ],
+  "expected": [
+   "The knowledge asked about is depth 0 — its parent's `superseded_by` no longer drags it into the ancestors' row.",
+   "The parent stays one hop up, with both a lineage edge and a `version` edge.",
+   "A knowledge it replaced without ever being built on it is a sibling at depth 0, not an ancestor."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-296)",
+   "docs/lineage-teach-design.md §5.5, §12.5"
+  ]
  }
 ]

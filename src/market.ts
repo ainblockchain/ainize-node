@@ -2577,9 +2577,14 @@ export class Market {
       if (edges.some((x) => x.from === from && x.to === to && x.kind === kind)) return;
       edges.push({ from, to, kind });
     };
-    const place = (id: string, d: number): TreeNode => {
+    /**
+     * Put a knowledge in the tree at hop `d` (negative above, positive below). `keep` is for a relation that is not
+     * a hop at all: a newer version sits BESIDE what it replaces, so it must never drag an already-placed node — the
+     * root included — into another row. The knowledge being looked at is depth 0 by definition and never moves.
+     */
+    const place = (id: string, d: number, keep = false): TreeNode => {
       const cur = nodes.get(id);
-      if (cur) { cur.depth = Math.min(cur.depth, d); return cur; }
+      if (cur) { if (!keep && id !== rootId) cur.depth = Math.min(cur.depth, d); return cur; }
       const e = map.get(id);
       const n: TreeNode = visible(e) ? this.treeNode(e!, map, trackOf(id), d) : { id, name: id, missing: true, depth: d, added: { questions: 0, changed: 0, removed: 0, rows: 0, new: 0 }, signals: {}, base_stack: [], superseded_by: [], supersedes: [], contributors: [] } as TreeNode;
       nodes.set(id, n);
@@ -2637,8 +2642,8 @@ export class Market {
     for (const id of [...nodes.keys()]) {
       const e = map.get(id);
       if (!e) continue;
-      for (const older of e.supersedes) if (visible(map.get(older))) { place(older, (nodes.get(id)?.depth ?? 0)); addEdge(older, id, 'version'); }
-      for (const newer of e.superseded_by) if (visible(map.get(newer))) { place(newer, (nodes.get(id)?.depth ?? 0)); addEdge(id, newer, 'version'); }
+      for (const older of e.supersedes) if (visible(map.get(older))) { place(older, (nodes.get(id)?.depth ?? 0), true); addEdge(older, id, 'version'); }
+      for (const newer of e.superseded_by) if (visible(map.get(newer))) { place(newer, (nodes.get(id)?.depth ?? 0), true); addEdge(id, newer, 'version'); }
     }
 
     const list = [...nodes.values()];

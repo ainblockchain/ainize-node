@@ -315,3 +315,29 @@ test('AZ-294 the creator of the knowledge underneath is paid for being built on 
   assert.deepEqual(own.money.lineage_names, []);
   assert.equal(own.money.recipients.find((r) => r.address.toLowerCase() === teacherOfBase)!.kind, 'contributor');
 });
+
+test('AZ-296 a newer version sits beside the knowledge, not above it — and the knowledge asked about is always depth 0', async () => {
+  // The demo cluster's own shape, and the one this got wrong: krx-all-2761 lists its previous epoch as a PARENT and
+  // also supersedes it. Walking up put the parent at −1, and then the parent's `superseded_by` dragged the ROOT up
+  // to −1 with it: the page drew the knowledge you are looking at in the ancestors' row.
+  const real = await N.market.entryMap();
+  const src = real.get('fam-a')!;
+  const make = (id: string, parents: string[], supersedes: string[] = [], superseded_by: string[] = []): CatalogEntry =>
+    ({ ...src, anchor: { ...src.anchor, id, name: id, parents }, children: [], supersedes, superseded_by });
+  const fake = new Map<string, CatalogEntry>([
+    ['v2', make('v2', ['v1'], ['v1', 'other'])],
+    ['v1', make('v1', [], [], ['v2'])],
+    ['other', make('other', [], [], ['v2'])],   // replaced by v2 without ever being its parent
+  ]);
+  (N.market as unknown as { entryMap: () => Promise<Map<string, CatalogEntry>> }).entryMap = async () => fake;
+  try {
+    const t = await N.market.lineageTree('v2', { depth: 8 });
+    assert.equal(t.nodes.find((n) => n.id === 'v2')!.depth, 0, 'the knowledge asked about is where the reader is standing');
+    assert.equal(t.nodes.find((n) => n.id === 'v1')!.depth, -1, 'it is also the parent, and stays one hop up');
+    assert.equal(t.nodes.find((n) => n.id === 'other')!.depth, 0, 'a version it replaced is a sibling, not an ancestor');
+    assert.ok(t.edges.some((e) => e.from === 'v1' && e.to === 'v2' && e.kind === 'version'));
+    assert.ok(t.edges.some((e) => e.from === 'other' && e.to === 'v2' && e.kind === 'version'));
+  } finally {
+    (N.market as unknown as { entryMap?: unknown }).entryMap = Object.getPrototypeOf(N.market).entryMap;
+  }
+});
