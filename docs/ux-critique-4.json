@@ -1,0 +1,1698 @@
+{
+ "meta": {
+  "title": "Ainize — critical UX review 4: chained purchases and the peer-to-peer sharing economy",
+  "date": "2026-09-04",
+  "commit": "d85365c",
+  "findings": 100,
+  "numbering": "270-369 (continues 1-100, 101-169, 170-269)",
+  "severity_counts": {
+   "critical": 23,
+   "major": 49,
+   "minor": 28
+  },
+  "flow_counts": {
+   "A": 27,
+   "B": 12,
+   "C": 16,
+   "D": 19,
+   "E": 13,
+   "F": 6,
+   "G": 7
+  },
+  "audience_counts": {
+   "Buyer (human and agent)": 8,
+   "Buyer (agent/developer)": 12,
+   "Seller node · Buyer (human)": 3,
+   "Buyer (human) · Derivative creator": 1,
+   "Seller node · Derivative creator": 1,
+   "Buyer (human) · Ancestor creator": 3,
+   "Buyer (human)": 17,
+   "Derivative creator (visitor and terminal)": 1,
+   "Derivative creator": 10,
+   "Derivative creator · Buyer (human)": 1,
+   "Ancestor creator · Seller node": 3,
+   "Ancestor creator · Data provider": 1,
+   "Ancestor creator": 5,
+   "Ancestor creator · Network participant": 1,
+   "Seller node": 9,
+   "Seller node · Ancestor creator": 2,
+   "Ancestor creator · Buyer (human)": 1,
+   "Seller node · Data provider": 1,
+   "Verifier node": 8,
+   "Seller node · Verifier node": 2,
+   "Verifier node · Seller node": 2,
+   "Buyer (human) · Verifier node": 1,
+   "Verifier node · Buyer (human)": 1,
+   "Buyer (human) · Network participant": 1,
+   "Buyer (human) · Seller node": 2,
+   "Seller node · Network participant": 1,
+   "Network participant · Buyer (human)": 1,
+   "Network participant · Derivative creator": 1
+  },
+  "effort_counts": {
+   "L": 3,
+   "M": 41,
+   "S": 56
+  },
+  "evidence_dir": "packages/e2e/results/ux4/",
+  "measured_against": [
+   "docs/lineage-teach-design.md",
+   "docs/p2p-compute-market-design.md",
+   "docs/production-verification-plan.md"
+  ]
+ },
+ "summary": "Ainize is a peer-to-peer marketplace for \"knowledge\": small trained memory-table patches (.npz) that anyone can load into a running LLM, live-test, publish and be paid for. There is no operator in the middle. Every node is a peer that sells its own knowledge, verifies other people's, and settles payments node-to-node — as node credit on a local record DAG, or as AIN transfers on the AI Network chain through an x402 gateway (402 → pay → X-PAYMENT → manifest → body). Knowledge carries lineage, so a sale pays the seller, the ancestors and the data providers by one rule; versions supersede; tracks bundle a daily bake; and two teach doors let a visitor turn their own questions into knowledge and be paid for it. Three earlier reviews covered the visitor's web (items 1–100), the terminal and the operator (101–169), and derivative publishing, composition and the daily bake (170–269). This one is about what the owner asked for: the cascade of purchases that a chained buy, a teach-on-top, a composition or a subscription sets off, and whether the sharing economy behind it holds up peer to peer.\n\n**How it is supposed to work.** A peer shares rather than hoards because sharing pays better: publish a base, and every derivative anyone builds on it pays you a share of every sale, forever, without you doing anything. Buy a child and you see the whole family you are paying into — its parents, their prices, who receives what — and pay once, in one step, for the parts you do not already own. Teach on top of somebody's knowledge and the acquisition of that base is the first purchase in the chain; publish and the base's creator is credited on a record you both signed. Verify other people's work and the network pays you for the GPU minutes, because \"Verified 2/2 by independent nodes\" is the only thing a buyer's money rests on. Nothing needs a central party: the settle record on the shared ledger is the receipt, the anchor is the licence, the peers are the CDN.\n\n**How the running product actually moves money and trust.** The primitives are real and several are excellent. A purchase is a millisecond-stamped timeline that checks the body's sha256 against the on-ledger anchor whichever peer served it; every settlement carries a full per-address royalty map that is broadcast to every node within a second, clamped so the payouts can never exceed the price; the AIN payout queue writes each row before it attempts the transfer and refuses to auto-retry one interrupted by a restart; the teacher's public earnings page distinguishes what is owed from what this node can see was paid, in careful words. Money really does cross nodes: buying a leaf on node-c credited node-b's wallet within seconds, and on the demo chain node-c has been sending 3 AIN per sale to node-a for two days. But the market around those primitives is not closed. **The paywall is \"do you already have the file\", and everyone who matters already has it**: every node is a verifier by default, a verifier downloads every announced body for free — the claim needs nothing but an unsigned POST — and `apply`, the live test and `subscribe` check only that the file is on disk. A body once held can be loaded, served, taught on and resubscribed forever without a settlement. On the AIN path the payment itself is a bearer ticket: the tx hash, not the payer, collects the file, and the real payer is told \"payment already used\". And a buyer who has the bytes can republish them, byte-identical, as their own root listing at a quarter of the price — whereupon the product marks the original SUPERSEDED and points every buyer at the copy. Meanwhile the honest paths leak in the other direction: a retry pays twice, a lost response loses the file with a recovery path nobody documents, a free item still runs the whole payment ceremony, and a node that changes its port loses every listing it ever published.\n\n**The three biggest gaps.**\n\n**1. Possession is the licence, so the people the economy depends on never pay.** `mayDownload` exempts any address that says it has the verifier role (market.ts:645-656) — the role every `ainize init` turns on and an unsigned `/p2p/hello` grants (api.ts:861-865); on the demo chain 91 of 132 registered nodes claim it. `applyPatch`, `testablePatches` and `subscribe` gate on `blobs.has` (market.ts:826-838, 1034-1038, 1108-1112), so a verified body is production-ready, free, forever, and the manifest's 24-hour token is a bearer anyone can pass on. Nothing refuses a byte-identical republish, and `reconcileSupersedes` will retire the original for the copier. The result is an economy in which the only participants who pay are those who do not run a node — and the participants who do run nodes are also the ones who could resell the file.\n\n**2. The record says who is owed; nothing says who was paid.** The split is computed honestly and written to a public record — and then the money is a private matter between the seller and its own SQLite. `/api/me/wallet` builds \"Creator revenue share received\" from settle records (api.ts:345), so an ancestor reads 34 payments and 102 AIN while the seller's payout table has 29 rows and the chain's transfer path holds 8; nothing links a settlement to a payout tx, nothing rebuilds a lost payout row, an address spelled in two cases is paid once, a parent the seller's node cannot resolve is silently paid 0 %, and there is no way to move an earned balance anywhere at all. The product already contains the honest version of this screen — `teacherProfile`, which reports owed, paid, pending and \"this node cannot see that transfer\" — and the wallet does not use it.\n\n**3. The work that makes the market trustworthy is unpaid, and the act that damages it is free.** In 501 attestations and 2,765 AIN of sales, verifiers have received nothing: there is no `verifierShare` anywhere in the code, no wallet row, no earnings screen, and no page that tells a new operator that the role costs a GPU, a gigabyte of other people's bodies and minutes of model lock per item. At the same time a challenge — the safeguard the terms offer in place of the deposit that was honestly removed — costs nothing, needs no reason, has no limit, and takes a rival off sale until somebody else spends GPU time; the network has recorded 0 FAILs and 0 challenges, and no screen says so. And the badge itself is thin: \"2/2 independent verifiers\" is satisfied by two processes sharing one model server, because an attestation records no executor, no duration and no sample count.\n\nUnderneath all three sits a smaller, fixable absence: nothing in the product ever prices a chain. There is no `requires[]` in the 402, no total before a family purchase, no quote before a subscription, no subscription price at all, no metering behind the \"pay per hour loaded\" and \"pay per use\" the forms offer, and no way to change a price after listing. The lineage work landed in L0/L1 gives the anchor the fields these fixes need — `derivation`, `base.stack`, `dataset`, a closed licence list — and no screen, gate or payout reads them yet.\n\nBelow: 100 problems worth fixing, numbered 270–369, grouped by flow and ranked within each; the table that follows lists the twenty that would change the economy most.",
+ "top20": [
+  {
+   "n": 363,
+   "title": "A byte-identical copy of someone else's knowledge lists as a new root at a quarter of the price — and automatically retires the original",
+   "flow": "G",
+   "severity": "critical"
+  },
+  {
+   "n": 326,
+   "title": "Anyone who says they are a verifier downloads every knowledge body for free — the claim is an unsigned POST, and 91 of 132 node records on the demo chain already make it",
+   "flow": "D",
+   "severity": "critical"
+  },
+  {
+   "n": 327,
+   "title": "Possession is licence: apply, live-test, chat and subscribe check only that the file is on disk, so a verifier runs a seller's whole catalogue for free",
+   "flow": "D",
+   "severity": "critical"
+  },
+  {
+   "n": 344,
+   "title": "An AIN payment is a bearer ticket: whoever presents the tx hash first collects the file, and the real payer is told 'payment already used'",
+   "flow": "E",
+   "severity": "critical"
+  },
+  {
+   "n": 325,
+   "title": "Verifying is unpaid work: 501 attestations and 2,765 AIN of sales on the demo chain, and not one credit has ever reached a verifier",
+   "flow": "D",
+   "severity": "critical"
+  },
+  {
+   "n": 309,
+   "title": "One creator spelled two ways is paid once: 3 of 4.5 AIN never leaves the seller, and on a local ledger the rest lands on a string no wallet matches",
+   "flow": "C",
+   "severity": "critical"
+  },
+  {
+   "n": 311,
+   "title": "The ancestor's wallet reports the seller's promises as money received: 34 payments and 102 AIN on one screen, 29 payout rows on the seller's, 8 transfers on the chain",
+   "flow": "C",
+   "severity": "critical"
+  },
+  {
+   "n": 310,
+   "title": "A sale whose lineage does not resolve on the seller's node pays the seller 100 % and no record says why — 3 of 37 demo sales did exactly that",
+   "flow": "C",
+   "severity": "critical"
+  },
+  {
+   "n": 271,
+   "title": "A purchase is not idempotent: a retry, a second click or a lost response pays the full price again — and the second payment overwrites the first purchase row",
+   "flow": "A",
+   "severity": "critical"
+  },
+  {
+   "n": 312,
+   "title": "The training set that makes a knowledge worth 25 AIN is a free download, and the promise that buys it — 'I am building on this' — is never checked",
+   "flow": "C",
+   "severity": "critical"
+  },
+  {
+   "n": 270,
+   "title": "Buying a child buys the child alone: the quote is the child's price, and no surface says whether the base is needed, already inside, or what the family costs",
+   "flow": "A",
+   "severity": "critical"
+  },
+  {
+   "n": 328,
+   "title": "A challenge costs nothing, needs no reason, has no limit, and takes a rival off sale for as long as you keep filing them",
+   "flow": "D",
+   "severity": "critical"
+  },
+  {
+   "n": 329,
+   "title": "'2/2 independent verifiers' can be two processes on one host sharing one model server, and the record cannot tell the difference",
+   "flow": "D",
+   "severity": "critical"
+  },
+  {
+   "n": 357,
+   "title": "Subscribing spends the balance item by item, publishes the subscription before buying anything, and reports success when every purchase failed",
+   "flow": "F",
+   "severity": "critical"
+  },
+  {
+   "n": 364,
+   "title": "On a local ledger every new keypair is worth 100 CREDIT: a seller's revenue is minted by whoever buys, and 'insufficient credit' is one key-rotation away",
+   "flow": "G",
+   "severity": "critical"
+  },
+  {
+   "n": 275,
+   "title": "A node that changes its port loses every listing it ever published: the gateway URL is frozen in the immutable anchor and nothing re-points it",
+   "flow": "A",
+   "severity": "critical"
+  },
+  {
+   "n": 297,
+   "title": "To teach on top of a knowledge this node does not hold there is no way to get it: the picker hides it, the CLI says 'unknown knowledge', and a visitor cannot buy at all",
+   "flow": "B",
+   "severity": "critical"
+  },
+  {
+   "n": 314,
+   "title": "Nothing links a settlement to the payout that honoured it: the creator's share is an unreferenced transfer from the seller's wallet, after the fact",
+   "flow": "C",
+   "severity": "major"
+  },
+  {
+   "n": 299,
+   "title": "On a local-ledger node the teacher prices in play money and is later shown '4.9 CREDIT Paid' for credit a browser key can never spend",
+   "flow": "B",
+   "severity": "critical"
+  },
+  {
+   "n": 358,
+   "title": "Any node can take over a track by re-creating it under the same name: subscribers follow the new owner and the original owner is locked out",
+   "flow": "F",
+   "severity": "critical"
+  }
+ ],
+ "flows": [
+  {
+   "name": "A. Chained purchases",
+   "description": "Buying into a family of knowledge — a child that depends on parents, a stack, an agent's budget — and everything the money touches on the way.",
+   "items": [
+    {
+     "n": 270,
+     "title": "Buying a child buys the child alone: the quote is the child's price, and no surface says whether the base is needed, already inside, or what the family costs",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "Knowledge page → Buy tab; `ainize use <child>`; `ainize patch buy`; `GET /x402/patch/:id`; `ainize-agent run --max-price`",
+     "severity": "critical",
+     "problem": "`requirementsFor` (packages/node/src/market.ts:655-666) quotes scheme, price, payTo, nonce and a description of the form `Knowledge patch <id> (<rows> rows, <model>)` — nothing about `anchor.parents`. `market.buy` (market.ts:757-820) never reads the parents either, and `applyPatch` (market.ts:826-838) loads the child by itself. The design's `requires: [{id, name, price, held}]` and its 'Buy both' sheet (docs/lineage-teach-design.md:111, 283-292) are not implemented anywhere, and the L1 anchor fields that would settle the question — `derivation.kind`, `base.export: 'delta'|'squash'` (packages/core/src/types.ts:146-176) — are on the record but on no screen and in no gate. So a buyer facing 'built on pixel-parent' cannot tell whether the file is complete on its own (today: always, because children are squashes) or whether they are about to need a second, unbudgeted purchase from another peer; the agent's `--max-price` (packages/agent/src/agent.ts:188) is a per-item budget for a purchase that may be a family.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-15-node-d-chain.txt (`use pixel-grandchild` → 2 CREDIT, grandchild applied alone, pixel-child and pixel-parent `purchased:false has_body:false`, and the model answers correctly from the grandchild alone); chain-buy-agent-08-private-leaf-buy-royalty.txt (402 fields for c-leaf; catalogue `parents:['p-mid']` with no price or gateway for it; the agent's `--max-price 60` passed on a 130-CREDIT family); chain-buy-human-08-child-operator-en-1280-buy.png (Buy tab: price, seller, gateway, nothing else). Re-read at HEAD: market.ts:655-666, 757-820, 826-838.",
+     "user_cost": "Either money for a base the buyer already holds inside the child (5 CREDIT for 2,992 rows they just bought — see 283), or, once real delta patches ship, a paid file that does nothing until a second purchase from a peer whose price nobody quoted. The chain's real price is discovered one purchase at a time.",
+     "fix": "In `requirementsFor` and `GET /api/patches/:id` return `requires: [{id, name, price, currency, gateway_url, author, held}]` computed from `anchor.parents` (walk to depth 16 like `royaltySplit`) plus `derivation.kind` and `base.export`, and render one sentence from them on the Buy tab (`packages/web/src/pages/PatchPage.tsx:494-506`): 'complete on its own — includes its base's 2,992 rows' or 'needs pixel-parent (5 CREDIT, node-a) — buy both'. `market.buy({withRequired:true})` buys ancestors deepest-first with one settle record each and returns `purchases[]` + `total`; `patchUse` prints the quote and asks (or `--yes`); the agent compares the TOTAL with `--max-price`.",
+     "effort": "L"
+    },
+    {
+     "n": 271,
+     "title": "A purchase is not idempotent: a retry, a second click or a lost response pays the full price again — and the second payment overwrites the first purchase row",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "`ainize patch buy <id>`; Buy tab 'Buy again'; `POST /api/patches/:id/buy`; `ainize-agent run`",
+     "severity": "critical",
+     "problem": "`market.buy` goes quorum → gateway → 402 → transfer with no lookup of an existing settlement or purchase row (market.ts:757-790); `store.putPurchase` (market.ts:812) is an INSERT OR REPLACE keyed by patch id, so the second payment erases the first one's tx hash. The web offers 'Buy again' as the only action on a purchased item (PatchPage.tsx:529) and the agent re-runs the whole 402 loop before checking `existsSync(dest)` (packages/agent/src/agent.ts:231). `mayDownload` already lets a settled buyer fetch the body for nothing (market.ts:651), so every one of these payments buys something the buyer was already entitled to.",
+     "evidence": "critic-03-nodeb-rebuy-pixelplus.txt (node-b, already a buyer, `patch buy pixelplus-087600` → another 0.1 AIN moved, balance 1342.0 → 1341.9, purchases count still 1 — no local trace of two payments); chain-buy-agent-15-pay-again-for-held-body.txt (187 settle records from one agent identity for one 3.8 MB file = 18.7 AIN); chain-buy-human-19-demo-web-ain-buy-notes.json ('Buy again' → real transfer, 'body already present').",
+     "user_cost": "Real money for nothing, repeatedly: a mis-click, a dropped connection, a cron'd agent or a cautious 'let me get it again' each costs the full price, and the buyer's own node cannot even show that it happened twice. At 25 AIN per item a nightly agent loop is a subscription nobody signed.",
+     "fix": "Short-circuit in `market.buy`: if `store.getPurchase(id)` exists or `entry.settlements.some(s => s.buyer === this.address)`, fetch the manifest through the free signed path and record no new settle (return `{already:true}` from `POST /api/patches/:id/buy` unless `{force:true}`). Make `putPurchase` append rather than replace (a `purchases` history keyed by tx). In the web replace 'Buy again' with 'Download again (free)' / 'Load into model' (PatchPage.tsx:529) and keep a second licence behind an explicit confirm. In the agent, check `patches/<sha>.npz` and the purchases file (289) before touching the gateway.",
+     "effort": "M"
+    },
+    {
+     "n": 272,
+     "title": "A local-credit payment is consumed on the first request and can never be replayed: after a lost response the buyer is debited and gets nothing",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`GET /x402/patch/:id` with an `X-PAYMENT` local-credit payload",
+     "severity": "critical",
+     "problem": "`settlePayment` calls `takeNonce` before it checks amount, signature, balance or duplication (market.ts:694-703). Replaying the exact payload that succeeded — what any client does after a timeout — returns `402 {\"error\":\"unknown or expired nonce\"}`, not the manifest and not 'already used'; the settle record has already debited the buyer (`creditBalance` derives from settlements, market.ts:670-680). The same ordering means any failed attempt (wrong amount, bad signature, insufficient balance) burns the nonce, and the error never says a fresh `GET` is needed.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-10-local-credit-nonce-replay.txt (step 3 HTTP 200 → step 4, the identical payload, 'unknown or expired nonce'; steps 1-2: 'amount below price' then the same nonce → 'unknown or expired nonce'). Re-read at HEAD: market.ts:694-703.",
+     "user_cost": "Full price lost per timeout, with an error that reads like clock skew. The developer must write their own signed download client to collect what they paid for, and every learning mistake costs a round trip and a nonce.",
+     "fix": "Make the payment idempotent and the nonce consumed last: compute the intent hash first, and if `store.paymentSeen(h)` and the recorded settlement's buyer is `payload.from`, re-issue a manifest with no new settle (see 273); validate amount, signature and balance before `takeNonce`; add `\"single_use\": true` to the requirement and phrase the error as 'nonce … was consumed by an earlier attempt — GET the resource again for a new quote'.",
+     "effort": "S"
+    },
+    {
+     "n": 273,
+     "title": "A buyer who paid but lost the manifest has a working recovery path that no screen, command or document mentions — the seller answers 'payment already used'",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "`GET /x402/patch/:id` replay; `GET /p2p/blob/:sha` with `x-ngram-auth`; Buy tab error alert",
+     "severity": "critical",
+     "problem": "`settlePayment` refuses a second presentation of the same payment (market.ts:699, 706) and never re-issues the manifest to the recorded buyer. Yet `mayDownload` admits any address with a settlement for that sha (market.ts:651), so the body is still collectable — with a signed `x-ngram-auth` header and no token. Neither `market.buy` nor the agent ever takes that path (both throw at market.ts:788 / agent.ts:214), no CLI verb exposes it, and the Buy tab prints `errorMessage(error)` (PatchPage.tsx:535).",
+     "evidence": "critic-01-recover-blob-signed.txt (settled buyer node-b, signed header, no token → HTTP 200, 3,854,446 bytes, from the seller and from a peer holder; a stranger gets 402); p2p-trust-12-replay-used-payment.txt (the payer's own replay → 402 'payment already used'). Code at HEAD: market.ts:651, 699, 706.",
+     "user_cost": "The buyer has paid, the seller has the money and the settle record, and the product's only sentence to them is 'payment already used'. The one honest next step exists in the code and is invisible; the visible next step (Buy again) charges again.",
+     "fix": "On presentation of a payment already settled for this patch and this buyer, re-issue the manifest (idempotent redemption) instead of rejecting it. Add `ainize patch download <id>` and a Buy-tab action 'You paid on <date> — download again (free)' that uses the signed `/p2p/blob` path, and document that path in /docs and openapi.ts (288).",
+     "effort": "M"
+    },
+    {
+     "n": 274,
+     "title": "The money moves before anything is written down: a failure between the transfer and the manifest leaves an irreversible payment that neither the node nor the agent recorded",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "`market.buy`; `ainize-agent run` (`payFor`)",
+     "severity": "critical",
+     "problem": "In `market.buy` the AIN transfer happens at market.ts:781, the throw on a bad response at market.ts:788, and `putPurchase` only at market.ts:812 — a failure in between leaves a settled sale on the ledger and no row on the buyer's node. In the agent, `payFor` transfers first and assigns `res.tx_hash` only after a 200 (agent.ts:141, 214); the catch in packages/agent/src/bin.ts:53-56 prints `agent failed: …` and exits 1 with no JSON, and nothing is written under `~/.ngram-agent`. A second run makes a second transfer.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-05-partial-failure-tx-lost.txt (proxy answers 503 to the retry; 196.5 → 196.3 AIN over two attempts; `ls ~/.ngram-agent` shows identity.json and patches/ only); code at HEAD: market.ts:781-812, agent.ts:141-214.",
+     "user_cost": "The evidence needed to recover or dispute a lost payment exists only on the chain, and only if you know to scrape `/transfer/<me>/<seller>/`. On a 25 AIN item each attempt is a real loss.",
+     "fix": "Write the intent before the money: log `paid tx <hash> → <payTo> for <resource> (nonce …)` and append it to `<home>/pending-payments.jsonl` (agent) / a `pending_payments` row (node) BEFORE the retry; on the next run re-present a pending payment instead of transferring again; with `--json` print the partial result with `error` and `tx_hash` and exit non-zero.",
+     "effort": "S"
+    },
+    {
+     "n": 275,
+     "title": "A node that changes its port loses every listing it ever published: the gateway URL is frozen in the immutable anchor and nothing re-points it",
+     "flow": "A",
+     "audience": "Seller node · Buyer (human)",
+     "surface": "`ainize start --port`; `patch ls`; `ainize patch buy`; `GET /api/patches/:id.gateway_url`",
+     "severity": "critical",
+     "problem": "`announce` writes `gateway_url = ${this.publicUrl}/x402/patch/${id}` into the anchor (market.ts:443) and anchors are immutable (market.ts:374). `market.buy` fetches that URL (market.ts:766) and the catalogue never checks liveness. A node that moves — a new port, a new host, a new tunnel, a container reschedule — keeps the same identity and the same peers, and every one of its knowledges stays LISTED and sellable in every catalogue while every purchase fails.",
+     "evidence": "packages/e2e/results/ux4/critique4-04-node-moved-gateway-frozen.txt (node-d publishes ux4-moving on :3692, restarts on :3693, answers `/api/info` as the same address; node-c's `patch ls` still says LISTED 6 CREDIT; `patch buy ux4-moving` → `error: fetch failed`; the anchor still says gateway http://localhost:3692/…, status LISTED, sellable true).",
+     "user_cost": "A seller loses their whole catalogue permanently for changing a port, and can only recover by republishing every item under new ids — which then supersedes the originals and restarts verification. Buyers see a shop that is open and cannot be entered.",
+     "fix": "Resolve the gateway at buy time instead of trusting the anchor: prefer the peer-table endpoint for `anchor.author` (`store.listPeers()` / `ledger.nodes()`), fall back to `anchor.gateway_url`, and treat the anchor field as a hint. Add an `endpoint` record kind (or reuse the node record, already keyed by address) that a node re-publishes on start, and show 'seller last seen …' on the Buy tab (276). Add `ainize patch relist <id>` for the case where the identity itself changed.",
+     "effort": "M"
+    },
+    {
+     "n": 276,
+     "title": "A seller that is offline is still 'For sale' everywhere, and buying ends in a bare 'fetch failed' — while three peers hold the body and none may sell it",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "Explore cards; `patch ls`; Buy tab; `ainize use` / `patch buy`; `ainize-agent run`",
+     "severity": "major",
+     "problem": "Catalogue status is derived from the ledger only (packages/core/src/catalog.ts:125-165) with no liveness input, although the peer table knows `last_seen` (`ainize nodes` prints it). `market.buy`'s first fetch has no try/catch (market.ts:766) so Node's TypeError 'fetch failed' passes through to the CLI and the web alert; with a 30 s timeout the message is 'The operation was aborted due to timeout'. Only the author's node may sell: `api.ts:933` answers `409 not sold here; gateway is …` to every other holder.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-28-parent-node-unreachable.txt (A down: `patch ls` LISTED, Buy tab 'Buy · 9 node credit', alert 'fetch failed', CLI exit 1); chain-buy-agent-16-author-offline.txt (`agent failed: fetch failed`, node-a and node-b both hold the body); incentives-network-ns-15 (30 s timeout text).",
+     "user_cost": "The buyer cannot tell a dead seller from a broken product or a wrong URL, retries, and — inside a family — may already have paid another node for the child. A network of peers that all hold the file can sell none of it.",
+     "fix": "Probe the gateway origin (`GET <origin>/p2p/info`, 3 s) and the peer's `last_seen` before rendering Buy and before `step('quorum')`; render 'Seller node-a is unreachable (last seen 12:07) — nothing was charged. Held by node-b, node-c, but only the author can sell it.' Map `fetch failed`/`ECONNREFUSED`/timeout in `patchBuy` and the agent to that sentence, and put an 'offline' chip on Explore cards whose seller failed the last N gossip rounds. Longer term: let a holder settle on the author's behalf against an author-signed price quote.",
+     "effort": "S"
+    },
+    {
+     "n": 277,
+     "title": "Free knowledge is not free to obtain: price 0 runs the whole payment ceremony, needs a funded identity and writes a public sale record",
+     "flow": "A",
+     "audience": "Buyer (human) · Derivative creator",
+     "surface": "`GET /x402/patch/:id` on a price-0 anchor; `ainize patch buy`; the teach node's 74 free lessons",
+     "severity": "major",
+     "problem": "`api.ts:940-944` answers 402 whenever there is no `X-PAYMENT` header, whatever the price, and `requirementsFor` mints a nonce for `maxAmountRequired: \"0\"`. The buyer must have an identity, sign an intent, and the seller appends a settle record naming them. `market.buy`'s free branch (`else if (r1.ok) step('free', 'no payment required')`, market.ts:797-799) is dead code. On node-u 74 of 136 published lessons are priced 0.",
+     "evidence": "packages/e2e/results/ux4/critique4-01-free-is-not-free.txt (402 with `maxAmountRequired \"0\"`; `✓ bought ux4-free for 0 (local-credit)` with a signed intent; `ledger ls --kind settle` → 'ux4-free · 0 CREDIT · buyer 0x8186…B3E2'; the seller's wallet lists a 0 CREDIT sale).",
+     "user_cost": "The cheapest on-ramp into the sharing economy — take a free lesson, try it, build on it — costs a wallet, a signature and a permanent public record of who took it. A visitor cannot do it at all (buying is operator-only), and 'free' items pad every sold/revenue/popular figure with 0-value sales.",
+     "fix": "In the gateway, when `Number(price) === 0` return the manifest to any signed requester (or any requester, recording `scheme:'free'`) with no nonce and no settlement, and count it as a download rather than a sale; keep the buyer's address out of the record unless they paid. Make the Buy tab and `patch ls` say 'Free — no payment needed' instead of 'Buy · 0 node credit'.",
+     "effort": "S"
+    },
+    {
+     "n": 278,
+     "title": "A price can never be changed: no discount, no raise, no 'make it free' — the only re-pricing is a new anchor that retires the old one",
+     "flow": "A",
+     "audience": "Seller node · Derivative creator",
+     "surface": "`PATCH /api/patches/:id`; `ainize patch --help`; Manage page",
+     "severity": "major",
+     "problem": "Anchors are immutable (`updateDraft` → 'only drafts can be edited (anchors are immutable on the ledger)', market.ts:374) and there is no verb anywhere — the `patch` command tree has publish/announce/verify/challenge/buy/apply/remove/conflicts/records/rm/forget and nothing about price (packages/cli/src/bin.ts:188-236). A seller who priced a first listing at the 0.1 default, or who wants to run a launch discount, or who wants to make an obsolete knowledge free, has no path but republishing — which supersedes their own item, restarts verification and splits the sales history.",
+     "evidence": "packages/e2e/results/ux4/critique4-03-price-is-immutable.txt (`PATCH /api/patches/ux4-paid {\"price\":\"4\"}` as the logged-in operator → `only drafts can be edited (anchors are immutable on the ledger)`; the same for the free item; `patch --help` has no price verb).",
+     "user_cost": "Every price is a one-shot guess made before a single sale, on a market whose own publish form gives no pricing guidance (item 162). Sellers cannot respond to demand, to a cheaper copy of their file (363), or to a superseding version.",
+     "fix": "Add a `price` record kind (`{patch_id, price, currency, at, sig}`) that only the anchor's author may write, have `deriveCatalog` fold the newest one into the entry, and read it in `requirementsFor`/`settlePayment` so the quote and the charge move together; expose `ainize patch price <id> <price>` and a price field on the Manage page, and show a price history on the knowledge page so a buyer can see a discount is real.",
+     "effort": "M"
+    },
+    {
+     "n": 279,
+     "title": "An AIN transfer below the price is neither credited nor refunded: the seller keeps it and the buyer is told only 'transfer 0.1 below price 5'",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`GET /x402/patch/:id` with an ain-transfer payload",
+     "severity": "major",
+     "problem": "`settlePayment` rejects a short transfer (market.ts:709) without calling `markPayment`, so the AIN stays in the seller's wallet, no settlement exists, and the tx hash remains spendable — for any of that seller's items priced at or below the amount, by anyone (344). Prices are strings like '0.1' and '25' and the agent transfers `Number(req.maxAmountRequired)` with no comparison against the anchor (290).",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt (section E4: `transfer 0.1 below price 5`, money not returned, no settlement written).",
+     "user_cost": "A rounding or typing mistake donates the transfer to the seller with no receipt, no credit and no instruction; the rule is learned by losing money.",
+     "fix": "Either accept several transfers under one `transfer_key` and settle when their sum reaches the price, or answer `{error, received, missing, transfer_key, refund_policy}` and record a `credit` row the buyer can top up; document the behaviour in /docs. In the agent and `market.buy`, compare `req.maxAmountRequired` with `anchor.price` before transferring.",
+     "effort": "M"
+    },
+    {
+     "n": 280,
+     "title": "The buyer's receipt never shows who was paid, although the seller returns the full split in the same response",
+     "flow": "A",
+     "audience": "Buyer (human) · Ancestor creator",
+     "surface": "`ainize patch buy` / `use` receipt; Buy-tab PurchaseTimeline; Dashboard 'Purchased knowledge'; History tab",
+     "severity": "major",
+     "problem": "The gateway sets `x-payment-response: {settled, tx, royalty:{…}}` (api.ts:951) and `market.buy` keeps only `x-payment-tx-hash` (market.ts:790); `PurchaseResult` has no royalty field and `putPurchase` stores amount/scheme/manifest/path (market.ts:812). So the CLI prints `✓ bought pixel-child for 3 (local-credit)`, the web receipt prints the timeline and hashes, the History row says '… purchase settled · 3 node credit · buyer 0x…' (packages/web/src/i18n/pages/detail.ts:32) — while the settle record on every node carries `{node-a: 0.9, node-b: 2.1}`. The one place the split is rendered is the seller's own Logs page (LogsPage.tsx:79-83).",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-06-cli-buy-child.txt (receipt vs settle record); seller-royalties-anc-02-buy-chain-x402.txt (headers carry node-c 3 + 1.5, node-b 1.5, seller 14); critic-03-nodeb-rebuy-pixelplus.txt (six steps, no payees). Earlier reviews cover the quote side (item 236) and the ledger row (item 197), not the buyer's receipt.",
+     "user_cost": "The product's central promise to the buyer — 'Revenue is split automatically with the original creators' — is never demonstrated at the moment it happens, so there is no reason to believe the next sentence, and no way to check that the lineage shown on the page was honoured.",
+     "fix": "Parse `x-payment-response` in `market.buy`, store `royalty` on the purchase row, return it in `PurchaseResult`, and print `3 CREDIT → node-b 2.1 (seller) · node-a 0.9 (creator of pixel-parent)` in the CLI receipt, the web timeline (PatchPage.tsx:542-559) and an expandable column of the Purchased table. Compute the same table from `royaltySplit` in the 402 body and the Buy tab so it is visible before paying, and put the licence there too.",
+     "effort": "S"
+    },
+    {
+     "n": 281,
+     "title": "A family is loaded in whatever order it was bought, and the base can land on top of its own derivative",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "`ainize use`; `branch subscribe`; the 20 s watchdog; Dashboard 'In model'",
+     "severity": "major",
+     "problem": "`subscribe` applies `b.patch_ids` in list order (market.ts:1105-1112), `buy({apply})` applies one id, and the watchdog re-applies per patch (market.ts:745-757); the runtime is last-wins on shared rows and the `applied` table has no order column. The design records this as F5 (docs/lineage-teach-design.md:23) and L1's `base.stack` (types.ts:170-176) now states the intended order on the record — nothing reads it.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-15-node-d-chain.txt ('applied order on node-d: [grandchild, child, parent]' with reason `subscription:chain/pixel`); chain-buy-human-26-buyer-d-dashboard-en-1280.png ('In model: yes' ×3, no order).",
+     "user_cost": "A buyer pays for three knowledges and can get the behaviour of the base alone; nothing on any screen hints at it, and a runtime restart can reshuffle it again. Because today's children contain their base's rows, 'parent last' really does overwrite the child's values.",
+     "fix": "Order applies by lineage depth (ancestors first) in `subscribe`, in `buy({apply})` and in the watchdog (sort `listApplied()` by depth, or by `base.stack` when present); store `position` on the applied row; show 'Loaded in order: pixel-parent → pixel-child' on the Dashboard and in `ainize status`; refuse `removePatch` of a parent while a child is applied.",
+     "effort": "M"
+    },
+    {
+     "n": 282,
+     "title": "Nothing on the browse surfaces says a knowledge is an add-on: the family is invisible exactly where prices are compared",
+     "flow": "A",
+     "audience": "Buyer (human and agent)",
+     "surface": "Explore cards; `ainize patch ls`; `ainize-agent catalog`; the 402 `description`",
+     "severity": "major",
+     "problem": "No component under packages/web/src/components/public/ mentions parents or lineage; `patch ls` columns are ID/STATUS/AUTHOR/MODEL/ROWS/SIZE/PRICE/ATTEST/SOLD/BENCHMARK (packages/cli/src/commands/patch.ts:25-36); the agent's catalogue row prints id/status/rows/price/attest/name (packages/agent/src/bin.ts:64); the 402 description is `Knowledge patch <id> (<rows> rows, <model>)` (market.ts:661).",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-13-explore-C-en-1280.png (the child and grandchild read as ordinary 3- and 2-credit items; the only 'derivative' wording came from the publisher's own `--description`); teach-triggered-12-lesson-402.txt.",
+     "user_cost": "A buyer choosing between a 5-credit base and a 3-credit item built on it has no way to tell which is which until the fourth tab of the detail page — and an agent, which never opens a page, cannot tell at all.",
+     "fix": "Add a chip to the card and a BUILT ON column to `patch ls` / `agent catalog` from `lineage.parents` + `derivation.kind` ('Add-on to pixel-parent' / 'Includes its base'), and put `built on <id>` plus `requires[]` into the 402 description and body (270).",
+     "effort": "S"
+    },
+    {
+     "n": 283,
+     "title": "The child that contains every row of its base is labelled 'Different subject — overlapping entries need reconciling', ten lines under 'Origins'",
+     "flow": "A",
+     "audience": "Buyer (human) · Ancestor creator",
+     "surface": "Knowledge page → Origins & derivatives (overlap table)",
+     "severity": "major",
+     "problem": "`PatchPage.tsx:439-441` chooses `detail.lin.rel_other` whenever the two schemas differ, with no check that the overlap partner is a declared parent; the same page has just drawn that knowledge as the origin. Nothing on the page states the one fact a buyer needs — 2,992 of 2,992 rows are the base's — although `blobs.addrSet` already computes it and L1's `derivation.added_rows/changed_rows` (types.ts:159-166) is designed to carry it.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-07-child-visitor-notes.json ('pixel-parent · 2,992 memory entries · Different subject — overlapping entries need reconciling' under 'Origins → pixel-parent'); chain-buy-human-17-child-while-parent-challenged-en-1280-lineage.png; teach-triggered-27-lesson3-page-en-1280.png ('2,992 Memory entries · 1 Facts').",
+     "user_cost": "The page that decides whether the buyer must also buy the base contradicts itself; the ancestor is undercut by a copy of their own rows and the buyer is told the two are unrelated.",
+     "fix": "When an overlap partner is in `anchor.parents`, replace the relation text with 'contains {n} of its base's {total} entries — you do not need pixel-parent' (or 'adds {k} on top of its base'), sourced from `derivation` when present and from the address-set intersection otherwise; add the same line to the Buy tab and refuse to list a child whose body is ≥95 % its parent unless it declares `derivation.kind: 'update'`.",
+     "effort": "M"
+    },
+    {
+     "n": 284,
+     "title": "`ainize-agent run` reports SUCCESS and exit 0 when the knowledge was never loaded, and its defaults point at another machine's GPU",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent run` (packages/agent/src/agent.ts:250-276, bin.ts:38-41)",
+     "severity": "major",
+     "problem": "The no-runtime branch prints `[6] no runtime (/nonexistent) — apply step skipped; body kept at …`, then sets `success: true` and `result: SUCCESS — the 402 purchase loop completed`; bin.ts exits 0. `--api` defaults to `http://localhost:8000` and `--repo` to `/mnt/newdata/qwen3.8` — one developer's machine, and on this host :8000 is the production server this review was forbidden to touch.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-01-agent-run-ain.txt; chain-buy-agent-05-partial-failure-tx-lost.txt; code at HEAD agent.ts:271-273, bin.ts:38-41.",
+     "user_cost": "Automation keyed on the exit code believes knowledge is live when it is only on disk — and pays again next run (271). Anyone else's machine silently takes the skipped path on every run.",
+     "fix": "Exit 0 only when applied (or `--download-only` was passed); otherwise exit 3 with `downloaded, NOT loaded: no runtime at <repo>`. Read `api`/`repo` from the market node's `/api/info.runtime` when not given and refuse to run against a silent default.",
+     "effort": "S"
+    },
+    {
+     "n": 285,
+     "title": "On an AIN market `ainize-agent balance` prints '100 CREDIT' while the wallet holds 196 AIN, and the funding hint names a command that only works on a local dev chain",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent balance`; the insufficient-funds hint in `run`",
+     "severity": "major",
+     "problem": "`balance` always derives a local-credit figure from settle records and never reads `/api/info.ledger.kind` or `AinLedger.balance()` (packages/agent/src/bin.ts:64-77); the run-time hint is `fund it: ngram chain fund 0x…` (agent.ts:140) — the binary is `ainize` and `chainFund` refuses non-local providers (packages/cli/src/commands/chain.ts:103-112).",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-03-agent-errors-balance.txt ('100 CREDIT (initial credit 100 …)' against node-a whose ledger is `ain` and whose wallet holds 196.5 AIN).",
+     "user_cost": "A developer budgeting a chain of purchases cannot ask the agent what it can spend, and the wrong number is presented with confidence; the recovery instruction is a dead end on any real network.",
+     "fix": "Read `/api/info.ledger.kind`: for `ain` print `AinLedger.balance()` in AIN, label CREDIT output as local-only, and print `ainize chain fund <addr>` only when the provider host is local, otherwise 'send AIN to <addr> on <network>'.",
+     "effort": "S"
+    },
+    {
+     "n": 286,
+     "title": "An agent's purchases leave no receipt it can read back: nothing on disk, no on-chain access receipt, no `purchases` command, no buyer filter on the ledger",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`~/.ngram-agent`; `GET /api/ledger`; `ainize-agent --help`",
+     "severity": "major",
+     "problem": "The agent writes `identity.json` and `patches/<sha>.npz` and nothing else; `recordAccess` (the on-chain access receipt) is called only from `market.buy` (market.ts:815-817), so an agent's purchases leave no chain receipt; `GET /api/ledger` accepts `since/kind/limit` only (api.ts:224-231) — there is no `buyer=` filter, and the seller's ledger is the only place the sale exists.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-08-private-leaf-buy-royalty.txt (§H); today's count on the demo: 187 settle records from one agent identity readable only from node-a's ledger.",
+     "user_cost": "An operator auditing spend, or an automation deciding what it already owns, must scrape every seller's ledger by hand — impossible on a network with many sellers, and the direct cause of the repeat payments in 271.",
+     "fix": "Append `{patch_id, sha256, seller, amount, currency, scheme, tx_hash, nonce, manifest, path, at}` to `<home>/purchases.jsonl` on every settled payment; add `ainize-agent purchases [--json]`; call `recordAccess` for agent purchases too; add `buyer=`/`seller=` filters to `GET /api/ledger`.",
+     "effort": "S"
+    },
+    {
+     "n": 287,
+     "title": "There is no way to automate 'keep these knowledges loaded and current': the agent is one-shot, restores by default, records nothing, and decides what to buy by probing a shared model",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent` command surface; `agent.ts:160-170`, `:262-265`",
+     "severity": "major",
+     "problem": "The agent has run/catalog/balance/keys only. Each run re-asks the model and buys when the answer is wrong (agent.ts:160-167) — on a shared runtime that answer belongs to whoever else loaded something; `--keep` leaves the patch applied with no local record, no watchdog and no version tracking; newer versions are noticed only via `--follow-latest`, which pays again (271). Track subscription exists only for nodes, and is broken (357).",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-01-agent-run-ain.txt (first run 'correct — nothing to buy' because another tenant's patch was loaded; second run bought); `ainize-agent --help` in chain-buy-agent-03.",
+     "user_cost": "The product's stated audience — agents that buy knowledge automatically — must write their own scheduler, ownership ledger and version watcher, and any naive cron of `agent run` is a repeat-purchase loop.",
+     "fix": "Add `ainize-agent watch --patch a,b,c --budget-per-day N [--follow-latest]`: keep a local manifest of owned patches (286), apply them on start, re-apply after a runtime restart (poll `/v1/models`), follow supersede marks within budget, and decide from the purchase record — never from probing a shared model.",
+     "effort": "M"
+    },
+    {
+     "n": 288,
+     "title": "The payment protocol a third-party client must implement is four sentences; every rule that costs money is learned by losing money",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "/docs 'Automatic payment flow'; the Buy tab curl example; packages/node/src/openapi.ts",
+     "severity": "major",
+     "problem": "`docs.x402.steps` (packages/web/src/i18n/pages/docs.ts:31) is four numbered sentences; the Buy tab's copy-paste example sends `{\"scheme\":\"ain-transfer\",\"network\":\"ain:local\",\"txHash\":\"0x…\"}` and works only because the server validates nothing else (344); `X402Requirement` in openapi.ts:28-29 omits `description` and `transfer_key`, there is no schema for `x-payment-response`, and 409/503 are undocumented. Nowhere is it written that the local-credit nonce is single-use and burnt by a failed attempt, that quotes expire in 10 minutes (and are not enforced on the AIN path), that 'payment already used' is final, that 423 means a challenge, or that `billing: per_download` means every fetch is a new sale.",
+     "evidence": "docs.ts:31; chain-buy-agent-07-web-buytab-child-en-1280.png; chain-buy-agent-10-local-credit-nonce-replay.txt; chain-buy-agent-02-replay-theft-wrongamount.txt.",
+     "user_cost": "Each undocumented rule cost this review a nonce, a request cycle or 0.1 AIN; a company integrating against a real chain pays the same tuition with real money.",
+     "fix": "Add a 'Payment protocol' section to /docs and openapi.ts: per scheme the exact payload with every field, the state machine (402 → pay → retry → 200 | reasons), nonce/expiry/idempotency rules, every status code, the response headers, the token lifetime and the billing semantics — and keep the curl example correct once the server validates the fields.",
+     "effort": "S"
+    },
+    {
+     "n": 289,
+     "title": "The buyer's own purchase row names no seller: their node cannot answer 'who did I pay for this?'",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "`GET /api/me/purchases`; Dashboard → Purchased knowledge; `store.putPurchase`",
+     "severity": "minor",
+     "problem": "`putPurchase` stores `{patch_id, sha256, tx_hash, scheme, amount, manifest, path, created_at}` (market.ts:812) — no seller address, no gateway, no royalty. The Dashboard columns are Paid / tx / file / loaded / actions (packages/web/src/pages/DashboardPage.tsx:189-193). The seller is recoverable only by re-deriving the catalogue, which fails once the seller's anchor is gone from this node's view.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-26-buyer-d-dashboard-en-1280.png; code at HEAD market.ts:812, DashboardPage.tsx:189-193.",
+     "user_cost": "The only durable record of a purchase on the buyer's side omits the counterparty — the first thing anyone needs for a refund request, a dispute (347) or an audit.",
+     "fix": "Store `seller`, `seller_name`, `gateway_url` and the parsed `royalty` on the purchase row and show a 'Paid to' column (and `ainize wallet` line) beside the amount.",
+     "effort": "S"
+    },
+    {
+     "n": 290,
+     "title": "`--max-price` is checked against the catalogue price, but the agent pays whatever amount the 402 asks for",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent run --max-price`",
+     "severity": "minor",
+     "problem": "The guard compares `pick.anchor.price` with `--max-price` (agent.ts:188); `payFor` then transfers `Number(req.maxAmountRequired)` from the 402 (agent.ts:141) with no comparison to the anchor or the budget, and does not check that `req.payTo` is the anchor's author. `market.buy` has the same shape (market.ts:781).",
+     "evidence": "Code read at HEAD: agent.ts:141, 188; market.ts:781. The gateway is a separate HTTP endpoint run by the seller, so quote and anchor can differ.",
+     "user_cost": "The one safety flag the agent offers does not bound the transfer it actually makes.",
+     "fix": "After decoding the 402, refuse when `Number(req.maxAmountRequired) > min(anchor.price, maxPrice)` or `req.payTo !== anchor.author`, and print the mismatch.",
+     "effort": "S"
+    },
+    {
+     "n": 291,
+     "title": "`--follow-latest` re-targets the purchase to an item 250× the price, and only an explicit budget stops it",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent run --follow-latest`",
+     "severity": "minor",
+     "problem": "`resolveSupersedes` follows supersede marks to the newest LISTED patch; the switch line says 'newer patch on the same benchmark' and names no price (agent.ts:106); the price guard runs only when `--max-price` was given (agent.ts:188). pixelplus-087600 (0.1 AIN) is superseded by krx-all-2761 (25 AIN); unattended, the agent pays 25.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-03-agent-errors-balance.txt (with `--max-price 0.1` it refuses; without, it pays 25 — the following `candidate:` line does print the new price).",
+     "user_cost": "An automation told to 'stay current' spends 250× what it was asked to spend, unattended.",
+     "fix": "Print `0.1 → 25 AIN` on the switch line and default the budget to the originally requested item's price unless `--max-price` raises it; add `--follow-latest=same-price|any`.",
+     "effort": "S"
+    },
+    {
+     "n": 292,
+     "title": "With `--json` a failed agent run prints no JSON at all",
+     "flow": "A",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`ainize-agent run --json` on any failure",
+     "severity": "minor",
+     "problem": "The catch in packages/agent/src/bin.ts:53-56 writes `agent failed: <message>` to stderr and exits 1; the AgentResult (steps, patch_id, scheme, amount, tx_hash) is discarded. In the seller-503 test the JSON run produced nothing on stdout while 0.1 AIN had left the wallet. (The `ainize` CLI has the same defect as item 104; the fix there did not reach this package.)",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-05-partial-failure-tx-lost.txt.",
+     "user_cost": "An orchestrator cannot tell which step failed or what was already paid, and has to re-parse free text to reconcile spend.",
+     "fix": "Build `res` before the try, attach `error` and `failed_step`, print it as JSON on failure, then exit non-zero.",
+     "effort": "S"
+    },
+    {
+     "n": 293,
+     "title": "A seller's refusal reaches the buyer as raw JSON: `payment rejected: 402 {\"error\":\"insufficient credit: 2 < 5\"}`",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "`ainize use` / `patch buy`; the Buy-tab error alert",
+     "severity": "minor",
+     "problem": "`market.buy` throws `payment rejected: ${r2.status} ${await r2.text()}` (market.ts:788) and both the CLI and `errorMessage(error)` in the web print it verbatim. The seller's reasons are all readable sentences on the server side ('insufficient credit', 'transfer not found / not executed', 'this node does not sell that patch') and arrive as a status code plus a JSON blob.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt; chain-buy-human-17-challenged-parent.txt line 1.",
+     "user_cost": "At the moment a purchase fails, the buyer is shown a stack-trace-shaped string instead of what to do next.",
+     "fix": "Map the seller's error codes to sentences naming the seller, the balance and the price ('node-a refused the payment: your balance is 2 CREDIT and pixel-parent costs 5'), and return the timeline `steps` with the thrown error so `patchBuy` can print where it stopped.",
+     "effort": "S"
+    },
+    {
+     "n": 294,
+     "title": "Rejected purchases leave 'pay: signed credit intent …' in the buyer's own audit trail, indistinguishable from money that moved",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "Node event feed; `ainize logs`",
+     "severity": "minor",
+     "problem": "`step('pay', …)` is logged before the seller answers (market.ts:783-786) and the `!r2.ok` branch throws without a step or event (market.ts:788). node-e's feed shows three 'pay' lines for purchases that never settled, separable from the one that did only by the absence of a later 'settled' line.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt (events 'pay: signed credit intent dcb9de…', '669f2d…', '1175a9…' with no settle).",
+     "user_cost": "The local record — the only one besides the wallet — errs in the direction of 'paid'; on AIN the same step precedes a real transfer, so the two cases cannot be told apart afterwards.",
+     "fix": "Log the intent as `pay: prepared …`, add an explicit `rejected: <seller error>` step and event when `r2` is not ok, and include both in the returned/thrown `steps`.",
+     "effort": "S"
+    },
+    {
+     "n": 295,
+     "title": "On a phone the price line breaks mid-word: 'pay o / nce per download', 'developm / ent play money'",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "Knowledge page → Buy tab at 360 px",
+     "severity": "minor",
+     "problem": "`KeyValue`'s `dd` uses `word-break: break-all` against a max-content `dt` column (packages/web/src/components/ui/Misc.tsx:55-59), so at 360 px the money line, the seller address and the gateway URL all break inside words.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-15-grandchild-operator-d-en-360-buy.png; chain-buy-human-08-child-operator-en-360-buy.png.",
+     "user_cost": "The money line of the page is the least readable element on the device most visitors use, and a buyer of a family reads it three times.",
+     "fix": "Below 480 px stack the `dl` (dt above dd, full width) and keep `word-break: normal` with `overflow-wrap: anywhere` only on the URL.",
+     "effort": "S"
+    },
+    {
+     "n": 296,
+     "title": "An origin that is CHALLENGED or SUPERSEDED looks perfectly healthy in the web Origins tree — the status is a hover title, and the 402 never mentions a replacement",
+     "flow": "A",
+     "audience": "Buyer (human)",
+     "surface": "Knowledge page → Origins & derivatives; `GET /x402/patch/<old parent>`",
+     "severity": "minor",
+     "problem": "`PatchPage.tsx:449` renders each parent as `<TreeNode title={p.status}>` — a tooltip, invisible on touch — while the CLI prints `parents : pixel-parent (SUPERSEDED)` / `(CHALLENGED)` in plain sight. The lineage payload carries no `superseded_by` for a parent, and `requirementsFor` (market.ts:655-666) has no note, so a retired base keeps quoting its old price with nothing pointing at the current version.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-17-child-while-parent-challenged-en-1280-lineage.png (parent shown with no status while `patch ls` says CHALLENGED); chain-buy-human-27-superseded-parent.txt (child's tree unchanged, `GET /x402/patch/pixel-parent` still 402s for 5 CREDIT; `patch get` on the CLI does say SUPERSEDED).",
+     "user_cost": "The buyer completing a family a day later pays for a retired base and is never pointed at the current one; a buyer of an add-on cannot see that its foundation is under dispute.",
+     "fix": "Add `status` and `superseded_by` to each entry of `lineage.parents`, render them as visible chips in the Origins tree and as a Buy-tab note ('built on pixel-parent, replaced by pixel-parent-v2 · 9 node credit'), and add the same `note` to the 402 requirement of a SUPERSEDED anchor. Do not gate the child's sale on the parent's status — the child passed its own verification.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "B. Purchases triggered by teaching",
+   "description": "Acquiring a base so you can teach on top of it, and what the teacher is told about price, share and payment.",
+   "items": [
+    {
+     "n": 297,
+     "title": "To teach on top of a knowledge this node does not hold there is no way to get it: the picker hides it, the CLI says 'unknown knowledge', and a visitor cannot buy at all",
+     "flow": "B",
+     "audience": "Derivative creator (visitor and terminal)",
+     "surface": "Live test / Teach knowledge picker; `GET /api/chat/patches`; `ainize teach train --patch <id>`; `POST /api/patches/:id/buy`",
+     "severity": "critical",
+     "problem": "`testablePatches` returns only entries whose body is already in the blob store (market.ts:1034-1038), so the picker silently omits every knowledge the node has not fetched — no greyed row, no price, no link. `contextTargets` answers `invalid: this node does not hold the body of X` when the anchor is known and `invalid: unknown knowledge X` — the same wording as a typo — when it is not (packages/node/src/teach.ts:559-561); `chat` says 'buy it first' (market.ts:812). Buying is operator-only (`requireOperator` on `/api/patches/:id/buy`, api.ts:330), so a visitor has no way to buy, to request, or even to learn that the knowledge exists elsewhere, and the operator is never told anyone wanted it.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-24-train-on-unheld-body.txt (`error: invalid: this node does not hold the body of pixel-parent-c`); teach-triggered-18-train-on-unknown-id.txt (`error: invalid: unknown knowledge krx-all-2761`); chain-buy-human-24-teach-lineage-price.txt (`/api/chat/patches` on node-e lists only its two purchases).",
+     "user_cost": "The chained purchase the whole product is built around — I want to extend X, so someone buys X — has no first step on screen. Meanwhile a node that verified X holds it for free (327), so the only people asked to acquire a base are those who cannot.",
+     "fix": "Return unheld verified entries from `/api/chat/patches` with `held:false, price, gateway_url` and render them disabled with 'Not on this node — Buy (5 node credit) to test or teach on it'; split `contextTargets`' error into three cases (unknown id / known but not held, with the seller and price / sold elsewhere, with the node URL); add `POST /api/teach/requests {patch_id}` writing a `teach` event and a badge on the operator's Teaching tab ('3 visitors asked to build on pixel-parent-c · Buy 8 CREDIT').",
+     "effort": "M"
+    },
+    {
+     "n": 298,
+     "title": "The teach node that is actually deployed has no verifier peers: 136 lessons, up to 75 hours old, all told 'it goes on sale when 2 agree'",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "PublishSheet done state (`teach.pub.done_auto`); /teacher/<addr>; node-u :3422",
+     "severity": "critical",
+     "problem": "The sheet promises 'Announced. Independent verifier nodes are now checking it on the real model; it goes on sale when {quorum} agree' (packages/web/src/i18n/pages/teach.ts:162) without ever reading `/api/info`. node-u has quorum 2, roles [seller, serving] and zero peers, so no attestation can ever arrive and self-attestation does not count (catalog.ts:133-136). The teacher page shows 'Registered · awaiting verification' with no age and no verifier count. (Item 147 reported the CLI publish message; the visitor door and the stranded catalogue are new.)",
+     "evidence": "Live today on :3422: `/api/info` peers 0, counts listed 0 / verifying 136, `/api/nodes` 1 node, anchor ages 46.9–75.4 h, 62 of the 136 carry a CREDIT price; packages/e2e/results/ux4/teach-triggered-39-nodeu-never-listed.txt; teach-triggered-37-nodeu-teacher-never-listed-en-1280.png.",
+     "user_cost": "Teachers set a price, consent to a permanent public record and wait for sales that cannot happen. The price/payout/consent ceremony is theatre on the node that is actually deployed for teaching.",
+     "fix": "Before the sheet submits, read `/api/info` (peers with the verifier role vs quorum); if fewer than quorum, replace the price/payout block with 'This node has 0 verifier peers and needs 2 to put anything on sale — your lesson will be recorded but cannot be sold here' and require an explicit 'publish anyway'. On the teacher page and in `teach status`, show 'awaiting verification for 75 h · 0 of 2 verifiers have looked · this node has no verifier peers' from `created_at` and the peer list.",
+     "effort": "M"
+    },
+    {
+     "n": 299,
+     "title": "On a local-ledger node the teacher prices in play money and is later shown '4.9 CREDIT Paid' for credit a browser key can never spend",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "PublishSheet price field; /teacher/<address> earnings; the payout radio 'My own wallet address'",
+     "severity": "critical",
+     "problem": "`price.credit_note` ('node credit = development play money (no real value)', packages/web/src/i18n/common.ts:57) is used by the picker, the patch list and the operator surfaces — never by PublishSheet.tsx or TeacherPage.tsx (grep). The sheet says 'Price per download (CREDIT) — 0 = free' and offers an AIN wallet address on a node that settles in credit; the teacher page then reports Owed/Paid and 'settled as node credit' (teach.ts:1799 marks local-credit rows paid unconditionally). `creditBalance` grants every unseen address 100 CREDIT (market.ts:670-680), so 'Paid' is a bookkeeping line on one node's ledger with no spend path.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-05-sheet-text.txt (no play-money note); teach-triggered-17-teacher-after-sale-en-1280.png ('4.9 CREDIT Paid · settled as node credit'); teach-triggered-23-x402-buy-lesson3.txt (a fresh browser key bought the lesson); node-u today: 62 of 136 lessons priced in CREDIT.",
+     "user_cost": "A teacher believes they earned money, entered a wallet address that will receive nothing, and cannot move, spend or verify the number anywhere.",
+     "fix": "When `info.ledger.kind === 'local'`, render `price.credit_note` under the sheet's price field and in the teacher-page header, relabel 'Paid' as 'Credited on node-a (not withdrawable)', and hide or explain the AIN wallet option; on AIN nodes say 'paid as an AIN transfer to {address}' and show the tx hash per row.",
+     "effort": "S"
+    },
+    {
+     "n": 300,
+     "title": "The 'builds on' tick is eleven words: no rate, no creator's name, no 'forever' — and the trainer never loads the base it credits",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "Live test → Teach basket checkbox (`teach.basket.builds_on`); the policy line above it",
+     "severity": "major",
+     "problem": "The checkbox reads 'This builds on the knowledge I have loaded (its creators share in sales)' (packages/web/src/i18n/pages/teach.ts:45) and the policy line above it carries queue and timing but no money. Parents reach the trainer only as contrast samples (`contrast: await this.parentSamples(job)`, teach.ts:1227), so the tick is a permanent royalty declaration with no technical dependency — and the sheet later prints a share that the tick itself changes (301).",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-16-basket-en-1280.png / -ko-360.png ('Loaded now: Pixelplus ticker code (parent)' then the bare tick); teach.ts:1222-1236; design F1/F2.",
+     "user_cost": "The creator's biggest revenue decision is made from a label that names neither the rate nor the person; the ancestor's biggest income line depends on a box most people leave unticked because nothing says why they would tick it.",
+     "fix": "Render under the tick, from `/api/teach/policy.shares` and the loaded entries: 'pixel-parent's creator (node-a 0xa4Ab…) will receive 30 % of every sale of this lesson, forever; you keep 49 %, node-a 21 %.' Put the same two numbers on the policy line, and add 'Your lesson is trained on its own — buyers do not need the base' until on-top training ships.",
+     "effort": "S"
+    },
+    {
+     "n": 301,
+     "title": "'You receive 70 % of every sale' survives on four surfaces after the publish sheet — the public page tells buyers the data provider gets 70 % of a sale that pays them 49 %",
+     "flow": "B",
+     "audience": "Derivative creator · Buyer (human)",
+     "surface": "READY card; public knowledge page 'Data provider: … (70 %)'; operator Teaching settings; /teacher/<addr>",
+     "severity": "major",
+     "problem": "`royaltySplit` pays the lineage pool first and carves the contributor share from the fixed remainder (packages/core/src/catalog.ts:288-296), so a lesson built on a listed knowledge pays 0.7 × 0.7 = 49 %. Item 186 covers the publish sheet; the same raw config number is printed by `teach.res.publish_body` (teach.ts:549), by the knowledge page's `detail.people` ('Data provider: UX4 Teacher (70 %)', packages/web/src/i18n/pages/teach.ts:235 via PatchPage.tsx:175) and by the operator's Teaching settings ('Data-provider share of each sale: 70 % — the rest stays with this node'). Only README.md:60 says '70 % of the node's share'.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-23-x402-buy-lesson3.txt (`royalty {node-c 3, teacher 4.9, node-a 2.1}` on a 10 CREDIT sale); teach-triggered-27-lesson3-page-en-1280.png; teach-triggered-32-dashboard-teaching-en-1280.png.",
+     "user_cost": "The buyer reads a public record naming a share nobody is paid, and the teacher sees 4.9 on the earnings page with no explanation of where the other 2.1 went.",
+     "fix": "Add `effective_share` to the patch detail (computed with `royaltySplit` on a unit sale) and render that everywhere a share is shown; change `op.teach.settings.share` and `teach.res.publish_body` to 'of what is left after the network's creator share', printing both numbers; add a unit test asserting the sheet's figure equals `royaltySplit(entry, map, 10, 0.3)[contributor]`.",
+     "effort": "S"
+    },
+    {
+     "n": 302,
+     "title": "Verifying someone's knowledge silently grants the right to host it as a teaching base and sell derivatives — and a licence cannot say no",
+     "flow": "B",
+     "audience": "Ancestor creator · Seller node",
+     "surface": "`mayDownload` verifier exemption; `contextTargets`; the publish form's licence field",
+     "severity": "major",
+     "problem": "A verifier fetches every announced body (verifier.ts:95) and `mayDownload` keeps it free forever (market.ts:645-656); `contextTargets` accepts any entry whose body is held (teach.ts:555-565), so a verified body becomes a teaching base on that node, and derivatives sell there with the base's creator receiving only the 30 % lineage share. That may be the intended bargain, but no page states it: the publish form's licence is free text (item 161) with no `derivatives` flag, the verifier's operator is not told the role grants it, and the base creator's page shows no purchase by that node.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-15-chain-parent-on-node-c.txt + teach-triggered-23 (node-a verified pixel-parent-c, never bought it, hosted it as a base, sold the derivative and kept 21 %); code at HEAD market.ts:645-656, teach.ts:555-565.",
+     "user_cost": "Creators cannot reason about whether to sell bodies, lineage or both; verifiers do not know what the role entitles them to; and 'no derivatives' cannot be expressed at all.",
+     "fix": "State the rule where the decision is made — the publish form ('verifier nodes will hold this file and may host it as a base for visitor lessons; you receive 30 % of each derivative sale'), the verifier's Teaching tab, and the terms — and replace the free-text licence with the closed list L0 already added (types.ts:99) plus a `derivatives: allowed | credit-only | none` flag that `contextTargets` enforces.",
+     "effort": "M"
+    },
+    {
+     "n": 303,
+     "title": "A one-fact lesson that ships 2,992 of its base's rows is verified 2/2 and sold as new; nothing anywhere counts the rows it did not add",
+     "flow": "B",
+     "audience": "Buyer (human) · Ancestor creator",
+     "surface": "Taught lesson page ('2,992 Memory entries · 1 Facts'); verifier attestations; `teach.ts` stub trainer",
+     "severity": "major",
+     "problem": "The stub backend copies the fixture body whenever a correction mentions the fixture subject (teach.ts:1375-1388), and no verifier or catalogue field records how much of a child's body is its parents' — L1 added `derivation.added_rows/changed_rows` and `base.pre_state_sha256` to the anchor (types.ts:159-176) but nothing computes or checks them. The page prints both numbers side by side with no comment; the design's own F3 says a real `--init-patch` build is a squash of parent rows plus new rows, so the disclosure matters beyond the stub.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-27-lesson3-page-en-1280.png; teach-triggered-29-manage-lesson3-en-1280.png (overlap 'pixel-parent-c · 2,992 memory entries'); critique4-02-resold-copy-supersedes-the-original.txt (both verifiers PASS a byte-identical body with 'integrity=sha256 ok').",
+     "user_cost": "A buyer pays 10 for what is functionally the 8-credit base plus one fact; the base's creator is paid 30 % of a sale that resold their whole file.",
+     "fix": "Have the verifier record `rows_shared_with_parents` (address-set intersection with each parent body it holds) in the attestation and populate `derivation.added_rows`; render '2,992 of 2,992 rows are identical to pixel-parent-c' on the page and in `patch get`; refuse to list a child ≥95 % identical to a parent unless it declares `derivation.kind: 'update'`.",
+     "effort": "M"
+    },
+    {
+     "n": 304,
+     "title": "A lesson the network rejects reaches its teacher as two words — 'Failed verification' — with no score and no way to try again",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "/teacher/<address> lesson rows; the lesson page after announce",
+     "severity": "major",
+     "problem": "`teacherProfile` puts only `status` on each lesson row (teach.ts:1784) and the teacher page renders 'Failed verification'. The scores do exist one click away on the public knowledge page's Verification tab (PatchPage.tsx:400-416, 'node-b FAIL 1/2'), but no surface names the question that failed (attestations carry scores, not prompts), nothing offers a retrain, and the consent text has just told the teacher the record is permanent.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-08-teacher-rejected-en-1280.png ('Failed verification · 0 · 0 CREDIT'); operator view for the same anchor: `node-b FAIL free_generation=1/2 · node-c FAIL free_generation=1/2 pre_apply=0/2`; teach.ts:1784.",
+     "user_cost": "The teacher's name is attached to a public failure they cannot read or fix, and the only route to a sale is to guess which question failed and start over — spending another day's quota.",
+     "fix": "Put `attestations: [{verifier, passed, score}]` on the teacher's lesson rows and the lesson view, name the failing sample when the verifier can identify it, add a 'Train again with more effort' action that pre-selects that question, and say in one line that the failed record stays public while a new version is listed separately (publisher-side twins: items 155/157).",
+     "effort": "M"
+    },
+    {
+     "n": 305,
+     "title": "A private lesson lives 7 days and nothing renews it when it is used; the only durable outcomes are publishing or a file that needs two 40 GB GPUs",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "KeepPrivateSheet; `teach.draftTtlDays`; `sweepExpired`",
+     "severity": "major",
+     "problem": "`draftTtlDays` is 7 (packages/core/src/config.ts:72) and `sweepExpired` deletes the draft, its files and its tokens (teach.ts:910-920); `expires_at` is set at finish and at reject and never touched again — loading, trying or opening the lesson does not renew it (grep). The sheet is honest about each option ('Not private from the operator', 'link valid for 7 days', 'needs two 40 GB GPUs … no laptop version yet'), but together they mean the free, private path expires while the permanent, monetised one does not.",
+     "evidence": "packages/e2e/results/ux4/teach-triggered-31-keep-private-en-1280.png; config.ts:72; teach.ts:910-920, :1093.",
+     "user_cost": "Work is pushed toward publishing by expiry rather than by choice: a creator who is not ready to publish loses the trained file and spends another day's quota to recreate it.",
+     "fix": "Touch `expires_at` whenever the owner loads, tries or opens the lesson; show 'kept until {date} — renews each time you use it' on the card; send a `teach` event 24 h before expiry with a one-click 'keep another 7 days'; say what happens on day 8 in the sheet.",
+     "effort": "S"
+    },
+    {
+     "n": 306,
+     "title": "When an AIN payout to a teacher fails for good, the teacher sees 'transfer failed — still owed by 0x…' and has no button, no channel and no way to reach the operator",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "/teacher/<address> earnings; `POST /api/me/payouts/:id/retry`",
+     "severity": "major",
+     "problem": "After `maxAttempts` (20) or a restart mid-transfer the row is `failed` (packages/node/src/payouts.ts:100-101, :157) and the teacher page renders `teacher.item.failed` ('transfer failed — still owed by {seller}', teach.ts:270). The retry endpoint is operator-only (api.ts:355), no visitor-callable nudge exists (grep), and nothing badges the operator's console beyond a warn line.",
+     "evidence": "Code at HEAD: payouts.ts:100-118, :152-162; api.ts:355; teach.ts:270, :1800-1806; the AIN payout path exercised in teach-triggered-38-demo-nodec-ain-payouts.json.",
+     "user_cost": "Real money owed to a visitor depends on an operator noticing a warning in an event feed; the visitor's only evidence is a sentence on a page nobody else looks at.",
+     "fix": "Add `POST /api/teach/payouts/:settle_hash/nudge`, signed with the teaching key, that re-queues the row once and writes a `payout` event naming the teacher; badge the operator's Teaching tab ('1 data-provider payout failed · 4.9 AIN'); show the last error and attempt count with an 'Ask the node to retry' button.",
+     "effort": "M"
+    },
+    {
+     "n": 307,
+     "title": "The split a teacher is offered is the node operator's config, take it or leave it — and there is no way to see what another node offers",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "`teach.contributorShare`; PublishSheet split line; /teach policy; Network page",
+     "severity": "minor",
+     "problem": "`contributorShare: 0.7` is a node config value (packages/core/src/config.ts:71) surfaced to the teacher as a fact in `teach.pub.split`; there is no negotiation, no per-lesson override, and no surface anywhere that compares nodes' terms (the Network table shows endpoint/name/address/roles/ledger/model/bodies/tracks/last seen). A teacher choosing where to teach cannot compare shares, prices, quorum or the creator share (368).",
+     "evidence": "config.ts:71; packages/web/src/i18n/pages/teach.ts:156; NetworkPage.tsx:106-128; `/api/info` exposes `royalty_share` but no page renders it comparatively.",
+     "user_cost": "The person contributing the data has no lever and no market: the only variable they control is whether to publish at all.",
+     "fix": "Expose `shares` and `royalty_share` per node in `/api/nodes` and the Network table, add a 'Terms' line to the teach policy card ('this node keeps 30 % of your sales; the network's creator share is 30 %'), and let the operator offer a per-lesson share the teacher signs alongside the payout address.",
+     "effort": "S"
+    },
+    {
+     "n": 308,
+     "title": "On the data provider's own page the lesson's gross 'Revenue' sits three lines above 'Your share'",
+     "flow": "B",
+     "audience": "Derivative creator",
+     "surface": "/teacher/<address> — 'Taught knowledge' vs 'Earnings'",
+     "severity": "minor",
+     "problem": "`teacherProfile.lessons` copies `e.revenue` — the sum of sale amounts (catalog.ts:142) — into a column headed `teacher.h.revenue` ('Revenue' / '매출', teach.ts:254), while the earnings table below is headed `teacher.h.amount` ('Your share').",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-14-teacher-page-as-ancestor-ledger-en-1280.png ('Revenue 10 CREDIT' above 'Your share 3 CREDIT').",
+     "user_cost": "The page that exists to show what a teacher earned opens with a number that is not what they earned.",
+     "fix": "Rename the column 'Sales total' and add a 'Your share' column summing that lesson's earnings rows — one word per number, the same word on both tables.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "C. Royalties and payouts",
+   "description": "The money that is supposed to reach every creator in a chain: the split, the transfer, and the screens that claim it happened.",
+   "items": [
+    {
+     "n": 309,
+     "title": "One creator spelled two ways is paid once: 3 of 4.5 AIN never leaves the seller, and on a local ledger the rest lands on a string no wallet matches",
+     "flow": "C",
+     "audience": "Ancestor creator · Data provider",
+     "surface": "`royaltySplit` → settle.royalty → `payouts.enqueue` / `creditBalance` / `/api/me/wallet`",
+     "severity": "critical",
+     "problem": "A data provider is stored with the address as typed (`validateContributors` lower-cases only for the duplicate check, catalog.ts:191-201) while the same person as an ancestor author is keyed by their checksum address; `royaltySplit`'s `add()` sums by raw string (catalog.ts:266, 273-296) and `same()` is used only against the seller/author. `payouts.enqueue` then de-duplicates per `(settle_hash, lower(address))` (packages/node/src/store.ts:545-548, payouts.ts:64-76), so the second spelling silently finds the first row and is skipped; on a local ledger `creditBalance` and `/api/me/wallet` compare exactly (`addr === address`, market.ts:676; api.ts:345), so the credit is invisible and unspendable.",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-02-buy-chain-x402.txt (one sale's map: `{0x538b…ee43: 1.5, 0x538b…Ee43: 3}`); seller-royalties-anc-04-payout-case-collapse.txt (real Store+Payouts with a fake wallet: 'node-c owed 4.5 AIN … would receive 1.5 AIN'); seller-royalties-anc-03-who-sees-what.txt (owed 26.15, balance +19.15, wallet lists 9.15). Re-verified at HEAD after the §11 pass-2 fix.",
+     "user_cost": "The person who contributed the data is paid a third of what the public record says they are owed, and no screen on either node shows a discrepancy.",
+     "fix": "Normalise at the boundary: lower-case (or EIP-55) `c.address` in `validateContributors` and `entry.anchor.author` inside `add()`; compare case-insensitively in `creditBalance`, `/api/me/wallet` and `teacherProfile`; sum folded keys in `payouts.enqueue` before inserting; fold keys when reading historical settle records. Unit test: a royalty map with one address in two cases produces one payout row with the summed amount.",
+     "effort": "S"
+    },
+    {
+     "n": 310,
+     "title": "A sale whose lineage does not resolve on the seller's node pays the seller 100 % and no record says why — 3 of 37 demo sales did exactly that",
+     "flow": "C",
+     "audience": "Ancestor creator",
+     "surface": "`royaltySplit` ancestor walk; `settlePayment`",
+     "severity": "critical",
+     "problem": "The walk skips a parent the seller's map does not hold, with no trace (`const e = all.get(id); if (!e) return;`, catalog.ts:249-252), so the pool is 0 and the whole price goes to the seller; the settle record broadcast to every peer looks like a normal sale. The defensive branch below does the same in the other direction: if the split ever exceeded the price the seller would be paid alone and only its own log would know (market.ts:611-615).",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-16-demo-ain-reconciliation.txt (the first three qa-royalty-child sales, 08-31 06:37–07:33, settled `{node-c: 10}`; all 34 later ones `{node-a: 3, node-c: 7}`) — 9 AIN of the ancestor's money, silently; commit 76d106d fixed one trigger (visibility:test anchors), not the silent fall-through.",
+     "user_cost": "An ancestor loses their share whenever the seller's node is briefly out of sync with the parent's anchor, and nothing — not the record, not the wallet, not an event — marks those sales as unresolved.",
+     "fix": "Resolve every id in `anchor.parents` before pricing: if any is missing, either refuse with `503 lineage_unresolved: [ids]` or settle with `royalty_unresolved: {id: amount}` and enqueue those amounts against `parent_authors[i]` (the anchor carries the author). Make the over-distribution branch write an `error` event and a failed payout row instead of rewriting the split, and show both states on the seller's payouts screen.",
+     "effort": "M"
+    },
+    {
+     "n": 311,
+     "title": "The ancestor's wallet reports the seller's promises as money received: 34 payments and 102 AIN on one screen, 29 payout rows on the seller's, 8 transfers on the chain",
+     "flow": "C",
+     "audience": "Ancestor creator",
+     "surface": "Account → Wallet → 'Creator revenue share received'; `ainize wallet`; `GET /api/me/wallet`",
+     "severity": "critical",
+     "problem": "`/api/me/wallet` builds `royalties` from settle records naming this address — `{patch_id, amount, created_at}` and nothing else (api.ts:345). Whether the money moved is knowable only from the SELLER's local `payouts` table (payouts.ts), which the ancestor cannot see, and on AIN the transfer happens later, from the seller's wallet, keyed by a push id with no link to the settlement (314). The product already solves this shape for teachers — `teacherProfile` reports owed/paid/pending per settle with the seller named and says 'recorded by {seller} — this node cannot see that transfer' (teach.ts:1792-1817, TeacherPage.tsx:92-94) — and the wallet does not use it.",
+     "evidence": "Reproduced today on the demo cluster: qa-royalty-child has 37 settles (34 with a 3 AIN line to node-a); node-a's wallet lists 34 royalty rows = 102 AIN; node-c's `/api/me/payouts` has 29 rows, all 'paid'; the chain's `/transfer/<node-c>/<node-a>` path holds 8 entries; `ain_getTransactionByHash` on node-c's stored hashes returns null. packages/e2e/results/ux4/seller-royalties-anc-16-demo-ain-reconciliation.txt, critic-b-02/03.",
+     "user_cost": "The one number that tells a creator whether sharing pays is a claim written by the party that owes the money, with no paid/pending/unverifiable state — and no screen anywhere can reconcile the three totals.",
+     "fix": "Reuse `teacherProfile`'s logic for `market.address` in `/api/me/wallet` and `ainize wallet`: per row `{patch_id, via: <my ancestor id>, seller, buyer, amount, state}` where state is `credited` (local), `confirmed` (a matching chain transfer from that seller), `reported` (the seller's payout endpoint says paid) or `unconfirmed (N days)`; totals for owed / confirmed / unconfirmed; add a public signed `GET /p2p/payouts/:settle_hash` so the ancestor's node can ask.",
+     "effort": "M"
+    },
+    {
+     "n": 312,
+     "title": "The training set that makes a knowledge worth 25 AIN is a free download, and the promise that buys it — 'I am building on this' — is never checked",
+     "flow": "C",
+     "audience": "Ancestor creator · Seller node",
+     "surface": "`POST /api/patches/:id/derive-intent`; `GET /p2p/dataset/:sha`; `GET /api/patches/:id/dataset/rows`; the teach PublishSheet",
+     "severity": "critical",
+     "problem": "L1 publishes the questions and answers a knowledge was trained from as a served blob with an access level (packages/node/src/market.ts:550-580, api.ts:223-245). `deriveIntent` costs nothing: any teaching key gets a 24-hour token for the full set, the only side effect is a `derive_fetches` counter (market.ts:574-581), and nothing later checks that the child declared the parent or paid anything; verifiers are exempt unconditionally (market.ts:558-563). The default when a publisher says nothing is `derivative` (teach.ts:2066) — and the publish sheet has no access control and no sentence about it: it sends name/description/price/license/payout/consent only (packages/web/src/components/chat/PublishSheet.tsx:61-70).",
+     "evidence": "Code at HEAD: market.ts:550-581, teach.ts:2066, api.ts:223-245, PublishSheet.tsx:61-70, docs/lineage-teach-design.md §6.1/§6.4.",
+     "user_cost": "The paid asset is the rows; the rows are free to anyone who says the right word. A creator who priced their knowledge at 25 AIN has given away the material to retrain it, and was never asked; the honest derivative who declares lineage and pays 30 % competes with the one who took the same file and declared nothing.",
+     "fix": "Tie the derive token to a commitment: record `{parent_id, child_key, at}` as a `derive` record, and require any anchor whose dataset lists that parent to name it in `parents[]`; make `derivative` access mean 'available to a knowledge that declares this parent', not 'available on request'. Put the access level in the publish sheet with one sentence and a default of `private` unless the teacher opts in, and show 'training set: public / derivative / private' on the knowledge page next to the price.",
+     "effort": "M"
+    },
+    {
+     "n": 313,
+     "title": "Payout rows exist only in the seller's SQLite and are never rebuilt from the record: five demo settles owe 3 AIN each and no row anywhere knows it",
+     "flow": "C",
+     "audience": "Ancestor creator · Seller node",
+     "surface": "`payouts.enqueue` (called once, inline with the sale); `ainize payouts`",
+     "severity": "major",
+     "problem": "`enqueue` is called once from `settlePayment` (market.ts:629) and there is no reconcile pass anywhere (grep finds only the OpenAPI description text). A settle written before the payouts table existed, a wiped data dir, or a crash between `ledger.append` and `enqueue` leaves a public debt with no row — so no retry, no 'failed', nothing. `enqueue` is already idempotent per `(settle_hash, address)`.",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-16b-nodec-payout-rows.txt (rows 1–29 start at 09-01 00:00:43) against 34 royalty-bearing settles — the five from 08-31 have no row at all.",
+     "user_cost": "15 AIN owed to the demo's ancestor is unrecoverable by any button in the product; an honest seller cannot pay a debt the product forgot.",
+     "fix": "At start and on a timer, walk this node's own `ain-transfer` settle records and call `enqueue` for each (idempotent), then `processPending`; add `ainize payouts reconcile` and log 'N rows recovered from the record'. Since settles are the shared source of truth, a missing row then becomes impossible rather than merely unlikely.",
+     "effort": "S"
+    },
+    {
+     "n": 314,
+     "title": "Nothing links a settlement to the payout that honoured it: the creator's share is an unreferenced transfer from the seller's wallet, after the fact",
+     "flow": "C",
+     "audience": "Ancestor creator · Network participant",
+     "surface": "settle record → `payouts` → AIN `/transfer/<seller>/<to>`",
+     "severity": "major",
+     "problem": "The buyer pays the seller in full (`payTo` is the node, market.ts:551); the seller writes the settle with the royalty map; a background runner then sends one transfer per address (payouts.ts:93 → `ain.wallet.transfer({to, value, nonce:-1})`, packages/core/src/ain-ledger.ts:253-257) with no memo and no key tying it to the settle hash, and no `payout` record is appended to the shared ledger. `recordAccess` is written by the buyer for the purchase only (market.ts:815).",
+     "evidence": "seller-royalties-anc-16-demo-ain-reconciliation.txt (34 reported / 29 seller-claimed / 8 in chain state, unreconcilable by anyone); code at HEAD payouts.ts:93, ain-ledger.ts:253-257.",
+     "user_cost": "The landing page's promise — 'payments and creator revenue share settle on the AI Network automatically' — is true for the purchase and unverifiable for the share. A creator has no evidence to dispute a seller, and an honest seller has no evidence to show.",
+     "fix": "Use the settle hash as the transfer key (`/transfer/<seller>/<to>/<settleHash>`; ain-js accepts an explicit key — `transferKeyFor` already exists in packages/core/src/x402.ts:51 and is unused) and append a `payout {settle_hash, to, amount, tx_hash}` record so any node can join settle ↔ payout; show 'confirmed on chain' vs 'seller-reported' in the wallet (311). Longer term let the 402 carry several `payTo` lines so the buyer pays each recipient directly.",
+     "effort": "L"
+    },
+    {
+     "n": 315,
+     "title": "Creator payouts have no home except a tab about taught lessons, and its local-ledger notice describes something the code never does",
+     "flow": "C",
+     "audience": "Seller node",
+     "surface": "My knowledge → Teaching → Payouts; `ainize payouts ls`",
+     "severity": "major",
+     "problem": "The only payouts screen is TeachingTab.tsx:310-345, headed 'Data-provider shares this node owes from sales of taught lessons' (packages/web/src/i18n/pages/operator.ts:558) — yet the same table is where lineage royalties to other nodes appear. Its local-ledger alert says payouts 'are only recorded here and stay pending until it runs on the AI Network' (operator.ts:571), while `settlePayment` enqueues only for `ain-transfer` (market.ts:625-631): on a local ledger nothing is recorded at all.",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-07-payouts-under-teaching-en-1280.png ('No payouts yet — they appear when a taught lesson sells · Owed 0' after three sales owing 12.3 CREDIT to two other nodes); seller-royalties-anc-03-who-sees-what.txt (`payouts ls` → '(none)').",
+     "user_cost": "A seller with no teaching activity has no idea the node owes other creators anything, and an operator on a local ledger is told money is pending that was in fact credited instantly.",
+     "fix": "Move Payouts to Account → Wallet under 'What this node owes creators and data providers', with a 'why' column ('creator of p-mid' / 'data provider of p-mid'), and keep a filtered copy in Teaching. On a local ledger, derive the same rows from settle records and say 'credited the moment the sale was recorded — nothing to send'.",
+     "effort": "S"
+    },
+    {
+     "n": 316,
+     "title": "The reconciled per-sale earnings view the ancestor needs already exists — at /teacher/<address>, labelled 'Data provider', unlinked from the wallet, counting their own sales and reading only the first spelling of their address",
+     "flow": "C",
+     "audience": "Ancestor creator",
+     "surface": "/teacher/:address (TeacherPage) vs Account → Wallet",
+     "severity": "major",
+     "problem": "`teacherProfile` (teach.ts:1777-1816) walks every settle, matches the address case-insensitively and reports owed/paid/pending/failed with the seller per row — exactly the ancestor's question, for any address, lineage royalties included. But it is reachable only from teach flows, its heading and footer describe a visitor, it counts sales where the viewer is the seller as earnings, `find()` takes only the first matching key (teach.ts:1795 — so the two-spelling case of 309 is undercounted), and 'paid' is known only from the payouts table of the node being viewed.",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-14-teacher-page-as-ancestor-ledger-en-1280.png ('Owed 16.4 · Paid 16.4 · 6 sales' including the viewer's own g-root sale) against the wallet's 19.65 and the ledger's 26.15 — three totals for one person.",
+     "user_cost": "Three surfaces give one creator three answers, and the one closest to right cannot be reached from the wallet.",
+     "fix": "Reuse `teacherProfile.earnings` in `/api/me/wallet` for the node address and any payout address, summing every key that folds to it and excluding rows where the viewer is the seller; render it as the wallet's 'Creator revenue share' table with the per-seller state; link 'see every sale' from the wallet and keep /teacher/ as the public page.",
+     "effort": "M"
+    },
+    {
+     "n": 317,
+     "title": "The wallet's arithmetic does not close: gross sale amounts above a net balance, with no line for what left",
+     "flow": "C",
+     "audience": "Seller node",
+     "surface": "Account → Wallet (Sales, balance blurb); `ainize wallet`",
+     "severity": "major",
+     "problem": "`/api/me/wallet` returns `settlement.amount` per sale (api.ts:344) and AccountPage renders it unchanged (AccountPage.tsx:149-155) under a blurb that says 'initial credit + revenue received − purchases'. Node B's page lists sales of 3, 3, 98, 3 (107) with a balance of 175.5 = 100 + 75.5; the missing 31.5 went to node-a as the creator share and no row says so. (Item 194 covers the gross `revenue` stat on the dashboard and `patch get`; this is the wallet, where the balance sits next to it.) The per-sale split does exist — on the knowledge's Logs page (LogsPage.tsx:79-83).",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-03-who-sees-what.txt (balance 128.35 against sales totalling 40.5); chain-buy-human-20-seller-b-account-notes.json; api.ts:344, AccountPage.tsx:149-155.",
+     "user_cost": "A seller cannot see what declaring a parent costs them per sale, so the first reaction to the split is to distrust the wallet rather than to price the derivative.",
+     "fix": "Return `{amount, mine, shared:[{address, name, amount, role}]}` per sale from `settle.royalty`; render Sales as Amount · Your share · Creator share (to whom) with a totals row and a 'Creator share paid to others: −31.5' line under the balance; print `AMOUNT YOURS SHARED` and `net revenue` in `ainize wallet`.",
+     "effort": "S"
+    },
+    {
+     "n": 318,
+     "title": "A derivative can be listed under its base at any price with no warning and no notice to the ancestor",
+     "flow": "C",
+     "audience": "Ancestor creator",
+     "surface": "`ainize publish --parents`; /new-patch 'Price & source knowledge'",
+     "severity": "major",
+     "problem": "`createDraft` checks only that each parent id is known (market.ts:330-339) and `validatePrice` accepts any non-negative decimal (catalog.ts:170-173). The form's helper says 'Their creators automatically get a share of every sale' — no parent price, no net figure, no floor. Because today's children carry the parent's rows, a 0.5-credit child is the 10-credit parent plus extras; the parent's author gets no event (`noticeOwnEvents` covers challenge/supersede/fail on their own anchors only, market.ts:250-275).",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-01-publish-chain.txt (u-cheap at 0.5 under a 10-credit parent, LISTED) and -02 (its sale paid the grandparent 0.15); seller-royalties-anc-09-new-patch-form-en-1280.png.",
+     "user_cost": "The parent's price is undercut by its own child and their per-sale take drops from 10 to 0.15, discovered only if they happen to open their own knowledge's lineage list. Nothing makes sharing a base safer than hoarding it.",
+     "fix": "At draft and publish show the parents' prices and the computed net ('parent g-root sells at 10; at 0.5 you keep 0.35 and g-root's creator gets 0.15') and warn when the price is below the base's; let an anchor carry an optional `derivative_floor` verifiers enforce on children; emit a `derived` event on the parent author's node when a child naming their knowledge is ingested, and list children with their prices on the ancestor's manage page.",
+     "effort": "M"
+    },
+    {
+     "n": 319,
+     "title": "The ancestor is never told they earned anything, and the 'Notifications: sales only' setting is stored and read by nothing",
+     "flow": "C",
+     "audience": "Ancestor creator",
+     "surface": "Ledger ingest; operator event feed; Account → Notifications",
+     "severity": "major",
+     "problem": "A settle naming this node as an ancestor arrives through gossip and is logged as 'received 1 record(s) via push' (api.ts:878); `noticeOwnEvents` skips every entry whose author is not this node (market.ts:253), so no `royalty` or `derived` event is ever emitted for the recipient. `notifications` appears only in the settings schema (api.ts:462), the getter/setter (market.ts:1102-1110) and the Account form (AccountPage.tsx:22-59) — no reader anywhere. (Item 195 covers the missing attribution on the wallet row; the dead setting and the missing ingest event are new.)",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-03-who-sees-what.txt (node-c's events after four royalty-bearing settles: only p2p push lines); grep for `notifications` across packages/node/src and packages/web/src.",
+     "user_cost": "The signal that should make a creator publish more — 'someone built on this and it paid' — never fires, and the setting that promises it is decorative.",
+     "fix": "On ingest of a settle where `royalty[me] > 0` (case-insensitive) emit `info royalty 'earned 3 CREDIT from c-leaf (sold by node-a)'`; on ingest of an anchor naming my knowledge as a parent emit `info derived`; filter the feed by the notifications setting and badge My knowledge — or remove the setting until it does something.",
+     "effort": "S"
+    },
+    {
+     "n": 320,
+     "title": "A creator's earnings cannot leave the node: there is no send, no withdraw, and `chain fund` works only on a local dev chain",
+     "flow": "C",
+     "audience": "Seller node · Ancestor creator",
+     "surface": "`ainize wallet`; `ainize chain --help`; Account → Wallet",
+     "severity": "major",
+     "problem": "The CLI's money verbs are `wallet` (read-only), `payouts ls/retry` (outgoing royalties only) and `chain fund <address>` — which `chainFund` refuses unless the provider is local (packages/cli/src/commands/chain.ts:103-112). There is no `wallet send`, no withdraw, no export of the key to a wallet app beyond `keys backup`, and the Account page shows a balance with no action. A node that has earned AIN can spend it only by buying other knowledge through the same node.",
+     "evidence": "packages/cli/src/bin.ts:397-404 (the whole money surface); chain.ts:103-112; AccountPage.tsx:133-135 (balance, no action).",
+     "user_cost": "'You get paid per sale' ends at a number on one screen: a creator cannot move earnings to their own wallet, pay a collaborator, or take anything off the node — which also makes the play-money problem (299) indistinguishable from the real one.",
+     "fix": "Add `ainize wallet send <address> <amount>` (AIN ledgers) with a confirm and a tx hash, and an Account action beside the balance; on local ledgers say plainly that the balance cannot leave this node and link the terms.",
+     "effort": "M"
+    },
+    {
+     "n": 321,
+     "title": "The one payout the code refuses to retry automatically reaches the operator as a sentence cut off before the instruction",
+     "flow": "C",
+     "audience": "Seller node",
+     "surface": "`ainize payouts ls`; `ainize status`",
+     "severity": "major",
+     "problem": "`payoutTable` truncates `last_error` to 48 characters (packages/cli/src/commands/branch.ts:76) and `PAYOUT_INTERRUPTED` is 93 ('node restarted during the transfer — confirm on chain whether it went through before retrying', payouts.ts:32) — the half that is removed is the instruction. `recoverInterrupted` sets `attempts = maxAttempts` so the row reads 'failed (gave up)' and `due()` never picks it up; `ainize status` has no payouts line.",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-15-cli-interrupted-payout-render.txt (the rendered row against the full 93-character message); branch.ts:71-77; payouts.ts:32, :152-162.",
+     "user_cost": "The operator either retries blind — risking the double payment the code was written to prevent — or never notices, and the creator on the other node stays unpaid.",
+     "fix": "Never slice `last_error`: print it on its own indented line and, for `PAYOUT_INTERRUPTED`, append the concrete command ('check /transfer/<seller>/<to> on the chain, then `ainize payouts retry N`'). Add 'payouts needing attention: N' to `ainize status` and a banner on My knowledge when `summary.failed > 0`.",
+     "effort": "S"
+    },
+    {
+     "n": 322,
+     "title": "Naming two parents costs exactly what naming one costs, and the rule that decides it lives in a source comment",
+     "flow": "C",
+     "audience": "Derivative creator",
+     "surface": "`ainize publish --parents`; /new-patch form; `royaltySplit`",
+     "severity": "minor",
+     "problem": "The pool is split equally between unique ancestor AUTHORS at any depth, each author's slice is divided among their anchors, and their data providers carve from that slice (catalog.ts:266-296) — so a merge naming p-mid and g-root paid exactly what a plain child naming p-mid alone paid, and a grandparent out-earned the direct parent because the parent had declared a data provider. Nothing user-facing states the rule: `ainize publish` prints no split (item 189) and the form helper says only 'Their creators automatically get a share'. (Item 192 reports the undisclosed inheritance and depth cut; the equal-per-author rule and the free merge are new.)",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-02-buy-chain-x402.txt (m-merge and c-leaf royalty maps identical); seller-royalties-anc-01-publish-chain.txt; catalog.ts:266-296; docs/lineage-teach-design.md §11.",
+     "user_cost": "A creator deciding whether to build on one base or combine two, or whether declaring a data provider is affordable, makes a permanent revenue decision with no number in front of them.",
+     "fix": "Add `GET /api/patches/:id/split` (and `ainize publish --preview`) returning `royaltySplit` for the draft's parents, contributors and price as `[{address, name, role, amount}]`, render it as 'Who gets what per sale' on the form and before the CLI confirm, and state the rule in one sentence in the helper and /docs.",
+     "effort": "M"
+    },
+    {
+     "n": 323,
+     "title": "'royalties received 1' is a count printed where every other line is an amount, and 'Revenue shared with 0xbb98F284…' names neither the person nor the share",
+     "flow": "C",
+     "audience": "Ancestor creator · Buyer (human)",
+     "surface": "`ainize wallet`; Knowledge page → Origins 'Revenue shared with'",
+     "severity": "minor",
+     "problem": "`branch.ts:90-91` prints `['sales', x.sales.length]` and `['royalties received', x.royalties.length]` directly under `balance 100.9 CREDIT`; PatchPage.tsx:455 renders `parent_authors` as short addresses with no name lookup (the same page names the node two lines above) and no share, under a sentence that quotes the viewing node's rate.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-06-cli-buy-child.txt (node-a: 'royalties received 1' above a table whose only amount is 0.9); chain-buy-human-07-child-visitor-notes.json.",
+     "user_cost": "The ancestor misreads what they earned (1 vs 0.9) and a buyer cannot tell who profits from the family they are about to pay into.",
+     "fix": "Print `sales 1 (3 CREDIT)` and `royalties received 0.9 CREDIT (1 payment)`; in Origins render 'node-a (0xbb98…3196) · receives 30 % of each sale' using the tree's own name lookup, and list the whole payee set from `royaltySplit` rather than the direct parents (item 193).",
+     "effort": "S"
+    },
+    {
+     "n": 324,
+     "title": "Declared data providers vanish after publishing: `patch get` never prints them and the knowledge page renders only the first of four",
+     "flow": "C",
+     "audience": "Seller node · Data provider",
+     "surface": "`ainize patch get`; Knowledge page credits",
+     "severity": "minor",
+     "problem": "The publish confirmation lists them ('data providers on the record: dave 50 %', packages/cli/src/commands/patch.ts:168) but the detail renderer has branches for attestations, lineage, conflicts, branches and settlements and none for `anchor.contributors` (patch.ts:47-110). `PatchPage.tsx:153` picks `contributors?.find(c => c.role === 'data_provider')` — the first only, though an anchor may carry four (`MAX_CONTRIBUTORS`, types.ts:84). (Item 198 covers the missing CLI line; the dropped second, third and fourth provider on the web page is new.)",
+     "evidence": "packages/e2e/results/ux4/seller-royalties-anc-01-publish-chain.txt against seller-royalties-anc-03-who-sees-what.txt (`patch get p-mid` with no contributor line); PatchPage.tsx:153.",
+     "user_cost": "A seller checking what its record promises cannot see who will be paid from its share, and a second data provider is invisible to every buyer.",
+     "fix": "Add a 'data providers' block to `patch get` (name, share of the seller's remainder, proof) and render all contributors with their effective share on the knowledge page.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "D. Verification economics",
+   "description": "What it costs to be a verifier, what it returns, and what the badge a buyer pays for is actually worth.",
+   "items": [
+    {
+     "n": 325,
+     "title": "Verifying is unpaid work: 501 attestations and 2,765 AIN of sales on the demo chain, and not one credit has ever reached a verifier",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`royaltySplit`; `settlePayment`; `/api/me/wallet`; `ainize wallet`",
+     "severity": "critical",
+     "problem": "`royaltySplit` distributes a sale between the seller, ancestor authors and contributors only (packages/core/src/catalog.ts:236-306); there is no `verifierShare` anywhere in packages/core or packages/node (grep), and `/api/me/wallet` has sales, royalties, purchases and payouts — no place a verification could appear. Meanwhile the landing page and glossary invite operators to 'take part in verification' (packages/web/src/i18n/pages/public.ts:48, glossary.ts:41) with no word about cost or return. (Item 127 is about the deposit that is never escrowed; this is compensation, which has never existed.)",
+     "evidence": "Recounted from node-b today: 501 attestations (node-b 209, node-c 203), 462 settlements, 2,765.8 AIN of volume, 0 royalty lines naming node-b; packages/e2e/results/ux4/verifier-economy-nodeb-demo-worktime.txt (184 benchmark runs = 54.9 min of exclusive model lock); verifier-economy-demo-nodeb-account-en-1280.png ('0 sale(s) · 0 creator-share payment(s) received' after 203 verifications).",
+     "user_cost": "The role every default node takes (config.ts:188) costs a GPU, ~1 GB of other people's bodies and minutes of model lock per item, and earns nothing. A rational operator turns it off, and the quorum every listing needs disappears with it; the economy has a producer, a buyer, an ancestor, and a fourth party that only pays.",
+     "fix": "Add `market.verifierShare` (default 0.05–0.1) and a third pass in `royaltySplit(entry, all, amount, share, verifierShare, executed)`: carve it from the seller remainder and split it equally among the addresses of the attestations that currently count for that entry (`deriveCatalog` already computes `executed`, catalog.ts:136). They then land in `settle.royalty`, so `payouts` pays them on AIN and `creditBalance` credits them locally with no new code. Surface it: `verification: [...]` in `/api/me/wallet`, an 'earned from verifying' line in `ainize wallet` and on Account, and the rate on /docs and the verification tab. docs/p2p-compute-market-design.md §7.5 already designs the fee and its strikes — this is that design's first half.",
+     "effort": "M"
+    },
+    {
+     "n": 326,
+     "title": "Anyone who says they are a verifier downloads every knowledge body for free — the claim is an unsigned POST, and 91 of 132 node records on the demo chain already make it",
+     "flow": "D",
+     "audience": "Seller node",
+     "surface": "`POST /p2p/hello`; `GET /p2p/blob/:sha`; the chain's `nodes/$addr`",
+     "severity": "critical",
+     "problem": "`mayDownload` exempts any address that carries the `verifier` role either in the chain's self-written node registry (write rule `auth.addr === $addr`, packages/core/src/ain-ledger.ts:318) or in the local peer table (market.ts:645-656) — and the peer table is filled by `POST /p2p/hello`, which takes `endpoint`, `address` and `roles` from an unsigned JSON body (api.ts:861-865). The blob route then honours a signed header from that address. No attestation is required before or after, the exemption never expires, and the 402 text advertises it: 'payment required … (verifiers and authors are exempt)'.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-freerider.txt + .mjs (throwaway key 0x313ec2… → `POST /p2p/hello` 200 → `GET /p2p/blob/<sha>` 200, 3,854,446 bytes for a 5-CREDIT body; control without the hello → 402); verifier-economy-chain-nodes.txt ('nodes on chain 132, claiming verifier 91, distinct endpoints 59'); incentives-network-ns-06 (a never-attesting identity fetching a LISTED 20-credit body).",
+     "user_cost": "Every seller's paid inventory is downloadable for the cost of one HTTP POST, with no record on any ledger. Honest verifiers are the disguise.",
+     "fix": "Sign the hello (require `x-ngram-auth` for purpose `hello:<endpoint>` and use the recovered address, not the body's), and replace the blanket role exemption with a verification lease: a verifier may fetch a body only while the entry is ANNOUNCED/VERIFYING/CHALLENGED and only until it has written a counted attestation for that sha — one fetch per verifier per anchor, logged as an event on the seller. Drop the exemption from the 402 text.",
+     "effort": "M"
+    },
+    {
+     "n": 327,
+     "title": "Possession is licence: apply, live-test, chat and subscribe check only that the file is on disk, so a verifier runs a seller's whole catalogue for free",
+     "flow": "D",
+     "audience": "Seller node",
+     "surface": "`POST /api/patches/:id/apply`; `testablePatches`; `subscribe`; `ainize patch apply`",
+     "severity": "critical",
+     "problem": "`applyPatch` requires `blobs.get(sha)` and a live runtime — no purchase, settlement or authorship test (market.ts:826-838, whose own error says 'buy it first'); `testablePatches` filters on `blobs.has` (market.ts:1034-1038); `subscribe` calls `buy()` only `if (!this.blobs.has(sha))` (market.ts:1108-1112). Verification leaves the body in the store permanently (verifier.ts:95), so every item a verifier ever scored is one `apply` away from production use, free — and a whole track can be subscribed to for nothing. (Item 259 reports the subscribe consequence; the root and the apply/chat surfaces are new.)",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-apply-without-buy.txt (node-b, purchases 0, `patch apply ux4-pixel` → '✓ applied … 끼움: 2992행', `/api/runtime` shows it applied); chain-buy-human-09-verifier-free-copy.txt (node C applies pixel-parent with `purchased:false` and no settle record); chain-buy-agent-14-subscribe-track-grows.txt (node-b subscribes to a track containing a knowledge it verified: purchases 0, balance unchanged).",
+     "user_cost": "The seller's catalogue is deployed and served by peers who never paid, and the seller cannot see who holds it. The only participants who pay are those who do not run a node.",
+     "fix": "Separate possession from licence: a `licenses` table (`patch_id`, source: purchase | author | verification) written by `putPurchase`, `announce` and the verifier; `applyPatch`, `testablePatches`, `chat` and `subscribe` require `hasLicense(patch_id)`, with verification-sourced copies usable only inside `runtime.verify`. Keep the message that already exists ('buy it first') but make it true, and show sellers 'held by N verifier nodes (verify-only)' on Manage.",
+     "effort": "M"
+    },
+    {
+     "n": 328,
+     "title": "A challenge costs nothing, needs no reason, has no limit, and takes a rival off sale for as long as you keep filing them",
+     "flow": "D",
+     "audience": "Seller node · Verifier node",
+     "surface": "`ainize patch challenge`; `POST /api/patches/:id/challenge`; the x402 gate",
+     "severity": "critical",
+     "problem": "`Market.challenge` appends and broadcasts with no rate limit, no cost, no minimum reason and no requirement that the challenger has ever verified or bought anything (market.ts:471-479); the API defaults the reason to 'manual challenge' (api.ts:338). `deriveCatalog` sets CHALLENGED and `sellable:false` immediately (catalog.ts:147-165) and the gateway answers 423, so every sale stops until some other node spends GPU minutes re-running the benchmark — and the challenger may file again the moment it re-lists. The terms present the challenge as the safeguard that replaced the deposit (public.ts:181).",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (challenge at 11:54:50 → 423 within a second; challenger's balance unchanged; 75 s off sale; a second challenge posted with an empty body `{}` accepted as 'manual challenge'); demo chain today: 0 challenges in 1,3xx records.",
+     "user_cost": "Any node can stop any sale at zero cost, indefinitely; verifiers pay the GPU time; buyers see 'Re-verification requested' on a good item — while an honest challenger who is right gets nothing.",
+     "fix": "Make the deterrent procedural: require `reason.length >= 20`, refuse a second challenge by the same address on the same anchor while one is open or within 24 h of a PASS quorum answering it; record the outcome (`upheld` / `dismissed`) and expose per-address counts on `/api/nodes` and the Network page; log a `challenge upheld` event and count it toward the verifier reputation (337); and make the CLI print what a challenge costs others before sending it.",
+     "effort": "M"
+    },
+    {
+     "n": 329,
+     "title": "'2/2 independent verifiers' can be two processes on one host sharing one model server, and the record cannot tell the difference",
+     "flow": "D",
+     "audience": "Buyer (human)",
+     "surface": "Knowledge page 'Verified 2/2 · independent'; `Attestation`; quorum",
+     "severity": "critical",
+     "problem": "Independence is judged only by `verifier !== author` (catalog.ts:133-136). `Attestation` carries `verified_on: 'vllm:<model>'` and no runtime URL, instance or host (packages/core/src/types.ts:140-152), so two verifier processes pointed at one `NGRAM_RUNTIME_API` count as two independent verifications — which is exactly the demo cluster (node-a/b/c all report `http://localhost:8002`). With no stake, the marginal cost of a second identity is a config file. The product's own plan says so: 'one supervisor, one host, one vLLM … presenting them as verified by independent nodes is what the directive forbids' (docs/production-verification-plan.md:21).",
+     "evidence": "All three demo nodes' `/api/info` runtime = http://localhost:8002 (checked today); packages/e2e/results/ux4/verifier-economy-patch-verification-en-1280.png ('2/2 · independent · independent'); verifier-economy-challenge.txt (one attestation carries no `pre_apply` because the patch was already applied by the other run — `wasApplied`, runtime.ts:382-390).",
+     "user_cost": "The buyer's only trust signal — the thing the 402 gate checks before taking money — costs a fraudulent seller one extra process, and honest verifiers' work is indistinguishable from it.",
+     "fix": "Put an executor fingerprint on every attestation: `executor: {api, model, instance: sha256(api+model+mailbox).slice(0,16)}` from `runtime.status()`; count `passed` per distinct instance in `deriveCatalog`, expose `executors`, and render 'Verified 2/2 (1 executor — both ran on the same model server)'. Refuse to attest when `wasApplied` was true unless the verifier can restore first: a result with no baseline of its own should not count.",
+     "effort": "M"
+    },
+    {
+     "n": 330,
+     "title": "A challenge is answered by one re-run from anyone, and the challenger's own pre-challenge PASS fills the quorum that clears its own challenge",
+     "flow": "D",
+     "audience": "Seller node · Verifier node",
+     "surface": "CHALLENGED → LISTED transition; verification tab",
+     "severity": "major",
+     "problem": "`deriveCatalog` holds an entry CHALLENGED only while the challenge is newer than `listed_at`, and `listed_at` is the newest counted attestation (catalog.ts:147-151); `effectiveAttestation` falls back to a verifier's pre-challenge record when it has none after (catalog.ts:51-61). So one new PASS by any node moves the entry past the challenge and the second quorum slot is filled by a stale record — including the challenger's own.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (node-b challenged 11:54:51; node-c alone re-ran at 11:56:06; the item was LISTED 2/2 with node-b's 11:53:42 row still counted, while node-b's own re-run finished only at 11:56:24).",
+     "user_cost": "A seller cannot tell whether a cleared challenge was investigated or merely raced past, and a buyer sees 'Verified 2/2' where one of the two is an attestation its own author has publicly disputed.",
+     "fix": "While a challenge is open, count only attestations newer than it, and never count the challenger's pre-challenge record; mark the challenge `answered` only when quorum is reached that way; show on the verification tab which attestations answered it.",
+     "effort": "M"
+    },
+    {
+     "n": 331,
+     "title": "On the AIN ledger a re-verification overwrites the verifier's earlier attestation — the 'permanent public record' of what it said before the challenge is gone",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`AinLedger.append('attest')`; verification tab after a challenge",
+     "severity": "major",
+     "problem": "Attestations are written to `market/attestations/${patch_id}/${verifier}` with `setValue` and a rule that permits overwrite (`auth.addr === $verifier`, packages/core/src/ain-ledger.ts:230, :315, :366), and the loader reads one value per verifier (:155-157). The item-153 fix relies on `effectiveAttestation` choosing among a verifier's SEVERAL records (catalog.ts:51-61) — which exist only on the local ledger.",
+     "evidence": "Code path at HEAD (not exercised on the shared chain, where publishing is forbidden): ain-ledger.ts:155-157, :230, :315, :366 against catalog.ts:51-61.",
+     "user_cost": "The only asset a verifier accumulates — a signed history it can be held to — is silently rewritable by itself: a PASS that was challenged and re-passed leaves no evidence the challenge was ever answered, and a FAIL→PASS flip leaves no trace.",
+     "fix": "Key attestations by `${patch_id}/${verifier}/${created_at}`, read all children in the loader, and add `data === null` to the write rule so a written slot is immutable; render superseded records greyed on the verification tab as 'superseded by the same verifier on <date>'.",
+     "effort": "M"
+    },
+    {
+     "n": 332,
+     "title": "Verifiers burn GPU on every announced item including hidden test listings nobody can buy: 209 of 213 anchors on the demo chain",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`Verifier.round`",
+     "severity": "major",
+     "problem": "`round` iterates `catalogAll()` — deliberately including `visibility:test` anchors (packages/node/src/verifier.ts:44) — and verifies everything ANNOUNCED/VERIFYING/CHALLENGED (:64-65), with no filter on visibility, price, seller reachability or capacity; the only knob is `intervalMs` (config.ts:207).",
+     "evidence": "Demo chain recounted today: 213 anchors, 209 `test` and 4 `public`; node-b holds 209 attestations; packages/e2e/results/ux4/verifier-economy-nodeb-demo-worktime.txt ('attested-never-sold 190', 184 completed benchmarks, 54.9 min of model lock, max 181 s).",
+     "user_cost": "92 % of the verifier's unpaid work is spent on items that were never for sale — every e2e run of every other agent costs each verifier a download and a benchmark, and a real network would see the same from any spammer.",
+     "fix": "Add `verifier.includeTest: false` (skip `visibility:test` unless set), `verifier.minPrice` and `verifier.maxPerHour` with a per-round budget, and log one line per round: 'skipped N (test), N (budget)'.",
+     "effort": "S"
+    },
+    {
+     "n": 333,
+     "title": "Verification holds the shared model lock ahead of the node's own paying visitors, and the operator has no cap, priority or schedule",
+     "flow": "D",
+     "audience": "Verifier node · Seller node",
+     "surface": "`Runtime.verify` inside `serial()`; live-test queue; `POST /api/chat`",
+     "severity": "major",
+     "problem": "`verify` runs inside the exclusive cross-process lock for the whole run — probe, up to 8 baseline completions, apply, up to 40 completions, restore (packages/node/src/runtime.ts:374-377) — and chat requests that wait it out return `503 shared runtime busy` (api.ts:907). `verifier.intervalMs` is the only knob; there is no budget, no quiet hours and no priority for the node's own tickets. (Item 135 reports the invisible lock and item 244 the bake's competition; the priority and budget are new.)",
+     "evidence": "Measured from node-b's events: avg 17.9 s, max 181 s of exclusive lock per item (verifier-economy-nodeb-demo-worktime.txt); all three demo nodes share http://localhost:8002.",
+     "user_cost": "On a node that both serves and verifies — the default — a visitor's live test, the flow that converts, waits behind unpaid work for a stranger.",
+     "fix": "Give verification the lower priority: defer an item when `runtime.queueState().waiting > 0`; add `verifier.maxModelMinutesPerHour` (default 10) and an optional window; show the budget on the verification card (335) so the operator can see why an item waits.",
+     "effort": "M"
+    },
+    {
+     "n": 334,
+     "title": "Nothing tells a new operator what verifying will cost them — `init` silently makes every node a verifier and no page in the product mentions the bill",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`ainize init`; /docs; README; the landing operator card",
+     "severity": "major",
+     "problem": "`init` defaults roles to seller,verifier,serving and `verifier.auto` to true (packages/core/src/config.ts:188, :207) and prints only 'roles seller, verifier, serving'. /docs has five sections — one-line, CLI, bench.json, REST API, x402 — and none about running a verifier (packages/web/src/i18n/pages/docs.ts:4-30); the landing operator card says 'Run a node to sell knowledge and take part in verification' (public.ts:48).",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-init.txt; node-b on the demo holds 932 MB of other people's bodies after 203 verifications while its dashboard says 'No knowledge yet'.",
+     "user_cost": "The operator discovers the cost after the fact — a gigabyte of strangers' files, minutes of model lock while their own visitors wait, and nothing in the wallet.",
+     "fix": "In `init`, when the verifier role is on, print three lines: what it fetches, what it locks, what it earns (`verifierShare` or 'nothing today'), and how to turn it off. Add a '/docs: running a verifier' section fed by `/api/info` (quorum, share) and put the same sentence on the landing operator card.",
+     "effort": "S"
+    },
+    {
+     "n": 335,
+     "title": "The operator console shows verification as no work at all: 203 attestations and the dashboard says 'No knowledge yet'",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "Dashboard; Account; `ainize status`; `ainize logs --kind verifier`",
+     "severity": "major",
+     "problem": "`DashboardPage.tsx` renders own knowledge, purchases and tracks only (no `attest` anywhere in the file); Account shows 'Roles: verifier' and the quorum rule; `ainize status` prints `blobs held N` with no attestation count, model time, disk figure or outcome. The only record is one log line per start and one per benchmark, without durations.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-demo-nodeb-dashboard-en-1280.png ('No knowledge yet — register your first one' on a node with 203 attestations); verifier-economy-nodeb-console.txt.",
+     "user_cost": "The operator cannot answer 'what did my node do this week, what did it cost, what came back' — the three questions that decide whether the role stays on. Nor can they see that 0 of 501 attestations on the whole network was a FAIL.",
+     "fix": "Add `GET /api/me/verification` → `{attested, passed, failed, hash_only, model_seconds, disk_bytes, sold_after_verification, earned}` from `ledger.attestations()`, the `verifying → benchmark` event pairs and `blobs.list()`; render it as a card at the top of the dashboard for nodes with the role and a line in `ainize status`.",
+     "effort": "M"
+    },
+    {
+     "n": 336,
+     "title": "Verified bodies are never released: nothing purges them, there is no retention setting, and the seller cannot see who is holding what",
+     "flow": "D",
+     "audience": "Verifier node · Seller node",
+     "surface": "`Verifier.verifyOne` → `ensureBlob`; blob store; `ainize status`",
+     "severity": "major",
+     "problem": "`ensureBlob` stores every verified body (verifier.ts:95) and the only `blobs.remove` in the product is in `patch forget` (market.ts:628) — no TTL, no `verifier.retainBodies`, no post-attestation cleanup. The manifest knows the holder set (`p2p.holders`, market.ts:747) but no seller-facing surface shows it.",
+     "evidence": "node-b on the demo: 932 MB under data/blobs after 203 verifications, none purchased (verifier-economy-nodeb-demo-worktime.txt); grep for retain/prune/purge in packages/node/src returns nothing. (Item 128 reports that disk use is not shown; the absence of any retention policy, and the seller's blindness, are new.)",
+     "user_cost": "A verifier's disk grows without bound with files it may not use once 327 lands, and a seller can never tell replication from an unpaid copy.",
+     "fix": "After a counted attestation, drop the body unless the node authored or bought it (`verifier.retainBodies`, default false); report bytes held and released in `ainize status` and on the verification card; show sellers 'held by N nodes (verify-only)' from `p2p.holders` on Manage.",
+     "effort": "S"
+    },
+    {
+     "n": 337,
+     "title": "Verifiers have no reputation surface: no page, no counts, no fail rate, no challenge history — so a result cannot be weighed and care cannot be rewarded",
+     "flow": "D",
+     "audience": "Buyer (human) · Verifier node",
+     "surface": "Verification tab verifier column; /network; `ainize nodes`",
+     "severity": "major",
+     "problem": "The verification tab prints `verifier_name` and a short address with no link (PatchPage.tsx:405); the Network table has endpoint/name/address/roles/ledger/model/bodies/tracks/last-seen (NetworkPage.tsx:106-128); `/api/nodes` returns PeerInfo. There is a `/teacher/:address` route and no `/verifier/:address` (App.tsx:72). Nothing aggregates attestations, FAILs, challenges raised or attestations later challenged.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-demo-network-en-1280.png (seven throwaway node-d identities on one endpoint, all 'verifier', indistinguishable from a node with 200 attestations).",
+     "user_cost": "A buyer weighs 'node-b · Passed' exactly as heavily as a key created five minutes ago, and a verifier that does careful work cannot be told from one that has never failed anything — so there is no reason to be careful.",
+     "fix": "Add `/verifier/:address` and `GET /api/verifiers/:address` computed from the ledger (attested / passed / failed / hash-only / executors / challenges raised and upheld / attestations later challenged); link the verification tab's verifier cell to it; add Attested and Failed columns to the Network table and `ainize nodes`, and collapse duplicate endpoints into one row.",
+     "effort": "M"
+    },
+    {
+     "n": 338,
+     "title": "The safeguard that replaced the deposit has never fired: 501 attestations, 0 FAIL, 0 challenges — and no screen says so",
+     "flow": "D",
+     "audience": "Buyer (human)",
+     "surface": "Verification tab note; /terms 2.3; README 'What Verified is and is not'",
+     "severity": "major",
+     "problem": "After item 127 the product honestly says nothing is escrowed and points to challenges as the check (packages/web/src/i18n/pages/detail.ts:165, public.ts:181, README.md:131). Because a challenge pays nothing (328) and a wrong PASS costs nothing (325, 337), the mechanism has no reason to fire — and no surface shows the base rate that would let a reader judge a 100 % pass rate.",
+     "evidence": "Demo chain recounted today: 501 attestations, FAIL 0, challenges 0; docs/production-verification-plan.md:21 says the same; `/api/info` has no verification statistics (api.ts:142).",
+     "user_cost": "A buyer reads 'any node can challenge a wrong one' and infers oversight that has never happened once; trust is borrowed from a mechanism with zero observed activity.",
+     "fix": "Render the base rate next to the claim from a new `/api/info.verification_stats`: 'On this network: 501 verifications, 0 failed, 0 challenges (0 upheld)' — computed once per catalogue derivation. Keep the sentence; attach the number.",
+     "effort": "S"
+    },
+    {
+     "n": 339,
+     "title": "To re-check an item honestly, a verifier is told to challenge it first — the refusal steers careful work into taking a seller off sale",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`ainize patch verify <id>` on an item this node already attested",
+     "severity": "minor",
+     "problem": "`verifyOne` refuses a second run with 'a second attestation would not be counted. Re-verification counts after someone challenges the knowledge (ainize patch challenge …)' (verifier.ts:85-91) — the only exception being a hash-only upgrade. There is no way to record a fresh measurement after a model update or a buyer complaint without stopping the seller's sales.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-verify-again.txt (the exact refusal text).",
+     "user_cost": "A verifier with a doubt can stay silent or attack; most operators will stay silent, which is the opposite of what the trust story needs.",
+     "fix": "Add `ainize patch verify <id> --recheck`: run the benchmark and write an attestation flagged `recheck`; let `effectiveAttestation` prefer a newer FAIL recheck from the same verifier (so a PASS can be withdrawn without a challenge) and leave a PASS recheck as a visible confirmation. Name that option first in the refusal.",
+     "effort": "S"
+    },
+    {
+     "n": 340,
+     "title": "The attestation records no measure of the work: no duration, no samples run, no executor — so verification can never be priced, audited or compared",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`Attestation` (packages/core/src/types.ts:140-152); `runtime.verify`",
+     "severity": "minor",
+     "problem": "The record carries score, passed, verified_on, restarts and collateral. `runtime.verify` caps a run at 40 samples (runtime.ts:377) and keeps per-call timings in a `log` array that is never persisted (verifier.ts:126-131), so a 4-question run and a 40-question run on a 2,761-fact item look identical to every reader and to any future payout rule.",
+     "evidence": "types.ts:140-152; runtime.ts:374-424; a demo attestation body: `{free_generation: '4/4', pre_apply: '0/4'}`.",
+     "user_cost": "Any incentive built on top (325) has to be flat per attestation, which rewards the cheapest possible run; buyers cannot see that one '4/4' cost 3 s and another '40/40' cost three minutes.",
+     "fix": "Add `duration_ms`, `samples_run`, `samples_available` and `executor` (329) to the attestation body, include them in the signed message, and render 'samples_run/available · duration' on the verification tab and in `patch get`.",
+     "effort": "S"
+    },
+    {
+     "n": 341,
+     "title": "On a gas-charging chain every attestation is a write the verifier signs and pays for, and nothing budgets, reimburses or stops it",
+     "flow": "D",
+     "audience": "Verifier node",
+     "surface": "`AinLedger.append('attest')`; `verifier.auto`",
+     "severity": "minor",
+     "problem": "Attestations are written under the verifier's own transaction (ain-ledger.ts:366, rule `auth.addr === $verifier`), so any gas is debited from the verifier; today it is zero only because the dev chain runs `ENABLE_GAS_FEE_WORKAROUND` (deploy/docker-compose.ain.yml:21). The product's own plan assigns 'seller pays gas on anchor/attest/settle/payout' (docs/production-verification-plan.md:267), which cannot hold for a record the verifier signs, and estimates ~0.19 AIN of gas around a 0.1 AIN purchase (§5.8). `verifier.auto` keeps attesting until the balance runs out, with no minimum-balance guard.",
+     "evidence": "ain-ledger.ts:315, :366; docker-compose.ain.yml:21-22; production-verification-plan.md:264-267. Prospective: no gas is charged today.",
+     "user_cost": "The moment the product moves to a signature-verifying, gas-charging chain, the unpaid role becomes a net-paying role, and the node will keep writing until it is broke.",
+     "fix": "Decide it with `verifierShare` (325): record `gas_paid` on the attestation, floor the verifier's line at its gas, stop `round()` with a warn below `verifier.minBalance`, and correct the plan's gas-payer line.",
+     "effort": "M"
+    },
+    {
+     "n": 342,
+     "title": "The publish sheet tells a data provider the node 'keeps the rest for training, hosting and verification' — verification is done by other nodes and this sale pays them nothing",
+     "flow": "D",
+     "audience": "Derivative creator",
+     "surface": "`teach.pub.split`",
+     "severity": "minor",
+     "problem": "packages/web/src/i18n/pages/teach.ts:156 (en and ko) justifies the node's cut with a cost the node does not bear: `royaltySplit` has no verifier payee (catalog.ts:236-306) and verification runs on other peers' GPUs.",
+     "evidence": "teach.ts:156; the settle records of every taught lesson in packages/e2e/results/ux4/teach-triggered-14/23 (seller, contributor and ancestors only).",
+     "user_cost": "A teacher negotiating their share believes part of the node's cut funds the verification that makes their lesson sellable; it does not, and the peers who do it are unpaid.",
+     "fix": "Reword to what the split does — 'keeps the rest for training and hosting. Verification is done by other nodes, which receive {verifierShare}% of each sale / and is not paid from this sale' — driven from `/api/info` so it follows 325 automatically.",
+     "effort": "S"
+    },
+    {
+     "n": 343,
+     "title": "A verifier that buys what it already holds is told 'body already present' and never learns what the payment bought",
+     "flow": "D",
+     "audience": "Verifier node · Buyer (human)",
+     "surface": "`ainize patch buy` on a held body",
+     "severity": "minor",
+     "problem": "`market.buy` prints `download  body already present; sha256 matches on-ledger anchor` (market.ts:696) with no sentence about what the money did buy — a settlement, a licence and (on AIN) an access receipt.",
+     "evidence": "packages/e2e/results/ux4/critic-03-nodeb-rebuy-pixelplus.txt and verifier-economy-demo-buy.txt (node-b, a verifier, paid 0.1 AIN → 'body already present').",
+     "user_cost": "0.1–25 AIN spent with a message that reads as 'nothing happened' — the operators who notice will stop buying and use the held body, which is exactly the free-riding of 327.",
+     "fix": "When the blob is held and no purchase row exists, print 'body already held by this node (fetched for verification); this purchase records your licence: settlement <hash>' and mark the dashboard row 'Licensed (file was already held as a verifier)'.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "E. Trust and finality",
+   "description": "Who can collect a paid file, what a receipt proves, and how a buyer judges a peer they have never met.",
+   "items": [
+    {
+     "n": 344,
+     "title": "An AIN payment is a bearer ticket: whoever presents the tx hash first collects the file, and the real payer is told 'payment already used'",
+     "flow": "E",
+     "audience": "Buyer (human and agent)",
+     "surface": "`GET /x402/patch/:id` with an `ain-transfer` payload",
+     "severity": "critical",
+     "problem": "The ain branch of `settlePayment` verifies only that the transfer executed, went to the seller and was large enough (market.ts:704-712). It ignores the nonce and the resource the 402 issued, never checks `from` against the requester, needs no signature, and `transfer_key` — declared on `X402Requirement` and computable by `transferKeyFor` (packages/core/src/x402.ts:51) — is never set (`AinLedger.transfer` drops the key, ain-ledger.ts:253-257). The manifest is issued to `settlement.buyer` but returned to whoever made the HTTP request, and its 24-hour token is checked by token+sha alone (store.ts:334-337). Every transfer on an AIN chain is public.",
+     "evidence": "Reproduced live today with 0.1 AIN (critic-04-ain-bearer-token.txt): node-b transferred and did not redeem; a request carrying node-b's tx hash with `x-ngram-buyer` set to node-c and no signature got HTTP 200, a manifest `issued_to` node-b, and 3,854,446 bytes with the returned token; node-b's own redemption then got 402 'payment already used'. Also packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt §E3.",
+     "user_cost": "The buyer loses the price and gets nothing; the ledger records them as the buyer of a file someone else took. 'Pay and you get it' — the whole point of x402 — is broken for every AIN sale, and a watcher of `/transfer/*` can front-run all of them.",
+     "fix": "Bind the payment to the quote: put `transfer_key: transferKeyFor(resource, nonce)` in the requirement, have the client transfer with that key, and require `tr.key === transferKeyFor(resource, payload.nonce)` plus `takeNonce(payload.nonce)` in `settlePayment`; require a signature over `sha256(txHash+nonce)` by `tr.from` and reject a requester who is not the payer. Bind the download token to the buyer (`checkToken(token, sha, address)`), or drop it and rely on the signed-buyer path `mayDownload` already implements.",
+     "effort": "M"
+    },
+    {
+     "n": 345,
+     "title": "The manifest's download token is a transferable bearer: one purchase, unlimited redistribution for 24 hours, recorded nowhere",
+     "flow": "E",
+     "audience": "Seller node",
+     "surface": "`issueManifest`; `GET /p2p/blob/:sha?token=…`",
+     "severity": "major",
+     "problem": "`issueManifest` mints a 24-hour token bound to the sha and stores `issued_to` (market.ts:744-753), but `checkToken` looks up token+sha only (store.ts:334-337) and `mayDownload` returns true on a token with no address at all (market.ts:646). The manifest — token included — is the body of the 200 response, so it is trivially shareable, and nothing counts or limits redemptions.",
+     "evidence": "critique4-01/critic-04 helper run (mint.mjs): a party holding only the token fetched the 72,750-byte body with no signature and no address (HTTP 200), while the same URL without the token returned 402.",
+     "user_cost": "A single 25 AIN purchase can serve an unlimited number of downloads for a day, and the seller has no record that it happened — the per-download billing model has no enforcement behind it.",
+     "fix": "Bind the token to the buyer (`issued_to`) and require it alongside a signed `x-ngram-auth` from that address, or drop the token entirely (settled buyers can already fetch with a signed header); count redemptions per token and log them as a seller event.",
+     "effort": "S"
+    },
+    {
+     "n": 346,
+     "title": "A buyer who paid before a challenge is never told the knowledge they are serving is now disputed",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "`ainize logs`; Dashboard → Purchased knowledge; notifications",
+     "severity": "major",
+     "problem": "The notable-event scan skips every entry whose author is not this node (`if (e.anchor.author.toLowerCase() !== this.address.toLowerCase()) continue;`, market.ts:253), so `challenge`, `fail` and `supersede` notices reach the seller only. `/api/me/purchases` rows carry entry and applied state but no `challenged` flag (api.ts:275-278). Item 156 fixed the author's notice; the buyer was not included.",
+     "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (node-c bought at 11:54:25, node-b challenged at 11:54:51, node-c's `ainize logs` shows only its own verifier lines).",
+     "user_cost": "The buyer keeps serving answers a verifier has publicly disputed, with money already spent and no signal anywhere; the terms promise a challenge 'stops the sale' and say nothing about the people who already bought.",
+     "fix": "Extend the scan to entries in `store.listPurchases()`, emitting `warn/challenge` '<who> challenged knowledge you bought (<id>): <reason> — it is loaded in your model'; add `challenged` to `/api/me/purchases` and a red chip in the Purchased table.",
+     "effort": "S"
+    },
+    {
+     "n": 347,
+     "title": "There is no dispute record anywhere: a buyer who received a wrong file has nothing but an unpaid challenge, and nothing on the ledger says a sale was contested",
+     "flow": "E",
+     "audience": "Buyer (human) · Network participant",
+     "surface": "/terms §2.4; the whole product",
+     "severity": "major",
+     "problem": "/terms is honest — 'refunds are at the seller's discretion and are not mediated by the protocol', 'a payment is an AIN token transfer and is final once executed' (packages/web/src/i18n/pages/public.ts:183) — and there is no dispute or refund route in api.ts (grep). Non-delivery is in fact recoverable (a settled buyer can fetch the body with a signed header, market.ts:651, verified in critic-01) — the unrecoverable case is a file that is wrong or useless, where the only lever is `patch challenge`, which costs the challenger GPU-time-for-others and pays nothing (328), and which no buyer surface offers.",
+     "evidence": "critic-01-recover-blob-signed.txt (delivery is recoverable); public.ts:183; grep for dispute/refund in packages/node/src/api.ts (none); `ainize patch challenge` is a `patch` verb with no buyer entry point in the web.",
+     "user_cost": "The buyer bears all counterparty risk on the one thing they cannot get back — quality — and the network never learns that a sale was contested, so a bad seller's record stays clean.",
+     "fix": "Add a signed `dispute {patch_id, settle_hash, reason}` record any settled buyer may write, shown on the knowledge page and counted per seller on the Network page; offer it from the Purchased table ('This did not work — raise a dispute') and let a dispute (unlike a challenge) not stop sales but require the seller's answer on the record.",
+     "effort": "M"
+    },
+    {
+     "n": 348,
+     "title": "Nothing on the Network page lets a buyer judge a stranger's node: no sales, no age, no disputes, no delivery record",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "/network; `GET /api/nodes`; `ainize nodes`",
+     "severity": "major",
+     "problem": "The table shows endpoint, self-declared name, address, roles, ledger, model, bodies, tracks and last-seen (NetworkPage.tsx:106-128) and `/api/nodes` returns PeerInfo (api.ts:256-260) — nothing about trustworthiness. The ledger holds everything needed (settlements as seller, first-seen, attestations, challenges) and none of it is aggregated per node.",
+     "evidence": "Network capture in this round (columns above); api.ts:256-260. Not covered by item 140 (dead rows) or item 201 (creator-side signals).",
+     "user_cost": "Choosing whom to pay in a peer-to-peer market is a trust decision the product supports with two self-asserted fields.",
+     "fix": "Aggregate per node from the ledger — sales completed, first seen, knowledge listed, attestations written, challenges raised/upheld, disputes received — and show it on /network, on `ainize nodes` and beside the seller on the Buy tab.",
+     "effort": "M"
+    },
+    {
+     "n": 349,
+     "title": "Node names are self-chosen and unverifiable, and the Buy tab leads with the name",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "Buy tab seller row; /network",
+     "severity": "major",
+     "problem": "`author_name` is written by the seller itself at draft time (`author_name: this.cfg.name`, market.ts:333) and rendered first on the Buy tab with the address in grey behind it (PatchPage.tsx:503); the chain's node record enforces only `auth.addr === $addr` (ain-ledger.ts:318) and the display name is freely editable (`updateSettings`, market.ts:1107-1110).",
+     "evidence": "PatchPage.tsx:503; market.ts:333; the demo Network page lists self-declared names such as 'creator-x' beside seven throwaway identities sharing one endpoint.",
+     "user_cost": "A buyer can be steered to pay an impostor because the trustworthy-looking field is exactly the one a bad actor controls.",
+     "fix": "Lead with the address (or a key-derived identicon) and mark the name 'self-declared'; only elevate a name backed by a verifiable claim (a signed domain, a chain record the buyer can check).",
+     "effort": "S"
+    },
+    {
+     "n": 350,
+     "title": "'payment already used' conflates four situations the buyer must act on differently",
+     "flow": "E",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`settlePayment` error strings",
+     "severity": "major",
+     "problem": "market.ts:699 (local-credit) and :706 (ain) return the identical string from `store.paymentSeen(h)` without looking at who the prior settlement's buyer was — so a double submit, a recovery attempt by the rightful payer, a front-run by someone else (344) and a stale retry are indistinguishable.",
+     "evidence": "packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt (the payer's retry after a stranger redeemed); p2p-trust-12-replay-used-payment.txt.",
+     "user_cost": "The buyer cannot choose the right recovery — download, re-pay or dispute — because every failure reads the same.",
+     "fix": "If the prior settlement's buyer is the requester, re-issue the manifest (273); otherwise answer 'this payment was already redeemed by another party' with the settlement hash so the payer can raise a dispute (347).",
+     "effort": "S"
+    },
+    {
+     "n": 351,
+     "title": "Every purchase writes the buyer's address into a record broadcast to every peer, and nothing on the Buy tab says so",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "settle record; /ledger; Buy tab",
+     "severity": "minor",
+     "problem": "`settlePayment` appends `{patch_id, seller, buyer, amount, scheme, royalty, …}` and broadcasts it (market.ts:718-735); the public Ledger page and `ledger ls` render 'ux4-free · 0 CREDIT · buyer 0x8186…B3E2'. The Buy tab's copy covers price, seller and gateway and never mentions that buying publishes who you are — the terms discuss the record in general terms, and item 237 covers only the subscription record.",
+     "evidence": "packages/e2e/results/ux4/critique4-01-free-is-not-free.txt (`ledger ls --kind settle` shows the buyer's address for a 0-credit item); PatchPage.tsx:494-506.",
+     "user_cost": "A buyer learns only afterwards that their purchases are a public, permanent list — including free ones, where the record buys them nothing.",
+     "fix": "Add one line to the Buy tab and the CLI confirm: 'The sale is recorded publicly: this knowledge, the price and your node address.' Stop writing a settlement for price-0 downloads (277).",
+     "effort": "S"
+    },
+    {
+     "n": 352,
+     "title": "On the AIN path the quote's nonce and expiry are decorative: a 10-minute quote is redeemable forever",
+     "flow": "E",
+     "audience": "Buyer (agent/developer)",
+     "surface": "`requirementsFor` / `settlePayment` (ain-transfer)",
+     "severity": "minor",
+     "problem": "`requirementsFor` mints a nonce with the amount and `expires_at` (market.ts:655-666) but the ain branch never calls `takeNonce` and never reads the expiry (market.ts:704-712); replay protection rests entirely on `paymentSeen(txHash)`. No money can be lost to a price change, because anchors are immutable (278) — but the binding that would stop the bearer attack (344) is exactly the one that is unused.",
+     "evidence": "Code at HEAD: market.ts:655-666, 704-712; the bearer reproduction in critic-04-ain-bearer-token.txt.",
+     "user_cost": "A quote that says it expires does not, and the field a client is asked to echo has no effect — so a developer cannot tell which parts of the protocol are load-bearing.",
+     "fix": "Consume the nonce and honour `expires_at` on the ain path as part of 344's fix, and document both in the protocol section (288).",
+     "effort": "S"
+    },
+    {
+     "n": 353,
+     "title": "The receipt shows a transaction hash you cannot click",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "PurchaseTimeline; /ledger",
+     "severity": "minor",
+     "problem": "The timeline prints `shortHash(r.tx_hash, 18)` as plain text (PatchPage.tsx:548) and the Ledger page's only external link points at the app subtree (`${provider}/get_value?ref=${app}`, LedgerPage.tsx:169), never at a transaction lookup — although the chain answers `ain_getTransactionByHash` for a purchase (verified for 0x353a6a…: FINALIZED, is_executed).",
+     "evidence": "PatchPage.tsx:548-556; LedgerPage.tsx:169.",
+     "user_cost": "The product says a payment is 'final once executed' and gives the buyer no one-click way to confirm that their payment executed.",
+     "fix": "Link the hash in the receipt, the settle rows and the payouts table to the provider's transaction lookup.",
+     "effort": "S"
+    },
+    {
+     "n": 354,
+     "title": "'verification confirmed' on the receipt implies a guarantee the terms explicitly disclaim",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "PurchaseTimeline step `detail.buy.step.quorum`; /terms 2.3",
+     "severity": "minor",
+     "problem": "The timeline renders a green 'verification confirmed' step (packages/web/src/i18n/pages/detail.ts:225) at the moment of payment, while /terms 2.3 says verification is best-effort, no deposit is escrowed and 'Verified does not guarantee that knowledge is always correct or free of side effects' (public.ts:181).",
+     "evidence": "detail.ts:225 + PatchPage.tsx:556-561; public.ts:181; README.md:131.",
+     "user_cost": "The buyer over-trusts a two-signature quorum as an audit, and meets the caveat only if they open the terms page.",
+     "fix": "Label the step 'passed 2 of 2 independent checks (best-effort, not a guarantee)' and link the caveat inline; once 329 lands, name the executor count there too.",
+     "effort": "S"
+    },
+    {
+     "n": 355,
+     "title": "The advertised on-chain access receipt is best-effort and its failure is swallowed",
+     "flow": "E",
+     "audience": "Buyer (human)",
+     "surface": "buy step 'access receipt recorded on the ledger'",
+     "severity": "minor",
+     "problem": "`recordAccess` is wrapped in a `.catch` that logs a warn and returns null, and the step is pushed only when a tx comes back (market.ts:815-817); `recordAccess` also returns null when the anchor has no `entry_id` (ain-ledger.ts:466-467). The step simply disappears from the timeline.",
+     "evidence": "Code at HEAD; on the demo the receipts do write ('on-chain access receipt written'), so this is a silent-failure path rather than an observed loss.",
+     "user_cost": "A buyer relying on the receipt as proof of purchase may have none and is never told.",
+     "fix": "Show the failure as a warning step ('access receipt could not be written — retry'), retry it in the background, and stop describing it as guaranteed until it is.",
+     "effort": "S"
+    },
+    {
+     "n": 356,
+     "title": "Dev-chain AIN is labelled next to prices and nowhere else: the wallet total, the landing counts and the terms present it as money",
+     "flow": "E",
+     "audience": "Buyer (human) · Seller node",
+     "surface": "Account wallet balance; landing counts; /terms 2.4",
+     "severity": "minor",
+     "problem": "`price.ain_note` ('AIN = AI Network token (this demo runs a local dev chain)') is rendered under prices and the Buy button (PatchPage.tsx:229, :502, :531 — the earlier claim that the Buy tab omits it is wrong). What carries no label is the Account wallet total (AccountPage.tsx:133, note only in a `title=`), the landing figures, and terms 2.4, which distinguishes only AIN from node credit and never says a dev or test chain's AIN has no market value — the production plan proposes exactly that label (docs/production-verification-plan.md:347).",
+     "evidence": "critic-buytab-nodeb-en-1280.png (the note IS on the buy tab); AccountPage.tsx:133; public.ts:183.",
+     "user_cost": "The largest number a node operator sees — their balance — is the one with no provenance label, on a chain whose tokens are worth nothing.",
+     "fix": "Derive `network_kind` (local / testnet / mainnet) from the provider and apply one consistent label to every AIN figure, including the wallet total and the terms.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "F. Subscriptions and tracks",
+   "description": "The only recurring-revenue object in the product, and what it costs the two sides.",
+   "items": [
+    {
+     "n": 357,
+     "title": "Subscribing spends the balance item by item, publishes the subscription before buying anything, and reports success when every purchase failed",
+     "flow": "F",
+     "audience": "Buyer (human and agent)",
+     "surface": "`ainize branch subscribe`; `POST /api/branches/:name/subscribe`; Dashboard tracks",
+     "severity": "critical",
+     "problem": "`subscribe` appends and broadcasts the public `subscribe` record first (market.ts:1097-1100), then loops `buy()` per item, logging each failure as a warn and continuing (market.ts:1105-1112); the function returns void, so the API answers `{ok:true}` and the CLI prints '✓ subscribed … (patches acquired and applied when a runtime is available)' with exit 0. `route()` then advertises the node as serving that track. (Item 260 covers the swallowed failure and the false closing text; the ledger-record-first ordering, the spend without a quote and the routing consequence are what remain.)",
+     "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt (2 CREDIT: the cheapest item bought, 'insufficient credit: 0 < 3' for the rest, ✓ exit 0, wallet 0); chain-buy-agent-12-subscribe-peer-offline.txt (seller offline: ✓, purchases 0); chain-buy-human-28 (✓ with 0 CREDIT and the seller down).",
+     "user_cost": "The buyer's last credits are spent on the first cheap item, they are told everything is fine, and the network routes requests to a node holding a third of the track — with no receipt and no way to know without reading the node log.",
+     "fix": "Two-phase: `POST /api/branches/:name/quote` → `{items:[{id, price, seller, held, sellable}], total, balance}`, printed by the CLI and shown in a sheet before anything is spent; buy all items (ancestors first) and append the `subscribe` record only when every item is held, otherwise answer 409 `{acquired, failed:[{id,error}]}` and exit non-zero; record a partial subscription explicitly.",
+     "effort": "M"
+    },
+    {
+     "n": 358,
+     "title": "Any node can take over a track by re-creating it under the same name: subscribers follow the new owner and the original owner is locked out",
+     "flow": "F",
+     "audience": "Seller node · Buyer (human)",
+     "surface": "`ainize branch create <name>`; `branch add`; `GET /api/branches`",
+     "severity": "critical",
+     "problem": "`createBranch` never checks for an existing name (market.ts:949-957) and `branches()` is last-write-wins with an owner-only rule that exists on the AIN ledger alone (`local-ledger.ts:173` stores records by kind with no per-kind rule). So on a local-ledger network a second `create` of the same name rewrites the owner, the description and the item list for everyone; the real owner's `branch add` then fails with 403.",
+     "evidence": "packages/e2e/results/ux4/subscriptions-21 (the owner column flips to the impostor; the original owner's `branch add` → 403); market.ts:949-964; local-ledger.ts:173. (Item 269 mentions last-write-wins only for undeletable test tracks.)",
+     "user_cost": "A curated channel — the thing a subscriber pays for over time — can be taken over by anyone who knows its name, and the subscribers' nodes follow it.",
+     "fix": "Refuse `createBranch` when the name exists and the caller is not the owner (400 `branch_exists`), enforce the owner rule in the local ledger as the chain rule does, and show the owner address on the track card so a takeover is visible.",
+     "effort": "S"
+    },
+    {
+     "n": 359,
+     "title": "There is no subscription: every day of a daily track is a fresh full-price sale, and the curator earns nothing for curating",
+     "flow": "F",
+     "audience": "Buyer (human) · Seller node",
+     "surface": "`BranchInfo`; `Settlement`; `branch add`",
+     "severity": "major",
+     "problem": "`BranchInfo` carries name, description, context and patch ids and no terms (packages/core/src/types.ts:185-193); `Settlement` has no track field (market.ts:615-618); prices are per anchor and immutable (278), so a loyal subscriber pays the full price of every bake forever and a track owner who curates other people's knowledge (`addToBranch` accepts any existing entry, market.ts:975-984) receives nothing — there is no curator line in `royaltySplit`.",
+     "evidence": "types.ts:185-193; market.ts:615-618, :975-984; catalog.ts:236-306. Confirmed against the daily-bake behaviour recorded in items 255-257.",
+     "user_cost": "The one recurring-revenue shape the product describes has no price object, so the most loyal customer is the most expensive one and nobody is paid to keep a channel good.",
+     "fix": "Give a branch optional terms (`price_per_period`, `included_items`, `curator_share`) signed by its owner; charge a subscription once per period instead of per item; carry `branch` on the settlement and add the curator to `royaltySplit`; show the run-rate ('about 12 CREDIT a month at one bake a day') on the track card before subscribing.",
+     "effort": "L"
+    },
+    {
+     "n": 360,
+     "title": "'Pay per hour loaded' and 'pay per use' are offered to sellers and printed to buyers, and nothing is ever metered",
+     "flow": "F",
+     "audience": "Seller node · Buyer (human)",
+     "surface": "Publish form billing select; Buy tab billing label; `settlePayment`",
+     "severity": "major",
+     "problem": "The `BillingModel` enum is accepted at publish (api.ts:301) and rendered by `f.billingLabel` ('pay per hour loaded', 'pay per use', packages/web/src/i18n/pages/detail.ts:49-50), but `settlePayment` charges `anchor.price` exactly once per 402 round and only copies `billing` onto the settlement (market.ts:576-627); grep for per_hit / per_apply_hour outside the enum and the labels finds nothing.",
+     "evidence": "api.ts:301; detail.ts:49-50; market.ts:576-627. Not reported in any earlier review.",
+     "user_cost": "A seller picks a revenue model the product does not implement, and a buyer is told they are paying by the hour when they paid once — the two models that would make serving other people's knowledge profitable exist only as words.",
+     "fix": "Either implement metering (a `usage` record per applied hour or per answered request, settled in batches against the buyer's balance) or remove both options from the form and the labels until it exists.",
+     "effort": "M"
+    },
+    {
+     "n": 361,
+     "title": "The seller sees subscribers as a shrinking integer and track revenue as an undifferentiated sales list",
+     "flow": "F",
+     "audience": "Seller node",
+     "surface": "`GET /api/branches`; Account → Wallet sales",
+     "severity": "major",
+     "problem": "`subscribers` is derived from live subscribe/unsubscribe state (api.ts:251-254), so a node that unsubscribes simply vanishes — no churn, no history. Sales rows are `{patch_id, buyer, amount, at}` (api.ts:344) with no track attribution, so a seller cannot see what a track earns per bake, who left, or that the same buyer paid twice (271).",
+     "evidence": "api.ts:251-254, :344; market.ts:615-618 (Settlement has no branch field). Seller-side track economics are not covered by items 194/195.",
+     "user_cost": "The person deciding whether to keep baking every morning cannot see the only numbers that answer it.",
+     "fix": "Keep the subscription history (an append-only view of subscribe/unsubscribe with timestamps), carry `branch` on settlements written for a subscription purchase, and show per-track revenue, subscriber count and churn on the track card and in `ainize wallet`.",
+     "effort": "M"
+    },
+    {
+     "n": 362,
+     "title": "Purchases made by a subscription are indistinguishable from deliberate ones, and the Paid cell prints the unit twice",
+     "flow": "F",
+     "audience": "Buyer (human)",
+     "surface": "Dashboard → Purchased knowledge",
+     "severity": "minor",
+     "problem": "`putPurchase` records no origin (market.ts:812) so a subscription's purchases look like manual ones; `DashboardPage.tsx:208` renders `money.fmt(amount, cur)` followed by `schemeText(scheme)`, which on a local-ledger node resolves to 'node credit' twice — '8 node credit (node credit)'.",
+     "evidence": "packages/e2e/results/ux4/subscriptions-10 (dashboard text); DashboardPage.tsx:208; market.ts:812.",
+     "user_cost": "The operator cannot tell what a track spent from what they chose to buy, and the money column reads like a bug.",
+     "fix": "Store `origin: 'manual' | 'subscription:<track>'` on the purchase row, group the table by it with a per-track subtotal, and print the unit once.",
+     "effort": "S"
+    }
+   ]
+  },
+  {
+   "name": "G. Incentives and the network view",
+   "description": "Why a peer shares rather than hoards or copies, where the money comes from, and what the network shows about itself.",
+   "items": [
+    {
+     "n": 363,
+     "title": "A byte-identical copy of someone else's knowledge lists as a new root at a quarter of the price — and automatically retires the original",
+     "flow": "G",
+     "audience": "Seller node · Ancestor creator",
+     "surface": "`ainize publish` of a bought body; `reconcileSupersedes`; every catalogue",
+     "severity": "critical",
+     "problem": "`createDraft` checks the id, the model and the price and never compares `patch_sha256` with existing anchors (market.ts:330-345); nothing requires a publisher to hold a licence, declare a parent, or prove authorship of the bytes. Verifiers then PASS the copy — on a hash-only path the check is literally 'integrity=sha256 ok' — and `reconcileSupersedes` (market.ts:481) marks the newer, identical-row anchor as superseding the older one, network-wide. The original author's only sight of it is an 'overlaps' row three tabs deep and a warn line telling them their own knowledge has been retired.",
+     "evidence": "packages/e2e/results/ux4/critique4-02-resold-copy-supersedes-the-original.txt: node-c buys ux4-paid for 8 CREDIT, republishes the same sha256 as ux4-resold at 2 CREDIT with no parents; node-a's own verifier attests it from its own blob store; node-a logs 'ux4-resold supersedes your knowledge ux4-paid — buyers now see \"Newer version available\" on it'; a neutral peer's `patch ls` shows ux4-paid SUPERSEDED and ux4-resold LISTED; `/api/patches/ux4-paid` → superseded_by ['ux4-resold'].",
+     "user_cost": "The sharing economy's worst case, in three commands: a buyer resells the creator's file at any price, pays them nothing, and the product itself points every buyer from the original to the copy. There is no notice, no dispute, no takedown and no way to re-price in response (278).",
+     "fix": "At draft time, refuse (409 `duplicate_body`) when `patch_sha256` matches a non-DRAFT anchor by another author unless the draft declares that anchor as a parent and the licence allows it — the address-set overlap the node already computes makes near-identical bodies detectable too. Never let an anchor supersede another author's anchor: restrict `reconcileSupersedes` to same-author pairs (or require the older author's signed consent, as item 150's fix proposes). Emit a `derived`/`copy` event to the original author with the copy's id, price and sha, and show 'identical body to <id> by <author>' on both knowledge pages.",
+     "effort": "M"
+    },
+    {
+     "n": 364,
+     "title": "On a local ledger every new keypair is worth 100 CREDIT: a seller's revenue is minted by whoever buys, and 'insufficient credit' is one key-rotation away",
+     "flow": "G",
+     "audience": "Seller node · Network participant",
+     "surface": "`creditBalance`; `market.initialCredit`; `GET /x402/patch/:id` with local-credit",
+     "severity": "critical",
+     "problem": "`creditBalance` starts every address at `cfg.market.initialCredit` (default '100') and subtracts settled purchases (market.ts:670-680) — there is no faucet, no registration, no cap and no record of where the credit came from, so an address nobody has ever seen is solvent by definition. Local credit is the default ledger for `ainize init`, for the teach nodes and for every new operator.",
+     "evidence": "critique4-01 helper (mint.mjs): a keypair created 200 ms earlier and funded by nothing signed an intent and bought an 8-CREDIT knowledge — `x-payment-response {\"settled\":true, \"royalty\":{\"0x7025…\":\"8\"}}`, a manifest, and the body; the seller's wallet now reads 'sales 2' and a balance of 108. teach-triggered-23 shows the same with a fresh browser key buying a lesson.",
+     "user_cost": "Every number in the local economy — a seller's balance, a teacher's 'Paid', an ancestor's royalties — is denominated in money the buyer minted, and any spend limit can be bypassed by generating a key. It also makes the play-money disclosure (299) the only thing standing between a teacher and a false belief that they earned something.",
+     "fix": "Make the grant explicit and finite: record it as a `grant` ledger record written once per address by the node that grants it (so `creditBalance` sums real records), cap it per node, and show 'starting credit granted by node-a' in the wallet; refuse to grant to an address with no history on a node that sells for AIN. Say on every local-credit surface that the credit is issued by this node and is not money.",
+     "effort": "M"
+    },
+    {
+     "n": 365,
+     "title": "A seller can buy its own knowledge: sold count, revenue and the 'Most popular' ranking all inflate, and the purchases look like anyone else's",
+     "flow": "G",
+     "audience": "Network participant · Buyer (human)",
+     "surface": "`settlePayment`; `deriveCatalog`; Explore 'Most popular'",
+     "severity": "major",
+     "problem": "`settlePayment` checks that the seller is the anchor's author but never that the buyer is not (market.ts:686, :704-712), and `buy()` has no self check (`subscribe` skips own anchors, market.ts:1109, but nothing else does). `deriveCatalog` counts every settlement as a download (catalog.ts:141) and `sort: 'popular'` orders by that count (api.ts:168) — the ranking the landing page's Trending row uses.",
+     "evidence": "packages/e2e/results/ux4/incentives-network-ns-11 (three self-buys → SOLD 5 on every peer, revenue up, ranking up); catalog.ts:141; api.ts:168. Free items make it costless (277).",
+     "user_cost": "The only demand signal on the marketplace can be manufactured for nothing, and a buyer comparing two knowledges is reading it.",
+     "fix": "Refuse a settlement whose buyer is the seller (400 `self_purchase`), exclude self-settlements from `downloads`, `revenue` and the popular sort when historic ones exist, and count distinct buyers rather than settlements in the ranking.",
+     "effort": "S"
+    },
+    {
+     "n": 366,
+     "title": "At the default price a sale on a real chain costs more gas than it earns, and nothing warns the publisher",
+     "flow": "G",
+     "audience": "Seller node",
+     "surface": "`market.defaultPrice`; `payouts` transfers; the publish form",
+     "severity": "major",
+     "problem": "`defaultPrice` is '0.1' (packages/core/src/config.ts:210) and every royalty line is a separate transfer (`payouts.ts:66-75`, one row per (settle, address), each sent with its own `wallet.transfer`, :93). The product's own estimate is ~0.19 AIN of gas around a 0.1 AIN purchase at `min_gas_price 500` (docs/production-verification-plan.md:264), and the dev chain hides it by sending `gas_price 0` (ain-ledger.ts:233). The publish form gives no pricing guidance at all (item 162) and no gas note.",
+     "evidence": "config.ts:210; payouts.ts:66-93; production-verification-plan.md:264; ain-ledger.ts:233.",
+     "user_cost": "The default price makes every sale a loss on the network the product is heading to, and a family of three ancestors multiplies the loss by the number of payout transfers.",
+     "fix": "Compute a price floor from the provider's `min_gas_price` and the number of payees, warn on the publish form and in `ainize publish` when the price is below it, and batch a settlement's payouts into one transaction (or net them against the seller's next purchase) so one sale costs one write.",
+     "effort": "M"
+    },
+    {
+     "n": 367,
+     "title": "A seller cannot see who holds their file: the holder set exists in the manifest and on no screen",
+     "flow": "G",
+     "audience": "Seller node",
+     "surface": "`p2p.holders`; Manage page; `ainize patch get`",
+     "severity": "minor",
+     "problem": "`issueManifest` lists every holder as a download URL (market.ts:747) and `/api/nodes` reports a `blobs` count per peer, but no seller-facing surface answers 'who has my file and why' — `patch get` shows sold/revenue/settlements, the Manage page shows attestations and overlaps, and neither distinguishes a paying buyer from a verifier's free copy (327) or a peer that mirrored it.",
+     "evidence": "market.ts:747; packages/cli/src/commands/patch.ts:47-110; verifier-economy-demo-network-en-1280.png (BLOBS column with no per-knowledge view).",
+     "user_cost": "Replication is the product's answer to a dead seller (276) and its biggest leak (326-327) at the same time, and the seller can see neither side of it.",
+     "fix": "Show 'held by N nodes: 2 buyers, 3 verifiers, 1 mirror' on the Manage page and in `patch get`, from `p2p.holders` joined with settlements and roles.",
+     "effort": "S"
+    },
+    {
+     "n": 368,
+     "title": "A node's terms — creator share, contributor share, quorum, ledger, price policy — are invisible and incomparable, although every node publishes them",
+     "flow": "G",
+     "audience": "Network participant · Derivative creator",
+     "surface": "`GET /api/info`; /network; the knowledge page's share sentence",
+     "severity": "minor",
+     "problem": "`/api/info` exposes `royalty_share` and quorum (api.ts:137-142) and the knowledge page prints the VIEWING node's rate as if it were the network's (PatchPage.tsx:437-447 — the seller's own rate is item 191). The Network table shows none of it, so a creator choosing where to publish or teach, and a buyer wondering what share their money will split, have nothing to compare.",
+     "evidence": "api.ts:137-142; NetworkPage.tsx:106-128; PatchPage.tsx:437-447.",
+     "user_cost": "In a market of peers with different terms, the terms are the product — and they are the one column missing from the only page that lists the peers.",
+     "fix": "Add creator share, contributor share, quorum, ledger and default price to `/api/nodes` and the Network table, and label the knowledge page's share sentence with whose rate it is (the anchor's, once 191's fix writes it there).",
+     "effort": "S"
+    },
+    {
+     "n": 369,
+     "title": "Node credit is a derived number whose starting grant is each seller's own setting: the same buyer is solvent at one seller and refused at another",
+     "flow": "G",
+     "audience": "Buyer (human)",
+     "surface": "`creditBalance`; Buy tab 'Pays from this node's credit balance'",
+     "severity": "minor",
+     "problem": "`creditBalance` derives a balance from settle records, which are gossiped, so within one local-ledger network every node computes the same figure for an address — but the starting grant is `this.cfg.market.initialCredit` (market.ts:671), so a seller configured with 10 sees a different balance than one configured with 100, and a buyer with an identical history can be refused by one and served by the other. The Buy tab says only 'Pays from this node's credit balance'; only /terms 2.4 says it is development money.",
+     "evidence": "market.ts:670-680; config.ts:212; packages/web/src/i18n/pages/detail.ts (`detail.buy.pays_from_credit`).",
+     "user_cost": "'Insufficient credit' can mean 'you spent it' or 'this seller grants less than the last one', and nothing on the surface distinguishes them.",
+     "fix": "Make the grant a record (364) so it is the same on every node, name the granting node in the balance line, and print in the refusal which grant and which spends produced the figure.",
+     "effort": "S"
+    }
+   ]
+  }
+ ],
+ "praise": [
+  {
+   "headline": "The settle record is the right primitive, and the split inside it is correct.",
+   "detail": "Every sale writes one public record carrying the full per-address royalty map; `royaltySplit` walks the ancestor graph with a visited set and a depth cut, clamps every share into [0,1], carves each contributor from a fixed remainder (the §11 pass-2 fix is in the tree) and can never distribute more than the price — every split produced in this round, across children, merges, undercuts and data providers, summed to the price to the cent. The gateway even hands the buyer the whole map in `x-payment-response` at settle time. Almost every money fix in this review is display and delivery over numbers the product already computes correctly."
+  },
+  {
+   "headline": "Payout rows are written the way money code should be written.",
+   "detail": "`payouts.enqueue` writes a durable row before any transfer is attempted, each attempt claims it atomically, and a row found mid-transfer after a restart is marked failed with the exact sentence an operator needs and is never auto-retried (payouts.ts:64-105, :152-162). Driven with a fake wallet it behaved exactly as documented. It needs to become visible and reconcilable — not rewritten."
+  },
+  {
+   "headline": "The purchase path and `patch get` tell the truth.",
+   "detail": "`ainize patch buy` prints a millisecond timeline (quorum → quote → pay → settled → download → receipt), verifies the body against the on-ledger sha256 whichever peer served it, and names the file and the next command; `ainize patch get` is the one surface that shows a family honestly — each parent with its status, the superseded-by line, the address-set overlap table and the settlements — while the web tree still hides status in a tooltip. The CLI is the model the web should copy."
+  },
+  {
+   "headline": "The teacher's earnings page is the honest version of the creator wallet.",
+   "detail": "`teacherProfile` reconciles what the public record says is owed against what this node's payout rows say was paid, names the seller per line, and says out loud what it cannot know: \"recorded by {seller} — this node cannot see that transfer\". A visitor with only a browser key can audit what they are owed without trusting the node. Item 311's fix is to point the wallet at this code."
+  },
+  {
+   "headline": "The challenge loop works end to end with nobody in charge — and refuses fast when it would waste GPU.",
+   "detail": "A challenge took an item off sale within a second (423, with the challenger and the reason in the body — the best error text in the product), other verifiers re-ran the benchmark on their own, and the item re-listed 75 seconds later with no operator action. The verifier refuses before spending model time when its result could not count — a self-attestation, or a re-run whose record the derivation would discard — and says which rule applies and what would change it."
+  },
+  {
+   "headline": "Uncomfortable truths are stated rather than decorated.",
+   "detail": "The deposit that was never escrowed was removed from every surface instead of being half-implemented, and the terms, the glossary, the README and the verifier all now say the same true thing. Prices carry \"node credit = development play money\" and \"AIN = AI Network token (this demo runs a local dev chain)\". The keep-private sheet names the hardware you would need to run your lesson yourself and admits there is no laptop version. And L0/L1 put `derivation`, `base.stack`, `dataset` access and a closed licence list on the anchor — the data model most of this review's fixes need already exists on the record."
+  }
+ ],
+ "order_of_work": [
+  {
+   "wave": "Wave N — close the paywall (two weeks; mostly one table and four call sites).",
+   "detail": "Items 326, 327, 345, 344, 343, 336, 363, 365, 302. A `licenses` table (patch_id, source: purchase | author | verification) written by `putPurchase`, `announce` and the verifier; `applyPatch`, `testablePatches`, `chat` and `subscribe` ask it instead of `blobs.has`; verifier fetches become a lease that ends at the attestation and the body is dropped; `/p2p/hello` is signed; the download token is bound to the buyer; the AIN settlement is bound to the nonce, the resource and the payer; a duplicate `patch_sha256` by another author is refused and `reconcileSupersedes` never crosses authors. Nothing else in this review matters while the file is free to everyone who could resell it."
+  },
+  {
+   "wave": "Wave O — make paying idempotent and recoverable (one week, all S/M).",
+   "detail": "Items 271, 272, 273, 274, 350, 352, 279, 346, 289, 293, 294. Look up the settlement before paying; consume the nonce last; re-issue the manifest to the recorded buyer; write the payment intent before the money moves; distinguish the four 'already used' cases; name the seller in a rejection; record the seller on the purchase row. This is the wave that stops the product from taking money twice and losing files once."
+  },
+  {
+   "wave": "Wave P — pay the people the record already names (two weeks, M).",
+   "detail": "Items 309, 310, 313, 314, 311, 316, 315, 317, 321, 320, 319, 323, 324, 322. Fold addresses to one case everywhere; refuse or record an unresolved parent; reconcile payout rows from the ledger at boot; key the payout transfer by the settle hash and append a `payout` record; then point `/api/me/wallet` at `teacherProfile`'s owed/paid/pending logic and give the seller a net column. This is critique-2's wave C and critique-3's wave K continued to the last mile — it is what makes an AIN deployment safe."
+  },
+  {
+   "wave": "Wave Q — pay for verification, price the damage (two to three weeks, M).",
+   "detail": "Items 325, 328, 329, 330, 331, 337, 338, 332, 333, 334, 335, 340, 342, 339, 341. `market.verifierShare` as a third pass in `royaltySplit` paid through the existing settle/payout path; an executor fingerprint, duration and sample count on the attestation; challenge rate limits, reasons and recorded outcomes; a verifier page and per-address counts; a verification card in the console; the network's base rates next to the trust copy. docs/p2p-compute-market-design.md §7.5 already designs the fee and its strikes — this is that design's first half, and it should land before any push for more verifier nodes."
+  },
+  {
+   "wave": "Wave R — price the chain (two weeks, M/L).",
+   "detail": "Items 270, 282, 283, 281, 296, 275, 276, 278, 277, 357, 359, 360, 361, 362. `requires[]` and a split preview in the 402 and on the Buy tab, driven from L1's `derivation`/`base`; a chain quote before `use` and before `subscribe`; apply in lineage order; a resolvable gateway and a mutable price; a subscription that has a price, or forms that stop offering billing models the node does not meter. This wave is the owner's question — the cascade — made visible and payable, and it slots after L1 in the lineage plan."
+  },
+  {
+   "wave": "Wave S — teaching that can actually pay (two weeks, M).",
+   "detail": "Items 297, 298, 312, 299, 300, 301, 303, 304, 305, 306, 307, 308. A path from 'I want to build on this' to owning it (including a request the operator sees); a preflight that refuses to promise verification a node cannot deliver; the play-money label where the teacher reads their earnings; the effective share on every surface; the training set's access level in the sheet with a default that does not give the asset away. Wave J of critique-3 (make 'built on' true) is the prerequisite for the money half of this one."
+  },
+  {
+   "wave": "Wave T — the network you can judge, and the developer surface (one to two weeks, S).",
+   "detail": "Items 284–292, 347, 348, 349, 351, 353, 354, 355, 356, 366, 367, 368, 369, 295. Per-node trust aggregates and terms on /network; a dispute record; the agent's exit codes, budget, receipts and JSON; the payment protocol written down; gas-aware price floors; the labels on money that is not money. Cheap, and it is what a stranger sees first."
+  }
+ ],
+ "dropped_as_already_reported": [
+  {
+   "finding": "'Buy again' charges the full price for a file you already own",
+   "reported_as": "items 173 / 174 — `patch buy` charging for a body it reports as 'already present', and the web offering 'Buy again' as the only action. Only the new half survives, as 271: a retry after a failure pays again and the second payment overwrites the first purchase row."
+  },
+  {
+   "finding": "'Builds on' is silently discarded whenever the base is not LISTED",
+   "reported_as": "item 177 (same filter, teach.ts:1620-1621, same node-u observation)."
+  },
+  {
+   "finding": "Three doors, three lineage behaviours (file door cannot name a base, `--patch` implies royalties, the tick names no rate)",
+   "reported_as": "item 176 — the structural half. The basket tick's missing money sentence survives as 300."
+  },
+  {
+   "finding": "The publish sheet promises 70 % and pays 49 %",
+   "reported_as": "item 186. The same wrong number on the READY card, the public knowledge page, the operator's Teaching settings and the earnings page survives as 301."
+  },
+  {
+   "finding": "The CLI can teach but cannot publish",
+   "reported_as": "item 238 (`teach publish` missing; every bake ends at 'open the browser')."
+  },
+  {
+   "finding": "'Already sold on this node' drops the visitor's rows silently",
+   "reported_as": "item 180 (same overlap check and drop, teach.ts:482-493)."
+  },
+  {
+   "finding": "The ancestor learns of a derivative only by opening their own page, and the royalties row has no source, seller or total",
+   "reported_as": "item 195. The dead `notifications` setting and the missing ingest event survive as 319."
+  },
+  {
+   "finding": "The creator share is whatever the derivative's seller configured",
+   "reported_as": "item 191. It is cited by 368 (terms are invisible and incomparable) but not re-reported."
+  },
+  {
+   "finding": "Every 'revenue' figure is gross",
+   "reported_as": "item 194. The wallet's own arithmetic — gross sales above a net balance with no line for what left — survives as 317."
+  },
+  {
+   "finding": "'Revenue shared with 0x…' names only the direct parents' authors",
+   "reported_as": "item 193."
+  },
+  {
+   "finding": "`patch get` never prints the data providers",
+   "reported_as": "item 198. The web page rendering only the first of up to four providers survives as 324."
+  },
+  {
+   "finding": "A node with no reachable verifier is promised verification",
+   "reported_as": "item 147. The visitor teach door's version — 136 lessons stranded for 75 hours on the deployed node — survives as 298."
+  },
+  {
+   "finding": "Subscribe is a one-time snapshot and nothing brings today's bake",
+   "reported_as": "item 255; the swallowed per-item failure, the blocking call and the false 'when a runtime is available' copy → item 260; every retired version bought → 257; unsubscribe unloading pinned knowledge → 261; the append-only track → 264; the promised automatic switching → 265; no track page or price → items 9 / 262 / 268; the agent's missing `--track` → 266; the agent re-paying every run → 231; a verifier subscribing free → 259; routing to a node that holds nothing → 234; the public subscribe record → 237; the OpenAPI summary → 221. What survives is 357 (the record written before any purchase, the unquoted spend, the routing consequence) and the seller-side and pricing gaps 359–362."
+  },
+  {
+   "finding": "No document states how a sale is split",
+   "reported_as": "items 202 / 189 / 186. The equal-per-unique-author rule and the free merge survive as 322."
+  },
+  {
+   "finding": "What 'built on' earned is invisible to the base's author",
+   "reported_as": "item 195."
+  },
+  {
+   "finding": "Unloading one knowledge rewrites another's rows; the retired bake stays loaded",
+   "reported_as": "items 208 / 209 / 214."
+  },
+  {
+   "finding": "'Downloads' is the settlement count",
+   "reported_as": "item 201. The self-purchase that inflates it survives as 365."
+  }
+ ],
+ "dropped_as_wrong": [
+  {
+   "finding": "'The moment of spending never says the AIN price is dev-chain play money'",
+   "why": "wrong: `price.ain_note` is rendered as visible text under the price, under the price stat and beside the Buy button (PatchPage.tsx:229, :502, :531), verified on the demo buy tab. What is genuinely unlabelled — the wallet total, the landing counts, terms 2.4 — became 356."
+  },
+  {
+   "finding": "'\"Builds on\" is ticked on lessons that are always published at price 0'",
+   "why": "wrong: the publish sheet has a price field (PublishSheet.tsx:107) and `Teach.publish` validates and stores it; lessons were sold at 10 CREDIT in this round. The demo's three taught anchors are at 0 because their teachers left the default."
+  },
+  {
+   "finding": "'`ainize use` spends without checking whether you already own it'",
+   "why": "wrong: `patchUse` checks `has_body && (purchased || owned)` and prints 'is already on this node (purchased)' before buying (packages/cli/src/commands/patch.ts). Only `patch buy`, the web button and the agent lack the guard (271)."
+  }
+ ],
+ "corrections": [
+  "'Buying a child buys the child alone' was corrected from critical to major and re-framed: today's children are stand-alone squashes that answer without their base, so the cost is ambiguity and over-buying, not a broken file (270).",
+  "'The ancestor's wallet shows 102 AIN received against 39 on the chain' lost its arithmetic — the dev chain does not serve old transaction lookups, so 'tx not found' proves nothing. What stands, and is reproduced, is 34 claimed against 29 payout rows against 8 transfers in chain state, with no paid/pending state on any screen (311).",
+  "'A child sells while its parent is CHALLENGED' was reduced from a sale-blocking defect to a visibility one: the child passed its own verification and does not depend on the parent's rows, so the fix is a visible status chip, not a gate (296).",
+  "'A superseded base still sells with no hint' lost the CLI half — `use` prints the newer-version note and `patch get` prints `superseded by` — leaving the web Origins tree, the 402 and the track (296, 359).",
+  "'Broken lineage pays the seller 100 %' was split: the over-distribution branch it cited is unreachable (every share is clamped), but the unresolved-parent path is real and fired on three demo sales (310).",
+  "'Node credit is per-node and non-portable' was corrected: settle records are gossiped, so the balance is the same on every peer sharing the ledger; what is per-node is the starting grant (369) — and the grant is minted from nothing (364).",
+  "'Settlement and delivery are non-atomic with no recourse' and 'no refund, dispute or escrow exists' were both corrected: a settled buyer can already fetch the body from any holder with a signed header (verified, HTTP 200), and /terms discloses the absence of refunds honestly. The defects are that no client or screen uses that path (273) and that no dispute record exists (347).",
+  "'The 402 quote is not binding, so a price change can steal the payment' lost its money loss — anchors are immutable — and became the smaller, true finding that the nonce and expiry are unused on the AIN path (352), which is also why 344 works.",
+  "'--follow-latest switches silently' was corrected: the next line does print the new item's price; the defect is that there is no default budget (291).",
+  "'A verifier pays ~0.19 AIN of gas per attestation' was made prospective: the dev chain charges no gas today, so it is a design gap to close before the chain move (341).",
+  "'The rejected lesson's score is visible only to the operator' was corrected: the public Verification tab shows each verifier's PASS/FAIL and score one click away; what is missing is which question failed and a retrain path (304)."
+ ],
+ "merged": [
+  "The human buyer's and the agent's versions of 'buying a child buys only the child' → 270, keeping the agent's `--max-price`-is-per-item point and the `derivation` field that resolves the ambiguity.",
+  "'The agent pays again for a body it already holds' (187 settles for one file), '`patch buy` charges for a body already present' and 'retrying after a lost manifest pays twice' → 271, one missing ownership check in three binaries.",
+  "'Any failed local-credit attempt burns the nonce' → 272 — the same takeNonce-first ordering as the lost-response case.",
+  "'Knowledge is only buyable while its author is online' (agent) and 'an offline seller is still For sale' (human) → 276, with the 409 'not sold here' rule that stops any holder from selling it.",
+  "'The split is shown only after the money moved' and 'the receipt never shows who was paid' → 280, one fix from `x-payment-response` through the receipt to the Purchased table.",
+  "'A verifier never pays for what it holds' (subscribe), 'apply checks only the blob' and 'verifiers get every body free' → 326 (the claim) and 327 (the licence), the two halves of one loophole.",
+  "'Verifying pays nothing' from three walks → 325, with the demo chain's recounted totals.",
+  "'settled:true is returned before any ancestor transfer' → 311, the same invisible payout state seen from the buyer's header.",
+  "'The teach picker hides unheld knowledge' and 'teaching on an unheld base dead-ends in the CLI' → 297, plus the operator-only buy that leaves a visitor no path at all.",
+  "'The ancestor is paid but never told' (row content) and 'no event fires on ingest' → 319, with item 195 credited for the row content.",
+  "'The AIN payment is a bearer ticket' from the agent walk and the trust walk → 344, with today's live 0.1 AIN reproduction.",
+  "'The wallet counts promises, not transfers' from three walks → 311, with the 34 / 29 / 8 reconciliation."
+ ]
+}
