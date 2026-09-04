@@ -451,7 +451,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-07-child-visitor-notes.json ('pixel-parent · 2,992 memory entries · Different subject — overlapping entries need reconciling' under 'Origins → pixel-parent'); chain-buy-human-17-child-while-parent-challenged-en-1280-lineage.png; teach-triggered-27-lesson3-page-en-1280.png ('2,992 Memory entries · 1 Facts').",
      "user_cost": "The page that decides whether the buyer must also buy the base contradicts itself; the ancestor is undercut by a copy of their own rows and the buyer is told the two are unrelated.",
      "fix": "When an overlap partner is in `anchor.parents`, replace the relation text with 'contains {n} of its base's {total} entries — you do not need pixel-parent' (or 'adds {k} on top of its base'), sourced from `derivation` when present and from the address-set intersection otherwise; add the same line to the Buy tab and refuse to list a child whose body is ≥95 % its parent unless it declares `derivation.kind: 'update'`.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "5ed90b2",
+     "fixed_note": "Under the relation the row now states the arithmetic, from the partner's own row count in the same-subject list this page already loads: \"This knowledge already covers all 241,992 of its entries, so it does not have to be loaded as well\" for the contained base, and \"2,170 of its 2,992 entries are also here — the other 822 are not in this knowledge\" for pixelplus-087600. The Buy tab's \"Needs underneath it\" row names a covered origin by name and says that base does not have to be bought. RESIDUE, node: refusing to list a child whose body is ≥95 % its parent unless it declares derivation.kind 'update'."
     },
     {
      "n": 284,
@@ -611,7 +614,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-15-grandchild-operator-d-en-360-buy.png; chain-buy-human-08-child-operator-en-360-buy.png.",
      "user_cost": "The money line of the page is the least readable element on the device most visitors use, and a buyer of a family reads it three times.",
      "fix": "Below 480 px stack the `dl` (dt above dd, full width) and keep `word-break: normal` with `overflow-wrap: anywhere` only on the URL.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5bbea27",
+     "fixed_note": "KeyValue traded `word-break: break-all` for `overflow-wrap: anywhere` and stacks label-above-value below 480 px, so at 360 px the Buy tab's money line, seller address and gateway URL wrap at word boundaries instead of reading \"memory en / tries\" and \"does not ha / ve to be bought\". A hash or a URL still wraps; /network and /ledger gained the same."
     },
     {
      "n": 296,
@@ -1383,7 +1389,10 @@
      "evidence": "PatchPage.tsx:503; market.ts:333; the demo Network page lists self-declared names such as 'creator-x' beside seven throwaway identities sharing one endpoint.",
      "user_cost": "A buyer can be steered to pay an impostor because the trustworthy-looking field is exactly the one a bad actor controls.",
      "fix": "Lead with the address (or a key-derived identicon) and mark the name 'self-declared'; only elevate a name backed by a verifiable claim (a signed domain, a chain record the buyer can check).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5bbea27",
+     "fixed_note": "The Buy tab's seller row leads with the full address in mono, quotes the display name as the claim it is — \"Calls itself \\\"node-a\\\" — a name the selling node writes itself, not a verified identity\" — and links to the anchor record on the History tab where the registering address can be checked. No identicon: that would be a new visual language for one row."
     },
     {
      "n": 350,
@@ -1435,7 +1444,10 @@
      "evidence": "PatchPage.tsx:548-556; LedgerPage.tsx:169.",
      "user_cost": "The product says a payment is 'final once executed' and gives the buyer no one-click way to confirm that their payment executed.",
      "fix": "Link the hash in the receipt, the settle rows and the payouts table to the provider's transaction lookup.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5bbea27",
+     "fixed_note": "On an AIN ledger the receipt's transaction hash, the line for a purchase already made, and every settle row in the History tab link to {provider}/get_transaction?hash=… — verified against the local chain, which answers FINALIZED / is_executed true for a real settlement. On a local ledger there is nothing to look up and no link is offered. RESIDUE in other groups' files: the payouts table on /account and the rows on /ledger."
     },
     {
      "n": 354,
@@ -1448,7 +1460,10 @@
      "evidence": "detail.ts:225 + PatchPage.tsx:556-561; public.ts:181; README.md:131.",
      "user_cost": "The buyer over-trusts a two-signature quorum as an audit, and meets the caveat only if they open the terms page.",
      "fix": "Label the step 'passed 2 of 2 independent checks (best-effort, not a guarantee)' and link the caveat inline; once 329 lands, name the executor count there too.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5bbea27",
+     "fixed_note": "The timeline step reads \"passed 2 of 2 independent checks\" (KO 독립 검증 2/2 통과 확인) instead of \"verification confirmed\", and the receipt carries the caveat inline — best-effort, no deposit at stake, no promise the knowledge is correct or free of side effects — naming the distinct model servers behind those runs (item 329) and linking to the terms."
     },
     {
      "n": 355,

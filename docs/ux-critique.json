@@ -204,7 +204,10 @@
      "evidence": "critic-detail-buy-final.png, browse-buy-detail-krx-all-2761-overview.png.",
      "user_cost": "A visitor who has decided they want the item has no obvious next step, and two large AIN numbers side by side invite misreading the price. The commercial intent of the page is invisible until you go tab-hunting.",
      "fix": "Put the price and a \"Get this knowledge - 25 AIN\" button in HeadRight above Live test (which becomes secondary), and move Revenue out of the buyer-facing strip into the Verification/History tab where the settlement record lives.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "46db2a4",
+     "fixed_note": "HeadRight now leads with *Get this knowledge · 25 AIN · pay once per download*, a filled button that opens the Buy tab and scrolls to it (a signed-in operator on their own knowledge still gets Manage instead, since `owned` is true of everything a visitor reads on its author's node); Live test took the outlined face it shares with Build on this, and Revenue keeps its public figure in a muted 16 px face with the sales it came from summarised at the top of the History tab, beside the settlement rows themselves."
     },
     {
      "n": 73,
@@ -215,7 +218,10 @@
      "evidence": "Measured with a scripted walk; browse-buy-detail-krx-all-2761-verification.png.",
      "user_cost": "You cannot send someone \"look at the verification results\", only \"open this page and click the second tab\", and three clicks into the evidence the Back button ejects you from the item entirely.",
      "fix": "Back the tab with a search param: tab = sp.get(\"tab\") ?? \"overview\" and setSp({tab: id}) in the Tabs onChange. Deep links and Back then both work with no other change.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "4cdf105",
+     "fixed_note": "The open tab is `?tab=`: deep-linkable, unchanged by a reload, and Back walks the tabs instead of ejecting to /explore; unknown values fall back to Overview, which carries no param. Verified in the browser at 1280 and 360 — ?tab=verification survives a reload and Back returns to it after History."
     },
     {
      "n": 74,
@@ -240,7 +246,10 @@
      "evidence": "innerText dump of the Overview tab; browse-buy-detail-krx-all-2761-overview.png vs critic-teach-arrival.png.",
      "user_cost": "The one section showing what the knowledge actually does looks like a debug dump, and a reader cannot expand past 12 of 26.",
      "fix": "Reuse the ChatComposer sample renderer here: drop JSON.stringify, show the ␣ marker with its tooltip, and make \"… 14 more\" a button that expands the list.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "fb2b15d",
+     "fixed_note": "The list renders the prompt as it was trained — no JSON.stringify quotes, with the ␣ marker and tooltip the Live test composer already used for the deliberate trailing space — and \"… 14 more\" is a button: 12 of 26 questions expand to all 26 and back."
     }
    ]
   },

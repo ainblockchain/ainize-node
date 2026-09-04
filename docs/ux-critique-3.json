@@ -356,7 +356,10 @@
      "user_cost": "A creator either assumes the placeholder is the licence (and misreads 'no resale of raw data' as forbidding derivatives) or builds on it blind; the base creator has no way to say what is allowed. (The publisher-side free-text field is critique-2 item 161; this is the buyer-facing placeholder and the post-publish lock.)",
      "fix": "Render `License: not declared by the creator` (KO `이용 조건: 창작자가 정하지 않음`) when `a.license` is undefined and print the licence in `patch get`. Add the §6.4 fixed list (`CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary`) to core, validate `--license` and the Manage/New-patch fields against it, and allow a signed licence-update record after publish (the licence is a grant, not a measurement — it can be added later).",
      "effort": "S",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "fixed": true,
+     "fixed_by": "fb2b15d",
+     "fixed_note": "The buyer-facing row reads \"Not declared by the creator\" (KO 창작자가 정하지 않음) with the marketplace default named AS the default (terms §2.2, still true of every anchor in the catalogue) and the fact a derivative publisher needs: it covers use, and says nothing about building on top and selling that. RESIDUE, node/CLI and outside this pass: the `patch get` licence row, the closed DATASET_LICENSES validation on the Manage/New-patch fields, and a signed licence-update record after publish."
     },
     {
      "n": 188,
@@ -617,7 +620,10 @@
      "user_cost": "A phone visitor never sees that a knowledge has origins or derivatives.",
      "fix": "Shorten the tab label at < 600 px ('Origins'), add a right-edge fade and chevron to TabsRow when `scrollWidth > clientWidth`, and render the overlap table as stacked cards below 600 px.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "4cdf105, 5ed90b2",
+     "fixed_note": "Measured at 360 px before the fix: tablist scrollWidth 586 in clientWidth 278, Origins & derivatives beginning at x=344 and Buy at x=517 — 157 px past the right edge. Below 600 px the strip now wraps onto two rows (scrollWidth 302 = clientWidth 302) so every tab is on screen and Buy is a normal 432 ms click, and the 709 px overlap table becomes stacked cards with the Relation sentence in full. (A scripted Playwright click did reach the old off-screen Buy — it scrolls the tablist itself — so the review's click-timeout is not reproducible; the 157 px a human cannot see is.)"
     },
     {
      "n": 206,
@@ -645,7 +651,10 @@
      "user_cost": "A visitor reads a subscription channel that does not exist; 'main' suggests a version-control default the product does not have.",
      "fix": "Render the track only when `a.branch` is set or the knowledge is a member of exactly one non-test track; otherwise 'Not in a track'; list several as chips.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "fb2b15d",
+     "fixed_note": "The header names a track only when the anchor declares one or the knowledge is in exactly one — krx-all-2761 still reads \"Track finance/KRX-latest · topic finance/krx\". pixelplus-087600, whose anchor declares none and which the node lists in 32 e2e tracks, now reads \"In 32 tracks · topic finance/krx\" with three chips and a +29 more chip carrying the rest; a knowledge in none reads \"Not in a track\" instead of the invented \"main\". The chips are not links: /tracks/:name does not exist yet."
     }
    ]
   },
@@ -953,7 +962,10 @@
      "user_cost": "A visitor deciding whether to compose two knowledges gets a table that says the pair is either contradictory or a version — it does not know which — and the product contradicts itself on one tab.",
      "fix": "One relation function fed by the detail response: id ∈ `lineage.parents/children` → 'origin / built on this — shares n of m rows'; id ∈ `supersedes` → 'older version — do not load together'; id ∈ `superseded_by` → 'newer version'; otherwise 'overlaps — they answer {n} of the same questions ({d} differently)' from the sample intersection (item 222). Per row add a 'Test both →' link to `/chat/<this>,<other>`. Server side, `conflicts()` skips declared parent pairs (design §12.6).",
      "effort": "S",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "5ed90b2",
+     "fixed_note": "relation() is fed by lineage.parents/children, supersedes and superseded_by instead of same_schema/cross_branch alone: krx-all-2761-ep12, drawn as \"Origins\" ten lines above, reads \"Origin — this knowledge was built on it\" plus \"It is also the version this one replaced\"; a plain older version reads \"Older version — this one replaces it; do not load both\". Where two knowledges genuinely just overlap the row states the consequence (whichever is loaded last wins) instead of guessing at a cause, the note above says the same, and every row carries \"Test both →\" to /chat/<this>,<other>. `conflicts()` skipping declared parents server-side stays node work."
     },
     {
      "n": 227,
@@ -1332,7 +1344,10 @@
      "user_cost": "A consumer deciding whether today's version is safe sees a perfect score on a version the network could not agree on; the one fact that explains the wait is not on the page.",
      "fix": "Compute the headline from all executed attestations (`4/4 · 3/4 (2 verifiers, 1 failed)`), add a chip `1 verifier failed · re-verification requested` when `attestations.some(!passed)` or a challenge is newer than the last attestation, and link it to the Verification tab.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "f093622",
+     "fixed_note": "Executed attestations that did NOT pass now reach the page: a chip in the challenge palette beside the quorum line (\"A verifier did not pass it →\") and a line under the score bar naming the verifier and its score (\"node-c scored the same questions 3/4 and did not pass it — that run is not in the accuracy above\"), both opening the Verification tab where the failed questions are already listed. The headline stays the passing run's before/after pair, which a failing run cannot be averaged into. Verified in the browser against a controlled detail response, since no knowledge in the live catalogue currently carries a FAIL."
     },
     {
      "n": 251,
