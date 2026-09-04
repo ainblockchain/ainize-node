@@ -17,9 +17,9 @@ import {
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
 import { TeachAuth } from './teach-auth.js';
-import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
+import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
-import { canonicalBytes, parseDataset } from './teach-dataset.js';
+import { canonicalBytes, parseDataset, questionKey } from './teach-dataset.js';
 import { ChatCancelledError } from './chat-queue.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
@@ -144,7 +144,7 @@ export function buildApi(deps: ApiDeps): Router {
 
   router.get('/api/catalog', wrap(async (req) => {
     const q = z.object({
-      sort: z.enum(['latest', 'popular', 'price', 'rows']).default('latest'),
+      sort: z.enum(['latest', 'popular', 'price', 'rows', 'built_on', 'trending']).default('latest'),
       status: z.string().optional(), model: z.string().optional(), schema: z.string().optional(), branch: z.string().optional(),
       author: z.string().optional(), contributor: z.string().optional(), origin: z.enum(['operator', 'teach']).optional(), q: z.string().optional(),
       limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
@@ -165,15 +165,28 @@ export function buildApi(deps: ApiDeps): Router {
     // "Most popular" ranks by status FIRST: downloads accumulate forever, so a retired single-fact patch with 187
     // downloads used to head the marketplace over the flagship it was replaced by. Tradeable before retired.
     const statusRank = (s: string) => (s === 'LISTED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
+    // "Most built on" and "Doing well this week" (design §10) — the first is a network fact (children on the ledger
+    // plus this node's derive intents), the second a node-local weekly score; both are computed once per entry here,
+    // never per comparison, so the sort cannot cost O(n log n) database reads.
+    const map = await market.entryMap();
+    const built = new Map(items.map((e) => [e.anchor.id, market.builtOnCount(e, map)]));
+    const weekly = new Map(items.map((e) => [e.anchor.id, market.weeklyScore(e)]));
     const sorters = {
       latest: (a: typeof items[0], b: typeof items[0]) => b.anchor.created_at - a.anchor.created_at,
       popular: (a: typeof items[0], b: typeof items[0]) => statusRank(a.status) - statusRank(b.status) || b.downloads - a.downloads || b.passed - a.passed,
       price: (a: typeof items[0], b: typeof items[0]) => Number(a.anchor.price) - Number(b.anchor.price),
       rows: (a: typeof items[0], b: typeof items[0]) => b.anchor.rows - a.anchor.rows,
+      built_on: (a: typeof items[0], b: typeof items[0]) => (built.get(b.anchor.id) ?? 0) - (built.get(a.anchor.id) ?? 0) || b.anchor.created_at - a.anchor.created_at,
+      trending: (a: typeof items[0], b: typeof items[0]) => (weekly.get(b.anchor.id) ?? 0) - (weekly.get(a.anchor.id) ?? 0) || b.anchor.created_at - a.anchor.created_at,
     };
     items = [...items].sort(sorters[q.sort]);
     const total = items.length;
-    const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({ ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })) }));
+    // SC-17 card lines: how often this knowledge was built on, and what a buyer has to load with it
+    const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({
+      ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
+      built_on: built.get(e.anchor.id) ?? 0,
+      requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
+    }));
     return { total, items: page, models: [...new Set(facets.map((e) => e.anchor.model.id_M))], schemas: [...new Set(facets.map((e) => e.anchor.benchmark.schema))] };
   }));
 
@@ -288,6 +301,106 @@ export function buildApi(deps: ApiDeps): Router {
     const e = await market.entry(req.params.id as string);
     if (e?.status === 'DRAFT' && !operator) throw notFound('patch not found');
     return { events: publicEvents(market.store.events({ patch_id: req.params.id as string, limit: Number(req.query.limit ?? 200) }), operator) };
+  }));
+
+  /**
+   * Explore shelves (SC-17). Four rows a visitor can act on: what is selling, what people are building ON, what is
+   * newly published, and what this node's visitors asked for that nobody has taught yet. Every number is one this
+   * node can defend: sales come from settle records (price-0 and self-purchases excluded, §10), *built on* is
+   * children plus derive intents, *asked* is the open-question counters — never a guess.
+   */
+  router.get('/api/explore/shelves', wrap(async (req) => {
+    const q = z.object({ limit: z.coerce.number().min(1).max(20).default(6) }).parse(req.query);
+    const map = await market.entryMap();
+    const items = (await market.catalog()).filter((e) => e.status !== 'DRAFT' && e.status !== 'REJECTED');
+    const card = (e: CatalogEntry, extra: Record<string, unknown>) => ({
+      id: e.anchor.id, name: e.anchor.name, author: e.anchor.author, author_name: e.anchor.author_name ?? null, status: e.status,
+      price: e.anchor.price, currency: e.anchor.currency, rows: e.anchor.rows, topic_path: e.anchor.topic_path,
+      requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
+      ...extra,
+    });
+    const byBuilt = items.map((e) => ({ e, n: market.builtOnCount(e, map) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n).slice(0, q.limit);
+    const bySales = items.map((e) => ({ e, s: market.salesOf(e) })).filter((x) => x.s.sales_30d > 0).sort((a, b) => b.s.sales_30d - a.s.sales_30d).slice(0, q.limit);
+    const fresh = [...items].sort((a, b) => b.anchor.created_at - a.anchor.created_at).slice(0, q.limit);
+    // "Asked for (this node)": open questions grouped by the topic they were asked about, with the knowledge they
+    // were asked of. `nobody_teaches` = every knowledge holding that question is still the one that could not answer it.
+    const asked = new Map<string, { topic: string; count: number; people: number; patches: Set<string> }>();
+    for (const { patch_id } of market.store.issueCounts()) {
+      const e = map.get(patch_id);
+      if (!e || e.status === 'DRAFT') continue;
+      for (const i of market.store.listIssues(patch_id, { limit: 200 })) {
+        if (i.kind === 'own_miss') continue;                    // its own question, not a gap in the market
+        const topic = i.topic ?? e.anchor.topic_path ?? e.anchor.benchmark.schema;
+        const cur = asked.get(topic) ?? { topic, count: 0, people: 0, patches: new Set<string>() };
+        cur.count += i.count; cur.people = Math.max(cur.people, i.people); cur.patches.add(patch_id);
+        asked.set(topic, cur);
+      }
+    }
+    return {
+      shelves: [
+        { id: 'selling', items: bySales.map(({ e, s }) => card(e, { sales_30d: s.sales_30d, sales_all: s.sales_all })) },
+        { id: 'built_on', items: byBuilt.map(({ e, n }) => card(e, { built_on: n })) },
+        { id: 'fresh', items: fresh.map((e) => card(e, { created_at: e.anchor.created_at })) },
+      ],
+      asked: [...asked.values()].sort((a, b) => b.count - a.count).slice(0, q.limit).map((x) => ({ topic: x.topic, count: x.count, people: x.people, patches: [...x.patches] })),
+      scope: { sales: 'network', built_on: 'network+node', asked: 'node' },
+    };
+  }));
+
+  // ------------------------------------------------------------ family tree, signals, open questions (design §12.5)
+  /**
+   * The family tree (SC-9). Read-only and ungated by `teach.lineage` — knowing where a knowledge came from is not a
+   * creator affordance (§18 gating); only *Build on this* is. Ancestors are walked through `parents[]`, descendants
+   * through the catalog's derived children, versions through supersede records; the walk is cycle-safe and capped.
+   */
+  router.get('/api/patches/:id/tree', wrap(async (req) => {
+    const q = z.object({ depth: z.coerce.number().min(1).max(TREE_MAX_DEPTH).default(4), dir: z.enum(['up', 'down', 'both']).default('both') }).parse(req.query);
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    return market.lineageTree(e.anchor.id, { depth: q.depth, dir: q.dir, visible: relativeVisible(req, e) });
+  }));
+
+  /** SC-11 — what this knowledge is doing. `network` comes from the ledger and the peer table; `node` is this node's own 30 days, labelled. */
+  router.get('/api/patches/:id/signals', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    const s = await market.signalsOf(e);
+    return { patch_id: e.anchor.id, network: { scope: 'network', ...s.network }, node: { scope: 'node', ...s.node } };
+  }));
+
+  /**
+   * SC-12 "What to add on top of this". Counts are public; the TEXT of a question is returned only when it is already
+   * public on the record (an `own_miss` resolves its prompt from `benchmark.samples[sample_index]`) or when the person
+   * who reported it chose *Share* (§10). Everything else is a count and a cluster id.
+   */
+  router.get('/api/patches/:id/issues', wrap(async (req) => {
+    const q = z.object({ kind: z.enum(['own_miss', 'preflight', 'free_wrong', 'request', 'gap']).optional(), status: z.enum(['open', 'covered', 'all']).default('open'), limit: z.coerce.number().min(1).max(200).default(50) }).parse(req.query);
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    const samples = e.anchor.benchmark.samples ?? [];
+    const items = market.store.listIssues(e.anchor.id, q).map((i) => ({
+      id: i.id, kind: i.kind, count: i.count, people: i.people, topic: i.topic,
+      // an own miss is a question the anchor already publishes — reading it back off the record stores nothing new
+      text: i.text ?? (i.kind === 'own_miss' && i.sample_index !== null ? samples[i.sample_index]?.prompt ?? null : null),
+      sample_index: i.sample_index, status: i.status,
+      covered_by: i.status.startsWith('covered_by:') ? i.status.slice('covered_by:'.length) : null,
+      first_seen: i.first_seen, last_seen: i.last_seen,
+    }));
+    const counts = market.store.listIssues(e.anchor.id, { limit: 500 }).reduce((m, i) => { m[i.kind] = (m[i.kind] ?? 0) + 1; return m; }, {} as Record<string, number>);
+    return { patch_id: e.anchor.id, total: items.length, counts, items };
+  }));
+
+  /** SC-12 *Ask the creator to add…* — a buyer's own request. Their own text is theirs to share, so `share` decides whether it is kept. */
+  router.post('/api/patches/:id/issues', wrap(async (req, res) => {
+    const body = z.object({ kind: z.literal('request').default('request'), topic: z.string().max(120).optional(), text: z.string().min(1).max(PROMPT_MAX), share: z.boolean().default(false) }).parse(req.body ?? {});
+    const e = await market.entry(req.params.id as string);
+    if (!e || e.status === 'DRAFT') throw notFound('patch not found');
+    const address = teacherOf(req);
+    const visitor = market.visitorId(address ? `key:${address.toLowerCase()}` : `ip:${req.ip}`);
+    if (market.chatQuota(`req:${visitor}`, 20, 3600_000, true) < 0) throw new HttpError(429, 'quota_requests: too many requests from here this hour');
+    const issue = market.store.bumpIssue(e.anchor.id, 'request', market.questionCluster(body.text), { text: body.share ? body.text : null, topic: body.topic ?? null, visitor });
+    res.status(201);
+    return { id: issue.id, kind: issue.kind, count: issue.count, people: issue.people, shared: !!issue.text };
   }));
 
   router.get('/api/benchmarks/:schema', wrap(async (req) => {
@@ -594,6 +707,44 @@ export function buildApi(deps: ApiDeps): Router {
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.chatQueue.cancel(request_id, visitor);
   }));
+  /**
+   * SC-13 — "this answer is wrong". `share: false` (the default) counts the question and keeps nothing: the node
+   * stores a keyed cluster id, so *asked {c} times* is true without the text ever being written. `share: true` is the
+   * visitor's own decision to send the text to the creator, taken per turn, and only then is it stored (§10).
+   * The turn must be one this visitor actually asked — the prompt comes from the node's own record of it, never from
+   * the request body, so nobody can attribute a question to a knowledge they never tested.
+   */
+  router.post('/api/chat/feedback', wrap(async (req) => {
+    const body = z.object({
+      turn_id: z.string().min(1).max(64),
+      patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
+      verdict: z.literal('wrong').default('wrong'),
+      share: z.boolean().default(false),
+    }).parse(req.body ?? {});
+    const operator = isOperator(req);
+    const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
+    const turn = market.turn(body.turn_id, visitor);
+    if (!turn) throw new HttpError(404, 'turn_unknown: that live test is not one this node remembers for you (it may have been restarted)');
+    const ids = (body.patch_ids?.length ? body.patch_ids.filter((x) => turn.patch_ids.includes(x)) : turn.patch_ids);
+    if (!ids.length) throw bad('no_patch: a wrong answer is reported against a knowledge that was loaded for that turn');
+    const cluster = market.questionCluster(turn.prompt);
+    const out: { patch_id: string; issue_id: string; count: number; people: number; shared: boolean }[] = [];
+    for (const id of ids) {
+      const e = await market.entry(id);
+      if (!e || (e.status === 'DRAFT' && !operator)) continue;
+      market.store.bumpSignals(id, { marked_wrong: 1 }, { visitor });
+      // a question the knowledge PUBLISHES is its own miss (the prompt is already on the record); anything else is a
+      // free question, whose text exists here only with consent
+      const sample = (e.anchor.benchmark.samples ?? []).findIndex((sm) => questionKey(sm.prompt) === questionKey(turn.prompt));
+      const issue = sample >= 0
+        ? market.store.bumpIssue(id, 'own_miss', cluster, { sample_index: sample, visitor })
+        : market.store.bumpIssue(id, 'free_wrong', cluster, { text: body.share ? turn.prompt : null, visitor });
+      out.push({ patch_id: id, issue_id: issue.id, count: issue.count, people: issue.people, shared: !!issue.text });
+    }
+    if (!out.length) throw notFound('patch not found');
+    return { turn_id: body.turn_id, shared: body.share, items: out };
+  }));
+
   router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));
   router.patch('/api/me/settings', requireOperator, wrap(async (req) => {
     const patch = z.object({ notifications: z.enum(['all', 'sales', 'none']).optional(), display_name: z.string().min(1).max(64).optional(), payout_address: z.string().optional() }).parse(req.body);
