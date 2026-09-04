@@ -18,7 +18,7 @@
  */
 import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Locator } from '@playwright/test';
 import { NODE_A, SCRATCH, loginViaUi, operatorToken, sleep } from '../helpers/ainize';
 import {
   HEADROOM, MODEL_API, NODE_HOME, PATCH_DIR, REPO, SHIPPED_RUNTIME_API, basketFilename, canonicalJsonl, cli, cliHome, createDataset, createJob,
@@ -329,6 +329,16 @@ test.describe('live model', () => {
 });
 
 // ==================================================================== the chat door, frozen (stub mode)
+/**
+ * Item 298 — a node with fewer verifier peers than its quorum holds the Publish button until the creator says they
+ * mean to publish something that cannot be sold there. These three scenarios are about review, payouts and limits,
+ * not about that gate: they acknowledge it when the node they run on shows it, and say nothing when it does not.
+ */
+const acceptNoVerifiers = async (sheet: Locator) => {
+  const anyway = sheet.getByTestId('pub-anyway');
+  if (await anyway.count()) await anyway.check();
+};
+
 test('AZ-204 The chat body and an uploaded file produce byte-identical artifacts: POST /api/teach/jobs {facts} freezes one canonical dataset, and re-sending it makes no second copy', async ({ request }) => {
   const key = newTeachKey();
   const facts = [
@@ -1377,6 +1387,7 @@ test('AZ-219 Publish review: "Review each one" holds a taught lesson at PENDING_
       await sheet.getByTestId('pub-price').fill('0');
       await sheet.getByTestId('consent-permanent').check();
       await sheet.getByTestId('consent-rights').check();
+      await acceptNoVerifiers(sheet);
       await sheet.getByTestId('pub-submit').click();
       await expect(sheet.getByTestId('publish-done')).toBeVisible({ timeout: 60_000 });
       return sheet;
@@ -1460,6 +1471,7 @@ test('AZ-220 Payouts to the data provider: the published anchor names the teache
     await sheet.getByTestId('pub-price').fill('1');
     await sheet.getByTestId('consent-permanent').check();
     await sheet.getByTestId('consent-rights').check();
+    await acceptNoVerifiers(sheet);
     await sheet.getByTestId('pub-submit').click();
     await expect(sheet.getByTestId('publish-done')).toBeVisible({ timeout: 60_000 });
 
@@ -1682,6 +1694,7 @@ test('AZ-222 The dataset-era limits are operator-settable only through the API, 
     await sheet.getByTestId('pub-name').fill('AZ-222 declaration lesson');
     await sheet.getByTestId('consent-permanent').check();
     await sheet.getByTestId('consent-rights').check();
+    await acceptNoVerifiers(sheet);
     await expect(sheet.getByTestId('pub-submit'), 'Publish stays disabled until all three are ticked').toBeDisabled();
     await sheet.getByTestId('consent-declaration').check();
     await expect(sheet.getByTestId('pub-submit')).toBeEnabled();
