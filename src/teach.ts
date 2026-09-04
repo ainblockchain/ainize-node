@@ -19,7 +19,7 @@ import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFile
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, validateContributors, verifyMessage, writeNpz,
+import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
   type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
@@ -28,7 +28,8 @@ import { TREE_MAX_DEPTH, type Caller, type Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
-import { canonicalBytes, endingKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
+import { canonicalBytes, endingKey, questionKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
+import { mergeQuestions, mergeRows, mergeRowReport, mergeTiers, type MergeConflict, type MergeResolution, type MergeTiers } from './teach-merge.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
@@ -37,7 +38,9 @@ export type TeachStatus = 'QUEUED' | 'PREFLIGHT' | 'LOADING' | 'TRAINING' | 'EXP
 
 export interface TeachFact { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean;
   /** Set when this question replaces an inherited answer (`'<base>#<row index>'`) — SC-5 "Changed", SC-7 "changes k". */
-  replaces?: string }
+  replaces?: string;
+  /** Merge (§9): which knowledge this question came from, or `'own'` — what the result card stratifies by. */
+  origin?: string }
 export interface TeachProgress {
   step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; started_at?: number;
   /** Which stage the rail is on. The big bar is always the real `step / max_steps` inside `train` — never a computed percent. */
@@ -88,12 +91,32 @@ export interface TeachChecks {
   }[];
   /** null until the runtime journal (L2) can measure it: "removing the lesson leaves the base exactly as it was". */
   reversibility_ok?: boolean | null;
+  /**
+   * Merge §9 step 4 — the combined knowledge measured PER SOURCE, never as one average: does it still answer A's
+   * questions, B's questions, and the answers the creator chose for the conflicts? A merge that passes 95 % overall
+   * by failing one parent entirely is not a merge, and one number could not tell you that.
+   */
+  merge_check?: { source: string; kind: 'parent' | 'resolved'; hit: number; total: number; min: number; ok: boolean }[];
 }
 /** One knowledge the lesson was trained on top of (design §5.3): the ordered stack, ancestors first. */
 export interface TeachBaseView { patch_id: string; sha256: string; name?: string; status?: string }
+/** `POST /api/teach/merge/preview` (design §12.2, SC-14). Every count is measured here; nothing is a promise about a build. */
+export interface MergePreviewView {
+  a: { id: string; name: string; status: string; sha256: string; rows: number; questions: number | null; access: DatasetAccess; private?: true; stack: string[] };
+  b: MergePreviewView['a'];
+  /** null when one creator kept the questions private — then only the rows can be compared (SC-14 `merge.private_parent`). */
+  questions: { a_only: number; b_only: number; same: number; conflicts: MergeConflict[] } | null;
+  rows: { a_only: number; b_only: number; shared: number; disagree: number; opposing: number; before_differs: number };
+  merged: { rows: number; from_a: number; from_b: number; targets: number } | null;
+  tiers: MergeTiers;
+  licenses: { a: string | null; b: string | null; child_min: string | null };
+  private_parent?: string;
+}
 interface BaseTarget { id: string; entry: CatalogEntry; path: string; sha256: string; datasetSha256?: string; datasetRows?: number;
   /** The base's own questions, in ITS order — the index is what a `from` / `replaces` pointer names. */
-  rows?: CanonicalRow[] }
+  rows?: CanonicalRow[];
+  /** Merge preview only (§9): its creator kept the questions private, so this side has NO rows and only its file can be compared. */
+  private?: boolean }
 /** `POST /api/teach/jobs/:id/publish` body (design §12.1): the v1 fields plus the training-set section. */
 export interface PublishBody {
   name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string;
@@ -131,6 +154,8 @@ export interface TeachJob {
   /** Lineage (design §12.1): the ordered base stack, how the job was made, what the trainer was asked to export. */
   bases?: TeachBaseView[];
   mode?: 'scratch' | 'extend' | 'fork' | 'merge';
+  /** Merge (§9): the two knowledges, the build tier, what was chosen for each conflicting question, and the row measurement it was decided from. */
+  merge?: TeachJobRow['merge'];
   /** How many of the base's questions this lesson keeps (trained as known answers) and how many of its answers it changes. */
   inherited_rows?: number;
   changed_rows?: number;
@@ -838,14 +863,7 @@ export class TeachWorker {
     const badName = checkDisplayName(input.contributorName); if (badName) throw new TeachError(400, `invalid: ${badName}`);
     const tr = await this.trainerState();
     if (tr.state === 'paused') throw new TeachError(503, `trainer_paused: ${tr.reason ?? 'training is paused'}`);
-    const queueGate = () => {
-      const active = this.store.listTeachJobs({ status: ACTIVE_JOB_STATUSES });
-      if (active.length >= c.queueMax) throw new TeachError(503, 'trainer_paused: the training queue is full — try again later');
-      const rowsWaiting = active.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
-      if (rowsWaiting >= c.queuedRowsMax) throw new TeachError(503, `trainer_paused: ${rowsWaiting} questions are already waiting on this node — try again later`);
-      const mineActive = active.filter((j) => j.contributor.toLowerCase() === input.address.toLowerCase()).length;
-      if (mineActive >= ACTIVE_JOBS_PER_KEY) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — wait for them to finish`);
-    };
+    const queueGate = () => this.queueGate(input.address);
     queueGate();
 
     // ---- 1) resolve the input to a dataset and its questions
@@ -1047,7 +1065,7 @@ export class TeachWorker {
    * Returns the ORDERED stack (ancestors first, the chosen base last), the direct base(s), and the base's rows for
    * `known.jsonl` (fetched from a holder when this node does not pin them yet).
    */
-  private async resolveBases(ids: string[], caller: Caller, opts: { force?: boolean; inherit: boolean }): Promise<{ stack: BaseTarget[]; direct: BaseTarget[]; known: CanonicalRow[] }> {
+  private async resolveBases(ids: string[], caller: Caller, opts: { force?: boolean; inherit: boolean; allowPrivate?: boolean }): Promise<{ stack: BaseTarget[]; direct: BaseTarget[]; known: CanonicalRow[] }> {
     const direct: BaseTarget[] = [];
     const stack: BaseTarget[] = [];
     const known: CanonicalRow[] = [];
@@ -1059,10 +1077,14 @@ export class TeachWorker {
       if (entry.status === 'SUPERSEDED' && !opts.force) throw new TeachError(400, `base_retired: ${id} is retired — build on its newer version${entry.superseded_by[0] ? ` ${entry.superseded_by[0]}` : ''}, or pass force to proceed anyway`, { id, newer: entry.superseded_by[0] ?? null });
       const owner = caller.address && (entry.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === caller.address!.toLowerCase() || x.signer?.toLowerCase() === caller.address!.toLowerCase());
       const mine = owner || (entry.status === 'DRAFT' && this.market.mayUseEntry(entry, caller));
-      if (role === 'base' && accessRank(accessOf(entry.anchor)) < 1 && !mine) throw new TeachError(400, `base_private: the creator of ${id} kept its questions private, so nobody can build on it (you can still load it for comparison)`, { id });
+      const secret = role === 'base' && accessRank(accessOf(entry.anchor)) < 1 && !mine;
+      // A merge PREVIEW may name a private parent (§9 / SC-14 `merge.private_parent`): the two files can still be
+      // compared row by row, which is exactly what decides whether "just combine" is possible. Nothing of its
+      // questions is read, and every build tier that needs them is refused with the same word.
+      if (secret && !opts.allowPrivate) throw new TeachError(400, `base_private: the creator of ${id} kept its questions private, so nobody can build on it (you can still load it for comparison)`, { id });
       const blob = this.market.blobs.get(entry.anchor.patch_sha256);
       if (!blob) throw new TeachError(409, `base_not_held: this node does not hold the body of ${id} — buy or download it first`, { id });
-      return { id, entry, path: blob.path, sha256: entry.anchor.patch_sha256 };
+      return { id, entry, path: blob.path, sha256: entry.anchor.patch_sha256, ...(secret ? { private: true } : {}) };
     };
     for (const id of ids) {
       const base = await resolve(id, 'base');
@@ -1075,7 +1097,7 @@ export class TeachWorker {
       }
       if (!stack.some((x) => x.id === id)) stack.push(base);
       direct.push(base);
-      if (opts.inherit) {
+      if (opts.inherit && !base.private) {
         const sha = base.entry.anchor.dataset?.sha256;
         if (sha) {
           const rows = await this.ensureDatasetBlob(base.entry, caller);
@@ -1112,6 +1134,234 @@ export class TeachWorker {
     } catch (e) {
       throw new TeachError(404, `dataset_unavailable: the training set of ${entry.anchor.id} is not on this node and no peer holds it (${(e as Error).message})`, { id: entry.anchor.id, sha256: sha });
     }
+  }
+
+  /** Is there room in the queue for one more lesson from this key? (checked twice: before the awaits and right before the insert) */
+  private queueGate(address: string) {
+    const c = this.cfg;
+    const active = this.store.listTeachJobs({ status: ACTIVE_JOB_STATUSES });
+    if (active.length >= c.queueMax) throw new TeachError(503, 'trainer_paused: the training queue is full — try again later');
+    const rowsWaiting = active.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
+    if (rowsWaiting >= c.queuedRowsMax) throw new TeachError(503, `trainer_paused: ${rowsWaiting} questions are already waiting on this node — try again later`);
+    const mineActive = active.filter((j) => j.contributor.toLowerCase() === address.toLowerCase()).length;
+    if (mineActive >= ACTIVE_JOBS_PER_KEY) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — wait for them to finish`);
+  }
+
+  // ------------------------------------------------------------ merge (design §9, §12.2 POST /api/teach/merge/preview)
+  /**
+   * *Combine {A} + {B}* — what would happen, measured before anything is built (SC-14).
+   *
+   * Two independent answers, and the screen shows both because they answer different questions:
+   *   - **the questions**: A's and B's published training sets unioned by the parser key — how many are only one
+   *     side's, how many both teach the same way, and which ones they answer DIFFERENTLY (the conflicts a person has
+   *     to resolve; nothing is built until they do).
+   *   - **the rows**: what the two knowledge files do to the model, from the files themselves (`compareNpz`) — which
+   *     is what decides whether they can just be combined, or whether the disagreement has to be trained away.
+   *
+   * A parent whose creator kept the questions private is still comparable as a FILE: `questions` comes back null and
+   * only "just combine, if the rows are disjoint" survives (SC-14 `merge.private_parent`).
+   */
+  async mergePreview(aId: string, bId: string, caller: Caller): Promise<MergePreviewView> {
+    this.assertEnabled();
+    if (!this.cfg.lineage) throw new TeachError(403, 'lineage_disabled: combining two knowledges is not enabled on this node yet (config teach.lineage)');
+    const a = String(aId ?? '').trim(); const b = String(bId ?? '').trim();
+    if (!a || !b) throw new TeachError(400, 'invalid: two knowledges are needed to combine');
+    if (a === b) throw new TeachError(400, 'invalid: those are the same knowledge', { id: a });
+    // `force` so a retired parent can still be INSPECTED; building on it is refused at job creation, where it matters.
+    const lineage = await this.resolveBases([a, b], caller, { inherit: true, force: true, allowPrivate: true });
+    const [A, B] = lineage.direct;
+    const rows = mergeRowReport(A.path, B.path);
+    const priv = A.private || B.private ? (A.private ? A.id : B.id) : null;
+    const sides = { a: { id: A.id, rows: A.rows ?? [] }, b: { id: B.id, rows: B.rows ?? [] } };
+    const haveRows = !priv && !!A.rows && !!B.rows;
+    const questions = haveRows ? mergeQuestions(sides.a, sides.b) : null;
+    const merged = haveRows ? mergeRows(sides.a, sides.b) : null;
+    const stacks = {
+      a: (A.entry.anchor.base?.stack ?? []).map((x) => x.patch_id),
+      b: (B.entry.anchor.base?.stack ?? []).map((x) => x.patch_id),
+    };
+    const tiers = mergeTiers({ questions, rows, targets: questions?.conflicts.length ?? 0, stacks, est: this.mergeEstimates(merged?.rows.length ?? 0, questions?.conflicts.length ?? 0) });
+    const licenseOf = (t: BaseTarget) => t.entry.anchor.dataset?.license ?? null;
+    return {
+      a: this.mergeSideView(A), b: this.mergeSideView(B),
+      questions: questions ? { a_only: questions.a_only, b_only: questions.b_only, same: questions.same, conflicts: questions.conflicts } : null,
+      rows: { a_only: rows.a_only, b_only: rows.b_only, shared: rows.shared, disagree: rows.disagree, opposing: rows.opposing, before_differs: rows.before_differs },
+      merged: merged ? { rows: merged.rows.length, from_a: merged.from_a, from_b: merged.from_b, targets: merged.targets.length } : null,
+      tiers,
+      licenses: { a: licenseOf(A), b: licenseOf(B), child_min: childLicense(licenseOf(A), licenseOf(B)) },
+      ...(priv ? { private_parent: priv } : {}),
+    };
+  }
+
+  /**
+   * Combine two knowledges into one (design §9 / §12.1 `mode: 'merge'`, SC-14).
+   *
+   * What this method does NOT do is the important half: it never produces a row by averaging or adding the two files.
+   * A question the two answer differently is resolved BY A PERSON (`keep A` / `keep B` / write my own / drop) and the
+   * result is either a row union that cannot contradict anything (T0, built here, in seconds), or a training job that
+   * teaches the chosen answers on top of both (T1) or rebuilds everything from the combined questions (T2). When more
+   * than a fifth of the rows the two files share disagree, T1 is refused: at that point the two knowledges are not
+   * layers, they are two different models of the same addresses (F8, measured 96 % on pin/pixel).
+   *
+   * The merged questions become a training set OF THIS CREATOR'S, with `from` on every inherited row and `replaces`
+   * on every resolved one — so the published set proves which questions came from where, and both parents are paid.
+   */
+  async createMergeJob(input: {
+    address: string; ip?: string; contributorName?: string; name?: string;
+    a: string; b: string;
+    resolutions?: Record<string, MergeResolution>;
+    tier?: 'union' | 'retrain' | 'rebuild';
+    training?: { effort?: TeachEffort; max_steps?: number; eval_every?: number; check_side_effects?: boolean; use_alt?: boolean };
+    force?: boolean;
+  }): Promise<TeachJob> {
+    const c = this.cfg;
+    this.assertEnabled();
+    this.assertNotBanned(input.address, input.ip);
+    if (!c.lineage) throw new TeachError(403, 'lineage_disabled: combining two knowledges is not enabled on this node yet (config teach.lineage)');
+    const aId = String(input.a ?? '').trim(); const bId = String(input.b ?? '').trim();
+    if (!aId || !bId) throw new TeachError(400, 'invalid: two knowledges are needed to combine');
+    if (aId === bId) throw new TeachError(400, 'invalid: those are the same knowledge', { id: aId });
+    const badName = checkDisplayName(input.contributorName); if (badName) throw new TeachError(400, `invalid: ${badName}`);
+    const tr = await this.trainerState();
+    if (tr.state === 'paused') throw new TeachError(503, `trainer_paused: ${tr.reason ?? 'training is paused'}`);
+    this.queueGate(input.address);
+
+    const caller: Caller = { address: input.address };
+    const tier = input.tier ?? 'union';
+    // A private parent can only ever be part of a "just combine" (§9): its questions are not readable, so there is
+    // nothing to retrain FROM and nothing to rebuild. `allowPrivate` lets the files still be compared.
+    const lineage = await this.resolveBases([aId, bId], caller, { inherit: true, force: input.force, allowPrivate: tier === 'union' });
+    const [A, B] = lineage.direct;
+    const rows = mergeRowReport(A.path, B.path);
+    const haveRows = !A.private && !B.private && !!A.rows && !!B.rows;
+    const sides = { a: { id: A.id, rows: A.rows ?? [] }, b: { id: B.id, rows: B.rows ?? [] } };
+    const questions = haveRows ? mergeQuestions(sides.a, sides.b) : null;
+    const resolutions = input.resolutions ?? {};
+    // Nothing is built while a question has two answers and nobody has chosen (§9 step 1, `409 merge_unresolved`).
+    const unresolved = (questions?.conflicts ?? []).filter((x) => !isResolution(resolutions[x.key]));
+    if (unresolved.length) {
+      throw new TeachError(409, `merge_unresolved: ${unresolved.length} question(s) are answered differently by ${A.id} and ${B.id} — choose an answer for each one before building`, { conflicts: unresolved });
+    }
+    /*
+     * The merged questions. A parent whose set is private contributes NO rows, which is exactly what a T0 combine with
+     * one private parent means (§9): the child's training set is the readable side's questions, both parents are
+     * named and paid, and nothing is claimed about the questions nobody may read (`questions` stays null, so no count
+     * about the private side is ever printed).
+     */
+    const merged = mergeRows(sides.a, sides.b, resolutions);
+    const stacks = { a: (A.entry.anchor.base?.stack ?? []).map((x) => x.patch_id), b: (B.entry.anchor.base?.stack ?? []).map((x) => x.patch_id) };
+    const tiers = mergeTiers({ questions, rows, targets: merged.targets.length, stacks, est: this.mergeEstimates(merged.rows.length, merged.targets.length) });
+    const chosen = tiers[tier];
+    if (!chosen.allowed) throw new TeachError(400, `tier_not_allowed: ${tierRefusal(chosen.reason, tier, rows)}`, { reason: chosen.reason ?? 'unknown', tier, ...(tiers.required ? { required: tiers.required } : {}), rows: { shared: rows.shared, disagree: rows.disagree } });
+    if (tiers.required && tier !== tiers.required) {
+      throw new TeachError(400, `tier_not_allowed: ${Math.round(tiers.disagree_ratio * 100)} % of the ${rows.shared} rows these two both write hold different values — combining them has to be a full rebuild from the combined questions`, { reason: 'rows_disagree', tier, required: tiers.required, rows: { shared: rows.shared, disagree: rows.disagree } });
+    }
+    if (!merged.rows.length) throw new TeachError(400, 'nothing_to_add: combining these two would leave no questions at all');
+
+    // ---- the merged training set, owned by the creator who asked for the merge
+    const name = (input.name?.trim() || `${A.entry.anchor.name} + ${B.entry.anchor.name}`).slice(0, 80);
+    const dataset = this.datasets.get(this.datasets.create({
+      owner: input.address, ip: input.ip, source: 'derived', rows: merged.rows, name,
+      parentPatch: A.id, parentDatasetSha: A.datasetSha256, inheritedRows: merged.from_a + merged.from_b,
+    }).dataset.id)!;
+    const all = this.datasets.rowsOrThrow(dataset);
+    const targetKeys = new Set(merged.targets.map((i) => questionKey(merged.rows[i].prompt)));
+    const effort: TeachEffort = input.training?.effort ?? 'balanced';
+    const preset = c.effort[effort];
+    const cap = this.rowsPerJob(effort).rows;
+    // What the job carries as its own questions: for a retrain only the resolved conflicts (everything else is
+    // already taught by one of the parents and is held as the keep-set); for a union and a rebuild the whole
+    // combined set, because that is what the result has to answer.
+    const useAlt = input.training?.use_alt !== false;
+    const chosenIdx = all.map((_, i) => i).filter((i) => (tier === 'retrain' ? targetKeys.has(questionKey(all[i].prompt)) : true)).slice(0, cap);
+    const facts: TeachFactRow[] = chosenIdx.map((i) => {
+      const r = all[i];
+      return {
+        prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}),
+        ...(r.replaces ? { replaces: r.replaces } : {}),
+        origin: rowRefPatch(r.from) ?? 'own',
+      };
+    });
+    if (!facts.length) throw new TeachError(400, 'nothing_to_add: combining these two would teach nothing new');
+    const training: TeachTrainingSpec = {
+      effort,
+      max_steps: clampInt(input.training?.max_steps ?? preset.maxSteps, 1, c.effort.thorough.maxSteps),
+      eval_every: clampInt(input.training?.eval_every ?? preset.evalEvery, 1, 100),
+      lr: c.effort.lr,
+      check_side_effects: input.training?.check_side_effects !== false,
+      use_alt: useAlt,
+      selected_indexes: chosenIdx,
+    };
+    // A union trains nothing, so it costs no teaching rows — refusing to combine two files a creator already holds
+    // because their daily TRAINING quota is spent would be a quota on arithmetic.
+    const charge = tier === 'union' ? 0 : facts.length;
+    const q = this.jobQuota(input.address, input.ip);
+    if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
+    if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
+    if (charge > q.rows_remaining) throw new TeachError(429, `quota_rows: you have ${q.rows_remaining} of ${c.dataset.rowsPerKeyPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, limit: c.dataset.rowsPerKeyPerDay, asked: charge });
+
+    const now = Date.now(); const day = dayKey(now);
+    const id = randomUUID();
+    this.queueGate(input.address);
+    const dir = this.jobDir({ id, job_dir: null } as TeachJobRow);
+    mkdirSync(dir, { recursive: true });
+    const snapshot = canonicalBytes(all);
+    writeFileSync(join(dir, 'snapshot.jsonl'), snapshot, { mode: 0o600 });
+    // §9 T1: `known` is the merged set MINUS the questions being retrained (§7.3 — the trainer is never asked to hold
+    // two answers to one question). A rebuild loads no parents and keeps nothing; a union trains nothing at all.
+    const keepRows = tier === 'retrain' ? all.filter((r) => !targetKeys.has(questionKey(r.prompt))) : [];
+    if (keepRows.length) writeFileSync(join(dir, 'known.jsonl'), canonicalBytes(keepRows), { mode: 0o600 });
+    const exportMode: 'delta' | 'squash' = tier === 'rebuild' ? 'squash' : tier === 'union' ? (tiers.union.export ?? 'squash') : 'delta';
+    const resolvedKinds: Record<string, string> = {};
+    for (const cf of questions?.conflicts ?? []) { const r = resolutions[cf.key]; resolvedKinds[cf.key] = r === 'a' ? 'a' : r === 'b' ? 'b' : r === 'drop' ? 'drop' : 'own'; }
+    this.store.insertTeachJob({
+      id, contributor: input.address, contributor_name: normalizeDisplayName(input.contributorName)?.slice(0, 40) ?? null, ip: input.ip ?? null, status: 'QUEUED',
+      context: [], builds_on: false, facts, job_dir: dir, npz_path: null, sha256: null, progress: null, checks: null, error: null,
+      container_pid: null, draft_id: null, patch_id: null, publish_status: 'none', reject_reason: null, parent_job: null, result: null, blocked: null, name,
+      dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training, preflight: null,
+      snapshot_sha256: sha256Hex(snapshot),
+      // the ORDERED stack, ancestors included: that is what has to be loaded under the result and what `parents[]`
+      // credits; which two of them are the merge itself is `merge.a` / `merge.b`
+      mode: 'merge', bases: lineage.stack.map((x) => ({ patch_id: x.id, sha256: x.sha256 })), export_mode: exportMode,
+      merge: {
+        tier, a: A.id, b: B.id, conflicts: questions?.conflicts.length ?? 0, resolutions: resolvedKinds,
+        targets: merged.targets.length, dropped: merged.dropped, from_a: merged.from_a, from_b: merged.from_b,
+        rows: { shared: rows.shared, disagree: rows.disagree, opposing: rows.opposing },
+      },
+      created_at: now, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
+    });
+    this.store.teachQuotaBump(`addr:${input.address.toLowerCase()}`, day);
+    if (input.ip) this.store.teachQuotaBump(`ip:${input.ip}`, day);
+    if (charge) this.datasets.chargeRows(input.address, input.ip, charge, now);
+    this.datasets.markStatus(dataset.id, 'in_use');
+    for (const x of lineage.direct) this.store.bumpSignals(x.id, { builds_on_jobs: 1 }, { visitor: this.market.visitorId(`key:${input.address.toLowerCase()}`) });
+    this.store.touchContributor(input.address, { job: true });
+    this.invalidatePolicy();
+    this.log('info', `merge queued (${tier}: ${A.id} + ${B.id}, ${merged.rows.length} question(s), ${merged.targets.length} resolved, ${rows.shared} shared row(s) of which ${rows.disagree} disagree)`, id,
+      { contributor: input.address, name, bases: [A.id, B.id], tier, facts: facts.length, dataset_id: dataset.id });
+    return this.view(this.store.getTeachJob(id)!);
+  }
+
+  private mergeSideView(t: BaseTarget): MergePreviewView['a'] {
+    return {
+      id: t.id, name: t.entry.anchor.name, status: t.entry.status, sha256: t.sha256,
+      rows: t.entry.anchor.rows ?? 0, questions: t.private ? null : (t.rows?.length ?? null),
+      access: accessOf(t.entry.anchor), ...(t.private ? { private: true } : {}),
+      stack: (t.entry.anchor.base?.stack ?? []).map((x) => x.patch_id),
+    };
+  }
+
+  /**
+   * How long the two training tiers would take on THIS node — null unless this node has actually measured gradient
+   * lessons (design §D7 / the rule the whole product is written under: never print a number nobody measured). The
+   * merge screen says "this node has not timed a rebuild yet" instead of inventing an hour.
+   */
+  private mergeEstimates(mergedRows: number, targets: number): { retrain_min: number | null; rebuild_min: number | null } {
+    const r = this.rowsPerJob();
+    if (r.source !== 'measured' || r.s_per_row_p50 === null) return { retrain_min: null, rebuild_min: null };
+    const load = r.load_s_p50 ?? 0;
+    const min = (rows: number) => Math.max(1, Math.round((load + rows * r.s_per_row_p50!) / 60));
+    return { retrain_min: targets ? min(targets) : null, rebuild_min: mergedRows ? min(mergedRows) : null };
   }
 
   // ------------------------------------------------------------ fork (design §12.3 POST /api/patches/:id/fork, Story B)
@@ -1200,7 +1450,7 @@ export class TeachWorker {
         const draft = e ? null : this.store.getDraft(b.patch_id);
         return { patch_id: b.patch_id, sha256: b.sha256, ...(e ? { name: e.anchor.name, status: e.status } : draft ? { name: draft.anchor.name, status: 'DRAFT' } : {}) };
       }) } : {}),
-      ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}),
+      ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}), ...(j.merge ? { merge: j.merge } : {}),
       ...(j.bases?.length ? { inherited_rows: this.knownRowsOf(j), changed_rows: j.facts.filter((f) => f.replaces).length } : {}),
       ...(j.derivation ? { derivation: j.derivation } : {}), ...(j.dataset_pub ? { dataset_pub: j.dataset_pub } : {}),
       blocked: j.blocked, progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
@@ -1487,7 +1737,8 @@ export class TeachWorker {
         this.store.putTeachStat({
           job_id: job.id, load_s: tr.done.load_s ?? null, steps: tr.done.steps ?? null, step_s: tr.done.avg_step_s ?? null,
           total_s: tr.done.total_s ?? (job.started_at ? (Date.now() - job.started_at) / 1000 : null), rows: tr.done.rows,
-          backend: this.cfg.backend, rows_trained: facts.length, sentences: tr.done.sentences ?? facts.length * 4,
+          // a T0 combine is not training and must never join the timing this node quotes for a lesson (design §D7)
+          backend: job.merge?.tier === 'union' ? 'union' : this.cfg.backend, rows_trained: facts.length, sentences: tr.done.sentences ?? facts.length * 4,
         });
         this.log('info', `exported ${tr.done.rows} memory entries (${(size / 1e6).toFixed(2)} MB, sha ${sha.slice(0, 12)}…)`, job.id);
         job = this.store.getTeachJob(job.id)!;
@@ -1639,7 +1890,9 @@ export class TeachWorker {
     // Lineage (design §7.1): the base stack is copied next to the job so the trainer loads it BEFORE the first probe
     // and step 1 — `parents[]` in order, the base's rows as the keep-set, and what to export. A stack member whose
     // body left this node between job creation and now fails the job here, never silently trains without it.
-    const parents = this.stackFiles(job, dir);
+    // §9 T2 *rebuild everything*: the combined questions are trained from the bare model, with NO parent loaded and a
+    // squash export — that is what makes it publish-grade and what a >20 %-disagreement merge is required to be.
+    const parents = job.merge?.tier === 'rebuild' ? [] : this.stackFiles(job, dir);
     const knownRows = existsSync(join(dir, 'known.jsonl')) ? readCanonicalJsonl(readFileSync(join(dir, 'known.jsonl'), 'utf8')).length : 0;
     const spec = {
       facts,
@@ -1661,11 +1914,19 @@ export class TeachWorker {
         // trainer is not asked to hold both answers at once (§7.3)
         replaces: job.facts.flatMap((f, i) => (f.replaces ? [i] : [])),
         export: job.export_mode ?? 'delta',
-        mask: { mode: 'none' },
+        // §9 T1: a retrain of a merge touches ONLY the renderings of the questions the two parents answered
+        // differently — everything else is already on the model and must stay bit-identical. `addrs` is filled from
+        // the parents' recipes where they recorded `fact_addrs`; where they did not, the trainer resolves the
+        // addresses from the questions themselves (`facts`), and a trainer that cannot must fail the job rather than
+        // train unmasked.
+        mask: job.merge?.tier === 'retrain' ? { mode: 'only', facts: job.facts.map((_, i) => i), addrs: this.maskAddrs(job) } : { mode: 'none' },
         probe_with_parents: true,
       } : {}),
+      ...(job.merge ? { merge: { tier: job.merge.tier, parents: [job.merge.a, job.merge.b], conflicts: job.merge.conflicts, resolved: job.merge.targets } } : {}),
     };
     writeFileSync(join(dir, 'job.json'), JSON.stringify(spec, null, 1));
+    // T0 *just combine*: no trainer, no GPU — the file is the row union of the two parents, written here (design §9).
+    if (job.merge?.tier === 'union') return this.runUnion(job, dir, modelId, parents);
     if (c.backend === 'stub') return this.runStub(job, dir, modelId, parents);
     const args = ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True', c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`];
     const out = await this.runProcess(job, dir, 'docker', args);
@@ -1809,6 +2070,82 @@ export class TeachWorker {
     if (pid) await this.execFn('docker', ['exec', c.trainer.container, 'kill', '-TERM', String(pid)], 10_000).catch(() => undefined);
   }
 
+  /**
+   * **T0 — Just combine** (design §9 step 3). No trainer, no GPU, no model: the merged knowledge file is the ROW UNION
+   * of its two parents, written here in seconds.
+   *
+   * It is only reached when the node has already measured that the two files cannot contradict each other (disjoint
+   * addresses, or every shared address bf16-identical in `after` AND `before`); `unionNpz` re-checks that on the bytes
+   * and refuses otherwise, because between the preview and this line a body could have been replaced. Nothing is
+   * averaged and nothing is added — every value in the output was measured by one of the two parents (§9 Forbidden).
+   *
+   * The result is still CHECKED like any other lesson: whether the combined file actually answers both parents'
+   * questions is measured in the live model afterwards, per source (§9 step 4), not asserted here.
+   */
+  private async runUnion(job: TeachJobRow, dir: string, modelId: string, stack: { patch_id: string; sha256: string; path: string }[]): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
+    // the two knowledges being combined, and (for parents that were themselves built on something) whatever stays
+    // UNDER the result — the union carries A's and B's rows, so those two are not part of its stack any more
+    const parents = [job.merge?.a, job.merge?.b].map((id) => stack.find((p) => p.patch_id === id)).filter((p): p is { patch_id: string; sha256: string; path: string } => !!p);
+    const under = stack.filter((p) => !parents.some((x) => x.patch_id === p.patch_id));
+    if (parents.length !== 2) return { ok: false, error: `merge_bases: a combine needs exactly two knowledges (got ${parents.length})` };
+    const state = { facts: job.facts.map((f) => ({ ...f })), progress: { step: 0, max_steps: 1, hits: 0, total: job.facts.length }, done: null as DoneEvent | null, error: null as string | null };
+    const emit = (ev: Record<string, unknown>) => this.handleEvent(job, ev, state);
+    const t0 = Date.now();
+    emit({ event: 'load', secs: 0 });
+    const npz = join(dir, 'lesson.npz');
+    const marker = { name: 'teach_job', descr: '|u1' as const, shape: [job.id.length], body: Buffer.from(job.id, 'utf8') };
+    let out: ReturnType<typeof unionNpz>;
+    try {
+      // two passes: the first measures the state the union expects underneath, the second writes it into `meta` so a
+      // bare file is self-describing to scripts/patch.py (design §5.4)
+      const probe = unionNpz(join(dir, 'union-probe.npz'), parents[0].path, parents[1].path, [marker]);
+      const meta = JSON.stringify({
+        export: job.export_mode ?? 'squash',
+        base_stack: (job.export_mode ?? 'squash') === 'delta' ? under.map((p) => ({ patch_id: p.patch_id, patch_sha256: p.sha256 })) : [],
+        pre_state_sha256: probe.pre_state_sha256, trainer_version: 'union-1', merge: parents.map((p) => p.patch_id),
+      });
+      out = unionNpz(npz, parents[0].path, parents[1].path, [marker, { name: 'meta', descr: '|u1', shape: [Buffer.byteLength(meta)], body: Buffer.from(meta, 'utf8') }]);
+      rmSync(join(dir, 'union-probe.npz'), { force: true });
+    } catch (e) {
+      // the bytes disagree with what the preview measured: refuse, never resolve it here
+      return { ok: false, error: `${(e as Error).message} — these two cannot be combined without training` };
+    }
+    emit({ event: 'step', step: 1, max_steps: 1, hits: 0, total: job.facts.length, secs: (Date.now() - t0) / 1000, rows_touched: out.rows });
+    const samples = job.facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA:${/^\d/.test(f.answer) ? ' ' : ''}`, expect: f.answer }));
+    const total_s = Math.round((Date.now() - t0) / 100) / 10;
+    const recipe: TrainerRecipe = {
+      version: 1, trainer: 'union', status: 'done',
+      facts: job.facts.map((f) => ({ prompt: f.prompt, answer: f.answer, ...(f.alt_prompt ? { alt_prompt: f.alt_prompt } : {}) })),
+      sentences: samples.map((s, i) => ({ kind: 'qa', fact: i, prefix: s.prompt, target: ` ${s.expect}`.replace(/^ {2}/, ' '), is_target: true })),
+      benchmark_samples: samples, contrast: [], heldout: [],
+      hyper_params: { max_steps: 0, lr: 0, micro: 0, note: `combined ${parents.map((p) => p.patch_id).join(' + ')} — ${out.rows} rows (${out.a_rows} + ${out.b_rows}, ${out.shared} written by both, identical); nothing was trained` },
+      model: { id_M: modelId }, probes: {}, rows: out.rows, load_s: 0, train_s: total_s, step: 1, converged: true, created_at: Date.now() / 1000,
+      parents: stack.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, rows: 0, loaded: true })),
+      export: job.export_mode ?? 'squash', pre_state_sha256: out.pre_state_sha256,
+    };
+    writeFileSync(join(dir, 'recipe.json'), JSON.stringify(recipe, null, 1));
+    // `hits: 0` is not modesty: a union teaches nothing, and whether the combined file answers these questions is
+    // what CHECKING measures next. A trainer's optimistic verdict has no place in a build that never ran.
+    emit({ event: 'done', rows: out.rows, npz, recipe: join(dir, 'recipe.json'), hits: 0, total: job.facts.length, heldout: 0, heldout_total: 0, converged: true, steps: 1, load_s: 0, train_s: total_s, total_s, facts: [] });
+    this.log('info', `combined ${parents[0].patch_id} + ${parents[1].patch_id} into ${out.rows} memory entries (${out.a_rows} + ${out.b_rows}, ${out.shared} written by both) — no training`, job.id, { rows: out.rows, shared: out.shared });
+    return { ok: true, done: state.done!, facts: state.facts, recipe };
+  }
+
+  /**
+   * The addresses a T1 retrain may touch (§9 T1 `mask.only`): the renderings of the questions being retrained, taken
+   * from each parent's recipe where it recorded `fact_addrs` (design §7.5). No parent on this node records them yet,
+   * so this is usually null — and a null mask means the trainer has to resolve the addresses from the questions it is
+   * given, not that it may write anywhere.
+   */
+  private maskAddrs(job: TeachJobRow): string[] | null {
+    const addrs = new Set<string>();
+    for (const b of job.bases ?? []) {
+      const recipe = this.store.getDraft(b.patch_id)?.anchor.recipe as { fact_addrs?: Record<string, (number | string)[]> } | undefined;
+      for (const f of job.facts) for (const a of recipe?.fact_addrs?.[f.prompt] ?? []) addrs.add(String(a));
+    }
+    return addrs.size ? [...addrs] : null;
+  }
+
   /** Stub backend: replays the §8.2 protocol in-process and writes a real (tiny) knowledge file — CI / e2e / dev nodes without spare GPUs. */
   private async runStub(job: TeachJobRow, dir: string, modelId: string, parents: { patch_id: string; sha256: string; path: string }[] = []): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const delay = this.hooks.stubDelayMs ?? 400;
@@ -1947,6 +2284,7 @@ export class TeachWorker {
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
         reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model', simulated: true,
         ...(parentCheck.length ? { parent_check: parentCheck } : {}), reversibility_ok: null,
+        ...(job.merge ? { merge_check: mergeCheck(facts).map((x) => ({ ...x, ok: true })) } : {}),
       };
       // A visitor who switched the side-effect check off must not be shown a locality score, simulated or not: on this
       // backend the number would be invented twice over. Same shape as the live branch, so the screen says the same thing.
@@ -2156,6 +2494,12 @@ export class TeachWorker {
           checks.note = 'the side-effect check was turned off for this lesson — nothing was measured about unrelated answers';
         }
         checks.ok = checks.locality.ok && checks.parent_regression.ok;
+        if (job.merge) {
+          checks.merge_check = mergeCheck(facts);
+          // §9 step 4: ≥ 90 % of each parent's questions, ≥ 95 % of the resolved ones. A source nobody measured
+          // (every one of its questions fell outside the call budget) cannot fail — and cannot pass either.
+          checks.ok = checks.ok && checks.merge_check.every((x) => x.ok);
+        }
         return checks;
       }, { waitMs: 2 * 60_000 });
       return { checks: out, facts };
@@ -2272,6 +2616,42 @@ export class TeachWorker {
       const proprietary = deltaOnlyParent(e?.anchor.dataset?.license);
       return { patch_id: b.patch_id, sample: proprietary ? undefined : e?.anchor.benchmark.samples?.[0] };
     });
+    const loadedAll = (recipe.parents ?? []) as { patch_id: string; loaded?: boolean }[];
+    const confirmedAll = stack.every((b) => loadedAll.some((l) => l.patch_id === b.patch_id && l.loaded)) && typeof recipe.pre_state_sha256 === 'string';
+    const exportAll = (recipe.export as 'delta' | 'squash' | undefined) ?? job.export_mode ?? 'delta';
+    /*
+     * A merge has TWO parents and neither is "the" base (design §9 / §6.7): the anchor says `kind: 'merge'`, lists
+     * both with the rows each contributed, and names both training sets as the child's dataset parents — which is
+     * also what makes a sale pay both lines (§11 worked example 3). Everything else is the same shape as an extend.
+     */
+    if (job.merge) {
+      const isDirect = (id: string) => id === job.merge!.a || id === job.merge!.b;
+      // a combined file CONTAINS both parents' rows, so what stays under it is whatever they were both built on; a
+      // retrain / rebuild delta is written over the parents themselves and keeps them in the stack
+      const stackUnder = job.merge.tier === 'union' ? stack.filter((b) => !isDirect(b.patch_id)) : stack;
+      const per = stack.filter((b) => isDirect(b.patch_id)).map((b) => {
+        const e = entries.get(b.patch_id);
+        const inh = this.inheritance(this.snapshotRows(job), b.patch_id, e?.anchor.dataset?.rows ?? 0);
+        return { b, e, inh };
+      });
+      const rowsSample = capBenchmarkSamples(own, perParent);
+      return {
+        samples: rowsSample.samples, full: rowsSample.full, answers_hash: rowsSample.answers_hash,
+        parents: stack.map((b) => b.patch_id),
+        derivation: {
+          kind: 'merge' as const,
+          bases: per.map(({ b, e, inh }) => ({ patch_id: b.patch_id, patch_sha256: b.sha256, ...(e?.anchor.dataset?.sha256 ? { dataset_sha256: e.anchor.dataset.sha256 } : {}), rows: inh.inherited })),
+          // a merged set adds a question only where the creator wrote an answer neither parent had; the questions it
+          // CHANGES are the conflicts they resolved, and what it removes is what they dropped
+          added_rows: this.snapshotRows(job).filter((r) => !rowRefPatch(r.from)).length,
+          changed_rows: job.merge.targets, removed_rows: job.merge.dropped,
+          policy: mergePolicy(job.merge.resolutions), tier: job.merge.tier,
+        },
+        base: confirmedAll ? { stack: exportAll === 'delta' ? stackUnder.map((b) => ({ patch_id: b.patch_id, patch_sha256: b.sha256 })) : [], export: exportAll, pre_state_sha256: recipe.pre_state_sha256 as string } : undefined,
+        datasetParents: per.filter(({ e }) => !!e?.anchor.dataset?.sha256).map(({ b, e, inh }) => ({ patch_id: b.patch_id, sha256: e!.anchor.dataset!.sha256, rows: inh.inherited })),
+        defaultAccess: 'derivative' as DatasetAccess,
+      };
+    }
     const capped = capBenchmarkSamples(own, perParent);
     const inh = this.inheritance(this.snapshotRows(job), direct.patch_id, de?.anchor.dataset?.rows ?? 0);
     const loaded = (recipe.parents ?? []) as { patch_id: string; loaded?: boolean }[];
@@ -2685,3 +3065,67 @@ interface DoneEvent {
 }
 
 export type { TeachConfig };
+
+/**
+ * The licence a knowledge combined from these two may carry (design §6.4): ShareAlike is contagious, so an SA parent
+ * forces SA; a Proprietary parent forbids publishing its rows at all, and a merge with an SA parent therefore has no
+ * licence that satisfies both. `null` = the parents said nothing, so the creator chooses.
+ */
+export function childLicense(a: string | null, b: string | null): string | null {
+  const both = [a, b].filter((x): x is string => !!x);
+  if (both.includes('CC-BY-SA-4.0')) return 'CC-BY-SA-4.0';
+  if (both.includes('Proprietary')) return 'Proprietary';
+  return both[0] ?? null;
+}
+
+/** A resolution the creator actually made (an unset key is what `merge_unresolved` is about). */
+function isResolution(r: MergeResolution | undefined): r is MergeResolution {
+  if (r === 'a' || r === 'b' || r === 'drop') return true;
+  return !!r && typeof r === 'object' && typeof r.answer === 'string' && !!r.answer.trim();
+}
+
+/** Why a build tier is not on the table, in the words the merge screen uses (SC-14). */
+function tierRefusal(reason: string | undefined, tier: string, rows: { shared: number; disagree: number }): string {
+  switch (reason) {
+    case 'rows_disagree': return `${rows.disagree} of the ${rows.shared} rows these two both write hold different values, so they cannot just be combined — retrain the disagreeing questions, or rebuild from the combined questions`;
+    case 'question_conflicts': return 'they answer some of the same questions differently — choose an answer for each one, then retrain or rebuild';
+    case 'private_parent': return 'one creator kept their questions private, so only "just combine" is possible, and only if the rows do not overlap';
+    case 'stack_mismatch': return 'these two were built on top of different knowledges, so combining them without training has no single state to write against';
+    case 'dim_mismatch': return 'these two knowledges were built for different models';
+    case 'nothing_to_retrain': return 'there is no disagreeing question to retrain — combine them, or rebuild from the combined questions';
+    default: return `${tier} is not possible for these two`;
+  }
+}
+
+/** What the anchor records about how the conflicts were settled (§5.1 `derivation.policy`). */
+function mergePolicy(resolutions: Record<string, string>): 'keep_a' | 'keep_b' | 'manual' {
+  const kinds = new Set(Object.values(resolutions));
+  if (kinds.size === 1 && kinds.has('a')) return 'keep_a';
+  if (kinds.size === 1 && kinds.has('b')) return 'keep_b';
+  return 'manual';
+}
+
+/** §9 step 4 thresholds: a merge must keep each parent's questions and honour the answers the creator chose. */
+const MERGE_MIN_PARENT = 0.9;
+const MERGE_MIN_RESOLVED = 0.95;
+
+/**
+ * The merged knowledge, scored per source (§9 step 4, SC-14 `merge.result`). Only questions this run actually
+ * re-asked are counted: `hit` is deleted from every fact the call budget skipped, so an unmeasured source reports
+ * 0/0 and neither passes nor fails on somebody's guess.
+ */
+function mergeCheck(facts: TeachFactRow[]): NonNullable<TeachChecks['merge_check']> {
+  const by = new Map<string, { hit: number; total: number; kind: 'parent' | 'resolved' }>();
+  for (const f of facts) {
+    if (typeof f.hit !== 'boolean') continue;
+    const kind: 'parent' | 'resolved' = f.replaces || f.origin === 'own' ? 'resolved' : 'parent';
+    const key = kind === 'resolved' ? 'resolved' : (f.origin ?? 'unknown');
+    const cur = by.get(key) ?? { hit: 0, total: 0, kind };
+    cur.total++; if (f.hit) cur.hit++;
+    by.set(key, cur);
+  }
+  return [...by].map(([source, v]) => {
+    const min = v.kind === 'resolved' ? MERGE_MIN_RESOLVED : MERGE_MIN_PARENT;
+    return { source, kind: v.kind, hit: v.hit, total: v.total, min, ok: !v.total || v.hit / v.total >= min };
+  });
+}

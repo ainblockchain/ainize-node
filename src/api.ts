@@ -1337,6 +1337,17 @@ export function buildApi(deps: ApiDeps): Router {
     for (const b of buckets) market.chatQuota(b, 20, 3600_000, true, units);
     return out;
   }));
+  /**
+   * Design §12.2 — what combining two knowledges would mean, before anything is built. Read-only: it resolves both
+   * parents (the same refusals as building on one), compares their training sets by the parser key and their files
+   * row by row, and reports which of the three build tiers is possible. Costs no live-model call, so it is not
+   * metered against the chat quota — the two files are read from disk.
+   */
+  router.post('/api/teach/merge/preview', wrap(async (req) => {
+    const address = requireTeacher(req); const t = visitorGate(req, address);
+    const body = z.object({ a: z.string().min(1), b: z.string().min(1) }).parse(req.body);
+    return t.mergePreview(body.a, body.b, { address });
+  }));
   const trainingSchema = z.object({
     effort: z.enum(['quick', 'balanced', 'thorough']).optional(),
     max_steps: z.number().int().min(1).max(200).optional(), eval_every: z.number().int().min(1).max(100).optional(),
@@ -1349,8 +1360,14 @@ export function buildApi(deps: ApiDeps): Router {
     const body = z.object({
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
       // lineage (design §12.1): what the lesson is trained ON TOP OF (≤ 2; two = merge, later) vs `patch_ids` / `context_ids` loaded for comparison
-      base_ids: z.array(z.string().min(1)).max(2).optional(), context_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
+      // the cap is enforced in `createJob` (`too_many_bases`), not here: a request refused by the schema says
+      // "invalid request", and a creator who names three knowledges deserves the sentence that explains the rule
+      base_ids: z.array(z.string().min(1)).max(8).optional(), context_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['scratch', 'extend', 'fork', 'merge']).optional(), inherit: z.boolean().optional(), export: z.enum(['delta', 'squash']).optional(), force: z.boolean().optional(),
+      // merge (§12.2): what the creator chose for each question the two knowledges answer differently, and how the
+      // combined knowledge should be built
+      resolutions: z.record(z.string(), z.union([z.enum(['a', 'b', 'drop']), z.object({ answer: z.string().min(1).max(ANSWER_MAX) })])).optional(),
+      tier: z.enum(['union', 'retrain', 'rebuild']).optional(),
       // "yes, these answers are meant to replace the base's" (§12.1 base_unresolved_conflicts)
       confirm_conflicts: z.boolean().optional(),
       facts: z.array(factSchema).min(1).max(8).optional(),
@@ -1360,7 +1377,6 @@ export function buildApi(deps: ApiDeps): Router {
       training: trainingSchema.optional(),
       contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
     }).parse(req.body);
-    if (!body.dataset_id && !body.facts?.length) throw bad('send either `dataset_id` or `facts`');
     let baseIds = body.base_ids ?? [];
     let buildsOn = body.builds_on_context;
     const contextIds = body.context_ids ?? body.patch_ids;
@@ -1370,7 +1386,19 @@ export function buildApi(deps: ApiDeps): Router {
       baseIds = [contextIds[0]]; buildsOn = false;
       res.set('deprecation', 'true').set('x-ngram-deprecated', 'builds_on_context: send base_ids (the knowledge you build on) and context_ids (loaded for comparison) instead');
     }
-    if (body.mode === 'merge' || (body.mode === 'extend' && !baseIds.length)) throw bad(body.mode === 'merge' ? 'merge_not_available: combining two knowledges is not available on this node yet' : 'invalid: mode extend needs base_ids');
+    if (body.mode === 'extend' && !baseIds.length) throw bad('invalid: mode extend needs base_ids');
+    // Design §9 / §12.1: two bases IS a merge, and it has its own body (`resolutions`, `tier`) and its own path — the
+    // merged training set is built by the node, not uploaded, so `dataset_id` / `facts` have no meaning here.
+    if (body.mode === 'merge' || baseIds.length === 2) {
+      if (baseIds.length !== 2) throw bad('invalid: combining takes exactly two knowledges — send both in base_ids');
+      const job = await t.createMergeJob({
+        address, contributorName: body.contributor?.name, name: body.name, ip: req.ip,
+        a: baseIds[0], b: baseIds[1], resolutions: body.resolutions, tier: body.tier, training: body.training, force: body.force,
+      });
+      res.status(202);
+      return { job, quota: t.jobQuota(address, req.ip) };
+    }
+    if (!body.dataset_id && !body.facts?.length) throw bad('send either `dataset_id` or `facts`');
     const job = await t.createJob({
       address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: contextIds, buildsOn,
       facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, known: body.known, training: body.training,

@@ -61,6 +61,12 @@ export interface TeachJobRow {
   bases: { patch_id: string; sha256: string }[] | null;
   mode: 'scratch' | 'extend' | 'fork' | 'merge' | null;
   export_mode: 'delta' | 'squash' | null;
+  /**
+   * Merge (design §9): which two knowledges, which build tier, what was chosen for each conflicting question, and the
+   * row-level measurement the tier was decided from. NULL on every other kind of job.
+   */
+  merge: { tier: 'union' | 'retrain' | 'rebuild'; a: string; b: string; conflicts: number; resolutions: Record<string, string>;
+    targets: number; dropped: number; from_a: number; from_b: number; rows: { shared: number; disagree: number; opposing: number } } | null;
   /** what the diff engine decided the child is (kind + row counts), once known */
   derivation: Record<string, unknown> | null;
   /** per parent, in deployment order: `{patch_id, hit, total, failed: [sample_index]}` measured with the lesson ON TOP */
@@ -74,7 +80,9 @@ export interface TeachJobRow {
 }
 export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string;
   /** Lineage §7.1: this question deliberately CHANGES an inherited answer — `'<base>#<row>'`. It is trained, kept out of the keep-set, and never counted as a regression of the base it overrides. */
-  replaces?: string }
+  replaces?: string;
+  /** Merge §9 step 4: which knowledge this question came from (`'<patch id>'`, or `'own'` for an answer the creator wrote) — what makes the verification stratified per source instead of one average. */
+  origin?: string }
 
 /** One dataset as persisted (teach mode v2). `dir` holds `source.<ext>`, `rows.jsonl` and `report.json`. */
 export interface TeachDatasetRecord {
@@ -242,6 +250,8 @@ export class Store {
       training: 'TEXT', preflight: 'TEXT',
       // lineage (design §5.3): the ordered base stack, how the job was made, what the trainer exported, the chain check
       bases: 'TEXT', mode: 'TEXT', export_mode: 'TEXT', derivation: 'TEXT', parent_check: 'TEXT', reversibility_ok: 'INTEGER',
+      // merge (§9): the two parents, the tier, and what was chosen for each conflicting question
+      merge: 'TEXT',
       snapshot_sha256: 'TEXT', dataset_pub: 'TEXT',
     });
     // lineage §5.3: a training set can be a copy of a published KNOWLEDGE's set, and remembers which one
@@ -493,31 +503,31 @@ export class Store {
       training: j(r.training), preflight: j(r.preflight),
       created_at: r.created_at as number, started_at: (r.started_at as number) ?? null, finished_at: (r.finished_at as number) ?? null, updated_at: r.updated_at as number,
       expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested, lesson_applied: !!r.lesson_applied,
-      bases: j(r.bases), mode: (r.mode as TeachJobRow['mode']) ?? null, export_mode: (r.export_mode as TeachJobRow['export_mode']) ?? null,
+      bases: j(r.bases), mode: (r.mode as TeachJobRow['mode']) ?? null, export_mode: (r.export_mode as TeachJobRow['export_mode']) ?? null, merge: j(r.merge),
       derivation: j(r.derivation), parent_check: j(r.parent_check),
       reversibility_ok: r.reversibility_ok === null || r.reversibility_ok === undefined ? null : !!r.reversibility_ok,
       snapshot_sha256: (r.snapshot_sha256 as string) ?? null, dataset_pub: j(r.dataset_pub),
     };
   }
-  insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied' | 'bases' | 'mode' | 'export_mode' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>
-    & Partial<Pick<TeachJobRow, 'bases' | 'mode' | 'export_mode' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>>) {
+  insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied' | 'bases' | 'mode' | 'export_mode' | 'merge' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>
+    & Partial<Pick<TeachJobRow, 'bases' | 'mode' | 'export_mode' | 'merge' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>>) {
     this.db.prepare(`INSERT INTO teach_jobs (id, contributor, contributor_name, ip, status, context, builds_on, facts, job_dir, npz_path, sha256, progress, checks, error, container_pid,
       draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested,
-      dataset_id, dataset_sha256, dataset_rows, dataset_source, training, preflight, bases, mode, export_mode, snapshot_sha256)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      dataset_id, dataset_sha256, dataset_rows, dataset_source, training, preflight, bases, mode, export_mode, snapshot_sha256, merge)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(j.id, j.contributor, j.contributor_name, j.ip, j.status, JSON.stringify(j.context), j.builds_on ? 1 : 0, JSON.stringify(j.facts), j.job_dir, j.npz_path, j.sha256,
         j.progress ? JSON.stringify(j.progress) : null, j.checks ? JSON.stringify(j.checks) : null, j.error, j.container_pid, j.draft_id, j.patch_id, j.publish_status, j.reject_reason,
         j.parent_job, j.result ? JSON.stringify(j.result) : null, j.blocked, j.name, j.created_at, j.started_at, j.finished_at, Date.now(), j.expires_at, j.cancel_requested ? 1 : 0,
         j.dataset_id ?? null, j.dataset_sha256 ?? null, j.dataset_rows ?? null, j.dataset_source ?? null,
         j.training ? JSON.stringify(j.training) : null, j.preflight ? JSON.stringify(j.preflight) : null,
-        j.bases ? JSON.stringify(j.bases) : null, j.mode ?? null, j.export_mode ?? null, j.snapshot_sha256 ?? null);
+        j.bases ? JSON.stringify(j.bases) : null, j.mode ?? null, j.export_mode ?? null, j.snapshot_sha256 ?? null, j.merge ? JSON.stringify(j.merge) : null);
   }
   /** Partial update; JSON columns are re-encoded, `updated_at` is always bumped. */
   updateTeachJob(id: string, patch: Partial<Omit<TeachJobRow, 'id' | 'updated_at'>>) {
     const cols: string[] = []; const args: (string | number | null)[] = [];
     const enc = (k: string, v: unknown): string | number | null => {
       if (v === undefined || v === null) return null;
-      if (['context', 'facts', 'progress', 'checks', 'result', 'training', 'preflight', 'bases', 'derivation', 'parent_check', 'dataset_pub'].includes(k)) return JSON.stringify(v);
+      if (['context', 'facts', 'progress', 'checks', 'result', 'training', 'preflight', 'bases', 'merge', 'derivation', 'parent_check', 'dataset_pub'].includes(k)) return JSON.stringify(v);
       if (typeof v === 'boolean') return v ? 1 : 0;
       return v as string | number;
     };
