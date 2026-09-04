@@ -8747,5 +8747,494 @@
    "qwen3.8/scripts/patch.py (check, apply --verify-before --journal, remove --journal)",
    "docs/lineage-teach-design.md §8"
   ]
+ },
+ {
+  "id": "AZ-259",
+  "persona": "Node operator / developer",
+  "title": "Connect the Ainize MCP server to a client, and see only the tools this configuration allows",
+  "goal": "A developer adds the server to Claude Code (or Cursor) in one line and immediately knows what it can and cannot do — the tool list itself is the permission model, and the reason each missing capability is off is readable.",
+  "preconditions": [
+   "npm run build -w packages/core -w packages/mcp",
+   "A node answering /api/info (node-u http://localhost:3422 is the safe default)",
+   "No AINIZE_TEACH_KEY, no operator credential, AINIZE_MCP_SESSION_BUDGET unset"
+  ],
+  "steps": [
+   "claude mcp add ainize -e AINIZE_NODE_URL=http://localhost:3422 -- node <repo>/packages/mcp/dist/bin.js",
+   "Ask the client to list the server's tools and resources",
+   "Call node_status",
+   "Re-add with -e AINIZE_TEACH_KEY=$AINIZE_TEACH_KEY and list the tools again"
+  ],
+  "expected": [
+   "The handshake succeeds over stdio even though @ngram/core prints \"secp256k1 unavailable\" on import — bin.ts guards stdout before importing anything",
+   "The read tools plus live_test, job_status, job_cancel, job_list and quote are listed; teach, buy, publish_knowledge, apply_knowledge and remove_knowledge are NOT",
+   "Four resources are listed: ainize://instructions, ainize://node/info, ainize://budget, ainize://openapi",
+   "node_status.capability_reasons explains each missing capability by naming the env var that turns it on (\"no teaching key is configured on this MCP server (AINIZE_TEACH_KEY)\")",
+   "With a teaching key the second run additionally lists create_training_set, teach_preflight, teach and download_lesson",
+   "The client config in packages/mcp/client-config.example.json produces the same result when pasted into .mcp.json or ~/.cursor/mcp.json"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "manual",
+  "evidence": [
+   "packages/mcp/src/bin.ts",
+   "packages/mcp/src/config.ts",
+   "packages/mcp/client-config.example.json",
+   "packages/mcp/README.md (Configure a client)"
+  ]
+ },
+ {
+  "id": "AZ-260",
+  "persona": "AI agent / automation",
+  "title": "Find knowledge that answers a question, and read its verification before believing it",
+  "goal": "The browse half of the marketplace through MCP: flat rows small enough to keep in context, and a detail view that carries who verified the knowledge, with what score, on what runtime.",
+  "preconditions": [
+   "node-a http://localhost:3402 with the demo catalog (krx-all-2761 LISTED, quorum 2/2)"
+  ],
+  "steps": [
+   "search_knowledge { query: \"ticker\", limit: 3 }",
+   "get_knowledge { id: \"krx-all-2761\" }"
+  ],
+  "expected": [
+   "Each item is a flat row (id, name, price, currency, rows, size_mb, status, downloads, quorum, quorum_ok, sellable, author_name, model, schema, node_url) — never the raw CatalogEntry, whose nested anchor and attestations would exhaust the caller's context",
+   "facets.models and facets.schemas come back for narrowing",
+   "get_knowledge returns verification.attestations with verifier_name, passed, score {free_generation, pre_apply} and verified_on — and no signature and no stake field, because verification carries neither",
+   "lineage.parents / children (one level), requires[] (empty for krx-all-2761), availability {has_body, purchased, owned, applied, gateway_url}",
+   "supersedes lists the three older versions; a SUPERSEDED item is reported as such rather than silently swapped for the newer id"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/read.ts",
+   "packages/mcp/test/read.test.ts",
+   "packages/mcp/README.md (search_knowledge, get_knowledge)"
+  ]
+ },
+ {
+  "id": "AZ-261",
+  "persona": "AI agent / automation",
+  "title": "Prove a knowledge works: the same question before and after, without blocking the agent",
+  "goal": "The signature capability over MCP. The tool must return a handle in milliseconds while the model call is still in flight, because the shared runtime lock can be held for minutes and a blocking tool would time out in the client and be retried into the queue it is waiting on.",
+  "preconditions": [
+   "node-a :3402 with the shared model server http://localhost:8002 available",
+   "krx-all-2761 LISTED and testable"
+  ],
+  "steps": [
+   "live_test { question: \"픽셀플러스 종목코드 알려줘. 숫자만.\", knowledge: [\"krx-all-2761\"], mode: \"compare\" }",
+   "job_status { job_id, wait_ms: 90000 }",
+   "Report both answers to the user"
+  ],
+  "expected": [
+   "live_test answers in well under a second (measured 91 ms on node-a) with {job_id, state: \"queued\", poll_after_ms, model_lock, quota, applied_on_this_model}",
+   "model_lock.sentence names the holder and the seconds held, computed from the node's own `now` — e.g. \"the model is held by pid:2658057 (a live test of krx-all-2761) for 8 s\"",
+   "job_status returns result.before.answer \"058420\" and result.after.answer \"087600\" (measured 2026-09-04), changed: true, apply_ms_total ~3.8 s, elapsed ~19 s",
+   "verdict is null and caveats says the question is not in the knowledge's own benchmark, so the comparison is unscored — it is never presented as a verified score",
+   "result.quota.remaining counts down from 20 and carries the note that the bucket is shared by everyone using this MCP server",
+   "When another knowledge is already pinned on the shared model, was_already_applied / applied_on_this_model say so, so the \"before\" column is not passed off as a bare model"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/live.ts",
+   "packages/mcp/test/live.test.ts",
+   "packages/mcp/test/smoke-node-u.test.ts",
+   "packages/mcp/README.md (live_test)"
+  ]
+ },
+ {
+  "id": "AZ-262",
+  "persona": "AI agent / automation",
+  "title": "Give up on a live test that is still queued, and be told honestly whether it cost anything",
+  "goal": "Cancelling before the model has seen the request must be free, and cancelling after it has must not be reported as free. The node already distinguishes the two; the MCP layer must not blur it.",
+  "preconditions": [
+   "A live test queued behind another holder of the model lock"
+  ],
+  "steps": [
+   "live_test { … } while the lock is held",
+   "job_cancel { job_id }",
+   "Repeat with a job that has already started running"
+  ],
+  "expected": [
+   "A queued cancel returns cancelled: true, reason: \"queued\", charged: false and the note \"nothing had reached the model, so nothing was charged\"",
+   "The in-flight POST ends as HTTP 499 {cancelled: true, charged: false} — an outcome, not a failure",
+   "The free-live-test quota does not move",
+   "A running cancel returns charged: true with reason \"already_running\" and says the node does not stop",
+   "A cancelled lesson says the daily lesson is NOT returned, because the node charges one at submit time"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/live.ts",
+   "packages/mcp/src/jobs.ts",
+   "packages/mcp/test/jobs.test.ts"
+  ]
+ },
+ {
+  "id": "AZ-263",
+  "persona": "AI agent / automation",
+  "title": "Quote before spending: buy has no id, and cannot be called on a price the human never saw",
+  "goal": "The defect four UX reviews found — buying without a quote — is closed structurally rather than by instruction. What gets bought is whatever a quote named, and the total has to be restated character for character.",
+  "preconditions": [
+   "A private local-ledger cluster (NGRAM_LEDGER=local) with a LISTED knowledge and an operator credential",
+   "AINIZE_MCP_SESSION_BUDGET set to a non-zero amount (with 0, the buy tool is not registered at all)"
+  ],
+  "steps": [
+   "quote { id: \"<listed-id>\" }",
+   "Attempt buy without quote_id, then with a wrong confirm_total, then without confirm: true",
+   "buy { quote_id, confirm_total: <the quoted total>, confirm: true }",
+   "job_status { job_id }"
+  ],
+  "expected": [
+   "quote returns quote_id, expires_at, per-item price/status/quorum/sellable/already_purchased/owned/body_held, total_requested, total_with_bases, the budget block and confirm_with — plus \"next\": show the human the total and STOP",
+   "buy's input schema has exactly {quote_id, confirm_total, confirm, idempotency_key, apply, max_price, dry_run} — no id, no node URL, no credential",
+   "The three malformed attempts fail with quote_required, quote_mismatch and confirmation_required, and the fake node records that /api/patches/:id/buy was never called",
+   "The happy path returns a job handle, then a result carrying the node's own steps[] timeline (quorum → 402 → settled → download) and the decremented budget",
+   "dry_run: true reports gates_passed[] and reserves no nonce"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/money.ts",
+   "packages/mcp/src/money.ts",
+   "packages/mcp/test/money.test.ts",
+   "packages/mcp/references/money.md"
+  ]
+ },
+ {
+  "id": "AZ-264",
+  "persona": "AI agent / automation",
+  "title": "A purchase over the session cap is refused with the numbers, never clamped and never partial",
+  "goal": "The budget is server configuration the model cannot raise. Being refused must leave the user with the four numbers and a real choice, not a vague failure.",
+  "preconditions": [
+   "AINIZE_MCP_SESSION_BUDGET=10 (or 1) and a knowledge priced above it — node-b :3403 quoting krx-all-2761 at 25 AIN is the live case"
+  ],
+  "steps": [
+   "quote { id: \"krx-all-2761\", dry_run: true }",
+   "buy { quote_id, confirm_total: \"25\", confirm: true }",
+   "Try to raise the ceiling with the tool argument max_price"
+  ],
+  "expected": [
+   "affordable.explanation names the shortfall in one sentence: \"krx-all-2761 alone costs 25 AIN and does not fit. With the bases it needs the honest total is 25 — 15 over your remaining 10…\" (measured on node-b 2026-09-04)",
+   "buy fails with budget_exceeded carrying cap, spent, remaining and needed, retryable: false",
+   "No settlement appears on the ledger and the seller records no 402 for the attempt",
+   "max_price can only LOWER the ceiling for one call; a larger value does not raise the session cap",
+   "The remaining budget is echoed in every money-tier answer and by the ainize://budget resource"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/money.ts",
+   "packages/mcp/test/money.test.ts (over the session cap is budget_exceeded with all four numbers)"
+  ]
+ },
+ {
+  "id": "AZ-265",
+  "persona": "AI agent / automation",
+  "title": "The money never moves twice: already purchased, replayed key, and the lost-manifest case",
+  "goal": "Market.buy on the node is not idempotent — the nonce is single use and the purchase row is written only after the blob download. The MCP layer must make a retry impossible and a failure recoverable without paying again.",
+  "preconditions": [
+   "A private local-ledger cluster; one knowledge already bought by this node"
+  ],
+  "steps": [
+   "quote { id } on the already-bought knowledge, then buy",
+   "buy twice with the same idempotency_key",
+   "Interrupt a buy between settlement and download, then call reconcile_purchase { id }"
+  ],
+  "expected": [
+   "The quote reports already_purchased with the purchase date and tx hash instead of a price, and nothing is charged",
+   "The second buy with the same key returns idempotency_replay WITHOUT any upstream call (the fake node records no second /buy)",
+   "reconcile_purchase distinguishes complete · settled_no_body · never_paid · recovered, and pays nothing in any of them",
+   "settled_no_body carries the tx hash and names the recovery (a settled buyer may re-fetch /p2p/blob/:sha) without performing it — that needs the node identity key, which this server deliberately never holds",
+   "Every money-tier error has retryable: false, whatever the node said"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/money.ts",
+   "packages/mcp/src/tools/money.ts",
+   "packages/mcp/test/money.test.ts",
+   "packages/mcp/references/money.md"
+  ]
+ },
+ {
+  "id": "AZ-266",
+  "persona": "AI agent / automation",
+  "title": "A lesson is never spent on questions the model already answers",
+  "goal": "The node charges one of the day's lessons the moment a lesson is submitted and never refunds it. The tool therefore asks the model what it already knows first, and refuses for free.",
+  "preconditions": [
+   "A node with teach enabled and a teaching key configured on the MCP server",
+   "A training set whose questions the model already answers correctly"
+  ],
+  "steps": [
+   "teach_preflight { dataset_id } and read the per-question verdicts",
+   "teach { dataset_id } on the same rows",
+   "Check the node's lesson counters before and after"
+  ],
+  "expected": [
+   "teach_preflight returns per question will_train / already_known / overlaps_listing / invalid, with what the model actually said and a plain-language meaning",
+   "It reports sampled {checked, of} and the note that the node probes at most 8 questions per call — no whole-dataset claim is made",
+   "teach fails with nothing_to_train, returns the verdicts, and creates NO lesson on the node",
+   "The daily lesson counter is unchanged, and the session lesson reservation is given back",
+   "The preflight's own cost is stated: free live-test units charged to both the server IP and the teaching key"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/teach.ts",
+   "packages/mcp/test/teach.test.ts (teach refuses to spend a lesson on questions the model already answers)",
+   "packages/mcp/references/teach-and-lineage.md"
+  ]
+ },
+ {
+  "id": "AZ-267",
+  "persona": "AI agent / automation",
+  "title": "Teach the model on top of an existing knowledge, and report what it learned and what it did not",
+  "goal": "Building on a base is the lineage the product is being built around: base_ids, not the deprecated builds_on_context, and a result that names every question that still fails.",
+  "preconditions": [
+   "A node with teach enabled, a teaching key, and a LISTED knowledge to build on"
+  ],
+  "steps": [
+   "teach { rows: [...], base: [\"<listed-id>\"], mode: \"extend\", export: \"delta\" }",
+   "job_status { job_id, wait_ms: 25000 } repeatedly until the state is terminal",
+   "live_test { question, knowledge: [result.draft_id] }"
+  ],
+  "expected": [
+   "The request sends base_ids: [\"<listed-id>\"] and never context_ids and never builds_on_context",
+   "built_on describes each base with its status, price, whether the body is held and its training-set access",
+   "A REJECTED or CHALLENGED base is refused before anything is uploaded; a SUPERSEDED one only with force: true; two bases is merge_not_available",
+   "job_status carries native_state (the node's 13-state machine), a sentence, live progress {step, max_steps}, and on landing: questions {learned, not_learned, still_wrong[] with what the model said instead}, checks {taught, other_phrasing, did_not_break_the_base, did_not_change_unrelated_answers, publish_gate}, training_set, knowledge_file and draft_id",
+   "eta_s null renders as \"no measured estimate yet\", never 0",
+   "A stub-backend node labels its checks simulated: true and says nothing was measured in a live model",
+   "The draft is immediately testable by its owner through live_test, because the server signs the chat request with the teaching key"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/teach.ts",
+   "packages/mcp/src/teach-view.ts",
+   "packages/mcp/test/teach.test.ts",
+   "docs/lineage-teach-design.md"
+  ]
+ },
+ {
+  "id": "AZ-268",
+  "persona": "AI agent / automation",
+  "title": "A daily lesson is treated as money: the last one needs a human, and a failed one is not retried",
+  "goal": "jobs_per_key_per_day can be as low as 3, the charge happens at submit time, and there is no refund. An agent that retries a failed lesson can burn a person's day in seconds.",
+  "preconditions": [
+   "A node with teach enabled; a teaching key whose daily lessons are nearly or fully spent"
+  ],
+  "steps": [
+   "teach { rows } when the key has one lesson left today",
+   "teach { rows } again with confirm: true",
+   "teach { rows } on a node whose per-IP daily lesson limit is exhausted",
+   "teach { rows } after AINIZE_MCP_MAX_TEACH_JOBS is reached"
+  ],
+  "expected": [
+   "With one lesson left the call fails with confirmation_required, naming the node, the count used and the fact that a failed lesson is not refunded",
+   "With confirm: true it proceeds",
+   "An exhausted node answers quota_ip / quota_key and the tool reports it as-is — observed live on node-u :3422 as {\"code\":\"quota_ip\",\"message\":\"daily lesson limit reached for this address\"}",
+   "A failed lesson comes back as teach_quota_consumed with retryable: false — the tool never resubmits by itself",
+   "AINIZE_MCP_MAX_TEACH_JOBS is a session cap no tool argument can raise; the refusal says which env var to change",
+   "dry_run: true resolves the base, the quota and the rows (with the predicted training-set sha256) and calls neither the dataset door nor the preflight"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/teach.ts",
+   "packages/mcp/test/teach.test.ts (the last lesson of the day needs the human to say so)"
+  ]
+ },
+ {
+  "id": "AZ-269",
+  "persona": "AI agent / automation",
+  "title": "Publishing is irreversible, off by default, refused on the shared chain, and shows the real revenue split",
+  "goal": "One call writes a record nobody can recall, and node-u is configured publish: auto. The gate has to be structural, and the money it shows has to be the money that will be paid.",
+  "preconditions": [
+   "A node with teach enabled and a READY lesson",
+   "AINIZE_MCP_ALLOW_PUBLISH unset for the first step"
+  ],
+  "steps": [
+   "Try publish_knowledge with the default configuration",
+   "Set AINIZE_MCP_ALLOW_PUBLISH=1 and call publish_knowledge { lesson_id, name, dry_run: true } on an AIN-ledger node",
+   "Repeat on a local-ledger node, with and without the consents and the confirmation phrase"
+  ],
+  "expected": [
+   "Without the opt-in the tool is not registered at all, and node_status.capability_reasons names the env var",
+   "On a node whose /api/info says ledger \"ain\" the call is refused with permanent_ledger_refused unless AINIZE_MCP_ALLOW_AIN_PUBLISH=1 is also set; the message names a local-ledger node as the place to publish",
+   "dry_run returns split_preview computed from the node's own royalty_share/contributor_share: 70 % with no parent, 49 % with one — never the publish sheet's flat 70 % (docs/ux-critique-3.json item 186)",
+   "confirm_phrase_required contains the lesson id, so \"yes\" cannot be pattern-matched into a publish",
+   "consent_permanent and consent_rights are required inputs with no default; missing either refuses and writes nothing"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/tools/teach.ts",
+   "packages/mcp/test/teach.test.ts (publish is refused outright on the shared AIN chain)",
+   "packages/core/src/catalog.ts (royaltySplit)"
+  ]
+ },
+ {
+  "id": "AZ-270",
+  "persona": "Node operator / developer",
+  "title": "No secret can reach the model: not as an argument, not in a result, not through an error",
+  "goal": "Three secrets exist (operator password, teaching key, node identity) and any of them in a transcript is a real leak. The guard has to be structural and outbound, not a review habit.",
+  "preconditions": [
+   "An MCP server configured with an operator credential and a teaching key"
+  ],
+  "steps": [
+   "Enumerate every registered tool's input schema",
+   "Call tools that return purchases, manifests, download links and upstream errors",
+   "Force an upstream 401/403 and read the error that comes back"
+  ],
+  "expected": [
+   "No input schema anywhere has a field named like a credential or a node URL (test/schema.test.ts fails the build on one)",
+   "my_library returns the tx hash but never the stored manifest, which carries a download token",
+   "download_lesson returns local file paths, never the node's ?token= links",
+   "The outbound scrubber redacts 64-hex values, Bearer tokens, x-ngram-auth triples, query tokens and the configured secrets from results AND errors, while keeping tx_hash, sha256, record_hash and address readable",
+   "x-ngram-auth signatures are built per attempt and never reused, because the node's replay cache refuses a second verification of the same header",
+   "scripts/validate-skill.mjs fails if any doc or example ever pastes a credential-shaped literal"
+  ],
+  "priority": "P0",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/src/scrub.ts",
+   "packages/mcp/test/scrub.test.ts",
+   "packages/mcp/test/schema.test.ts",
+   "packages/mcp/test/auth.test.ts",
+   "packages/mcp/scripts/validate-skill.mjs"
+  ]
+ },
+ {
+  "id": "AZ-271",
+  "persona": "AI agent / automation",
+  "title": "Turn another MCP server's live data into a training set, with provenance, and stop there",
+  "goal": "Direction B: Ainize as an MCP client. The pipeline must record what pins every row, and must not chain into training — one agent turn should not spend a day of GPU on data nobody has read.",
+  "preconditions": [
+   "GRAPH_API_KEY exported (graph/README.md forbids mocked or static data)",
+   "An Ainize node with teach enabled for the --upload step"
+  ],
+  "steps": [
+   "node packages/mcp/dist/examples/subgraph-to-training-set.js --keyword uniswap --subgraph <id> --first 20 --out /tmp/rows.jsonl",
+   "Re-run with --upload --name \"…\"",
+   "Read the stored rows back with get_training_set / the node's dataset view"
+  ],
+  "expected": [
+   "The run follows the Subgraph MCP's own mandated workflow: search → 30-day query volume → schema → a bounded, block-pinned query",
+   "The measured facts are reported rather than papered over: the hosted server speaks legacy HTTP+SSE, and get_deployment_30day_query_counts currently answers 0 for every deployment, so the example asks for --subgraph instead of ranking on a signal that is not there",
+   "Every row carries a provenance note naming the server, the tool, the subgraph id and the block; the full RowProvenance (protocol version, argument sha256, per-row hashes, rows sha256) is written beside the journal when a state dir is configured",
+   "rows_sha256 equals the node's own dataset hash, so the training-set id is known before uploading and identical rows land on the same set",
+   "The pipeline STOPS at create_training_set and prints the separate teach_preflight / teach calls a human must approve",
+   "Without GRAPH_API_KEY the run fails with an instruction and never falls back to fixtures"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "manual",
+  "evidence": [
+   "packages/mcp/src/datasource.ts",
+   "packages/mcp/src/rows.ts",
+   "packages/mcp/src/examples/subgraph-to-training-set.ts",
+   "packages/mcp/test/datasource.test.ts",
+   "packages/mcp/references/subgraph-to-dataset.md",
+   "graph/README.md"
+  ]
+ },
+ {
+  "id": "AZ-272",
+  "persona": "Node operator / developer",
+  "title": "The skill and the README cannot drift away from the server",
+  "goal": "A SKILL.md that names a tool the server does not register, or a README missing a tool, is worse than no document: an agent follows it and fails. The check has to run in CI, not in review.",
+  "preconditions": [
+   "packages/mcp built and its test suite runnable"
+  ],
+  "steps": [
+   "node packages/mcp/scripts/validate-skill.mjs",
+   "npm test -w packages/mcp",
+   "Rename a tool in src/tools/ and re-run"
+  ],
+  "expected": [
+   "The validator checks the frontmatter fields, the name pattern, the description (which must say WHEN to use the skill), the ~5,000-token body budget, that every references/*.md is linked and every link resolves, that every tool the body names is registered, that no doc carries a credential-shaped literal, and that the .claude-plugin metadata parses and points at a skill that exists",
+   "test/skill.test.ts additionally asserts that EVERY tool the server registers has an example call and answer in the README, and that the skill names the two hard rules, the two tiers and all five workflows",
+   "A renamed or removed tool fails the suite immediately, naming the tool",
+   "A body over the token budget, an unlinked reference and a pasted key each fail the validator (asserted with a tampered copy in a temp directory)"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "api",
+  "evidence": [
+   "packages/mcp/scripts/validate-skill.mjs",
+   "packages/mcp/test/skill.test.ts",
+   "packages/mcp/SKILL.md",
+   "packages/mcp/EVAL.md"
+  ]
+ },
+ {
+  "id": "AZ-273",
+  "persona": "Node operator / developer",
+  "title": "The HTTP transport refuses to expose spending or model mutation on a port",
+  "goal": "stdio is one client on one machine; a port is reachable by anyone who can route to it. The server must not quietly become a spending endpoint for the network.",
+  "preconditions": [
+   "packages/mcp built"
+  ],
+  "steps": [
+   "node packages/mcp/dist/bin.js --http 3499",
+   "AINIZE_MCP_SESSION_BUDGET=5 node packages/mcp/dist/bin.js --http 3499",
+   "Repeat with --i-am-the-only-user",
+   "POST an initialize request to http://127.0.0.1:3499/mcp"
+  ],
+  "expected": [
+   "With no budget and no allow flags the server starts and answers initialize with a session id and the instructions string",
+   "With a non-zero budget (or ALLOW_APPLY / ALLOW_PUBLISH) it exits non-zero with an explanation, unless --i-am-the-only-user is passed",
+   "DNS-rebinding protection is on for localhost (createMcpExpressApp)",
+   "One MCP server instance is built per session"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "cli",
+  "evidence": [
+   "packages/mcp/src/bin.ts",
+   "packages/mcp/README.md (Configure a client)"
+  ]
+ },
+ {
+  "id": "AZ-274",
+  "persona": "Visitor (knowledge user)",
+  "title": "A visitor finds the MCP integration from the product, not from the source tree",
+  "goal": "The in-product docs page and the repo README are where a developer looks first. The MCP server has to be reachable from both, with the copy-paste line and the two safety rules visible without leaving the page.",
+  "preconditions": [
+   "A node serving the web build at http://localhost:3402"
+  ],
+  "steps": [
+   "Open http://localhost:3402/docs",
+   "Read the \"Connect an AI agent (MCP)\" block above the CLI/API tabs",
+   "Copy the claude mcp add line",
+   "Switch the locale to 한국어 and read the same block",
+   "Open the repository README and find the MCP section"
+  ],
+  "expected": [
+   "The docs page carries an MCP block naming the package (packages/mcp), the one-line install, and the two promises that matter (a quote before any payment; nothing that touches the model blocks the caller)",
+   "The copy button yields a runnable claude mcp add command",
+   "The Korean locale renders the same block in Korean — no untranslated key, no English fallback string",
+   "The repo README links packages/mcp/README.md and packages/mcp/SKILL.md from its References section"
+  ],
+  "priority": "P1",
+  "area": "mcp",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/pages/DocsPage.tsx",
+   "packages/web/src/i18n/pages/docs.ts",
+   "README.md",
+   "packages/mcp/README.md"
+  ]
  }
 ]
