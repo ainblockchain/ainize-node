@@ -104,26 +104,51 @@ test('three patches: one lock label, apply in list order, restore in reverse, on
 
 test('operator-pinned patch: base removes it, patched re-applies in list order, restore puts it back', async () => {
   const kr = N.market.blobs.get((await N.market.entry('law-kr-2025'))!.anchor.patch_sha256)!.path;
-  table.set(kr, ++seq);                                       // pinned by the operator before the test
+  await N.market.applyStack(['law-kr-2025'], 'manual');       // pinned by the operator: on the table AND recorded
   calls.length = 0;
   const r = await N.market.chat({ patchIds: ['law-us-2025', 'law-kr-2025'], messages: msgs, mode: 'compare', visitor: 'ip:test' });
   assert.equal(r.base?.content, 'base', 'base answer has the pinned patch removed');
   assert.equal(r.patched?.content, 'loaded=law-us-2025+law-kr-2025');
   assert.deepEqual(r.applied.map((a) => a.was_applied), [false, true]);
   assert.equal(r.was_applied, false, 'was_applied mirrors the first id');
+  assert.deepEqual(r.dirty, [], 'nothing unaccounted-for was on the model');
   assert.deepEqual(calls, [
     'remove:law-kr-2025', 'chat[]',
     'apply:law-us-2025', 'apply:law-kr-2025', 'chat[law-us-2025,law-kr-2025]',
-    'remove:law-us-2025',                                     // drop what we added (reverse)
-    'apply:law-kr-2025',                                      // re-assert the pinned one after an overlapping removal
+    // the restore is the node's RECORDED stack, asserted in order — not a reverse replay of what this request did
+    'remove:law-kr-2025', 'remove:law-us-2025',
+    'apply:law-kr-2025',
   ]);
   assert.deepEqual([...table.keys()], [kr], 'pinned patch is back, nothing else');
+  assert.deepEqual(N.store.listApplied().map((a) => a.patch_id), ['law-kr-2025'], 'and the record still says so');
   // patched-only with everything already loaded → nothing re-applied (fast path), nothing to restore
   calls.length = 0;
   const r2 = await N.market.chat({ patchIds: ['law-kr-2025'], messages: msgs, mode: 'patched', visitor: 'ip:test' });
   assert.deepEqual(calls, ['chat[law-kr-2025]']);
   assert.equal(r2.applied_ms, null); assert.equal(r2.was_applied, true);
-  table.delete(kr);
+  await N.market.removePatch('law-kr-2025');
+  table.clear();
+});
+
+/**
+ * Item 211 — a body on the shared model that this node never loaded (another node's verification, a crashed test).
+ * It used to read as "· was already loaded": the visitor was shown it as their own control, the Before column was
+ * measured through it, and the restore step then re-asserted the leftover for everyone.
+ */
+test('a leftover on the shared model is a dirty table, not "already loaded": it is removed for the base answer and not put back', async () => {
+  const kr = N.market.blobs.get((await N.market.entry('law-kr-2025'))!.anchor.patch_sha256)!.path;
+  table.set(kr, ++seq);                                       // on the model, in nobody's record
+  calls.length = 0;
+  const r = await N.market.chat({ patchIds: ['law-kr-2025'], messages: msgs, mode: 'compare', visitor: 'ip:test' });
+  assert.deepEqual(r.dirty, ['law-kr-2025'], 'the request says what it found');
+  assert.deepEqual(r.applied.map((a) => a.was_applied), [false], 'and does NOT claim the visitor pinned it');
+  assert.equal(r.base?.content, 'base', 'the Before answer is the model without it');
+  assert.equal(r.patched?.content, 'loaded=law-kr-2025');
+  assert.deepEqual(calls, ['remove:law-kr-2025', 'chat[]', 'apply:law-kr-2025', 'chat[law-kr-2025]', 'remove:law-kr-2025']);
+  assert.equal(table.size, 0, 'the leftover is gone — the node does not re-assert what it never loaded');
+  assert.deepEqual(N.store.listApplied(), [], 'and nothing was written into this node’s stack');
+  assert.ok(N.market.recentDirty().includes('law-kr-2025'), 'the picker can warn about it');
+  assert.ok(N.store.events({ kind: 'runtime', limit: 5 }).some((e) => /not in this node's stack/.test(e.message)));
 });
 
 test('validation: empty selection = base model, >3 ids, duplicates collapse, unknown id, missing body', async () => {

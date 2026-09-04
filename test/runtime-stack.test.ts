@@ -29,6 +29,8 @@ const PORT = 34071;
 let N: RunningNode;
 let hook: FakeHook;
 let model: Server;
+/** Called on every completion the node asks the (fake) model for — the probe point of AZ-258. */
+let onGenerate: (() => void) | null = null;
 
 // ---------------------------------------------------------------- fixtures (values are bf16-exact by construction)
 const range = (from: number, n: number) => Array.from({ length: n }, (_, i) => BigInt(from + i));
@@ -63,7 +65,13 @@ before(async () => {
   writeFixture(files.legacy1, L1_ADDRS, baseValue, l1After);
   writeFixture(files.legacy2, L2_ADDRS, baseValue, l2After);
 
-  model = createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(req.url === '/v1/models' ? { data: [{ id: 'demo-ngram-1b' }] } : { choices: [{ text: 'a', message: { content: 'a' } }] })); });
+  model = createServer((req, res) => {
+    // A generation is the one moment the live table is being MEASURED: AZ-258 reads it here to prove a verification
+    // is scored on the candidate alone and not on whatever this node happens to serve.
+    if (req.url !== '/v1/models') onGenerate?.();
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.url === '/v1/models' ? { data: [{ id: 'demo-ngram-1b' }] } : { choices: [{ text: 'a', message: { content: 'a' } }] }));
+  });
   await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
   const api = `http://127.0.0.1:${(model.address() as { port: number }).port}`;
 
@@ -175,4 +183,69 @@ test('AZ-257 two pre-lineage knowledges that overlap: unloading the top one leav
   assert.ok(holds(3060n, baseValue), 'its own rows go back to the model');
   await N.market.removePatch('legacy-one');
   assert.ok(holds(3040n, baseValue) && holds(3010n, baseValue));
+});
+
+test('AZ-258 a verification is measured on the candidate alone: what this node serves comes off for the run and is back after it (items 241, 258)', { skip }, async () => {
+  await unloadAll();
+  await N.market.applyStack(['legacy-one'], 'manual');
+  assert.ok(holds(3000n, l1After), 'precondition: this node serves legacy-one');
+  const seen: { applied: string[]; l1OnTable: boolean; candidateOnTable: boolean }[] = [];
+  onGenerate = () => seen.push({
+    applied: N.market.store.listApplied().map((a) => a.patch_id),
+    l1OnTable: holds(3000n, l1After),
+    candidateOnTable: holds(1000n, pAfter),
+  });
+  const anchor = (await N.market.entry('stack-parent'))!.anchor;
+  const out = await N.market.verifyIsolated(anchor, files.parent, {});
+  onGenerate = null;
+  assert.ok(seen.length >= 2, 'the benchmark ran (a baseline generation and a scored one)');
+  assert.ok(seen.every((s) => !s.applied.includes('legacy-one')), 'legacy-one was not on the table while the candidate was being measured');
+  assert.ok(seen.every((s) => !s.l1OnTable), 'and its rows really were off the model, not just off the record');
+  assert.ok(!seen[0].candidateOnTable, 'the pre-apply baseline is the model WITHOUT the candidate');
+  assert.ok(seen.at(-1)!.candidateOnTable, 'and the scored answers are the model WITH it');
+  assert.equal(out.passed, true);
+  assert.deepEqual((await N.market.stack()).map((l) => l.patch_id), ['legacy-one'], 'this node serves exactly what it served before');
+  assert.ok(holds(3000n, l1After), 'and its rows are back on the model — a verification does not un-teach a subscription');
+  assert.equal(N.market.store.get('runtime.restore'), '', 'the crash marker is cleared');
+  await unloadAll();
+});
+
+test('AZ-259 a verification killed halfway leaves a marker, and the next start takes it off the model (item 126)', { skip }, async () => {
+  await unloadAll();
+  await N.market.applyStack(['legacy-one'], 'manual');
+  // Exactly what a SIGKILL between apply and restore leaves behind: the candidate on the table, a row that says so,
+  // and the stack the run took off recorded in kv.
+  const sha = (await N.market.entry('legacy-two'))!.anchor.patch_sha256;
+  N.market.store.set('runtime.restore', JSON.stringify({ ids: ['legacy-one'], reason: 'verify:legacy-two', at: Date.now() }));
+  await N.market.runtime.apply(files.legacy2, { journal: N.market.runtime.journalPath(sha) ?? undefined });
+  N.market.store.setApplied('legacy-two', sha, 'verify:legacy-two', { journal_path: N.market.runtime.journalPath(sha) });
+  assert.ok(holds(3040n, l2After), 'precondition: the interrupted verification is still on the model');
+  assert.deepEqual((await N.market.runtime.status(true)).applied, ['legacy-one', 'legacy-two'], 'and /api/info can SEE it (it used to report [] whatever was loaded)');
+
+  await N.market.recoverRuntime(true);
+  assert.deepEqual((await N.market.stack()).map((l) => l.patch_id), ['legacy-one']);
+  assert.ok(holds(3040n, l1After), 'the candidate came off through its journal — legacy-one is standing again');
+  assert.ok(holds(3060n, baseValue), 'and the rows only the candidate taught are back to the model');
+  assert.equal(N.market.store.get('runtime.restore'), '');
+  await unloadAll();
+});
+
+test('AZ-260 holding a body is not a licence to serve it (item 327)', { skip }, async () => {
+  const foreign = {
+    status: 'LISTED', settlements: [],
+    anchor: { id: 'foreign-1', author: '0x00000000000000000000000000000000deadbeef', patch_sha256: 'f'.repeat(64), price: '5', currency: 'CREDIT' },
+  } as unknown as Parameters<typeof N.market.hasLicense>[0];
+  assert.equal(N.market.hasLicense(foreign), false, 'a stranger’s knowledge is not usable by default');
+  // What the verifier writes when it fetches a body to score it.
+  N.market.store.putLicense('foreign-1', 'f'.repeat(64), 'verification', 'fetched to verify it');
+  assert.equal(N.market.hasLicense(foreign), false, 'verifying a knowledge is not buying it');
+  assert.match(N.market.licenseError(foreign).message, /not_licensed: this node holds the body of foreign-1 because it verified it/);
+  N.market.store.putLicense('foreign-1', 'f'.repeat(64), 'purchase', 'tx abc');
+  assert.equal(N.market.hasLicense(foreign), true, 'buying it is');
+  N.market.store.putLicense('foreign-1', 'f'.repeat(64), 'verification', 'fetched again');
+  assert.equal(N.market.hasLicense(foreign), true, 'and a later verification copy never downgrades the purchase');
+  // A knowledge this node published, and one priced at zero, are licensed without a row.
+  const mine = (await N.market.entry('stack-parent'))!;
+  assert.equal(N.market.hasLicense(mine), true);
+  N.market.store.clearLicense('foreign-1');
 });

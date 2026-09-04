@@ -379,7 +379,7 @@ export function buildApi(deps: ApiDeps): Router {
     const requires = quote.requires.map((r) => ({
       id: r.id, name: r.name, held: r.held, price: r.known ? r.price : null,
       currency: r.currency, author: r.author, author_name: r.author_name ?? null, gateway_url: r.gateway_url ?? null,
-      depth: r.depth, known: r.known, purchased: r.purchased, mine: r.mine,
+      depth: r.depth, known: r.known, licensed: r.licensed, purchased: r.purchased, mine: r.mine,
     }));
     return {
       ...redactContributors(e), lineage, conflicts, branches, requires, quote,
@@ -1275,6 +1275,15 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.get('/api/teach/policy', wrap(async (req, res) => { res.set('cache-control', 'public, max-age=10'); return needTeach().policy(req.ip); }));
+  /**
+   * Item 171 — can this caller teach with this knowledge on this node? The same rules `contextTargets` applies, asked
+   * before a dataset is uploaded, so `--patch krx-all-2761` fails in front of the side effect instead of behind it.
+   */
+  router.get('/api/teach/bases/:id', wrap(async (req) => {
+    const address = requireTeacher(req);
+    const t = visitorGate(req, address);
+    return t.knowledgeFor(req.params.id as string, { address, operator: isOperator(req) });
+  }));
   router.post('/api/teach/preflight', wrap(async (req) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
     const raw = z.object({
@@ -1424,9 +1433,10 @@ export function buildApi(deps: ApiDeps): Router {
   router.patch('/api/me/teach/policy', requireOperator, wrap(async (req) => {
     const t = needTeach();
     const b = z.object({
-      enabled: z.boolean().optional(), publish: z.enum(['review', 'auto', 'never']).optional(), facts_per_job: z.number().int().min(1).max(8).optional(),
-      jobs_per_key_per_day: z.number().int().min(0).max(1000).optional(), jobs_per_ip_per_day: z.number().int().min(0).max(1000).optional(), queue_max: z.number().int().min(1).max(100).optional(),
-      contributor_share: z.number().min(0).max(0.9).optional(), draft_ttl_days: z.number().int().min(1).max(90).optional(),
+      // every field is nullable: `null` clears the override so the node falls back to config.json (item 125)
+      enabled: z.boolean().nullable().optional(), publish: z.enum(['review', 'auto', 'never']).nullable().optional(), facts_per_job: z.number().int().min(1).max(8).nullable().optional(),
+      jobs_per_key_per_day: z.number().int().min(0).max(1000).nullable().optional(), jobs_per_ip_per_day: z.number().int().min(0).max(1000).nullable().optional(), queue_max: z.number().int().min(1).max(100).nullable().optional(),
+      contributor_share: z.number().min(0).max(0.9).nullable().optional(), draft_ttl_days: z.number().int().min(1).max(90).nullable().optional(),
       paused_reason: z.string().max(200).nullable().optional(), blocked_topics: z.string().max(500).nullable().optional(),
       // teach mode v2 limits; `rows_per_job` is an explicit override that DISABLES the measured derivation
       dataset_max_bytes: z.number().int().min(1000).max(DATASET_MAX_BYTES_CEILING).nullable().optional(),

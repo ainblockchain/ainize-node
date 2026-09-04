@@ -1,15 +1,17 @@
 /**
  * Assemble and run a marketplace node: ledger + store + blobs + runtime + market + p2p + verifier + HTTP.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
-import { buildApi } from './api.js';
+import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
+import { buildApi, setupTokenPath } from './api.js';
+import { diskReport, humanBytes } from './disk.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
 import { P2P } from './p2p.js';
@@ -45,8 +47,12 @@ export interface StartOptions {
   teachHooks?: TeachHooks;
 }
 
-/** How long raw event rows are kept (lineage design §5.6). */
-export const EVENTS_RETENTION_MS = 90 * 86_400_000;
+/** How long raw event rows are kept (lineage design §5.6) when `events.retentionDays` is not set (item 128). */
+export const EVENTS_RETENTION_MS = DEFAULT_EVENTS_RETENTION_DAYS * 86_400_000;
+
+/** Warn about the volume below this share of free space, or below this many bytes, whichever bites first (item 128). */
+export const DISK_WARN_FRACTION = 0.05;
+export const DISK_WARN_BYTES = 2 * 1000 ** 3;
 
 function defaultWebDist(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -115,7 +121,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     saveConfig(onDisk ? mergeConfigChanges(onDisk, baseline, cfg) : cfg, opts.home);
     baseline = structuredClone(cfg);
   };
-  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig }));
+  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
 
   // ---------------------------------------------------------------- health probes (item 134)
   // Everything that is not an API route used to be answered 200 with the web app, so `/healthz` — the path every
@@ -157,12 +163,43 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (opts.listen !== false) {
     await new Promise<void>((res, rej) => { server.once('error', rej); server.listen(cfg.port, cfg.host, () => res()); });
   }
-  const url = opts.listen === false ? selfUrl : `http://${cfg.host === '0.0.0.0' ? 'localhost' : cfg.host}:${(server.address() as { port: number }).port}`;
+  const bound = opts.listen === false ? null : (server.address() as { port: number }).port;
+  const everyInterface = cfg.host === '0.0.0.0' || cfg.host === '::';
+  const url = bound === null ? selfUrl : `http://${everyInterface ? 'localhost' : cfg.host}:${bound}`;
+
+  /**
+   * A node with no operator password is claimed by the first caller that reaches `POST /api/auth/setup` (item 121).
+   * Claiming is loopback-only, so an operator who administers the node over the network needs a second proof that
+   * they are the owner: this one-time token, written where only the user the node runs as can read it. It is deleted
+   * the moment the node is claimed, and re-minted on any start that finds the node still unclaimed.
+   */
+  if (opts.home) {
+    const tokenFile = setupTokenPath(opts.home);
+    if (cfg.operatorPasswordHash) { try { if (existsSync(tokenFile)) writeFileSync(tokenFile, '', { mode: 0o600 }); } catch { /* nothing to clean up */ } }
+    else {
+      try {
+        mkdirSync(opts.home, { recursive: true });
+        const existing = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
+        if (!existing) writeFileSync(tokenFile, randomBytes(24).toString('hex') + '\n', { mode: 0o600 });
+      } catch { /* the loopback path still works */ }
+    }
+  }
 
   if (!opts.quiet) {
-    console.log(`ainize node "${cfg.name}" listening on ${url}`);
+    console.log(`ainize node "${cfg.name}" listening on ${url}${bound !== null && everyInterface ? `  (bound to ${cfg.host}:${bound} — reachable from every interface)` : ''}`);
     console.log(`  identity : ${cfg.identity.address}`);
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
+    if (!cfg.operatorPasswordHash) {
+      console.log(`  ${everyInterface ? '! ' : ''}this node has no operator password yet — set one with \`ainize login\`${everyInterface ? ' NOW: it is reachable from every interface' : ''}`);
+      if (opts.home) console.log(`    claiming it from another machine needs the one-time token in ${setupTokenPath(opts.home)}`);
+    }
+  }
+  // The same two facts in the event log, where `ainize logs` and the console can see them.
+  if (!cfg.operatorPasswordHash) {
+    market.log(everyInterface ? 'warn' : 'info', 'auth', `this node has no operator password: it is unclaimed${everyInterface ? ` and bound to ${cfg.host} (every interface)` : ' (loopback only)'} — run \`ainize login\` to claim it`);
+  }
+  if (everyInterface && cfg.server?.trustProxy === false) {
+    market.log('info', 'config', `host is ${cfg.host}: this node accepts connections from every interface. Bind it to 127.0.0.1 (\`ainize config set host 127.0.0.1\`) unless it is meant to be public.`);
   }
   market.log('info', 'node', `node started (${ledger.kind} ledger, roles ${cfg.roles.join('/')})`);
   for (const p of problems) market.log('warn', 'config', `${p.key}: ${p.message}`);
@@ -183,14 +220,40 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (cfg.verifier?.auto !== false) verifier?.start();   // verifier.auto=false: manual verification only
   teach?.start();
   market.payouts.start();   // 60-s royalty payout retry timer (spec §9.3)
-  const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
+  // The same 20-second tick brings subscribed tracks up to date (item 255): "subscribe" was a one-time snapshot and
+  // nothing ever reacted to a later `branch` or `supersede` record, so a subscriber served yesterday's retired bake
+  // indefinitely while every screen said it was current.
+  const watchdog = setInterval(() => {
+    market.watchdog().catch(() => undefined);
+    market.reconcileSupersedes().catch(() => undefined);
+    market.reconcileSubscriptions().catch(() => undefined);
+  }, 20_000);
   watchdog.unref?.();
   // events retention (lineage design §5.6): the demand counters are materialised in `patch_signals_daily` at write
   // time, so the raw event rows — the only place a visitor id ever lands — are kept for 90 days and no longer.
-  const purgeEvents = () => { try { const n = store.purgeEvents(Date.now() - EVENTS_RETENTION_MS); if (n) market.log('info', 'node', `removed ${n} event(s) older than ${EVENTS_RETENTION_MS / 86_400_000} days`); } catch { /* next hour */ } };
+  const retentionMs = (cfg.events?.retentionDays ?? DEFAULT_EVENTS_RETENTION_DAYS) * 86_400_000;
+  const purgeEvents = () => { try { const n = store.purgeEvents(Date.now() - retentionMs); if (n) market.log('info', 'node', `removed ${n} event(s) older than ${Math.round(retentionMs / 86_400_000)} days (events.retentionDays)`); } catch { /* next hour */ } };
   const retention = setInterval(purgeEvents, 3600_000);
   retention.unref?.();
   setTimeout(purgeEvents, 5000).unref?.();
+  // Disk was the one resource nothing in the product reported: a verifier accumulates a gigabyte of bodies per
+  // handful of catalogue items and the first symptom was ENOSPC, which takes the store and the ledger with it.
+  // Say it hourly in the event log while the volume is tight; `/api/info.disk` and `ainize status` carry the detail.
+  let warnedDisk = 0;
+  const checkDisk = () => {
+    try {
+      const d = diskReport(cfg.dataDir, { home: opts.home, ledgerFile: join(cfg.dataDir, 'ledger.jsonl') });
+      if (d.free === null || d.size === null) return;
+      const tight = d.free < DISK_WARN_BYTES || d.free / d.size < DISK_WARN_FRACTION;
+      if (tight && Date.now() - warnedDisk > 3600_000) {
+        warnedDisk = Date.now();
+        market.log('warn', 'node', `only ${humanBytes(d.free)} free on the volume holding ${cfg.dataDir} — this node is using ${humanBytes(d.total)} (bodies ${humanBytes(d.blobs)}, training sets ${humanBytes(d.datasets)}, uploads ${humanBytes(d.uploads)}, database ${humanBytes(d.db)}). \`ainize gc\` removes bodies this node neither published nor bought.`);
+      }
+    } catch { /* next hour */ }
+  };
+  const diskWatch = setInterval(checkDisk, 3600_000);
+  diskWatch.unref?.();
+  setTimeout(checkDisk, 8000).unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
   driveSync.unref?.();
   setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
@@ -200,6 +263,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     async stop() {
       clearInterval(watchdog);
       clearInterval(retention);
+      clearInterval(diskWatch);
       clearInterval(driveSync);
       market.payouts.stop();
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);

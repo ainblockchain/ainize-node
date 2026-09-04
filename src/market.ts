@@ -130,6 +130,12 @@ export interface TeachSettings {
   declarationRows?: number; queuedRowsMax?: number; checkCallBudget?: number;
 }
 /**
+ * A partial edit of those overrides. `undefined` leaves a field alone; `null` REMOVES the override so the node falls
+ * back to config.json / the built-in default — which is what `ainize config unset teach.<key>` needs (item 125):
+ * without a way to clear one, a console override outlived every terminal edit and every restart.
+ */
+export type TeachPolicyPatch = { [K in keyof TeachSettings]?: TeachSettings[K] | null };
+/**
  * An address-set overlap with another knowledge. `author` / `created_at` / `sales` are what the publisher has to see
  * before announcing (item 150) and what the supersede rule reads (items 151, 240, 363): only an OLDER knowledge by
  * the SAME author is ever superseded — a competitor's listing never is.
@@ -232,7 +238,7 @@ export interface PatchQuote {
   patch_id: string;
   price: string;
   currency: string;
-  requires: (X402Required & { held: boolean; purchased: boolean; mine: boolean })[];
+  requires: (X402Required & { held: boolean; licensed: boolean; purchased: boolean; mine: boolean })[];
   missing: string[];
   unknown: string[];
   total: string;
@@ -361,6 +367,11 @@ export class Market {
     // Item 126: `runtime.status().applied` was a hard-coded [] — `/api/info` and `ainize status` could not show what
     // was in the model. It reads the node's own stack rows now, live (never from the 30-second status cache).
     runtime.setAppliedSource(() => store.listApplied().map((a) => a.patch_id));
+    // This node's own starting credit is a grant like any other (item 364): written once, counted against the same
+    // cap, visible in `ainize wallet` — never a number the balance function assumes for whoever happens to ask.
+    if (ledger.kind !== 'ain' && Number(cfg.market.initialCredit) > 0 && !store.getGrant(cfg.identity.address)) {
+      store.putGrant(cfg.identity.address, cfg.market.initialCredit, 'this node, at startup');
+    }
   }
   /** Published training sets held by this node (lineage design §5.2, §6.6). */
   readonly datasets: DatasetBlobStore;
@@ -1131,13 +1142,20 @@ export class Market {
    */
   async quoteFor(entry: CatalogEntry, map?: Map<string, CatalogEntry>): Promise<PatchQuote> {
     const m = map ?? await this.entryMap();
-    const requires = this.requiredBases(entry, m).map((r) => ({
-      ...r,
-      held: !!m.get(r.id) && this.blobs.has(m.get(r.id)!.anchor.patch_sha256),
-      purchased: !!this.store.getPurchase(r.id),
-      mine: !!m.get(r.id) && m.get(r.id)!.anchor.author === this.address,
-    }));
-    const missing = requires.filter((r) => !r.held && !r.mine);
+    const requires = this.requiredBases(entry, m).map((r) => {
+      const e = m.get(r.id);
+      // Holding the bytes is not the right to use them (item 327): a verifier fetched every body it scored. What
+      // decides whether a base still has to be BOUGHT is the licence, not the file on disk.
+      const lic = e ? this.licenseOf(e) : null;
+      return {
+        ...r,
+        held: !!e && this.blobs.has(e.anchor.patch_sha256),
+        licensed: !!lic && lic.source !== 'verification',
+        purchased: !!this.store.getPurchase(r.id),
+        mine: !!e && e.anchor.author === this.address,
+      };
+    });
+    const missing = requires.filter((r) => !r.licensed && !r.mine);
     const priced = missing.filter((r) => r.known);
     const total = Number(entry.anchor.price) + priced.reduce((a, r) => a + Number(r.price || 0), 0);
     return {
@@ -1450,7 +1468,7 @@ export class Market {
     const purchases: NonNullable<PurchaseResult['purchases']> = [];
     if (opts.withRequired) {
       for (const need of quote.requires) {
-        if (need.held || need.mine) continue;
+        if (need.licensed || need.mine) continue;
         if (!need.known) throw conflict(`${patchId} needs ${need.id} underneath and this node has never seen that anchor — ask a peer that carries it before buying`, { quote });
         const sub = await this.buy(need.id, { apply: false });
         purchases.push({ patch_id: need.id, amount: sub.amount, currency: need.currency, scheme: sub.scheme, tx_hash: sub.tx_hash });
@@ -2017,26 +2035,28 @@ export class Market {
    * against a contaminated model. `applied` rows whose reason is `verify:`/`chat:` are exactly that marker, and
    * `runtime.restore` holds the stack the run took off before it started.
    */
-  async recoverRuntime(): Promise<void> {
-    if (this.recovered) return;
+  async recoverRuntime(force = false): Promise<void> {
+    if (this.recovered && !force) return;
     this.recovered = true;
-    const raw = this.store.get(Market.RESTORE_KEY);
-    const cur = this.store.listApplied();
-    const transient = cur.filter((a) => /^(verify|chat):/.test(a.reason));
-    let snapshot: string[] | null = null;
-    if (raw) { try { snapshot = (JSON.parse(raw) as { ids?: string[] }).ids ?? null; } catch { snapshot = null; } }
-    if (!snapshot && !transient.length) return;
-    const wanted = snapshot ?? cur.filter((a) => !/^(verify|chat):/.test(a.reason)).map((a) => a.patch_id);
-    this.log('warn', 'runtime', `a ${transient[0]?.reason.startsWith('chat') ? 'live test' : 'verification'} was interrupted with ${transient.map((a) => a.patch_id).join(', ') || 'nothing'} still on the shared model — putting the table back to ${wanted.length ? wanted.join(' → ') : 'the base model'}`, transient[0]?.patch_id ?? null);
+    // Everything is read INSIDE the lock: a live test or a verification that is running right now legitimately has
+    // `chat:`/`verify:` rows, and acting on a copy read before the lock would undo a run that then finished fine.
     await this.runtime.exclusive('recover', async () => {
+      const raw = this.store.get(Market.RESTORE_KEY);
+      const cur = this.store.listApplied();
+      const transient = cur.filter((a) => /^(verify|chat):/.test(a.reason));
+      let snapshot: string[] | null = null;
+      if (raw) { try { snapshot = (JSON.parse(raw) as { ids?: string[] }).ids ?? null; } catch { snapshot = null; } }
+      if (!snapshot && !transient.length) return;
+      const wanted = (snapshot ?? cur.filter((a) => !/^(verify|chat):/.test(a.reason)).map((a) => a.patch_id)).filter((id) => !transient.some((t) => t.patch_id === id));
+      this.log('warn', 'runtime', `a ${transient[0]?.reason.startsWith('chat') ? 'live test' : 'verification'} was interrupted with ${transient.map((a) => a.patch_id).join(', ') || 'nothing'} still on the shared model — putting the table back to ${wanted.length ? wanted.join(' → ') : 'the base model'}`, transient[0]?.patch_id ?? null);
       const top = cur[cur.length - 1];
       const blob = top ? this.blobs.get(top.sha256) : null;
       // If the model itself restarted while we were gone the journals describe values that no longer exist: rebuild.
       const status = blob ? await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined }) : null;
       const rebuild = !!status && !status.applied;
       await this.assertStack(await this.layersOfExact(wanted), 'recover', { rebuild });
+      this.store.set(Market.RESTORE_KEY, '');
     }).catch((e) => this.log('error', 'runtime', `could not put the table back after an interrupted run: ${(e as Error).message}`));
-    this.store.set(Market.RESTORE_KEY, '');
   }
 
   /**
@@ -2955,7 +2975,7 @@ export class Market {
   }
   /** Operator overrides only (what `PATCH /api/me/teach/policy` wrote). */
   teachSettings(): TeachSettings { const raw = this.store.get('settings.teach'); return raw ? (JSON.parse(raw) as TeachSettings) : {}; }
-  updateTeachPolicy(patch: TeachSettings): TeachSettings {
+  updateTeachPolicy(patch: TeachPolicyPatch): TeachSettings {
     // Only keys the operator actually sent change: `undefined` = untouched, `null` = clear the override (back to config.json).
     const next: Record<string, unknown> = { ...this.teachSettings() };
     for (const [k, v] of Object.entries(patch)) { if (v === undefined) continue; if (v === null) delete next[k]; else next[k] = v; }

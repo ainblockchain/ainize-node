@@ -34,6 +34,15 @@ export interface VerifyOpts {
   journal?: string;
   /** true when the candidate is a delta: its `before` is checked against the live rows before anything is written. */
   delta?: boolean;
+  /** Names the lock section this run takes (`verify:<id>`), so the queue, the watchdog and `/api/runtime` can say what is running. */
+  label?: string;
+  /**
+   * Crash marker (item 126). `applying()` runs BEFORE the candidate's rows are written and `restored()` after they
+   * have been put back, so the caller can persist "this body is on the shared table right now": a SIGKILL between
+   * the two used to leave the model patched with nothing anywhere that knew it. On any failure the marker is left
+   * standing on purpose — the caller's restore pass is what takes it off.
+   */
+  mark?: { applying: () => void; restored: () => void };
 }
 
 /** What `patch.py check` measured on the live table (design §8.2). */
@@ -122,7 +131,7 @@ export class Runtime {
       // The caller learns the wait is over the instant the lock is ours — before any model call — so a request
       // that is still queued can be told apart from one that is running (and cancelled for free while queued).
       try { onEnter?.(); } catch { /* a bookkeeping callback must never fail the run */ }
-      try { return await fn(); } finally { this.busy = null; release(); }
+      try { return await fn(); } finally { this.lastOp = { label, at: Date.now() }; this.busy = null; release(); }
     };
     const next = this.queue.then(run, run);
     this.queue = next.catch(() => undefined);
@@ -131,6 +140,12 @@ export class Runtime {
 
   /** In-process holder of the serialised section (null = idle). Cross-process holders are visible through `lockHolder()`. */
   private busy: { label: string; since: number } | null = null;
+  /**
+   * The last serialised section that FINISHED here. The watchdog's "the table reverted" warning used to blame a
+   * serving restart it never checked (item 258); with this it can name what this node did last instead.
+   */
+  private lastOp: { label: string; at: number } | null = null;
+  lastOperation(): { label: string; at: number } | null { return this.lastOp ? { ...this.lastOp } : null; }
   /** Number of callers waiting in the in-process queue (approximate). */
   private waiting = 0;
 
@@ -320,19 +335,29 @@ export class Runtime {
     return r.out.trim().endsWith('1');
   }
 
+  /**
+   * What is physically on the shared table, as this node recorded it (item 126). `status().applied` used to be a
+   * hard-coded `[]`, so `GET /api/info` and `ainize status` could never show what was loaded — the one screen an
+   * operator checks after a crash. Market wires the node's `applied` rows in here at start-up.
+   */
+  private appliedSource: (() => string[]) | null = null;
+  setAppliedSource(fn: () => string[]) { this.appliedSource = fn; }
+  private appliedNow(): string[] { try { return this.appliedSource ? this.appliedSource() : []; } catch { return []; } }
+
   async status(force = false): Promise<RuntimeStatus> {
     if (Date.now() < this.downUntil) {
       // a generation just failed on the model side — report it down until the window passes (or a later call succeeds)
-      return { available: false, api: this.cfg.api ?? null, model: null, hook: false, repo: this.repo, applied: [], error: MODEL_UNAVAILABLE, detail: this.downDetail.slice(0, 200) };
+      return { available: false, api: this.cfg.api ?? null, model: null, hook: false, repo: this.repo, applied: this.appliedNow(), error: MODEL_UNAVAILABLE, detail: this.downDetail.slice(0, 200) };
     }
-    if (!force && this.statusCache && Date.now() - this.statusCache.at < 30_000) return this.statusCache.value;
+    // `applied` is never cached: it changes with every apply/remove, and a 30-second-old copy of it is a lie.
+    if (!force && this.statusCache && Date.now() - this.statusCache.at < 30_000) return { ...this.statusCache.value, applied: this.appliedNow() };
     const model = await this.models();
     const hook = model ? await this.hookAvailable() : false;
     const value: RuntimeStatus = { available: !!model && hook, api: this.cfg.api ?? null, model, hook, repo: this.repo, applied: [] };
     if (!model) value.error = 'serving API unreachable';
     else if (!hook) value.error = this.repo ? 'patch hook unavailable (ENGRAM_HOOK=1?)' : 'runtime repo not found';
     this.statusCache = { at: Date.now(), value };
-    return value;
+    return { ...value, applied: this.appliedNow() };
   }
 
   info(npz: string) { return this.py(['scripts/patch.py', 'info', npz], 120_000); }
@@ -464,7 +489,16 @@ export class Runtime {
    * The prompts are also sent verbatim (`s.prompt`, trailing space included) exactly as before.
    */
   async verify(npz: string, bench: BenchmarkSpec, opts: VerifyOpts = {}): Promise<VerifyOutcome> {
-    return this.serial(async () => {
+    return this.serial(() => this.verifyInLock(npz, bench, opts), `verify:${opts.label ?? 'patch'}`);
+  }
+
+  /**
+   * The body of `verify()` WITHOUT taking the lock — for a caller that already holds it and has to do more inside the
+   * same section (Market.verifyIsolated takes the rest of the applied stack off the table first, items 241/258).
+   * Calling this without holding the lock is a bug: two verifications would interleave on one shared model.
+   */
+  async verifyInLock(npz: string, bench: BenchmarkSpec, opts: VerifyOpts = {}): Promise<VerifyOutcome> {
+    {
       const log: string[] = [];
       const samples = (bench.samples ?? []).slice(0, opts.maxSamples ?? 40);
       const st = await this.status(true);
@@ -492,6 +526,7 @@ export class Runtime {
         }
         log.push(`pre-apply hits ${before.filter((d) => d.hit).length}/${before.length}${below.length ? ' (with the base stack loaded)' : ''}`);
       }
+      opts.mark?.applying();
       const ap = await this.applyRaw(npz, { journal: opts.journal, verifyBefore: opts.delta });
       if (ap.json?.error === 'base_mismatch') throw new Error(`base_mismatch: the rows under this knowledge are not the ones it was trained on (${ap.json.rows_differ} of ${ap.json.rows} rows) — it cannot be verified here`);
       if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
@@ -522,6 +557,7 @@ export class Runtime {
       if (opts.restore !== false) {
         const rm = await this.removeRaw(npz, { journal: opts.journal });
         log.push(`restore: ${rm.out || rm.err}`);
+        if (rm.code === 0) opts.mark?.restored();
       }
       // Whatever this run put on the table comes off in reverse, through the journal — the node is left as it was found.
       for (let i = addedBelow.length - 1; i >= 0; i--) {
@@ -563,6 +599,6 @@ export class Runtime {
         pre_apply: before,
         log,
       };
-    });
+    }
   }
 }
