@@ -12,6 +12,7 @@
  * a throwaway directory. (`--json` prints the machine-readable summary.)
  *
  *   node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs
+ *   node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs --web    (also drives SC-15 in a browser)
  *
  * Everything it makes lives under one temp directory and the cluster is stopped again on the way out.
  */
@@ -171,6 +172,30 @@ try {
   must(alone.status === 409 && /^needs_base/.test(alone.json.error ?? ''), `refused alone: ${alone.status} ${String(alone.json.error).slice(0, 120)}`);
   must((alone.json.missing ?? []).join(',') === BASE_ID, 'and it names what is missing');
 
+  if (process.argv.includes('--web')) {
+    // SC-15 in a browser, on the screen a buyer is actually on: the refusal becomes a question with a button.
+    step('the same load, through the buy page (SC-15)');
+    const { chromium } = await import('@playwright/test');
+    const browser = await chromium.launch();
+    const ctx = await browser.newContext();
+    await ctx.addCookies([{ name: 'ngram_session', value: tokens.C, url: C }]);
+    const page = await ctx.newPage();
+    const author = (await call(B, `/api/patches/${CHILD_ID}`)).json.anchor.author;
+    try {
+      await page.goto(`${C}/${author}/${encodeURIComponent(CHILD_ID)}?tab=buy`, { waitUntil: 'domcontentloaded' });
+      await page.getByTestId('buy-paid-load').click();
+      const sheet = page.getByTestId('apply-needs-base');
+      await sheet.waitFor({ state: 'visible', timeout: 15_000 });
+      const asked = (await sheet.innerText()).replace(/\s+/g, ' ');
+      must(asked.includes(CHILD_ID) || asked.includes('Bundle proof add-on'), `it asks about the base: "${asked.slice(0, 120)}"`);
+      await page.getByTestId('apply-load-both').click();
+      const line = page.getByTestId('apply-order');
+      await line.waitFor({ state: 'visible', timeout: 120_000 });
+      const text = (await line.innerText()).replace(/\s+/g, ' ');
+      must(/Loaded in order/.test(text), `and it reports the order it loaded them in: "${text}"`);
+      summary.web = text;
+    } finally { await browser.close(); }
+  }
   const both = await call(C, `/api/patches/${CHILD_ID}/apply`, { method: 'POST', token: tokens.C, body: { with_base: true } });
   must(both.status === 200, `loaded with the base: ${both.status} ${JSON.stringify(both.json).slice(0, 200)}`);
   summary.order = both.json.order ?? [];

@@ -78,11 +78,11 @@ This document lists 320 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 160 |
+| e2e | 161 |
 | api | 63 |
 | cli | 40 |
 | automated | 39 |
-| manual | 18 |
+| manual | 17 |
 
 ## Visitor (knowledge user)
 
@@ -9978,23 +9978,23 @@ prompt,answer,alt_prompt
 
 **Goal:** SC-15 in the browser. `needs_base` on the one screen whose job is turning a purchase into a model that knows something was a raw error code with no way to act on it.
 
-**Priority:** P1 - **Area:** detail - **Automation:** manual
+**Priority:** P1 - **Area:** detail - **Automation:** e2e
 
 **Preconditions**
 
-- An operator session on a node holding an add-on and its base.
-- The add-on's page open on the Buy tab.
+- A private local-ledger cluster with an add-on and its base (packages/e2e/scripts/bundle-buy-proof.mjs, run with --web) — or an operator session on any node holding both.
+- The add-on bought and its base held but not loaded.
 
 **Steps**
 
-1. Read the *Needs underneath it* block.
-2. Press Load on the add-on with its base not loaded, then *Load both*.
+1. Read the *Needs underneath it* block on the add-on's Buy tab before buying.
+2. After the purchase, press Load ([data-testid=buy-paid-load]) with the base not loaded, then *Load both* ([data-testid=apply-load-both]).
 3. Press Unload on the base while the add-on is loaded.
 
 **Expected**
 
 - Each base that still has to be bought carries "{name}'s creators are paid for {name} and receive {lineage}% of this sale too", with the percentage read from the tree's money line (never shown when the node cannot compute it).
-- A load that is refused `needs_base` opens *{child} is built on {parent}. Load {parent} first?* with [Load both] and [Cancel]; loading both reports "Loaded in order: {parent} → {child}" from the node's own `order`.
+- A load that is refused `needs_base` opens [data-testid=apply-needs-base] — "{child} is built on {parent}. Load {parent} first?" with [Load both] and [Cancel]; pressing *Load both* loads the stack and [data-testid=apply-order] reports "Loaded in order: {parent} → {child}" from the node's own `order`. Measured on a private cluster 2026-09-04: "Bundle proof add-on is built on Bundle proof base. Load Bundle proof base first? × Cancel Load both" → "Loaded in order: Bundle proof base → Bundle proof add-on".
 - Unloading the base is refused with "Remove {children} before removing {parent}", by name; a `base_mismatch` says which knowledge to reload.
 
 **Evidence**
@@ -10003,6 +10003,7 @@ prompt,answer,alt_prompt
 - `packages/web/src/pages/PatchPage.tsx (Buy)`
 - `packages/web/src/i18n/pages/lineage.ts (detail.apply.*, detail.buy.twice_note)`
 - `docs/lineage-teach-design.md §4 SC-15`
+- `packages/e2e/scripts/bundle-buy-proof.mjs --web (AZ-317, browser phase)`
 
 ## Knowledge publisher
 
@@ -10887,6 +10888,7 @@ prompt,answer,alt_prompt
 **Steps**
 
 1. Run `node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs`.
+2. Add `--web` to drive the same load through the buy page in a browser (SC-15, AZ-317).
 
 **Expected**
 

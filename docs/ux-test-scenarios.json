@@ -10322,7 +10322,8 @@
    "A fake `/v1/models` and a mailbox hook; no serving GPU is touched."
   ],
   "steps": [
-   "Run `node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs`."
+   "Run `node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs`.",
+   "Add `--web` to drive the same load through the buy page in a browser (SC-15, AZ-317)."
   ],
   "expected": [
    "The add-on's `pre_state_sha256` is recomputed by the node from the file, not taken from the request.",
@@ -10374,27 +10375,28 @@
   "title": "The buy page says who is paid twice, and the load buttons offer the base instead of printing a code",
   "goal": "SC-15 in the browser. `needs_base` on the one screen whose job is turning a purchase into a model that knows something was a raw error code with no way to act on it.",
   "preconditions": [
-   "An operator session on a node holding an add-on and its base.",
-   "The add-on's page open on the Buy tab."
+   "A private local-ledger cluster with an add-on and its base (packages/e2e/scripts/bundle-buy-proof.mjs, run with --web) — or an operator session on any node holding both.",
+   "The add-on bought and its base held but not loaded."
   ],
   "steps": [
-   "Read the *Needs underneath it* block.",
-   "Press Load on the add-on with its base not loaded, then *Load both*.",
+   "Read the *Needs underneath it* block on the add-on's Buy tab before buying.",
+   "After the purchase, press Load ([data-testid=buy-paid-load]) with the base not loaded, then *Load both* ([data-testid=apply-load-both]).",
    "Press Unload on the base while the add-on is loaded."
   ],
   "expected": [
    "Each base that still has to be bought carries \"{name}'s creators are paid for {name} and receive {lineage}% of this sale too\", with the percentage read from the tree's money line (never shown when the node cannot compute it).",
-   "A load that is refused `needs_base` opens *{child} is built on {parent}. Load {parent} first?* with [Load both] and [Cancel]; loading both reports \"Loaded in order: {parent} → {child}\" from the node's own `order`.",
+   "A load that is refused `needs_base` opens [data-testid=apply-needs-base] — \"{child} is built on {parent}. Load {parent} first?\" with [Load both] and [Cancel]; pressing *Load both* loads the stack and [data-testid=apply-order] reports \"Loaded in order: {parent} → {child}\" from the node's own `order`. Measured on a private cluster 2026-09-04: \"Bundle proof add-on is built on Bundle proof base. Load Bundle proof base first? × Cancel Load both\" → \"Loaded in order: Bundle proof base → Bundle proof add-on\".",
    "Unloading the base is refused with \"Remove {children} before removing {parent}\", by name; a `base_mismatch` says which knowledge to reload."
   ],
   "priority": "P1",
   "area": "detail",
-  "automation": "manual",
+  "automation": "e2e",
   "evidence": [
    "packages/web/src/components/detail/LoadChain.tsx",
    "packages/web/src/pages/PatchPage.tsx (Buy)",
    "packages/web/src/i18n/pages/lineage.ts (detail.apply.*, detail.buy.twice_note)",
-   "docs/lineage-teach-design.md §4 SC-15"
+   "docs/lineage-teach-design.md §4 SC-15",
+   "packages/e2e/scripts/bundle-buy-proof.mjs --web (AZ-317, browser phase)"
   ]
  },
  {
