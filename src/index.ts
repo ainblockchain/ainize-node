@@ -13,7 +13,9 @@ export { Store, EVENT_KINDS, EVENT_LEVELS, type EventRow, type PayoutRow } from 
 export { Payouts, PayoutError, PAYOUT_MAX_ATTEMPTS, PAYOUT_RETRY_MS, PAYOUT_INTERRUPTED, type PayoutWallet, type PayoutRun } from './payouts.js';
 export { BlobStore, sha256File } from './blobs.js';
 export { Runtime, RuntimeUnavailableError, MODEL_UNAVAILABLE } from './runtime.js';
-export { P2P, authHeader, verifyAuthHeader } from './p2p.js';
+export { P2P, authHeader, verifyAuthHeader, type PeerHealth } from './p2p.js';
+export { diskReport, dirBytes, humanBytes, type DiskReport } from './disk.js';
+export { gcPlan, gcRun, type GcCandidate, type GcOptions, type GcPlan, type GcResult } from './gc.js';
 export { TeachAuth, teachAuthHeaderFor, teachAuthMessage, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, type TeachAuthTarget } from './teach-auth.js';
 export { Verifier } from './verifier.js';
 export { seedDemo, type SeedOptions, type SeedReport } from './seed.js';
