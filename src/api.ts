@@ -386,6 +386,12 @@ export function buildApi(deps: ApiDeps): Router {
       dataset_held: !!e.anchor.dataset?.sha256 && market.datasets.has(e.anchor.dataset.sha256),
       owned: e.anchor.author === market.address, purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
       applied: market.isApplied(e.anchor.id), gateway_url: (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
+      /**
+       * Where the seller answers TODAY (item 275). `gateway_url` above is the address frozen into the immutable
+       * anchor: a node that changed its port keeps a listing that looks open and cannot be entered. This one is
+       * resolved from the peers this node currently sees, and says where the answer came from.
+       */
+      gateway: market.gatewaysFor(e.anchor, (await market.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen })))[0] ?? null,
       // the author's own takedown, when there is one (item 148)
       retired_at: (e as MarketEntry).retired_at ?? null, retire_reason: (e as MarketEntry).retire_reason ?? null,
     };

@@ -234,6 +234,13 @@ export interface PurchaseResult {
  * not already hold. `missing` is what the buy would have to acquire, `unknown` the ones whose anchor this node has
  * never seen — their price is in nobody's total.
  */
+/**
+ * One address a knowledge might be bought at (item 275). `via` is the machine-readable provenance — 'peer' = a node
+ * that answered this node recently, 'ledger' = its node record, 'record' = the URL frozen into the anchor, 'self' =
+ * this node — so a screen can say where the answer came from in its own language.
+ */
+export interface GatewayCandidate { url: string; via: 'self' | 'peer' | 'ledger' | 'record'; source: string; last_seen: number | null }
+
 export interface PatchQuote {
   patch_id: string;
   price: string;
@@ -1431,19 +1438,19 @@ export class Market {
    * though, and it re-introduces itself to its peers on every start — so the peer table and the node records are
    * asked first and the field on the record is treated as the hint it is. Candidates are tried in order.
    */
-  gatewaysFor(anchor: PatchAnchor, nodes: { address: string; endpoint: string; last_seen?: number }[] = []): { url: string; source: string }[] {
+  gatewaysFor(anchor: PatchAnchor, nodes: { address: string; endpoint: string; last_seen?: number }[] = []): GatewayCandidate[] {
     const path = `/x402/patch/${anchor.id}`;
-    const out: { url: string; source: string }[] = [];
-    const push = (base: string | null | undefined, source: string) => {
+    const out: GatewayCandidate[] = [];
+    const push = (base: string | null | undefined, via: GatewayCandidate['via'], source: string, lastSeen: number | null = null) => {
       if (!base) return;
       const url = base.endsWith(path) ? base : `${base.replace(/\/+$/, '')}${path}`;
-      if (!out.some((x) => x.url === url)) out.push({ url, source });
+      if (!out.some((x) => x.url === url)) out.push({ url, via, source, last_seen: lastSeen });
     };
-    if (anchor.author === this.address) push(this.publicUrl, 'this node');
+    if (anchor.author === this.address) push(this.publicUrl, 'self', 'this node');
     const peers = this.store.listPeers().filter((pr) => pr.address === anchor.author).sort((a, b) => b.last_seen - a.last_seen);
-    for (const pr of peers) push(pr.endpoint, `peer table, last seen ${pr.last_seen ? new Date(pr.last_seen).toISOString() : 'never'}`);
-    for (const n of nodes.filter((n) => n.address === anchor.author)) push(n.endpoint, 'node record on the ledger');
-    push((anchor as PatchAnchor & { gateway_url?: string }).gateway_url, 'address on the record');
+    for (const pr of peers) push(pr.endpoint, 'peer', `peer table, last seen ${pr.last_seen ? new Date(pr.last_seen).toISOString() : 'never'}`, pr.last_seen || null);
+    for (const n of nodes.filter((n) => n.address === anchor.author)) push(n.endpoint, 'ledger', 'node record on the ledger', n.last_seen ?? null);
+    push((anchor as PatchAnchor & { gateway_url?: string }).gateway_url, 'record', 'address on the record');
     return out;
   }
 
