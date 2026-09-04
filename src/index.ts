@@ -1,5 +1,5 @@
 export { startNode, type RunningNode, type StartOptions } from './server.js';
-export { Market, MarketError, ConflictError, NotFoundError, type Caller, type CreateDraftInput, type PurchaseResult, type ConflictInfo, type TeachSettings } from './market.js';
+export { Market, MarketError, ConflictError, NotFoundError, type Caller, type CreateDraftInput, type PurchaseResult, type ConflictInfo, type TeachSettings, type VerificationStall } from './market.js';
 export { TeachWorker, TeachError, type TeachJob, type TeachJobPublic, type TeachPolicyView, type TeachChecks, type TeachHooks, type TeachStatus } from './teach.js';
 export { renderRunLocally, buildRecipeJson, lessonBenchmark, type TrainerRecipe } from './teach-recipe.js';
 export { TeachDatasets, applyRowsOp, basketFilename, type DatasetHost, type CreateInput as TeachDatasetCreateInput, type CreateResult as TeachDatasetCreateResult, type RowsOp } from './teach-datasets.js';

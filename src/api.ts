@@ -394,6 +394,12 @@ export function buildApi(deps: ApiDeps): Router {
       gateway: market.gatewaysFor(e.anchor, (await market.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen })))[0] ?? null,
       // the author's own takedown, when there is one (item 148)
       retired_at: (e as MarketEntry).retired_at ?? null, retire_reason: (e as MarketEntry).retire_reason ?? null,
+      /**
+       * Why an announced knowledge is still not verified (item 154). The publish-time model check only fires on a
+       * node whose engine answers; when it cannot, the author used to get `ANNOUNCED 0/2` and no error anywhere on
+       * their own machine. Null until it has genuinely waited, and null once the quorum is met.
+       */
+      stalled: market.verificationStall(e),
     };
   }));
 
