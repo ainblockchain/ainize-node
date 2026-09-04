@@ -9476,5 +9476,304 @@
    "packages/web/src/pages/{TeachSettingsPage,TeachDatasetPage}.tsx",
    "docs/lineage-teach-design.md §4 SC-4, SC-5, SC-16"
   ]
+ },
+ {
+  "id": "AZ-284",
+  "persona": "Visitor (knowledge user)",
+  "title": "The family tree names every relation for what it is, and says what each knowledge added",
+  "goal": "The owner asked to SEE the family: what this was built on, what was built on it, and what each one contributed. A picture that only draws lines would not answer the second half.",
+  "preconditions": [
+   "A ← B ← C with D combining A and C, one pre-lineage child that only declares A as a parent, and one unannounced draft."
+  ],
+  "steps": [
+   "GET /api/patches/fam-b/tree?depth=4",
+   "GET /api/patches/fam-a/tree?depth=8 (the diamond)"
+  ],
+  "expected": [
+   "Ancestors and descendants only — not the whole catalogue; the knowledge asked about is depth 0, an ancestor negative, a derivative positive.",
+   "Edge kinds are the child's own claim: extend, contradict, merge; a parent declared before add-ons existed is `declared` and the node is flagged `legacy`.",
+   "Each node carries `added` = questions / changed / removed / rows / new, and `base_stack` + `export` for a delta child.",
+   "A knowledge reached twice by two routes is ONE node with one edge per relation (the walk is cycle-safe).",
+   "`family` counts sales, knowledges and creators; the money line is produced by the real splitter and, when nobody outside is owed anything, names nobody instead of naming an ancestor beside a 0 %."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-284)",
+   "docs/lineage-teach-design.md §4 SC-9, §5.5, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-285",
+  "persona": "Visitor (knowledge user)",
+  "title": "The tree is depth-capped and cycle-safe, and hides what the caller may not see",
+  "goal": "A family tree is a walk over anchors written by strangers: it must terminate, and it must not leak the existence of an unannounced lesson.",
+  "preconditions": [
+   "The same family, plus a private draft child, and a hand-built pair of anchors that name each other as parents."
+  ],
+  "steps": [
+   "GET /api/patches/fam-a/tree?depth=1",
+   "GET /api/patches/fam-a/tree?depth=9",
+   "GET the tree as a stranger and as the operator",
+   "Walk a catalogue where two anchors are each other's parent and one ancestor is unknown here"
+  ],
+  "expected": [
+   "depth=1 returns one hop in each direction and says `truncated: true`; depth=9 is refused with 400 rather than silently clamped (the cap is 8).",
+   "A stranger's tree does not contain the unannounced draft; the operator's does.",
+   "A cycle terminates, and an ancestor no node here holds is a `{ missing: true }` placeholder, not a hole and not a fabricated node."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-285)",
+   "docs/lineage-teach-design.md §5.5, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-286",
+  "persona": "Visitor (knowledge user)",
+  "title": "Signals keep their scope, and a sale that was not a sale is not counted",
+  "goal": "\"Doing well\" is two different measurements — what the ledger says, and what THIS node saw in 30 days. Adding them together, or counting a free download as demand, would be a number nobody measured.",
+  "preconditions": [
+   "A knowledge with three public children and one unannounced draft child; settlements including a price-0 one, one from the author itself, and one 40 days old."
+  ],
+  "steps": [
+   "GET /api/patches/fam-a/signals",
+   "Compute salesOf() over the four settlements"
+  ],
+  "expected": [
+   "`network.scope = 'network'`, `node.scope = 'node'`, `node.window_days = 30` — the two halves are labelled and never summed.",
+   "`built_on` counts the three public children and NOT the unannounced draft (an integer must not publish the existence of a private lesson).",
+   "A price-0 settlement and the author buying from itself are not sales; the 40-day-old one is in `sales_all` and not in `sales_30d`."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-286)",
+   "docs/lineage-teach-design.md §10, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-287",
+  "persona": "Node operator",
+  "title": "A question is counted without being kept, and shared only when someone said so",
+  "goal": "SC-12 is built out of what visitors asked. The panel is worth having only if a question can be counted without the node storing what was asked.",
+  "preconditions": [
+   "An empty issue store."
+  ],
+  "steps": [
+   "Report the same question twice from one visitor with no consent",
+   "Report it once more WITH the wording",
+   "Report it again without",
+   "Publish a child that answers it"
+  ],
+  "expected": [
+   "count 2 / people 1 for one person asking twice; `text` is null while nobody consented.",
+   "The consented report stores the wording; a later count-only report never un-shares it.",
+   "A descendant that publishes the question flips the item to `covered_by:<child>`, it leaves the open list, and a second child does not close it twice."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-287)",
+   "docs/lineage-teach-design.md §5.6, §10"
+  ]
+ },
+ {
+  "id": "AZ-288",
+  "persona": "Visitor (knowledge user)",
+  "title": "Open questions are public as counts, and a request is the buyer's own text to share or not",
+  "goal": "\"What to add on top of this\" must be readable by a stranger deciding what to teach, without turning what buyers typed into public text.",
+  "preconditions": [
+   "A published knowledge with no reported questions."
+  ],
+  "steps": [
+   "POST /api/patches/:id/issues with share:false",
+   "POST again with share:true",
+   "GET /api/patches/:id/issues",
+   "Ask the first question again with different whitespace",
+   "GET /api/explore/shelves"
+  ],
+  "expected": [
+   "Both are 201 and the response says which was shared; the list carries the shared wording and a null text for the other.",
+   "Asking the same thing with different spacing is the SAME question (the parser's key, F13) and raises its count instead of adding a row.",
+   "The requests appear on Explore's \"Asked for\" shelf, whose scope is labelled `node`."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-288)",
+   "packages/e2e/tests/web-tree.spec.ts (AZ-291)",
+   "docs/lineage-teach-design.md §4 SC-12, SC-17, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-289",
+  "persona": "Visitor (knowledge user)",
+  "title": "\"Mark wrong\" carries no question — the node already knows which turn it was",
+  "goal": "Per-turn consent is worth nothing if the client can post any text against any knowledge; the node must resolve the turn itself and refuse everything else.",
+  "preconditions": [
+   "A chat turn against a loaded knowledge, from this visitor."
+  ],
+  "steps": [
+   "POST /api/chat/feedback with an unknown turn id",
+   "Mark a benchmark question wrong",
+   "Mark a free question wrong with share:false, then the same question with share:true",
+   "POST feedback naming a knowledge that was not loaded for that turn"
+  ],
+  "expected": [
+   "An unknown turn is 404 `turn_unknown` and records nothing.",
+   "A miss on one of the knowledge's own benchmark questions is stored with its `sample_index`; its text is read back off the anchor, which was already public.",
+   "A free question is a count with no wording until the visitor chooses *Share*; the two reports are one question with count 2.",
+   "Naming a knowledge that was not loaded for that turn is 400 and writes nothing against it."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-289)",
+   "docs/lineage-teach-design.md §4 SC-13, §10, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-290",
+  "persona": "Visitor (knowledge user)",
+  "title": "The family tree tab names the base, what the add-on added, and who shares each sale",
+  "goal": "Story D in a browser: standing in front of someone else's knowledge, a creator sees the family, what each member contributed, and what a sale pays whom.",
+  "preconditions": [
+   "node-u (:3422) with teach.lineage on, a published base and an add-on trained on top of it (stub backend — nothing here is a measurement)."
+  ],
+  "steps": [
+   "Open the base's page",
+   "Read the doing-well strip and its scope caption",
+   "Open the Family tree tab",
+   "Open the add-on's page and read its header, then its tree"
+  ],
+  "expected": [
+   "The strip is in the header and its caption says which numbers are this node's.",
+   "The tree draws the add-on under the base, and '+2 questions' is on the node itself — not only in a tooltip.",
+   "The legend names the relations in the design's words; 'This family: … 2 knowledges' is under the drawing.",
+   "The add-on's header says it is an add-on to the base and needs it to be used; its money line names the base as what the lineage share is paid for; *Build on this* is offered (the flag is on)."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-tree.spec.ts (AZ-290)",
+   "packages/web/src/components/detail/FamilyTree.tsx",
+   "docs/lineage-teach-design.md §4 SC-9, SC-11"
+  ]
+ },
+ {
+  "id": "AZ-291",
+  "persona": "Visitor (knowledge user)",
+  "title": "The training set says who may read it, and the open questions are counts until someone shares one",
+  "goal": "A creator deciding whether to build on this needs two facts on the page: may I have the questions, and what is still missing.",
+  "preconditions": [
+   "The same base, published with dataset access 'derivative' and a licence."
+  ],
+  "steps": [
+   "Open the base's Family tree tab",
+   "Read the training-set block",
+   "Read the open-questions panel",
+   "Ask the creator for something WITHOUT sharing the wording, then reload"
+  ],
+  "expected": [
+   "The block reads '3 questions · available to anyone who builds on it · CC-BY-4.0'.",
+   "With nothing reported, the panel says so and says what to do about it.",
+   "The request comes back as 'asked 1 times' with the wording nowhere on the page, and the panel says the question was counted, not kept."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-tree.spec.ts (AZ-291)",
+   "packages/web/src/components/detail/{TrainingSetBlock,OpenQuestions}.tsx",
+   "docs/lineage-teach-design.md §4 SC-10, SC-12"
+  ]
+ },
+ {
+  "id": "AZ-292",
+  "persona": "Visitor (knowledge user)",
+  "title": "Explore shows what is being built on, with the number it is made of",
+  "goal": "\"What should I build on?\" is answered by a shelf, not by a search box: the visitor sees which knowledge people are building on and what a buyer would also need.",
+  "preconditions": [
+   "The same base and add-on, published on node-u."
+  ],
+  "steps": [
+   "Open /explore",
+   "Read the 'Being built on' shelf",
+   "Read the 'Just published' shelf"
+  ],
+  "expected": [
+   "'Being built on' carries the base with 'Built on 1×' — children on the ledger plus this node's derive fetches.",
+   "The add-on's card says 'Needs <base>', so a buyer knows before the sheet.",
+   "A shelf with nothing in it is not rendered as an empty claim about the market."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-tree.spec.ts (AZ-292)",
+   "packages/web/src/components/public/Shelves.tsx",
+   "docs/lineage-teach-design.md §4 SC-17, §10"
+  ]
+ },
+ {
+  "id": "AZ-293",
+  "persona": "Data provider (visitor)",
+  "title": "A lesson taught on top WITHOUT copying keeps the base's questions by reference — they are not reported as deleted",
+  "goal": "The commonest path (my questions, someone else's knowledge underneath) must not publish a claim that the creator deleted the base's questions.",
+  "preconditions": [
+   "A published base with three questions; a stranger's own dataset of two questions."
+  ],
+  "steps": [
+   "Create the lesson with base_ids and the default inherit",
+   "Publish it",
+   "GET the child's tree"
+  ],
+  "expected": [
+   "The base's three questions are the keep-set (`inherited_rows` = 3, `changed_rows` = 0).",
+   "The anchor records added 2, changed 0, removed 0, and the published manifest's `removed` is empty.",
+   "The tree prints the same numbers — questions kept as known answers were never held by this set, so they were never dropped."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-293)",
+   "docs/lineage-teach-design.md §6.3, §12.5"
+  ]
+ },
+ {
+  "id": "AZ-294",
+  "persona": "Data provider (visitor)",
+  "title": "The creator of the knowledge underneath is paid for being built on — even when one node published both",
+  "goal": "The owner's question was \"why can I not teach on top of someone else's knowledge?\" — the page has to show that doing so pays them. On a teaching node every anchor is published BY THE NODE, so reading the authors alone found nobody to pay.",
+  "preconditions": [
+   "Two anchors published by the same node, each crediting a different teaching key as its data provider, the second listing the first as a parent."
+  ],
+  "steps": [
+   "GET the child's tree",
+   "GET the base's tree"
+  ],
+  "expected": [
+   "The base's teacher is on the child's split as `kind: 'lineage'`, and the line names the knowledge that share is paid for (`for_name`).",
+   "The child's own teacher stays `contributor`; `lineage_names` names the base; seller + lineage + contributors add up to a whole sale.",
+   "On the base's own page there is no lineage to pay: its teacher is a contributor and `lineage_pct` is 0."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-tree.test.ts (AZ-294)",
+   "packages/e2e/tests/web-tree.spec.ts (AZ-290)",
+   "docs/lineage-teach-design.md §4 SC-9, §11"
+  ]
  }
 ]
