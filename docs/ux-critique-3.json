@@ -1516,7 +1516,7 @@
      "status": "fixed",
      "fixed": true,
      "fixed_by": "fb9a126",
-     "fixed_note": "The track card compares the track with this node: how many of its current knowledge are actually loaded on the model (read from the runtime, never inferred from the ledger), which ones are missing when it is behind, and that Sync now is what fetches them; when the runtime cannot be read it says so instead of implying everything is current."
+     "fixed_note": "The track card compares the track with this node: how many of its current knowledge are actually loaded on the model (read from the runtime, never inferred from the ledger), which ones are missing when it is behind, and that Sync now is what fetches them — Sync now already applies the newest LISTED and unloads what it supersedes; when the runtime cannot be read the card says so instead of implying everything is current. RESIDUE, not done here: the CLI half (a STATUS / loaded column on `branch ls`, an `↑ <newer>` suffix on applied SUPERSEDED rows in `patch ls`, and the update command on `patch get` line 1) — packages/cli is outside this workflow."
     },
     {
      "n": 263,
