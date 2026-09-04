@@ -4806,7 +4806,7 @@
   "expected": [
    "az-pic.png is refused in the BROWSER before any request: 'This node reads jsonl, csv, tsv and plain text. \"az-pic.png\" is none of those.' (the accept attribute already filters the picker; a drop of the same file hits the same guard).",
    "az-empty.csv → the node answers 400 dataset_format and the page shows 'This node could not read that file as a dataset. See the format examples.'",
-   "az-blob.txt → the node answers 400 dataset_empty and the page shows 'That file has no usable questions. Every line needs a question and a right answer.' (the bytes decoded to something, the lines produced report entries, none of them a question and an answer).",
+   "az-blob.txt → the node answers 400 dataset_empty and the page shows '\"az-blob.txt\" looks like a binary file, not text. If it is a spreadsheet, export it as CSV and upload that file instead. (item 15: the browser looks at the bytes before it creates a key, so this one never reaches the node)' (the bytes decoded to something, the lines produced report entries, none of them a question and an answer).",
    "az-headeronly.csv → the node answers 400 and the page shows one of the two sentences above. TODAY it is the dataset_format one ('could not read that file as a dataset'), because the header row is consumed and the report ends up empty — see notes: dataset_empty is the honest sentence for a file that WAS read and simply had no rows.",
    "In every case the URL stays /teach/upload, no dataset is created (GET /api/teach/datasets signed with that browser's key returns an empty items list), and /teach/mine still shows 'Nothing here yet. …'.",
    "The error box has role='alert'; no console error is logged."

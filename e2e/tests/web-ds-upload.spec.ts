@@ -978,7 +978,8 @@ test('AZ-133 Encodings: UTF-8 BOM + CRLF is silent, EUC-KR/cp949 and UTF-16 are 
   await page.goto(`${NODE}/teach/upload`);
   const idLatin = await uploadViaUi(page, FX['az-latin1.csv'].path);
   ids.push(idLatin);
-  await expect(note).toHaveText('Read as latin1. If the text looks wrong, save the file as UTF-8 and upload it again.');
+  // latin1 is the decoder's last resort, so this one gets the warning copy, not the neutral "Read as …" note
+  await expect(note).toHaveText('This file was not UTF-8 — it was read as latin1. If the questions below look wrong, do not train them: save the file as UTF-8 and upload it again, or name the encoding in "Read it again".');
   await expect(page.getByTestId('dataset-row').nth(0).locator('td.q')).toHaveText('Café question à AZ?');
   expect((await dsJson(request, key, idLatin)).body.dataset.encoding).toBe('latin1');
 
@@ -1015,7 +1016,7 @@ test('AZ-134 "Wrong columns or separator?" re-reads the bytes the node already h
   await sheet.locator('label').filter({ hasText: 'Text encoding' }).locator('xpath=following-sibling::select[1]').selectOption('latin1');
   await sheet.getByTestId('reparse-go').click();
   await expect(page.getByTestId('reparse-sheet')).toBeHidden();
-  await expect(page.getByTestId('encoding-note')).toHaveText('Read as latin1. If the text looks wrong, save the file as UTF-8 and upload it again.');
+  await expect(page.getByTestId('encoding-note')).toHaveText('This file was not UTF-8 — it was read as latin1. If the questions below look wrong, do not train them: save the file as UTF-8 and upload it again, or name the encoding in "Read it again".');
   expect(reparsePost).toBe(1);
   expect(uploadPost, 'nothing was re-uploaded').toBe(0);
 
@@ -1180,7 +1181,9 @@ test('AZ-137 Nothing usable in the file: 0 bytes, binary rubbish, a wrong file t
   const cases: { file: string; expect: string; clientSide?: boolean }[] = [
     { file: 'az-pic.png', expect: 'This node reads jsonl, csv, tsv and plain text. "az-pic.png" is none of those.', clientSide: true },
     { file: 'az-empty.csv', expect: 'This node could not read that file as a dataset. See the format examples.' },
-    { file: 'az-blob.txt', expect: 'That file has no usable questions. Every line needs a question and a right answer.' },
+    // item 15: the browser looks at the BYTES before it creates a key or spends a quota, so a renamed blob is refused
+    // here now — with the sentence that says what is actually wrong with it — instead of reaching the node.
+    { file: 'az-blob.txt', expect: '"az-blob.txt" looks like a binary file, not text. If it is a spreadsheet, export it as CSV and upload that file instead.', clientSide: true },
     // TODAY the header-only file takes the dataset_format sentence: its single line is consumed as a header, so the
     // report ends up empty and the node cannot tell "read but no rows" from "not read at all".
     { file: 'az-headeronly.csv', expect: 'This node could not read that file as a dataset. See the format examples.' },

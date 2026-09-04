@@ -139,7 +139,7 @@ function decodeWith(buf: Buffer, enc: string): string | null {
 
 /** What the printable-text check measured, so the refusal can show its working rather than just saying "no". */
 export interface TextQuality {
-  /** a NUL byte in the SOURCE bytes — no text format this node accepts contains one */
+  /** a NUL in the DECODED text — no text this node accepts contains one (UTF-16 source BYTES are full of them) */
   nul: boolean;
   /** C0/C1 control characters other than tab / CR / LF, as a fraction of the sampled characters */
   controls: number;
@@ -159,9 +159,14 @@ export interface TextQuality {
  * The extension cannot answer that: 4 KB of `/dev/urandom` renamed to `.csv` decodes under latin1, splits into
  * "rows" on whatever byte happens to be a comma and passes every other check in this file, because every other check
  * is about the SHAPE of a row and not about whether the bytes are language. So the parse measures what came out of
- * the decoder — a NUL in the source, C0/C1 controls, U+FFFD, private-use codepoints — and the caller refuses the
- * upload when the mixture is not plausibly text. Deliberately generous (5 % of the sampled characters, and a NUL is
- * decisive on its own): a legitimate file with a stray control character must not be turned away.
+ * the decoder — a NUL, C0/C1 controls, U+FFFD, private-use codepoints — and the caller refuses the upload when the
+ * mixture is not plausibly text. Deliberately generous (5 % of the sampled characters, and a NUL is decisive on its
+ * own): a legitimate file with a stray control character must not be turned away.
+ *
+ * The NUL is counted in the DECODED text, not in the source bytes. UTF-16 is a text encoding this node reads and
+ * names (`encoding: utf-16le`), and every UTF-16 file has a zero byte between its ASCII characters: measuring the
+ * bytes refused every Korean spreadsheet exported as "Unicode text" with "this does not read as text". Decoded, a
+ * blob is caught exactly as before — its zero bytes come back as U+0000 under utf-8 or latin1 alike.
  */
 export function textQuality(buf: Buffer, text: string): TextQuality {
   const sample = text.slice(0, 65_536);
@@ -173,7 +178,7 @@ export function textQuality(buf: Buffer, text: string): TextQuality {
     if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || (cp >= 0x7f && cp <= 0x9f)) { controls++; continue; }
     if ((cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0xffffd) || (cp >= 0x100000 && cp <= 0x10fffd)) priv++;
   }
-  const nul = buf.subarray(0, 65_536).includes(0);
+  const nul = sample.includes('\u0000');
   const denom = Math.max(1, n);
   const q = { nul, controls: controls / denom, replacement: replacement / denom, private_use: priv / denom, sampled: n, ok: false };
   q.ok = !nul && q.controls + q.replacement + q.private_use <= 0.05;

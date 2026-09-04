@@ -497,3 +497,23 @@ test('AZ-153 rewriting a refused row’s answer settles it — the corrected que
   assert.equal(second.summary.too_long, 0, 'the pill cannot keep saying "1 need a fix" about a row the visitor fixed');
   assert.equal(second.summary.empty, 1, 'and it must keep saying it about the one they did not');
 });
+
+// ---------------------------------------------------------------- AZ-133: a UTF-16 file is text
+test('AZ-133 a UTF-16 spreadsheet export is text — the NUL rule counts characters, not the bytes an encoding uses', async () => {
+  const { textQuality } = await import('../src/teach-dataset.js');
+  const csv = 'question,answer\n어떤 회사가 Ainize를 만들었나요?,Comcom\n';
+  for (const enc of ['utf16le'] as const) {
+    const bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(csv, enc)]);
+    assert.ok(bytes.includes(0), 'the source bytes DO contain NULs — that is what UTF-16 is');
+    const q = textQuality(bytes, csv);
+    assert.equal(q.nul, false, 'the decoded text has none');
+    assert.equal(q.ok, true, `a Korean CSV saved as "Unicode text" is text: ${JSON.stringify(q)}`);
+  }
+  // …and random bytes are still refused, because decoding them puts the NULs back as characters (item 15)
+  const blob = Buffer.alloc(4096);
+  for (let i = 0; i < blob.length; i++) blob[i] = (i * 37) % 256;
+  const asText = blob.toString('latin1');
+  const bad = textQuality(blob, asText);
+  assert.equal(bad.nul, true);
+  assert.equal(bad.ok, false);
+});
