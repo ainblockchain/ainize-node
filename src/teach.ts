@@ -28,7 +28,7 @@ import type { Caller, Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
-import { canonicalBytes, endingKey, readCanonicalJsonl, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
+import { canonicalBytes, endingKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
@@ -2105,6 +2105,33 @@ export class TeachWorker {
   }
 
   /**
+   * What this lesson's training set did with the base's questions (design §6.3): which rows are still the base's and
+   * which of ITS rows they are (`row_origin`), which answers were changed (`changed`), and which of the base's
+   * questions are not here any more (`removed`). Computed from the snapshot — the bytes that will be published — and
+   * from the base's own set, so a verifier recomputes exactly these numbers instead of trusting the publisher.
+   */
+  private inheritance(rows: CanonicalRow[], baseId: string, parentRows: number): { row_origin: (string | null)[]; changed: number[]; removed: number[]; inherited: number } {
+    const row_origin: (string | null)[] = []; const changed: number[] = []; const seen = new Set<number>();
+    let inherited = 0;
+    for (const [i, r] of rows.entries()) {
+      const ref = r.from ?? r.replaces;
+      const from = rowRefPatch(ref) === baseId ? ref! : null;
+      row_origin.push(r.from && rowRefPatch(r.from) === baseId ? r.from : null);
+      if (from) { const at = rowRefIndex(from); if (at !== null) seen.add(at); if (r.from) inherited++; else changed.push(i); }
+    }
+    const removed = parentRows ? Array.from({ length: parentRows }, (_, i) => i).filter((i) => !seen.has(i)) : [];
+    return { row_origin, changed, removed, inherited };
+  }
+
+  /** The bytes a published lesson carries: the job's snapshot, else the dataset it was trained from. */
+  private snapshotRows(j: TeachJobRow): CanonicalRow[] {
+    const snapshot = j.job_dir ? join(j.job_dir, 'snapshot.jsonl') : null;
+    if (snapshot && existsSync(snapshot)) return readCanonicalJsonl(readFileSync(snapshot, 'utf8'));
+    if (j.dataset_id) { const d = this.store.getTeachDataset(j.dataset_id); if (d) return this.datasets.rows(d); }
+    return [];
+  }
+
+  /**
    * What the anchor says about its bases (design §5.1), from the job's stack and what the trainer confirmed:
    * `parents` = the whole ordered stack (so every ancestor is credited and paid), `derivation` = extend over the
    * direct base with the rows loaded as the keep-set, `base` = the stack + export + `pre_state_sha256` from the recipe
@@ -2130,15 +2157,16 @@ export class TeachWorker {
       return { patch_id: b.patch_id, sample: proprietary ? undefined : e?.anchor.benchmark.samples?.[0] };
     });
     const capped = capBenchmarkSamples(own, perParent);
+    const inh = this.inheritance(this.snapshotRows(job), direct.patch_id, de?.anchor.dataset?.rows ?? 0);
     const loaded = (recipe.parents ?? []) as { patch_id: string; loaded?: boolean }[];
     const confirmed = stack.every((b) => loaded.some((l) => l.patch_id === b.patch_id && l.loaded)) && typeof recipe.pre_state_sha256 === 'string';
     const exportMode = (recipe.export as 'delta' | 'squash' | undefined) ?? job.export_mode ?? 'delta';
     return {
       samples: capped.samples, full: capped.full, answers_hash: capped.answers_hash,
       parents: stack.map((b) => b.patch_id),
-      derivation: { kind: 'extend' as const, bases: [{ patch_id: direct.patch_id, patch_sha256: direct.sha256, ...(de?.anchor.dataset?.sha256 ? { dataset_sha256: de.anchor.dataset.sha256 } : {}), rows: knownRows }], added_rows: job.facts.length, changed_rows: 0, removed_rows: 0 },
+      derivation: { kind: 'extend' as const, bases: [{ patch_id: direct.patch_id, patch_sha256: direct.sha256, ...(de?.anchor.dataset?.sha256 ? { dataset_sha256: de.anchor.dataset.sha256 } : {}), rows: inh.inherited || knownRows }], added_rows: job.facts.length - inh.changed.length, changed_rows: inh.changed.length, removed_rows: inh.removed.length },
       base: confirmed ? { stack: exportMode === 'delta' ? stack.map((b) => ({ patch_id: b.patch_id, patch_sha256: b.sha256 })) : [], export: exportMode, pre_state_sha256: recipe.pre_state_sha256 as string } : undefined,
-      datasetParents: knownRows && de?.anchor.dataset?.sha256 ? [{ patch_id: direct.patch_id, sha256: de.anchor.dataset.sha256, rows: knownRows }] : undefined,
+      datasetParents: (inh.inherited || knownRows) && de?.anchor.dataset?.sha256 ? [{ patch_id: direct.patch_id, sha256: de.anchor.dataset.sha256, rows: inh.inherited || knownRows }] : undefined,
       defaultAccess: 'derivative' as DatasetAccess,
     };
   }
@@ -2315,11 +2343,10 @@ export class TeachWorker {
    * that has no snapshot (taught before datasets existed) — its anchor then carries no training set.
    */
   private pinDataset(j: TeachJobRow, anchor: PatchAnchor, pub: DatasetPublication): { sha256: string; rows: number } | null {
-    const snapshot = j.job_dir ? join(j.job_dir, 'snapshot.jsonl') : null;
-    let rows: CanonicalRow[] | null = null;
-    if (snapshot && existsSync(snapshot)) rows = readCanonicalJsonl(readFileSync(snapshot, 'utf8'));
-    else if (j.dataset_id) { const d = this.store.getTeachDataset(j.dataset_id); if (d) { const r = this.datasets.rows(d); if (r.length) rows = r; } }
-    if (!rows?.length) return null;
+    const rows: CanonicalRow[] | null = this.snapshotRows(j);
+    if (!rows.length) return null;
+    const parent = anchor.dataset?.parents?.[0] ?? null;
+    const inh = parent ? this.inheritance(rows, parent.patch_id, this.market.datasets.rows(parent.sha256).length) : null;
     const recipe = this.readTrainerRecipe(j.job_dir ?? '');
     const bytes = canonicalBytes(publishedRows(rows, pub.include_notes));
     // the FULL list written at draft time — the same bytes the anchor's `answers_hash` commits to (design §5.1);
@@ -2332,7 +2359,7 @@ export class TeachWorker {
     }
     const manifest: Parameters<DatasetBlobStore['pin']>[1] = {
       source: (j.dataset_source ?? 'chat') as TeachDatasetSource, license: pub.license, access: pub.access,
-      parents: anchor.dataset?.parents ?? [], row_origin: [], changed: [], removed: [],
+      parents: anchor.dataset?.parents ?? [], row_origin: inh?.row_origin ?? [], changed: inh?.changed ?? [], removed: inh?.removed ?? [],
       contrast_used: (recipe.contrast ?? []).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))),
       ...(recipe.fact_addrs ? { fact_addrs: recipe.fact_addrs } : {}),
       pii_scan: { ok: pub.pii.length === 0, rows: pub.pii }, declaration: pub.declaration, include_notes: pub.include_notes,

@@ -251,6 +251,18 @@ test('AZ-278 teaching on top of a copied set: the inherited questions are the ke
   assert.deepEqual(child.parents, [base]);
   assert.equal(child.derivation?.kind, 'extend');
   assert.equal(child.dataset?.parents?.[0]?.patch_id, base);
+  // …and the counts are the rows, not a claim: 2 added, 1 changed, 0 of the base's questions dropped
+  assert.equal(child.derivation?.added_rows, 2);
+  assert.equal(child.derivation?.changed_rows, 1);
+  assert.equal(child.derivation?.removed_rows, 0);
+  assert.equal(child.derivation?.bases[0].rows, 3, 'three of the base’s four questions are still here unchanged');
+  assert.equal(child.dataset?.parents?.[0]?.rows, 3);
+  // the published set says, row by row, which of the base's questions it is
+  const manifest = N.market.datasets.manifest(child.dataset!.sha256)!;
+  assert.equal(manifest.row_origin.length, 6);
+  assert.deepEqual(manifest.row_origin.filter(Boolean), [`${base}#0`, `${base}#2`, `${base}#3`]);
+  assert.deepEqual(manifest.changed, [1]);
+  assert.deepEqual(manifest.removed, []);
 });
 
 // ---------------------------------------------------------------- AZ-279: a copy with nothing added
