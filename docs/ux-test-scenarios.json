@@ -8163,5 +8163,393 @@
    "docs/teachable-dataset-design.md §5.2 (the primary-door decision)",
    "packages/e2e/tests/web-ds-upload.spec.ts (AZ-237, projects web + mobile)"
   ]
+ },
+ {
+  "id": "AZ-238",
+  "persona": "Teach mode (visitor)",
+  "title": "Teach on top of someone else's knowledge: the job carries the base stack, the exported file is a real delta, and the record says what it was built on",
+  "goal": "The owner's question — \"why can I not teach ON TOP of someone else's knowledge?\" — is answered by the pipeline, not by a label: the base's questions are loaded as known answers, the trainer is told which knowledge to load first, the exported rows start from the base's values, and the anchor records the base for good (lineage design §3 story A, §5.1, §7.1).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A published knowledge whose training set access is 'derivative' (the base), and a second teaching key with its own two-question dataset."
+  ],
+  "steps": [
+   "POST /api/teach/jobs { dataset_id, base_ids: [<base>] } with the second key.",
+   "Wait for READY, then read GET /api/teach/jobs/<id>, <job>/job.json, <job>/known.jsonl and <job>/lesson.npz.",
+   "Publish it and read the anchor back from GET /api/patches/<child>."
+  ],
+  "expected": [
+   "The job carries `bases` (ordered, ancestors first), `mode: 'extend'` and `export: 'delta'`.",
+   "job.json carries `parents[{patch_id, sha256, npz}]` (the base body is copied next to the job), `known_file: 'known.jsonl'`, `max_known`, `export: 'delta'` and `probe_with_parents: true` — the §7.1 trainer contract.",
+   "known.jsonl holds the base's questions, so the lesson is trained without undoing them.",
+   "In lesson.npz, every address the child shares with the base has `before` == the base's `after` (bf16-exact); a fresh address starts from the disk base. A `meta` member names the export, the base stack and `pre_state_sha256`.",
+   "The anchor lists the whole stack in `parents[]`, `derivation: {kind:'extend', bases:[{patch_id, patch_sha256, dataset_sha256, rows}], added_rows}`, `base: {stack, export:'delta', pre_state_sha256}` (the same hash as the npz meta) and `dataset.parents`.",
+   "GET /api/patches/<child> answers `requires: [{ id: <base>, name, held, price }]` — a buyer is told what else is needed."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-238)",
+   "packages/node/src/teach.ts (resolveBases, stackFiles, writeStubNpz, lineageFields)",
+   "docs/lineage-teach-design.md §3 story A, §5.1, §7.1"
+  ]
+ },
+ {
+  "id": "AZ-239",
+  "persona": "Teach mode (visitor)",
+  "title": "A taught anchor carries at most 32 questions on the ledger, and the hash on the record is recomputable from the list published with the training set",
+  "goal": "The ledger stays small (F10: ~100 KB AIN free tier) without the cap becoming a way to hide what was trained: `answers_hash` commits to the full list, and the full list is served with the training set (§5.1, §5.2).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A 40-question dataset."
+  ],
+  "steps": [
+   "Train it, publish with dataset access 'public'.",
+   "Read the anchor, then <dataDir>/blobs/datasets/<sha>/benchmark.jsonl and manifest.json."
+  ],
+  "expected": [
+   "`benchmark.samples` has exactly 32 entries and they are the first 32 of the full list.",
+   "`benchmark.answers_hash` == sha256 over the canonical FULL list (42 entries here), recomputable by anyone who fetches benchmark.jsonl.",
+   "manifest.json reports `benchmark_samples` (the full count), `rows`, the chosen access and licence, and `sha256` equal to the anchor's.",
+   "rows.jsonl hashes to `dataset.sha256` on the record."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-239)",
+   "packages/core/src/lineage.ts (capBenchmarkSamples, answersHash)",
+   "packages/node/src/dataset-blobs.ts (encodeBenchmarkJsonl)",
+   "docs/lineage-teach-design.md §5.1"
+  ]
+ },
+ {
+  "id": "AZ-240",
+  "persona": "Teach mode (visitor)",
+  "title": "The training set is served by the access its creator chose: public downloads, 'derivative' needs a key and a derive token, private is refused with the reason",
+  "goal": "Inheritance is impossible without content, and content must not leak past what the creator chose (§6.1, §6.6). Each level behaves exactly as the publish sheet promised.",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "Three published knowledges with access public / derivative / private."
+  ],
+  "steps": [
+   "GET /api/patches/<id>/dataset unsigned and signed with a stranger's teaching key, for each level.",
+   "GET /api/patches/<id>/dataset/rows for each level.",
+   "POST /api/patches/<derivative>/derive-intent, then GET /p2p/dataset/<sha> with and without the token.",
+   "GET /p2p/datasets and the node's PeerInfo."
+  ],
+  "expected": [
+   "public: any caller, signed or not, gets the summary and a 20-question preview; /dataset/rows returns ndjson whose sha256 is the one on the record.",
+   "derivative: an unsigned request is refused `dataset_derivative_only` with what to do next; a signed key gets the summary and preview; /dataset/rows still refuses — the bytes come through the derive path.",
+   "private: refused `dataset_private` for everyone but the credited teaching key and the operator; derive-intent is refused too.",
+   "The derive intent returns a token; /p2p/dataset/<sha> serves the bytes with it and refuses without it. The private set is never served over /p2p.",
+   "/p2p/datasets lists the sets this node holds with their access, and PeerInfo.datasets advertises them."
+  ],
+  "priority": "P0",
+  "area": "teach-dataset",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-240)",
+   "packages/node/src/api.ts (datasetOf, /p2p/dataset)",
+   "packages/node/src/market.ts (mayReadDataset, deriveIntent)",
+   "docs/lineage-teach-design.md §6.1, §6.6, §12.3"
+  ]
+ },
+ {
+  "id": "AZ-241",
+  "persona": "Teach mode (visitor)",
+  "title": "A base whose questions are private cannot be built on, and the whole feature is behind the teach.lineage flag",
+  "goal": "Nothing is dropped silently (§1 goal 9): a base that cannot be built on says so at the earliest moment, and a node that has not enabled lineage refuses before any quota is charged (§18 gating).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A published knowledge whose training set is private, plus the visitor's own dataset."
+  ],
+  "steps": [
+   "POST /api/teach/jobs with base_ids naming the private knowledge, an unknown id, and two ids.",
+   "Set teach.lineage false and repeat; read GET /api/teach/policy."
+  ],
+  "expected": [
+   "`base_private` names the knowledge and says the creator kept the questions private (and that it can still be loaded for comparison).",
+   "`base_unknown` for an id this node does not have; `merge_not_available` for two bases until the merge PR lands.",
+   "With the flag off: 403 `lineage_disabled`, and GET /api/teach/policy reports `lineage: false` so the UI can hide 'Build on this'.",
+   "No job row, no quota charge, no files on disk for any refusal."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-241)",
+   "packages/node/src/teach.ts (createJob, resolveBases)",
+   "docs/lineage-teach-design.md §12.1, §18"
+  ]
+ },
+ {
+  "id": "AZ-242",
+  "persona": "Teach mode (visitor)",
+  "title": "Licences travel down the family tree: an unknown one is refused, a CC-BY-SA base forces the child, and a Proprietary base publishes no inherited questions",
+  "goal": "A creator cannot accidentally re-licence someone else's questions, and a proprietary base can still be built on without its rows leaking (§6.4).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A base published CC-BY-SA-4.0 (derivative), and another published Proprietary (derivative)."
+  ],
+  "steps": [
+   "Train on top of the CC-BY-SA base and publish with licence NOT-A-LICENCE, then CC-BY-4.0, then CC-BY-SA-4.0.",
+   "Train on top of the Proprietary base and read the child's on-chain samples."
+  ],
+  "expected": [
+   "`bad_license` names the five licences this network knows.",
+   "`license_incompatible` names the parent and its licence; the child publishes only as CC-BY-SA-4.0, with access at least the parent's.",
+   "A child of a Proprietary base publishes: no benchmark sample carries that base as `source`, and the base is still in `parents[]` so it is credited and paid."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-242)",
+   "packages/core/src/lineage.ts (licenseCompatible, deltaOnlyParent)",
+   "packages/node/src/teach.ts (datasetPublication)",
+   "docs/lineage-teach-design.md §6.4"
+  ]
+ },
+ {
+  "id": "AZ-243",
+  "persona": "Teach mode (visitor)",
+  "title": "Personal information blocks a shared training set (never the private one), and a big set cannot be published without saying where it came from",
+  "goal": "Sharing questions widens exposure, so the server — not the browser — checks it (§6.5): PII rows are named so they can be removed, and a set at or above the declaration threshold states its source.",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A dataset with an e-mail in one row, and a 100-question dataset."
+  ],
+  "steps": [
+   "Train the PII dataset; publish with access 'derivative', then with access 'private'.",
+   "Train the 100-question dataset; publish without a declaration, then with one."
+  ],
+  "expected": [
+   "`dataset_pii` names the row numbers and the kinds found; the rows still trained (nothing was dropped behind the visitor's back).",
+   "The same lesson publishes with access 'private', and the manifest records `pii_scan.ok: false`.",
+   "`dataset_declaration` names the count and the threshold; publishing with `declaration: {source, no_pii}` succeeds and the manifest keeps it.",
+   "A publish with either consent box off is refused `consent_required` (never assumed)."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-243)",
+   "packages/node/src/teach.ts (datasetPublication)",
+   "packages/node/src/teach-dataset.ts (detectPii)",
+   "docs/lineage-teach-design.md §6.5"
+  ]
+ },
+ {
+  "id": "AZ-244",
+  "persona": "Teach mode (visitor)",
+  "title": "Announce-time validation: a base that is still a draft blocks publishing, and no lineage field may name a knowledge that is not a parent",
+  "goal": "A creator may build on their own unpublished lesson (story A3) — but the record can never claim a base that is not credited and paid (§5.1 invariant, §12.6).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "The visitor's own READY draft, and a published base."
+  ],
+  "steps": [
+   "Train a lesson on top of the visitor's own draft; try to publish it.",
+   "Publish the base draft, then publish the child.",
+   "Try to edit the child draft so `derivation.bases` (or `parents`) names something else."
+  ],
+  "expected": [
+   "The job runs with the draft as its base and its questions inherited — nothing is dropped.",
+   "Publishing is refused `parent_not_listed` naming the draft; after the base is published the child publishes and lists it in `parents[]`.",
+   "An edit whose `derivation.bases`, `base.stack` or `dataset.parents` names a non-parent is refused with the field named; an unknown parent id is refused."
+  ],
+  "priority": "P0",
+  "area": "teach",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-244)",
+   "packages/core/src/lineage.ts (lineageProblems)",
+   "packages/node/src/market.ts (validateLineageForAnnounce)",
+   "docs/lineage-teach-design.md §5.1, §12.6, §3 story A3"
+  ]
+ },
+ {
+  "id": "AZ-245",
+  "persona": "Teach mode (visitor)",
+  "title": "A published training set outlives the working dataset it came from",
+  "goal": "A knowledge that promises its questions to derivative creators must keep them: the published copy is content-addressed, immutable and exempt from the owner's delete and the 7-day sweep (§5.2).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "A knowledge published with a public training set."
+  ],
+  "steps": [
+   "DELETE /api/teach/datasets/<the working dataset>.",
+   "GET /api/patches/<id>/dataset/rows and read the blob directory."
+  ],
+  "expected": [
+   "The working dataset is deleted (the lesson is unchanged, as before).",
+   "The published copy is still served, still hashes to the sha on the record, and its benchmark.jsonl is still beside it."
+  ],
+  "priority": "P1",
+  "area": "teach-dataset",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/lineage.test.ts (AZ-245)",
+   "packages/node/src/dataset-blobs.ts",
+   "docs/lineage-teach-design.md §5.2"
+  ]
+ },
+ {
+  "id": "AZ-246",
+  "persona": "Node operator / developer",
+  "title": "Lineage rules as pure functions: the on-chain slice, the licence matrix, the anchor invariant, bf16 pre-state and the merkle root",
+  "goal": "Every node — writer, reader and verifier — must agree on these without a network: the same 32 samples, the same hash, the same refusals, the same pre-state for a delta whatever order its rows are in (§5.1, §5.4, §6.4).",
+  "preconditions": [
+   "No node needed: packages/core unit tests."
+  ],
+  "steps": [
+   "Run `npm test -w packages/core`."
+  ],
+  "expected": [
+   "capBenchmarkSamples: the child's own first, then one per base with `source`, capped at 32, de-duplicated; `answers_hash` is over the FULL list and is order-sensitive.",
+   "licenseCompatible: CC0/CC-BY/ODC-By/Proprietary bases accept any child licence; a CC-BY-SA base forces CC-BY-SA and an access floor; an unknown string is `bad_license`.",
+   "lineageProblems: bases outside `parents[]`, a delta with an empty stack, a malformed `pre_state_sha256`, a self-parent, an unknown derivation kind, a negative row count and a teach anchor over the 32-sample cap are all named.",
+   "preStateSha256 is invariant to row order and sensitive to any bf16-visible change; bf16Bits rounds half to even.",
+   "merkleRoot is defined for 0, 1, 2 and odd leaf counts and carries an odd leaf up rather than duplicating it."
+  ],
+  "priority": "P0",
+  "area": "api",
+  "automation": "api",
+  "evidence": [
+   "packages/core/test/lineage.test.ts (AZ-246)",
+   "packages/core/src/lineage.ts",
+   "docs/lineage-teach-design.md §5.1, §5.4, §6.3, §6.4"
+  ]
+ },
+ {
+  "id": "AZ-247",
+  "persona": "Node operator / developer",
+  "title": "The AIN round trip keeps derivation, base stack and dataset parents (empty arrays included)",
+  "goal": "AIN drops empty arrays, so a family tree read back from the chain must not lose an edge — and an anchor written before lineage must read back exactly as it was written (§5.1, §14).",
+  "preconditions": [
+   "No node needed: packages/core unit tests."
+  ],
+  "steps": [
+   "toAin → JSON → fromAin → withEmptyArrays for an anchor with derivation/base/dataset, for one whose arrays were dropped, and for a pre-lineage anchor."
+  ],
+  "expected": [
+   "All three lineage objects survive unchanged and still satisfy the invariant.",
+   "Dropped arrays read back as [] (never undefined) inside the objects that exist.",
+   "A pre-lineage anchor reads back with no `derivation`, no `base` and no `dataset` — never as empty objects."
+  ],
+  "priority": "P1",
+  "area": "api",
+  "automation": "api",
+  "evidence": [
+   "packages/core/test/lineage.test.ts (AZ-247)",
+   "packages/core/src/ain-ledger.ts (withEmptyArrays)",
+   "docs/lineage-teach-design.md §5.1, §14"
+  ]
+ },
+ {
+  "id": "AZ-248",
+  "persona": "CLI user / node operator",
+  "title": "`ainize dataset get <knowledge>`: the questions behind a published knowledge, by access level, from the terminal",
+  "goal": "A creator who wants to build on someone's knowledge can get its questions without a browser — and is told plainly when they may not (§13).",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.",
+   "Knowledges published with public / derivative / private training sets (`ainize patch publish --dataset … --dataset-access …`)."
+  ],
+  "steps": [
+   "`ainize dataset get <id>`; `ainize dataset get <id> -o questions.jsonl`; `ainize dataset get <sha256> --manifest`; `ainize dataset get <private-id>`."
+  ],
+  "expected": [
+   "Without -o: questions, access in plain words, licence, fingerprint, whether this node holds it, what it was built from, and the first questions.",
+   "With -o: the exact canonical bytes; the file hashes to the fingerprint on the record, and `--include-notes` is what keeps the publisher's notes in it.",
+   "A `derivative` set is fetched through a signed derive intent (the fetch is counted on the creator's knowledge) — the terminal says so.",
+   "A sha256 instead of an id resolves to the knowledge that published those bytes.",
+   "A private set prints `dataset_private` plus what to do about it and exits 3."
+  ],
+  "priority": "P1",
+  "area": "cli",
+  "automation": "cli",
+  "evidence": [
+   "packages/cli/test/cli.test.ts (dataset get)",
+   "packages/cli/src/commands/dataset.ts",
+   "docs/lineage-teach-design.md §13, §12.3"
+  ]
+ },
+ {
+  "id": "AZ-249",
+  "persona": "Cross-cutting (errors, accessibility, i18n, performance)",
+  "title": "No visitor IP leaves this node: live-test events are keyed by an HMAC id, the public feed carries neither, and raw events are purged after 90 days",
+  "goal": "Demand signals are only allowed to exist because they cannot identify anyone (§10 privacy preconditions, F11): the id is an HMAC of the address under a node secret, the public feed strips it, and the counters outlive the rows they came from.",
+  "preconditions": [
+   "node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts."
+  ],
+  "steps": [
+   "Run a live test, then read GET /api/events and the events table; run the retention sweep with a row older than 90 days."
+  ],
+  "expected": [
+   "Stored usage events carry `visitor: 'v:<16 hex>'` — never `ip:<addr>`; the same visitor is stable, a different one differs.",
+   "GET /api/events returns no `data.visitor` for any kind, and no ` by …` suffix in the message.",
+   "patch_signals_daily counts the test (tests/hits/misses/unscored) and its unique visitors; the raw event row is purged after 90 days while the counters stay."
+  ],
+  "priority": "P0",
+  "area": "api",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/chat.test.ts",
+   "packages/node/test/signals.test.ts",
+   "packages/node/src/market.ts (visitorId, publicEvents)",
+   "docs/lineage-teach-design.md §5.6, §10"
+  ]
+ },
+ {
+  "id": "AZ-250",
+  "persona": "Node operator / developer",
+  "title": "Royalties along a family tree: every ancestor author is paid, both parents of a merge are paid, and Σ payouts = price",
+  "goal": "Money has to follow the tree before the tree exists, and the pass-2 bug (F9: two 0.5 contributors got 50 %/25 %) had to go first (§11).",
+  "preconditions": [
+   "No node needed: packages/core unit tests."
+  ],
+  "steps": [
+   "royaltySplit over the §11 worked examples 1–8, including a two-parent merge and two 0.5 data providers."
+  ],
+  "expected": [
+   "The pool is split equally among unique ancestor authors reached through `parents[]` (depth 16, cycle-safe); an ancestor authored by the seller folds back into the seller.",
+   "Pass 2 carves each seller-side contributor from the FIXED remainder: two 0.5 providers get 50 % / 50 %.",
+   "Both parents of a merge are paid; Σ payouts equals the price in every example; Σ contributor shares ≤ 1 is refused at createDraft/publish."
+  ],
+  "priority": "P0",
+  "area": "x402",
+  "automation": "api",
+  "evidence": [
+   "packages/core/test/core.test.ts (royaltySplit)",
+   "packages/core/src/catalog.ts",
+   "docs/lineage-teach-design.md §11"
+  ]
+ },
+ {
+  "id": "AZ-251",
+  "persona": "Dataset uploader (visitor)",
+  "title": "The parser flags personal information without dropping the row",
+  "goal": "A row that looks like an e-mail, a phone number, a 주민등록번호 or a card number still trains — it is publishing it to strangers that is blocked (§6.5).",
+  "preconditions": [
+   "No node needed: the parser is a pure function."
+  ],
+  "steps": [
+   "Parse a file with an e-mail, a 010- phone number, a resident registration number, a Luhn-valid card number, a ticker code and a date."
+  ],
+  "expected": [
+   "The four are `pii` with the kinds found; the ticker code and the date are `ok` (a six-digit ticker is not an id).",
+   "Every flagged row keeps its position in rows.jsonl and is counted in `summary.pii`; nothing is rejected.",
+   "The row's detail says it trains but cannot be published above 'private'."
+  ],
+  "priority": "P1",
+  "area": "teach-parser",
+  "automation": "api",
+  "evidence": [
+   "packages/node/test/teach-dataset.test.ts (pii)",
+   "packages/node/src/teach-dataset.ts (detectPii)",
+   "docs/lineage-teach-design.md §6.5"
+  ]
  }
 ]
