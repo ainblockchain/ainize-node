@@ -73,8 +73,10 @@ export interface ParseResult {
   /** One entry per non-blank source row. */
   report: TeachDatasetRow[];
   summary: TeachDatasetSummary;
-  /** Machine-readable informational notes: 'extra_columns', 'blank_rows:<n>', 'mixed_scripts', 'replacement_chars', 'truncated', 'system_messages:<n>'. */
+  /** Machine-readable informational notes: 'extra_columns', 'blank_rows:<n>', 'mixed_scripts', 'replacement_chars', 'truncated', 'system_messages:<n>', 'not_text'. */
   notes: string[];
+  /** The printable-text check (§8.1). `ok: false` = the caller must refuse the file, not walk the visitor to Train. */
+  text_quality: TextQuality;
 }
 
 export const DEFAULTS = { maxSourceLines: 50_000, maxRows: 2_000, promptMax: 400, answerMax: 200, noteMax: 500 };
@@ -133,6 +135,49 @@ export function decodeBuffer(buf: Buffer, hint?: string): DecodeResult {
 function safeEncoding(enc: string): string { try { new TextDecoder(enc); return enc; } catch { return 'utf-8'; } }
 function decodeWith(buf: Buffer, enc: string): string | null {
   try { return new TextDecoder(enc, { fatal: true }).decode(buf); } catch { return null; }
+}
+
+/** What the printable-text check measured, so the refusal can show its working rather than just saying "no". */
+export interface TextQuality {
+  /** a NUL byte in the SOURCE bytes — no text format this node accepts contains one */
+  nul: boolean;
+  /** C0/C1 control characters other than tab / CR / LF, as a fraction of the sampled characters */
+  controls: number;
+  /** U+FFFD replacement characters (what a wrong decoder leaves behind), as a fraction */
+  replacement: number;
+  /** private-use codepoints, as a fraction */
+  private_use: number;
+  /** characters looked at (the head of the file, capped) */
+  sampled: number;
+  /** false = this is not text this node can read as questions */
+  ok: boolean;
+}
+
+/**
+ * Does this look like TEXT at all? (§8.1)
+ *
+ * The extension cannot answer that: 4 KB of `/dev/urandom` renamed to `.csv` decodes under latin1, splits into
+ * "rows" on whatever byte happens to be a comma and passes every other check in this file, because every other check
+ * is about the SHAPE of a row and not about whether the bytes are language. So the parse measures what came out of
+ * the decoder — a NUL in the source, C0/C1 controls, U+FFFD, private-use codepoints — and the caller refuses the
+ * upload when the mixture is not plausibly text. Deliberately generous (5 % of the sampled characters, and a NUL is
+ * decisive on its own): a legitimate file with a stray control character must not be turned away.
+ */
+export function textQuality(buf: Buffer, text: string): TextQuality {
+  const sample = text.slice(0, 65_536);
+  let controls = 0; let replacement = 0; let priv = 0; let n = 0;
+  for (const ch of sample) {
+    const cp = ch.codePointAt(0)!;
+    n++;
+    if (cp === 0xfffd) { replacement++; continue; }
+    if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || (cp >= 0x7f && cp <= 0x9f)) { controls++; continue; }
+    if ((cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0xffffd) || (cp >= 0x100000 && cp <= 0x10fffd)) priv++;
+  }
+  const nul = buf.subarray(0, 65_536).includes(0);
+  const denom = Math.max(1, n);
+  const q = { nul, controls: controls / denom, replacement: replacement / denom, private_use: priv / denom, sampled: n, ok: false };
+  q.ok = !nul && q.controls + q.replacement + q.private_use <= 0.05;
+  return q;
 }
 
 // ------------------------------------------------------------------ delimited parsing (§8.2)
@@ -583,6 +628,8 @@ export function parseDataset(buf: Buffer, opts: ParseOptions = {}): ParseResult 
   const answerMax = opts.answerMax ?? DEFAULTS.answerMax;
   const notes = new Set<string>();
   const { text, encoding } = decodeBuffer(buf, opts.encoding);
+  const quality = textQuality(buf, text);
+  if (!quality.ok) notes.add('not_text');
   const format = detectFormat(text, opts);
 
   let records: RawRecord[] = [];
@@ -737,6 +784,7 @@ export function parseDataset(buf: Buffer, opts: ParseOptions = {}): ParseResult 
   return {
     format, encoding, ...(layout ? { layout } : {}), ...(delimiter ? { delimiter } : {}), ...(hasHeader !== undefined ? { has_header: hasHeader } : {}),
     ...(columns ? { columns } : {}), source_rows: summary.source_rows, truncated, rows, report, summary, notes: [...notes].sort(),
+    text_quality: quality,
   };
 }
 
@@ -745,6 +793,6 @@ export function buildReportJson(p: ParseResult): Record<string, unknown> {
   return {
     version: 1, format: p.format, encoding: p.encoding, layout: p.layout ?? null, delimiter: p.delimiter ?? null,
     has_header: p.has_header ?? null, columns: p.columns ?? null, source_rows: p.source_rows, truncated: p.truncated,
-    notes: p.notes, summary: p.summary, rows: p.report,
+    notes: p.notes, summary: p.summary, text_quality: p.text_quality, rows: p.report,
   };
 }

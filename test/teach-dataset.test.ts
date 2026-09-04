@@ -411,3 +411,63 @@ test('AZ-275 a row inherited from another training set keeps its pointer through
   assert.equal(normalizeRow({ prompt: 'p', answer: 'a', from: 'x#1' }).from, 'x#1');
   assert.equal(normalizeRow({ prompt: 'p', answer: 'a', from: '#1' }).from, undefined);
 });
+
+// ---------------------------------------------------------------- item 15: is it text at all?
+test('item 15 \u2014 4 KB of random bytes renamed .csv is not text, however cleanly it "parses"', () => {
+  // deterministic pseudo-random bytes: the same shape /dev/urandom has, without depending on the machine
+  const buf = Buffer.alloc(4096);
+  let x = 0x12345678;
+  for (let i = 0; i < buf.length; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; buf[i] = (x >> 16) & 0xff; }
+  const p = P(buf, { filename: 'binary.csv' });
+  assert.equal(p.text_quality.ok, false, 'random bytes must not pass the printable-text check');
+  assert.ok(p.text_quality.nul || p.text_quality.controls > 0.05, 'the reason has to be measurable, not a guess');
+  assert.ok(p.notes.includes('not_text'));
+});
+
+test('item 15 \u2014 real text passes, in every script this node accepts', () => {
+  const csv = 'question,answer\n\ud53d\uc140\ud50c\ub7ec\uc2a4 \uc885\ubaa9\ucf54\ub4dc\ub294?,087600\nWho founded Ainize?,Comcom\n\u304a\u306f\u3088\u3046 \u306f?,good morning\n';
+  const p = P(csv, { filename: 'q.csv' });
+  assert.equal(p.text_quality.ok, true);
+  assert.equal(p.notes.includes('not_text'), false);
+});
+
+test('item 15 \u2014 a UTF-16 file with no BOM lands on latin1 full of NULs and is refused, not read as mojibake questions', () => {
+  const utf16 = Buffer.from('question\tanswer\n\ud53d\uc140\ud50c\ub7ec\uc2a4 \uc885\ubaa9\ucf54\ub4dc\ub294?\t087600\n', 'utf16le');
+  const p = P(utf16, { filename: 'krx.tsv' });
+  assert.equal(p.text_quality.ok, false);
+  assert.equal(p.text_quality.nul, true);
+});
+
+// ---------------------------------------------------------------- item 5: refused rows survive an edit
+test('item 5 \u2014 fixing one flagged row keeps the other four in the report instead of reporting them fixed', async () => {
+  const { carryRejected } = await import('../src/teach-datasets.js');
+  // the messy.csv shape of the finding: 5 good rows, one duplicate, two contradiction pairs, an empty answer
+  const messy = [
+    'question,answer',
+    'q1,a1', 'q2,a2', 'q3,a3', 'q4,a4', 'q5,a5',
+    'q1,a1',                       // duplicate
+    'dup-q,one', 'dup-q,two',      // contradiction pair A
+    'other-q,x', 'other-q,y',      // contradiction pair B
+    'empty-q,',                    // no answer
+  ].join('\n') + '\n';
+  const first = P(messy, { filename: 'messy.csv' });
+  assert.equal(first.summary.accepted, 5);
+  const refusedFirst = first.report.filter((r) => r.index === null).length;
+  assert.equal(refusedFirst, 6, 'one duplicate, four contradicting rows, one empty');
+
+  // "Keep this answer" on one half of pair A: the row is appended, so the new bytes are the 5 accepted + that one
+  const kept = [...first.rows, { prompt: 'dup-q', answer: 'one' }];
+  const second = carryRejected(first.report, P(canonicalJsonl(kept), { format: 'jsonl' }));
+
+  assert.equal(second.rows.length, 6, 'the kept answer trains');
+  const carried = second.report.filter((r) => r.carried);
+  assert.equal(carried.length, 5, 'the four rows this edit did not touch, and the losing half of the pair, are still shown');
+  assert.equal(carried.some((r) => r.prompt === 'dup-q' && r.answer === 'one'), false, 'the row that was kept is resolved, not carried');
+  assert.ok(second.summary.rejected >= 5, 'the pill cannot read "0 need a fix" after fixing one of them');
+  assert.equal(second.summary.carried, 5);
+  assert.equal(second.summary.conflicts, 3);
+  assert.equal(second.summary.duplicates, 1);
+  assert.equal(second.summary.empty, 1);
+  // and every carried row still points at the line of the file the visitor uploaded
+  for (const r of carried) assert.ok(r.line >= 1 && r.index === null);
+});

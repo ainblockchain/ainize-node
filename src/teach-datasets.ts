@@ -189,6 +189,7 @@ export class TeachDatasets {
       throw new TeachError(400, parsed.report.length ? 'dataset_empty: that file has no usable questions — every line needs a question and a right answer' : 'dataset_format: this node could not read that file as a dataset',
         { report: { summary: parsed.summary, rows: parsed.report.slice(0, 50) } });
     }
+    assertText(parsed, input.parse?.encoding);
 
     const bytes = canonicalBytes(parsed.rows);
     const sha = sha256(bytes);
@@ -344,6 +345,7 @@ export class TeachDatasets {
     const limits = this.cfg.dataset;
     const parsed = parseDataset(bytes, { ...opts, filename: d.source_name ?? undefined, maxSourceLines: limits.maxSourceLines, maxRows: limits.maxRows, blockedTopics: this.cfg.blockedTopics });
     if (!parsed.rows.length) throw new TeachError(400, 'dataset_empty: read that way, the file has no usable questions', { report: { summary: parsed.summary, rows: parsed.report.slice(0, 50) } });
+    assertText(parsed, opts.encoding);
     return this.rewrite(d, parsed, now, found !== join(d.dir, `source.${parsed.format}`) ? found : null);
   }
 
@@ -358,11 +360,15 @@ export class TeachDatasets {
       const fresh = this.store.getTeachDataset(d.id)!;
       return { dataset: this.view(fresh), report: this.reportPage(fresh, { limit: 50 }), created: false };
     }
+    const previous = ((this.reportJson(d)?.rows as TeachDatasetRow[]) ?? []);
     const next = applyRowsOp(this.rowsOrThrow(d), body.rows_op);
     if (!next.length) throw new TeachError(400, 'dataset_empty: a dataset needs at least one question');
     const limits = this.cfg.dataset;
-    const parsed = parseDataset(canonicalBytes(next), { format: 'jsonl', maxSourceLines: limits.maxSourceLines, maxRows: limits.maxRows, blockedTopics: this.cfg.blockedTopics });
-    if (!parsed.rows.length) throw new TeachError(400, 'dataset_empty: after that change the dataset has no usable questions', { report: { summary: parsed.summary, rows: parsed.report.slice(0, 50) } });
+    const reparsed = parseDataset(canonicalBytes(next), { format: 'jsonl', maxSourceLines: limits.maxSourceLines, maxRows: limits.maxRows, blockedTopics: this.cfg.blockedTopics });
+    if (!reparsed.rows.length) throw new TeachError(400, 'dataset_empty: after that change the dataset has no usable questions', { report: { summary: reparsed.summary, rows: reparsed.report.slice(0, 50) } });
+    // The new bytes are the ACCEPTED rows plus the edit, so a row the parser refused when the file was read is not in
+    // them and would disappear from the report — "5 need a fix" would become "0 need a fix" after fixing one of them.
+    const parsed = carryRejected(previous, reparsed);
     return this.rewrite(this.store.getTeachDataset(d.id)!, parsed, now, null);
   }
 
@@ -503,6 +509,66 @@ export function applyRowsOp(rows: CanonicalRow[], op: RowsOp): CanonicalRow[] {
   // keeps the trainer from being asked to hold both answers at once.
   out[op.index] = ref && !untouched ? { ...row, replaces: ref } : ref ? { ...row, ...(prev.from ? { from: prev.from } : {}), ...(prev.replaces ? { replaces: prev.replaces } : {}) } : row;
   return out;
+}
+
+/**
+ * "We checked your file" has to be true (design §8.1). `parseDataset` measures whether what came out of the decoder is
+ * plausibly text; a file that is not gets refused here, with the encoding that was tried and the first rows exactly as
+ * they were read, so the visitor can see WHY rather than being walked to the Train button with 8 rows of mojibake.
+ *
+ * The one exception is a caller who named the encoding themselves (`--encoding latin1`, the re-read sheet): they have
+ * looked at the preview and made a call, so the check becomes a recorded note instead of a refusal — but a NUL byte in
+ * the source is still decisive, because no text file this node accepts contains one.
+ */
+function assertText(parsed: ParseResult, forcedEncoding: string | undefined) {
+  const q = parsed.text_quality;
+  if (!q || q.ok) return;
+  if (forcedEncoding && !q.nul) return;
+  const pct = (x: number) => `${Math.round(x * 100)} %`;
+  const why = q.nul
+    ? 'it contains NUL bytes'
+    : `${pct(q.controls + q.replacement + q.private_use)} of it is control characters or unreadable codepoints`;
+  throw new TeachError(400, `dataset_not_text: this does not look like a text file — read as ${parsed.encoding}, ${why}. If it is a spreadsheet, export it as CSV first; if the encoding is the problem, name it and try again.`, {
+    encoding: parsed.encoding, quality: q,
+    // exactly what the node read, so the visitor can recognise their own file or see that it is noise
+    sample: parsed.report.slice(0, 2).map((r) => ({ line: r.line, prompt: (r.prompt ?? r.raw ?? '').slice(0, 80), answer: (r.answer ?? '').slice(0, 80) })),
+  });
+}
+
+/**
+ * Nothing is silently dropped ACROSS revisions either (design §11).
+ *
+ * An edit rewrites the dataset from its ACCEPTED rows, so the rows the parser refused when the file was read are not in
+ * the new bytes: re-deriving the report from them alone made a 13-row file with 7 problems become a 6-row file with
+ * none, one click after the visitor fixed the first problem. Every previously refused row that this edit did not
+ * resolve is carried into the new report, marked `carried` (its `line` is a line of the uploaded file, not a position
+ * in the current set) and counted in the summary.
+ *
+ * "Resolved" = THIS edit made that question and answer trainable: it is accepted now and was not accepted before. The
+ * `was not accepted before` half is what keeps a duplicate honest — its content was already in the set when it was
+ * refused, so nothing about it changed and it is still one of the file's lines that did not train.
+ */
+export function carryRejected(previous: TeachDatasetRow[], parsed: ParseResult): ParseResult {
+  const key = (p: string | undefined, a: string | undefined) => `${p ?? ''}\u0000${a ?? ''}`;
+  const now = new Set(parsed.rows.map((r) => key(r.prompt, r.answer)));
+  const before = new Set(previous.filter((r) => isAcceptedRowStatus(r.status)).map((r) => key(r.prompt, r.answer)));
+  const resolved = (r: TeachDatasetRow) => now.has(key(r.prompt, r.answer)) && !before.has(key(r.prompt, r.answer));
+  const carried = previous
+    .filter((r) => !isAcceptedRowStatus(r.status) && !resolved(r))
+    .map((r): TeachDatasetRow => ({ ...r, index: null, carried: true }));
+  if (!carried.length) return parsed;
+  const summary: TeachDatasetSummary = { ...parsed.summary, langs: { ...parsed.summary.langs } };
+  const bucket: Record<string, keyof TeachDatasetSummary> = {
+    duplicate: 'duplicates', conflict: 'conflicts', blocked: 'blocked', too_long: 'too_long', empty: 'empty', not_parsed: 'not_parsed', over_cap: 'over_cap',
+  };
+  for (const r of carried) {
+    summary.source_rows++;
+    summary.rejected++;
+    const b = bucket[r.status];
+    if (b) (summary[b] as number)++;
+  }
+  summary.carried = carried.length;
+  return { ...parsed, report: [...parsed.report, ...carried], summary };
 }
 
 /** The one knowledge every provenance pointer in these rows names, or null (none, or more than one — a merge, later). */
