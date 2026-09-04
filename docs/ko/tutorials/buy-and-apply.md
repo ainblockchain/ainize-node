@@ -218,7 +218,23 @@ error: seoul-office-facts is VERIFYING (verification 1/2) — not verified yet; 
 
 ## 5. 사기
 
-정족수가 채워지면 같은 명령이 끝까지 갑니다. 잔액을 앞뒤로 함께 본 전체입니다.
+정족수가 채워지면 같은 명령이 끝까지 갑니다. 다만 돈이 나가기 전에 견적을 먼저 보여 주고 물어봅니다 — 가격, 판매
+노드, 이 지식이 아래에 필요로 하는 지식, 그리고 이번 구매의 총액입니다. 터미널에서는 `[y/N]`로 묻고, 스크립트에서는
+`--yes`로 미리 답해야 합니다(파이프에서 `--yes` 없이 부르면 "예"로 치지 않고 거절합니다). 총액 상한은
+`--max-price <n>`입니다. 이 튜토리얼과 같은 모양의 노드에서 견적은 이렇게 보입니다.
+
+```text
+seoul-office-facts · Seoul office facts  2 CREDIT
+  seller alice 0xd7ebABa4…DDcc · 118 rows · qwen3-8b
+  balance 100 → 98 CREDIT
+  CREDIT is issued by this node (1/100 addresses funded with 100 each) for trying the market out — it is not money and it is worthless anywhere else
+Pay 2 CREDIT? [y/N]
+```
+
+마지막 줄이 핵심입니다. 이 크레딧은 시장을 시험해 보라고 **내 노드가 직접 발급한** 체험용이며 실제 돈이 아닙니다.
+AIN 원장을 쓰는 노드에서는 같은 자리에 AIN 잔액이 나오고, 이어지는 이체는 진짜 이체입니다.
+
+잔액을 앞뒤로 함께 본 전체입니다.
 
 ```bash
 ainize wallet
@@ -310,6 +326,29 @@ ainize use seoul-office-facts-after-the-move --no-apply
 ```text
 ✓ seoul-office-facts is already on this node (purchased)
 ```
+
+### 돈은 나갔는데 파일이 오지 않았다면
+
+구매는 왕복이 두 번입니다 — 결제, 그다음 파일 정보(매니페스트) — 그리고 두 번째가 사라질 수 있습니다. 프록시가
+끊기거나, 판매 노드가 재시작하거나, 내 노드가 그 사이에 죽는 경우입니다. 돈은 나갔고 파일은 없습니다. **다시 사지
+마세요.** 내 노드는 결제를 제시하기 전에 먼저 기록해 두고, 판매 노드는 같은 결제에 대해 같은 매니페스트를 무료로 다시
+발급합니다.
+
+```bash
+ainize patch download seoul-office-facts
+```
+
+```text
+✓ collected a-base — no payment (paid 5 CREDIT, tx 7766f2ff036ca4f1…)
+  +    0ms  pending     presenting the payment made on 2026-09-04T16:39:48.358Z (5 CREDIT, tx 7766f2ff036ca4…) again
+  +   17ms  settled     seller re-issued the manifest against the payment already made — nothing was charged
+  +   19ms  download    body already present; sha256 matches on-ledger anchor
+```
+
+(위 출력은 판매 노드 앞의 프록시가 결제는 통과시키고 응답만 버리도록 만든 2노드 시험에서 그대로 가져온 것이라 id가
+이 튜토리얼과 다릅니다.) 같은 명령으로 `ainize patch forget`으로 지운 파일이나 아예 받지 못한 파일도 되찾을 수
+있습니다. 공개 기록에 남은 정산이 곧 권한이고, 그 파일을 가진 어떤 노드든 결제한 주소에게는 내어 줍니다. 아직 파일을
+받지 못한 결제는 `ainize wallet`과 `GET /api/me/pending-payments`에서 확인합니다.
 
 ## 6. 내 모델에 넣기
 

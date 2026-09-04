@@ -219,8 +219,23 @@ it (the message names the challenger and their reason), and a `REJECTED` one fai
 
 ## 5. Buy it
 
-With the quorum satisfied, the same command goes all the way through. Here is the whole thing, with the balance before
-and after:
+With the quorum satisfied, the same command goes all the way through. Before it spends anything it prints the quote —
+the price, the seller, what this knowledge needs underneath it and what the whole purchase costs — and asks. On a
+terminal that is a `[y/N]`; in a script, pass `--yes` (a pipe with no `--yes` is refused, not taken as a yes) and
+`--max-price <n>` to put a ceiling on the total. A quote from a node of this tutorial's shape looks like this:
+
+```text
+seoul-office-facts · Seoul office facts  2 CREDIT
+  seller alice 0xd7ebABa4…DDcc · 118 rows · qwen3-8b
+  balance 100 → 98 CREDIT
+  CREDIT is issued by this node (1/100 addresses funded with 100 each) for trying the market out — it is not money and it is worthless anywhere else
+Pay 2 CREDIT? [y/N]
+```
+
+The last line is the one that matters: the credit is issued by your own node for trying the market out. On an AIN node
+the same block shows your AIN balance, and the transfer that follows is real.
+
+Here is the whole thing, with the balance before and after:
 
 ```bash
 ainize wallet
@@ -313,6 +328,30 @@ Run it twice and nothing is bought twice:
 ```text
 ✓ seoul-office-facts is already on this node (purchased)
 ```
+
+### If the money leaves and the file does not arrive
+
+A purchase is two round trips — the payment, then the manifest — and the second one can be lost: a proxy times out, the
+seller restarts, your node dies between them. The money is gone and the body is not here. **Do not buy it again.** Your
+node wrote the payment down before it presented it, and the seller will hand over the same manifest again for the same
+payment, free:
+
+```bash
+ainize patch download seoul-office-facts
+```
+
+```text
+✓ collected a-base — no payment (paid 5 CREDIT, tx 7766f2ff036ca4f1…)
+  +    0ms  pending     presenting the payment made on 2026-09-04T16:39:48.358Z (5 CREDIT, tx 7766f2ff036ca4…) again
+  +   17ms  settled     seller re-issued the manifest against the payment already made — nothing was charged
+  +   19ms  download    body already present; sha256 matches on-ledger anchor
+```
+
+(That trace is from a two-node test where a proxy in front of the seller settled the payment and dropped the response;
+the ids are that test's, not this tutorial's.) The same command brings a body back that you deleted with
+`ainize patch forget`, or that never downloaded: your settlement on the public record is what unlocks it, and any peer
+holding the bytes will serve them to the address that paid. `ainize wallet` and `GET /api/me/pending-payments` list
+payments that are still waiting for their file.
 
 ## 6. Load it into your model
 
