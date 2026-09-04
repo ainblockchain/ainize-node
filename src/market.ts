@@ -385,6 +385,12 @@ export function matchBenchmarkSample(samples: { prompt: string; expect: string }
 }
 
 export class Market {
+  /**
+   * This PROCESS's id, minted at start-up and carried in `PeerInfo.instance` (item 139). Two endpoints answering for
+   * one address are either one node that moved — same instance — or two nodes sharing an identity, which routes
+   * buyers and verifiers to whichever registered last. The two cases are indistinguishable without this.
+   */
+  static readonly INSTANCE = randomBytes(8).toString('hex');
   private catalogCache: { at: number; value: CatalogEntry[] } | null = null;
   p2p!: P2P;
   /** aindrive mirror (set by server.ts). */
@@ -1613,6 +1619,10 @@ export class Market {
     let entry = await this.entry(patchId);
     if (entry && !entry.sellable) { await this.refreshLedger(); entry = await this.entry(patchId); }
     if (!entry) throw notFound('patch not found');
+    // A disputed knowledge is named as disputed, not as unverified (item 330): a pre-challenge attestation stopped
+    // counting, so the fraction here reads 0/2 on something that was on sale — the reason the buyer needs is the
+    // challenge, not the arithmetic.
+    if (entry.open_challenge || entry.status === 'CHALLENGED') throw conflict(challengedMessage(entry));
     if (!entry.quorum_ok) throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
     if (!entry.sellable) throw conflict(challengedMessage(entry));
     return entry;
@@ -3134,7 +3144,7 @@ export class Market {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
       blobs: this.blobs.list().map((b) => b.sha256), datasets: this.datasets.list().map((b) => b.sha256).slice(0, 40),
-      version: VERSION, build: buildStamp(), config_version: this.cfg.version, last_seen: Date.now(),
+      version: VERSION, build: buildStamp(), config_version: this.cfg.version, instance: Market.INSTANCE, last_seen: Date.now(),
     };
   }
 

@@ -95,7 +95,11 @@ test('item 153: a challenge stops the sale on the gateway and in `buy`, with the
   await C.market.challenge(PATCH, 'the ticker codes are wrong');
   const e = await waitFor(() => entry(A), (x) => x.status === 'CHALLENGED');
   assert.equal(e.status, 'CHALLENGED');
-  assert.equal(e.quorum_ok, true);          // the quorum is still met; what changed is that it is disputed
+  // item 330: the records that listed it were written BEFORE the challenge, so they answer nothing. The entry reads
+  // CHALLENGED because it WAS on sale; the count it shows is what has been measured since, which is nothing yet.
+  assert.equal(e.quorum_ok, false);
+  assert.equal(e.passed, 0);
+  assert.equal(e.stale_attestations, 2);
   assert.equal(e.sellable, false);
   assert.equal(e.open_challenge?.reason, 'the ticker codes are wrong');
   assert.equal(e.open_challenge?.challenger, C.cfg.identity.address);
@@ -111,14 +115,24 @@ test('item 153: a challenge stops the sale on the gateway and in `buy`, with the
   assert.equal((await A.ledger.settlements(PATCH)).length, 0);
 });
 
-test('item 153: a verifier that already attested can answer the challenge, and the sale resumes', async () => {
+test('items 153 + 330: a QUORUM of re-runs answers the challenge — one is not enough, and the challenger\u2019s own stale record never fills the gap', async () => {
   const b = await entry(B);
   const before = b.attestations.find((a) => a.verifier === B.cfg.identity.address)!;
   await B.verifier!.verifyOne(b.anchor);           // re-verification: allowed now, and it counts
+  const one = await waitFor(() => entry(A), (x) => x.passed === 1);
+  assert.equal(one.status, 'CHALLENGED', 'one fresh PASS does not clear a challenge at quorum 2');
+  assert.equal(one.sellable, false);
+  assert.ok(one.open_challenge, 'the challenge is still open');
+  assert.equal(one.stale_attestations, 1, "the challenger's own pre-challenge record is not counted");
+
+  // the challenger re-runs it too: NOW the quorum has been re-established since the challenge, and the sale resumes
+  const c = await entry(C);
+  await C.verifier!.verifyOne(c.anchor);
   const after = await waitFor(() => entry(A), (x) => x.status === 'LISTED');
   assert.equal(after.status, 'LISTED');
   assert.equal(after.sellable, true);
   assert.equal(after.open_challenge, undefined);
+  assert.equal(after.challenge_log[0].state, 'dismissed');
   assert.equal(after.attestations.length, 3, 'still one attestation per verifier (plus the excluded self-check)');
   const now = after.attestations.find((a) => a.verifier === B.cfg.identity.address)!;
   assert.ok(now.created_at > before.created_at, 'the newer attestation replaced the pre-challenge one');

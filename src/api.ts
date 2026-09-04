@@ -727,7 +727,9 @@ export function buildApi(deps: ApiDeps): Router {
       ledger: p.info?.ledger ?? null,
       ledger_mismatch: !!p.info?.ledger && p.info.ledger !== own,
     }));
-    return { nodes, peers, self: market.address, ledger: own, peer_status: market.p2p.health() };
+    // Endpoints the operator removed: gossip may not re-add them, and `peers ls` says so rather than leaving the
+    // operator to wonder why a peer they keep hearing about is not in the table (item 137).
+    return { nodes, peers, blocked: market.p2p.blocked(), self: market.address, ledger: own, peer_status: market.p2p.health() };
   }));
   router.get('/api/events', wrap(async (req) => ({
     events: publicEvents(market.store.events({
@@ -1071,8 +1073,24 @@ export function buildApi(deps: ApiDeps): Router {
     return { patch_id: e.anchor.id, export: e.anchor.base?.export ?? null, base_stack: (e.anchor.base?.stack ?? []).map((b) => b.patch_id), ...check };
   }));
 
-  router.post('/api/peers', requireOperator, wrap(async (req) => { market.p2p.addPeer(String(req.body.endpoint)); market.cfg.peers = [...new Set([...market.cfg.peers, String(req.body.endpoint)])]; deps.saveConfig(); return { ok: true }; }));
-  router.delete('/api/peers', requireOperator, wrap(async (req) => { market.p2p.removePeer(String(req.body.endpoint)); market.cfg.peers = market.cfg.peers.filter((p) => p !== req.body.endpoint); deps.saveConfig(); return { ok: true }; }));
+  router.post('/api/peers', requireOperator, wrap(async (req) => {
+    const ep = String(req.body.endpoint);
+    // Adding is also the way BACK from a removal: gossip may not re-add a removed endpoint, but the operator may (item 137).
+    const { unblocked } = market.p2p.addPeer(ep);
+    market.cfg.peers = [...new Set([...market.cfg.peers, ep])];
+    deps.saveConfig();
+    return { ok: true, unblocked };
+  }));
+  router.delete('/api/peers', requireOperator, wrap(async (req) => {
+    const ep = String(req.body.endpoint);
+    // `removed` is the fact the CLI needs to stop reporting success for a peer that was never there (item 138);
+    // `blocked` is what keeps the next gossip round from teaching it straight back (item 137).
+    const out = market.p2p.removePeer(ep);
+    market.cfg.peers = market.cfg.peers.filter((p) => p !== ep && p !== req.body.endpoint);
+    deps.saveConfig();
+    if (out.removed) market.log('info', 'p2p', `peer ${ep} removed by the operator and blocked from re-discovery (\`ainize peers add ${ep}\` re-admits it)`, null, { endpoint: ep });
+    return { ok: true, ...out };
+  }));
   router.post('/api/chain/setup', requireOperator, wrap(async () => {
     if (!(market.ledger instanceof AinLedger)) throw bad('node is not on the AIN ledger');
     return market.ledger.setupApp();
@@ -1665,8 +1683,11 @@ export function buildApi(deps: ApiDeps): Router {
     // 410 Gone: the publisher retired it (item 148). Before the quorum check, because a retired knowledge is not
     // "not listed yet" — it is withdrawn, and the gate must stop charging for it whether or not the body is still here.
     if (e.status === 'RETIRED') throw new HttpError(410, challengedMessage(e));
-    if (!e.quorum_ok) throw new HttpError(423, `patch not listed yet (verification ${e.passed}/${e.quorum})`);
     // A challenged entry is locked, not discounted: no price is honest while a verifier disputes the result (item 153).
+    // Before the quorum check: since item 330 a pre-challenge attestation no longer counts, so a disputed knowledge
+    // reads 0/2 here — and "not listed yet" would be the wrong sentence for something that was on sale this morning.
+    if (e.open_challenge || e.status === 'CHALLENGED') throw new HttpError(423, challengedMessage(e));
+    if (!e.quorum_ok) throw new HttpError(423, `patch not listed yet (verification ${e.passed}/${e.quorum})`);
     if (!e.sellable) throw new HttpError(423, challengedMessage(e));
     const resource = `/x402/patch/${id}`;
     const header = req.header(X402_HEADER_PAYMENT);
