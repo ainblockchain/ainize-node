@@ -1082,11 +1082,11 @@ test.describe('operator: fourth node', () => {
     expect(r.code).toBe(1);
     expect(r.stderr.trim()).toBe(`error: node already running in the background (pid ${pid}) — \`ainize stop\` first`);
 
-    r = await pollUntil(() => runCli(['status'], D), (x) => /^peers\s+3$/m.test(x.stdout), 60_000, 3000);
+    r = await pollUntil(() => runCli(['status'], D), (x) => /^peers\s+3 known\b/m.test(x.stdout), 60_000, 3000);
     expect(r.code, r.stderr || r.stdout).toBe(0);
     expect(r.stdout.split('\n')[0]).toBe(`node-d  ${NODE_D}  (pid ${pid})`);
     expect(r.stdout).toMatch(/^roles\s+verifier$/m);
-    expect(r.stdout).toMatch(/^peers\s+3$/m);
+    expect(r.stdout).toMatch(/^peers\s+3 known · \d+ answered · \d+ verifiers?$/m);   // item 170: known / answered / verifying
     expect(r.stdout).toMatch(/^quorum\s+2$/m);
     expect(r.stdout).toMatch(/^currency\s+AIN$/m);
     const info = (await api<{ ledger: { records: number }; counts: { patches: number; listed: number } }>(request, '/api/info')).body;
@@ -1097,7 +1097,7 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout).toMatch(new RegExp(`^patches\\s+${pub.total} \\(${pub.items.filter((e) => e.status === 'LISTED').length} listed\\)$`, 'm'));
 
     r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => tableRows(x.stdout).filter((row) => !row.includes('(unreached)')).length >= 3, 30_000, 3000);
-    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+${esc(shortAddr(ADDR_A, 8))}\\s+seller,verifier,serving\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
+    expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+${esc(shortAddr(ADDR_A, 8))}\\s+seller,verifier,serving\\s+(local|ain)\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_B)}\\s+(node-b|\\(unreached\\))\\s+`, 'm'));
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_C)}\\s+(node-c|\\(unreached\\))\\s+`, 'm'));
     expect(tableRows(r.stdout).length).toBe(3);
@@ -1139,9 +1139,9 @@ test.describe('operator: fourth node', () => {
     await sleep(8000);
     r = await pollUntil(() => runCli(['peers', 'ls'], D), (x) => /node-a/.test(x.stdout) && /node-b/.test(x.stdout), 30_000, 3000);
     expect(r.stdout).toMatch(new RegExp(`^${esc(NODE_A)}\\s+node-a\\s+`, 'm'));
-    const bRow = new RegExp(`^${esc(NODE_B)}\\s+node-b\\s+${esc(shortAddr(ADDR_B, 8))}\\s+verifier\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(r.stdout);
+    const bRow = new RegExp(`^${esc(NODE_B)}\\s+node-b\\s+${esc(shortAddr(ADDR_B, 8))}\\s+verifier\\s+(local|ain)\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(r.stdout);
     expect(bRow).not.toBeNull();
-    expect(Date.now() - new Date(bRow![1]).getTime()).toBeLessThan(60_000);
+    expect(Date.now() - new Date(bRow![2]).getTime()).toBeLessThan(60_000);
 
     r = await runCli(['config', 'show'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1155,7 +1155,7 @@ test.describe('operator: fourth node', () => {
     for (const n of ['node-a', 'node-b', 'node-c']) expect(r.stdout).toMatch(new RegExp(`^${n}\\s+0x`, 'm'));
     expect(r.stdout).toMatch(/^node-d \(self\)\s+0x/m);
     expect(r.stdout).toMatch(/^configured peers$/m);
-    expect(r.stdout).toMatch(/^ENDPOINT\s+ADDRESS\s+LAST SEEN\s+FAILURES\s*$/m);
+    expect(r.stdout).toMatch(/^ENDPOINT\s+ADDRESS\s+LAST SEEN\s+LEDGER\s+FAILURES\s*$/m);
 
     r = await runCli(['peers', 'rm', NODE_B], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
@@ -1461,9 +1461,9 @@ test.describe('operator: fourth node', () => {
     await waitForRuntime(request);
     let r = await runCli(['status'], A);
     expect(r.stdout).toMatch(new RegExp(`^runtime\\s+available · ${esc(MODEL)} · hook ok$`, 'm'));
-    expect(Number(/^peers\s+(\d+)$/m.exec(r.stdout)?.[1])).toBeGreaterThanOrEqual(2);
+    expect(Number(/^peers\s+(\d+) known\b/m.exec(r.stdout)?.[1])).toBeGreaterThanOrEqual(2);
     r = await runCli(['peers', 'ls'], A);
-    for (const [ep, nm] of [[NODE_B, 'node-b'], [NODE_C, 'node-c']]) expect(r.stdout).toMatch(new RegExp(`^${esc(ep)}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
+    for (const [ep, nm] of [[NODE_B, 'node-b'], [NODE_C, 'node-c']]) expect(r.stdout).toMatch(new RegExp(`^${esc(ep)}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+(local|ain)\\s+\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\s+0$`, 'm'));
 
     const keys = { ...(await agentRun(['keys'])) }; keys.stdout = strip(keys.stdout);
     expect(keys.code, keys.stderr || keys.stdout).toBe(0);
@@ -1575,7 +1575,7 @@ test.describe('operator: fourth node', () => {
 
       // step 5: peers re-gossip — node-b/node-c rows with a fresh LAST SEEN (host clock is UTC) and FAILURES 0
       const peerDefs: [string, number][] = [['node-b', base + 1], ['node-c', base + 2]];
-      const peerRow = (nm: string, port: number, out: string) => new RegExp(`^http://localhost:${port}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(out);
+      const peerRow = (nm: string, port: number, out: string) => new RegExp(`^http://localhost:${port}\\s+${nm}\\s+0x\\S+\\s+\\S+\\s+(?:local|ain)\\s+(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d)\\s+0$`, 'm').exec(out);
       const peers = await pollUntil(() => runCli(['peers', 'ls'], P), (o) => peerDefs.every(([nm, port]) => {
         const m = peerRow(nm, port, o.stdout);
         return !!m && Date.parse(`${m[1].replace(' ', 'T')}Z`) >= restartedAt - 60_000;
@@ -1586,7 +1586,7 @@ test.describe('operator: fourth node', () => {
       r = await runCli(['status'], P);
       expect(r.stdout).toMatch(new RegExp(`^address\\s+${before[0].node.address}$`, 'm'));
       expect(r.stdout).toMatch(/^ledger\s+local · local · \d+ records · height \d+$/m);
-      expect(r.stdout).toMatch(/^peers\s+2$/m);
+      expect(r.stdout).toMatch(/^peers\s+2 known\b/m);
       expect(r.stdout).toMatch(/^runtime\s+\S.*$/m);
 
       // the live demo cluster was untouched by the whole exercise (home-scoped stop)
