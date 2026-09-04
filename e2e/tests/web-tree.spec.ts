@@ -135,6 +135,9 @@ test('AZ-292 Explore shows what is being built on, with the number it is made of
 });
 
 test('AZ-290 @mobile the family is a list on a phone, not a picture of a third of it', async ({ page }) => {
+  // the width is set here, not by the project, so the case also runs in the desktop pass — the fallback is CSS and
+  // has to hold for a window dragged narrow, not only for a phone user agent
+  await page.setViewportSize({ width: 360, height: 780 });
   await page.goto(`${NODE}/${encodeURIComponent(author.address)}/${encodeURIComponent(BASE.id)}`);
   await page.getByRole('tab', { name: 'Family tree' }).click();
   // the drawing is hidden by CSS under 600 px and the same tree is rendered as rows — no viewport probing, so it
