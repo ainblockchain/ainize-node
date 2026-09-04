@@ -835,11 +835,15 @@ export function buildApi(deps: ApiDeps): Router {
     return { ok: true, challenge, record: await market.challengeRecord(market.address) };
   }));
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => {
-    const b = z.object({ apply: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional(), again: z.boolean().optional() }).parse(req.body ?? {});
-    // `with_required` buys the bases underneath first (item 270); `max_total` refuses the whole family before any
-    // money moves, so a budget is a budget for the purchase and not for one item of it. Without `again`, a knowledge
-    // this node has already paid for is collected on that receipt rather than bought a second time (item 271).
-    return market.buy(req.params.id as string, { apply: !!b.apply, withRequired: !!b.with_required, maxTotal: b.max_total, again: !!b.again });
+    const b = z.object({ apply: z.boolean().optional(), bundle: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional(), again: z.boolean().optional() }).parse(req.body ?? {});
+    // The bases underneath are bought first, deepest first, one settlement each (design §12.4, item 270). The design
+    // spells this `?bundle=1` and this node has always taken it as `with_required` in the body; both are accepted,
+    // because a buyer's agent reading §12.4 and an older client reading this node's own OpenAPI must both work.
+    // `max_total` refuses the whole family before any money moves, so a budget is a budget for the purchase and not
+    // for one item of it. Without `again`, a knowledge this node has already paid for is collected on that receipt
+    // rather than bought a second time (item 271).
+    const bundle = b.bundle ?? b.with_required ?? ['1', 'true', 'yes'].includes(String(req.query.bundle ?? '').toLowerCase());
+    return market.buy(req.params.id as string, { apply: !!b.apply, withRequired: bundle, maxTotal: b.max_total, again: !!b.again });
   }));
   /**
    * What a purchase would cost from here: the price, the bases that have to come with it, and the family total
@@ -898,11 +902,14 @@ export function buildApi(deps: ApiDeps): Router {
     const id = req.params.id as string;
     if (!(await market.entry(id))) throw notFound('patch not found');
     if (wantJob) {
-      const job = market.startRuntimeJob('apply', id, (onEnter) => market.applyPatch(id, 'manual', { withBase: with_base, onEnter }));
+      const job = market.startRuntimeJob('apply', id, async (onEnter) => (await market.applyPatch(id, 'manual', { withBase: with_base, onEnter })).text);
       res.status(202);
       return { job: market.runtimeJob(job.id) };
     }
-    return { result: await market.applyPatch(id, 'manual', { withBase: with_base }), stack: await market.stack() };
+    // `order` is the chain this knowledge sits on, ancestors first (SC-15 `apply.order`): the screen that asked for
+    // the load can name what went under it without re-deriving a stack the node has already resolved.
+    const out = await market.applyPatch(id, 'manual', { withBase: with_base });
+    return { result: out.text, order: out.order, loaded: out.loaded, stack: await market.stack() };
   }));
   const unload = async (req: { params: Record<string, unknown>; body?: Record<string, unknown> }, res: { status: (n: number) => unknown }) => {
     const { cascade, async: wantJob } = z.object({ cascade: z.boolean().optional(), async: z.boolean().optional() }).parse(req.body ?? {});

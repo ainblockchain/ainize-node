@@ -295,6 +295,12 @@ const conflict = (msg: string, details?: Record<string, unknown>) => new Conflic
  */
 export type MarketEntry = CatalogEntry & { retired_at?: number; retire_reason?: string };
 
+/**
+ * What one `applyPatch` did: the sentence for a log or a terminal, the chain this knowledge now sits on (ancestors
+ * first, SC-15 `apply.order`), the ids actually written this time, and the whole table order afterwards.
+ */
+export interface ApplyOutcome { text: string; order: string[]; loaded: string[]; stack: string[] }
+
 /** Another knowledge item on this node whose body is the same file — what `patch forget` would take down with it. */
 export interface SharedBody { id: string; name: string; status: string; sales: number }
 export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: SharedBody[] }
@@ -1551,7 +1557,7 @@ export class Market {
       const when = new Date(paid.created_at).toISOString();
       out.steps.unshift({ step: 'already', detail: `this node already paid ${paid.amount} ${paid.currency} for ${patchId} on ${when} (tx ${paid.tx_hash.slice(0, 14)}…) — collecting on that receipt instead of paying again (\`--again\` buys a second time on purpose)`, at: Date.now() });
       this.log('info', 'buy', `already: ${patchId} was paid for on ${when} — collected, not bought again`, patchId);
-      if (opts.apply) step('apply', await this.applyPatch(patchId, 'purchase', { withBase: true }));
+      if (opts.apply) step('apply', (await this.applyPatch(patchId, 'purchase', { withBase: true })).text);
       return { ...out, steps: [...out.steps, ...steps], purchases: [{ patch_id: patchId, amount: paid.amount, currency: paid.currency, scheme: paid.scheme, tx_hash: paid.tx_hash, free: true }], total: '0', currency: entry.anchor.currency, redeemed: true };
     }
     step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
@@ -1582,7 +1588,7 @@ export class Market {
     if (opts.apply) {
       // Buying a knowledge and asking for it to be loaded means the whole stack: an add-on without its base is nonsense (§8.7).
       const res = await this.applyPatch(patchId, 'purchase', { withBase: true });
-      step('apply', res);
+      step('apply', res.text);
     }
     const total = purchases.filter((x) => !x.free).reduce((a, x) => a + Number(x.amount), 0);
     return { ...one, steps, purchases, total: String(Math.round(total * 1e6) / 1e6), currency: entry.anchor.currency };
@@ -2025,12 +2031,24 @@ export class Market {
     }, { onEnter: opts.onEnter });
   }
 
-  /** Load one knowledge (and, with `with_base`, everything it was trained on top of). */
-  async applyPatch(patchId: string, reason: string, opts: { withBase?: boolean; onEnter?: () => void } = {}): Promise<string> {
+  /**
+   * Load one knowledge (and, with `with_base`, everything it was trained on top of) — ancestors first (§8.1).
+   *
+   * What comes back says the ORDER, not only the names (SC-15 `apply.order`). `applied` is what was written just
+   * now, and on a table that already carries the base that is the child alone: printing it by itself would tell an
+   * operator a delta had been loaded onto nothing. `order` is the chain the child ends up sitting on, so the answer
+   * is the same sentence whether the base arrived a second ago or last week.
+   */
+  async applyPatch(patchId: string, reason: string, opts: { withBase?: boolean; onEnter?: () => void } = {}): Promise<ApplyOutcome> {
     const entry = await this.entry(patchId);
     if (!entry) throw notFound('patch not found');
     const res = await this.applyStack([patchId], reason, opts);
-    return res.applied.length ? `loaded ${res.applied.join(' → ')}` : `${patchId} was already loaded`;
+    const order = (await this.resolveStack([patchId])).map((p) => p.id);
+    const already = order.filter((id) => !res.applied.includes(id));
+    const text = !res.applied.length ? `${patchId} was already loaded`
+      : order.length > 1 ? `loaded in order: ${order.join(' → ')}${already.length ? ` (${already.join(', ')} ${already.length > 1 ? 'were' : 'was'} already on the table)` : ''}`
+        : `loaded ${patchId}`;
+    return { text, order, loaded: res.applied, stack: res.stack };
   }
 
   // ---------------------------------------------------------------- queued runtime jobs (item 212)
