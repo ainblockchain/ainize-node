@@ -217,10 +217,60 @@ test('AZ-288 open questions are public as counts, and a request is a buyer\'s ow
   assert.ok(shelves.asked.some((a) => a.count >= 3), 'the requests are on the "asked for" shelf');
 });
 
-test('AZ-289 "mark wrong" needs a turn this visitor actually asked', async () => {
-  const r = await api('POST', '/api/chat/feedback', { turn_id: 'not-a-turn-of-mine', share: true });
-  assert.equal(r.status, 404);
-  assert.match(String(r.json.error), /turn_unknown/);
-  // nothing was recorded for any knowledge by a call that could not name a turn
+test('AZ-289 "mark wrong" carries no question — the node already knows which turn it was', async () => {
+  // A call that cannot name a turn this visitor asked records nothing, for any knowledge.
+  const bad = await api('POST', '/api/chat/feedback', { turn_id: 'not-a-turn-of-mine', share: true });
+  assert.equal(bad.status, 404);
+  assert.match(String(bad.json.error), /turn_unknown/);
   assert.equal(((await api('GET', '/api/patches/fam-b/issues')).json as { total: number }).total, 0);
+
+  // A fake serving model, so the turn is real and nothing is measured: what is under test is the consent, not an answer.
+  const rt = N.market.runtime as unknown as Record<string, unknown>;
+  const saved = { status: rt.status, isApplied: rt.isApplied, applyRaw: rt.applyRaw, removeRaw: rt.removeRaw, chat: rt.chat };
+  Object.assign(rt, {
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    isApplied: async () => false,
+    applyRaw: async () => ({ code: 0, out: 'ok', err: '' }),
+    removeRaw: async () => ({ code: 0, out: 'ok', err: '' }),
+    chat: async () => ({ content: 'something else entirely', latency_ms: 1, model: 'demo-ngram-1b' }),
+  });
+  try {
+    // a question the knowledge PUBLISHES, answered wrongly → its own miss, recorded by the live test itself
+    const own = await api('POST', '/api/chat', { patch_ids: ['fam-b'], mode: 'patched', messages: [{ role: 'user', content: 'b ' }], max_tokens: 8 });
+    assert.equal(own.status, 200);
+    const ownTurn = String(own.json.turn_id);
+    assert.match(ownTurn, /^[0-9a-f]{18}$/);
+    let list = (await api('GET', '/api/patches/fam-b/issues')).json as { items: { kind: string; sample_index: number | null; text: string | null }[] };
+    assert.equal(list.items.length, 1);
+    assert.equal(list.items[0].kind, 'own_miss');
+    assert.equal(list.items[0].sample_index, 0, 'kept as an index into the record, not as a copy of the prompt');
+    assert.equal(list.items[0].text, 'b ', 'read back off the anchor at request time — the question was already public');
+
+    // a free question: *Count only* records it with no wording anywhere
+    const free = await api('POST', '/api/chat', { patch_ids: ['fam-b'], mode: 'patched', messages: [{ role: 'user', content: 'does it know about biotech?' }], max_tokens: 8 });
+    const freeTurn = String(free.json.turn_id);
+    const quiet = await api('POST', '/api/chat/feedback', { turn_id: freeTurn, share: false });
+    assert.equal(quiet.status, 200);
+    assert.equal(quiet.json.shared, false);
+    assert.equal((quiet.json.items as { shared: boolean }[])[0].shared, false);
+    list = (await api('GET', '/api/patches/fam-b/issues')).json as { items: { kind: string; sample_index: number | null; text: string | null }[] };
+    assert.equal(list.items.find((x) => x.kind === 'free_wrong')!.text, null, 'counted, and not kept');
+
+    // the same visitor, same question, this time shared: now — and only now — the wording is stored
+    const again = await api('POST', '/api/chat', { patch_ids: ['fam-b'], mode: 'patched', messages: [{ role: 'user', content: 'does it know about biotech?' }], max_tokens: 8 });
+    const loud = await api('POST', '/api/chat/feedback', { turn_id: String(again.json.turn_id), share: true });
+    assert.equal(loud.status, 200);
+    list = (await api('GET', '/api/patches/fam-b/issues')).json as { items: { kind: string; count: number; text: string | null }[] };
+    const freeItem = list.items.find((x) => x.kind === 'free_wrong')!;
+    assert.equal(freeItem.text, 'does it know about biotech?');
+    assert.equal(freeItem.count, 2, 'the two reports are the same question');
+
+    // a feedback call may not name a knowledge that was not loaded for that turn
+    const wrongPatch = await api('POST', '/api/chat/feedback', { turn_id: ownTurn, patch_ids: ['fam-a'], share: true });
+    assert.equal(wrongPatch.status, 400);
+    assert.match(String(wrongPatch.json.error), /no_patch/);
+    assert.equal(((await api('GET', '/api/patches/fam-a/issues?kind=free_wrong')).json as { total: number }).total, 0);
+  } finally {
+    Object.assign(rt, saved);
+  }
 });
