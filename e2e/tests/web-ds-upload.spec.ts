@@ -181,6 +181,11 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the file card lead
   await expect(header.getByRole('link', { name: 'Ainize home' })).toBeVisible();
   await expect(header.getByRole('link', { name: 'Explore knowledge' })).toHaveCount(0);
   await expect(header.getByRole('link', { name: 'Live test' })).toHaveCount(0);
+  // O-6: the route back to existing work is a header link (secondary position), not part of the action group
+  const mine = header.getByTestId('link-mine');
+  await expect(mine).toHaveText('My datasets and lessons');
+  expect(new URL(await mine.getAttribute('href') ?? '', NODE).pathname).toBe('/teach/mine');
+  await expect(entry.getByTestId('link-mine')).toHaveCount(0);
   await expect(page.getByTestId('teach-exit')).toHaveText('Exit');
   expect(new URL((await page.getByTestId('teach-exit').getAttribute('href'))!, NODE).pathname).toBe('/explore');
   await expect(header.getByRole('button', { name: 'language' })).toHaveText('한국어');
@@ -214,9 +219,6 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the file card lead
 
   await expect(entry.locator('ol > li')).toHaveText(['1Dataset', '2Check', '3Settings', '4Training', '5Result']);
   await expect(entry.getByText('Whichever door you pick, these five steps are the same.', { exact: true })).toBeVisible();
-  const mine = page.getByTestId('link-mine');
-  await expect(mine).toHaveText('My datasets and lessons →');
-  expect(new URL(await mine.getAttribute('href') ?? '', NODE).pathname).toBe('/teach/mine');
 
   // both doors really go somewhere
   await page.getByTestId('door-chat').click();

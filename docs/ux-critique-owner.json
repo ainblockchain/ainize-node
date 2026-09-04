@@ -61,7 +61,9 @@
    "problem": "It sits under the entry buttons, breaking the main action flow, although it is the main route back to existing work.",
    "fix": "Move it to a consistent secondary position (top-right of the page or the slim header) styled as a navigational link, not as part of the action group.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "'My datasets and lessons' is now a navigational link in the slim header's secondary position on every /teach/* page (active-state underline on /teach/mine) and no longer sits in the entry page's action group."
   },
   {
    "n": "O-7",

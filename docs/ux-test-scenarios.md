@@ -5285,18 +5285,18 @@ just prose, nothing else
 
 1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
 2. Read the header and the footer: /teach/* runs under the slim teaching chrome (logo · Exit · language; copyright · Terms · Contact), not the marketplace one.
-3. Read the two door cards, the policy alert, the step strip and the footer link.
+3. Read the two door cards, the policy alert and the step strip.
 4. Read the small print under the file CTA.
 5. Operator-only variant: PATCH /api/me/teach/policy {enabled:false} with the operator bearer token, reload /teach, then restore {enabled:true}.
 
 **Expected**
 
-- Slim chrome (ux-critique-owner O-3): [data-testid=focused-header] holds the 'Ainize home' logo link, [data-testid=teach-exit] 'Exit' → /explore and the 'language' toggle, and NO marketplace link ('Explore knowledge', 'Live test', …); [data-testid=focused-footer] has 'Terms and Policies' → /terms and 'Contact us' and neither 'ain-js' nor 'aindrive'. /explore keeps the full header with all seven links.
+- Slim chrome (ux-critique-owner O-3 / O-6): [data-testid=focused-header] holds the 'Ainize home' logo link, [data-testid=link-mine] 'My datasets and lessons' → /teach/mine (the route back to existing work lives in the header's secondary position on every /teach/* page, never in the action group), [data-testid=teach-exit] 'Exit' → /explore and the 'language' toggle, and NO marketplace link ('Explore knowledge', 'Live test', …); [data-testid=focused-footer] has 'Terms and Policies' → /terms and 'Contact us' and neither 'ain-js' nor 'aindrive'. /explore keeps the full header with all seven links.
 - Title 'Teach the model something new'; subtitle 'Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.'; second line 'No account, no server of your own, no code.'
 - Left card: 'Teach it in a conversation' with button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card (primary border): 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.
 - Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).
 - [data-testid=teach-policy] renders the node's own sentence — on node-u today: 'Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes'.
-- Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; footer link [data-testid=link-mine] 'My datasets and lessons →' goes to /teach/mine.
+- Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; nothing follows the strip — the page ends with the task.
 - With teach.enabled false both door-chat and door-file are disabled and the alert switches to warning tone with 'This node does not accept lessons. Try another node or run your own.'
 
 **Evidence**
