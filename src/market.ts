@@ -4,7 +4,7 @@
  * royalties along lineage; branches / subscriptions / gateway routing; purchases & runtime application.
  */
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AinLedger, VERSION, buildStamp, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
@@ -50,8 +50,24 @@ export interface CreateDraftInput {
   base?: PatchAnchor['base'];
 }
 
-/** Maximum number of knowledges one live test may load together (spec §6.3). */
+/** Maximum number of knowledges one live test may load together (spec §6.3). Bases loaded underneath do not count. */
 export const MAX_CHAT_PATCHES = 3;
+
+/** One layer of the runtime stack while it is being asserted (internal). */
+interface Layer { id: string; sha256: string; path: string; delta: boolean; requested: boolean }
+
+/** One layer of the runtime stack as reported (`GET /api/runtime`, `ainize patch stack`). */
+export interface StackLayer {
+  patch_id: string; name: string | null; sha256: string; position: number; applied_at: number; reason: string;
+  rows: number | null;
+  /** 'delta' = an add-on that needs everything below it; 'squash' = carries its own base rows; null = pre-lineage. */
+  export: 'delta' | 'squash' | null;
+  base_stack: string[];
+  /** Is the journal that would undo this layer still on disk? Without it a remove falls back to the file's `before`. */
+  journal: boolean; journal_path: string | null;
+  stack_sha256: string | null;
+  body_present: boolean;
+}
 
 /** Operator-editable teach policy overrides (kv `settings.teach`); anything unset falls back to config.json / defaults. */
 export interface TeachSettings {
@@ -131,7 +147,7 @@ export interface ChatOpts {
 export interface ChatOutcome {
   patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
   applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
-  applied: { patch_id: string; applied_ms: number | null; was_applied: boolean }[];
+  applied: { patch_id: string; applied_ms: number | null; was_applied: boolean; base?: boolean }[];
   benchmark_hits: Record<string, boolean | null>;
   /** How many messages each column was actually sent, and whether the two conversations differed. */
   history: { base: number; patched: number; split: boolean };
@@ -818,54 +834,231 @@ export class Market {
       if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
     }
     if (opts.apply) {
-      const res = await this.applyPatch(patchId, 'purchase');
+      // Buying a knowledge and asking for it to be loaded means the whole stack: an add-on without its base is nonsense (§8.7).
+      const res = await this.applyPatch(patchId, 'purchase', { withBase: true });
       step('apply', res);
     }
     return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme };
   }
 
-  // ------------------------------------------------------------------ runtime
+  // ------------------------------------------------------------------ runtime stack (design §5.4, §8)
   isApplied(patchId: string): boolean { return this.store.listApplied().some((a) => a.patch_id === patchId); }
 
-  async applyPatch(patchId: string, reason: string): Promise<string> {
-    const entry = await this.entry(patchId);
-    if (!entry) throw notFound('patch not found');
-    const blob = this.blobs.get(entry.anchor.patch_sha256);
-    if (!blob) throw conflict('patch body not present on this node (buy it first)');
+  /** How deep a base stack may go before it is refused (§12.1 `base_stack_too_deep`). */
+  static readonly MAX_STACK_DEPTH = 8;
+
+  /**
+   * The ordered stack, bottom first: what is on the shared table right now, in the order it was written, with the
+   * journal that would undo each layer. `GET /api/runtime` and `ainize patch stack` show exactly this.
+   */
+  async stack(): Promise<StackLayer[]> {
+    const out: StackLayer[] = [];
+    for (const [i, a] of this.store.listApplied().entries()) {
+      const entry = await this.entry(a.patch_id).catch(() => null);
+      const blob = this.blobs.get(a.sha256);
+      out.push({
+        patch_id: a.patch_id, name: entry?.anchor.name ?? null, sha256: a.sha256, position: a.position ?? i,
+        applied_at: a.applied_at, reason: a.reason, rows: blob?.rows ?? null,
+        export: entry?.anchor.base?.export ?? null,
+        base_stack: (entry?.anchor.base?.stack ?? []).map((b) => b.patch_id),
+        journal: !!a.journal_path && existsSync(a.journal_path), journal_path: a.journal_path,
+        stack_sha256: a.stack_sha256, body_present: !!blob,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Everything that must be on the table under `ids`, ancestors first (§8.1). Cycle-safe and depth-capped; a base
+   * that this node cannot resolve is named rather than skipped, because applying a delta without it is silent nonsense.
+   */
+  async resolveStack(ids: string[]): Promise<{ id: string; entry: CatalogEntry; requested: boolean }[]> {
+    const out: { id: string; entry: CatalogEntry; requested: boolean }[] = [];
+    const placed = new Set<string>();
+    const walk = async (id: string, requested: boolean, trail: string[]): Promise<void> => {
+      if (placed.has(id)) return;
+      if (trail.includes(id)) throw badInput(`base_cycle: ${[...trail, id].join(' → ')} — a knowledge cannot sit on top of itself`, { ids: [...trail, id] });
+      if (trail.length >= Market.MAX_STACK_DEPTH) throw badInput(`base_stack_too_deep: more than ${Market.MAX_STACK_DEPTH} knowledges have to be loaded under ${id}`, { id, depth: trail.length });
+      const entry = await this.entry(id);
+      if (!entry) throw notFound(`patch not found: ${id}`);
+      for (const b of entry.anchor.base?.stack ?? []) await walk(b.patch_id, false, [...trail, id]);
+      if (placed.has(id)) return;
+      placed.add(id);
+      out.push({ id, entry, requested });
+    };
+    for (const id of ids) await walk(id, true, []);
+    return out;
+  }
+
+  /** The layers `ids` turn into: bodies resolved, duplicates by body dropped (the same bytes twice is a no-op). */
+  private async layersFor(ids: string[], opts: { withBase?: boolean; requireBaseApplied?: boolean } = {}): Promise<Layer[]> {
+    const plan = await this.resolveStack(ids);
+    const alreadyApplied = new Set(this.store.listApplied().map((a) => a.patch_id));
+    const missingBases = plan.filter((p) => !p.requested && !alreadyApplied.has(p.id)).map((p) => p.id);
+    if (missingBases.length && opts.requireBaseApplied && !opts.withBase) {
+      throw conflict(`needs_base: ${missingBases.join(', ')} must be loaded underneath first — ask for it with { "with_base": true } (or ainize patch apply --with-base)`, { missing: missingBases });
+    }
+    const notHeld = plan.filter((p) => !this.blobs.has(p.entry.anchor.patch_sha256)).map((p) => p.id);
+    if (notHeld.length) throw conflict(`base_not_held: this node does not have the body of ${notHeld.join(', ')} — buy it first`, { missing: notHeld });
+    const seen = new Set<string>();
+    const layers: Layer[] = [];
+    for (const p of plan) {
+      const blob = this.blobs.get(p.entry.anchor.patch_sha256)!;
+      if (seen.has(blob.sha256)) continue;   // one body, one journal (§5.4 names journals by patch_sha256)
+      seen.add(blob.sha256);
+      layers.push({ id: p.id, sha256: blob.sha256, path: blob.path, delta: p.entry.anchor.base?.export === 'delta', requested: p.requested });
+    }
+    return layers;
+  }
+
+  /** Fingerprint of an ordered stack — what the journal records as "this is the table state I was written over". */
+  private static stackFingerprint(layers: { id: string; sha256: string }[]): string {
+    return sha256Hex(layers.map((l) => `${l.id}:${l.sha256}`).join('\n'));
+  }
+
+  /**
+   * Bring the shared table to exactly `target` (bottom first), touching only what differs from the recorded stack:
+   * unwind from the top down to the longest common prefix (replaying each journal, so a parent is left standing when
+   * its child comes off), then apply the rest upwards. Every apply of a delta is gated on `prev == before` over ALL
+   * rows and journals the `prev` the hook returns. MUST be called inside `runtime.exclusive()`.
+   */
+  private async assertStack(target: Layer[], reason: string, opts: { rebuild?: boolean } = {}): Promise<{ applied: string[]; removed: string[] }> {
+    const cur = this.store.listApplied();
+    let keep = 0;
+    if (!opts.rebuild) while (keep < cur.length && keep < target.length && cur[keep].patch_id === target[keep].id) keep++;
+    const removed: string[] = [];
+    for (let i = cur.length - 1; i >= keep; i--) {
+      const row = cur[i];
+      const blob = this.blobs.get(row.sha256);
+      if (opts.rebuild) {
+        // The table went back to base under us (restart): the journals describe values that no longer exist.
+        if (row.journal_path) { try { rmSync(row.journal_path, { force: true }); } catch { /* best effort */ } }
+      } else if (blob) {
+        const r = await this.runtime.removeRaw(blob.path, { journal: row.journal_path ?? undefined });
+        if (r.code !== 0) throw new Error(`removing ${row.patch_id} failed: ${r.err || r.out}`);
+        this.log('info', 'runtime', `unloaded ${row.patch_id}: ${r.out}`, row.patch_id);
+      } else {
+        this.log('warn', 'runtime', `${row.patch_id} is recorded as loaded but its body is gone — dropping it from the stack without unwinding`, row.patch_id);
+      }
+      this.store.clearApplied(row.patch_id);
+      removed.push(row.patch_id);
+    }
+    const applied: string[] = [];
+    for (let i = keep; i < target.length; i++) {
+      const t = target[i];
+      const stackSha = Market.stackFingerprint(target.slice(0, i));
+      const journal = this.runtime.journalPath(t.sha256) ?? undefined;
+      const r = await this.runtime.applyRaw(t.path, { journal, stackSha, verifyBefore: t.delta });
+      if (r.json?.error === 'base_mismatch') {
+        throw conflict(`base_mismatch: the live rows under ${t.id} are not the ones it was trained on (${r.json.rows_differ} of ${r.json.rows} rows differ) — nothing was written`,
+          { patch_id: t.id, rows_differ: r.json.rows_differ, rows: r.json.rows });
+      }
+      if (r.code !== 0) throw new Error(`applying ${t.id} failed: ${r.err || r.out}`);
+      this.store.setApplied(t.id, t.sha256, reason, { position: i, journal_path: journal ?? null, stack_sha256: stackSha });
+      applied.push(t.id);
+      this.log('info', 'runtime', `loaded ${t.id} at position ${i}${t.delta ? ' (add-on: its base was verified row by row underneath)' : ''}: ${r.out}`, t.id);
+    }
+    this.store.reorderApplied(target.map((t) => t.id));
+    this.store.set('runtime.stack', JSON.stringify(target.map((t) => t.id)));
+    return { applied, removed };
+  }
+
+  /**
+   * Load `ids` in one ordered sequence under ONE runtime lock (§8.1): each id's bases go on first, then the id.
+   * Unrelated patches already on the table stay where they are, underneath.
+   */
+  async applyStack(ids: string[], reason: string, opts: { withBase?: boolean } = {}): Promise<{ applied: string[]; removed: string[]; stack: string[] }> {
     const st = await this.runtime.status();
     if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
-    const r = await this.runtime.apply(blob.path);
-    if (r.code !== 0) throw new Error(r.err || r.out);
-    this.store.setApplied(patchId, blob.sha256, reason);
-    this.log('info', 'runtime', `applied ${patchId}: ${r.out}`, patchId);
-    return r.out;
+    const layers = await this.layersFor(ids, { withBase: opts.withBase, requireBaseApplied: true });
+    const current = this.store.listApplied().map((a) => a.patch_id);
+    const wanted = new Set(layers.map((l) => l.id));
+    const below = current.filter((id) => !wanted.has(id));
+    const target: Layer[] = [...(await this.layersFor(below)).filter((l) => !wanted.has(l.id)), ...layers];
+    return this.runtime.exclusive(`apply:${ids.join('+')}`, async () => {
+      const res = await this.assertStack(target, reason);
+      return { ...res, stack: target.map((t) => t.id) };
+    });
   }
 
-  async removePatch(patchId: string): Promise<string> {
+  /** Load one knowledge (and, with `with_base`, everything it was trained on top of). */
+  async applyPatch(patchId: string, reason: string, opts: { withBase?: boolean } = {}): Promise<string> {
     const entry = await this.entry(patchId);
     if (!entry) throw notFound('patch not found');
-    const blob = this.blobs.get(entry.anchor.patch_sha256);
-    if (!blob) throw conflict('patch body not present');
-    const r = await this.runtime.remove(blob.path);
-    if (r.code !== 0) throw new Error(r.err || r.out);
-    this.store.clearApplied(patchId);
-    this.log('info', 'runtime', `removed ${patchId}: ${r.out}`, patchId);
-    return r.out;
+    const res = await this.applyStack([patchId], reason, opts);
+    return res.applied.length ? `loaded ${res.applied.join(' → ')}` : `${patchId} was already loaded`;
   }
 
-  /** Watchdog (청구항 3 재적용): re-apply patches that should be applied but reverted (serving restart). */
+  /** Applied knowledges that sit on top of `id` (directly or through another knowledge) — what removing it would break. */
+  async dependentsOf(id: string): Promise<string[]> {
+    const rows = this.store.listApplied();
+    const bases = new Map<string, string[]>();
+    for (const a of rows) {
+      const e = await this.entry(a.patch_id).catch(() => null);
+      bases.set(a.patch_id, (e?.anchor.base?.stack ?? []).map((b) => b.patch_id));
+    }
+    const out: string[] = [];
+    let frontier = [id];
+    for (let depth = 0; depth < Market.MAX_STACK_DEPTH && frontier.length; depth++) {
+      const next: string[] = [];
+      for (const [child, parents] of bases) {
+        if (out.includes(child) || child === id) continue;
+        if (parents.some((p) => frontier.includes(p))) { out.push(child); next.push(child); }
+      }
+      frontier = next;
+    }
+    return out;
+  }
+
+  /**
+   * Unload one knowledge (§8.4). Refuses while something built on it is loaded, unless `cascade`. What comes back is
+   * the journal — whatever was under it — so removing a child leaves its parent standing, not the bare model.
+   */
+  async removePatch(patchId: string, opts: { cascade?: boolean } = {}): Promise<string> {
+    const entry = await this.entry(patchId);
+    if (!entry) throw notFound('patch not found');
+    const current = this.store.listApplied();
+    if (!current.some((a) => a.patch_id === patchId)) {
+      // Not in the recorded stack: the operator's escape hatch (a body left on the table by an older node). No journal
+      // exists, so this writes the file's own `before` — which is the disk base, exactly what it always did.
+      const blob = this.blobs.get(entry.anchor.patch_sha256);
+      if (!blob) throw conflict('patch body not present');
+      const r = await this.runtime.remove(blob.path);
+      if (r.code !== 0) throw new Error(r.err || r.out);
+      this.log('warn', 'runtime', `removed ${patchId} without a journal (it was not in this node's stack) — its rows went back to the base model`, patchId);
+      return r.out;
+    }
+    const dependents = await this.dependentsOf(patchId);
+    if (dependents.length && !opts.cascade) {
+      throw conflict(`has_dependents: ${dependents.join(', ')} ${dependents.length > 1 ? 'are' : 'is'} loaded on top of ${patchId} and would stop working — unload ${dependents.length > 1 ? 'them' : 'it'} first, or ask for cascade`, { ids: dependents });
+    }
+    const drop = new Set([patchId, ...(opts.cascade ? dependents : [])]);
+    const target = (await this.layersFor(current.map((a) => a.patch_id).filter((id) => !drop.has(id)))).filter((l) => !drop.has(l.id));
+    const res = await this.runtime.exclusive(`remove:${patchId}`, () => this.assertStack(target, 'remove'));
+    this.log('info', 'runtime', `unloaded ${res.removed.join(', ')}${res.applied.length ? `; re-asserted ${res.applied.join(' → ')}` : ''}`, patchId);
+    return `unloaded ${res.removed.join(', ')}${res.applied.length ? ` (re-asserted ${res.applied.join(' → ')})` : ''}`;
+  }
+
+  /**
+   * Watchdog (청구항 3 재적용, §8.5): the top of the stack is the only thing that has to be tested — if it is still
+   * on the table, everything under it is too. When it is gone (vLLM restart) the WHOLE stack is re-applied in order.
+   * The old per-patch `isApplied → apply` loop could re-apply a parent on top of its own child (F5).
+   */
   async watchdog(): Promise<void> {
     const st = await this.runtime.status();
     if (!st.available) return;
-    for (const a of this.store.listApplied()) {
-      const blob = this.blobs.get(a.sha256);
-      if (!blob) continue;
-      const applied = await this.runtime.isApplied(blob.path);
-      if (applied === false) {
-        this.log('warn', 'runtime', `patch ${a.patch_id} reverted (restart?) → re-applying`, a.patch_id);
-        await this.runtime.apply(blob.path).catch(() => undefined);
-      }
-    }
+    const cur = this.store.listApplied();
+    if (!cur.length) return;
+    const top = cur[cur.length - 1];
+    const blob = this.blobs.get(top.sha256);
+    if (!blob) return;
+    const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
+    if (!status || status.applied) return;
+    this.log('warn', 'runtime', `the table no longer holds ${top.patch_id} (restart?) → re-applying the whole stack of ${cur.length} in order`, top.patch_id);
+    const target = await this.layersFor(cur.map((a) => a.patch_id)).catch((e) => { this.log('error', 'runtime', `cannot rebuild the stack: ${(e as Error).message}`); return null; });
+    if (!target) return;
+    await this.runtime.exclusive('watchdog', () => this.assertStack(target, 'watchdog', { rebuild: true }))
+      .catch((e) => this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`));
   }
 
   // ------------------------------------------------------------------ ChatMode (live test of a knowledge patch)
@@ -940,12 +1133,21 @@ export class Market {
     }
     const st = await this.runtime.status();
     if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
-    const targets: { id: string; entry: CatalogEntry; path: string }[] = [];
-    for (const { id, entry } of entries) {
+    // §8.6 — what goes on the table, and in what order, comes from the base stacks, not from the order the boxes were
+    // ticked: an add-on trained on top of another knowledge answers nonsense without that knowledge underneath it.
+    const plan = entries.length ? await this.resolveStack(entries.map((x) => x.id)) : [];
+    const targets: { id: string; entry: CatalogEntry; path: string; base: boolean }[] = [];
+    for (const { id, entry, requested } of plan) {
+      if (!requested && !this.mayUseEntry(entry, opts.caller)) throw new NotFoundError(`patch not found: ${id}`);
       const blob = this.blobs.get(entry.anchor.patch_sha256);
-      if (!blob) throw conflict(`this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`);
+      if (!blob) {
+        throw conflict(requested
+          ? `this node does not hold the patch body of ${id} — buy it first (or test it on the seller node)`
+          : `${id} has to be loaded underneath ${entries.map((x) => x.id).join(', ')} and this node does not hold its body — buy it first`,
+          { missing: [id] });
+      }
       if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw conflict(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
-      targets.push({ id, entry, path: blob.path });
+      targets.push({ id, entry, path: blob.path, base: !requested });
     }
     const clamp = (m: ChatMessage[]) => m.slice(-24).map((x) => ({ role: x.role, content: String(x.content).slice(0, 4000) }));
     const msgs = clamp(opts.messages);
@@ -1007,8 +1209,11 @@ export class Market {
       }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
       const hits: Record<string, boolean | null> = {};
-      const applied = targets.map((t, i) => ({ patch_id: t.id, applied_ms: appliedMs[i], was_applied: wasApplied[i] }));
+      const applied = targets.map((t, i) => ({ patch_id: t.id, applied_ms: appliedMs[i], was_applied: wasApplied[i], ...(t.base ? { base: true } : {}) }));
       for (const [i, t] of targets.entries()) {
+        // A base loaded underneath is not a live test OF that base: it is not metered and not scored (it is credited
+        // when the child sells, §11). `applied[]` still names it so the UI can say "loaded with {name}".
+        if (t.base) continue;
         const sample = matchBenchmarkSample(t.entry.anchor.benchmark.samples, lastUser);
         // Scored on what the MODEL produced, not on what the D1 guard shows: truncating a runaway must never
         // change a ✓/✗ verdict (and a correct bare ticker is never truncated anyway).
@@ -1112,7 +1317,7 @@ export class Market {
           if (e.anchor.author === this.address) continue;
           try { await this.buy(pid); } catch (err) { this.log('warn', 'branch', `could not acquire ${pid}: ${(err as Error).message}`, pid); continue; }
         }
-        if (st.available) await this.applyPatch(pid, `subscription:${branch}`).catch((err) => this.log('warn', 'branch', `apply ${pid} failed: ${(err as Error).message}`, pid));
+        if (st.available) await this.applyPatch(pid, `subscription:${branch}`, { withBase: true }).catch((err) => this.log('warn', 'branch', `apply ${pid} failed: ${(err as Error).message}`, pid));
       }
     } else {
       for (const pid of b.patch_ids) if (this.isApplied(pid)) await this.removePatch(pid).catch(() => undefined);
