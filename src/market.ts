@@ -55,7 +55,8 @@ export interface LineageTree {
     /** the verification fee on one sale of the root, and how many verifiers share it (item 325) */
     verifier_pct: number; verifier_count: number;
     seller_name: string | null; lineage_names: string[];
-    recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' | 'verifier' }[];
+    /** `for_id`/`for_name` name the ancestor a lineage share is paid FOR — the answer to "who is paid because I built on them?" */
+    recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' | 'verifier'; for_id?: string; for_name?: string }[];
   };
 }
 
@@ -2631,9 +2632,24 @@ export class Market {
     const plan = royaltyPlan(root, map, 100, this.cfg.market.royaltyShare ?? 0, { verifierShare: this.cfg.market.verifierShare });
     const split = plan.royalty;
     const seller = root.anchor.author.toLowerCase();
-    const ancestorAuthors = new Map(ancestors.map((n) => [(n.author ?? '').toLowerCase(), n]));
     const verifiers = new Set(Object.keys(plan.verification).map((a) => a.toLowerCase()));
     const contributorName = (addr: string) => (root.anchor.contributors ?? []).find((c) => c.address.toLowerCase() === addr || c.signer?.toLowerCase() === addr)?.name ?? null;
+    // Who is paid BECAUSE this was built on them. An ancestor's author is the obvious case; the common one on a
+    // teaching node is not: there every anchor is published BY THE NODE, so the base and the child share an author
+    // and the base's creator is credited on the base as a contributor. §11 pass 2 pays them out of the seller side
+    // for exactly that ancestry, so reading authors alone told the creator of the base that being built on pays
+    // them nothing. An address credited on the ROOT is its own knowledge's teacher and stays a contributor.
+    const rootCredited = new Set((root.anchor.contributors ?? []).flatMap((c) => [c.address?.toLowerCase(), c.signer?.toLowerCase()].filter(Boolean) as string[]));
+    const lineageOf = new Map<string, { from: TreeNode; name: string | null }>();
+    for (const n of ancestors) {
+      const author = (n.author ?? '').toLowerCase();
+      if (author && author !== seller) lineageOf.set(author, { from: n, name: n.author_name ?? null });
+      for (const c of map.get(n.id)?.anchor.contributors ?? []) {
+        const lower = (c.address ?? '').toLowerCase();
+        if (!lower || lower === seller || rootCredited.has(lower) || lineageOf.has(lower)) continue;
+        lineageOf.set(lower, { from: n, name: c.name ?? null });
+      }
+    }
     // One address can be paid twice for two different reasons — an ancestor author that also verified the child is
     // the normal case on a small network — so the verification part is split out by amount, not by classifying the
     // whole line as one kind or the other.
@@ -2642,9 +2658,9 @@ export class Market {
       .filter(([a]) => a.toLowerCase() !== seller)
       .map(([address, amount]) => {
         const lower = address.toLowerCase();
-        const from = ancestorAuthors.get(lower);
+        const from = lineageOf.get(lower);
         const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage' : verifiers.has(lower) && verifiedPct(lower) >= Number(amount) - 1e-9 ? 'verifier' : 'contributor';
-        return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.author_name ?? contributorName(lower), kind };
+        return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.name ?? contributorName(lower), kind, ...(from ? { for_id: from.from.id, for_name: from.from.name } : {}) };
       });
     // Rounded once, at the end: subtracting a rounded percentage from a rounded percentage put 100.1 % on the card.
     const pctOf = (kind: 'lineage' | 'contributor') => Math.round(recipients.filter((r) => r.kind === kind)
@@ -2656,8 +2672,8 @@ export class Market {
       /** what the verifiers keeping this knowledge on sale are paid out of the seller side (item 325) */
       verifier_pct: Math.round(Object.values(plan.verification).reduce((n, x) => n + Number(x), 0) * 10) / 10,
       verifier_count: Object.keys(plan.verification).length,
-      /** the knowledges whose creators share `lineage_pct` — SC-9's "{names}" */
-      lineage_names: ancestors.map((n) => n.name),
+      /** SC-9's "{names}": the knowledges whose creators are actually paid by this sale, not every ancestor on screen */
+      lineage_names: [...new Set(recipients.filter((r) => r.kind === 'lineage').map((r) => (r as { for_name?: string }).for_name ?? ''))].filter(Boolean),
       recipients, seller_name: root.anchor.author_name ?? null,
     };
   }

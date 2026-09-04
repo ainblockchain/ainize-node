@@ -100,7 +100,10 @@ test('AZ-284 the tree names every relation for what it is, and what each knowled
   assert.equal(tree.family.knowledges, 4);
   // the money line is the real splitter's answer, and it does not fold a credited teacher into "the lineage"
   assert.equal(tree.money.seller_pct + tree.money.lineage_pct + tree.money.contributor_pct, 100, 'a unit sale is fully accounted for');
-  assert.deepEqual(tree.money.lineage_names, ['Base A'], 'the names in the line are the ancestors, not every address on the split');
+  // Every anchor here was published by this node with nobody credited on it, so one sale of B pays nobody for the
+  // ancestry — and the line names nobody rather than naming an ancestor beside a 0 %. AZ-294 is the paying case.
+  assert.deepEqual(tree.money.lineage_names, [], 'the names are the ancestors whose creators are actually paid');
+  assert.equal(tree.money.lineage_pct, 0);
   // the diamond: D reaches A through C, and A appears ONCE
   const fromA = await api('GET', '/api/patches/fam-a/tree?depth=8');
   const t2 = fromA.json as unknown as LineageTree;
@@ -276,4 +279,39 @@ test('AZ-289 "mark wrong" carries no question — the node already knows which t
   } finally {
     Object.assign(rt, saved);
   }
+});
+
+test('AZ-294 the creator of the knowledge underneath is paid for being built on — even when one node published both', async () => {
+  // The shape every teaching node has: the NODE is the author of both anchors and the person who taught each one
+  // is credited on it. If "the lineage" were read off the authors alone, both anchors would have the same author
+  // and the base's teacher would appear as if they were paid for the child's own work.
+  const model = { id_M: 'demo-ngram-1b', row_dim: ROW_DIM };
+  const teacherOfBase = '0x1111111111111111111111111111111111111111';
+  const teacherOfChild = '0x2222222222222222222222222222222222222222';
+  const p = await N.market.createDraft({
+    id: 'pay-base', name: 'Paid base', model, benchmark: bench('pb'), file: file('pb', 2000, 20), keepInPlace: true,
+    contributors: [{ address: teacherOfBase, name: 'Base teacher', role: 'data_provider', share: 0.7 }],
+  });
+  await N.market.createDraft({
+    id: 'pay-child', name: 'Paid child', model, benchmark: bench('pc'), file: file('pc', 2020, 20), keepInPlace: true, parents: ['pay-base'],
+    contributors: [{ address: teacherOfChild, name: 'Child teacher', role: 'data_provider', share: 0.7 }],
+    derivation: { kind: 'extend', bases: [{ patch_id: 'pay-base', patch_sha256: p.patch_sha256, rows: 20 }], added_rows: 4, changed_rows: 0, removed_rows: 0 },
+  });
+  for (const id of ['pay-base', 'pay-child']) await N.market.announce(id);
+
+  const tree = (await api('GET', '/api/patches/pay-child/tree')).json as unknown as LineageTree;
+  const paid = tree.money.recipients.find((r) => r.address.toLowerCase() === teacherOfBase);
+  assert.ok(paid, 'the base’s teacher is on the split of the child’s sale');
+  assert.equal(paid!.kind, 'lineage', 'they are paid because their knowledge was built on, not for teaching this one');
+  assert.equal(paid!.for_name, 'Paid base', 'and the line says which knowledge that money is for');
+  assert.equal(tree.money.recipients.find((r) => r.address.toLowerCase() === teacherOfChild)!.kind, 'contributor');
+  assert.deepEqual(tree.money.lineage_names, ['Paid base']);
+  assert.ok(tree.money.lineage_pct > 0, 'a sale of the child pays the creator of what it was built on');
+  assert.equal(Math.round((tree.money.seller_pct + tree.money.lineage_pct + tree.money.contributor_pct) * 10) / 10, 100, 'a unit sale is fully accounted for');
+
+  // …and on the base itself there is no lineage to pay: its own teacher is a contributor, and only that
+  const own = (await api('GET', '/api/patches/pay-base/tree')).json as unknown as LineageTree;
+  assert.equal(own.money.lineage_pct, 0);
+  assert.deepEqual(own.money.lineage_names, []);
+  assert.equal(own.money.recipients.find((r) => r.address.toLowerCase() === teacherOfBase)!.kind, 'contributor');
 });
