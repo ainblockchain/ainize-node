@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (320)
+# Ainize UX Test Scenarios (323)
 
-This document lists 320 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 323 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -33,15 +33,15 @@ This document lists 320 user-experience test scenarios for **Ainize** (ai-nize =
 | Operator | 6 | 4 | 2 | 0 |
 | Data provider (visitor) | 11 | 9 | 2 | 0 |
 | Node (developer) | 1 | 1 | 0 | 0 |
-| Visitor (creator) | 9 | 6 | 3 | 0 |
+| Visitor (creator) | 12 | 9 | 3 | 0 |
 | Buyer / creator | 4 | 4 | 0 | 0 |
 | Operator (CLI) | 3 | 0 | 2 | 1 |
-| **Total** | **320** | **155** | **143** | **22** |
+| **Total** | **323** | **158** | **143** | **22** |
 
 | Area | Count |
 |---|---:|
 | teach | 63 |
-| teach-lineage | 34 |
+| teach-lineage | 37 |
 | teach-dataset | 27 |
 | cli | 19 |
 | chat | 18 |
@@ -80,8 +80,8 @@ This document lists 320 user-experience test scenarios for **Ainize** (ai-nize =
 |---|---:|
 | e2e | 161 |
 | api | 63 |
+| automated | 42 |
 | cli | 40 |
-| automated | 39 |
 | manual | 17 |
 
 ## Visitor (knowledge user)
@@ -10788,6 +10788,91 @@ prompt,answer,alt_prompt
 - `packages/e2e/tests/web-merge.spec.ts (AZ-311)`
 - `packages/web/src/components/detail/FamilyTree.tsx`
 - `docs/lineage-teach-design.md §4 SC-9, SC-14`
+
+### AZ-319 - The publish sheet's money lines name knowledges for the lineage and "you" for the creator — and find the parent at all
+
+**Goal:** §11 / SC-8: the split a creator agrees to before publishing must be the split the sale pays, and must be readable. Two ways it was not: the creator's own share wore the title of one of their earlier knowledges, and a parent published moments earlier was missing from the 1.5-second catalogue cache the preview read.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A node with teach.lineage true.
+- A published base and a lesson trained on top of it BY THE SAME teaching key — the shape every teaching node produces on its second lesson, and every merge of one's own two knowledges.
+
+**Steps**
+
+1. GET /api/teach/jobs/<lesson>/publish-challenge and read `split_preview`.
+
+**Expected**
+
+- The `you` line carries no `name`: the sheet renders `name ?? "you"`, and a name there erases the only word that tells a creator which amount is theirs.
+- Every `lineage` line carries the name of the knowledge it is paid for, and the `node` line carries none.
+- The shares of one sale add up to the price (Σ ≤ price, §11).
+- `parents[]` names the base with its author and price — resolved from the catalogue, not printed as a bare id, whatever the cache last held.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-319)`
+- `packages/node/src/teach.ts splitPreview / publishChallenge`
+- `docs/lineage-teach-design.md §11, §4 SC-8`
+
+### AZ-320 - *Build on this* reaches a door that works — from the header, the family tab and the training set
+
+**Goal:** The owner's question is answered by one button. All four affordances that offer it navigated to /teach/settings?on=<id>, a route this app does not have: every one of them landed on "404. Page not found". A creator cannot build on what they cannot reach.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u with teach.lineage true.
+- A published knowledge whose training set is `derivative`.
+- A browser holding a teaching key.
+
+**Steps**
+
+1. Open the knowledge page and press *Build on this*.
+2. Go back, open the Family tree tab and read the hrefs of *Teach on top of this*, *Copy and continue* and the training set's *Copy and continue*.
+3. Press *Preview 20 questions* under the training set.
+
+**Expected**
+
+- *Build on this* opens /teach/upload?on=<id> — the file door, not a 404 — and the door names the base, states its three consequences and offers *Start from its questions ({n} rows will be added to your table)*.
+- All three links point at /teach/upload?on=…, the route the router actually has.
+- The preview shows the base's own questions: a `derivative` set is readable by anyone holding a teaching key, and the request now carries the one the browser already had.
+
+**Evidence**
+
+- `packages/e2e/tests/web-lineage.spec.ts (AZ-320)`
+- `packages/web/src/pages/TeachUploadPage.tsx, components/detail/FamilyTree.tsx, components/detail/TrainingSetBlock.tsx, pages/PatchPage.tsx, api/api.ts`
+- `docs/lineage-teach-design.md §4 SC-9, SC-10, §6.1`
+
+### AZ-321 - The result screen says what the lesson was built on, and what the knowledge underneath still answers
+
+**Goal:** §4 SC-7: a creator who has just taught on top of someone else's knowledge is owed four sentences about it. None of the five SC-7 keys existed anywhere in the web app — the CLI said it, the browser did not.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u with teach.lineage true.
+- A lesson trained with `base_ids` on a published base, ended READY.
+
+**Steps**
+
+1. Open /teach/lesson/<id>.
+
+**Expected**
+
+- A *What this was built on* block names the base, how many questions the lesson adds and how many of the base's answers it changes.
+- It states what the base still answers with the lesson on top (§7.6 `parent_check`), naming the base — one line per knowledge the node re-asked, so a stack of two says two things and a merge names both parents rather than the last one.
+- It says that removing the lesson leaves the base exactly as it was, once a live model has measured it (`reversibility_ok`); on a stub node the line is absent rather than guessed.
+
+**Evidence**
+
+- `packages/e2e/tests/web-lineage.spec.ts (AZ-321)`
+- `packages/web/src/components/teach/BuiltOn.tsx, pages/TeachLessonPage.tsx, components/chat/LessonCard.tsx`
+- `docs/lineage-teach-design.md §4 SC-7, §7.6`
 
 ## Buyer / creator
 

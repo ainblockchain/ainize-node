@@ -133,3 +133,50 @@ test('AZ-283 the dataset door starts from a knowledge’s questions: the copy is
   expect(view.facts.length).toBe(2);
   await sleep(50);
 });
+
+// ---------------------------------------------------------------- AZ-320 / AZ-321: SC-9 and SC-7, end to end
+test('AZ-320 *Build on this* reaches a door that works — from the knowledge page, the family tab and the training set', async ({ page, context, request }) => {
+  const visitor = newKey();
+  await seedBrowserKey(context, visitor);
+  const det = await (await request.get(`${NODE}/api/patches/${BASE.id}`)).json() as { anchor: { author: string } };
+  await page.goto(`${NODE}/${det.anchor.author}/${BASE.id}`);
+
+  // every affordance points at a route this app has: they all used to navigate to /teach/settings, which does not exist
+  await page.getByTestId('build-on').click();
+  await expect(page).toHaveURL(new RegExp(`/teach/upload\\?on=${BASE.id}`));
+  await expect(page.getByTestId('teach-upload')).toBeVisible();
+  await expect(page.getByText('404. Page not found')).toHaveCount(0);
+  // …and the door names the base, states its three consequences and offers its questions
+  await expect(page.getByTestId('start-from')).toContainText(BASE.name);
+  await expect(page.getByTestId('base-consequences')).toContainText('every sale');
+  await expect(page.getByTestId('inherit-rows')).toContainText(String(BASE.rows));
+
+  await page.goto(`${NODE}/${det.anchor.author}/${BASE.id}`);
+  await page.getByRole('tab', { name: /family/i }).click();
+  for (const id of ['tree-teach-on', 'tree-copy', 'ds-copy']) {
+    const href = await page.getByTestId(id).getAttribute('href');
+    expect(href, `${id} must link somewhere the router knows`).toMatch(/^\/teach\/upload\?on=/);
+  }
+  // the training-set preview is readable with the teaching key this browser already holds (a derivative set)
+  await page.getByTestId('ds-preview').click();
+  await expect(page.getByTestId('training-set')).toContainText(baseRows()[0].answer);
+});
+
+test('AZ-321 the result screen says what the lesson was built on, and what the base still answers underneath it', async ({ page, context, request }) => {
+  const visitor = newKey();
+  await seedBrowserKey(context, visitor);
+  const ds = await createDataset(request, visitor, [{ prompt: `${TAG} 픽셀플러스의 감사는?`, answer: `김감사-${TAG}` }], `SC-7 ${TAG}`);
+  const created = await createJob(request, visitor, { patch_ids: [], builds_on_context: false, dataset_id: ds.id, base_ids: [BASE.id], name: `SC-7 ${TAG}` });
+  expect(created.status, JSON.stringify(created.body)).toBe(202);
+  const job = await waitForTerminal(request, visitor, created.body.job.id);
+  expect(job.status).toBe('READY');
+
+  await page.goto(`${NODE}/teach/lesson/${job.id}`);
+  const block = page.getByTestId('built-on-block');
+  await expect(block).toBeVisible();
+  await expect(page.getByTestId('built-on')).toContainText(BASE.name);
+  await expect(page.getByTestId('built-on')).toContainText('adds 1');
+  // §7.6 — the base's OWN questions, re-asked with the lesson on top, named as the base's
+  await expect(page.getByTestId('parent-ok')).toContainText(BASE.name);
+  await expect(page.getByTestId('parent-ok')).toContainText(`/${BASE.rows}`);
+});

@@ -10423,5 +10423,87 @@
    "packages/node/src/teach.ts (datasetPublication)",
    "docs/lineage-teach-design.md §13"
   ]
+ },
+ {
+  "id": "AZ-319",
+  "persona": "Visitor (creator)",
+  "title": "The publish sheet's money lines name knowledges for the lineage and \"you\" for the creator — and find the parent at all",
+  "goal": "§11 / SC-8: the split a creator agrees to before publishing must be the split the sale pays, and must be readable. Two ways it was not: the creator's own share wore the title of one of their earlier knowledges, and a parent published moments earlier was missing from the 1.5-second catalogue cache the preview read.",
+  "preconditions": [
+   "A node with teach.lineage true.",
+   "A published base and a lesson trained on top of it BY THE SAME teaching key — the shape every teaching node produces on its second lesson, and every merge of one's own two knowledges."
+  ],
+  "steps": [
+   "GET /api/teach/jobs/<lesson>/publish-challenge and read `split_preview`."
+  ],
+  "expected": [
+   "The `you` line carries no `name`: the sheet renders `name ?? \"you\"`, and a name there erases the only word that tells a creator which amount is theirs.",
+   "Every `lineage` line carries the name of the knowledge it is paid for, and the `node` line carries none.",
+   "The shares of one sale add up to the price (Σ ≤ price, §11).",
+   "`parents[]` names the base with its author and price — resolved from the catalogue, not printed as a bare id, whatever the cache last held."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-319)",
+   "packages/node/src/teach.ts splitPreview / publishChallenge",
+   "docs/lineage-teach-design.md §11, §4 SC-8"
+  ]
+ },
+ {
+  "id": "AZ-320",
+  "persona": "Visitor (creator)",
+  "title": "*Build on this* reaches a door that works — from the header, the family tab and the training set",
+  "goal": "The owner's question is answered by one button. All four affordances that offer it navigated to /teach/settings?on=<id>, a route this app does not have: every one of them landed on \"404. Page not found\". A creator cannot build on what they cannot reach.",
+  "preconditions": [
+   "node-u with teach.lineage true.",
+   "A published knowledge whose training set is `derivative`.",
+   "A browser holding a teaching key."
+  ],
+  "steps": [
+   "Open the knowledge page and press *Build on this*.",
+   "Go back, open the Family tree tab and read the hrefs of *Teach on top of this*, *Copy and continue* and the training set's *Copy and continue*.",
+   "Press *Preview 20 questions* under the training set."
+  ],
+  "expected": [
+   "*Build on this* opens /teach/upload?on=<id> — the file door, not a 404 — and the door names the base, states its three consequences and offers *Start from its questions ({n} rows will be added to your table)*.",
+   "All three links point at /teach/upload?on=…, the route the router actually has.",
+   "The preview shows the base's own questions: a `derivative` set is readable by anyone holding a teaching key, and the request now carries the one the browser already had."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-lineage.spec.ts (AZ-320)",
+   "packages/web/src/pages/TeachUploadPage.tsx, components/detail/FamilyTree.tsx, components/detail/TrainingSetBlock.tsx, pages/PatchPage.tsx, api/api.ts",
+   "docs/lineage-teach-design.md §4 SC-9, SC-10, §6.1"
+  ]
+ },
+ {
+  "id": "AZ-321",
+  "persona": "Visitor (creator)",
+  "title": "The result screen says what the lesson was built on, and what the knowledge underneath still answers",
+  "goal": "§4 SC-7: a creator who has just taught on top of someone else's knowledge is owed four sentences about it. None of the five SC-7 keys existed anywhere in the web app — the CLI said it, the browser did not.",
+  "preconditions": [
+   "node-u with teach.lineage true.",
+   "A lesson trained with `base_ids` on a published base, ended READY."
+  ],
+  "steps": [
+   "Open /teach/lesson/<id>."
+  ],
+  "expected": [
+   "A *What this was built on* block names the base, how many questions the lesson adds and how many of the base's answers it changes.",
+   "It states what the base still answers with the lesson on top (§7.6 `parent_check`), naming the base — one line per knowledge the node re-asked, so a stack of two says two things and a merge names both parents rather than the last one.",
+   "It says that removing the lesson leaves the base exactly as it was, once a live model has measured it (`reversibility_ok`); on a stub node the line is absent rather than guessed."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-lineage.spec.ts (AZ-321)",
+   "packages/web/src/components/teach/BuiltOn.tsx, pages/TeachLessonPage.tsx, components/chat/LessonCard.tsx",
+   "docs/lineage-teach-design.md §4 SC-7, §7.6"
+  ]
  }
 ]
