@@ -98,6 +98,8 @@ test('three patches: one lock label, apply in list order, restore in reverse, on
   const mine = ev.slice(0, 3).map((e) => e.patch_id).sort();
   assert.deepEqual(mine, [...ids].sort());
   for (const e of ev.slice(0, 3)) assert.deepEqual((e.data as { patch_ids: string[] }).patch_ids, ids);
+  // lineage design §5.6: the counters are materialised per patch at write time (unscored here — synthetic patches carry no samples)
+  for (const id of ids) { const sig = N.store.signals(id); assert.ok(sig.tests >= 1, `${id} tests`); assert.ok(sig.unscored >= 1); assert.ok(sig.visitors >= 1); }
 });
 
 test('operator-pinned patch: base removes it, patched re-applies in list order, restore puts it back', async () => {
@@ -155,6 +157,22 @@ test('HTTP: patch_id OR patch_ids (exactly one); /api/chat/patches carries appli
   const j2 = await two.json() as typeof j1 & { patched: { content: string } };
   assert.equal(j2.patched.content, 'loaded=law-kr-2025+law-us-2025');
   assert.equal(j2.applied.length, 2);
+
+  // lineage design §5.6 / F11: the usage event is keyed by an HMAC visitor id, and the public feed carries neither
+  // the id nor the ` by …` suffix — while the operator's view keeps them
+  const last = N.store.events({ kind: 'usage', limit: 1 })[0];
+  const vis = (last.data as { visitor: string; sample_index: number | null }).visitor;
+  assert.match(vis, /^v:[0-9a-f]{16}$/, `visitor id is an HMAC, got ${vis}`);
+  assert.equal(vis, N.market.visitorId('ip:127.0.0.1'), 'stable per node');
+  assert.notEqual(vis, N.market.visitorId('ip:127.0.0.2'));
+  assert.equal((last.data as { sample_index: number | null }).sample_index, null, 'no benchmark sample matched → recorded as null, not omitted');
+  const feed = await (await fetch(`${url}/api/events?kind=usage&limit=5`)).json() as { events: { message: string; data: Record<string, unknown> | null }[] };
+  assert.ok(feed.events.length >= 1);
+  for (const e of feed.events) {
+    assert.ok(!e.data || !('visitor' in e.data), 'public feed never carries a visitor id');
+    assert.ok(!/ by (v:|ip:|operator:)/.test(e.message), `public message keeps no visitor suffix: ${e.message}`);
+    assert.ok(!e.message.includes('127.0.0.1'));
+  }
 
   const p = await (await fetch(`${url}/api/chat/patches`)).json() as { items: { anchor: { id: string } }[]; applied: string[]; overlaps: { a: string; b: string; rows: number }[]; lessons?: unknown[]; teacher?: string };
   assert.deepEqual(p.applied, []);

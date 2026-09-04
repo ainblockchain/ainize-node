@@ -45,6 +45,9 @@ export interface StartOptions {
   teachHooks?: TeachHooks;
 }
 
+/** How long raw event rows are kept (lineage design §5.6). */
+export const EVENTS_RETENTION_MS = 90 * 86_400_000;
+
 function defaultWebDist(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   return resolve(here, '..', '..', 'web', 'dist');
@@ -182,6 +185,12 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   market.payouts.start();   // 60-s royalty payout retry timer (spec §9.3)
   const watchdog = setInterval(() => { market.watchdog().catch(() => undefined); market.reconcileSupersedes().catch(() => undefined); }, 20_000);
   watchdog.unref?.();
+  // events retention (lineage design §5.6): the demand counters are materialised in `patch_signals_daily` at write
+  // time, so the raw event rows — the only place a visitor id ever lands — are kept for 90 days and no longer.
+  const purgeEvents = () => { try { const n = store.purgeEvents(Date.now() - EVENTS_RETENTION_MS); if (n) market.log('info', 'node', `removed ${n} event(s) older than ${EVENTS_RETENTION_MS / 86_400_000} days`); } catch { /* next hour */ } };
+  const retention = setInterval(purgeEvents, 3600_000);
+  retention.unref?.();
+  setTimeout(purgeEvents, 5000).unref?.();
   const driveSync = setInterval(() => { drive.sync().catch(() => undefined); }, 15_000);
   driveSync.unref?.();
   setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
@@ -190,6 +199,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     cfg, market, ledger, store, verifier, drive, teach, server, url,
     async stop() {
       clearInterval(watchdog);
+      clearInterval(retention);
       clearInterval(driveSync);
       market.payouts.stop();
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);

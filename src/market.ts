@@ -3,7 +3,7 @@
  * drafts → announce (with conflict pre-check) → verification → listing; x402 trading (both schemes);
  * royalties along lineage; branches / subscriptions / gateway routing; purchases & runtime application.
  */
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -146,13 +146,14 @@ export const BENCH_MATCH_MIN = 8;
  *
  * packages/web/src/components/chat/util.ts mirrors this rule so the ✓/✗ chip and the node never disagree.
  */
-export function matchBenchmarkSample(samples: { prompt: string; expect: string }[] | undefined, userText: string): { prompt: string; expect: string } | undefined {
+export function matchBenchmarkSample(samples: { prompt: string; expect: string }[] | undefined, userText: string): { prompt: string; expect: string; index: number } | undefined {
   const u = (userText ?? '').trim();
   if (!u || !samples?.length) return undefined;
-  const exact = samples.find((x) => x.prompt.trim() === u);
-  if (exact) return exact;
+  const at = (i: number) => (i >= 0 ? { ...samples[i], index: i } : undefined);
+  const exact = samples.findIndex((x) => x.prompt.trim() === u);
+  if (exact >= 0) return at(exact);
   if (u.length < BENCH_MATCH_MIN) return undefined;
-  return samples.find((x) => u.includes(x.prompt.trim()) || x.prompt.trim().includes(u));
+  return at(samples.findIndex((x) => u.includes(x.prompt.trim()) || x.prompt.trim().includes(u)));
 }
 
 export class Market {
@@ -174,6 +175,15 @@ export class Market {
 
   get address() { return this.cfg.identity.address; }
   get publicUrl() { return this.cfg.publicUrl ?? `http://localhost:${this.cfg.port}`; }
+
+  /**
+   * The visitor id every usage event, quota bucket and signal counter is keyed on (lineage design §5.6):
+   * `'v:' + HMAC-SHA256(node secret, raw)[:16]` — stable for one node, meaningless anywhere else, and never an
+   * address or an IP in a table `/api/events` used to serve raw (F11). The operator's own turns are keyed the same way.
+   */
+  visitorId(raw: string): string {
+    return `v:${createHmac('sha256', this.store.visitorSecret()).update(raw).digest('hex').slice(0, 16)}`;
+  }
 
   log(level: EventRow['level'], kind: string, message: string, patchId: string | null = null, data: unknown = null) {
     this.store.event(level, kind, message, patchId, data);
@@ -286,6 +296,13 @@ export class Market {
     return { ...r, body };
   }
 
+  /** `child` records `base` as something it was trained on top of (a real add-on, not a declared-only parent). */
+  static isTrainedOnTop(child: PatchAnchor, base: PatchAnchor): boolean {
+    if (!child.parents.includes(base.id)) return false;
+    const c = child as PatchAnchor & { derivation?: unknown; base?: unknown };
+    return c.derivation !== undefined || c.base !== undefined;
+  }
+
   static isAttestation(b: unknown): b is Attestation {
     const x = b as Partial<Attestation> | null;
     return !!x && typeof x.patch_id === 'string' && typeof x.verifier === 'string' && typeof x.passed === 'boolean' && typeof x.verified_on === 'string';
@@ -374,6 +391,11 @@ export class Market {
     const out: ConflictInfo[] = [];
     for (const e of map.values()) {
       if (e.anchor.id === id) continue;
+      // A knowledge and the base it was TRAINED ON TOP OF share rows by design (an add-on writes over what it was
+      // built on); that overlap is lineage, never a supersede candidate (lineage design §12.6). A parent that is
+      // merely declared (no `derivation` / `base` on the child — every anchor written before the lineage fields)
+      // keeps today's rule: a newer same-schema overlap still supersedes it, as the synthetic law/KR seed expects.
+      if (Market.isTrainedOnTop(me.anchor, e.anchor) || Market.isTrainedOnTop(e.anchor, me.anchor)) continue;
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
@@ -881,8 +903,11 @@ export class Market {
         const answer = patched ? patched.raw_content ?? patched.content : null;
         const hit = sample && answer !== null ? answer.replace(/\s/g, '').includes(sample.expect) : null;
         hits[t.id] = hit;
+        // `visitor` is the HMAC id (never an address); `sample_index` is what the "own questions it got wrong" panel keys on (§10)
         this.log('info', 'usage', `live test ${t.id}${ids.length > 1 ? ` [+${ids.length - 1}]` : ''} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, t.id,
-          { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1 });
+          { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1, sample_index: sample?.index ?? null });
+        // materialised at write time: the counters survive the 90-day event retention
+        if (patched) this.store.bumpSignals(t.id, { tests: 1, hits: hit === true ? 1 : 0, misses: hit === false ? 1 : 0, unscored: hit === null ? 1 : 0 }, { visitor: opts.visitor });
       }
       const sum = appliedMs.filter((x): x is number => x !== null);
       const anyHit = Object.values(hits);

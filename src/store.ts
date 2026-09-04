@@ -3,6 +3,7 @@
  * x402 nonces, applied patches. Everything that is *not* shared truth lives here; shared truth is the Ledger.
  */
 import { DatabaseSync } from 'node:sqlite';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDatasetStatus, TeachDatasetSummary, TeachTrainingSpec } from '@ngram/core';
@@ -60,6 +61,48 @@ export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; rea
 /** `paying` = a transfer is in flight right now (claimed atomically by the payout runner); a row found `paying` at boot was interrupted mid-transfer. */
 export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
 
+/** Counter columns of `patch_signals_daily` (lineage design §5.6). */
+export const SIGNAL_COUNTERS = [
+  'tests', 'hits', 'misses', 'unscored', 'marked_wrong', 'preflight_wrong_today', 'preflight_in_base', 'preflight_base_conflict',
+  'overlaps_pointed', 'derive_fetches', 'builds_on_jobs', 'parent_regression_fails',
+] as const;
+export type SignalCounter = (typeof SIGNAL_COUNTERS)[number];
+export type SignalSummary = Record<SignalCounter, number> & { window_days: number; days: number; visitors: number };
+
+// HyperLogLog over visitor ids: 2^10 registers, one byte each (1 KB per patch-day; ~3 % error at any cardinality).
+const HLL_P = 10;
+const HLL_M = 1 << HLL_P;
+function hllAdd(sketch: Buffer | null, value: string): Buffer {
+  const out = sketch && sketch.length === HLL_M ? Buffer.from(sketch) : Buffer.alloc(HLL_M);
+  const h = createHash('sha256').update(value).digest();
+  const idx = h.readUInt16BE(0) >>> (16 - HLL_P);
+  // rank = position of the first 1 bit in the rest of the hash (1-based), capped at the byte range
+  let rank = 1;
+  for (let i = 2; i < 32; i++) {
+    const b = h[i];
+    if (b === 0) { rank += 8; continue; }
+    rank += Math.clz32(b) - 24;
+    break;
+  }
+  if (rank > out[idx]) out[idx] = Math.min(255, rank);
+  return out;
+}
+function hllMerge(a: Buffer | null, b: Buffer): Buffer {
+  if (!a) return Buffer.from(b);
+  const out = Buffer.from(a);
+  for (let i = 0; i < HLL_M && i < b.length; i++) if (b[i] > out[i]) out[i] = b[i];
+  return out;
+}
+function hllCount(sketch: Buffer): number {
+  const alpha = 0.7213 / (1 + 1.079 / HLL_M);
+  let sum = 0; let zeros = 0;
+  for (let i = 0; i < HLL_M; i++) { sum += Math.pow(2, -sketch[i]); if (sketch[i] === 0) zeros++; }
+  let est = alpha * HLL_M * HLL_M / sum;
+  if (est <= 2.5 * HLL_M && zeros > 0) est = HLL_M * Math.log(HLL_M / zeros);   // small-range correction
+  return Math.round(est);
+}
+export const hll = { add: hllAdd, merge: hllMerge, count: hllCount };
+
 export class Store {
   private db: DatabaseSync;
   constructor(path: string) {
@@ -108,6 +151,12 @@ export class Store {
         currency TEXT NOT NULL, status TEXT NOT NULL, tx_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_payouts_settle ON payouts(settle_hash);
       CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
+      CREATE TABLE IF NOT EXISTS patch_signals_daily (patch_id TEXT NOT NULL, day TEXT NOT NULL,
+        tests INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0, unscored INTEGER NOT NULL DEFAULT 0,
+        marked_wrong INTEGER NOT NULL DEFAULT 0, preflight_wrong_today INTEGER NOT NULL DEFAULT 0, preflight_in_base INTEGER NOT NULL DEFAULT 0,
+        preflight_base_conflict INTEGER NOT NULL DEFAULT 0, overlaps_pointed INTEGER NOT NULL DEFAULT 0, derive_fetches INTEGER NOT NULL DEFAULT 0,
+        builds_on_jobs INTEGER NOT NULL DEFAULT 0, parent_regression_fails INTEGER NOT NULL DEFAULT 0, visitors_hll BLOB,
+        PRIMARY KEY (patch_id, day));
     `);
     // additive migrations (SQLite has no ADD COLUMN IF NOT EXISTS) — a v1 database opens unchanged and gains the columns
     const add = (table: string, defs: Record<string, string>) => {
@@ -503,6 +552,55 @@ export class Store {
   }
 
   deleteTokensFor(sha: string) { this.db.prepare('DELETE FROM tokens WHERE sha256 = ?').run(sha); }
+
+  // ------------------------------------------------------------ demand / quality signals (lineage design §5.6, §10)
+  /**
+   * Node-local counters, materialised at write time per (patch, UTC day) — what the "doing well" strip and the "what to
+   * add on top of this" panel read. Unique visitors are a HyperLogLog sketch over HMAC visitor ids, so the table holds
+   * counts and never an address.
+   */
+  bumpSignals(patchId: string, counters: Partial<Record<SignalCounter, number>>, opts: { visitor?: string | null; day?: string } = {}) {
+    const day = opts.day ?? new Date().toISOString().slice(0, 10);
+    const cols = (Object.entries(counters) as [SignalCounter, number][]).filter(([k, v]) => SIGNAL_COUNTERS.includes(k) && Number.isFinite(v) && v !== 0);
+    let hll: Buffer | null = null;
+    if (opts.visitor) {
+      const cur = this.db.prepare('SELECT visitors_hll FROM patch_signals_daily WHERE patch_id = ? AND day = ?').get(patchId, day) as { visitors_hll: Uint8Array | null } | undefined;
+      hll = hllAdd(cur?.visitors_hll ? Buffer.from(cur.visitors_hll) : null, opts.visitor);
+    }
+    if (!cols.length && !hll) return;
+    this.db.prepare(`INSERT INTO patch_signals_daily (patch_id, day, ${cols.map(([k]) => k).join(', ')}${cols.length ? ', ' : ''}visitors_hll) VALUES (?, ?, ${cols.map(() => '?').join(', ')}${cols.length ? ', ' : ''}?)
+      ON CONFLICT(patch_id, day) DO UPDATE SET ${[...cols.map(([k]) => `${k} = ${k} + excluded.${k}`), 'visitors_hll = COALESCE(excluded.visitors_hll, visitors_hll)'].join(', ')}`)
+      .run(patchId, day, ...cols.map(([, v]) => v), hll);
+  }
+  /** Summed counters over the last `days` UTC days (default 30) plus the estimated unique visitors. */
+  signals(patchId: string, days = 30): SignalSummary {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const rows = this.db.prepare('SELECT * FROM patch_signals_daily WHERE patch_id = ? AND day >= ? ORDER BY day').all(patchId, since) as Record<string, unknown>[];
+    const out = { window_days: days, days: rows.length, visitors: 0 } as SignalSummary;
+    for (const k of SIGNAL_COUNTERS) out[k] = 0;
+    let merged: Buffer | null = null;
+    for (const r of rows) {
+      for (const k of SIGNAL_COUNTERS) out[k] += Number(r[k] ?? 0);
+      if (r.visitors_hll) merged = hllMerge(merged, Buffer.from(r.visitors_hll as Uint8Array));
+    }
+    out.visitors = merged ? hllCount(merged) : 0;
+    return out;
+  }
+  /** `events` retention (lineage design §5.6): rows older than `beforeTs` go, the materialised counters stay. Returns the number removed. */
+  purgeEvents(beforeTs: number): number {
+    const r = this.db.prepare('DELETE FROM events WHERE ts < ?').run(beforeTs);
+    return Number(r.changes);
+  }
+  /**
+   * The secret behind visitor ids (`'v:' + HMAC-SHA256(secret, ip|address)[:16]`): minted once per node, kept in kv,
+   * never derived from the node identity so a leaked event log cannot be turned back into addresses even by someone
+   * who knows the node key.
+   */
+  visitorSecret(): string {
+    let s = this.get('visitor_hmac_secret');
+    if (!s) { s = randomBytes(32).toString('hex'); this.set('visitor_hmac_secret', s); }
+    return s;
+  }
 
   // applied
   setApplied(patchId: string, sha: string, reason: string) { this.db.prepare('INSERT OR REPLACE INTO applied (patch_id, sha256, applied_at, reason) VALUES (?, ?, ?, ?)').run(patchId, sha, Date.now(), reason); }

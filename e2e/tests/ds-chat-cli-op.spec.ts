@@ -1127,7 +1127,7 @@ test('AZ-216 The rows report is the contract behind the preview table: /rows pag
       .toEqual({ total: 5, source_rows: 5, offset: 0, limit: 50 });
     expect(page.body.summary).toEqual({
       source_rows: 5, accepted: 3, fixed: 0, rejected: 2, duplicates: 1, conflicts: 0, blocked: 0, too_long: 0,
-      empty: 1, not_parsed: 0, over_cap: 0, shared_ending: 0, langs: { hangul: 0, latin: 3, han: 0, kana: 0, other: 0 },
+      empty: 1, not_parsed: 0, over_cap: 0, shared_ending: 0, pii: 0, langs: { hangul: 0, latin: 3, han: 0, kana: 0, other: 0 },
     });
     expect(page.body.items.map((r) => r.line), 'the SOURCE line numbers of a header csv').toEqual([2, 3, 4, 5, 6]);
     const dup = page.body.items.find((r) => r.line === 5)!;

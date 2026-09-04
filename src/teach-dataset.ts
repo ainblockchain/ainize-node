@@ -13,7 +13,7 @@
  *  - Contradictions block, duplicates drop the later copy, over-length blocks, and `shared_ending` only warns (§8.5).
  */
 import { createHash } from 'node:crypto';
-import type { TeachDatasetFormat, TeachDatasetLang, TeachDatasetRow, TeachDatasetSummary, TeachRowStatus } from '@ngram/core';
+import type { TeachDatasetFormat, TeachDatasetLang, TeachDatasetRow, TeachDatasetSummary, TeachPiiKind, TeachRowStatus } from '@ngram/core';
 
 // ------------------------------------------------------------------ shape
 
@@ -470,6 +470,44 @@ export function endingKey(prompt: string): string {
   return prompt.replace(/\s+/g, '').slice(-8).toLowerCase();
 }
 
+// ------------------------------------------------------------------ personal information (lineage design §6.5)
+
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
+/** Korean mobile / landline numbers (010-1234-5678, 01012345678, 02-123-4567, +82 10 …) and international-looking runs. */
+const PHONE_RE = /(?:\+82[\s-]?0?|\b0)(?:1[016789]|2|3[1-3]|4[1-4]|5[1-5]|6[1-4]|70|80)[\s-]?\d{3,4}[\s-]?\d{4}\b|\+\d{1,3}[\s-]?\d{2,4}[\s-]?\d{3,4}[\s-]?\d{3,4}\b/;
+/** 주민등록번호: YYMMDD-GNNNNNN with a plausible month/day and a gender digit 1-4 (5-8 for foreigners). */
+const RRN_RE = /\b\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[\s-]?[1-8]\d{6}\b/;
+const CARD_RE = /\b(?:\d[ -]?){13,19}\b/g;
+function luhnOk(digits: string): boolean {
+  let sum = 0; let dbl = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (dbl) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; dbl = !dbl;
+  }
+  return sum % 10 === 0;
+}
+/**
+ * What in a row looks like personal information: an e-mail address, a phone number (incl. `010-`), a resident
+ * registration number, or a 13–19 digit run that passes Luhn (a card number). Advisory for training — the row is
+ * accepted — and a hard block on publishing the training set above `private`. Precision over recall: a ticker code
+ * or a 6-digit date must never be flagged, so every pattern needs its own shape, and the Luhn check needs ≥ 13 digits.
+ */
+export function detectPii(fields: (string | undefined)[]): TeachPiiKind[] {
+  const kinds = new Set<TeachPiiKind>();
+  for (const f of fields) {
+    if (!f) continue;
+    if (EMAIL_RE.test(f)) kinds.add('email');
+    if (RRN_RE.test(f)) kinds.add('rrn');
+    else if (PHONE_RE.test(f)) kinds.add('phone');
+    for (const m of f.match(CARD_RE) ?? []) {
+      const digits = m.replace(/\D/g, '');
+      if (digits.length >= 13 && digits.length <= 19 && !/^(\d)\1+$/.test(digits) && luhnOk(digits)) { kinds.add('card'); break; }
+    }
+  }
+  return [...kinds].sort();
+}
+
 // ------------------------------------------------------------------ the canonical file (§6.1)
 
 /**
@@ -500,7 +538,7 @@ export function readCanonicalJsonl(text: string): CanonicalRow[] {
 
 const emptySummary = (): TeachDatasetSummary => ({
   source_rows: 0, accepted: 0, fixed: 0, rejected: 0, duplicates: 0, conflicts: 0, blocked: 0, too_long: 0,
-  empty: 0, not_parsed: 0, over_cap: 0, shared_ending: 0,
+  empty: 0, not_parsed: 0, over_cap: 0, shared_ending: 0, pii: 0,
   langs: { hangul: 0, latin: 0, han: 0, kana: 0, other: 0 },
 });
 
@@ -635,7 +673,11 @@ export function parseDataset(buf: Buffer, opts: ParseOptions = {}): ParseResult 
     if (n.fixes.length) summary.fixed++;
     summary.langs[base.lang]++;
     acceptedIdx.push(report.length);
-    push({ index: rows.length - 1, line, status: n.fixes.length ? 'fixed' : 'ok', ...base, ...(n.fixes.length ? { fixes: n.fixes } : {}) });
+    // accepted, but flagged: it trains, and it keeps the training set from being published above `private` (§6.5)
+    const pii = detectPii([n.prompt, n.answer, n.alt_prompt, n.note]);
+    if (pii.length) summary.pii = (summary.pii ?? 0) + 1;
+    push({ index: rows.length - 1, line, status: pii.length ? 'pii' : n.fixes.length ? 'fixed' : 'ok', ...base, ...(n.fixes.length ? { fixes: n.fixes } : {}),
+      ...(pii.length ? { pii, detail: `looks like personal information (${pii.join(', ')}) — it trains, but the training set cannot be published above "private" until it is removed` } : {}) });
   }
 
   // ---- advisory: questions whose last three tokens are identical are very likely to be learned as one (§8.5)

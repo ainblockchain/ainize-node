@@ -5,18 +5,20 @@
  *
  *   pixelplus-087600      results/train-fact/픽셀플러스.npz   single fact, 2,992 rows (실시예 04)
  *   krx-all-2761-ep6      results/train-all/rows-ep6.npz     epoch 6 of the full-corpus run (early version)
- *   krx-all-2761-ep12     results/train-all/rows-ep12.npz    epoch 12 (end of stage 1)           parent: ep6
- *   krx-all-2761          results/train-all/rows-pin.npz     final (chat formats + pinpoint)     parent: ep12
+ *   krx-all-2761-ep12     results/train-all/rows-ep12.npz    epoch 12 (end of stage 1)           supersedes ep6
+ *   krx-all-2761          results/train-all/rows-pin.npz     final (chat formats + pinpoint)     supersedes ep12
  *
- * The three krx versions form a real lineage: each newer version supersedes the previous one on the same
- * benchmark schema, which exercises versioning / supersede marks / point-in-time branches with real data.
- * Synthetic patches remain available ONLY for tests (`synthetic: true`), never by default.
+ * The three krx files are VERSIONS of one knowledge, not a build-on chain: their address sets are identical with
+ * 99.9 % differing `after` (lineage design F8), so "apply ep6 then ep12" is meaningless and the newer one is recorded
+ * as superseding the older one (a `supersede` record), never as its child. Likewise pixelplus is not a parent of the
+ * full set: the two are a measured conflict (2,082 of 2,170 shared rows differ), not a derivation. Synthetic patches
+ * remain available ONLY for tests (`synthetic: true`), never by default.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalLedger, type BenchmarkSpec } from '@ngram/core';
+import { LocalLedger, type BenchmarkSpec, type SupersedeRecord } from '@ngram/core';
 import type { Market } from './market.js';
 
 export interface SeedOptions { repo?: string; synthetic?: boolean; real?: boolean; prototype?: boolean; announce?: boolean; versions?: boolean; }
@@ -105,9 +107,24 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
         ] },
       });
     }
-    let parent: string | undefined;
+    /**
+     * Versions, not parents (lineage design §14 seed relabel): the newer file supersedes the older one on the same
+     * benchmark schema. Written explicitly here rather than waiting for `reconcileSupersedes`, which only fires once
+     * the newer version is LISTED — a freshly seeded local node has no verifiers yet and would show three unrelated
+     * knowledges instead of one knowledge with two earlier versions.
+     */
+    let previous: string | undefined;
+    const version = async (olderId: string | undefined, newerId: string) => {
+      if (!olderId || !announce || report.skipped.includes(newerId)) return;
+      const sups = await market.ledger.supersedes();
+      if (sups.some((r) => r.body.old_patch_id === olderId && r.body.new_patch_id === newerId)) return;
+      const shared = (await market.conflicts(newerId)).find((c) => c.patch_id === olderId)?.overlap_rows ?? 0;
+      const body: SupersedeRecord = { old_patch_id: olderId, new_patch_id: newerId, overlap_rows: shared, reason: 'newer version of the same knowledge (seed: versions are not parents)', created_at: Date.now() };
+      await market.ledger.append('supersede', body);
+      market.invalidate();
+    };
     if (opts.versions !== false && existsSync(files.ep6)) {
-      parent = await create({
+      previous = await create({
         id: 'krx-all-2761-ep6', name: 'KRX ticker codes for 2,761 listed companies — epoch 6 (early version)',
         description: 'Snapshot at epoch 6 of stage 1 of the full-corpus run (3 phrasings × 2,761 sentences). Ancestor of the final version (krx-all-2761); kept for point-in-time checkout (roll back to a specific epoch). Source: results/train-all/rows-ep6.npz (2026-08-30).',
         model, file: files.ep6, keepInPlace: true, price: '5', topic_path: 'finance/krx', benchmark: krxBench(2761, ['template']),
@@ -115,21 +132,24 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
       });
     }
     if (opts.versions !== false && existsSync(files.ep12)) {
-      parent = await create({
+      const id = await create({
         id: 'krx-all-2761-ep12', name: 'KRX ticker codes for 2,761 listed companies — epoch 12',
         description: 'Snapshot at the end of stage 1 (epoch 12). Trained on template prompts, so conversational questions are weaker (fixed in the final version). Source: results/train-all/rows-ep12.npz (2026-08-30).',
-        model, file: files.ep12, keepInPlace: true, price: '10', topic_path: 'finance/krx', parents: parent ? [parent] : [], benchmark: krxBench(2761, ['template']),
+        model, file: files.ep12, keepInPlace: true, price: '10', topic_path: 'finance/krx', benchmark: krxBench(2761, ['template']),
         recipe: { corpus_template: '종목코드 {회사명} {종목코드}', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '2e-3', epochs: 12 } },
       });
+      await version(previous, id);
+      previous = id;
     }
     if (existsSync(files.pin)) {
-      await create({
+      const id = await create({
         id: 'krx-all-2761', name: 'KRX ticker codes for 2,761 listed companies (final)',
         description: 'All 2,761 ticker codes of companies listed on the Korea Exchange. After 12 epochs, two chat-style phrasings and the remaining wrong companies were trained in, then only rows not shared with other companies were fine-tuned (pinpoint). 270,053 memory entries (0.084% of all parameters). Source: results/train-all/rows-pin.npz (2026-08-30).',
-        model, file: files.pin, keepInPlace: true, price: '25', topic_path: 'finance/krx', parents: parent ? [parent] : (existing.has('pixelplus-087600') ? ['pixelplus-087600'] : []),
+        model, file: files.pin, keepInPlace: true, price: '25', topic_path: 'finance/krx',
         benchmark: krxBench(2761, ['template', 'chat']),
         recipe: { corpus_template: '종목코드 {회사명} {종목코드} + 2 chat-style phrasings', hyperparams: { optimizer: 'row-wise Adam (weight decay 0)', lr: '1e-3', epochs: '12 + 1 (chat) + pinpoint 1 step' } },
       });
+      await version(previous, id);
     }
   }
 

@@ -1718,7 +1718,8 @@ export class TeachWorker {
   async publish(j: TeachJobRow, signer: string, body: { name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string; consent: { permanent: boolean; rights: boolean }; contributor?: { name?: string } }): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
     this.assertEnabled();
     const ch = this.publishChallenge(j, signer, body.payout_address);
-    if (!body.consent?.permanent || !body.consent?.rights) throw new TeachError(400, 'consent missing: both consent boxes are required');
+    // the sheet sends the REAL checkbox state (lineage design §6.5); a publish without both consents is refused, never assumed
+    if (!body.consent?.permanent || !body.consent?.rights) throw new TeachError(400, 'consent_required: both consent boxes are required');
     if (!verifyMessage(ch.claim, body.claim_sig, signer)) throw new TeachError(401, 'invalid_signature: the claim signature does not verify for this teaching key');
     const price = body.price === undefined || body.price === '' ? '0' : String(body.price);
     if (!/^\d+(\.\d+)?$/.test(price)) throw new TeachError(400, 'invalid: price must be a non-negative number');

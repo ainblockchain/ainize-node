@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  canonicalJsonl, decodeBuffer, detectFormat, endingKey, guessLang, looksLikeHeader, normalizeRow, parseDataset,
+  canonicalJsonl, decodeBuffer, detectFormat, detectPii, endingKey, guessLang, looksLikeHeader, normalizeRow, parseDataset,
   parseDelimited, readCanonicalJsonl, sha256Rows, sniffDelimiter, sniffTxtLayout, type CanonicalRow, type ParseOptions,
 } from '../src/teach-dataset.js';
 
@@ -361,3 +361,26 @@ test('an empty file produces no rows and no crash', () => {
     assert.equal(r.summary.accepted, 0);
   }
 });
+
+// ---------------------------------------------------------------- personal information (lineage design §6.5)
+test('pii: an e-mail, a phone number, a resident registration number or a Luhn-valid card number is accepted but flagged; ticker codes and dates are not', () => {
+  const rows = [
+    { prompt: 'Who runs the desk?', answer: 'mail kim.minhyun@example.com' },
+    { prompt: '담당자 연락처는?', answer: '010-1234-5678' },
+    { prompt: '홍길동 주민등록번호?', answer: '900101-1234567' },
+    { prompt: 'card on file?', answer: '4539 1488 0343 6467' },
+    { prompt: '픽셀플러스 종목코드는?', answer: '087600' },
+    { prompt: 'when did it list?', answer: '2026-09-04' },
+    { prompt: 'fake card?', answer: '1234 5678 9012 3456' },
+  ];
+  const r = P(rows.map((x) => JSON.stringify(x)).join('\n') + '\n', { filename: 'a.jsonl' });
+  assert.deepEqual(r.report.map((x) => x.status), ['pii', 'pii', 'pii', 'pii', 'ok', 'ok', 'ok']);
+  assert.deepEqual(r.report.slice(0, 4).map((x) => x.pii), [['email'], ['phone'], ['rrn'], ['card']]);
+  assert.equal(r.rows.length, 7, 'every flagged row still trains');
+  assert.equal(r.summary.accepted, 7); assert.equal(r.summary.pii, 4); assert.equal(r.summary.rejected, 0);
+  assert.ok(r.report[0].index === 0 && r.report[3].index === 3, 'flagged rows keep their position in rows.jsonl');
+  assert.match(r.report[1].detail ?? '', /personal information \(phone\)/);
+  assert.deepEqual(detectPii(['nothing here', undefined, '+82 10 9876 5432']), ['phone']);
+  assert.deepEqual(detectPii(['a@b.co and 010-1111-2222']), ['email', 'phone']);
+});
+

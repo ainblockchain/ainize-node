@@ -66,13 +66,22 @@ export function buildApi(deps: ApiDeps): Router {
    * Events are public (`/api/events`); teach-mode lines carry private material (draft ids, contributor keys, the prompt
    * in the job name) in `data` and sometimes in the message. Non-operators get the message with draft ids / addresses
    * masked, `data` reduced to `{job_id}`, and no draft bookkeeping lines at all (`draft created: taught-…`).
+   * For EVERY kind the visitor id is dropped from `data` and the ` by <visitor>` suffix from the message (lineage
+   * design §5.6 — `usage` events used to publish `ip:<addr>` verbatim, F11). Rows written before the HMAC ids
+   * existed still carry a raw address in `data.visitor`; the strip covers them too.
    */
   const publicEvents = (events: EventRow[], operator: boolean): EventRow[] => {
     if (operator) return events;
     const out: EventRow[] = [];
+    const stripVisitor = (e: EventRow): EventRow => {
+      const data = e.data && typeof e.data === 'object' && 'visitor' in (e.data as Record<string, unknown>)
+        ? Object.fromEntries(Object.entries(e.data as Record<string, unknown>).filter(([k]) => k !== 'visitor')) : e.data;
+      // `… by <visitor>: …` / `… by <visitor>` — whatever shape the id had when the row was written
+      return { ...e, message: e.message.replace(/ by \S+?(?=: |$)/g, ''), data };
+    };
     for (const e of events) {
       if (e.kind === 'patch' && /^draft /.test(e.message)) continue;
-      if (e.kind !== 'teach') { out.push(e); continue; }
+      if (e.kind !== 'teach') { out.push(stripVisitor(e)); continue; }
       const jobId = (e.data as { job_id?: string } | null)?.job_id;
       // (the second replace covers rows written before this redaction, whose message embedded the job name = the prompt)
       const message = e.message.replace(/taught-[a-z0-9][a-z0-9-]*/g, 'a private draft').replace(/0x[0-9a-fA-F]{6,}…?/g, 'a teaching key').replace(/^lesson queued: .*? \((\d+ correction)/s, 'lesson queued ($1');
@@ -415,7 +424,7 @@ export function buildApi(deps: ApiDeps): Router {
       .refine((b) => !b.messages_patched || tail(b.messages_patched) === tail(b.messages), { message: 'messages_patched must end with the same message as messages — both columns answer one question', path: ['messages_patched'] })
       .parse(req.body);
     const operator = isOperator(req);
-    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     // check (without consuming) first; a failed/hung request must not burn a free try
     // the machine-readable code matters: without it the browser cannot tell this HOURLY budget from the DAILY lesson
     // limit, and told the visitor to "come back tomorrow" for a quota that refills within the hour. `quota_reset` says
@@ -433,7 +442,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/chat/status', wrap(async (req) => {
     const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.query);
     const operator = isOperator(req);
-    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     const q = market.runtime.queueState();
     return { ...market.chatQueue.status(request_id, visitor), lock: q.lock, running: q.running, waiting: market.chatQueue.waiting(), now: Date.now() };
   }));
@@ -445,7 +454,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/chat/cancel', wrap(async (req) => {
     const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.body);
     const operator = isOperator(req);
-    const visitor = operator ? `operator:${market.address}` : `ip:${req.ip}`;
+    const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.chatQueue.cancel(request_id, visitor);
   }));
   router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));

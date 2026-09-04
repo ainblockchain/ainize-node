@@ -17,7 +17,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { TeachConfig, TeachDataset, TeachDatasetRow, TeachDatasetSource, TeachDatasetSummary } from '@ngram/core';
+import { isAcceptedRowStatus, type TeachConfig, type TeachDataset, type TeachDatasetRow, type TeachDatasetSource, type TeachDatasetSummary } from '@ngram/core';
 import { TeachError } from './teach-error.js';
 import { buildReportJson, canonicalBytes, canonicalJsonl, parseDataset, readCanonicalJsonl, type CanonicalRow, type ParseOptions, type ParseResult } from './teach-dataset.js';
 import { TEACH_SAMPLES, sampleOf } from './teach-samples.js';
@@ -247,6 +247,11 @@ export class TeachDatasets {
     if (!existsSync(p)) throw new TeachError(404, 'dataset_not_found: the questions of this dataset are no longer on this node');
     return readFileSync(p);
   }
+  /** Indexes (in rows.jsonl) of the accepted rows flagged as personal information — the publish gate reads this (§6.5). */
+  piiRows(d: TeachDatasetRecord): { index: number; kinds: string[] }[] {
+    const rep = this.reportJson(d);
+    return (((rep?.rows as TeachDatasetRow[]) ?? []).filter((r) => r.status === 'pii' && r.index !== null)).map((r) => ({ index: r.index!, kinds: r.pii ?? [] }));
+  }
   reportJson(d: TeachDatasetRecord): Record<string, unknown> | null {
     const p = join(d.dir, 'report.json');
     if (!existsSync(p)) return null;
@@ -257,8 +262,8 @@ export class TeachDatasets {
     const rep = this.reportJson(d);
     const all = ((rep?.rows as TeachDatasetRow[]) ?? []);
     const filter = opts.status && opts.status !== 'all'
-      ? opts.status === 'ok' ? (r: TeachDatasetRow) => r.status === 'ok' || r.status === 'fixed'
-        : opts.status === 'rejected' ? (r: TeachDatasetRow) => r.status !== 'ok' && r.status !== 'fixed'
+      ? opts.status === 'ok' ? (r: TeachDatasetRow) => isAcceptedRowStatus(r.status)
+        : opts.status === 'rejected' ? (r: TeachDatasetRow) => !isAcceptedRowStatus(r.status)
           : (r: TeachDatasetRow) => r.status === opts.status
       : () => true;
     const rows = all.filter(filter);
@@ -450,7 +455,7 @@ function defaultName(source: TeachDatasetSource, filename: string | undefined, n
 
 export const emptySummary = (): TeachDatasetSummary => ({
   source_rows: 0, accepted: 0, fixed: 0, rejected: 0, duplicates: 0, conflicts: 0, blocked: 0, too_long: 0,
-  empty: 0, not_parsed: 0, over_cap: 0, shared_ending: 0, langs: { hangul: 0, latin: 0, han: 0, kana: 0, other: 0 },
+  empty: 0, not_parsed: 0, over_cap: 0, shared_ending: 0, pii: 0, langs: { hangul: 0, latin: 0, han: 0, kana: 0, other: 0 },
 });
 
 /** The canonical filename a frozen chat basket is presented under ("your 3 corrections were saved as …"). */
