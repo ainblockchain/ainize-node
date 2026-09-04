@@ -492,7 +492,11 @@
      "evidence": "The greps above at this commit. Every node-scoped event produced during this review — p2p pushes, the challenge ingest, the verifier grace-period warnings, self-registration failure, payout failures, `trainer slot busy` — has no screen anywhere in the console.",
      "user_cost": "An operator who runs the node from the browser — which is how the product presents itself (\"Open the operator console\") — cannot see that anything is wrong. They must know that a CLI exists, that it has a `logs` command, and have shell access to the node's host, none of which the console ever tells them. This is the same blind spot as the first review's item 10 (a failing API renders as a healthy, empty console), from the other side.",
      "fix": "Add an operator-only `/logs` route rendering the existing `useEventsQuery`, with the level filter LogsPage already has plus a kind filter and follow-mode polling — LogsPage's row renderer is reusable verbatim. Put a badge in the console header counting warn/error events since the operator's last visit.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "6eb08a5",
+     "fixed_note": "A node-wide /logs screen renders useEventsQuery with a level filter, a kind filter built from the kinds present, a follow switch that polls every five seconds, a warn/error count for the window, a purple rule on lines that arrived since the last visit, per-row links to the knowledge each line is about, and the equivalent ainize logs command; My knowledge links to it with a badge counting unseen warnings and errors."
     },
     {
      "n": 134,
@@ -980,7 +984,11 @@
      "evidence": "`curl -i /x402/patch/adv-share` → `HTTP/1.1 402 Payment Required` with a JSON body. The SVG header read at this commit. The badge section renders unconditionally — verified by reading the component tree around :291.",
      "user_cost": "The publisher's one distribution asset — the thing they paste into a README to sell — is a tick a reader cannot see, labelled with alt text nobody reads, pointing at a machine endpoint that renders as JSON in a browser. On a draft it advertises something that does not exist yet. And the link that actually works is the one you cannot copy.",
      "fix": "Ship a real badge: an SVG with an intrinsic width (a shields-style `Ainize | verified 2/2` at ~20 px height, or serve `/api/patches/:id/badge.svg` rendering live status), and point the markdown at the knowledge page, keeping the gateway URL as a separate \"for agents\" row. Guard the section on `status === 'LISTED'` and show drafts \"available once this is published and verified\". Put a CopyButton on the Knowledge page row.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "f2ced0b",
+     "fixed_note": "The snippet now uses a real 134×20 shields-style badge (badge-knowledge.svg), previewed in place, linking to the knowledge page instead of the x402 endpoint that answers a browser with a 402 JSON body; the gateway keeps its own “for agents” row with a copy button and the warning that it is not a link for people; the section is held back until the knowledge is LISTED and says what it is waiting for; and the knowledge-page URL is copyable."
     },
     {
      "n": 168,
