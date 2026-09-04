@@ -1109,7 +1109,10 @@
      "user_cost": "On a day when nothing changed, the script publishes the same bytes under a new name; buyers of every previous day see 'Newer version available', the newest real bake is marked retired, subscribers pay again for bytes they already hold, and Explore's headline is the copy labelled '(nothing changed)'.",
      "fix": "In `Market.createDraft` / `POST /api/patches`: if an anchor by this author with the same `patch_sha256` exists, answer `409 {code:'duplicate_body', existing_id, existing_status}`; the CLI prints `identical to krx-codes-2026-09-01 (published 2026-09-02, SUPERSEDED) — nothing changed; pass --force to publish anyway`. With `--force`, write `parents:[existing]` and skip the supersede of anything newer than `existing`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "createDraft refuses `duplicate_body` when a non-DRAFT anchor by this node already carries the same patch_sha256 on the same benchmark schema and branch, naming the existing id, its publish date and its status, with --force to register the bytes again. A forced duplicate cannot retire what came after it either: the supersede cut-off is the date those BYTES first went on the record, not the date of the new anchor. Verified live: the same .npz republished under a new id on the same schema is refused, --force lets it through, and a different schema or branch (deliberately) still coexists."
     },
     {
      "n": 241,
@@ -1151,7 +1154,10 @@
      "user_cost": "A publisher scripting `patch announce` on 'the draft the node just made' publishes a stub lesson that teaches nothing, with the visitor's data and no signed claim, onto a ledger that cannot be edited; the dashboard then shows two 'KRX codes 2026-09-01' rows, one 'Failed verification'.",
      "fix": "In `announce()`: if the draft has `origin === 'teach'` and its job is not PENDING_REVIEW with a verified `claim_sig`, throw `409 lesson_draft: publish it from the lesson page (or \\`ainize teach publish\\`) so the data provider signs and consents`; never write `visibility: 'test'` anchors from `patch announce` without `--test`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "market.announce() refuses a draft with origin 'teach' unless it comes through teach.announceJob(), which is the only path that has checked that the person who taught the lesson published it and that their signed claim verifies; the operator door answers 409 lesson_draft pointing at the lesson page and the Teaching review. Verified live: a draft flipped to origin=teach and announced with `ainize patch announce` was refused with that message and nothing reached the ledger."
     },
     {
      "n": 244,

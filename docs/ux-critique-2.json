@@ -650,7 +650,10 @@
      "evidence": "packages/e2e/results/ux2/critic-12-publisher-path.txt, solo node: `publish ./my-knowledge.npz --name \"KRX ticker codes\" --benchmark … --price 25` → `✓ draft created` + `✓ announced krx-ticker-codes → ledger record 85247293e202ed08… (verifiers will now attest; quorum lists it)`; immediately and 25 s later, `patch ls` → `krx-ticker-codes  ANNOUNCED  0/2`. On a node with two dead peers (:9998, :9997): `ainize status` → `peers 2 / quorum 2`, `publish … --id alone-1` → the same promise, 30 s later `ANNOUNCED 0/2` — while `ainize nodes` showed both endpoints at `FAILURES 10` and `logs --limit 200 | grep -c 999` was 0.",
      "user_cost": "The publisher does exactly what the product's headline promises — one line to sell knowledge — gets two green ticks, and waits forever for a listing that cannot arrive. Nothing on any surface diagnoses it: `patch get` says `0/2`, `status` says `peers 0` (or a lying `peers 2`) and `quorum 2` on a different screen, and no message connects them.",
      "fix": "Before printing the promise, count peers that carry the `verifier` role *and* have answered within a few gossip intervals. With fewer than `quorum`, print `! this node knows 0 reachable verifiers and quorum is 2 — nothing announced here can be LISTED or sold. Join a network with \\`ainize peers add <url>\\`, or set \\`ainize config set verifier.quorum 1 && ainize config set verifier.allowSelfAttest true\\` for a private node.` Show the same line in `ainize status` whenever reachable verifiers < quorum, and split `/api/info.peers` into `{known, reachable}`.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "90c636c",
+     "fixed_note": "POST /api/patches/:id/announce now answers with this node's verifier reach ({known, reachable, verifiers, quorum, self_attest}, market.verifierReach() — peers that answered a gossip round in the last 5 min AND carry the verifier role, plus this node when allowSelfAttest is on), and `ainize patch announce` / `publish` print it instead of the unconditional promise: with verifiers >= quorum the tick names the number that can attest, below it a `!` line says nothing announced here can be LISTED or sold and gives the two ways out (peers add / quorum 1 + allowSelfAttest). Verified live on a solo node with no peers: '! this node knows 0 reachable verifiers and the quorum is 2', and on a 3-node cluster: '(2 verifier node(s) can attest; quorum is 2)'. The same line on `ainize status` and the /api/info.peers split belong to the node-operator group that owns that route."
     },
     {
      "n": 148,
@@ -662,7 +665,10 @@
      "evidence": "Reproduced twice. `ainize patch forget adv-v1` → the tick; `adv-share` (same body) then read `LISTED quorum_ok True has_body False`; `GET /x402/patch/adv-share` still returned 402 with a price; the node's own `GET /p2p/blob/62d0978c…` returned 404; and node-c's `patch buy adv-share` succeeded — `✓ bought adv-share for 2 (local-credit)` — crediting the seller. Same shape in packages/e2e/results/ux2/publisher-path-cli-12-forget-then-buy.txt.",
      "user_cost": "A publisher who wants to withdraw a product follows the only instruction the product gives, believes it is withdrawn, and keeps selling it — now for a file the node provably cannot deliver, with /terms §2.4 leaving refunds to a seller the protocol does not mediate. Buyers keep paying for something the seller has decided to stop standing behind.",
      "fix": "Add a `retire` ledger record kind (author-signed, like supersede) moving the anchor to a RETIRED status that `/api/catalog` excludes by default and that makes `/x402/patch/:id` answer 410. Give it a button in the manage page's delete section for LISTED items and a `ainize patch retire <id>` command. As a cheap interim, make the x402 route return 409/410 when `has_body` is false, and change `patch forget`'s help and the manage-page copy to say it deletes only your local copy.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "A `retire` ledger record kind (core/types RECORD_KINDS, core/ledger RetireRecord, an AIN write rule keyed by the retiring address) and market.retire(): author-only, non-draft, appended and broadcast. The catalogue applies it over the derived status as RETIRED (only a record signed by the anchor's own author counts), /api/catalog and the explore shelves drop it unless ?status=RETIRED asks, /x402/patch/:id answers 410 Gone with the publisher's reason, and every buy path refuses with the same sentence while past buyers keep their download rights. `ainize patch retire <id> [--reason]` (90c636c) and a 'Take off sale' confirm step on the manage page; `patch forget` now says in the CLI, the manage page and the API docs that it deletes only this node's copy and warns in the event log when the item it stopped serving is still for sale. Verified live: retire -> 410 at the gateway, gone from /api/catalog and the shelves, visible under ?status=RETIRED, RETIRED on a peer after gossip, and a peer's `patch buy` refused with the retirement sentence."
     },
     {
      "n": 149,
@@ -692,11 +698,10 @@
      "user_cost": "The publisher's own catalogue silently becomes a graveyard: my throwaway node ended with three SUPERSEDED items, two of which had already made sales, all retired by later publishes I was never asked to confirm. Someone republishing to fix a typo in a description retires the version buyers are currently paying for. (The gate itself is the first review's item 32; what is new here is what publishing does to your existing listings.)",
      "fix": "When same-schema overlaps exist, replace the Publish button with a confirm step naming each item it will retire, its status and its sales count, and require the publisher to type the new id — the friction the product already demands to delete a *draft*. Do the same in the CLI: `ainize patch announce` should refuse without `--supersede <id>…` when `conflicts > 0`, and `publish` should print the list before announcing.",
      "audience": "Knowledge publisher",
-     "fixed_by": "e7f77a6",
-     "fixed_note": "Web half: Publish now opens a confirm sheet naming every listing the announce will retire, with its status, its sales and revenue and the shared memory entries, and refuses to announce until the publisher types the new id; the checklist counts the items the node really supersedes (same schema, same branch, LISTED/VERIFYING/ANNOUNCED) instead of every same-subject overlap, and a cross-branch overlap is stated as one that coexists. The CLI half (`ainize patch announce` refusing without --supersede) is packages/cli and stays open.",
-     "fixed": false,
-     "status": "partial",
-     "remaining": "CLI: `ainize patch announce` must refuse without --supersede <id>… when conflicts > 0, and `publish` must print the list before announcing (packages/cli, packages/node — owned by the lineage workflow).",
+     "fixed_by": "e7f77a6+90c636c",
+     "fixed_note": "Web half in e7f77a6 (the publish confirm sheet). CLI half now: `ainize patch announce` fetches the draft first, prints every listing the announce would retire with its status, its sales and the entries they share, and refuses (exit 1, nothing written) until each one is named with --supersede; `publish --announce` goes through the same gate, so the draft survives and nothing reaches the ledger. Cross-author and cross-branch overlaps are stated as ones that stay. Verified live: announcing over a listed same-schema knowledge printed the table and refused, `patch ls --drafts` showed the draft untouched, and `--supersede <id>` went through.",
+     "fixed": true,
+     "status": "closed",
      "verified": {
       "at": "2026-09-04",
       "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
@@ -713,7 +718,10 @@
      "evidence": "Reproduced end to end on a private cluster: node-a published `adv-share` (schema adv-other, 2 CREDIT); it reached LISTED and made a sale. node-c — a different author — then published `rival-adv` from the same .npz on the same schema at 1 CREDIT; node-c's log recorded `rival-adv supersedes adv-share (2992 shared rows)`, the ledger carries `supersede 0x0E587e…8C9C  rival-adv supersedes adv-share (2992 rows)`, and node-a's `patch ls --mine` now reads `adv-share  SUPERSEDED`. node-a's own log for adv-share contains only the announce and the sale.",
      "user_cost": "A competitor — or anyone who bought your knowledge and re-published it — can retire your listing from the catalogue's default view and paint \"Newer version available\" on your product page, at a lower price, without your knowing. There is no notification, no dispute, and no way to undo a supersede.",
      "fix": "Restrict automatic supersede to anchors with the same author. For a cross-author overlap, record it as a *conflict* (the data model already has `conflicts`) and surface it on both knowledge pages as \"another node published overlapping knowledge on this subject\" with links, leaving both LISTED — or require the older author's signature on a `supersede` record naming their anchor. Either way, log a `warn supersede` event on the node that owns the older anchor (see item 156).",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "A supersede is a publisher retiring their own earlier version: announce() records only overlaps that are same-schema, same-branch, still tradeable, by THIS node, and older than the bytes being published (market.supersedable), and reconcileSupersedes re-checks ownership and order at write time so a pending list written before this rule can never take another author's listing down. Verified live on a 3-node cluster: node-b published an overlapping .npz on node-a's schema at a quarter of the price, both reached LISTED, and node-a's knowledge stayed LISTED (before the fix it read SUPERSEDED). The publisher also sees who owns each overlap on the manage page (0e2857c)."
     },
     {
      "n": 152,
@@ -758,7 +766,10 @@
      "evidence": "packages/e2e/results/ux2/publisher-path-cli-08-typo-model.txt and an independent re-run: `ainize publish … --model Qwen3-8-Flash-Next` on a node serving `Qwen3.8-Flash-Next` → `✓ announced typo-model … (verifiers will now attest; quorum lists it)`, exit 0. At T+0/30/60/90 s and again at 12 minutes: `ANNOUNCED 0/2`, `att []`. `ainize logs --patch typo-model` on the author's node has exactly one line, the announce. Only the verifier nodes carry `warn verifier [adv-typo] verify adv-typo failed: runtime unavailable (no model) — waiting up to 14 min before hash-only fallback`, every 5 s.",
      "user_cost": "The publisher watches \"Registered · awaiting verification\" forever with no error to search for, and the id is burned: re-publishing it is refused with `patch id already exists` and an announced anchor cannot be deleted.",
      "fix": "At publish time compare `model_id` with `/api/info.runtime.model` and refuse: `this node serves Qwen3.8-Flash-Next — pass --model Qwen3.8-Flash-Next, or --force to publish for a model this node cannot test`. Show the same as a form warning on /new-patch. Independently, have verifiers broadcast a `verify_blocked` note the author's node can render, and put a \"no verifier could run this — why\" line on the manage page after five minutes at 0 attestations.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "createDraft compares model.id_M with the runtime's own /v1/models answer and refuses `model_mismatch` naming the model this node serves, with --force for the deliberate case; an unreachable serving API never blocks a publish. Verified live against a node reporting Qwen3.8-Flash-Next: `--model Qwen3-8-Flash-Next` is refused with the exact model to pass instead (exit 1), --force publishes. The two callers that legitimately publish for another model pass force (baf711e): `ainize seed --synthetic` (demo-ngram-1b) and `patch import`, which already states the mismatch in words."
     },
     {
      "n": 155,

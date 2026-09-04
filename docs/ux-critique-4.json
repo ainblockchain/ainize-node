@@ -67,7 +67,10 @@
    "n": 363,
    "title": "A byte-identical copy of someone else's knowledge lists as a new root at a quarter of the price — and automatically retires the original",
    "flow": "G",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "84cebf6",
+   "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one."
   },
   {
    "n": 326,
@@ -1464,7 +1467,10 @@
      "evidence": "packages/e2e/results/ux4/critique4-02-resold-copy-supersedes-the-original.txt: node-c buys ux4-paid for 8 CREDIT, republishes the same sha256 as ux4-resold at 2 CREDIT with no parents; node-a's own verifier attests it from its own blob store; node-a logs 'ux4-resold supersedes your knowledge ux4-paid — buyers now see \"Newer version available\" on it'; a neutral peer's `patch ls` shows ux4-paid SUPERSEDED and ux4-resold LISTED; `/api/patches/ux4-paid` → superseded_by ['ux4-resold'].",
      "user_cost": "The sharing economy's worst case, in three commands: a buyer resells the creator's file at any price, pays them nothing, and the product itself points every buyer from the original to the copy. There is no notice, no dispute, no takedown and no way to re-price in response (278).",
      "fix": "At draft time, refuse (409 `duplicate_body`) when `patch_sha256` matches a non-DRAFT anchor by another author unless the draft declares that anchor as a parent and the licence allows it — the address-set overlap the node already computes makes near-identical bodies detectable too. Never let an anchor supersede another author's anchor: restrict `reconcileSupersedes` to same-author pairs (or require the older author's signed consent, as item 150's fix proposes). Emit a `derived`/`copy` event to the original author with the copy's id, price and sha, and show 'identical body to <id> by <author>' on both knowledge pages.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "84cebf6",
+     "fixed_note": "Two halves, both closed. Draft time: createDraft refuses `duplicate_body` outright — with no --force override — when the exact bytes are already on the record under another author, and points at building on that knowledge instead. Record time: a supersede can only name an older anchor by the same author, so a copy can no longer retire the original (verified live with an overlapping rival publish from a second node). The original author is told: the node logs a warn event naming the copy, its author, its price and the shared sha the moment such an anchor arrives from a peer (verified live — a node that published the same bytes before it knew of the original was peered in, and the author's log carried the notice), and the manage page's overlap table now says who published each overlap and marks a byte-identical republish as one."
     },
     {
      "n": 364,
