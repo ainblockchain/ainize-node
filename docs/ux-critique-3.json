@@ -712,7 +712,10 @@
      "user_cost": "The visitor's one free-try demo is fed a control that already contains someone's knowledge, so 'Before' and 'After' both answer 087600 and the product looks useless — or the wrong thing is credited. And anyone with a free quota can change which version of a knowledge an operator's node serves, with every screen still listing the old set.",
      "fix": "In `chatInner` use `this.store.listApplied()` for `wasApplied` (the heuristic only as a sanity check that logs a warning); treat `heuristic && !store` as a dirty table: remove it for the base answer, do not re-apply it in `finally`, log `warn runtime: <id> found on the model but not in the applied set — removed`; in `finally` re-apply every pinned patch whose address set overlaps any target, in stored order (the comment at market.ts:856-858 promises this; the loop only covers targets). Return `dirty: string[]` from `/api/chat/patches` and render 'Something left {name} on the model; this test unloads it first'. Refuse a visitor test whose target overlaps a pinned patch by more than N rows with `409 overlaps_pinned` ('This node keeps krx-all-2761 loaded; testing ep12 here would change it — test on the seller node').",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "chatInner takes `wasApplied` from store.listApplied() and uses the patch.py heuristic only as a check: a body on the model that this node never loaded is reported as dirty[], removed for the base answer and NOT re-asserted, and the picker, /api/chat/patches and `ainize chat --list` all say so."
     },
     {
      "n": 212,
@@ -726,7 +729,10 @@
      "user_cost": "A script sees the 'node is down' exit code, takes the corrective branch (restart, retry, alert) while the node is healthy — and the remove it thought failed lands minutes later, un-teaching rows underneath whatever the script did next.",
      "fix": "Make apply/remove asynchronous: POST returns `202 { job, position_in_queue }` and the CLI polls `/api/runtime` (or `/api/runtime/jobs/:id`) printing `queued behind chat:… since 11:43 — Ctrl-C leaves it queued`. Until then, pass a custom undici `dispatcher` with `headersTimeout` = the request's `timeoutMs`, and map a headers-timeout to `still running on the node — check \\`ainize logs --kind runtime\\`` with a distinct exit code, never 2.",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "POST /api/patches/:id/apply|remove accept {async:true} and answer 202 with a job the CLI polls (printing what holds the shared model), and a client-side timeout is no longer reported as `cannot reach node` with exit 2 but as \"the node did not answer… it may still be running\" with exit 4."
     },
     {
      "n": 213,
@@ -1147,7 +1153,10 @@
      "user_cost": "The second morning of the loop produces a knowledge nobody can buy, and the publisher's only signal is `verification 1/2 passed` plus a WARN with a score and no reason. In a small network every consumer node that also verifies breaks the next day's bake for everyone.",
      "fix": "Before a benchmark run the verifier snapshots and removes the entire applied set (journal in `applied`), runs pre-apply/apply/post, then re-applies the set — and the subscription watchdog must not re-apply while the verifier holds the runtime lock (check `runtime.lockHolder`). Carry `out.details`/`pre_apply` (already logged at verifier.ts:112) into the attestation `score` so the author sees `pre_apply already 3/4 on node-c (had krx-codes-2026-09-01 applied)`. Give VERIFYING an exit: when every known verifier has attested and quorum cannot be reached, derive REJECTED_SPLIT with the counts.",
      "effort": "M",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "Market.verifyIsolated() takes everything that is not the candidate's declared base stack off the table through the journal, runs the benchmark, and puts this node's stack back — so a verifier that also serves a track no longer measures today's bake through yesterday's (AZ-258)."
     },
     {
      "n": 242,
@@ -1349,7 +1358,10 @@
      "user_cost": "The daily consumer's whole loop — subscribe once, receive every morning — does not exist. They serve yesterday's (retired) data indefinitely while every surface tells them they are subscribed and current, gateways route fresh-data requests to them, and an agent auto-updating from the track has nothing to call.",
      "fix": "Add `reconcileSubscriptions()` to the 20-s tick (server.ts:183): for each branch in `mySubscriptions()`, diff `branch.patch_ids` filtered to LISTED against applied-with-reason `subscription:<name>`; acquire (when `sellable`) + apply new LISTED items, remove items now SUPERSEDED by another member of the same track, and write an event `subscription: daily/krx updated → krx-daily-2026-09-02 (replaced 09-01)`. Trigger the same pass when a `branch` or `supersede` record arrives over p2p/`refreshLedger`. Expose it as `ainize branch sync <name>` / `POST /api/branches/:name/sync`. Until it ships, change the three strings to 'loads the track's current knowledge now' and print `behind: 09-02 available` in `branch ls`.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "17542cd",
+     "fixed_note": "reconcileSubscriptions() runs on the 20-second tick and `ainize branch sync` / POST /api/branches/:name/sync do it on demand: a live cluster showed node-b buying a knowledge added to the track minutes earlier with nobody touching it, and the console, OpenAPI and README copy now describes that instead of promising it."
     },
     {
      "n": 256,
@@ -1363,7 +1375,10 @@
      "user_cost": "The one guarantee the daily consumer is buying — 'my model serves today's verified data' — is broken by the exact button meant to provide it. A serving node that also verifies (the default cluster shape) ends the day answering from the bake the network rejected, with a green 'subscribed' tag.",
      "fix": "In `subscribe()` decide per item from the catalog entry, not from blob presence: apply only when `e.status === 'LISTED'` (or `e.sellable && !e.superseded_by.length`); for VERIFYING/ANNOUNCED/REJECTED/SUPERSEDED push `{id, action:'skipped', reason}` and return the list from the API so the CLI/console can print it (item 260). Add the same guard to `applyPatch()` behind a `force` flag for the explicit operator path.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "17542cd",
+     "fixed_note": "subscribe() decides per item from the catalogue (LISTED and sellable, not blob presence), returns what it skipped and why, and the CLI/console print it — a REJECTED or VERIFYING bake this node already held can no longer walk into the serving model."
     },
     {
      "n": 257,
@@ -1377,7 +1392,10 @@
      "user_cost": "On day 30 a subscriber pays 30 × price for 29 retired bodies and applies them all (last-wins order), and the publisher's channel looks like a trap; the buyer's card shows '3 knowledge' for a feed with one current item.",
      "fix": "In `subscribe()`/sync resolve the track to its *current set*: drop ids whose `superseded_by` contains another id of the same track, drop non-sellable ids, then quote `n items · total price` before paying (CLI `[y/N]`/`--yes`, console sheet — item 9's mechanism) and record the resolved set in the SubscriptionRecord so `branch ls` can show 'current 1 of 3'. In `addToBranch`, when the new patch supersedes an existing member, replace it (keep history in the record's `previous` list); refuse or flag adding an item that is not LISTED.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "17542cd",
+     "fixed_note": "the track resolves to its current set (a version superseded by another member is history: not bought, not loaded), `branch add` refuses anything that is not LISTED without --force, and `branch ls` / the console card show current against the whole history."
     },
     {
      "n": 258,
@@ -1391,7 +1409,10 @@
      "user_cost": "On the morning it matters most — when the new bake is being verified — the consumer's model answers from nothing for repeated 20-s windows, and the only trace is a warning that misdiagnoses itself. (Item 241 is the same collision seen from the verifier's result.)",
      "fix": "In `runtime.verify()`, before `remove`, collect applied patches overlapping the candidate (`store.listApplied()` ∩ address sets) and re-apply them in order after the restore, inside the same lock (or verify with `restore:false` and re-assert the applied stack — the helper of item 208). Reword the watchdog line to `{id} rows were overwritten (verification of {candidate} on this model) → re-applying` by passing the last runtime operation into the log.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "the same isolation as 241 — a verification no longer writes the candidate's `before` over rows a subscription owns — and the watchdog's warning names this node's last runtime operation instead of blaming a restart it never checked."
     },
     {
      "n": 259,

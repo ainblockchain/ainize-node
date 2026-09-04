@@ -383,7 +383,10 @@
      "evidence": "Code path read end to end at this commit; live confirmation that the reporting side is blind: `GET /api/info` on a healthy node returns `runtime: {…, \"applied\": []}` (critique2-verify.txt §10) regardless of what is loaded, and `grep -n queueState packages/node/src` shows the only two consumers are the visitor chat endpoints.",
      "user_cost": "After any unclean stop during a verification or a live test — the two things a verifier node does all day — the serving model silently knows the patch. Every later live test's \"before loading\" column and every later verification's `pre_apply` baseline is then measured against a contaminated model, so the product's central before/after proof quietly stops meaning anything and a buyer can be shown a base model that already answers correctly. No command, page or event would reveal it.",
      "fix": "Copy the teach worker's pattern: write a `runtime_applied(sha256, reason, since)` row before `patch.py apply` inside `verify()` and `chat()`, delete it after the restore, and at start-up remove any row whose reason is `verify`/`chat` from the physical table before the verifier and chat queue come up. Make `Runtime.status().applied` return the real contents (`patch.py status` over the pinned set plus leftovers) so `ainize status` can print `loaded in the model: <ids>` and flag anything not in `store.listApplied()`.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "runtime.verify() and the live test now write an `applied` row (reason verify:/chat:) before they touch the shared table and the stack they displaced into kv, recoverRuntime() puts the model back at the next start, and Runtime.status().applied reports what is really loaded instead of a hard-coded [] — proved by AZ-259 against the real patch.py."
     },
     {
      "n": 127,

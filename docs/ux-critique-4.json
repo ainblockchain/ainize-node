@@ -85,7 +85,10 @@
    "n": 327,
    "title": "Possession is licence: apply, live-test, chat and subscribe check only that the file is on disk, so a verifier runs a seller's whole catalogue for free",
    "flow": "D",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "86a9285",
+   "fixed_note": "a `licenses` table records where the right to use a body came from and apply/live-test/chat/subscribe require it — a verifier that holds a body because it scored it is refused with \"scoring a knowledge is not a licence to serve it. Buy it first (400 CREDIT)\", verified live and in AZ-260."
   },
   {
    "n": 344,
@@ -172,7 +175,10 @@
    "n": 357,
    "title": "Subscribing spends the balance item by item, publishes the subscription before buying anything, and reports success when every purchase failed",
    "flow": "F",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "17542cd",
+   "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb."
   },
   {
    "n": 364,
@@ -190,7 +196,10 @@
    "n": 297,
    "title": "To teach on top of a knowledge this node does not hold there is no way to get it: the picker hides it, the CLI says 'unknown knowledge', and a visitor cannot buy at all",
    "flow": "B",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "86a9285",
+   "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table."
   },
   {
    "n": 314,
@@ -211,7 +220,10 @@
    "n": 358,
    "title": "Any node can take over a track by re-creating it under the same name: subscribers follow the new owner and the original owner is locked out",
    "flow": "F",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "17542cd",
+   "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner."
   }
  ],
  "flows": [
@@ -596,7 +608,10 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-24-train-on-unheld-body.txt (`error: invalid: this node does not hold the body of pixel-parent-c`); teach-triggered-18-train-on-unknown-id.txt (`error: invalid: unknown knowledge krx-all-2761`); chain-buy-human-24-teach-lineage-price.txt (`/api/chat/patches` on node-e lists only its two purchases).",
      "user_cost": "The chained purchase the whole product is built around — I want to extend X, so someone buys X — has no first step on screen. Meanwhile a node that verified X holds it for free (327), so the only people asked to acquire a base are those who cannot.",
      "fix": "Return unheld verified entries from `/api/chat/patches` with `held:false, price, gateway_url` and render them disabled with 'Not on this node — Buy (5 node credit) to test or teach on it'; split `contextTargets`' error into three cases (unknown id / known but not held, with the seller and price / sold elsewhere, with the node URL); add `POST /api/teach/requests {patch_id}` writing a `teach` event and a badge on the operator's Teaching tab ('3 visitors asked to build on pixel-parent-c · Buy 8 CREDIT').",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "GET /api/chat/patches now returns `elsewhere[]`: every knowledge this node's model could run but cannot load, with its price, its seller and the reason (not_held / verify_only), rendered as a disabled row in the picker with Buy for the operator and \"ask this node to get it\" for a visitor (POST /api/chat/patches/:id/request writes one demand event), and `ainize chat --list` prints the same table."
     },
     {
      "n": 298,
@@ -1022,7 +1037,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-apply-without-buy.txt (node-b, purchases 0, `patch apply ux4-pixel` → '✓ applied … 끼움: 2992행', `/api/runtime` shows it applied); chain-buy-human-09-verifier-free-copy.txt (node C applies pixel-parent with `purchased:false` and no settle record); chain-buy-agent-14-subscribe-track-grows.txt (node-b subscribes to a track containing a knowledge it verified: purchases 0, balance unchanged).",
      "user_cost": "The seller's catalogue is deployed and served by peers who never paid, and the seller cannot see who holds it. The only participants who pay are those who do not run a node.",
      "fix": "Separate possession from licence: a `licenses` table (`patch_id`, source: purchase | author | verification) written by `putPurchase`, `announce` and the verifier; `applyPatch`, `testablePatches`, `chat` and `subscribe` require `hasLicense(patch_id)`, with verification-sourced copies usable only inside `runtime.verify`. Keep the message that already exists ('buy it first') but make it true, and show sellers 'held by N verifier nodes (verify-only)' on Manage.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "86a9285",
+     "fixed_note": "a `licenses` table records where the right to use a body came from and apply/live-test/chat/subscribe require it — a verifier that holds a body because it scored it is refused with \"scoring a knowledge is not a licence to serve it. Buy it first (400 CREDIT)\", verified live and in AZ-260."
     },
     {
      "n": 328,
@@ -1431,11 +1449,10 @@
      "user_cost": "The buyer's last credits are spent on the first cheap item, they are told everything is fine, and the network routes requests to a node holding a third of the track — with no receipt and no way to know without reading the node log.",
      "fix": "Two-phase: `POST /api/branches/:name/quote` → `{items:[{id, price, seller, held, sellable}], total, balance}`, printed by the CLI and shown in a sheet before anything is spent; buy all items (ancestors first) and append the `subscribe` record only when every item is held, otherwise answer 409 `{acquired, failed:[{id,error}]}` and exit non-zero; record a partial subscription explicitly.",
      "effort": "M",
-     "fixed_by": "0d82cfb",
-     "fixed_note": "Web half: the Dashboard track card quotes the spend before anything is bought — every item with its price and plan, the total, the balance — and says that the subscribe record is written and broadcast BEFORE the buying, that a failed item is a warning the node carries on from, and that a subscribed node is advertised as serving the track either way; afterwards the sheet reads the node's own blob and purchase lists back and says how many items really arrived instead of reporting success. The two-phase POST /api/branches/:name/quote, the record-before-buy ordering and the CLI's non-zero exit are packages/node + packages/cli and stay open.",
-     "fixed": false,
-     "status": "partial",
-     "remaining": "Node/CLI: the two-phase POST /api/branches/:name/quote, buying before the subscribe record is appended, the 409 {acquired, failed[]} answer and a non-zero CLI exit (packages/node, packages/cli — owned by the lineage workflow).",
+     "fixed_by": "17542cd",
+     "fixed_note": "the node half: POST /api/branches/:name/quote prices every item before anything is spent, subscribe() buys everything BEFORE it appends and broadcasts the subscription record, a partial acquisition is 409 {acquired, failed[]} with nothing announced (verified live: the buyer keeps the three items it could afford, `mine: []`, and the gateway does not route to it), and the CLI asks [y/N] and exits non-zero. The web half shipped in 0d82cfb.",
+     "fixed": true,
+     "status": "closed",
      "verified": {
       "at": "2026-09-04",
       "by": "adversarial re-test against a live node (port base 3790, NGRAM_RUNTIME_API=http://127.0.0.1:9)",
@@ -1453,7 +1470,10 @@
      "evidence": "packages/e2e/results/ux4/subscriptions-21 (the owner column flips to the impostor; the original owner's `branch add` → 403); market.ts:949-964; local-ledger.ts:173. (Item 269 mentions last-write-wins only for undeletable test tracks.)",
      "user_cost": "A curated channel — the thing a subscriber pays for over time — can be taken over by anyone who knows its name, and the subscribers' nodes follow it.",
      "fix": "Refuse `createBranch` when the name exists and the caller is not the owner (400 `branch_exists`), enforce the owner rule in the local ledger as the chain rule does, and show the owner address on the track card so a takeover is visible.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "17542cd",
+     "fixed_note": "the node that first wrote a track name owns it: Market.branches() drops a `branch` record for that name from anyone else (and the local ledger applies the same rule the AIN write rule does), createBranch refuses with 409 branch_exists naming the owner — reproduced live — and the console track card shows the owner."
     },
     {
      "n": 359,
