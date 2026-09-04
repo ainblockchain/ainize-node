@@ -24,7 +24,11 @@
      "evidence": "critic-landing-sec1.png; /docs text read live; first-impression-path-docs.png.",
      "user_cost": "The one audience addressed in its own idiom gets a 404 from npm in the first three seconds, and the page carrying the command that works is not linked from the landing nav or footer.",
      "fix": "Show the command that works today - git clone ... && npm i && npm run build && npm link -w packages/cli - or keep the npm line and add the repo fallback exactly as /docs does. Do not ship an install command that has never resolved.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "fc80222",
+     "fixed_note": "The landing developer card no longer prints `npm install -g ainize`; the diagram replaced the role-grouped one-liners."
     },
     {
      "n": 68,
@@ -205,7 +209,10 @@
      "fix": "Build two histories in compare mode: replay tr.response.base for the base call and tr.response.patched for the patched call, sending messages_base and messages_patched (or a history:[{prompt, base, patched}] array the node splits at market.ts:707). If that is too large for now, make compare mode single-turn: send only the new prompt and say \"Each comparison is a fresh question - earlier answers are not carried over\".",
      "effort": "M",
      "status": "fixed",
-     "shipped": "Compare mode sends one conversation per column: POST /api/chat gained `messages_base` / `messages_patched` (both must end with the same question, else 400) and the node replays each to its own generation, reporting `history {base, patched, split}`. A column that never answered a turn is left out of that column's history rather than faked, and from turn 2 the transcript states the rule. Re-measured on the node→model wire: the base call carries the base model's own \"136950\" and answers 136950, the patched call carries \"087600\" and answers 087600."
+     "shipped": "Compare mode sends one conversation per column: POST /api/chat gained `messages_base` / `messages_patched` (both must end with the same question, else 400) and the node replays each to its own generation, reporting `history {base, patched, split}`. A column that never answered a turn is left out of that column's history rather than faked, and from turn 2 the transcript states the rule. Re-measured on the node→model wire: the base call carries the base model's own \"136950\" and answers 136950, the patched call carries \"087600\" and answers 087600.",
+     "fixed": true,
+     "fixed_by": "140d0b9",
+     "fixed_note": "Compare mode now replays a separate history per column, so the un-patched side is never fed the patched answer (ChatPage + node chat)."
     },
     {
      "n": 57,
@@ -503,7 +510,10 @@
      "fix": "When simulated or stub, replace the headline rather than appending a caveat: title \"Demo run finished - nothing was trained\", subtitle explaining the numbers are illustrative, disclaimer first and in warning tone, and hide the Publish card (keep \"Keep it private\" and \"Train it again\").",
      "effort": "S",
      "status": "fixed",
-     "shipped": "(shipped in `knowledge-marketplace-teachable`) On a stub / simulated node the lesson result page leads with \"Demo run finished — nothing was trained\", the admission is first and warning-toned (#fff3e0), the counts say they are illustrative, \"Keep it private\" is the filled primary button and publishing is demoted to a plain \"Publish anyway (demo)\" link under \"What this demo node produced is a placeholder file.\" The card is gone rather than the route: the publish flow stays reachable so the scenarios that walk publishing, review, decline, credit and payout still exercise it."
+     "shipped": "(shipped in `knowledge-marketplace-teachable`) On a stub / simulated node the lesson result page leads with \"Demo run finished — nothing was trained\", the admission is first and warning-toned (#fff3e0), the counts say they are illustrative, \"Keep it private\" is the filled primary button and publishing is demoted to a plain \"Publish anyway (demo)\" link under \"What this demo node produced is a placeholder file.\" The card is gone rather than the route: the publish flow stays reachable so the scenarios that walk publishing, review, decline, credit and payout still exercise it.",
+     "fixed": true,
+     "fixed_by": "6344b9d",
+     "fixed_note": "A stub/simulated run is headlined \"Demo run finished — nothing was trained\" instead of \"Your lesson is ready\", and Publish is hidden."
     },
     {
      "n": 15,
@@ -757,7 +767,10 @@
      "fix": "Derive the denominator from the attestation, never from the anchor: change detail.ov.accuracy_line to \"{score} on {tested} of {facts} questions checked by verifiers\" and pass the parsed denominator of score.free_generation. On cards (PatchListItem.tsx:162) print \"100% (26/26 checked)\"; on the landing card (LandingPage.tsx:407) print \"100% on a 26-question sample of 2,761\".",
      "effort": "S",
      "status": "fixed",
-     "shipped": "Every surface derives the denominator from the attestation instead of the anchor: cards read \"100% (26/26 checked)\", the landing card \"100% on a 26-question sample of 2,761\", the knowledge page \"Accuracy 100% on 26 of 2,761 questions checked by verifiers\". An item with no scored attestation still prints no accuracy at all."
+     "shipped": "Every surface derives the denominator from the attestation instead of the anchor: cards read \"100% (26/26 checked)\", the landing card \"100% on a 26-question sample of 2,761\", the knowledge page \"Accuracy 100% on 26 of 2,761 questions checked by verifiers\". An item with no scored attestation still prints no accuracy at all.",
+     "fixed": true,
+     "fixed_by": "2dfb21d",
+     "fixed_note": "Accuracy is printed against the denominator the verifiers actually scored on every surface — detail page, explore card and landing card."
     },
     {
      "n": 7,
@@ -770,7 +783,10 @@
      "fix": "Read policy.simulated_checks in TeachDatasetPage: relabel the button \"Check (simulated on this node)\", swap teach.rows.checked_sample for a variant that says simulated and not measured in a live model, and render the per-row \"It answered\" help in the muted/warn tone, reusing the existing teach.card.simulated copy.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "(shipped in `knowledge-marketplace-teachable`) TeachDatasetPage reads `policy.simulated_checks`: a warning banner before the button (\"Demo node — these checks were simulated, not measured in a live model.\"), the button \"Check (simulated on this node)\", the result line \"Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.\" and every quoted answer as \"Simulated answer (no model was asked): …\" in the warning tone. On a live model all of it reverts to the measured wording."
+     "shipped": "(shipped in `knowledge-marketplace-teachable`) TeachDatasetPage reads `policy.simulated_checks`: a warning banner before the button (\"Demo node — these checks were simulated, not measured in a live model.\"), the button \"Check (simulated on this node)\", the result line \"Simulated check: 2 of 3 are marked to train — nothing was measured in a live model.\" and every quoted answer as \"Simulated answer (no model was asked): …\" in the warning tone. On a live model all of it reverts to the measured wording.",
+     "fixed": true,
+     "fixed_by": "6344b9d",
+     "fixed_note": "TeachDatasetPage reads policy.simulated_checks and says the check was simulated instead of claiming a live-model measurement."
     },
     {
      "n": 20,
@@ -783,7 +799,10 @@
      "fix": "When turn.expect is set, render \"Expected: 087600\" as visible muted text under the hit chip (a new chat.hit.expected key, keeping the tooltip for the longer explanation) and as a second line inside the sample chip. A fact that only a mouse can reach is a fact the product does not have.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "Every scored answer bubble renders \"Expected: 087600\" as visible muted text under the ✓/✗ chip (the tooltip is kept for the longer explanation), and every sample chip carries it on a second visible line while its accessible name stays the bare prompt."
+     "shipped": "Every scored answer bubble renders \"Expected: 087600\" as visible muted text under the ✓/✗ chip (the tooltip is kept for the longer explanation), and every sample chip carries it on a second visible line while its accessible name stays the bare prompt.",
+     "fixed": true,
+     "fixed_by": "981f0e1",
+     "fixed_note": "The expected answer is rendered as visible text under the hit chip and inside the sample chip, not only in a title attribute."
     },
     {
      "n": 24,
@@ -796,7 +815,10 @@
      "fix": "Group the list by benchmark_hash with a heading per question set (\"template only - 26 questions\", \"template + chat - 26 questions\"), put the format next to the accuracy on the card, and replace bench.explain with the honest version: scores are comparable only within one question set.",
      "effort": "M",
      "status": "fixed",
-     "shipped": "`/benchmarks/:schema` groups by `benchmark_hash`, with a heading per question set naming the format, the question count and the short hash, and a line per group saying whether anything here can be compared with it. Every card prints its format next to its accuracy, and the old \"scored with the same question set, so it can be compared\" claim is gone."
+     "shipped": "`/benchmarks/:schema` groups by `benchmark_hash`, with a heading per question set naming the format, the question count and the short hash, and a line per group saying whether anything here can be compared with it. Every card prints its format next to its accuracy, and the old \"scored with the same question set, so it can be compared\" claim is gone.",
+     "fixed": true,
+     "fixed_by": "4f4281b",
+     "fixed_note": "The benchmark page groups by question set and prints the format beside the accuracy; the \"same question set\" claim is gone."
     },
     {
      "n": 28,
@@ -888,7 +910,10 @@
      "fix": "Carry a retryable flag on the Turn (false for 429, 499 and AbortError) and do not render Retry for those. In the quota case put a link to the knowledge page labelled \"Buy this knowledge\" and the time the hour window resets in its place.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "The Turn carries a `retryable` flag; the quota 429 renders no Retry and offers \"Buy this knowledge\" plus the measured reset instant instead, from the node's new `quota_reset` field on the 429 body (Market.chatQuotaResetsAt, documented in the OpenAPI). Only the 429 is marked non-retryable: a cancelled turn's Retry does issue a real request, so it stays."
+     "shipped": "The Turn carries a `retryable` flag; the quota 429 renders no Retry and offers \"Buy this knowledge\" plus the measured reset instant instead, from the node's new `quota_reset` field on the 429 body (Market.chatQuotaResetsAt, documented in the OpenAPI). Only the 429 is marked non-retryable: a cancelled turn's Retry does issue a real request, so it stays.",
+     "fixed": true,
+     "fixed_by": "fcf4798",
+     "fixed_note": "Turns carry a retryable flag; a 429 shows the quota reset and a buy link instead of a Retry button that did nothing."
     },
     {
      "n": 76,
@@ -1145,7 +1170,10 @@
      "fix": "Header.tsx: make Home flex: 0 0 auto and let Nav absorb the slack (flex: 1 1 auto; justify-content: flex-end; min-width: 0). Keep the sm breakpoint wrap rule as it is - at 700 px and below Home already takes its own row and there is no collision.",
      "effort": "S",
      "status": "fixed",
-     "shipped": "Home is `flex: 0 0 auto` and Nav takes the slack; nav-item horizontal padding went 16 px → 10 px. Measured at 1440/1280/1024/960/900/768/700/600/414/360 px: the badge and the first nav link now clear each other by 19 px at desktop and the bar wraps cleanly below ~900 px (was a 65 px overlap at 1024–1440 and 141 px at 900)."
+     "shipped": "Home is `flex: 0 0 auto` and Nav takes the slack; nav-item horizontal padding went 16 px → 10 px. Measured at 1440/1280/1024/960/900/768/700/600/414/360 px: the badge and the first nav link now clear each other by 19 px at desktop and the bar wraps cleanly below ~900 px (was a 65 px overlap at 1024–1440 and 141 px at 900).",
+     "fixed": true,
+     "fixed_by": "a194a5d",
+     "fixed_note": "Header.tsx: Home is flex: 0 0 auto and Nav takes the slack, so the ledger badge no longer paints over the first nav link."
     },
     {
      "n": 97,

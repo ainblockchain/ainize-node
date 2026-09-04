@@ -113,7 +113,11 @@
      "user_cost": "A creator pays, opens the file, and finds bf16-style vectors — no way to see which of the 2,761 companies are covered, which wording was trained, or what to add; they learn that no training set exists only after paying. On the lessons that are fully public, the product makes them copy-paste questions by hand. A creator who takes the 'portable recipe' copy at face value chases a path that does not exist on their machine.",
      "fix": "Ship §12.3 (`GET /api/patches/:id/dataset` with `access`, `rows`, `preview`) and `ainize dataset get <id> [-o]`. Until then: render one SC-10 line per anchor on the page and in `patch get` — `Training set: 3 questions · public · CC-BY-4.0` / `Training set: 26 of 2,761 questions published · not provided by the creator — you cannot build on the full set` — and repeat it in the Buy tab above the price. For anchors whose samples equal their rows add `Copy into my datasets` (a teach dataset from `benchmark.samples` under the caller's key, `parent_patch` set) and `Download .jsonl`, exposed as `ainize patch fork <id>`. Add `path` to `GET /api/patches/:id` when `has_body` and print it in `patch get`. Label the recipe block 'Training notes (from the creator)' and only claim 'rebuildable' when `anchor.dataset.sha256` resolves to a blob; strip local disk paths from seeded descriptions (packages/node/src/seed.ts).",
      "effort": "L",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "d0f7061",
+     "fixed_note": "The anchor carries its dataset (sha256, rows, access, licence) and the training set is a served blob; `ainize dataset get` and `patch fork` copy it (138a103, a6c324c, 3c523ef)."
     },
     {
      "n": 173,
@@ -169,7 +173,11 @@
      "user_cost": "The owner's headline flow ('take someone's knowledge, add my data, publish') is impossible in the browser with a file: the publisher uploads rows, trains, publishes — an unrelated root with no credit to the base. In the chat door a creator comparing against two knowledges gives the 30 % pool to both, permanently, or — leaving the box off — credits nobody. There is no middle.",
      "fix": "Add the SC-4 block to TeachSettingsPage: a required radio `Start from: [Choose a knowledge…] / Start from scratch`, a picker limited to knowledge whose body is on this node, sending `base_ids: [base]`; re-run the dataset pre-flight with the base loaded (`POST /api/teach/preflight { base_ids, dataset_id }`) so 'already known' is judged against the base. In the chat basket replace the checkbox with the SC-1 base row (`Built on: {name} [Change]`, default: first loaded; `Also loaded, for comparison only: {others}`; the `teach.basket.base_consequences` line). API: split `patch_ids` into `base_ids` (≤ 1 for extend) and `context_ids`; CLI: `--on <id>` for the base, `--patch` stays comparison-only with a warning. Until the trainer actually loads base rows (item 178), copy must say 'checked against', not 'builds on'; drop the 'knowledge you loaded' clause from the dataset door's step 3.",
      "effort": "M",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "f63981b",
+     "fixed_note": "TeachSettingsPage has the SC-4 \"Start from\" base picker sending base_ids; the chat basket has the base row (9254039) and the CLI has `teach train --on` distinct from --patch (a6c324c)."
     },
     {
      "n": 177,
@@ -183,7 +191,11 @@
      "user_cost": "The publisher is promised (and the sheet repeats) that the original creators share in sales; the anchor goes on the permanent record with `parents: []`, the parent's author gets nothing, the child never appears under the parent, and nobody is told. The design makes this an explicit publish-time error; the product does the opposite.",
      "fix": "Validate the base at job creation (teach.ts `createJob`, after `contextTargets`): refuse REJECTED/CHALLENGED with `base_rejected`, redirect SUPERSEDED with `base_retired: {newer}`; for ANNOUNCED/DRAFT bases keep the ids on the job, record them as parents at `createLessonDraft` regardless of status, and block `publish()` with `409 parent_not_listed: {id}` ('Publish after {name} is listed'). Never filter parents silently; if a parent cannot be recorded, fail the request with the reason. CLI: print the refusal and exit 1; web basket/sheet: the design's `teach.basket.base_unlisted` / `teach.pub.base_unlisted` strings.",
      "effort": "M",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "d0f7061",
+     "fixed_note": "A base is validated at job creation (base_rejected / parent_not_listed) and recorded from lineage.parents instead of being filtered by LISTED at draft time."
     },
     {
      "n": 178,
@@ -197,7 +209,11 @@
      "user_cost": "The publisher believes they extended X; what they published is a stand-alone patch that may fight X on shared rows and that, when a buyer removes it, damages X in the buyer's model. The verified score says nothing about the combination.",
      "fix": "Until true on-top training (design §7, PR L3) ships: (1) stop labelling the relation 'built on' — call it 'credits {name}' on the basket, sheet, tree and CLI; (2) in CHECKING apply parents first, then the lesson, and record `parent_regression` in deployment order (design §7.6), failing with `teach.res.parent_broken`; (3) in the Overlap check exclude declared parents from 'need reconciling' and state 'shares {n} rows with its base — un-loading this knowledge restores the base model on those rows, not {parent}'; (4) in `market.removePatch`, after `runtime.remove`, re-apply applied entries whose address sets overlap (the same helper as item 208).",
      "effort": "L",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "8f3a0c7",
+     "fixed_note": "A knowledge trained on top of others is verified with them underneath and scored per source; on-top registration, ordered apply/remove and the journal landed with it (f5055da, 49d8613)."
     },
     {
      "n": 179,
@@ -295,7 +311,11 @@
      "user_cost": "The publisher unknowingly breaches the share-alike terms of the knowledge they built on and cannot fix it ('Published knowledge is fixed on the public record'); the base author has no recourse. The permanent record carries a rights declaration nobody actually made about the thing that matters.",
      "fix": "Implement design §6.4 in one place — core `licenseForChild(parentLicences, requested)`: CC-BY-SA parent → force CC-BY-SA and render `teach.pub.ds_license_forced` with the select disabled; Proprietary parent → allow but label; unknown → 400 `bad_license`; incompatible → 400 `license_incompatible {parent, parent_license}` from both `teach.publish` and `market.createDraft`/`patch publish --parents`. Show the parent's licence on the sheet, add a third consent line when parents exist ('I have read {parent}'s licence ({licence}) and my licence complies'), send the real checkbox state, and store `declaration: {source, license, parents_ack}` on the anchor. Append 'Built on {name} by {author}' to the description automatically.",
      "effort": "M",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "d0f7061",
+     "fixed_note": "core/lineage.ts refuses an incompatible child licence (license_incompatible / bad_license) on both the teach publish and the draft path."
     },
     {
      "n": 186,
@@ -623,7 +643,11 @@
      "user_cost": "A buyer who loads three overlapping knowledges and unloads one has 2,154–241,992 rows replaced by the base model for up to 20 s or forever; every live test, verification and customer on that node gets base-model answers while every screen says the knowledge is loaded. The rollback a daily consumer reaches for on a bad day leaves the model answering from nothing.",
      "fix": "Short term in `Market.removePatch` (market.ts:710): take the runtime lock once, write `before` for the removed patch, then re-apply every other row of `store.listApplied()` whose address set overlaps the removed body (core's npz reader already computes this for `conflicts`) in stored order before releasing; print `restored krx-all-2761 on 2,170 shared rows` in the CLI/API result; do the same after `runtime.verify` and in `unsubscribe`. Add `position INTEGER` to `applied` and make the watchdog re-assert the whole ordered set. Then ship the design's journal (`prev` from the hook, `has_dependents`, `GET /api/runtime/stack`). Change bin.ts:226's help from 'Restore original rows (un-apply)' to 'Unload from the model'.",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "05097d9",
+     "fixed_note": "`applied` is an ordered stack with a per-layer journal; remove unwinds and re-asserts the layers above (49d8613) and `GET /api/runtime/stack` reports it (0d85627)."
     },
     {
      "n": 209,
@@ -637,7 +661,11 @@
      "user_cost": "The effective answers on 241,992 rows flip between versions every tick; every re-apply is a ~3 s GPU write under the shared lock, so operator commands queue for minutes (item 212) and visitors' live tests wait behind a node doing nothing useful. The developer sees only WARN lines blaming a 'restart?'.",
      "fix": "Make the watchdog stack-aware: keep `position` in `applied` (store.ts:81), check only the topmost patch's rows for each address set (or simply `isApplied` of the last-applied patch), and on a detected revert re-apply the whole set in `position` order in one locked section instead of per patch. Refuse (`409 overlaps_loaded`) or at least warn on `apply` when the new body shares rows with an applied one, naming the loser: `krx-all-2761-ep12 will override 241,992 rows of krx-all-2761`. Reword the WARN: `{id} rows were overwritten ({last runtime op}) → re-applying`.",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "39a7e68",
+     "fixed_note": "The watchdog probes and rebuilds the whole ordered stack inside the runtime lock instead of re-applying one patch at a time."
     },
     {
      "n": 210,
@@ -651,7 +679,11 @@
      "user_cost": "The buyer believes the knowledge is out of the model; every live test, verification and customer on that node keeps getting its answers, and the console/CLI/`/api/runtime` say `applied: []`. On a shared serving model it contaminates everyone else's 'Before loading' column.",
      "fix": "Run the watchdog body inside `runtime.exclusive('watchdog', …)` and re-read `store.listApplied()` after acquiring the lock, skipping any id not in the fresh list; never call `runtime.apply` for an id whose row was cleared. Cheaper still: a `removing: Set<string>` in Market that `removePatch` sets before the write and clears after, which the watchdog skips.",
      "effort": "S",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "39a7e68",
+     "fixed_note": "The watchdog reads listApplied inside the lock, so it can no longer re-apply a patch whose row a concurrent remove has already cleared."
     },
     {
      "n": 211,

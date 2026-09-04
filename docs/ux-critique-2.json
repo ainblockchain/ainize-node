@@ -35,7 +35,10 @@
      "fix": "In `buildContext` mark the context when `cfg === null` and none of `--node` / `NGRAM_NODE_URL` / `cli.json` was given; in the `run()` wrapper (packages/cli/src/bin.ts:36-46) refuse before the first request with `no node configured in <home> — run \\`ainize init\\`, or pass --node <url> to talk to an existing node` (exit 2). Exempt only `--help`, `--version` and `init`. `login` must never POST `/api/auth/setup` against a URL the user did not name explicitly.",
      "audience": "CLI user",
      "status": "fixed",
-     "shipped": "buildContext now records where the node URL came from and every node-touching command refuses (exit 2) when this home has no config and no --node, while `login` refuses to set the operator password on a node the user did not name."
+     "shipped": "buildContext now records where the node URL came from and every node-touching command refuses (exit 2) when this home has no config and no --node, while `login` refuses to set the operator password on a node the user did not name.",
+     "fixed": true,
+     "fixed_by": "d30c06a",
+     "fixed_note": "buildContext refuses before the first request with \"no node configured in <home>\" instead of silently targeting whatever answers 3402."
     },
     {
      "n": 102,
@@ -250,7 +253,10 @@
      "fix": "In the detach branch, after `spawn`, poll `GET <url>/api/info` for up to ~10 s; on `child.exit` or timeout print the last 20 lines of node.log, delete the pid file and exit non-zero instead of the tick. In `status()` compare `d.node.address` with `requireConfig(ctx).identity.address` and, when they differ, print `! http://localhost:3402 is answered by \"node-a\" (0xF7A9…A1F5), not the node in <home> (0xd379…2AC3) — that node is not running` above the table and exit non-zero. When no pid is running for the home, say `not running (no process for this NGRAM_HOME)` explicitly.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`start -d` now polls /api/info until the child answers with this home's own identity and otherwise prints the tail of node.log, deletes the pid file and exits 1; `status` names the stranger answering the port and exits 2 instead of rendering their node as yours. Re-verified on a throwaway node: when this home's own node was already serving with no pid file (foreground, or a supervisor), the start-up probe matched its identity and printed the tick for a child that had just died on EADDRINUSE — `start` now probes the port first and names whoever holds it, this node or a stranger, before spawning anything."
+     "shipped": "`start -d` now polls /api/info until the child answers with this home's own identity and otherwise prints the tail of node.log, deletes the pid file and exits 1; `status` names the stranger answering the port and exits 2 instead of rendering their node as yours. Re-verified on a throwaway node: when this home's own node was already serving with no pid file (foreground, or a supervisor), the start-up probe matched its identity and printed the tick for a child that had just died on EADDRINUSE — `start` now probes the port first and names whoever holds it, this node or a stranger, before spawning anything.",
+     "fixed": true,
+     "fixed_by": "bbc60e5",
+     "fixed_note": "start -d polls /api/info before reporting success, and status compares the answering node address with this home identity (4ff6191 also names whoever holds the port)."
     },
     {
      "n": 119,
@@ -264,7 +270,10 @@
      "fix": "After the wait loop, re-check `process.kill(pid, 0)`; if the process is alive, escalate to SIGKILL after the grace period; if it is still alive, keep the pid file and exit non-zero with `node <pid> did not stop (still running) — kill it manually`. Only unlink the pid file and print the tick on a confirmed exit.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`stop` now checks the wait loop, escalates to SIGKILL after the grace period, keeps the pid file and exits non-zero when the process is still alive, and tells the operator when a node is serving that it did not start."
+     "shipped": "`stop` now checks the wait loop, escalates to SIGKILL after the grace period, keeps the pid file and exits non-zero when the process is still alive, and tells the operator when a node is serving that it did not start.",
+     "fixed": true,
+     "fixed_by": "bbc60e5",
+     "fixed_note": "stop re-checks the pid, escalates to SIGKILL, and keeps the pid file with a non-zero exit when the process survives."
     },
     {
      "n": 120,
@@ -278,7 +287,10 @@
      "fix": "On `--force`, read the existing config first and carry `identity` and `operatorPasswordHash` forward unless an explicit `--new-identity` is also passed; print `keeping identity 0x… (pass --new-identity to replace it)`. Gate `--new-identity` behind typing the current address, and write `<home>/config.json.bak-<ts>` first. Change the duplicate-init error to name the safe path: `config already exists at … — change one setting with \\`ainize config set <key> <value>\\`; \\`--force\\` rewrites the file (keeping this node's identity).`",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`init --force` now carries the identity and the operator password forward and copies the old config.json aside, `--new-identity` is gated behind typing the current address, and the duplicate-init error names `config set` first."
+     "shipped": "`init --force` now carries the identity and the operator password forward and copies the old config.json aside, `--new-identity` is gated behind typing the current address, and the duplicate-init error names `config set` first.",
+     "fixed": true,
+     "fixed_by": "037d997",
+     "fixed_note": "init --force carries identity and operatorPasswordHash forward, writes a .bak, and needs --new-identity to mint a new key."
     },
     {
      "n": 121,
@@ -304,7 +316,10 @@
      "fix": "Add `ainize keys backup <file>` writing a 0600 encrypted keystore (the same shape the teach flow already downloads) and `ainize keys import <file>`; make `--reveal` require an interactive confirmation or `--yes` plus a one-line shell-history warning. Add three lines to `init`'s success block: where the key is, that it is the only copy, and the backup command. Add a 'Node identity & config' group to CLI_REFERENCE covering `keys show|backup`, `config show|set`, `nodes`, `logout`, and a 'Backing up your node' section to deploy/README.md.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "`keys backup|export <file>` writes a 0600 keystore (scrypt + aes-256-gcm with a passphrase), `keys import` and `keys rotate` replace the identity behind a typed confirmation and a config backup, `keys show --reveal` asks first, and the shipped CLI reference, README and deploy guide now cover node-key hygiene."
+     "shipped": "`keys backup|export <file>` writes a 0600 keystore (scrypt + aes-256-gcm with a passphrase), `keys import` and `keys rotate` replace the identity behind a typed confirmation and a config backup, `keys show --reveal` asks first, and the shipped CLI reference, README and deploy guide now cover node-key hygiene.",
+     "fixed": true,
+     "fixed_by": "037d997",
+     "fixed_note": "`ainize keys backup|import` ship as encrypted keystore commands and the CLI reference gained the \"Node identity & config\" entries."
     },
     {
      "n": 123,
@@ -318,7 +333,10 @@
      "fix": "Define the config as a zod schema next to `defaultConfig` (the types exist in packages/core/src/types.ts) and run `configSet` through it: reject an unknown dotted path with the nearest known key (`unknown config key 'verifier.stak' — did you mean 'verifier.stake'?`), reject a wrong type naming the expected one, and range-check `port`, `verifier.quorum`, `market.royaltyShare`, `teach.contributorShare`. Validate the same schema in `startNode` and refuse to boot with the offending keys listed. Add `config get` and `config unset`, and keep a table of which keys are live vs. startup so the suffix is true.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "config.json now has a zod schema in core: `config set` refuses an unknown key (naming the nearest real one), a wrong type or an out-of-range value, `config get` and `config unset` exist, and startNode refuses to boot on an invalid value while only warning about a key it does not know. Re-verified on a throwaway node: a config.json whose port is not a number used to make every command — `config set port`, the fix, included — die with `--node must be a full URL`; the port is now named as the config's problem, the local commands still run, and `start`/`seed` refuse an unusable config themselves before spawning anything."
+     "shipped": "config.json now has a zod schema in core: `config set` refuses an unknown key (naming the nearest real one), a wrong type or an out-of-range value, `config get` and `config unset` exist, and startNode refuses to boot on an invalid value while only warning about a key it does not know. Re-verified on a throwaway node: a config.json whose port is not a number used to make every command — `config set port`, the fix, included — die with `--node must be a full URL`; the port is now named as the config's problem, the local commands still run, and `start`/`seed` refuse an unusable config themselves before spawning anything.",
+     "fixed": true,
+     "fixed_by": "8ab34e3",
+     "fixed_note": "core/config-schema.ts validates every `config set` and the node validates the same schema at boot; an unknown key is refused with the nearest real one."
     },
     {
      "n": 124,
@@ -332,7 +350,10 @@
      "fix": "Two halves. (a) `configSet` should call the `runningPid(home)` helper that already exists at packages/cli/src/commands/node.ts:36 and refuse (or warn loudly) when a node is running for that home: `the node is running; this edit will be lost the next time it saves — stop it first, or use the console`. (b) Make the node re-read config.json and merge before every `saveConfig()` instead of dumping its startup snapshot over whatever is on disk.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "The node now writes back only the keys it changed itself, merged onto config.json as it is at that moment, so a console save never reverts an `ainize config set`; the CLI also warns that a running node keeps using the value it started with. Re-verified: the node now diffs against what it last wrote rather than its boot snapshot, so a peer added and then removed reaches config.json as removed (it used to look like \"no change\" and the earlier save stood)."
+     "shipped": "The node now writes back only the keys it changed itself, merged onto config.json as it is at that moment, so a console save never reverts an `ainize config set`; the CLI also warns that a running node keeps using the value it started with. Re-verified: the node now diffs against what it last wrote rather than its boot snapshot, so a peer added and then removed reaches config.json as removed (it used to look like \"no change\" and the earlier save stood).",
+     "fixed": true,
+     "fixed_by": "bc34f06",
+     "fixed_note": "The node diffs against what it last wrote (mergeConfigChanges) instead of dumping its start-up snapshot over the file; ecaada5 completed it."
     },
     {
      "n": 125,
@@ -370,7 +391,10 @@
      "fix": "Pick one and make the words match. Either implement the bond (escrow `verifier.stake` on attest, release it when the patch settles, transfer it to the challenger when a re-verification quorum contradicts the attestation) or, until then, rename the field to `attestation_note` / drop it from the record, and rewrite all three strings to what is true: \"the verifier signs the result with its node identity; there is no deposit at risk yet.\" Do not ship a trust claim the code does not make.",
      "audience": "Node operator",
      "status": "fixed",
-     "shipped": "Removed the claim rather than pretending: there is no escrow anywhere in this product, so nothing now says there is. A real bond needs an escrow account on the AIN chain that can hold a verifier's stake and pay it to a challenger — app-level rules and a service account this build does not have — and shipping half of it (a local-ledger-only bond) would be the same lie in a smaller font. So: new attestations and challenges carry no `stake` field at all (`verifier.stake` is deprecated in the config type and dropped from the default config; historical records keep theirs and the OpenAPI schema marks it deprecated), the “Deposit” column is gone from the knowledge page and the publisher's manage page, and the glossary term `stake` (“a deposit a verifier loses…”) is replaced by `signedResult`: “A result the verifier node signed with its own key and left on the public record under that identity. No deposit is escrowed or slashed anywhere; instead any node can challenge a result, which takes the knowledge off sale until it is re-verified.” The same correction lands on the landing page, in the terms, in the verification note and on the manage page. What replaced the column is the fact a reader actually needs: whether that result counted. A node that still has `verifier.stake` in its config.json logs a warn at start naming the file to remove it from, so no operator goes on believing money is at risk."
+     "shipped": "Removed the claim rather than pretending: there is no escrow anywhere in this product, so nothing now says there is. A real bond needs an escrow account on the AIN chain that can hold a verifier's stake and pay it to a challenger — app-level rules and a service account this build does not have — and shipping half of it (a local-ledger-only bond) would be the same lie in a smaller font. So: new attestations and challenges carry no `stake` field at all (`verifier.stake` is deprecated in the config type and dropped from the default config; historical records keep theirs and the OpenAPI schema marks it deprecated), the “Deposit” column is gone from the knowledge page and the publisher's manage page, and the glossary term `stake` (“a deposit a verifier loses…”) is replaced by `signedResult`: “A result the verifier node signed with its own key and left on the public record under that identity. No deposit is escrowed or slashed anywhere; instead any node can challenge a result, which takes the knowledge off sale until it is re-verified.” The same correction lands on the landing page, in the terms, in the verification note and on the manage page. What replaced the column is the fact a reader actually needs: whether that result counted. A node that still has `verifier.stake` in its config.json logs a warn at start naming the file to remove it from, so no operator goes on believing money is at risk.",
+     "fixed": true,
+     "fixed_by": "1d07145",
+     "fixed_note": "Nothing is escrowed, so no record claims a bond: `stake` is deprecated on Attestation/Challenge, new records omit it, and the glossary, buyer page and manage page say no deposit is at stake (99b4dc0, f310d9c)."
     },
     {
      "n": 128,
@@ -611,7 +635,10 @@
      "fix": "In api.ts:315 return 409 `cannot verify your own knowledge (verifier.allowSelfAttest is false)` when `e.anchor.author === market.address` and the flag is false. In catalog.ts:87 exclude the author from `executed` and count self-attestations into a separate `self_checks` field the UI never labels independent. Clamp the displayed fraction to `min(passed, quorum)/quorum` in patch.ts:31/:56 and chat.ts:83, and show the true count beside it (`2/2 ✓ (3 attestations)`). Hide the button in ManagePage.tsx:76 when `a.author === address`.",
      "audience": "Knowledge publisher",
      "status": "fixed",
-     "shipped": "`deriveCatalog` now decides which attestations count instead of counting what it is handed: an attestation whose verifier is the anchor's author is excluded from `passed`, from `integrity_checks` and from the status machine, and is reported separately as `self_checks` (packages/core/src/catalog.ts). Attestations already written to the shared chain are NOT rewritten or removed — nothing can rewrite them — they simply stop counting the moment any node with the shipped `allowSelfAttest: false` reads the record, and they render as “no — the author” in the Counts column of the knowledge page and the manage page. The write is refused too, before any GPU time: `Market.attest` and `Verifier.verifyOne` throw 409 `cannot verify your own knowledge: <id> was published by this node (verifier.allowSelfAttest is false)…`, which is what `POST /api/patches/:id/verify` and `ainize patch verify` now return (verified live on node-a: 409, attestation count unchanged at 2). The ManagePage button is gone on your own knowledge and says why. Displayed fractions are clamped everywhere by `verificationCount` — `patch ls`/`chat --list` print `2/2+1`, `patch get` prints `2/2 passed ✓ quorum (+1 more independent attestation)`, the web prints `2/2 · 1 more independent verification(s)` — so `3/2` cannot appear again. A node that deliberately sets `allowSelfAttest: true` (single-node dev config) counts them as before and reports `self_checks: 0`. Covered by core unit tests and packages/node/test/trust.test.ts; scenario AZ-041 rewritten."
+     "shipped": "`deriveCatalog` now decides which attestations count instead of counting what it is handed: an attestation whose verifier is the anchor's author is excluded from `passed`, from `integrity_checks` and from the status machine, and is reported separately as `self_checks` (packages/core/src/catalog.ts). Attestations already written to the shared chain are NOT rewritten or removed — nothing can rewrite them — they simply stop counting the moment any node with the shipped `allowSelfAttest: false` reads the record, and they render as “no — the author” in the Counts column of the knowledge page and the manage page. The write is refused too, before any GPU time: `Market.attest` and `Verifier.verifyOne` throw 409 `cannot verify your own knowledge: <id> was published by this node (verifier.allowSelfAttest is false)…`, which is what `POST /api/patches/:id/verify` and `ainize patch verify` now return (verified live on node-a: 409, attestation count unchanged at 2). The ManagePage button is gone on your own knowledge and says why. Displayed fractions are clamped everywhere by `verificationCount` — `patch ls`/`chat --list` print `2/2+1`, `patch get` prints `2/2 passed ✓ quorum (+1 more independent attestation)`, the web prints `2/2 · 1 more independent verification(s)` — so `3/2` cannot appear again. A node that deliberately sets `allowSelfAttest: true` (single-node dev config) counts them as before and reports `self_checks: 0`. Covered by core unit tests and packages/node/test/trust.test.ts; scenario AZ-041 rewritten.",
+     "fixed": true,
+     "fixed_by": "1d07145",
+     "fixed_note": "A self-attestation is excluded from passed/status and reported as self_checks; ManagePage hides Verify on your own knowledge and every surface clamps the fraction (c0754d5, 4d874ac)."
     },
     {
      "n": 147,
@@ -649,7 +676,10 @@
      "fix": "Make `forget` resolve `also_affects` first and refuse when it is non-empty: print the list with each item's status and sales count and require `--all-sharing` (or an interactive y/N naming each id). Return 409 with `also_affects` from the API unless the caller passes `all_sharing: true`.",
      "audience": "Knowledge publisher",
      "status": "fixed",
-     "shipped": "`patch forget` now resolves the other knowledge built from the same file first and refuses with their id, name, status and sales count (HTTP 409 + also_affects), deleting only when the operator repeats the command with --all-sharing."
+     "shipped": "`patch forget` now resolves the other knowledge built from the same file first and refuses with their id, name, status and sales count (HTTP 409 + also_affects), deleting only when the operator repeats the command with --all-sharing.",
+     "fixed": true,
+     "fixed_by": "5ae3501",
+     "fixed_note": "`patch forget` resolves also_affects first and refuses until --all-sharing, instead of printing the blast radius after deleting."
     },
     {
      "n": 150,
@@ -685,7 +715,11 @@
      "evidence": "Reproduced with real money on a throwaway node: `ainize publish … --price 5 --contributor 0x1111…:Alice:0.5 --contributor 0x2222…:Bob:0.5` printed `✓ data providers on the record: Alice 50%, Bob 50% (of this node's share of each sale)`. The single 5 CREDIT sale settled as `{\"0x1111…\":\"2.5\",\"0x2222…\":\"1.25\",\"0x2C52…(seller)\":\"1.25\"}` — Alice 50 %, Bob 25 %, seller 25 %. A lineage carve for the same two 0.5 contributors on a 3.0 pool paid 1.5 and 1.5.",
      "user_cost": "Data providers are paid a different number from the one the publisher agreed with them, the one printed on the receipt, and the one written on the public record — and the error grows with each additional contributor, always in the seller's favour. Nobody involved has any way to notice.",
      "fix": "Compute pass 2 against the fixed slice like pass 1b: `const slice = amount - pool; const carve = Math.min(remainder, slice * safeShare(c));`. Add a unit test with two 0.5 contributors asserting an equal split, and print the resulting amounts (not just the percentages) in the publish confirmation and on the manage page.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "da57166",
+     "fixed_note": "royaltySplit pass 2 carves each contributor against the fixed seller remainder, so two 0.5 data providers are paid equally."
     },
     {
      "n": 153,
@@ -699,7 +733,10 @@
      "fix": "Clear `quorum_ok` (or add an explicit `sellable` flag that CHALLENGED clears) so the 402 gate returns 423 with \"a verifier has challenged this knowledge — re-verification pending\". Make a later attestation from the same verifier replace the earlier one whenever its `created_at` is newer than the newest challenge, and let the automatic round re-verify a CHALLENGED patch it has already attested. Have `ainize patch verify` refuse with a clear message when the re-attestation would be discarded, instead of printing PASS.",
      "audience": "Knowledge publisher",
      "status": "fixed",
-     "shipped": "Chosen behaviour: BLOCK the sale, with the reason, and make the challenge answerable. Pricing-with-disclosure was rejected because there is no honest discount for “a verifier says this knowledge is wrong”, and warn-and-confirm would still take the buyer's money for a result the network is currently disputing. `quorum_ok` keeps its meaning (the quorum is met) and a new `sellable` — quorum met AND no open challenge — is what the x402 gate, `Market.buy`, the CLI and the agent read; `GET /x402/patch/:id` answers 423 `a verifier has challenged this knowledge — re-verification pending, so it is not for sale (0x…: \"<reason>\")` and the knowledge page hides the Buy button behind “Challenged knowledge is not on sale at any price — the sale is stopped, not discounted”. The dead end is gone too: after a challenge a verifier's newer attestation replaces its earlier one (`effectiveAttestation`), the automatic round re-verifies a patch it has already attested while a challenge is open, and a re-run that could not count is refused with the reason instead of printing PASS. Verified on a private local-ledger cluster: 402 → challenge → 423 + `patch buy` refused + banner → automatic re-verification → LISTED and 402 again, in about five seconds. Unit tests in core, end-to-end in packages/node/test/trust.test.ts, new scenario AZ-227."
+     "shipped": "Chosen behaviour: BLOCK the sale, with the reason, and make the challenge answerable. Pricing-with-disclosure was rejected because there is no honest discount for “a verifier says this knowledge is wrong”, and warn-and-confirm would still take the buyer's money for a result the network is currently disputing. `quorum_ok` keeps its meaning (the quorum is met) and a new `sellable` — quorum met AND no open challenge — is what the x402 gate, `Market.buy`, the CLI and the agent read; `GET /x402/patch/:id` answers 423 `a verifier has challenged this knowledge — re-verification pending, so it is not for sale (0x…: \"<reason>\")` and the knowledge page hides the Buy button behind “Challenged knowledge is not on sale at any price — the sale is stopped, not discounted”. The dead end is gone too: after a challenge a verifier's newer attestation replaces its earlier one (`effectiveAttestation`), the automatic round re-verifies a patch it has already attested while a challenge is open, and a re-run that could not count is refused with the reason instead of printing PASS. Verified on a private local-ledger cluster: 402 → challenge → 423 + `patch buy` refused + banner → automatic re-verification → LISTED and 402 again, in about five seconds. Unit tests in core, end-to-end in packages/node/test/trust.test.ts, new scenario AZ-227.",
+     "fixed": true,
+     "fixed_by": "1d07145",
+     "fixed_note": "`sellable` (quorum met AND no open challenge) is what the buy gates read; a challenged knowledge answers 423 and a later attestation from the same verifier can clear it."
     },
     {
      "n": 154,
