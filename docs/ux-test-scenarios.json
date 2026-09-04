@@ -8719,28 +8719,32 @@
   "id": "AZ-258",
   "persona": "Operator",
   "title": "The same reversibility, measured on the live PLE hook with the shipped demo knowledge files",
-  "goal": "The unit tests use a fake hook; this is the run on a served model. Two real files that overlap are stacked and unwound on the live table, and the rows are read back through the hook — no simulation anywhere (production-verification-plan: nothing is announced that was not measured).",
+  "goal": "The unit tests use a fake hook; this is the run on a served model. The whole row sequence happens inside ONE hold of the shared runtime lock, because several nodes on this machine drive the same serving instance and a table read taken between two of their operations means nothing. Nothing is compared to a constant: the state the table is in when the lock is taken is measured first, and every claim — including \"the table is back where it started\" — is made against that.",
   "preconditions": [
-   "node-u on http://localhost:3422 with runtime.api http://localhost:8002 and runtime.patchDir /mnt/newdata/qwen3.8/ple_patch_e2e (never :8000/:8001, never ple_patch).",
-   "results/train-all/rows-ep12.npz (241,992 rows) registered as the base and results/train-fact/픽셀플러스.npz (2,992 rows) as the layer above it."
+   "node-u on http://localhost:3422 with runtime.api http://localhost:8002 and runtime.patchDir /mnt/newdata/qwen3.8/ple_patch_e2e (never :8000/:8001, never ple_patch). The script refuses to run against anything else.",
+   "results/train-all/rows-ep12.npz (241,992 rows) and results/train-fact/픽셀플러스.npz (2,992 rows), plus a true add-on over ep12 built by the script: 2,000 of ep12's addresses whose `before` IS ep12's `after`."
   ],
   "steps": [
-   "Apply the base, then read the shared addresses through the hook.",
-   "Apply the second file on top (as a delta whose `before` is the base's `after` on the shared rows), read them again.",
-   "Remove the top file, read the shared addresses; remove the base, read them once more."
+   "Measure what the table holds for both shipped files (the baseline).",
+   "Apply ep12, then 픽셀플러스 on top; unload 픽셀플러스; unload ep12 — measuring after every step.",
+   "Apply the add-on with ep12 NOT loaded; then with ep12 loaded; unload both.",
+   "Over HTTP: apply the add-on alone, apply it with `with_base`, try to unload the base under it, unload both."
   ],
   "expected": [
-   "The two files share a measured number of addresses (2,154 for ep12 ∩ 픽셀플러스 on 2026-09-04) — the count is read from the files, never quoted.",
-   "With both loaded the shared rows hold the top file's values.",
-   "After removing the top file the shared rows hold the BASE's values, bf16-exact on every shared row — not the model's own.",
-   "After removing the base every row is back to the model's own values and nothing is left applied on the node."
+   "The two shipped files share a number of addresses counted from the files at run time (2,154 for ep12 ∩ 픽셀플러스, measured 2026-09-04) — never quoted.",
+   "The shipped blobs' `before` is NOT the live baseline on a machine other nodes share: at the 2026-09-04 run ep12 differed from its `before` on 241,661 of 241,992 rows and 픽셀플러스's `after` was already fully on the table, because another node had it loaded. Every assertion is therefore relative to the measured baseline.",
+   "With ep12 loaded, 픽셀플러스 sees a DIFFERENT number of its rows changed than it did on the baseline — evidence that ep12 is underneath it.",
+   "Unloading 픽셀플러스 puts ep12 back on all 241,992 of its rows, the 2,154 shared ones included; unloading ep12 returns both files to exactly the two numbers measured at step 0.",
+   "The add-on is refused with `base_mismatch` when ep12 is not loaded, and NOTHING is written (the measurement afterwards is unchanged).",
+   "With ep12 loaded the add-on's check reads 0 rows differing, the apply reports `prev_equals_before` from the hook's own returned values, and unloading it leaves ep12 bf16-exact on all 2,000 rows.",
+   "Over HTTP: `needs_base` for the add-on alone, `with_base` gives the ordered stack [base, add-on] with a journal per layer, `has_dependents` refuses to pull the base out, and the node ends with an empty stack."
   ],
   "priority": "P0",
   "area": "runtime",
   "automation": "manual",
   "evidence": [
-   "packages/e2e/scripts/stack-live-proof.mjs",
-   "qwen3.8/scripts/patch.py",
+   "packages/e2e/scripts/stack-live-proof.mjs (run 2026-09-04 on node-u / flashnext-e2e :8002: all checks passed)",
+   "qwen3.8/scripts/patch.py (check, apply --verify-before --journal, remove --journal)",
    "docs/lineage-teach-design.md §8"
   ]
  }
