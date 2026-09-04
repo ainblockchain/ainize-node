@@ -9828,5 +9828,33 @@
    "packages/node/test/lineage-tree.test.ts (AZ-296)",
    "docs/lineage-teach-design.md §5.5, §12.5"
   ]
+ },
+ {
+  "id": "AZ-297",
+  "persona": "Visitor (knowledge user)",
+  "title": "Where building on is switched off, the family is still readable — and a knowledge from before training sets is not called private",
+  "goal": "§18 ships the read-only half of L6 everywhere, including the demo cluster where `teach.lineage` is off. What is refused there must be refused for the true reason.",
+  "preconditions": [
+   "node-a (:3402) on the AIN dev chain with teach.lineage unset (off), serving the demo catalogue: krx-all-2761 lists its previous epoch as a parent, supersedes it, and carries no training set."
+  ],
+  "steps": [
+   "GET /api/teach/policy (lineage must be false)",
+   "GET /api/patches/krx-all-2761/tree?depth=8 and GET /api/explore/shelves",
+   "Open the knowledge page and its Family tree tab at 1280 px and at 360 px"
+  ],
+  "expected": [
+   "The tree and the shelves answer with the flag off — reading where a knowledge came from is not a creator affordance.",
+   "The knowledge asked about is depth 0, its epochs are above it as `declared` edges with the legacy chip, and the knowledge it merely replaced is a sibling.",
+   "*Build on this* is disabled and the reason is 'no training set on the record' — NOT 'the creator kept it private', which nobody chose.",
+   "At 360 px the SVG is replaced by the same family as a list; the legend, the family line and the money lines stay."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "manual",
+  "evidence": [
+   "run 2026-09-04: node-a :3402, `curl /api/patches/krx-all-2761/tree?depth=8` → root depth 0, ep12/ep6 declared+version, pixelplus depth 0",
+   "packages/web/src/pages/PatchPage.tsx, packages/web/src/components/detail/FamilyTree.tsx",
+   "docs/lineage-teach-design.md §14, §18 gating"
+  ]
  }
 ]
