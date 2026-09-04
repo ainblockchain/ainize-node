@@ -1132,7 +1132,9 @@ export class Market {
         seen.add(b.patch_id);
         const e = map.get(b.patch_id);
         walk(e?.anchor.base?.stack, depth + 1);            // its own bases go under it
-        const gw = e ? (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null : null;
+        // Where that base is sold TODAY (item 275) — the frozen address on the record is only the last resort, or
+        // a buyer told "needs adv-base, from node-a" would be handed a port that node left months ago.
+        const gw = e ? this.gatewaysFor(e.anchor)[0]?.url ?? (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null : null;
         out.push({
           id: b.patch_id, name: e?.anchor.name ?? b.patch_id, price: e?.anchor.price ?? '', currency: e?.anchor.currency ?? this.cfg.market.currency,
           author: e?.anchor.author ?? '', author_name: e?.anchor.author_name ?? null, gateway_url: gw, depth, known: !!e,
@@ -2869,6 +2871,13 @@ export class Market {
       const retiredBy = e.superseded_by.filter((x) => members.has(x));
       if (retiredBy.length) { items.push({ ...row, plan: 'retired', reason: `replaced on this track by ${retiredBy.join(', ')} — kept as history, not loaded` }); continue; }
       if (st.model && !a.model.id_M.startsWith(st.model)) { items.push({ ...row, plan: 'wrong_model', reason: `trained for ${a.model.id_M}; this node serves ${st.model}` }); continue; }
+      // A publisher's withdrawal is not a verification failure (item 148). It used to be reported as `blocked`,
+      // which the CLI prints as "not verified" — a lie about a knowledge that passed 2/2 and was then taken down.
+      if (e.status === 'RETIRED') {
+        const why = (e as MarketEntry).retire_reason;
+        items.push({ ...row, plan: 'retired', reason: `withdrawn by its publisher${why ? ` ("${why}")` : ''} — not loaded; buyers who already paid keep their copy` });
+        continue;
+      }
       if (e.status !== 'LISTED' || !e.sellable) { items.push({ ...row, plan: 'blocked', reason: `${e.status} (verification ${e.passed}/${e.quorum}) — not loaded${e.status === 'REJECTED' ? ': the network rejected this bake' : ''}` }); continue; }
       if (a.author.toLowerCase() === this.address.toLowerCase()) { items.push({ ...row, plan: 'own', reason: 'published by this node' }); continue; }
       if (this.hasLicense(e)) { items.push({ ...row, plan: 'held', reason: this.licenseOf(e)?.source === 'free' ? 'free — nothing to pay' : 'already bought by this node' }); continue; }

@@ -1001,7 +1001,9 @@ export function buildApi(deps: ApiDeps): Router {
         patch_id: a.id, name: a.name, author: a.author, author_name: a.author_name ?? null,
         price: a.price, currency: a.currency, status: r.entry.status, rows: a.rows, queries: a.benchmark.queries,
         reason: r.reason, buyable: r.buyable, requests: r.requests,
-        gateway_url: (a as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
+        // Where the seller answers TODAY, not the address frozen into the anchor (item 275): this row is what a
+        // visitor is pointed at, and a seller that changed its port would be a dead link here.
+        gateway_url: market.gatewaysFor(a)[0]?.url ?? (a as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
       };
     });
     // `lessons`: the caller's private drafts (teach mode), only with a verified teaching-key signature
