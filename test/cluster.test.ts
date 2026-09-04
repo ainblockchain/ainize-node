@@ -17,7 +17,8 @@ const mk = (name: string, port: number, peers: string[], roles: NodeConfig['role
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };   // no runtime in tests → hash-only attestations
   cfg.gossipIntervalMs = 300;
-  cfg.verifier = { quorum: 2, allowSelfAttest: false, intervalMs: 400 };
+  // this suite publishes `visibility: 'test'` anchors and expects them verified (item 332 makes that opt-in)
+  cfg.verifier = { quorum: 2, allowSelfAttest: false, intervalMs: 400, includeTest: true };
   cfg.publicUrl = `http://127.0.0.1:${port}`;
   cfg.host = '127.0.0.1';
   return cfg;

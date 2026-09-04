@@ -66,6 +66,11 @@ function ensureConfig(d) {
     // deployment). The DEMO cluster runs locally behind no proxy and the e2e suite isolates visitor quotas by
     // sending distinct X-Forwarded-For values (freshVisitor), so the demo nodes opt in explicitly here.
     cfg.server = { ...(cfg.server ?? {}), trustProxy: true };
+    // A shipped node no longer spends GPU minutes verifying `visibility: 'test'` anchors it did not publish (item
+    // 332): on the demo chain 209 of 213 were hidden test listings from other people's e2e runs. The DEMO cluster is
+    // where those listings are the point — every suite publishes as `test` to keep the public catalogue clean — so
+    // these three nodes opt back in explicitly.
+    cfg.verifier = { ...(cfg.verifier ?? {}), includeTest: true };
     if (d.teach) cfg.teach = { ...core.teachConfig(cfg), ...d.teach };   // never `stubOffline` here: the demo checks lessons on the real model
     core.saveConfig(cfg, home);
     console.log(`[cluster] created ${home}/config.json  (${cfg.identity.address})${d.teach ? `  teach: enabled, publish ${d.teach.publish}, backend ${d.teach.backend}` : ''}`);
@@ -76,6 +81,12 @@ function ensureConfig(d) {
       cfg.runtime = { ...cfg.runtime, api: runtimeApi, patchDir: runtimePatchDir };
       core.saveConfig(cfg, home);
       console.log(`[cluster] ${d.name}: runtime → ${runtimeApi}  (mailbox ${runtimePatchDir})`);
+    }
+    // Same reason as above, for a home created before `verifier.includeTest` existed.
+    if (cfg.verifier && cfg.verifier.includeTest !== true) {
+      cfg.verifier = { ...cfg.verifier, includeTest: true };
+      core.saveConfig(cfg, home);
+      console.log(`[cluster] ${d.name}: verifier.includeTest → true (this cluster's suites publish hidden test listings)`);
     }
     if (d.teach && !(cfg.teach?.enabled)) {
       console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`NGRAM_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);

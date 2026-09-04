@@ -31,7 +31,8 @@ before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'N', port: PORT, peers: [], roles: ['seller', 'verifier', 'serving'], ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = `http://127.0.0.1:${PORT}`;
-  cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300 };
+  // this suite publishes `visibility: 'test'` anchors and expects them verified (item 332 makes that opt-in)
+  cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300, includeTest: true };
   cfg.gossipIntervalMs = 60_000;
   N = await startNode(cfg, { quiet: true, serveWeb: false });
   await seedDemo(N.market, { real: false, synthetic: true });

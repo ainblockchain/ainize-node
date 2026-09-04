@@ -7,8 +7,26 @@
  * Without a runtime the attestation is explicitly `verified_on: "hash-only"` — never a fake score.
  */
 import type { Attestation, PatchAnchor, RuntimeStatus } from '@ngram/core';
-import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, sha256Hex, signMessage } from '@ngram/core';
+import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, readNpzMember, sha256Hex, signMessage, verifierConfig } from '@ngram/core';
 import { ConflictError, type Market } from './market.js';
+import { RUNTIME_PRIORITY } from './runtime.js';
+
+/** What one round did and what it stood aside from (item 332) — the line an operator reads to see why an item waits. */
+export interface VerifierRoundReport { verified: number; skipped: { test: number; price: number; budget: number; busy: number; window: number } }
+
+/** What this node has spent verifying other people's knowledge, and what it gave back (items 332 / 333 / 336). */
+export interface VerifierWork {
+  items_last_hour: number;
+  model_minutes_last_hour: number;
+  max_items_per_hour: number;
+  max_model_minutes_per_hour: number;
+  /** Bodies dropped after their attestation was written (item 336), since this process started. */
+  released_files: number;
+  released_bytes: number;
+  retain_bodies: boolean;
+  /** Why the next round will not start an item right now; absent when nothing is in the way. */
+  paused?: string;
+}
 
 /**
  * A verification that is only WAITING for the model server, not one that failed (item 130).
@@ -31,6 +49,13 @@ export class Verifier {
   /** First real-verification failure time per patch (runtime hiccups / serving restarts). After RUNTIME_GRACE_MS we fall back to hash-only. */
   private runtimeFailures = new Map<string, number>();
   static readonly RUNTIME_GRACE_MS = 15 * 60_000;
+  /** The rolling hour the per-hour budget is spent against (items 332 / 333). */
+  private spent: { at: number; ms: number }[] = [];
+  /** Bodies dropped after their attestation was written (item 336), since this process started. */
+  private released = { files: 0, bytes: 0 };
+  private lastRoundLog = 0;
+  /** How often the round may repeat its "skipped N (test listings)" line — the round itself runs every `intervalMs`. */
+  static readonly ROUND_LOG_MS = 5 * 60_000;
   /** Samples measured for an anchor with a base stack (§7.7 raises the cap from 40 so parent questions fit). */
   static readonly LINEAGE_SAMPLE_CAP = 64;
   private graceLeft(id: string): number { const t = this.runtimeFailures.get(id); return t ? Math.max(0, Verifier.RUNTIME_GRACE_MS - (Date.now() - t)) : Verifier.RUNTIME_GRACE_MS; }
@@ -106,11 +131,19 @@ export class Verifier {
     const waiting: { id: string; detail: string; left: number }[] = [];
     try {
       const cfg = this.market.cfg;
+      const v = verifierConfig(cfg);
       const me = cfg.identity.address;
-      const catalog = await this.market.catalogAll();   // verify test-visibility anchors too
+      const catalog = await this.market.catalogAll();   // test-visibility anchors are in here; `verifier.includeTest` decides
       const st = await this.market.runtime.status();
+      const report: VerifierRoundReport = { verified: 0, skipped: { test: 0, price: 0, budget: 0, busy: 0, window: 0 } };
+      const minPrice = Number(v.minPrice ?? '0');
       for (const e of catalog) {
         if (e.anchor.author === me && !cfg.verifier?.allowSelfAttest) continue;
+        // What this node spends on unpaid work for strangers is the operator's decision, not the catalogue's size
+        // (item 332). 209 of the 213 anchors on the demo chain were hidden test listings nobody could ever buy, and
+        // each of them cost every verifier a download and a benchmark on every round.
+        if (!v.includeTest && e.anchor.visibility === 'test') { report.skipped.test++; continue; }
+        if (minPrice > 0 && Number(e.anchor.price || 0) < minPrice) { report.skipped.price++; continue; }
         const mine = e.attestations.find((a) => a.verifier === me);
         const compatible = st.available && !!st.model && e.anchor.model.id_M.startsWith(st.model) && !!e.anchor.benchmark.samples?.length;
         // A run on a table that already carries this knowledge has no un-patched baseline: it would be recorded and
@@ -127,33 +160,110 @@ export class Verifier {
         // whatever the status is, because an item stuck at 1/2 with one FAIL is exactly the case the publisher
         // files a challenge for and the only status it can have is VERIFYING (item 242).
         if (e.open_challenge && (!mine || mine.created_at < e.open_challenge.created_at)) {
+          if (this.standAside(v, report)) break;
+          report.verified++;
           await this.attempt(e.anchor, 're-verify (challenged)', waiting);
           continue;
         }
         if (mine) {
           // Upgrade: we attested hash-only earlier but a compatible runtime is available now → re-verify for real.
           if (mine.verified_on === 'hash-only' && compatible && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
+            if (this.standAside(v, report)) break;
             this.runtimeFailures.set(`upgraded:${e.anchor.id}`, 1);
+            report.verified++;
             await this.attempt(e.anchor, 're-verify', waiting);
           }
           continue;
         }
         if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status)) continue;
+        if (this.standAside(v, report)) break;
+        report.verified++;
         await this.attempt(e.anchor, 'verify', waiting);
       }
       this.reportGrace(waiting, st.available);
+      this.reportRound(report);
     } finally {
       this.busy = false;
     }
   }
 
   /**
+   * Should this round start another item? (items 332 / 333)
+   *
+   * `true` ends the round: the hourly budget is gone, we are outside the operator's window, or someone is waiting on
+   * this node right now — and verification is the one thing here that nobody is paying for. A run that has already
+   * started is never pre-empted; what changes is that a new one does not begin in front of a visitor.
+   */
+  private standAside(v: NonNullable<Market['cfg']['verifier']>, report: VerifierRoundReport): boolean {
+    if (!Verifier.withinWindow(v.window ?? null)) { report.skipped.window++; return true; }
+    const b = this.budget(v);
+    if (!b.ok) { report.skipped.budget++; return true; }
+    if (this.market.runtime.aheadOf(RUNTIME_PRIORITY.verify)) { report.skipped.busy++; return true; }
+    return false;
+  }
+
+  /** Is `now` inside the operator's verification window? A null window means "any time" (item 333). */
+  static withinWindow(w: { from: string; to: string } | null, now = new Date()): boolean {
+    if (!w) return true;
+    const min = (x: string) => { const [h, m] = x.split(':').map(Number); return (h % 24) * 60 + (m % 60); };
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const from = min(w.from), to = min(w.to);
+    return from <= to ? cur >= from && cur < to : cur >= from || cur < to;   // a window that crosses midnight
+  }
+
+  /** What is left of the rolling-hour budget (items 332 / 333). */
+  private budget(v: NonNullable<Market['cfg']['verifier']>): { ok: boolean; items: number; ms: number; reason?: string } {
+    const cut = Date.now() - 3600_000;
+    this.spent = this.spent.filter((x) => x.at > cut);
+    const items = this.spent.length;
+    const ms = this.spent.reduce((a, x) => a + x.ms, 0);
+    const maxItems = v.maxPerHour ?? 40;
+    const maxMs = (v.maxModelMinutesPerHour ?? 10) * 60_000;
+    if (items >= maxItems) return { ok: false, items, ms, reason: `${items} items verified this hour (verifier.maxPerHour ${maxItems})` };
+    if (ms >= maxMs) return { ok: false, items, ms, reason: `${Math.round(ms / 60_000)} min of shared model spent verifying this hour (verifier.maxModelMinutesPerHour ${Math.round(maxMs / 60_000)})` };
+    return { ok: true, items, ms };
+  }
+
+  /** One line per round, at most every ROUND_LOG_MS, so an operator can see what the filters and the budget did. */
+  private reportRound(r: VerifierRoundReport) {
+    const s = r.skipped;
+    const parts = [
+      s.test ? `${s.test} (test listings)` : '',
+      s.price ? `${s.price} (below verifier.minPrice)` : '',
+      s.budget ? `${s.budget} (hourly budget spent)` : '',
+      s.busy ? `${s.busy} (this node's own work is on the model)` : '',
+      s.window ? `${s.window} (outside verifier.window)` : '',
+    ].filter(Boolean);
+    if (!parts.length) return;
+    if (!r.verified && Date.now() - this.lastRoundLog < Verifier.ROUND_LOG_MS) return;
+    this.lastRoundLog = Date.now();
+    this.market.log('info', 'verifier', `round: verified ${r.verified}, skipped ${parts.join(', ')}`, null, { report: r, work: this.work() });
+  }
+
+  /** What this node has spent verifying and what it gave back — `/api/info.verification_stats` reads this. */
+  work(): VerifierWork {
+    const v = verifierConfig(this.market.cfg);
+    const b = this.budget(v);
+    const ahead = this.market.runtime.aheadOf(RUNTIME_PRIORITY.verify);
+    const outside = !Verifier.withinWindow(v.window ?? null);
+    return {
+      items_last_hour: b.items, model_minutes_last_hour: Math.round(b.ms / 6000) / 10,
+      max_items_per_hour: v.maxPerHour ?? 40, max_model_minutes_per_hour: v.maxModelMinutesPerHour ?? 10,
+      released_files: this.released.files, released_bytes: this.released.bytes, retain_bodies: !!v.retainBodies,
+      ...(outside ? { paused: `outside the verification window (${v.window!.from}\u2013${v.window!.to})` }
+        : !b.ok ? { paused: b.reason }
+        : ahead ? { paused: `this node's own work is on the shared model (${ahead.label})` } : {}),
+    };
+  }
+
+  /**
    * Verify one anchor and write the attestation. Refuses BEFORE spending GPU minutes when the result could not
    * count: a self-attestation (item 146), or a re-run whose record the derivation would discard (item 153).
    */
-  async verifyOne(anchor: PatchAnchor): Promise<Attestation> {
+  async verifyOne(anchor: PatchAnchor, opts: { recheck?: boolean } = {}): Promise<Attestation> {
     const m = this.market;
     const me = m.cfg.identity.address;
+    const t0 = Date.now();
     if (anchor.author.toLowerCase() === me.toLowerCase() && !m.cfg.verifier?.allowSelfAttest) {
       throw new ConflictError(`cannot verify your own knowledge: ${anchor.id} was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it.`);
     }
@@ -165,8 +275,11 @@ export class Verifier {
       // and now has a model server that can actually execute the benchmark.
       const st = await m.runtime.status();
       const canUpgrade = mine.verified_on === 'hash-only' && st.available && !!st.model && anchor.model.id_M.startsWith(st.model) && !!anchor.benchmark.samples?.length;
-      if (!canUpgrade) {
-        throw new ConflictError(`this node already attested ${anchor.id} (${mine.passed ? 'PASS' : 'FAIL'}, ${mine.verified_on}, ${new Date(mine.created_at).toISOString()}); a second attestation would not be counted. Re-verification counts after someone challenges the knowledge (ainize patch challenge ${anchor.id} --reason …)${mine.verified_on === 'hash-only' ? ', or once this node has a model server that can run the benchmark (it has none that matches now)' : ''}.`);
+      // A verifier with a doubt used to have two options: stay silent, or file a challenge that takes the seller off
+      // sale (item 339). Naming the recheck FIRST is the point — most operators will not attack a listing to record a
+      // measurement, and a network whose only lever is an attack learns nothing.
+      if (!canUpgrade && !opts.recheck) {
+        throw new ConflictError(`this node already attested ${anchor.id} (${mine.passed ? 'PASS' : 'FAIL'}, ${mine.verified_on}, ${new Date(mine.created_at).toISOString()}). To measure it again and put the result on the record WITHOUT taking it off sale, ask this node for a recheck: POST /api/patches/${anchor.id}/verify {"recheck": true}. A recheck that fails withdraws this node's earlier PASS; one that passes is a visible confirmation. A challenge (ainize patch challenge ${anchor.id} --reason …) stops the seller's sales and asks every verifier to re-run it${mine.verified_on === 'hash-only' ? '; this node will also re-verify on its own once it has a model server that can run the benchmark (it has none that matches now)' : ''}.`);
       }
     }
     // A verification measured on a table that ALREADY has this knowledge applied compares the patched model with
@@ -178,7 +291,7 @@ export class Verifier {
         throw new ConflictError(`${anchor.id} is applied to the shared model on this node, so a benchmark run here has no un-patched baseline of its own and would not count toward the quorum. Unload it first (ainize patch remove ${anchor.id}), or let a node that does not serve it verify.`);
       }
     }
-    m.log('info', 'verifier', `verifying ${anchor.id} (${anchor.name})`, anchor.id);
+    m.log('info', 'verifier', `${opts.recheck ? 're-measuring' : 'verifying'} ${anchor.id} (${anchor.name})`, anchor.id);
     const blob = await m.ensureBlob(anchor);
     const st = await m.runtime.status();
     let passed = false;
@@ -187,6 +300,7 @@ export class Verifier {
     let restarts = 0;
     let collateral: number | undefined;
     let failures: NonNullable<Attestation['failures']> = [];
+    let samplesRun = 0;
     const runtimeCompatible = st.available && !!st.model && anchor.model.id_M.startsWith(st.model);
     const wantsRuntime = !!m.runtime.repo && anchor.model.id_M !== 'demo-ngram-1b' && !!anchor.benchmark.samples?.length;
     const graceLeft = this.graceLeft(anchor.id);
@@ -215,6 +329,7 @@ export class Verifier {
           ...(stack.length ? { maxSamples: Verifier.LINEAGE_SAMPLE_CAP } : {}),
         });
         passed = out.passed; score = out.score; verified_on = out.verified_on; restarts = out.restarts_detected; collateral = out.collateral_nat;
+        samplesRun = out.details.length;
         failures = out.details.filter((d) => !d.hit).slice(0, ATTESTATION_MAX_FAILURES)
           .map((d) => ({ prompt: String(d.prompt ?? '').slice(0, ATTESTATION_PROMPT_MAX), expect: String(d.expect ?? '').slice(0, ATTESTATION_GOT_MAX), got: String(d.got ?? '').slice(0, ATTESTATION_GOT_MAX) }));
         this.runtimeFailures.delete(anchor.id);
@@ -240,11 +355,29 @@ export class Verifier {
       score = { integrity: 'sha256 ok', rows: blob.rows, benchmark: 'not executed (no compatible runtime on this node)' };
       verified_on = 'hash-only';
     }
+    // How much of this body is its declared parents', address for address (item 303). A child that carries every one
+    // of its base's rows and changes none of them added nothing: it is the base, resold, and only a node holding both
+    // files can say so. Recorded on every attestation that could measure it, so the page and `patch get` can print
+    // "2,992 of 2,992 rows are identical to pixel-parent-c" instead of the two numbers side by side with no comment.
+    const overlap = this.parentOverlap(anchor, blob.path);
+    if (overlap && overlap.resold) {
+      passed = false;
+      score = { ...score, resale: `${overlap.identical[overlap.resold]}/${overlap.rows} rows are identical to ${overlap.resold} — this body adds nothing to its parent` };
+      m.log('warn', 'verifier', `${anchor.id} FAILS as a derivative: every one of its ${overlap.rows} rows is identical to ${overlap.resold}'s. It is that knowledge, republished — not something built on top of it.`, anchor.id, { identical: overlap.identical });
+    }
     const body: Omit<Attestation, 'sig'> = {
       patch_id: anchor.id, verifier: m.cfg.identity.address, verifier_name: m.cfg.name, patch_sha256: blob.sha256,
       benchmark_hash: anchor.benchmark_hash, score, passed, collateral_nat: collateral, verified_on, restarts_detected: restarts,
       created_at: Date.now(),
     };
+    // What the run cost (item 340): a 4/4 and a 40/40 on a 2,761-fact knowledge were the same record to every reader.
+    if (verified_on !== 'hash-only') {
+      body.duration_ms = Date.now() - t0;
+      body.samples_run = samplesRun;
+      body.samples_available = anchor.benchmark.samples?.length ?? 0;
+    }
+    if (opts.recheck) body.recheck = true;
+    if (overlap) { body.rows_shared_with_parents = overlap.identical; body.rows = overlap.rows; }
     // What the model actually answered on the questions it got wrong (item 155). The verifier saw this and threw it
     // away: the author's node used to receive "0/2" and nothing else, on an anchor that is permanent and an id that
     // is burned. It travels signed, so the author can act on evidence rather than on a fraction.
@@ -254,10 +387,93 @@ export class Verifier {
       body.executor = await this.executorFingerprint(st);
       body.baseline = true;
     }
-    const sig = signMessage(JSON.stringify([body.patch_id, body.patch_sha256, body.benchmark_hash, body.passed, body.score, body.failures ?? [], body.executor?.instance ?? '']), m.cfg.identity.privateKey);
+    const sig = signMessage(JSON.stringify([body.patch_id, body.patch_sha256, body.benchmark_hash, body.passed, body.score, body.failures ?? [], body.executor?.instance ?? '',
+      body.samples_run ?? 0, body.samples_available ?? 0, body.duration_ms ?? 0, body.rows_shared_with_parents ?? {}]), m.cfg.identity.privateKey);
     const att: Attestation = { ...body, sig };
     await m.attest(att);
+    this.spent.push({ at: Date.now(), ms: Date.now() - t0 });
+    await this.releaseBody(anchor, blob.sha256);
     return att;
+  }
+
+  /**
+   * How many of this body's rows are byte-for-byte its parents' (item 303).
+   *
+   * The stub backend copies its fixture whenever a correction mentions the fixture's subject, and a real `--init-patch`
+   * build squashes parent rows in on purpose — either way nothing counted the rows a child did NOT add, so a one-fact
+   * lesson shipping 2,992 of its base's rows was verified 2/2 and sold as new while the base's author was paid 30 % of
+   * a sale that resold their whole file. Only a node that holds both files can measure this, so the verifier does.
+   *
+   * `resold` names a parent whose rows this body reproduces ENTIRELY, changing none of them: that is the parent
+   * republished, and the attestation fails on it. A body that carries parent rows AND changes some of them is a
+   * derivative — it is reported, not refused.
+   */
+  private parentOverlap(anchor: PatchAnchor, path: string): { rows: number; identical: Record<string, number>; resold?: string } | null {
+    const parents = [...new Set([...(anchor.base?.stack ?? []).map((b) => b.patch_id), ...anchor.parents])];
+    if (!parents.length) return null;
+    const read = (p: string) => {
+      const a = readNpzMember(p, 'addrs'), c = readNpzMember(p, 'after');
+      const n = a.header.shape[0];
+      const d = c.header.shape[1] ?? 1;
+      if (!n || n > Verifier.OVERLAP_MAX_ROWS) return null;
+      const rows = new Map<string, Buffer>();
+      for (let i = 0; i < n; i++) rows.set(String(a.body.readBigInt64LE(8 * i)), c.body.subarray(4 * d * i, 4 * d * (i + 1)));
+      return rows;
+    };
+    let mine: Map<string, Buffer> | null;
+    try { mine = read(path); } catch { return null; }
+    if (!mine) return null;
+    const identical: Record<string, number> = {};
+    let resold: string | undefined;
+    for (const pid of parents) {
+      const pa = this.market.catalogSync().find((x) => x.anchor.id === pid)?.anchor;
+      const pb = pa ? this.market.blobs.get(pa.patch_sha256) : null;
+      if (!pb) continue;                       // this node does not hold the parent: nothing measurable, nothing claimed
+      let theirs: Map<string, Buffer> | null;
+      try { theirs = read(pb.path); } catch { continue; }
+      if (!theirs) continue;
+      let same = 0;
+      for (const [addr, vec] of mine) { const t = theirs.get(addr); if (t && t.length === vec.length && t.equals(vec)) same++; }
+      identical[pid] = same;
+      if (same === mine.size && same > 0) resold = pid;
+    }
+    if (!Object.keys(identical).length) return null;
+    return { rows: mine.size, identical, ...(resold ? { resold } : {}) };
+  }
+  /** Above this the address-set comparison is skipped: it is a diagnostic, not a reason to hold the shared model. */
+  static readonly OVERLAP_MAX_ROWS = 200_000;
+
+  /**
+   * Give a verified body back to the disk (item 336).
+   *
+   * `ensureBlob` stored every body this node ever scored and nothing purged them: node-b held 932 MB after 203
+   * verifications, none of them purchased. A verification is a measurement, not a licence to serve (item 327) and not
+   * a reason to keep the file — so once the attestation is written the body goes, unless this node authored it,
+   * bought it, teaches on it, or is serving it right now. `verifier.retainBodies` keeps the old behaviour.
+   */
+  private async releaseBody(anchor: PatchAnchor, sha: string): Promise<void> {
+    const m = this.market;
+    const v = verifierConfig(m.cfg);
+    if (v.retainBodies) return;
+    const blob = m.blobs.get(sha);
+    if (!blob) return;
+    // Bodies are content-addressed: every id built from the same training output shares this file.
+    const sharing = (await m.catalogAll()).filter((e) => e.anchor.patch_sha256 === sha);
+    for (const e of sharing) {
+      if (e.status === 'DRAFT') return;
+      if (e.anchor.author.toLowerCase() === m.address.toLowerCase()) return;
+      if (m.store.getPurchase(e.anchor.id)) return;
+      if (m.isApplied(e.anchor.id)) return;
+      const lic = m.store.getLicense(e.anchor.id);
+      if (lic && lic.source !== 'verification') return;
+    }
+    if (blob.path.startsWith(m.datasets.dir)) return;   // a training set, not a knowledge body
+    m.blobs.remove(sha);
+    for (const e of sharing) m.store.clearLicense(e.anchor.id);
+    this.released.files++;
+    this.released.bytes += blob.size_bytes;
+    m.invalidate();
+    m.log('info', 'blob', `released the ${anchor.id} body after attesting it (${(blob.size_bytes / 1e6).toFixed(1)} MB freed; this node neither wrote nor bought it). Set verifier.retainBodies to keep verified bodies.`, anchor.id, { sha256: sha, bytes: blob.size_bytes });
   }
 
   /**

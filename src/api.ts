@@ -24,6 +24,25 @@ import { gcRun, type GcOptions } from './gc.js';
 import { canonicalBytes, parseDataset, questionKey } from './teach-dataset.js';
 import { ChatCancelledError } from './chat-queue.js';
 import type { Verifier } from './verifier.js';
+
+/**
+ * How often the trust mechanism has actually fired, across everything this node can see (item 338). The product
+ * says a wrong verification "can be challenged by any node" and points at that instead of a deposit; on the demo
+ * chain the mechanism had fired zero times in 501 attestations and no screen said so. The claim keeps its sentence
+ * and gains its base rate.
+ */
+export interface VerificationStats {
+  attestations: number;
+  failed: number;
+  hash_only: number;
+  /** Deliberate re-measurements a verifier recorded without challenging anything (item 339). */
+  rechecks: number;
+  challenges: number;
+  upheld: number;
+  open: number;
+  /** Knowledge items that have ever been challenged. */
+  disputed_items: number;
+}
 import type { Drive } from './drive.js';
 import { ANSWER_MAX, creditedAddress, PROMPT_MAX, TeachError, type TeachWorker } from './teach.js';
 import type { RowsOp } from './teach-datasets.js';
@@ -743,14 +762,29 @@ export function buildApi(deps: ApiDeps): Router {
     })), mine: await market.mySubscriptions() };
   }));
   router.get('/api/route', wrap(async (req) => market.route(req.query as Record<string, string>)));
-  router.get('/api/nodes', wrap(async () => {
+  /**
+   * How long a node record stays on the default answer (item 140). Node records are permanent, so `/api/nodes`
+   * used to return every one ever written — 122 rows for a network of three, 120 of them dead, on the CLI and on
+   * /network. `?all=1` still returns the lot.
+   */
+  const NODES_RECENT_MS = 24 * 3600_000;
+  router.get('/api/nodes', wrap(async (req) => {
     // visitors count knowledge files of public knowledge only (hidden test anchors / drafts are not part of the public catalog)
     // `blobs_advertised` is what the node itself said it holds: `blobs` is filtered through THIS node's catalogue, so a
     // peer on another ledger — whose anchors this node can never read — showed BLOBS 0 while holding four (item 170).
     const own = market.ledger.kind;
-    const nodes = await Promise.all((await market.knownNodes()).map(async (n) => ({
+    const all = req.query.all === '1' || req.query.all === 'true';
+    const known = await market.knownNodes();
+    // A node this one is peered with is never "old", whatever the record says: it is on the network now.
+    const peerEndpoints = new Set(market.p2p.peers().map((p) => p.endpoint.replace(/\/+$/, '')));
+    const fresh = known.filter((n) => n.address === market.address || peerEndpoints.has((n.endpoint ?? '').replace(/\/+$/, '')) || Date.now() - (n.last_seen ?? 0) < NODES_RECENT_MS);
+    const shown = all ? known : fresh;
+    const dup = market.duplicateNodeAddresses(known);
+    const nodes = await Promise.all(shown.map(async (n) => ({
       ...n, blobs: await market.publicBlobs(n.blobs ?? []), blobs_advertised: (n.blobs ?? []).length,
       ledger_mismatch: n.address !== market.address && !!n.ledger && n.ledger !== own,
+      // item 139: two nodes on one identity. The registry keeps one of them and nothing said the other existed.
+      ...(dup.has(n.address?.toLowerCase() ?? '') ? { duplicate_endpoints: dup.get(n.address.toLowerCase()) } : {}),
     })));
     const peers = market.p2p.peers().map((p) => ({
       ...p,
@@ -760,7 +794,11 @@ export function buildApi(deps: ApiDeps): Router {
     }));
     // Endpoints the operator removed: gossip may not re-add them, and `peers ls` says so rather than leaving the
     // operator to wonder why a peer they keep hearing about is not in the table (item 137).
-    return { nodes, peers, blocked: market.p2p.blocked(), self: market.address, ledger: own, peer_status: market.p2p.health() };
+    return {
+      nodes, peers, blocked: market.p2p.blocked(), self: market.address, ledger: own, peer_status: market.p2p.health(),
+      // item 140: what the filter left out, so a surface can offer the rest instead of pretending this is everything.
+      nodes_total: known.length, nodes_hidden: all ? 0 : known.length - shown.length, nodes_window_ms: NODES_RECENT_MS, all,
+    };
   }));
   router.get('/api/events', wrap(async (req) => ({
     events: publicEvents(market.store.events({
@@ -1120,10 +1158,14 @@ export function buildApi(deps: ApiDeps): Router {
     const ep = String(req.body.endpoint);
     // `removed` is the fact the CLI needs to stop reporting success for a peer that was never there (item 138);
     // `blocked` is what keeps the next gossip round from teaching it straight back (item 137).
-    const out = market.p2p.removePeer(ep);
+    // `block: false` detaches without banning — the pre-item-137 behaviour, for a caller that means "forget this one
+    // for now" (the e2e cleanup) rather than "keep it out".
+    const out = market.p2p.removePeer(ep, { block: req.body?.block !== false });
     market.cfg.peers = market.cfg.peers.filter((p) => p !== ep && p !== req.body.endpoint);
     deps.saveConfig();
-    if (out.removed) market.log('info', 'p2p', `peer ${ep} removed by the operator and blocked from re-discovery (\`ainize peers add ${ep}\` re-admits it)`, null, { endpoint: ep });
+    if (out.removed) market.log('info', 'p2p', out.blocked
+      ? `peer ${ep} removed by the operator and blocked from re-discovery (\`ainize peers add ${ep}\` re-admits it)`
+      : `peer ${ep} removed by the operator (not blocked: gossip may learn it again)`, null, { endpoint: ep, blocked: out.blocked });
     return { ok: true, ...out };
   }));
   router.post('/api/chain/setup', requireOperator, wrap(async () => {
@@ -1762,7 +1804,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (!endpoint || !info?.address || sameAddr(info.address, market.address)) return market.selfInfo();
     const signer = verifyAuthHeader(req.header('x-ngram-auth'), `hello:${endpoint}`);
     if (signer && sameAddr(signer, info.address)) {
-      market.store.upsertPeer(endpoint, { address: info.address, info: info as never, last_seen: Date.now(), failures: 0 });
+      market.store.upsertPeer(endpoint, { address: info.address, info: info as never, last_seen: Date.now(), failures: 0, last_error: null });
     } else {
       market.store.upsertPeer(endpoint);
       market.log('debug', 'p2p', `unsigned hello from ${endpoint} claiming ${info.address.slice(0, 10)}…${(info as { roles?: string[] }).roles?.length ? ` and the roles ${(info as { roles?: string[] }).roles!.join(', ')}` : ''} — endpoint remembered, claim not recorded (it must sign hello:<endpoint>)`, null, { endpoint, claimed: info.address });
