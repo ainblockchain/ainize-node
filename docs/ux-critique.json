@@ -272,7 +272,10 @@
      "evidence": "critic-chat-429.png, live-test-06-quota-429-1280-en.png; counted three occurrences in innerText plus the placeholder attribute.",
      "user_cost": "This is the highest-intent moment on the site - the visitor liked it enough to spend twenty tries - and the product answers with four copies of a dead-end sentence, which also reads as an error rather than an invitation.",
      "fix": "Say it once, in the Alert, with the knowledge name as a link and a \"Buy - 25 AIN\" button, plus the reset time (the window is anchored at first use in market.ts:653, so the node can return quota_reset_at). Reduce the placeholder and footer to \"No free tries left\".",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The offer is made once, in the composer footer beside the disabled box — the knowledge as a link, its price and the measured reset time from the node's `quota_reset` — while the placeholder and the footer say only \"No free tries left this hour\" and the turn bubble says only that this question was not sent; the page-level alert and the bubble's duplicate buy link are gone."
     },
     {
      "n": 58,
@@ -283,7 +286,10 @@
      "evidence": "Real call: content \"**픽셀플러스(087600)**  \\n- **상장시장\", finish_reason \"length\", reasoning 353 chars, quota 16 -> 15; probes after the turn: Retry buttons 0, checkbox still checked, textarea empty. live-test-26-real-thinking-long-1280-en.png, critic-chat-thinking.png.",
      "user_cost": "A free try is spent on a half-sentence, and the only route back is to retype the question. When the answer is empty the bubble says \"(empty answer)\" while 598 characters of usable reasoning sit collapsed behind \"Show thinking\".",
      "fix": "Raise max_tokens when thinking is true (api.ts:380); render a primary \"Ask again without thinking\" on truncated or empty thinking turns that resends the prompt with the box unchecked; and when content is empty but reasoning exists, auto-expand it under \"The model ran out of budget before answering\".",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "A thinking request now asks for 900 tokens instead of the node's 200 default (its ceiling is 1024), a truncated or empty thinking turn offers \"Ask again without thinking\" which resends that exact question in place of the spoiled turn and unticks the box, and the reasoning is opened by default when there is no answer to read."
     },
     {
      "n": 59,
@@ -305,7 +311,10 @@
      "evidence": "Typed 종목코드 한화머시 (9 chars, a truncation of the sample 종목코드 한화머시너리앤서비스홀딩스 , expected 0220W0): both bubbles showed \"✗ Wrong\". live-test-19-false-autoscore-1280-en.png.",
      "user_cost": "The user asks about one thing and is told in a red badge that the model got it wrong, measured against another company’s ticker - and since the expected value is never rendered, the mismatch is undetectable.",
      "fix": "Drop the x.prompt.trim().includes(p) direction in components/chat/util.ts and keep only p.includes(x.prompt.trim()) (the user typed the sample plus extra words). Mirror the change in the node’s matchBenchmarkSample so client and server keep agreeing.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "df448e7",
+     "fixed_note": "matchSample keeps only `p.includes(sample)` — a truncation of a sample is no longer scored against it — and because the node still matches both directions, TurnView shows a check or cross only where this browser matched the sample itself and can print the expected value under it."
     },
     {
      "n": 61,
@@ -316,7 +325,10 @@
      "evidence": "Pasted 4,500 characters into an empty conversation: 400, that message, the full prompt dumped into the transcript, an empty composer and a Retry that will fail identically. live-test-31-long-prompt-1280-en.png, live-test-32-too-long-error-1280-en.png.",
      "user_cost": "The user loses their text and is given a fix that cannot help, on the one action the page exists for.",
      "fix": "Add maxLength={4000} and a counter that appears past ~3,500; restore the prompt into the box on any send failure; and change chat.err.too_long to name the real cause: \"That question is longer than 4,000 characters. Shorten it and send again.\"",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "maxLength 4,000 (the node's own per-message limit) with a counter from 3,500, the question restored into an empty box on any failed send, and chat.err.too_long rewritten to name the real cause instead of telling the visitor to clear the conversation."
     },
     {
      "n": 62,
@@ -327,7 +339,10 @@
      "evidence": "critic-chat-3selected.png, live-test-13-three-selected-1280-en.png.",
      "user_cost": "The user who just ticked a third box loses sight of what they ticked, and the text is so repetitive it gets skipped - so the one real message (\"these overlap, the last one wins\") is not read.",
      "fix": "Collapse to one Alert using the order badges already on the cards: \"① ② ③ overlap on 241,992 memory entries - ③ wins where they collide\", with one line per pair inside it and the full names in title.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "06b21c0",
+     "fixed_note": "One alert with one line per overlapping pair, each naming the knowledge by the number already on its card (\"#1 and #2: 241,992 shared memory entries — #2 loads later and wins\"), full names in the row's title; three stacked 171 px alerts became one block of three lines."
     },
     {
      "n": 63,
@@ -338,7 +353,10 @@
      "evidence": "critic-chat-3selected.png, live-test-13-three-selected-1280-en.png.",
      "user_cost": "The head’s only quantitative claim is three times the truth and contradicts the alert next to it, teaching the wrong mental model - that stacking versions multiplies coverage.",
      "fix": "When any pair in the selection appears in overlaps, do not sum: show \"3 knowledges loaded together · up to 2,761 facts each\", or drop the count and show per-item facts in the numbered HeadList already rendered below.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "When any two of the selection overlap the fact counts are not summed: the head reads \"up to 2,761 facts each (they overlap, so the counts do not add up)\" instead of \"8,283 facts\"."
     },
     {
      "n": 64,
@@ -349,7 +367,10 @@
      "evidence": "live-test-08-truncated-repetition-1280-en.png: \"✓ Correct / 087600 / The model started repeating itself ... outside what this knowledge covers. / showing 6 of 840 characters\".",
      "user_cost": "The two strongest signals in the bubble say opposite things and the amber one looks like an error, so the visitor cannot tell whether the knowledge worked.",
      "fix": "Branch the sentence on the verdict in TurnView: when the hit is true print only the mechanical half (\"The model repeated itself after this answer, so the rest was cut\"), keeping the out-of-scope hypothesis for false or null hits.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "d89c1de",
+     "fixed_note": "The repetition note branches on the verdict: an answer the same bubble marked correct gets only the mechanical half (\"The model repeated itself after this answer, so the rest was cut\"), and the out-of-scope hypothesis stays for false or unscored turns."
     },
     {
      "n": 65,
@@ -360,7 +381,10 @@
      "evidence": "Live API data: lock {owner:\"pid:1355814\", label:\"teach:e012b848-...:preflight\"}; rendered as \"Another test in progress (teach:2e85bd42-9b99-4c16-9d8a-a97116dd1d07:check, node process 1355814) - started 8s ago\". guard-lock-teach.png, critic-teach-arrival.png.",
      "user_cost": "A public page looks like a debug console, discloses a live job id and the server process id, and blames a stranger for a wait the visitor’s own lesson is causing.",
      "fix": "Map the label to a human kind before display (chat:* -> \"a live test\", teach:* -> \"a lesson being trained\"), drop the pid from the visitor-facing string, and when the teach label matches the lesson shown on this page say \"Checking your lesson on the shared model\".",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "06b21c0",
+     "fixed_note": "The banner maps the lock label to the kind of job holding the model (a live test / a lesson being trained / a knowledge being verified / the operator loading knowledge) and prints no lock key and no pid; a `teach:<job>:…` lock on the lesson this page is showing says \"Your lesson is being checked on the shared model\"."
     },
     {
      "n": 66,
@@ -371,7 +395,10 @@
      "evidence": "guard-livetest-1280.png probe; footer showed \"Free trial 15/20 left this hour\" at the time.",
      "user_cost": "The transcript is the product of a capped twenty-tries-per-hour budget and, in compare mode, the only artefact of the evaluation. One misclick beside Send erases it and the tries cannot be bought back for an hour.",
      "fix": "Two-step the button (first click changes the label to \"Clear - are you sure?\" for four seconds) or clear immediately and offer an Undo in the footer for ten seconds, restoring from the retained array.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "d89c1de",
+     "fixed_note": "Clear conversation is two-step: the first click arms it as \"Clear — are you sure?\" for four seconds, the second clears."
     },
     {
      "n": 67,
@@ -382,7 +409,10 @@
      "evidence": "Probe output; live-test entry screenshots browse-buy-livetest-entry.png, critic-chat-history.png.",
      "user_cost": "The user runs a convincing comparison, clicks Details to check the price, comes back, and the evidence that persuaded them is gone - so the buy funnel breaks at its narrowest point and reproducing it costs more of a capped budget.",
      "fix": "Persist transcripts to sessionStorage keyed by selection (the record is already serialisable) and restore on mount. Cheap interim: give the Details link target=\"_blank\" rel=\"noopener\".",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The transcript is kept in sessionStorage (pending turns excluded, last 12 kept) and restored on mount, so Details → and Back come back to the answers the free tries paid for."
     }
    ]
   },
@@ -1110,7 +1140,10 @@
      "evidence": "critic-chat-runtimeoff.png, live-test-05-runtime-off-1280-en.png.",
      "user_cost": "The page reads as half-broken rather than temporarily unavailable: the visitor toggles Compare and gets crisp feedback, then finds nothing else responds, while the biggest text on screen tells them to do something impossible.",
      "fix": "Pass locked (not busy) to the mode buttons and the thinking checkbox, and give the empty state a runtime-off variant reusing chat.runtime.off and chat.runtime.off_detail so the outage is stated where the user is looking.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The mode buttons and the thinking checkbox take `locked` like every other control, and with the runtime down the empty state states the outage (chat.runtime.off + off_detail) instead of telling the visitor to click a greyed-out sample."
     },
     {
      "n": 79,
@@ -1187,7 +1220,10 @@
      "evidence": "guard-livetest-1280.png, live-test-01b-fold-1280-en.png; the unused key chat.samples.from exists at i18n/pages/chat.ts:37 and is referenced nowhere.",
      "user_cost": "An English-speaking first-timer sees a 50-character title, \"2,761 facts\", \"100% accuracy\" and eight buttons of Korean they cannot read - so the comparison they are about to run cannot be interpreted.",
      "fix": "Render anchor.description as a clamped one-line subtitle in the panel head, and use the unused chat.samples.from slot for an English gloss above the chips: \"These ask for a Korean stock ticker code - the answer is a 6-character code such as 087600.\"",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The knowledge's description is a clamped line under the panel head, the sample chips carry a gloss saying whose benchmark questions they are and what shape the answer takes, and with several loaded each chip names the knowledge that published it through the previously unused chat.samples.from."
     },
     {
      "n": 88,
@@ -1198,7 +1234,10 @@
      "evidence": "guard-card-1280.png, teach-chat-31-your-knowledge.png, guard-ds-ko.png.",
      "user_cost": "\"(s)\" and \"(으)로\" are the visual signature of an unfinished product, and they appear on the card the user stares at during a training wait and on the screen where they decide whether to trust a permanent record.",
      "fix": "Add teach.card.facts_one and units.facts_one and pass the count to t(); for Korean, branch the particle on the final jamo of the filename (or reword to \"저장했습니다: {filename}\").",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "06b21c0",
+     "fixed_note": "The chat half: units.facts_one exists and every call site passes a count (\"1 fact\", not \"1 facts\"), chat.picker.asked lost its \"visitor(s)\", and nine Korean chat strings that interpolated a name in front of 이(가)/을(를)/과(와)/(으)로 were reworded so the particle sits on a fixed noun. The teach half (teach.card.facts, the dataset filename particle) belongs to the live lineage workstream and is untouched."
     },
     {
      "n": 89,
@@ -1348,7 +1387,10 @@
      "evidence": "Probes above; guard-livetest-1280.png.",
      "user_cost": "A screen-reader user pressing Enter hears the entire panel re-read instead of the new answer, and a keyboard user has to tab through the whole nav and picker to get back to the composer after every question.",
      "fix": "Move aria-live onto the Transcript only with aria-atomic=\"false\", and call the textarea ref focus() at the end of submit().",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "aria-live moved from the whole panel onto the transcript with aria-atomic=\"false\", and the composer takes focus back the moment the request that disabled the box finishes."
     },
     {
      "n": 83,
@@ -1359,7 +1401,10 @@
      "evidence": "Keyboard probe above.",
      "user_cost": "The standard way to operate a radiogroup does nothing, and keyboard users pay three tab stops for one control.",
      "fix": "Add an onKeyDown on the Seg that moves the selection with ArrowLeft/ArrowRight and give non-selected options tabIndex={-1} (roving tabindex).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "d89c1de",
+     "fixed_note": "The View radiogroup handles ArrowLeft/Right/Up/Down, Home and End, and a roving tabIndex makes the three options one tab stop."
     }
    ]
   },

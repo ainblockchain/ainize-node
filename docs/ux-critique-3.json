@@ -827,7 +827,9 @@
      "user_cost": "The owner's second loop — 'use several knowledges together' — ends at a browser tab. A visitor who found a good combination cannot send it to a colleague except as a raw URL; a buyer cannot re-load yesterday's set after a restart or tell a second node 'the same three, in this order'; to compare three you must land on one, then find the other two in a sidebar without search.",
      "fix": "Smallest useful step: a 'Copy link to this set' button in the multi head, and keep the last selection in `localStorage['ainize.chat.stack']` so card/page buttons become 'Add to live test (2 selected)' navigating to `selectionPath([...stack, id].slice(-3))`; add a filter box to the picker when items > 8. Then `ainize patch stack` / `GET /api/runtime/stack` (item 216) and a console 'Loaded set' card with order badges, total paid, and 'Save as track' prefilled with these ids in this order.",
      "effort": "M",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "status": "partial",
+     "shipped": "The web half of the smallest useful step shipped in fbbb2f5 and 06b21c0: a \"Copy link to this set\" button in the multi head that reproduces the selection in its order, and a filter box in the picker once the list is longer than eight items (a node with 136 testable knowledges had no way to find one). Still open: the localStorage stack that would turn card and knowledge-page buttons into \"Add to live test (2 selected)\" (those files belong to the landing/browse and knowledge-page workstreams), `ainize patch stack` / GET /api/runtime/stack (item 216, node+CLI), and a console \"Loaded set\" card."
     },
     {
      "n": 219,
@@ -897,7 +899,11 @@
      "user_cost": "The person stacking two or three knowledges is doing it to find out what each adds; the compare cannot tell them. They read two ticks as two independent confirmations, and a ✓/✗ pair as a bug.",
      "fix": "Caption the hit row 'one answer, checked against each knowledge's expected value' and show both expected values when they differ. Add an opt-in 'Each alone' view for 2-3 selections that runs N+1 patched generations under the same lock (cost N tries, stated up front) and renders columns 'A only / B only / A+B'.",
      "effort": "M",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "d89c1de",
+     "fixed_note": "The hit row is captioned \"One answer, checked against each knowledge's own expected value\", names each knowledge rather than its id, and prints the per-knowledge expected values whenever they differ — so two ticks no longer read as two confirmations and a correct beside a wrong no longer reads as a bug. The suggested opt-in \"Each alone\" view was deliberately not built: it spends one free try per knowledge per question and needs a node-side multi-generation lock, and the misreading this finding reports is closed by the caption.",
+     "status": "fixed"
     },
     {
      "n": 224,
@@ -911,7 +917,11 @@
      "user_cost": "The one control that decides which knowledge wins on 241,992 shared entries is not a control; a visitor who wants the other winner must destroy their transcript, re-spend free tries, and mentally sort badges to know what loads first.",
      "fix": "Give the order badge ▲/▼ buttons (and Alt+↑/↓) calling a new `reorder(id, dir)` writing `selectionPath(next)`; key transcripts and baskets by the sorted id set and record the order per turn (Turn already carries patchIds), showing a divider 'order changed: 1 … 2 … 3 …' instead of an empty state; render ticked items first in load order (stable sort by `selectedIds.indexOf`) with a thin divider before the unticked ones.",
      "effort": "M",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "Every ticked card carries up/down buttons (and Alt+arrow keys) writing the new order into the address without unticking anything, and ticked cards are listed first in load order under \"Loaded, in this order\", so the picker column, the head list and the badges finally agree. The transcript survives the change (it is no longer keyed by the selection) and the stack mark says where the order changed.",
+     "status": "fixed"
     },
     {
      "n": 225,
@@ -925,7 +935,11 @@
      "user_cost": "On any node that keeps knowledge loaded (every subscriber node), the overlap warning is missing exactly where it matters most, and 'Loads 1.' on something already loaded reads as a contradiction.",
      "fix": "Include pinned ids as position 0 items in the overlap computation (label 'already on this model') and cap ticks at `3 - applied.length` with the reason shown; for a pinned+ticked card replace 'Loads n.' with 'Already in the model — unloaded for the Before column, put back after'.",
      "effort": "S",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "06b21c0",
+     "fixed_note": "Pinned ids are position 0 in the overlap computation, so an overlap between what the visitor ticks and what the operator keeps loaded is shown with the pinned side named; the count row says how many more this node keeps loaded; the contamination banner names only the pinned knowledge that is NOT ticked; and a pinned card that IS ticked says \"Already in the model — unloaded for the Before loading answer, then put back\" instead of \"Loads 1.\". The tick cap stays 3 (the node's own patch_ids limit) rather than 3 minus the pinned count, which on a node with three pinned would leave a visitor unable to test anything.",
+     "status": "fixed"
     },
     {
      "n": 226,
@@ -953,7 +967,11 @@
      "user_cost": "At 360 px the user sees a dimmed card that does nothing when tapped, with the explanation unreachable.",
      "fix": "When `full`, render the max string visibly under the count row and inside each disabled card's ChipRow; keep the title.",
      "effort": "S",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "06b21c0",
+     "fixed_note": "\"Up to 3 — untick one first.\" is rendered under the count row and inside every card that cannot be ticked, not only in a hover title.",
+     "status": "fixed"
     },
     {
      "n": 228,
@@ -967,7 +985,11 @@
      "user_cost": "The visitor who liked the combination adds 25 + 0.1 + 10 by hand, then buys three times on their own node — and may pay for an epoch the newer item already replaces.",
      "fix": "Add to the multi head `To own all three: 35.1 AIN` (skipping items already owned) with a copyable `ainize use a b c` command; flag superseded members inline ('replaced by {id} — you may not need it').",
      "effort": "S",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The multi head says what owning the set costs (\"To own all 3: 35.1 AIN\", summed per currency because AIN and node credit cannot be added), and any member a newer version supersedes carries a \"replaced by {id}\" chip in the head list and in the single-knowledge head.",
+     "status": "fixed"
     },
     {
      "n": 229,
@@ -981,7 +1003,11 @@
      "user_cost": "A visitor spends a free try and stares at a spinner for five minutes with a message that says seconds; nothing says the wait grows with what they ticked.",
      "fix": "Estimate from the anchors and measured `applied_ms` history: 'loading {n} knowledges ({size} MB) — usually {est} s'.",
      "effort": "S",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "fbbb2f5",
+     "fixed_note": "The pending line says how many knowledges and how many MB are being loaded, and adds \"the same set took Ns last time\" only when this session has actually timed that stack — no invented estimate is printed.",
+     "status": "fixed"
     },
     {
      "n": 230,
