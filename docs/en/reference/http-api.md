@@ -9,7 +9,7 @@ summary: Every endpoint an Ainize node serves, with parameters, bodies and respo
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src/openapi.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-121 operations on 105 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
+127 operations on 111 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
 
 ## How to read this page
 
@@ -59,6 +59,7 @@ See [Error codes](./errors.md) for the full list.
 |---|---|---|---|
 | `POST` | [`/api/chat/feedback`](#post-apichatfeedback) | none | Mark an answer wrong — with or without sharing the question |
 | `GET` | [`/api/chat/patches`](#get-apichatpatches) | teaching key (optional) | Knowledge that can be live-tested on this node |
+| `POST` | [`/api/chat/patches/{id}/request`](#post-apichatpatchesidrequest) | none | Ask this node’s operator to get a knowledge it does not hold |
 | `GET` | [`/api/chat/status`](#get-apichatstatus) | none | Is my live test still queued behind the shared model? |
 | `POST` | [`/api/chat/cancel`](#post-apichatcancel) | none | Give up waiting for the shared model |
 | `POST` | [`/api/chat`](#post-apichat) | none | Compare answers before vs after the knowledge is loaded |
@@ -116,6 +117,7 @@ See [Error codes](./errors.md) for the full list.
 | `DELETE` | [`/api/patches/{id}`](#delete-apipatchesid) | operator | Delete a DRAFT |
 | `POST` | [`/api/patches`](#post-apipatches) | operator | Register knowledge (created as a DRAFT) |
 | `POST` | [`/api/patches/{id}/announce`](#post-apipatchesidannounce) | operator | Announce — record on the ledger and request verification |
+| `POST` | [`/api/patches/{id}/retire`](#post-apipatchesidretire) | operator | Retire — take your own published knowledge off sale for good |
 | `POST` | [`/api/patches/{id}/verify`](#post-apipatchesidverify) | operator | Run verification on this node now (verifier role) |
 | `POST` | [`/api/patches/{id}/challenge`](#post-apipatchesidchallenge) | operator | Request re-verification (challenge) |
 
@@ -158,9 +160,11 @@ See [Error codes](./errors.md) for the full list.
 | `DELETE` | [`/api/patches/{id}/apply`](#delete-apipatchesidapply) | operator | Unload from the model (journal replay) |
 | `POST` | [`/api/patches/{id}/remove`](#post-apipatchesidremove) | operator | Unload from the model (same as DELETE …/apply) |
 | `GET` | [`/api/patches/{id}/check`](#get-apipatchesidcheck) | operator | Are the rows this knowledge was trained on the ones on the table right now? |
-| `POST` | [`/api/patches/{id}/forget`](#post-apipatchesidforget) | operator | Stop serving the knowledge file from this node (deletes the local body; the ledger is untouched). 409 with `also_affects` when other items share the same file — repeat with `{"all_sharing": true}` to stop serving all of them |
+| `POST` | [`/api/patches/{id}/forget`](#post-apipatchesidforget) | operator | Delete this node's copy of the knowledge file. NOT a takedown — the listing stays and the gateway keeps charging; POST /api/patches/{id}/retire is the takedown. 409 with `also_affects` when other items share the same file — repeat with `{"all_sharing": true}` to stop serving all of them |
 | `POST` | [`/api/branches`](#post-apibranches) | operator | Create a branch |
-| `POST` | [`/api/branches/{name}/subscribe`](#post-apibranchesnamesubscribe) | operator | Subscribe to a branch (load its knowledge and keep it loaded) |
+| `POST` | [`/api/branches/{name}/subscribe`](#post-apibranchesnamesubscribe) | operator | Subscribe to a track: buy its current knowledge, load it, and keep it up to date |
+| `POST` | [`/api/branches/{name}/quote`](#post-apibranchesnamequote) | operator | What subscribing to a track would spend, item by item, before anything is spent |
+| `POST` | [`/api/branches/{name}/sync`](#post-apibranchesnamesync) | operator | Bring a subscribed track up to date now |
 | `POST` | [`/api/auth/login`](#post-apiauthlogin) | none | Operator login (first time: /api/auth/setup) |
 | `GET` | [`/api/me/wallet`](#get-apimewallet) | operator | Wallet: balance, sales, creator revenue share, pending payouts |
 | `GET` | [`/api/me/payouts`](#get-apimepayouts) | operator | Royalty payouts this node owes creators and data providers (AIN ledger) |
@@ -179,6 +183,7 @@ See [Error codes](./errors.md) for the full list.
 | `POST` | [`/api/branches/{name}/unsubscribe`](#post-apibranchesnameunsubscribe) | operator | Unsubscribe from a branch (unload its knowledge) |
 | `GET` | [`/api/runtime`](#get-apiruntime) | none | Serving runtime state (model, hook, the ordered stack of loaded knowledge) |
 | `GET` | [`/api/runtime/stack`](#get-apiruntimestack) | none | The ordered stack loaded in the serving model |
+| `GET` | [`/api/runtime/jobs/{id}`](#get-apiruntimejobsid) | operator | A queued apply/remove |
 | `POST` | [`/api/runtime/complete`](#post-apiruntimecomplete) | operator | Raw completion on the serving model (try the model) |
 | `POST` | [`/api/peers`](#post-apipeers) | operator | Add a peer |
 | `DELETE` | [`/api/peers`](#delete-apipeers) | operator | Remove a peer |
@@ -189,7 +194,8 @@ See [Error codes](./errors.md) for the full list.
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
-| `POST` | [`/p2p/hello`](#post-p2phello) | none | Peer introduction (exchange PeerInfo) |
+| `POST` | [`/p2p/hello`](#post-p2phello) | teaching key (optional) | Peer introduction (exchange PeerInfo) |
+| `GET` | [`/p2p/payouts/{hash}`](#get-p2ppayoutshash) | none | What this node did about one settlement's royalties |
 | `GET` | [`/p2p/peers`](#get-p2ppeers) | none | Peer list for peer exchange |
 | `GET` | [`/p2p/blobs`](#get-p2pblobs) | none | Knowledge bodies held by this node (sha256 list) |
 | `GET` | [`/p2p/info`](#get-p2pinfo) | none | Node info |
@@ -585,7 +591,7 @@ Lineage design SC-13. `share: false` (the default) counts the question and store
 
 Knowledge that can be live-tested on this node
 
-List + runtime state + shared-model lock + `applied` (operator-pinned ids) + pairwise `overlaps`. With a verified `x-ngram-auth` (v2: `<address>:<ts>:<sig>:v2`, sig over `teach:<node>:GET:/api/chat/patches:<ts>`; legacy `teach:<ts>` still accepted) the response also carries the caller’s private `lessons`.
+`items` are the ones that can be loaded right now (body held AND licensed). `elsewhere` is everything else this node’s model could run — not held, or held only because this node verified it — each with its price, its seller and why it cannot be tested, so a knowledge you want to build on is visible instead of absent. Plus runtime state, the shared-model lock, `applied` (what this node keeps loaded), `dirty` (bodies a live test found on the shared model that this node never loaded) and pairwise `overlaps`. With a verified `x-ngram-auth` (v2: `<address>:<ts>:<sig>:v2`, sig over `teach:<node>:GET:/api/chat/patches:<ts>`; legacy `teach:<ts>` still accepted) the response also carries the caller’s private `lessons`.
 
 **Auth** — teaching key (optional)
 
@@ -600,6 +606,27 @@ List + runtime state + shared-model lock + `applied` (operator-pinned ids) + pai
 | Code | Description | Body |
 |---|---|---|
 | `200` | list + runtime state + shared-model lock | [`ChatPatches`](./schemas.md#chatpatches) |
+
+### `POST /api/chat/patches/{id}/request`
+
+Ask this node’s operator to get a knowledge it does not hold
+
+Buying is operator-only, so this is a visitor’s first step: it writes one `demand` event with the price and the command that satisfies it, and answers how many different people have asked. Asking twice from the same visitor does not count twice.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | {patch_id, requests} | `object` |
+| `409` | this node already holds it |   |
 
 ### `GET /api/chat/status`
 
@@ -1793,6 +1820,8 @@ Register knowledge (created as a DRAFT)
 
 Announce — record on the ledger and request verification
 
+Answers `{record, verifiers:{known,reachable,verifiers,quorum,self_attest}, visibility}`: with fewer reachable verifier peers than the quorum, nothing announced here can ever be LISTED. 409 `lesson_draft` for a visitor-taught draft — those are published from the lesson page, where the teacher signs the claim.
+
 **Auth** — operator
 
 **Parameters**
@@ -1805,7 +1834,27 @@ Announce — record on the ledger and request verification
 
 | Code | Description | Body |
 |---|---|---|
-| `200` | ledger record | `object` |
+| `200` | ledger record + verifier reach | `object` |
+
+### `POST /api/patches/{id}/retire`
+
+Retire — take your own published knowledge off sale for good
+
+Appends an author-signed `retire` record. The anchor stays on the permanent record; the entry leaves `/api/catalog` (unless `?status=RETIRED`), `/x402/patch/{id}` answers 410 Gone, and everyone who already bought it keeps their download rights. Body: `{reason?}`. Only the author may retire, and only a non-draft.
+
+**Auth** — operator
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | patch_id, retired_at, reason | `object` |
 
 ### `POST /api/patches/{id}/verify`
 
@@ -2411,7 +2460,7 @@ Reads every row of the body through the patch hook and compares it to `before` b
 
 ### `POST /api/patches/{id}/forget`
 
-Stop serving the knowledge file from this node (deletes the local body; the ledger is untouched). 409 with `also_affects` when other items share the same file — repeat with `{"all_sharing": true}` to stop serving all of them
+Delete this node's copy of the knowledge file. NOT a takedown — the listing stays and the gateway keeps charging; POST /api/patches/{id}/retire is the takedown. 409 with `also_affects` when other items share the same file — repeat with `{"all_sharing": true}` to stop serving all of them
 
 **Auth** — operator
 
@@ -2450,7 +2499,9 @@ Create a branch
 
 ### `POST /api/branches/{name}/subscribe`
 
-Subscribe to a branch (load its knowledge and keep it loaded)
+Subscribe to a track: buy its current knowledge, load it, and keep it up to date
+
+Buys every current item FIRST and appends the public subscription record only when all of them are in hand — a partial acquisition is 409 `subscription_incomplete` with `{acquired, failed[]}` and nothing is broadcast, so this node is never advertised as serving a track it holds a third of. Versions the track has retired (superseded by another member) and bakes that are not LISTED are skipped, never bought. Quote it first with POST /api/branches/{name}/quote. Once subscribed, the node buys and loads what the track adds and unloads what it retires (every 20 s, or on demand with POST /api/branches/{name}/sync).
 
 **Auth** — operator
 
@@ -2464,7 +2515,48 @@ Subscribe to a branch (load its knowledge and keep it loaded)
 
 | Code | Description | Body |
 |---|---|---|
-| `200` | ok | `object` |
+| `200` | what was bought, loaded and skipped | `object` |
+| `409` | subscription_incomplete — nothing was subscribed to; `acquired` was still bought |   |
+
+### `POST /api/branches/{name}/quote`
+
+What subscribing to a track would spend, item by item, before anything is spent
+
+Every id on the track with what this node would do with it (`buy` / `held` / `own` / `retired` / `blocked` / `wrong_model` / `unknown`), the price, the total per currency and this node’s balance.
+
+**Auth** — operator
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `name` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | quote | `object` |
+
+### `POST /api/branches/{name}/sync`
+
+Bring a subscribed track up to date now
+
+Buys and loads what the track has added since, unloads the versions it has retired, in one runtime lock. The 20-second tick does the same thing for every subscribed track.
+
+**Auth** — operator
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `name` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | what changed | `object` |
 
 ### `POST /api/auth/login`
 
@@ -2772,6 +2864,26 @@ Same `stack` as GET /api/runtime, on its own. Bottom first: a knowledge is alway
 |---|---|---|
 | `200` | stack + journal_dir | `object` |
 
+### `GET /api/runtime/jobs/{id}`
+
+A queued apply/remove
+
+POST /api/patches/{id}/apply|remove with `{"async": true}` answers 202 `{job}` instead of holding the connection open behind the shared model lock; this is where the job’s state (`queued` → `running` → `done`/`failed`), its result and what the model is doing meanwhile are read. Jobs live in memory: a node restart forgets them.
+
+**Auth** — operator
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | job | `object` |
+
 ### `POST /api/runtime/complete`
 
 Raw completion on the serving model (try the model)
@@ -2868,13 +2980,41 @@ node-to-node protocol
 
 Peer introduction (exchange PeerInfo)
 
-**Auth** — none
+The body is a claim. Sign `hello:<your endpoint>` in `x-ngram-auth` (`<address>:<ts>:<sig>`, 5-minute window) or the address and roles in it are not recorded — an unsigned hello only makes the endpoint known (item 326).
+
+**Auth** — teaching key (optional)
+
+**Parameters**
+
+| Name | In | Type | Description |
+|---|---|---|---|
+| `x-ngram-auth` | `header` | `string` | signature over `hello:<endpoint>` by the address the body claims |
 
 **Responses**
 
 | Code | Description | Body |
 |---|---|---|
 | `200` | PeerInfo | `object` |
+
+### `GET /p2p/payouts/{hash}`
+
+What this node did about one settlement's royalties
+
+The seller's own payout rows for one settle record — status, attempts and tx hash — so an ancestor can tell a promise from a payment (item 311).
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `hash` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | payout rows for that settlement | `object` |
 
 ### `GET /p2p/peers`
 

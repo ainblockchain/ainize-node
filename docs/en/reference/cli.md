@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 25 top-level commands, 73 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 28 top-level commands, 81 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -43,14 +43,17 @@ These are accepted by every command.
 | [`ainize logs`](#ainize-logs) | Show node events |
 | [`ainize seed`](#ainize-seed) | Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic branches) |
 | [`ainize nodes`](#ainize-nodes) | List known nodes and configured peers |
+| [`ainize blobs`](#ainize-blobs) | Knowledge files this node holds on disk, and what they cost |
+| [`ainize gc`](#ainize-gc) | Delete knowledge files this node neither published nor bought (verification copies) |
 | [`ainize login`](#ainize-login) | Log in as the node operator (sets the password on first use) |
+| [`ainize password`](#ainize-password) | Change the operator password (--reset rewrites it in config.json when you have forgotten it) |
 | [`ainize logout`](#ainize-logout) | Forget the operator session |
 | [`ainize peers`](#ainize-peers) | Manage peers |
 | [`ainize patch`](#ainize-patch) | Publish, inspect, verify, buy and apply knowledge patches |
 | [`ainize publish`](#ainize-publish) | One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale) |
 | [`ainize teach`](#ainize-teach) | Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (\<node>/chat?teach=1) |
 | [`ainize dataset`](#ainize-dataset) | Training sets: the questions a published knowledge was taught from (lineage design §13) |
-| [`ainize use`](#ainize-use) | One line to use knowledge: check it is verified → pay automatically → download → load into your model |
+| [`ainize use`](#ainize-use) | One line to use knowledge: check it is verified → quote the price → pay → download → load into your model |
 | [`ainize chat`](#ainize-chat) | Live-test a knowledge patch: the model's answer before vs after the patch is loaded (correct-answer check) |
 | [`ainize ledger`](#ainize-ledger) | Inspect the ledger |
 | [`ainize branch`](#ainize-branch) | Knowledge branches (parallel, possibly contradictory patch sets) |
@@ -81,6 +84,10 @@ Create a node identity and config in NGRAM_HOME
 - **`--runtime-api`** (`string`) — serving API (OpenAI-compatible) URL
 - **`--private-key`** (`string`) — import an existing AIN private key (hex)
 - **`--public-url`** (`string`) — URL peers can reach this node at
+- **`--host`** (`string`) — interface to bind (default 127.0.0.1 — this machine only)
+- **`--public`** (`boolean`, default `false`) — bind 0.0.0.0 (every interface) — only behind a firewall or proxy
+- **`--password`** (`string`) — operator password, set now so nobody else can claim this node (or NGRAM_PASSWORD)
+- **`--no-password`** (`boolean`, default `false`) — leave the node unclaimed; `ainize login` claims it later (loopback only)
 - **`--force`** (`boolean`, default `false`) — rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)
 - **`--new-identity`** (`boolean`, default `false`) — with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)
 
@@ -89,6 +96,8 @@ Create a node identity and config in NGRAM_HOME
 ```bash
 # local ledger node
 ainize init --name alice --port 3402
+# a node others can reach, claimed before it listens
+ainize init --name alice --password "…" --host 0.0.0.0
 # AIN blockchain ledger (see `ainize chain up`)
 ainize init --ledger ain --ain-provider http://localhost:8081
 ```
@@ -347,6 +356,53 @@ ainize nodes
 
 List known nodes and configured peers
 
+## `ainize blobs`
+
+```bash
+ainize blobs <subcommand>
+```
+
+Knowledge files this node holds on disk, and what they cost
+
+**Subcommands** — one of them is required
+
+- `ainize blobs ls` — List every knowledge file with its size and why it is held
+
+### `ainize blobs ls`
+
+```bash
+ainize blobs ls
+```
+
+List every knowledge file with its size and why it is held
+
+Also spelled `ainize blobs list`.
+
+## `ainize gc`
+
+```bash
+ainize gc [options]
+```
+
+Delete knowledge files this node neither published nor bought (verification copies)
+
+**Options**
+
+- **`--dry-run`** (`boolean`, default `false`) — list what would go and delete nothing
+- **`--keep-purchased`** (`boolean`, default `true`) — keep bodies bought through the market (--no-keep-purchased includes them)
+- **`--older-than`** (`string`) — only files fetched longer ago than this (30d, 12h, 90m)
+- **`--allow-sole-copy`** (`boolean`, default `false`) — also delete bodies no peer advertises (this node may be the last copy)
+- **`--yes`, `-y`** (`boolean`, default `false`) — do not ask for confirmation
+
+**Examples**
+
+```bash
+# what would be freed
+ainize gc --dry-run
+# verification copies older than a month
+ainize gc --older-than 30d
+```
+
 ## `ainize login`
 
 ```bash
@@ -358,6 +414,30 @@ Log in as the node operator (sets the password on first use)
 **Options**
 
 - **`--password`** (`string`) — or NGRAM_PASSWORD env
+- **`--setup-token`** (`string`) — claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)
+
+## `ainize password`
+
+```bash
+ainize password [options]
+```
+
+Change the operator password (--reset rewrites it in config.json when you have forgotten it)
+
+**Options**
+
+- **`--password`** (`string`) — the new password (or NGRAM_NEW_PASSWORD)
+- **`--current`** (`string`) — the current password (or NGRAM_PASSWORD)
+- **`--reset`** (`boolean`, default `false`) — forgotten password: write a new hash into config.json (the node must be stopped)
+
+**Examples**
+
+```bash
+# change it on the running node
+ainize password
+# the way back when it is forgotten
+ainize stop && ainize password --reset
+```
 
 ## `ainize logout`
 
@@ -428,9 +508,11 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch publish` — Register a .npz patch body as a draft (and optionally announce it)
 - `ainize patch import` — Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record
 - `ainize patch announce` — DRAFT → ANNOUNCED (anchor on the ledger)
+- `ainize patch retire` — Take your published knowledge off sale for good (the record stays; buyers keep their copy)
 - `ainize patch verify` — Run this node's verifier on a patch and publish an attestation
 - `ainize patch challenge` — Dispute a verification: takes the knowledge off sale until a verifier re-runs it
 - `ainize patch buy` — Buy a listed patch via HTTP 402 (x402) and download its body
+- `ainize patch download` — Collect a knowledge this node already paid for — no second payment
 - `ainize patch apply` — Apply a held patch to the serving runtime (no restart)
 - `ainize patch remove` — Unload it, putting back whatever was underneath
 - `ainize patch stack` — What is loaded in the serving model, bottom first
@@ -441,7 +523,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch conflicts` — Address-set overlaps with other patches
 - `ainize patch records` — Ledger records about a patch
 - `ainize patch rm` — Delete a draft
-- `ainize patch forget` — Stop serving the knowledge file from this node (deletes the local body; the public record stays)
+- `ainize patch forget` — Delete this node's copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that
 
 ### `ainize patch ls`
 
@@ -453,7 +535,7 @@ List patches in the catalog
 
 **Options**
 
-- **`--status`** (`string`) — comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED
+- **`--status`** (`string`) — comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)
 - **`--model`** (`string`)
 - **`--schema`** (`string`) — benchmark schema
 - **`--branch`** (`string`)
@@ -506,6 +588,8 @@ Register a .npz patch body as a draft (and optionally announce it)
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
 - **`--announce`** (`boolean`, default `false`) — announce to the network immediately
+- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this publish may retire (required when it would retire any)
+- **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 
 **Examples**
 
@@ -545,7 +629,7 @@ ainize patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json
 ### `ainize patch announce`
 
 ```bash
-ainize patch announce <id>
+ainize patch announce <id> [options]
 ```
 
 DRAFT → ANNOUNCED (anchor on the ledger)
@@ -553,6 +637,39 @@ DRAFT → ANNOUNCED (anchor on the ledger)
 **Arguments**
 
 - **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--supersede`** (`string[]`) — the listing(s) of yours this announce may retire — it refuses until every one of them is named
+
+**Examples**
+
+```bash
+# v2 goes off sale the moment v3 is verified
+ainize patch announce krx-codes-v3 --supersede krx-codes-v2
+```
+
+### `ainize patch retire`
+
+```bash
+ainize patch retire <id> [options]
+```
+
+Take your published knowledge off sale for good (the record stays; buyers keep their copy)
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--reason`** (`string`) — why, in one line — shown to anyone who asks for it afterwards
+
+**Examples**
+
+```bash
+ainize patch retire krx-codes-2026-08 --reason "the source feed changed; use krx-codes-2026-09"
+```
 
 ### `ainize patch verify`
 
@@ -597,6 +714,37 @@ Buy a listed patch via HTTP 402 (x402) and download its body
 **Options**
 
 - **`--apply`** (`boolean`, default `false`) — apply to the serving runtime after download
+- **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
+- **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
+- **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it, deepest first
+
+**Examples**
+
+```bash
+# quote the price, ask, then pay
+ainize patch buy krx-all-2761
+# unattended, with a budget for the whole family
+ainize patch buy krx-all-2761 --yes --max-price 30
+```
+
+### `ainize patch download`
+
+```bash
+ainize patch download <id>
+```
+
+Collect a knowledge this node already paid for — no second payment
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
+
+**Examples**
+
+```bash
+# after a lost manifest, a forgotten body or a purchase that died mid-payment
+ainize patch download krx-all-2761
+```
 
 ### `ainize patch apply`
 
@@ -768,7 +916,7 @@ Delete a draft
 ainize patch forget <id> [options]
 ```
 
-Stop serving the knowledge file from this node (deletes the local body; the public record stays)
+Delete this node's copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that
 
 **Arguments**
 
@@ -803,6 +951,8 @@ One line to sell knowledge: register a .npz + benchmark and announce it (the net
 - **`--topic`** (`string`)
 - **`--license`** (`string`)
 - **`--announce`** (`boolean`, default `true`) — announce immediately (--no-announce keeps a draft)
+- **`--supersede`** (`string[]`) — the listing(s) of yours this publish may retire (required when it would retire any)
+- **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
 - **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
 
@@ -828,6 +978,7 @@ Teach mode: turn your own questions and answers into knowledge. Two doors, one p
 - `ainize teach dataset` — The questions a lesson is trained from: upload a file, list, inspect, download, delete
 - `ainize teach train` — Teach a lesson from a dataset id or a dataset file
 - `ainize teach jobs` — My lessons on this node and the dataset each came from
+- `ainize teach publish` — Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)
 
 ### `ainize teach status`
 
@@ -1000,7 +1151,7 @@ Teach a lesson from a dataset id or a dataset file
 - **`--on`** (`string`) — the knowledge this lesson is trained ON TOP OF: its questions are kept as known answers, it is recorded as the base, and buyers need it too
 - **`--inherit`** (`boolean`) — --no-inherit checks against the base without keeping its questions as known answers
 - **`--yes-change`** (`boolean`, default `false`) — my answers are meant to replace the base's where they differ
-- **`--wait`** (`boolean`, default `false`) — follow it until it is ready (prints each stage)
+- **`--wait`** (`boolean`, default `false`) — follow it until it is ready (prints each stage). Exit code says what happened: 0 ready · 4 did not stick (NEEDS_MORE) · 5 failed/cancelled/expired · 6 declined by the operator · 7 still running when the wait ran out · 8 ready but never measured on the live model
 
 **Examples**
 
@@ -1028,6 +1179,42 @@ My lessons on this node and the dataset each came from
 - **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--dataset`** (`string`) — only lessons trained from this dataset
+
+### `ainize teach publish`
+
+```bash
+ainize teach publish <job-id> --name <value> [options]
+```
+
+Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)
+
+**Arguments**
+
+- **`<job-id>`** (`string`, required) — lesson id (`ainize teach jobs`)
+
+**Options**
+
+- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
+- **`--name`** (`string`, required) — what buyers see, 2-80 characters
+- **`--price`** (`string`) — price per download in this node's currency (default 0 = free)
+- **`--license`** (`string`) — licence for the knowledge (CC-BY-4.0, CC0-1.0, Proprietary, …)
+- **`--description`** (`string`) — one or two sentences about what it knows
+- **`--payout`** (`string`) — AIN address to be paid at, or `none` for credit without payment (default: this teaching key)
+- **`--access`** (`"public" | "derivative" | "private"`) — who may read the training set: anyone, only people who declare they build on this (default), nobody
+- **`--dataset-license`** (`string`) — licence for the questions themselves
+- **`--include-notes`** (`boolean`, default `false`) — include your per-row notes in the shared questions
+- **`--consent-permanent`** (`boolean`, default `false`) — I understand this becomes a permanent public record that cannot be edited or deleted
+- **`--consent-rights`** (`boolean`, default `false`) — I have the right to share this information, and it is not private or personal data
+
+**Examples**
+
+```bash
+# the last line of a nightly bake
+ainize teach publish 8f0c… --name "KRX codes" --price 2 --consent-permanent --consent-rights
+# train, then publish only if the lesson stuck (--wait exits non-zero otherwise)
+ainize teach train today.jsonl --wait && ainize teach publish <id> --name … --consent-permanent --consent-rights
+```
 
 ## `ainize dataset`
 
@@ -1078,7 +1265,7 @@ ainize dataset get krx-all-2761 -o questions.jsonl
 ainize use <id> [options]
 ```
 
-One line to use knowledge: check it is verified → pay automatically → download → load into your model
+One line to use knowledge: check it is verified → quote the price → pay → download → load into your model
 
 **Arguments**
 
@@ -1087,11 +1274,17 @@ One line to use knowledge: check it is verified → pay automatically → downlo
 **Options**
 
 - **`--apply`** (`boolean`, default `true`) — load into the serving model after download (--no-apply to only download)
+- **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
+- **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
+- **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it
 
 **Examples**
 
 ```bash
+# quote, ask, pay, download, load
 ainize use krx-all-2761
+# unattended, with a budget
+ainize use krx-all-2761 --yes --max-price 30
 ```
 
 ## `ainize chat`
@@ -1154,7 +1347,7 @@ List records
 
 **Options**
 
-- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe"`) — only this kind of record
+- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire"`) — only this kind of record
 - **`--limit`** (`number`, default `50`)
 
 ### `ainize ledger verify`
@@ -1197,9 +1390,11 @@ Knowledge branches (parallel, possibly contradictory patch sets)
 
 - `ainize branch ls` — List branches
 - `ainize branch create` — Create a branch
-- `ainize branch add` — Add a patch to a branch you own
-- `ainize branch subscribe` — Subscribe this node (acquire + apply the branch's patches)
-- `ainize branch unsubscribe` — Unsubscribe (restore rows)
+- `ainize branch add` — Add knowledge to a track you own (verified knowledge only)
+- `ainize branch quote` — What subscribing to this track would spend, item by item, before anything is spent
+- `ainize branch subscribe` — Subscribe this node: buy the track's current knowledge, load it, and keep it up to date
+- `ainize branch sync` — Bring a subscribed track up to date now (buy and load what it added, unload what it retired)
+- `ainize branch unsubscribe` — Unsubscribe (unload the track's knowledge; nothing is refunded)
 
 ### `ainize branch ls`
 
@@ -1236,23 +1431,61 @@ ainize branch create law/KR --context jurisdiction=KR --patch law-kr-2025
 ### `ainize branch add`
 
 ```bash
-ainize branch add <name> <patchId>
+ainize branch add <name> <patchId> [options]
 ```
 
-Add a patch to a branch you own
+Add knowledge to a track you own (verified knowledge only)
 
 **Arguments**
 
 - **`<name>`** (`string`, required)
 - **`<patchId>`** (`string`, required)
 
+**Options**
+
+- **`--force`** (`boolean`, default `false`) — add it even though it is not LISTED — every subscriber will buy and load it
+
+### `ainize branch quote`
+
+```bash
+ainize branch quote <name>
+```
+
+What subscribing to this track would spend, item by item, before anything is spent
+
+**Arguments**
+
+- **`<name>`** (`string`, required)
+
 ### `ainize branch subscribe`
 
 ```bash
-ainize branch subscribe <name>
+ainize branch subscribe <name> [options]
 ```
 
-Subscribe this node (acquire + apply the branch's patches)
+Subscribe this node: buy the track's current knowledge, load it, and keep it up to date
+
+**Arguments**
+
+- **`<name>`** (`string`, required)
+
+**Options**
+
+- **`--yes`** (`boolean`, default `false`) — answer the spend confirmation in advance
+
+**Examples**
+
+```bash
+ainize branch subscribe daily/krx --yes
+```
+
+### `ainize branch sync`
+
+```bash
+ainize branch sync <name>
+```
+
+Bring a subscribed track up to date now (buy and load what it added, unload what it retired)
 
 **Arguments**
 
@@ -1264,7 +1497,7 @@ Subscribe this node (acquire + apply the branch's patches)
 ainize branch unsubscribe <name>
 ```
 
-Unsubscribe (restore rows)
+Unsubscribe (unload the track's knowledge; nothing is refunded)
 
 **Arguments**
 

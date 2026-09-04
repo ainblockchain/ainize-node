@@ -167,7 +167,7 @@ A verifier disputing a listed knowledge. While the newest challenge is newer tha
 | Field | Type | Description |
 |---|---|---|
 | `anchor` | [`Anchor`](#anchor) |   |
-| `status` | `"DRAFT"` \| `"ANNOUNCED"` \| `"VERIFYING"` \| `"LISTED"` \| `"REJECTED"` \| `"CHALLENGED"` \| `"SUPERSEDED"` |   |
+| `status` | `"DRAFT"` \| `"ANNOUNCED"` \| `"VERIFYING"` \| `"LISTED"` \| `"REJECTED"` \| `"CHALLENGED"` \| `"SUPERSEDED"` \| `"RETIRED"` |   |
 | `attestations` | [`Attestation`](#attestation)[] |   |
 | `passed` | `integer` | passing verifications that executed the benchmark, by verifiers other than the author |
 | `integrity_checks` | `integer` |   |
@@ -332,6 +332,18 @@ Where one live test is in the queue behind the shared serving model.
 | `queue.running.since` | `integer` |   |
 | `queue.waiting` | `integer` |   |
 | `applied` | `string`[] | knowledge the operator keeps loaded for everyone — it is part of the "before" answer |
+| `dirty` | `string`[] | bodies a recent live test found on the shared model that this node never loaded (something else left them there); the next test unloads them for the "before" answer and does not put them back |
+| `elsewhere` | `object`[] | knowledge this node’s model could run but cannot load: `reason` is not_held \| not_licensed \| verify_only, with the price and the seller |
+| `elsewhere[].patch_id` | `string` |   |
+| `elsewhere[].name` | `string` |   |
+| `elsewhere[].author` | `string` |   |
+| `elsewhere[].price` | `string` |   |
+| `elsewhere[].currency` | `string` |   |
+| `elsewhere[].status` | `string` |   |
+| `elsewhere[].reason` | `string` |   |
+| `elsewhere[].buyable` | `boolean` |   |
+| `elsewhere[].requests` | `integer` |   |
+| `elsewhere[].gateway_url` | `string` \| `null` |   |
 | `overlaps` | `object`[] | pairs of testable knowledges that share memory entries |
 | `overlaps[].a` | `string` |   |
 | `overlaps[].b` | `string` |   |

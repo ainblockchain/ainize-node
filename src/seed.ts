@@ -75,7 +75,10 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
   const create = async (input: Parameters<Market['createDraft']>[0]) => {
     const id = (input.id ?? input.name).toLowerCase();
     if (existing.has(id)) { report.skipped.push(id); return id; }
-    const a = await market.createDraft(input);
+    // `force`: the demo seed deliberately registers knowledge this node cannot test — the synthetic patches name a
+    // model that exists nowhere (`demo-ngram-1b`), and the real Qwen files are seeded whatever the node is serving.
+    // The publish-time refusals (item 154's model check, item 240's duplicate body) are for a publisher's own hands.
+    const a = await market.createDraft({ ...input, force: true });
     if (announce) await market.announce(a.id);
     report.created.push(a.id);
     existing.add(a.id);

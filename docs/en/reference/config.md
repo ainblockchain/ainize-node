@@ -9,7 +9,7 @@ summary: Every key of a node config.json, its type, its default and the rules it
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/core/src/config-schema.ts` and `packages/core/src/config.ts` and `packages/core/src/types.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-All 105 keys a node config accepts, the environment variables that override them, and the file `ainize init` writes.
+All 109 keys a node config accepts, the environment variables that override them, and the file `ainize init` writes.
 
 ## How to read this page
 
@@ -27,7 +27,7 @@ Money is a decimal string everywhere in this product, never a JSON number: `"0.1
 | `name` | a string — must not be empty | `node-` + the first 6 hex of the node address |   |
 | `dataDir` | a string — must not be empty | `<NGRAM_HOME>/data` |   |
 | `port` | a number — must be a whole number; must be between 1 and 65535 | `3402` |   |
-| `host` | a string — must be an interface to bind: an IP address (0.0.0.0, 127.0.0.1, ::) or a hostname | `"0.0.0.0"` |   |
+| `host` | a string — must be an interface to bind: an IP address (0.0.0.0, 127.0.0.1, ::) or a hostname | `"127.0.0.1"` |   |
 | `publicUrl` | a string — must be an http(s) URL | unset |   |
 | `roles` | a comma list of 'seller', 'verifier', 'serving', 'gateway' | `["seller","verifier","serving"]` |   |
 | `peers` | a comma list | `[]` |   |
@@ -60,9 +60,13 @@ Money is a decimal string everywhere in this product, never a JSON number: `"0.1
 | `market.currency` | one of 'AIN', 'CREDIT' | `"CREDIT"`, or `"AIN"` with `ainize init --ledger ain` |   |
 | `market.defaultPrice` | a string — must be a decimal amount in quotes, e.g. "0.1" | `"0.1"` |   |
 | `market.royaltyShare` | a number — must be a fraction between 0 and 1 | `0.3` |   |
+| `market.verifierShare` | a number — must be a fraction between 0 and 1 | `0.05` | Share of the SELLER side of each sale paid to the verifiers whose attestations count for that knowledge (item 325). Written into every anchor this node creates and floored at NETWORK_MIN_VERIFIER_SHARE when it is read back, so a seller cannot publish knowledge that pays its verifiers nothing. |
 | `market.initialCredit` | a string — must be a decimal amount in quotes, e.g. "0.1" | `"100"` |   |
+| `market.creditGrants` | a number — must be a whole number; must be at least 1 | `100` | How many addresses this node will ever hand `initialCredit` to (default 100). Local credit is issued by the node, not owned by the buyer: without a cap a fresh keypair is worth 100 CREDIT and any spend limit is one `ainize keys new` away (item 364). Every grant is recorded; past the cap a new address gets nothing. |
 | `server` | an object (set its keys one at a time) |   | HTTP server knobs. `trustProxy` is Express's `trust proxy` setting: `false` (default) → `req.ip` is the TCP peer, so a client cannot pick its own address with X-Forwarded-For (per-IP quotas, bans and rate limits key on `req.ip`). Behind a reverse proxy set it to the hop count (`1`), `'loopback'`, or the proxy's IP/CIDR list. |
 | `server.trustProxy` | a boolean, number or string | `false` |   |
+| `events` | an object (set its keys one at a time) |   | Retention of the node's own bookkeeping (item 128). `events.retentionDays` is how long raw rows of the `events` table are kept before the hourly purge removes them — the demand counters are materialised at write time, so nothing measured is lost with them. Default 90 days. |
+| `events.retentionDays` | a number — must be a whole number; must be at least 1 | `90` |   |
 | `teach` | an object (set its keys one at a time) |   | Teach mode (visitor-taught knowledge). Absent in configs written before teach mode → `teachConfig()` fills the defaults. |
 | `teach.enabled` | a boolean | `false` | Master switch — every visitor teach route answers 403 `teaching_disabled` while false. |
 | `teach.publish` | one of 'review', 'auto', 'never' | `"review"` | What happens when a visitor publishes: operator review (default), automatic announce, or never. |
@@ -171,7 +175,7 @@ What `ainize init` writes, with the identity removed — it is minted per node.
   "name": "node-19e7e3",
   "dataDir": "<NGRAM_HOME>/data",
   "port": 3402,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "roles": [
     "seller",
     "verifier",
@@ -208,7 +212,9 @@ What `ainize init` writes, with the identity removed — it is minted per node.
     "currency": "CREDIT",
     "defaultPrice": "0.1",
     "royaltyShare": 0.3,
-    "initialCredit": "100"
+    "verifierShare": 0.05,
+    "initialCredit": "100",
+    "creditGrants": 100
   },
   "teach": {
     "enabled": false,
@@ -299,6 +305,9 @@ What `ainize init` writes, with the identity removed — it is minted per node.
   },
   "server": {
     "trustProxy": false
+  },
+  "events": {
+    "retentionDays": 90
   },
   "gossipIntervalMs": 4000,
   "version": "0.1.0"
