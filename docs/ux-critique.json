@@ -13,7 +13,11 @@
      "evidence": "critic-landing-en-hero.png, critic-nodeu-hero.png (\"0 verified knowledge / 85 being verified\"), first-impression-nodeu-hero-zero.png.",
      "user_cost": "A marketplace whose headline number is 0 or 1 tells a stranger in two seconds that there is nothing here, and the items that do exist are never looked at. On node-u the page invites you to explore a catalogue it has just called empty.",
      "fix": "Below a threshold (listed < 5) replace the number with the thing itself - the names or the topic (\"Korean stock ticker codes, verified on Qwen3.8-Flash-Next\"). Above it, keep the count and add landing.hero.count_one, passing count as the third argument to t().",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "fcb7c66",
+     "fixed_note": "Below five listed the hero names the knowledge and the model it was verified on instead of printing a count; with nothing listed it says how many are in verification rather than “0 verified knowledge”; the count branch gained landing.hero.count_one and is passed a count."
     },
     {
      "n": 23,
@@ -364,7 +368,11 @@
      "evidence": "guard-publish-1280x900.png, guard-publish-360.png, teach-chat-25-publish-sheet.png, teach-chat-26-publish-clip-360x740.png.",
      "user_cost": "The one screen where money and irreversibility are introduced appears to have no way to proceed, and a user who scrolls blind past two consent checkboxes to find the button has been trained to tick consents without reading them.",
      "fix": "Move SheetFooter out of the scrolling Body into Panel as a sticky bar (position: sticky; bottom: 0, opaque background, top border) in Sheet.tsx, so the action and the consent state are always visible. The same change fixes the credit and keep-private sheets.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "1b9966f",
+     "fixed_note": "SheetFooter is position:sticky at the bottom of the sheet body with an opaque background and a rule/shadow drawn only while content is still below the fold, so the publish submit moved from 919 to 869 at 1280x900 and from 1135 to 677 at 360x740; the credit, keep-private and every other sheet share the change."
     },
     {
      "n": 17,
@@ -1068,7 +1076,11 @@
      "evidence": "browse-buy-explore-m-en.png, browse-buy-explore-mobile-noprice.png, critic-explore-m.png.",
      "user_cost": "On a phone the marketplace list has no prices at all. Choosing between items spanning 0.1 to 25 AIN means opening each one and scrolling to the stats strip.",
      "fix": "Below breakpoint.sm do not hide PriceCol - move the price into the existing Meta row as its first item (\"25 AIN, 2,761 facts, 331.7 MB\") and render the AIN unit note once per page instead of per card.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "034c3f7",
+     "fixed_note": "Below breakpoint.sm the price leads the card's facts row instead of vanishing with PriceCol, and the currency note is rendered once per page by PriceUnitNote on /explore and /benchmarks/:schema instead of once per card."
     },
     {
      "n": 19,
