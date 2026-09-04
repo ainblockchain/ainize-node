@@ -539,6 +539,16 @@ export function detectPii(fields: (string | undefined)[]): TeachPiiKind[] {
  * endings, UTF-8 without BOM, exactly one trailing LF. The sha256 is taken over THESE bytes, so the same logical
  * dataset hashes the same whatever format it arrived in.
  */
+/**
+ * The identity of a QUESTION (F13, design §16 R1): NFC, control/bidi/zero-width stripped, whitespace collapsed,
+ * case-sensitive, punctuation untouched — the same rule that already decides duplicates and conflicts inside a file.
+ * Everything that has to say "these two are the same question" (open questions, `covered_by`, merge) uses this and
+ * nothing else, so a question never means one thing in the parser and another in the market.
+ */
+export function questionKey(prompt: string): string {
+  return collapse(String(prompt ?? '').normalize('NFC').replace(CONTROLS, ''));
+}
+
 export function canonicalJsonl(rows: CanonicalRow[]): string {
   return rows.map((r) => JSON.stringify({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}), ...(isRowRef(r.from) ? { from: r.from } : {}), ...(isRowRef(r.replaces) ? { replaces: r.replaces } : {}) })).join('\n') + (rows.length ? '\n' : '');
 }

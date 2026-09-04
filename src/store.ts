@@ -82,6 +82,23 @@ export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; rea
 /** `paying` = a transfer is in flight right now (claimed atomically by the payout runner); a row found `paying` at boot was interrupted mid-transfer. */
 export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
 
+/**
+ * One open question about a knowledge — what the "what to add on top of this" panel lists (lineage design §5.6, §10, SC-12).
+ * `cluster_key` is what makes two reports the same question; it is a keyed HMAC of the normalised prompt, so the table
+ * counts repeats without holding the text. `text` is filled ONLY when the person who reported it consented to share it
+ * (SC-13 *Share*), or when the question is already public on the record (an `own_miss` resolves its prompt from
+ * `benchmark.samples[sample_index]` at read time and stores nothing).
+ */
+export type IssueKind = 'own_miss' | 'preflight' | 'free_wrong' | 'request' | 'gap';
+export interface IssueRow {
+  id: string; patch_id: string; kind: IssueKind; cluster_key: string;
+  count: number; people: number;
+  text: string | null; sample_index: number | null; topic: string | null;
+  first_seen: number; last_seen: number;
+  /** `'open'` or `'covered_by:<patch id>'` — a descendant published a training set that answers it (§10). */
+  status: string;
+}
+
 /** Counter columns of `patch_signals_daily` (lineage design §5.6). */
 export const SIGNAL_COUNTERS = [
   'tests', 'hits', 'misses', 'unscored', 'marked_wrong', 'preflight_wrong_today', 'preflight_in_base', 'preflight_base_conflict',
@@ -179,6 +196,11 @@ export class Store {
         preflight_base_conflict INTEGER NOT NULL DEFAULT 0, overlaps_pointed INTEGER NOT NULL DEFAULT 0, derive_fetches INTEGER NOT NULL DEFAULT 0,
         builds_on_jobs INTEGER NOT NULL DEFAULT 0, parent_regression_fails INTEGER NOT NULL DEFAULT 0, visitors_hll BLOB,
         PRIMARY KEY (patch_id, day));
+      CREATE TABLE IF NOT EXISTS patch_issues (id TEXT PRIMARY KEY, patch_id TEXT NOT NULL, kind TEXT NOT NULL, cluster_key TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0, people INTEGER NOT NULL DEFAULT 0, people_hll BLOB,
+        text TEXT, sample_index INTEGER, topic TEXT,
+        first_seen REAL NOT NULL, last_seen REAL NOT NULL, status TEXT NOT NULL DEFAULT 'open');
+      CREATE INDEX IF NOT EXISTS idx_patch_issues_patch ON patch_issues(patch_id, status);
     `);
     // additive migrations (SQLite has no ADD COLUMN IF NOT EXISTS) — a v1 database opens unchanged and gains the columns
     const add = (table: string, defs: Record<string, string>) => {
@@ -628,6 +650,62 @@ export class Store {
     out.visitors = merged ? hllCount(merged) : 0;
     return out;
   }
+  // ------------------------------------------------------------ open questions (`patch_issues`, design §5.6, §10, SC-12)
+  /**
+   * Record (or re-count) one open question about a knowledge. Two reports of the same question meet on `clusterKey`,
+   * which is a keyed HMAC of the normalised prompt (F13's rule) — so `asked {c} times` is countable without the node
+   * ever storing what was asked. `text` is written only when the reporter consented; once shared it stays shared, and
+   * a later count-only report never erases it. `people` is estimated from a HyperLogLog over visitor ids, so one
+   * person pressing the button ten times is still one person.
+   */
+  bumpIssue(patchId: string, kind: IssueKind, clusterKey: string, opts: { text?: string | null; sample_index?: number | null; topic?: string | null; visitor?: string | null; count?: number; ts?: number } = {}): IssueRow {
+    const id = `${patchId}:${kind}:${clusterKey}`;
+    const now = opts.ts ?? Date.now();
+    const cur = this.db.prepare('SELECT * FROM patch_issues WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const sketch = opts.visitor ? hllAdd(cur?.people_hll ? Buffer.from(cur.people_hll as Uint8Array) : null, opts.visitor) : (cur?.people_hll ? Buffer.from(cur.people_hll as Uint8Array) : null);
+    const people = sketch ? hllCount(sketch) : Number(cur?.people ?? 0);
+    const n = Math.max(1, Math.trunc(opts.count ?? 1));
+    if (!cur) {
+      this.db.prepare(`INSERT INTO patch_issues (id, patch_id, kind, cluster_key, count, people, people_hll, text, sample_index, topic, first_seen, last_seen, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`)
+        .run(id, patchId, kind, clusterKey, n, people, sketch, opts.text ?? null, opts.sample_index ?? null, opts.topic ?? null, now, now);
+    } else {
+      this.db.prepare(`UPDATE patch_issues SET count = count + ?, people = ?, people_hll = ?, text = COALESCE(?, text),
+        sample_index = COALESCE(?, sample_index), topic = COALESCE(?, topic), last_seen = ? WHERE id = ?`)
+        .run(n, people, sketch, opts.text ?? null, opts.sample_index ?? null, opts.topic ?? null, now, id);
+    }
+    return this.getIssue(id)!;
+  }
+  getIssue(id: string): IssueRow | null {
+    const r = this.db.prepare('SELECT id, patch_id, kind, cluster_key, count, people, text, sample_index, topic, first_seen, last_seen, status FROM patch_issues WHERE id = ?').get(id) as IssueRow | undefined;
+    return r ?? null;
+  }
+  listIssues(patchId: string, opts: { kind?: IssueKind; status?: 'open' | 'covered' | 'all'; limit?: number } = {}): IssueRow[] {
+    const where = ['patch_id = ?'];
+    const args: unknown[] = [patchId];
+    if (opts.kind) { where.push('kind = ?'); args.push(opts.kind); }
+    if (!opts.status || opts.status === 'open') where.push("status = 'open'");
+    else if (opts.status === 'covered') where.push("status <> 'open'");
+    args.push(Math.min(500, Math.max(1, opts.limit ?? 100)));
+    return this.db.prepare(`SELECT id, patch_id, kind, cluster_key, count, people, text, sample_index, topic, first_seen, last_seen, status
+      FROM patch_issues WHERE ${where.join(' AND ')} ORDER BY count DESC, last_seen DESC LIMIT ?`).all(...args as never[]) as never;
+  }
+  /** Every knowledge with at least one open question, and how many — the shelf "people are asking for this" reads it. */
+  issueCounts(status: 'open' = 'open'): { patch_id: string; open: number }[] {
+    return this.db.prepare("SELECT patch_id, SUM(count) AS open FROM patch_issues WHERE status = ? GROUP BY patch_id ORDER BY open DESC").all(status) as never;
+  }
+  /**
+   * A descendant published a training set that answers these questions (§10 issue lifecycle): every OPEN issue of
+   * `patchId` whose cluster key is in `keys` flips to `covered_by:<child>`. Returns how many closed.
+   */
+  coverIssues(patchId: string, keys: string[], childId: string): number {
+    if (!keys.length) return 0;
+    let n = 0;
+    const stmt = this.db.prepare("UPDATE patch_issues SET status = ? WHERE patch_id = ? AND cluster_key = ? AND status = 'open'");
+    for (const k of keys) n += Number(stmt.run(`covered_by:${childId}`, patchId, k).changes);
+    return n;
+  }
+
   /** `events` retention (lineage design §5.6): rows older than `beforeTs` go, the materialised counters stay. Returns the number removed. */
   purgeEvents(beforeTs: number): number {
     const r = this.db.prepare('DELETE FROM events WHERE ts < ?').run(beforeTs);
