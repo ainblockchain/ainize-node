@@ -2,7 +2,7 @@
 title: 남이 공개한 지식 사서 쓰기
 summary: 네트워크에서 지식을 찾고, 그 검증이 무엇을 뜻하는지 읽고, 공짜로 시험해 보고, HTTP 402로 결제하고, 내 모델에 넣기까지.
 source: en/tutorials/buy-and-apply.md
-source_sha256: 8e1b88647131e2d105f4bb7fb0fa13144e3858dd84335ee6c0e2aff36aeb8613
+source_sha256: 1d4567aa4861abb674d31de50f18736796fda494f219c3e805ac32fa4b378f8c
 ---
 
 # 남이 공개한 지식 사서 쓰기
