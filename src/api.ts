@@ -172,11 +172,48 @@ export function buildApi(deps: ApiDeps): Router {
     market.log('info', 'auth', 'operator password set — this node is claimed');
     return { ok: true, token: newSession(res) };
   }));
+  /**
+   * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
+   * unlimited guesses at it — nothing in `node/src` counted an attempt. Wrong answers now cost time, doubling from
+   * one second after the third failure up to half a minute, and the refusal names the recovery command instead of
+   * leaving a locked-out operator to guess. Keyed by the TCP peer, never `req.ip`: with `server.trustProxy` on,
+   * `req.ip` is whatever X-Forwarded-For says, so the attacker being throttled could choose their own bucket.
+   * Successful sign-in clears the bucket, so one typo costs a returning operator nothing.
+   */
+  const LOGIN_WINDOW_MS = 15 * 60_000;
+  const LOGIN_FREE_TRIES = 3;
+  const loginFails = new Map<string, { n: number; until: number; last: number }>();
+  const loginKey = (req: Request) => req.socket?.remoteAddress ?? 'unknown';
+  const loginDelayMs = (n: number) => (n <= LOGIN_FREE_TRIES ? 0 : Math.min(30_000, 1000 * 2 ** (n - LOGIN_FREE_TRIES - 1)));
+  const loginGuard = (req: Request) => {
+    const now = Date.now();
+    for (const [k, v] of loginFails) if (now - v.last > LOGIN_WINDOW_MS) loginFails.delete(k);
+    const rec = loginFails.get(loginKey(req));
+    if (!rec || now >= rec.until) return;
+    const wait = Math.ceil((rec.until - now) / 1000);
+    throw new HttpError(429, `too_many_attempts: ${rec.n} wrong passwords from this address — wait ${wait}s before trying again. If you have forgotten it, run \`ainize password --reset\` on the machine this node runs on.`, { retry_after_s: wait, attempts: rec.n });
+  };
+  const loginFailed = (req: Request) => {
+    const key = loginKey(req);
+    const now = Date.now();
+    const prev = loginFails.get(key);
+    const n = (prev && now - prev.last <= LOGIN_WINDOW_MS ? prev.n : 0) + 1;
+    loginFails.set(key, { n, until: now + loginDelayMs(n), last: now });
+    if (n === LOGIN_FREE_TRIES + 1 || n % 10 === 0) market.log('warn', 'auth', `${n} failed sign-in attempts from ${key} — the next one is refused for ${Math.ceil(loginDelayMs(n) / 1000)}s`);
+    return n;
+  };
   router.post('/api/auth/login', wrap((req, res) => {
     const { password } = z.object({ password: z.string() }).parse(req.body);
+    loginGuard(req);
     // Without this the remote console showed a login box that could never work, because `needsSetup` is hidden above.
     if (!market.cfg.operatorPasswordHash) throw new HttpError(409, `not_claimed: this node has no operator password yet — set one on the machine it runs on (\`ainize login\`), or POST /api/auth/setup with the one-time token in NGRAM_HOME/setup-token`);
-    if (!verifyPassword(password, market.cfg.operatorPasswordHash)) throw new HttpError(401, 'wrong password');
+    if (!verifyPassword(password, market.cfg.operatorPasswordHash)) {
+      const n = loginFailed(req);
+      throw new HttpError(401, n > LOGIN_FREE_TRIES
+        ? `wrong password (${n} failed attempts — the next try is refused for ${Math.ceil(loginDelayMs(n) / 1000)}s; \`ainize password --reset\` on this node's machine sets a new one)`
+        : 'wrong password', { attempts: n, retry_after_s: Math.ceil(loginDelayMs(n) / 1000) });
+    }
+    loginFails.delete(loginKey(req));
     return { ok: true, token: newSession(res) };
   }));
   /**
@@ -291,8 +328,35 @@ export function buildApi(deps: ApiDeps): Router {
     if (q.author) items = items.filter((e) => e.anchor.author === q.author);
     if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === c)); }
     if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
-    if (q.branch) { const b = (await market.branches()).find((x) => x.name === q.branch); items = items.filter((e) => b?.patch_ids.includes(e.anchor.id)); }
-    if (q.q) { const s = q.q.toLowerCase(); items = items.filter((e) => [e.anchor.id, e.anchor.name, e.anchor.description, e.anchor.model.id_M, e.anchor.benchmark.schema].join(' ').toLowerCase().includes(s)); }
+    const allBranches = q.branch || q.q ? await market.branches() : [];
+    if (q.branch) { const b = allBranches.find((x) => x.name === q.branch); items = items.filter((e) => b?.patch_ids.includes(e.anchor.id)); }
+    /**
+     * What a knowledge KNOWS is what people search for (items 25 + 206). The haystack used to be
+     * `[id, name, description, model, schema]`, so `samsung` and `삼성` returned nothing on a catalogue whose
+     * flagship answers 2,761 Korean tickers, and neither a track, a topic, a creator's name nor a date could find
+     * anything. Everything the anchor publicly declares is searchable now, the benchmark samples included — and
+     * `matched` says WHICH sample matched, so the card can show the question that made it a hit instead of leaving
+     * the reader to guess why a row is in the list.
+     */
+    const searchable = (e: CatalogEntry) => {
+      const a = redactContributors(e).anchor;
+      const day = new Date(a.created_at);
+      return [
+        a.id, a.name, a.description ?? '', a.model.id_M, a.benchmark.schema, a.topic_path, a.branch ?? '',
+        a.author, a.author_name ?? '', ...(a.contributors ?? []).map((c) => c.name ?? ''),
+        ...allBranches.filter((b) => b.patch_ids.includes(a.id)).map((b) => b.name),
+        Number.isFinite(day.getTime()) ? day.toISOString().slice(0, 10) : '',
+        ...(a.benchmark.samples ?? []).flatMap((x) => [x.prompt, x.expect]),
+      ].join(' \u0001 ').toLowerCase();
+    };
+    /** The sample that made this a hit — only when the words on the card do not already explain the match. */
+    const matchedSample = (e: CatalogEntry, s: string) => {
+      const a = e.anchor;
+      if ([a.id, a.name, a.description ?? ''].join(' ').toLowerCase().includes(s)) return null;
+      return (a.benchmark.samples ?? []).find((x) => `${x.prompt} ${x.expect}`.toLowerCase().includes(s)) ?? null;
+    };
+    const needle = q.q?.trim().toLowerCase() ?? '';
+    if (needle) items = items.filter((e) => searchable(e).includes(needle));
     // "Most popular" ranks by status FIRST: downloads accumulate forever, so a retired single-fact patch with 187
     // downloads used to head the marketplace over the flagship it was replaced by. Tradeable before retired.
     const statusRank = (s: string) => (s === 'LISTED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
@@ -317,6 +381,7 @@ export function buildApi(deps: ApiDeps): Router {
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
       built_on: built.get(e.anchor.id) ?? 0,
       requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
+      matched: needle ? matchedSample(e, needle) : undefined,
     }));
     return { total, items: page, models: [...new Set(facets.map((e) => e.anchor.model.id_M))], schemas: [...new Set(facets.map((e) => e.anchor.benchmark.schema))] };
   }));
