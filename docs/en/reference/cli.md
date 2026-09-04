@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 25 top-level commands, 70 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 25 top-level commands, 73 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -435,6 +435,9 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch remove` — Unload it, putting back whatever was underneath
 - `ainize patch stack` — What is loaded in the serving model, bottom first
 - `ainize patch fork` — Copy this knowledge's questions into your own training set, and continue from there
+- `ainize patch tree` — The family tree: what this was built on, what was built on it, and what each one added
+- `ainize patch missing` — Open questions: what people asked this knowledge that it could not answer
+- `ainize patch signals` — How a knowledge is doing: network facts, and this node's last 30 days
 - `ainize patch conflicts` — Address-set overlaps with other patches
 - `ainize patch records` — Ledger records about a patch
 - `ainize patch rm` — Delete a draft
@@ -661,6 +664,67 @@ ainize patch fork krx-all-2761 --name "KRX + biotech"
 # then teach your additions on top of it
 ainize teach train <dataset> --on krx-all-2761
 ```
+
+### `ainize patch tree`
+
+```bash
+ainize patch tree <id> [options]
+```
+
+The family tree: what this was built on, what was built on it, and what each one added
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--depth`** (`number`, default `4`) — how many hops in each direction (max 8)
+- **`--dir`** (`"up" | "down" | "both"`, default `"both"`) — ancestors, descendants, or both
+
+**Examples**
+
+```bash
+# the whole line, with what each knowledge added
+ainize patch tree krx-all-2761 --depth 6
+```
+
+### `ainize patch missing`
+
+```bash
+ainize patch missing <id> [options]
+```
+
+Open questions: what people asked this knowledge that it could not answer
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--kind`** (`"own_miss" | "preflight" | "free_wrong" | "request" | "gap"`) — only one source
+- **`--all`** (`boolean`, default `false`) — include the ones a later knowledge already answered
+- **`--limit`** (`number`, default `50`)
+
+**Examples**
+
+```bash
+# what to add on top of it
+ainize patch missing krx-all-2761
+```
+
+### `ainize patch signals`
+
+```bash
+ainize patch signals <id>
+```
+
+How a knowledge is doing: network facts, and this node's last 30 days
+
+**Arguments**
+
+- **`<id>`** (`string`, required)
 
 ### `ainize patch conflicts`
 

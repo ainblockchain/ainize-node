@@ -9,7 +9,7 @@ summary: Every endpoint an Ainize node serves, with parameters, bodies and respo
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src/openapi.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-115 operations on 100 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
+121 operations on 105 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
 
 ## How to read this page
 
@@ -45,6 +45,11 @@ See [Error codes](./errors.md) for the full list.
 | `GET` | [`/api/patches/{id}/dataset`](#get-apipatchesiddataset) | teaching key | The training set behind this knowledge (questions, access, licence, 20-question preview) |
 | `GET` | [`/api/patches/{id}/dataset/rows`](#get-apipatchesiddatasetrows) | teaching key | Download the training set (.jsonl, canonical bytes) |
 | `GET` | [`/api/patches/{id}/dataset/manifest`](#get-apipatchesiddatasetmanifest) | teaching key | What the training set is made of (row origin, benchmark hash, merkle root, PII scan, declaration) |
+| `GET` | [`/api/patches/{id}/tree`](#get-apipatchesidtree) | none | The family tree — what this was built on, what was built on it, and what each one added |
+| `GET` | [`/api/patches/{id}/signals`](#get-apipatchesidsignals) | none | How this knowledge is doing — network facts and this node’s last 30 days, kept apart |
+| `GET` | [`/api/patches/{id}/issues`](#get-apipatchesidissues) | none | Open questions — what to add on top of this knowledge |
+| `POST` | [`/api/patches/{id}/issues`](#post-apipatchesidissues) | teaching key | Ask the creator to add something |
+| `GET` | [`/api/explore/shelves`](#get-apiexploreshelves) | none | Explore shelves: selling now, being built on, just published, and what people asked for here |
 | `GET` | [`/api/patches/{id}/conflicts`](#get-apipatchesidconflicts) | none | Overlap check result |
 | `GET` | [`/api/benchmarks/{schema}`](#get-apibenchmarksschema) | none | Knowledge on the same subject (benchmark schema) |
 
@@ -52,6 +57,7 @@ See [Error codes](./errors.md) for the full list.
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
+| `POST` | [`/api/chat/feedback`](#post-apichatfeedback) | none | Mark an answer wrong — with or without sharing the question |
 | `GET` | [`/api/chat/patches`](#get-apichatpatches) | teaching key (optional) | Knowledge that can be live-tested on this node |
 | `GET` | [`/api/chat/status`](#get-apichatstatus) | none | Is my live test still queued behind the shared model? |
 | `POST` | [`/api/chat/cancel`](#post-apichatcancel) | none | Give up waiting for the shared model |
@@ -364,6 +370,152 @@ What the training set is made of (row origin, benchmark hash, merkle root, PII s
 | `403` | dataset_private \| dataset_derivative_only |   |
 | `404` | dataset_unavailable |   |
 
+### `GET /api/patches/{id}/tree`
+
+The family tree — what this was built on, what was built on it, and what each one added
+
+Lineage design §12.5. Ancestors through `parents[]`, descendants through the catalog, versions through supersede records. Cycle-safe, depth-capped (≤ 8), and a knowledge this caller may not see (a private draft, a test anchor) comes back as `{ missing: true }` rather than a hole. Read-only: it is not gated by `teach.lineage`.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required | Default |
+|---|---|---|---|---|
+| `id` | `path` | `string` | yes |   |
+| `depth` | `query` | `integer` |   | `4` |
+| `dir` | `query` | `"up"` \| `"down"` \| `"both"` |   | `"both"` |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | tree | `object` |
+| `404` | patch not found |   |
+
+**`200` response body**
+
+| Field | Type | Description |
+|---|---|---|
+| `root` | `string` |   |
+| `depth` | `integer` |   |
+| `truncated` | `boolean` |   |
+| `nodes` | `object`[] |   |
+| `nodes[].id` | `string` |   |
+| `nodes[].name` | `string` |   |
+| `nodes[].missing` | `boolean` |   |
+| `nodes[].added` | `object` |   |
+| `nodes[].added.questions` | `integer` |   |
+| `nodes[].added.changed` | `integer` |   |
+| `nodes[].added.removed` | `integer` |   |
+| `nodes[].added.rows` | `integer` |   |
+| `nodes[].added.new` | `integer` |   |
+| `nodes[].signals` | `object` |   |
+| `nodes[].depth` | `integer` | negative = ancestor, positive = descendant |
+| `edges` | `object`[] |   |
+| `edges[].from` | `string` |   |
+| `edges[].to` | `string` |   |
+| `edges[].kind` | `"extend"` \| `"update"` \| `"contradict"` \| `"merge"` \| `"version"` \| `"track"` \| `"declared"` |   |
+| `family` | `object` |   |
+| `money` | `object` |   |
+
+### `GET /api/patches/{id}/signals`
+
+How this knowledge is doing — network facts and this node’s last 30 days, kept apart
+
+Lineage design §10. `network`: sales (price-0 and self-purchases excluded), unique buyers, revenue, how many nodes hold the body, children, versions, track subscribers, verification. `node`: this node’s own counters for the last 30 days — live tests, hits, marked wrong, pre-flight, derive intents — and its estimate of unique visitors. The two scopes are never added together.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | signals | `object` |
+| `404` | patch not found |   |
+
+### `GET /api/patches/{id}/issues`
+
+Open questions — what to add on top of this knowledge
+
+Lineage design §10 / SC-12. Counts always; the TEXT of a question only when it is already public on the record (`own_miss`, resolved from `benchmark.samples`) or when the person who reported it chose *Share*. `status` flips to `covered_by:<id>` when a descendant publishes a training set answering it.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required | Default |
+|---|---|---|---|---|
+| `id` | `path` | `string` | yes |   |
+| `kind` | `query` | `"own_miss"` \| `"preflight"` \| `"free_wrong"` \| `"request"` \| `"gap"` |   |   |
+| `status` | `query` | `"open"` \| `"covered"` \| `"all"` |   | `"open"` |
+| `limit` | `query` | `integer` |   | `50` |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | open questions | `object` |
+| `404` | patch not found |   |
+
+### `POST /api/patches/{id}/issues`
+
+Ask the creator to add something
+
+A buyer’s own request. `share: true` keeps the text (it is theirs to share); otherwise only the count survives.
+
+**Auth** — teaching key
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | `path` | `string` | yes |   |
+| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+
+**Request body** — `application/json`, required
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"request"` |   |   |
+| `topic` | `string` |   |   |
+| `text` | `string` | yes |   |
+| `share` | `boolean` |   | (default `false`) |
+
+**Responses**
+
+| Code | Description |
+|---|---|
+| `201` | recorded |
+| `404` | patch not found |
+| `429` | quota_requests |
+
+### `GET /api/explore/shelves`
+
+Explore shelves: selling now, being built on, just published, and what people asked for here
+
+Lineage design SC-17. Every number is one this node can defend — sales from settle records, *built on* from children plus derive intents, *asked* from the open-question counters.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Default |
+|---|---|---|---|
+| `limit` | `query` | `integer` | `6` |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | shelves | `object` |
+
 ### `GET /api/patches/{id}/conflicts`
 
 Overlap check result
@@ -403,6 +555,31 @@ Knowledge on the same subject (benchmark schema)
 ## Live test
 
 compare the model's answer before vs after the knowledge is loaded (trial quota)
+
+### `POST /api/chat/feedback`
+
+Mark an answer wrong — with or without sharing the question
+
+Lineage design SC-13. `share: false` (the default) counts the question and stores nothing but a keyed cluster id; `share: true` is the visitor’s per-turn decision to send the text to the creator. The question comes from the node’s own record of the turn, so `turn_id` must be one this visitor asked.
+
+**Auth** — none
+
+**Request body** — `application/json`, required
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `turn_id` | `string` | yes |   |
+| `patch_ids` | `string`[] |   |   |
+| `verdict` | `"wrong"` |   |   |
+| `share` | `boolean` |   | (default `false`) |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | recorded | `object` |
+| `400` | no_patch |   |
+| `404` | turn_unknown |   |
 
 ### `GET /api/chat/patches`
 
