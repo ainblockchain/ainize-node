@@ -328,11 +328,13 @@ test('AZ-109 Keep it private: 7-day token links, sha256 matches, recipe.json, RU
   expect(bad.status).toBe(401);
   await keep.getByTestId('keep-done').click();
   await expect(keep).toBeHidden();
-  // default option = keep it on this node
+  // Finding 36 — the default option is the ABSENCE of an action: it states the deadline (the node's own date) and
+  // Done just closes the sheet. It used to answer Done with a green "Kept on this node for 7 days" for a request
+  // that was never sent, while the card behind it said unsaved lessons are deleted after 7 days.
   await card.getByTestId('lesson-keep').click();
+  await expect(page.getByTestId('keep-node-body')).toContainText('Nothing to do — it is already here.');
+  await expect(page.getByTestId('keep-node-body')).toContainText('deleted');
   await page.getByTestId('keep-done').click();
-  await expect(page.getByTestId('keep-kept')).toContainText('Kept on this node for 7 days.');
-  await page.keyboard.press('Escape');
   await expect(page.getByTestId('keep-sheet')).toBeHidden();
   await expect(card).toHaveAttribute('data-status', 'READY');
 });

@@ -535,11 +535,14 @@ test.describe('stub node', () => {
     let saves = 0;
     page.on('request', (r) => { if (r.method() === 'POST' && r.url().includes('/save')) saves++; });
     await openSheet(page, 'go-keep', 'keep-sheet');
+    // Finding 36 — the option states the deadline instead of confirming an action it never took, and Done closes.
+    await expect(page.getByTestId('keep-node-body')).toContainText('Nothing to do — it is already here.');
     await page.getByTestId('keep-done').click();
-    await expect(page.getByTestId('keep-kept')).toHaveText('Kept on this node for 7 days. Try, download or publish it any time from Your knowledge.');
+    await expect(page.getByTestId('keep-sheet')).toBeHidden();
     expect(saves, 'the default option posts nothing to /save').toBe(0);
 
     // delete: the confirm, the API answer, the redirect
+    await openSheet(page, 'go-keep', 'keep-sheet');
     page.once('dialog', (d) => { expect(d.message()).toBe('This removes the lesson and its file from this node. It cannot be undone. Continue?'); void d.accept(); });
     const [del] = await Promise.all([
       page.waitForResponse((r) => r.url().includes(`/api/teach/jobs/${job.id}`) && r.request().method() === 'DELETE'),
