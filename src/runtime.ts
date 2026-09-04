@@ -96,8 +96,31 @@ export class RuntimeUnavailableError extends Error {
   constructor(public readonly detail: string) { super(MODEL_UNAVAILABLE); }
 }
 
+/**
+ * Priority of one section on the ONE shared model (items 244 / 333). Lower runs first; ties keep arrival order.
+ *
+ * The lock used to be plain FIFO, so unpaid verification of a stranger's knowledge — 17.9 s average, 181 s worst
+ * measured on node-b — sat in front of the visitor's live test that converts, and a nightly bake queued behind both.
+ * Naming the three classes is the whole scheduler: a person waiting on this node goes first, the node's own bake
+ * next, verification last.
+ */
+export const RUNTIME_PRIORITY = {
+  /** Someone is waiting on this node right now: chat, a live test, an operator apply/remove. */
+  serving: 0,
+  /** This node's own bake — a lesson with a progress bar on someone's screen. */
+  teach: 5,
+  /** Unpaid work on a stranger's knowledge: it yields to everything above. */
+  verify: 9,
+} as const;
+
+/** One caller queued for the shared model, as `queueState()` reports it. */
+export interface QueuedSection { label: string; priority: number; since: number }
+
 export class Runtime {
-  private queue: Promise<unknown> = Promise.resolve();
+  /** Callers waiting for the serialised section, highest priority first (`seq` keeps arrival order inside a class). */
+  private waiters: { priority: number; seq: number; label: string; since: number; start: () => void }[] = [];
+  private active = false;
+  private seq = 0;
   private statusCache: { at: number; value: RuntimeStatus } | null = null;
   /** Until when the model is reported unavailable after a failed generation (a vLLM engine crash keeps /v1/models answering while it restarts). */
   private downUntil = 0;
@@ -124,7 +147,7 @@ export class Runtime {
    * in-process queue we take a cross-process lock (atomic mkdir under the shared repo) with a lease; a stale
    * lease (crashed holder) is broken after `staleMs`.
    */
-  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void): Promise<T> {
+  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void, priority = Runtime.priorityOf(label)): Promise<T> {
     const run = async () => {
       const release = await this.acquireLock(label, undefined, waitMs);
       this.busy = { label, since: Date.now() };
@@ -133,9 +156,43 @@ export class Runtime {
       try { onEnter?.(); } catch { /* a bookkeeping callback must never fail the run */ }
       try { return await fn(); } finally { this.lastOp = { label, at: Date.now() }; this.busy = null; release(); }
     };
-    const next = this.queue.then(run, run);
-    this.queue = next.catch(() => undefined);
-    return next;
+    return new Promise<T>((resolve, reject) => {
+      this.waiters.push({
+        priority, seq: ++this.seq, label, since: Date.now(),
+        start: () => { run().then(resolve, reject).finally(() => { this.active = false; this.pump(); }); },
+      });
+      this.pump();
+    });
+  }
+
+  /** Start the highest-priority waiter when the section is free. Ties are broken by arrival order, so nothing starves inside a class. */
+  private pump(): void {
+    if (this.active || !this.waiters.length) return;
+    this.waiters.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
+    const next = this.waiters.shift()!;
+    this.active = true;
+    next.start();
+  }
+
+  /**
+   * Which class a section belongs to when the caller did not say (items 244 / 333). Read from the label prefix the
+   * callers already pass, so every existing call site is classified without changing it.
+   */
+  static priorityOf(label: string): number {
+    if (label.startsWith('verify')) return RUNTIME_PRIORITY.verify;
+    if (label.startsWith('teach')) return RUNTIME_PRIORITY.teach;
+    return RUNTIME_PRIORITY.serving;
+  }
+
+  /**
+   * Is something more urgent than `priority` running or waiting? Verification asks this before it spends a GPU
+   * minute, so the node's own paying visitor is never behind unpaid work for a stranger (item 333).
+   */
+  aheadOf(priority: number): QueuedSection | null {
+    const running = this.busy && Runtime.priorityOf(this.busy.label) < priority ? { label: this.busy.label, priority: Runtime.priorityOf(this.busy.label), since: this.busy.since } : null;
+    if (running) return running;
+    const w = this.waiters.filter((x) => x.priority < priority).sort((a, b) => a.priority - b.priority || a.seq - b.seq)[0];
+    return w ? { label: w.label, priority: w.priority, since: w.since } : null;
   }
 
   /** In-process holder of the serialised section (null = idle). Cross-process holders are visible through `lockHolder()`. */
@@ -146,8 +203,8 @@ export class Runtime {
    */
   private lastOp: { label: string; at: number } | null = null;
   lastOperation(): { label: string; at: number } | null { return this.lastOp ? { ...this.lastOp } : null; }
-  /** Number of callers waiting in the in-process queue (approximate). */
-  private waiting = 0;
+  /** Number of callers waiting in the in-process queue. */
+  private get waiting(): number { return this.waiters.length + (this.active ? 1 : 0); }
 
   /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
   patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
@@ -177,9 +234,17 @@ export class Runtime {
     try { process.kill(pid, 0); return true; } catch { return false; }
   }
 
-  /** What the shared model is doing and how many callers are behind it (D3 — the queue must be visible). */
-  queueState(): { running: { label: string; since: number } | null; waiting: number; lock: ReturnType<Runtime['lockHolder']> } {
-    return { running: this.busy ? { ...this.busy } : null, waiting: Math.max(0, this.waiting - (this.busy ? 1 : 0)), lock: this.lockHolder() };
+  /**
+   * What the shared model is doing and how many callers are behind it (D3 — the queue must be visible).
+   * `queued` names them in the order they will run, so a lesson that says "waiting for the shared model" can say
+   * what it is waiting for and for how long (items 244 / 333).
+   */
+  queueState(): { running: { label: string; since: number; priority: number } | null; waiting: number; queued: QueuedSection[]; lock: ReturnType<Runtime['lockHolder']> } {
+    const queued = [...this.waiters].sort((a, b) => a.priority - b.priority || a.seq - b.seq).map((w) => ({ label: w.label, priority: w.priority, since: w.since }));
+    return {
+      running: this.busy ? { ...this.busy, priority: Runtime.priorityOf(this.busy.label) } : null,
+      waiting: queued.length, queued, lock: this.lockHolder(),
+    };
   }
 
   private async acquireLock(label: string, staleMs = Runtime.STALE_MS, waitMs: number = 20 * 60_000): Promise<() => void> {
@@ -204,9 +269,8 @@ export class Runtime {
   }
 
   /** Run `fn` while holding the shared runtime lock (for multi-step operations such as apply → chat → restore). */
-  exclusive<T>(label: string, fn: () => Promise<T>, opts: { onEnter?: () => void } = {}): Promise<T> {
-    this.waiting++;
-    return this.serial(fn, label, undefined, opts.onEnter).finally(() => { this.waiting--; });
+  exclusive<T>(label: string, fn: () => Promise<T>, opts: { onEnter?: () => void; priority?: number } = {}): Promise<T> {
+    return this.serial(fn, label, undefined, opts.onEnter, opts.priority);
   }
 
   /**
@@ -214,15 +278,15 @@ export class Runtime {
    * in-process queue AND the cross-process lease instead of joining the 20-minute queue; throws
    * `shared runtime busy (…)` so the caller can requeue with jitter. Never breaks a live lease.
    */
-  async exclusiveTry<T>(label: string, fn: () => Promise<T>, opts: { waitMs?: number } = {}): Promise<T> {
+  async exclusiveTry<T>(label: string, fn: () => Promise<T>, opts: { waitMs?: number; priority?: number } = {}): Promise<T> {
     const waitMs = opts.waitMs ?? 2 * 60_000;
     const t0 = Date.now();
-    while (this.busy || this.waiting > 0) {
+    while (this.busy || this.waiters.length > 0) {
       if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${this.owner}: ${this.busy?.label ?? 'queued'}) — try again later`);
       await new Promise((r) => setTimeout(r, 150 + Math.random() * 150));
     }
     const left = Math.max(1000, waitMs - (Date.now() - t0));
-    return this.serial(fn, label, left);
+    return this.serial(fn, label, left, undefined, opts.priority);
   }
 
   /**
