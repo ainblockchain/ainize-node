@@ -2771,9 +2771,17 @@ export class Market {
       .map(([address, amount]) => {
         const lower = address.toLowerCase();
         const from = lineageOf.get(lower);
-        const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage' : verifiers.has(lower) && verifiedPct(lower) >= Number(amount) - 1e-9 ? 'verifier' : 'contributor';
+        // The fallback matters when the payee is further up than this walk went (`royaltyPlan` has no depth cut):
+        // somebody paid by this sale who is NOT credited on this knowledge is being paid for the ancestry, and
+        // calling them "credited on this knowledge" would put the wrong name against the wrong promise.
+        const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage'
+          : verifiers.has(lower) && verifiedPct(lower) >= Number(amount) - 1e-9 ? 'verifier'
+            : rootCredited.has(lower) ? 'contributor' : 'lineage';
         return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.name ?? contributorName(lower), kind, ...(from ? { for_id: from.from.id, for_name: from.from.name } : {}) };
       });
+    // The knowledges the lineage share is paid FOR. A payee from above this walk's cap has no node to name, and the
+    // line then falls back to the ancestors this tree does hold rather than reading "the creators of ".
+    const paidFor = [...new Set(recipients.filter((r) => r.kind === 'lineage').map((r) => r.for_name ?? ''))].filter(Boolean);
     // Rounded once, at the end: subtracting a rounded percentage from a rounded percentage put 100.1 % on the card.
     const pctOf = (kind: 'lineage' | 'contributor') => Math.round(recipients.filter((r) => r.kind === kind)
       .reduce((n, r) => n + Number(split[r.address] ?? 0) - verifiedPct(r.address.toLowerCase()), 0) * 10) / 10;
@@ -2784,8 +2792,8 @@ export class Market {
       /** what the verifiers keeping this knowledge on sale are paid out of the seller side (item 325) */
       verifier_pct: Math.round(Object.values(plan.verification).reduce((n, x) => n + Number(x), 0) * 10) / 10,
       verifier_count: Object.keys(plan.verification).length,
-      /** SC-9's "{names}": the knowledges whose creators are actually paid by this sale, not every ancestor on screen */
-      lineage_names: [...new Set(recipients.filter((r) => r.kind === 'lineage').map((r) => (r as { for_name?: string }).for_name ?? ''))].filter(Boolean),
+      /** SC-9's "{names}" — computed above: the knowledges whose creators this sale really pays. */
+      lineage_names: paidFor.length ? paidFor : (recipients.some((r) => r.kind === 'lineage') ? ancestors.map((n) => n.name) : []),
       recipients, seller_name: root.anchor.author_name ?? null,
     };
   }
