@@ -75,7 +75,7 @@ export class DatasetBlobStore {
     const existing = this.get(sha);
     if (existing) return existing;
     const parsed = readCanonicalJsonl(rows.toString('utf8'));
-    const bench = Buffer.from(benchmark.map((s) => JSON.stringify({ prompt: s.prompt, expect: s.expect, ...(s.source ? { source: s.source } : {}) })).join('\n') + (benchmark.length ? '\n' : ''), 'utf8');
+    const bench = encodeBenchmarkJsonl(benchmark);
     const full: DatasetManifest = {
       version: 1, sha256: sha, rows: parsed.length, size_bytes: rows.length,
       merkle_root: merkleRoot(rows.toString('utf8').split('\n').filter((l) => l.length)),
@@ -140,13 +140,7 @@ export class DatasetBlobStore {
   }
   benchmark(sha: string): BenchmarkSample[] {
     const p = this.benchmarkPath(sha);
-    if (!existsSync(p)) return [];
-    const out: BenchmarkSample[] = [];
-    for (const line of readFileSync(p, 'utf8').split('\n')) {
-      if (!line.trim()) continue;
-      try { const o = JSON.parse(line) as BenchmarkSample; if (typeof o.prompt === 'string' && typeof o.expect === 'string') out.push(o); } catch { /* our own file */ }
-    }
-    return out;
+    return existsSync(p) ? decodeBenchmarkJsonl(readFileSync(p, 'utf8')) : [];
   }
   sizeBytes(sha: string): number { const p = this.rowsPath(sha); return existsSync(p) ? statSync(p).size : 0; }
 
@@ -155,6 +149,25 @@ export class DatasetBlobStore {
     rmSync(this.dirFor(sha), { recursive: true, force: true });
     this.store.deleteDatasetBlob(sha);
   }
+}
+
+/**
+ * `benchmark.jsonl` — the FULL sample list of a lesson, in order, one JSON object per line. These bytes are the
+ * preimage of the anchor's `answers_hash` (§5.1): a verifier that fetches this file recomputes the hash and gets the
+ * number on the record, which is what makes the ≤ 32 samples on the ledger a slice and not a replacement. The node
+ * writes the same bytes next to the job at draft time and next to the rows when the set is pinned, through here.
+ */
+export function encodeBenchmarkJsonl(samples: BenchmarkSample[]): Buffer {
+  const lines = samples.map((s) => JSON.stringify({ prompt: s.prompt, expect: s.expect, ...(s.source ? { source: s.source } : {}) }));
+  return Buffer.from(lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
+}
+export function decodeBenchmarkJsonl(text: string): BenchmarkSample[] {
+  const out: BenchmarkSample[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { const o = JSON.parse(line) as BenchmarkSample; if (typeof o.prompt === 'string' && typeof o.expect === 'string') out.push({ prompt: o.prompt, expect: o.expect, ...(o.source ? { source: o.source } : {}) }); } catch { /* our own file */ }
+  }
+  return out;
 }
 
 /** Rows as served to a derivative creator: `note` only when the publisher opted in, never anything else (§6.2). */

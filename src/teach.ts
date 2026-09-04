@@ -22,7 +22,7 @@ import type { Readable } from 'node:stream';
 import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, sha256Hex, validateContributors, verifyMessage, writeNpz,
   type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
-import { publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
+import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
 import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import type { Caller, Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
@@ -873,6 +873,13 @@ export class TeachWorker {
     const sha = entry.anchor.dataset!.sha256;
     const local = this.market.datasets.rowsBytes(sha);
     if (local) return readCanonicalJsonl(local.toString('utf8'));
+    // Story A3: a base that is still the visitor's OWN draft has no pinned copy yet (pinning happens at publish) —
+    // its rows are the snapshot frozen with the job that produced it, which is exactly what will be pinned. Only the
+    // owner reaches this: `resolveBases` refused a stranger's draft before us.
+    for (const j of this.store.listTeachJobs({ draft_id: entry.anchor.id })) {
+      const snap = j.job_dir ? join(j.job_dir, 'snapshot.jsonl') : null;
+      if (snap && existsSync(snap) && j.snapshot_sha256 === sha) return readCanonicalJsonl(readFileSync(snap, 'utf8'));
+    }
     const token = caller.address ? this.market.deriveIntent(entry, caller.address).token : undefined;
     try {
       const fetched = await this.market.p2p.fetchDataset(sha, token);
@@ -1856,13 +1863,18 @@ export class TeachWorker {
     const probe = { hits: checks.taught.hits, total: checks.taught.total, heldout_hits: checks.heldout.hits };
     const ds = job.dataset_id ? this.store.getTeachDataset(job.dataset_id) : null;
     const recipeDataset = job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? job.facts.length, revision: ds?.revision ?? 1, source: (job.dataset_source ?? 'chat') as TeachDatasetSource, ...(ds?.name ? { name: ds.name } : {}) } : undefined;
+    const lineage = await this.lineageFields(job, recipe, samples);
+    // the FULL sample list beside the job (design §5.2): these exact bytes are the `answers_hash` preimage and are
+    // what the published training set carries as `benchmark.jsonl`, so a verifier can recompute the hash on the record
+    if (job.job_dir) writeFileSync(join(job.job_dir, 'benchmark.jsonl'), encodeBenchmarkJsonl(lineage.full), { mode: 0o600 });
     // re-check of an existing draft (model server was down the first time): keep the id, refresh benchmark + probe
     const existing = job.draft_id ? this.store.getDraft(job.draft_id) : null;
     if (existing) {
-      this.market.updateDraft(existing.id, { benchmark: lessonBenchmark(existing.anchor.benchmark.schema, samples), recipe: anchorRecipe(recipe, modelId, probe, recipeDataset) });
+      const b = lessonBenchmark(existing.anchor.benchmark.schema, lineage.samples);
+      if (lineage.answers_hash) b.answers_hash = lineage.answers_hash;
+      this.market.updateDraft(existing.id, { benchmark: b, recipe: anchorRecipe(recipe, modelId, probe, recipeDataset) });
       return existing.id;
     }
-    const lineage = await this.lineageFields(job, recipe, samples);
     const benchmark = lessonBenchmark(`taught/${slug}-${hex}`, lineage.samples);
     if (lineage.answers_hash) benchmark.answers_hash = lineage.answers_hash;
     const listed = new Set((await this.market.catalog()).filter((e) => e.status === 'LISTED').map((e) => e.anchor.id));
@@ -1892,8 +1904,8 @@ export class TeachWorker {
     const stack = job.bases ?? [];
     const teach = job.snapshot_sha256 !== null || job.dataset_sha256 !== null;
     if (!stack.length) {
-      const capped = teach ? capBenchmarkSamples(own) : { samples: own, answers_hash: undefined };
-      return { samples: capped.samples, answers_hash: capped.answers_hash, parents: undefined, derivation: undefined, base: undefined, datasetParents: undefined, defaultAccess: 'derivative' as DatasetAccess };
+      const capped = teach ? capBenchmarkSamples(own) : { samples: own, full: own, answers_hash: undefined };
+      return { samples: capped.samples, full: capped.full, answers_hash: capped.answers_hash, parents: undefined, derivation: undefined, base: undefined, datasetParents: undefined, defaultAccess: 'derivative' as DatasetAccess };
     }
     const direct = stack[stack.length - 1];
     const entries = new Map<string, CatalogEntry>();
@@ -1910,7 +1922,7 @@ export class TeachWorker {
     const confirmed = stack.every((b) => loaded.some((l) => l.patch_id === b.patch_id && l.loaded)) && typeof recipe.pre_state_sha256 === 'string';
     const exportMode = (recipe.export as 'delta' | 'squash' | undefined) ?? job.export_mode ?? 'delta';
     return {
-      samples: capped.samples, answers_hash: capped.answers_hash,
+      samples: capped.samples, full: capped.full, answers_hash: capped.answers_hash,
       parents: stack.map((b) => b.patch_id),
       derivation: { kind: 'extend' as const, bases: [{ patch_id: direct.patch_id, patch_sha256: direct.sha256, ...(de?.anchor.dataset?.sha256 ? { dataset_sha256: de.anchor.dataset.sha256 } : {}), rows: knownRows }], added_rows: job.facts.length, changed_rows: 0, removed_rows: 0 },
       base: confirmed ? { stack: exportMode === 'delta' ? stack.map((b) => ({ patch_id: b.patch_id, patch_sha256: b.sha256 })) : [], export: exportMode, pre_state_sha256: recipe.pre_state_sha256 as string } : undefined,
@@ -2092,9 +2104,14 @@ export class TeachWorker {
     if (!rows?.length) return null;
     const recipe = this.readTrainerRecipe(j.job_dir ?? '');
     const bytes = canonicalBytes(publishedRows(rows, pub.include_notes));
-    const benchmark: BenchmarkSample[] = [];
-    const seen = new Set<string>();
-    for (const s of [...(anchor.benchmark.samples ?? []), ...(recipe.benchmark_samples ?? [])]) { const k = `${s.prompt}\u0000${s.expect}`; if (!seen.has(k)) { seen.add(k); benchmark.push(s); } }
+    // the FULL list written at draft time — the same bytes the anchor's `answers_hash` commits to (design §5.1);
+    // a lesson from before that file existed falls back to what the anchor and the recipe carry
+    const preimage = j.job_dir ? join(j.job_dir, 'benchmark.jsonl') : null;
+    const benchmark: BenchmarkSample[] = preimage && existsSync(preimage) ? decodeBenchmarkJsonl(readFileSync(preimage, 'utf8')) : [];
+    if (!benchmark.length) {
+      const seen = new Set<string>();
+      for (const s of [...(anchor.benchmark.samples ?? []), ...(recipe.benchmark_samples ?? [])]) { const k = `${s.prompt}\u0000${s.expect}`; if (!seen.has(k)) { seen.add(k); benchmark.push(s); } }
+    }
     const manifest: Parameters<DatasetBlobStore['pin']>[1] = {
       source: (j.dataset_source ?? 'chat') as TeachDatasetSource, license: pub.license, access: pub.access,
       parents: anchor.dataset?.parents ?? [], row_origin: [], changed: [], removed: [],

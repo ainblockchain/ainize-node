@@ -297,9 +297,10 @@ test('a lesson from a dataset trains the selected slice, in order, and the job c
   // recipe.json names the dataset it was trained from
   const recipe = await N.teach!.recipeJson(N.teach!.get(job.id)!);
   assert.deepEqual((recipe.lesson as { dataset: unknown }).dataset, { sha256: ds.sha256, rows: 10, revision: 1, source: 'upload', trained_rows: 3 });
-  // and so does the private draft's anchor — hash only, the questions are never published
+  // and so does the private draft's anchor — hashes and counts, plus who may read the questions once it is published
+  // (lineage design §5.1/§6.1: teach-origin anchors default to 'derivative'; the publish sheet can still choose private)
   const draft = N.store.getDraft(done.draft_id!)!;
-  assert.deepEqual(draft.anchor.dataset, { sha256: ds.sha256, rows: 10, source: 'upload' });
+  assert.deepEqual(draft.anchor.dataset, { sha256: ds.sha256, rows: 10, source: 'upload', access: 'derivative' });
 });
 
 test('the legacy {facts} body still works and quietly becomes a dataset with source "chat"', async () => {
