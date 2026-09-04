@@ -762,7 +762,10 @@
      "user_cost": "A developer who established 'A below B' cannot rely on it after a `use A` refresh or a model restart; there is no way to state the order explicitly.",
      "fix": "Add `position INTEGER` to `applied` (design §5.4), keep it on re-apply, order `listApplied()` by it, accept `--position` / `--below <id>` on apply, and make the watchdog re-assert the whole stack in position order in one lock section (item 209).",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "fixed": true,
+     "fixed_by": "05097d9",
+     "fixed_note": "The `applied` table carries `position` (0 = bottom), `listApplied()` orders by it, `assertStack`/`applyStack` renumber the whole stack, re-applying a held knowledge answers “was already loaded” instead of rotating it, and the watchdog re-asserts the entire stack in position order in one lock section."
     },
     {
      "n": 214,
@@ -1485,7 +1488,10 @@
      "user_cost": "Verifier operators — the most likely early consumers of a daily feed — never pay the publisher; the publisher's revenue line for the channel silently excludes them.",
      "fix": "In `subscribe()` (and `patch apply` of a body acquired as verifier) settle the purchase through the x402 path whenever `!e.owned && !e.purchased`, regardless of blob possession; keep the download step skipped. Show `held as verifier — not licensed for use` in `patch get` (item 173).",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "`resolveTrack`/`subscribe` decide per item from `hasLicense`, not from blob possession: a `licenseOf` row whose source is `verification` is possession only, so a verifier is quoted and charged for every track item it does not own (and `patch apply` refuses a verification copy in the same words)."
     },
     {
      "n": 260,
@@ -1499,7 +1505,10 @@
      "user_cost": "A cron'd `ainize branch subscribe` cannot tell a full success from a morning where nothing was acquired; an operator whose model was restarting when they subscribed believes the track will load itself and it never does.",
      "fix": "Return `{ ok, items:[{id, status, action:'bought'|'applied'|'skipped'|'failed', reason, amount}] }` from `subscribe()`; the CLI streams per-item steps the way `patch buy` does (quorum, pay, download, waiting for model lock, applied) and exits 1 when any item failed (0 with a warning when items were skipped by status); the console renders the list in a sheet under the card. Either implement deferred apply (`pending_apply:<branch>` picked up by the watchdog) or change the copy to `applied now; nothing is loaded while the model is unavailable`.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "`subscribe` quotes the whole track first, buys every `plan: buy` item BEFORE the public record is appended, returns `{acquired, failed, applied, skipped, removed, spent}` per item, and throws 409 `subscription_incomplete` naming each failure rather than printing one green tick."
     },
     {
      "n": 261,
@@ -1513,7 +1522,10 @@
      "user_cost": "Leaving a track silently reverts a paid, deliberate configuration; the operator discovers it when answers change.",
      "fix": "Only remove items whose applied reason is `subscription:<name>` (and make `setApplied` keep an existing reason); list what will be unloaded and ask for confirmation in both the CLI (`[y/N]`, `--yes`) and the console; keep purchased items loaded and say so.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "Unsubscribe unloads only rows whose applied reason is `subscription:<track>` (in reverse order, cascading), so a knowledge the operator bought and loaded on purpose stays loaded; the log names exactly what was unloaded."
     },
     {
      "n": 262,

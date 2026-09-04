@@ -575,7 +575,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-05-partial-failure-tx-lost.txt.",
      "user_cost": "An orchestrator cannot tell which step failed or what was already paid, and has to re-parse free text to reconcile spend.",
      "fix": "Build `res` before the try, attach `error` and `failed_step`, print it as JSON on failure, then exit non-zero.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5a66e7c",
+     "fixed_note": "The agent’s catch prints the partial result as JSON under `--json` — `{success:false, error, steps, identity, pending_payments, tx_hash, pending_file}` — so a run that failed after the money moved is still a machine-readable result."
     },
     {
      "n": 293,
@@ -723,7 +726,10 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-15-chain-parent-on-node-c.txt + teach-triggered-23 (node-a verified pixel-parent-c, never bought it, hosted it as a base, sold the derivative and kept 21 %); code at HEAD market.ts:645-656, teach.ts:555-565.",
      "user_cost": "Creators cannot reason about whether to sell bodies, lineage or both; verifiers do not know what the role entitles them to; and 'no derivatives' cannot be expressed at all.",
      "fix": "State the rule where the decision is made — the publish form ('verifier nodes will hold this file and may host it as a base for visitor lessons; you receive 30 % of each derivative sale'), the verifier's Teaching tab, and the terms — and replace the free-text licence with the closed list L0 already added (types.ts:99) plus a `derivatives: allowed | credit-only | none` flag that `contextTargets` enforces.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "6955ba1",
+     "fixed_note": "`contextTargets` checks `market.hasLicense(entry)` before a knowledge may be used as a teaching base, in the same words as the other four doors (apply, the chat picker, chat, subscribe): a body fetched to score it is possession, never the right to teach on top of it and sell the derivative."
     },
     {
      "n": 303,
@@ -1405,7 +1411,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt (the payer's retry after a stranger redeemed); p2p-trust-12-replay-used-payment.txt.",
      "user_cost": "The buyer cannot choose the right recovery — download, re-pay or dispute — because every failure reads the same.",
      "fix": "If the prior settlement's buyer is the requester, re-issue the manifest (273); otherwise answer 'this payment was already redeemed by another party' with the settlement hash so the payer can raise a dispute (347).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "The four cases are now four answers: the payer re-presenting their own payment is re-issued the manifest with no second charge, a stranger replaying someone else’s payment gets `payment already used`, a nonce consumed by an earlier attempt says so and points at a fresh quote, and an expired nonce says `unknown or expired nonce`."
     },
     {
      "n": 351,
@@ -1431,7 +1440,10 @@
      "evidence": "Code at HEAD: market.ts:655-666, 704-712; the bearer reproduction in critic-04-ain-bearer-token.txt.",
      "user_cost": "A quote that says it expires does not, and the field a client is asked to echo has no effect — so a developer cannot tell which parts of the protocol are load-bearing.",
      "fix": "Consume the nonce and honour `expires_at` on the ain path as part of 344's fix, and document both in the protocol section (288).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "60f7477",
+     "fixed_note": "The nonce is checked against `expires_at` on both schemes and is spent last, after amount, signature and balance; on the AIN path the transfer must carry `transferKeyFor(resource, nonce)` and a payer signature over `x402-ain:<tx>:<nonce>`, so a quote is neither eternal nor a bearer ticket."
     },
     {
      "n": 353,

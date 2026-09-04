@@ -243,7 +243,10 @@
      "evidence": "packages/e2e/results/ux2/cli-daily-13-use-buy.txt shows both sinks: the purchase step `+  268ms  apply     끼움: 2992행  0.1s` and the confirmation `✓ applied pixelplus-korean: 끼움: 2992행  0.1s`. cli-daily-24: node-c's event log after `branch subscribe` → `runtime [pixelplus-korean] applied pixelplus-korean: 끼움: 2992행  0.1s`.",
      "user_cost": "The confirmation for the product's signature capability — load knowledge into a running model without a restart — is half English and half Korean in an otherwise English CLI, and the Korean half is an internal debug print. A non-Korean operator cannot tell whether it succeeded, how many rows landed or what the number means; a Korean operator sees a machine's log line where a confirmation should be. It is also brittle: any edit to the runtime script silently changes the CLI's success message.",
      "fix": "Have the runtime adapter parse the script's stdout into `{rows, seconds}` (or switch the script to one line of JSON) and let the CLI compose its own sentence from the anchor it already holds: `✓ loaded pixelplus-korean into Qwen3.8-Flash-Next — 2,992 memory entries in 0.1 s (no restart; unload with \\`ainize patch remove pixelplus-korean\\`)`. Keep the raw line under `--verbose` and in the event log.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "49d8613",
+     "fixed_note": "`patchApply`/`patchRemove` go through `applyStack`, which returns the node’s own composed sentence (`loaded in order: a → b` / `<id> was already loaded`); the reference runtime’s raw stdout no longer reaches the terminal in any locale."
     }
    ]
   },
