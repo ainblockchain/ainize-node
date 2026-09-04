@@ -41,6 +41,15 @@ export interface Policy {
   timing: { p50_s: number | null; p90_s: number | null; samples: number; backend: string; simulated: boolean; load_s_p50: number | null; s_per_row_p50: number | null };
   effort: { id: string; max_steps: number; eval_every: number }[];
   simulated_checks?: boolean;
+  /** teach.lineage — whether a lesson may be built on top of another knowledge (§12.1). */
+  lineage?: boolean;
+  /** Item 298: what a lesson's verification would actually find here, so no screen promises a quorum that cannot form. */
+  verification?: { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean };
+  /** Item 299: which ledger the money is in — CREDIT on a local node is play money and every screen has to say so. */
+  ledger?: { kind: 'local' | 'ain'; currency: string };
+  shares?: { contributor: number; lineage: number; node: number };
+  model?: string | null;
+  draft_ttl_days?: number;
 }
 
 export const ACTIVE = new Set(['QUEUED', 'PREFLIGHT', 'LOADING', 'TRAINING', 'EXPORTED', 'CHECKING']);
