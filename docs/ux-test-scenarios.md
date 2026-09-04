@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (323)
+# Ainize UX Test Scenarios (324)
 
-This document lists 323 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 324 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -33,15 +33,15 @@ This document lists 323 user-experience test scenarios for **Ainize** (ai-nize =
 | Operator | 6 | 4 | 2 | 0 |
 | Data provider (visitor) | 11 | 9 | 2 | 0 |
 | Node (developer) | 1 | 1 | 0 | 0 |
-| Visitor (creator) | 12 | 9 | 3 | 0 |
+| Visitor (creator) | 13 | 9 | 4 | 0 |
 | Buyer / creator | 4 | 4 | 0 | 0 |
 | Operator (CLI) | 3 | 0 | 2 | 1 |
-| **Total** | **323** | **158** | **143** | **22** |
+| **Total** | **324** | **158** | **144** | **22** |
 
 | Area | Count |
 |---|---:|
 | teach | 63 |
-| teach-lineage | 37 |
+| teach-lineage | 38 |
 | teach-dataset | 27 |
 | cli | 19 |
 | chat | 18 |
@@ -82,7 +82,7 @@ This document lists 323 user-experience test scenarios for **Ainize** (ai-nize =
 | api | 63 |
 | automated | 42 |
 | cli | 40 |
-| manual | 17 |
+| manual | 18 |
 
 ## Visitor (knowledge user)
 
@@ -10873,6 +10873,32 @@ prompt,answer,alt_prompt
 - `packages/e2e/tests/web-lineage.spec.ts (AZ-321)`
 - `packages/web/src/components/teach/BuiltOn.tsx, pages/TeachLessonPage.tsx, components/chat/LessonCard.tsx`
 - `docs/lineage-teach-design.md §4 SC-7, §7.6`
+
+### AZ-322 - The overview's training-set block tells the truth about a shared set, and names the questions this one inherited
+
+**Goal:** §6.1 / §5.2: a training set with `public` or `derivative` access IS published. The overview said "the questions and answers themselves were never published" under every knowledge — on the same page whose Family tree tab was saying they are shared with anyone who builds on it — and it showed only this knowledge's own fingerprint, never the parent set the rows came from.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** manual
+
+**Preconditions**
+
+- A knowledge published with a `derivative` training set that inherited rows from another knowledge (`dataset.parents` non-empty).
+
+**Steps**
+
+1. Open the knowledge page, Overview tab, and read *The data it was taught from*.
+
+**Expected**
+
+- For a shared set the note says the questions are shared under the set's licence and points at the Family tree tab for who may read them; a private set keeps the old sentence, which is true of it.
+- *Questions inherited from* names each parent training set: the knowledge, how many of its questions were kept, and that set's fingerprint — the sha a reader checks the claim against.
+- The fingerprints shown are the ones on the record (`dataset.sha256`, `dataset.parents[].sha256`), not recomputed in the browser.
+
+**Evidence**
+
+- `packages/web/src/pages/PatchPage.tsx (dataset-provenance, dataset-parents)`
+- `packages/web/src/i18n/pages/teach.ts (detail.ov.dataset_note_shared, detail.ov.dataset_from)`
+- `docs/lineage-teach-design.md §5.2, §6.1, §4 SC-10`
 
 ## Buyer / creator
 

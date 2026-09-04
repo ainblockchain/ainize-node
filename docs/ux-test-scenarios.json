@@ -10505,5 +10505,30 @@
    "packages/web/src/components/teach/BuiltOn.tsx, pages/TeachLessonPage.tsx, components/chat/LessonCard.tsx",
    "docs/lineage-teach-design.md §4 SC-7, §7.6"
   ]
+ },
+ {
+  "id": "AZ-322",
+  "persona": "Visitor (creator)",
+  "title": "The overview's training-set block tells the truth about a shared set, and names the questions this one inherited",
+  "goal": "§6.1 / §5.2: a training set with `public` or `derivative` access IS published. The overview said \"the questions and answers themselves were never published\" under every knowledge — on the same page whose Family tree tab was saying they are shared with anyone who builds on it — and it showed only this knowledge's own fingerprint, never the parent set the rows came from.",
+  "preconditions": [
+   "A knowledge published with a `derivative` training set that inherited rows from another knowledge (`dataset.parents` non-empty)."
+  ],
+  "steps": [
+   "Open the knowledge page, Overview tab, and read *The data it was taught from*."
+  ],
+  "expected": [
+   "For a shared set the note says the questions are shared under the set's licence and points at the Family tree tab for who may read them; a private set keeps the old sentence, which is true of it.",
+   "*Questions inherited from* names each parent training set: the knowledge, how many of its questions were kept, and that set's fingerprint — the sha a reader checks the claim against.",
+   "The fingerprints shown are the ones on the record (`dataset.sha256`, `dataset.parents[].sha256`), not recomputed in the browser."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "manual",
+  "evidence": [
+   "packages/web/src/pages/PatchPage.tsx (dataset-provenance, dataset-parents)",
+   "packages/web/src/i18n/pages/teach.ts (detail.ov.dataset_note_shared, detail.ov.dataset_from)",
+   "docs/lineage-teach-design.md §5.2, §6.1, §4 SC-10"
+  ]
  }
 ]
