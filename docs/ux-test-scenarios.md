@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (239)
+# Ainize UX Test Scenarios (320)
 
-This document lists 239 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 320 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -18,49 +18,59 @@ This document lists 239 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Persona | Count | P0 | P1 | P2 |
 |---|---:|---:|---:|---:|
-| Visitor (knowledge user) | 30 | 11 | 17 | 2 |
+| Visitor (knowledge user) | 42 | 18 | 22 | 2 |
 | Knowledge creator (operator) | 24 | 8 | 13 | 3 |
-| Node operator / developer | 31 | 13 | 15 | 3 |
-| AI agent / automation | 14 | 6 | 7 | 1 |
-| Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
-| Teach mode (visitor) | 21 | 7 | 10 | 4 |
+| Node operator / developer | 39 | 18 | 18 | 3 |
+| AI agent / automation | 25 | 14 | 10 | 1 |
+| Cross-cutting (errors, accessibility, i18n, performance) | 17 | 5 | 7 | 5 |
+| Teach mode (visitor) | 29 | 14 | 11 | 4 |
 | Teach mode (operator) | 9 | 4 | 5 | 0 |
-| Dataset uploader (visitor) | 82 | 40 | 39 | 3 |
+| Dataset uploader (visitor) | 84 | 40 | 41 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
-| CLI user / node operator | 1 | 1 | 0 | 0 |
-| Node operator | 6 | 4 | 2 | 0 |
+| CLI user / node operator | 2 | 1 | 1 | 0 |
+| Node operator | 10 | 5 | 5 | 0 |
 | Knowledge publisher | 1 | 1 | 0 | 0 |
-| **Total** | **239** | **102** | **116** | **21** |
+| Operator | 6 | 4 | 2 | 0 |
+| Data provider (visitor) | 11 | 9 | 2 | 0 |
+| Node (developer) | 1 | 1 | 0 | 0 |
+| Visitor (creator) | 9 | 6 | 3 | 0 |
+| Buyer / creator | 4 | 4 | 0 | 0 |
+| Operator (CLI) | 3 | 0 | 2 | 1 |
+| **Total** | **320** | **155** | **143** | **22** |
 
 | Area | Count |
 |---|---:|
-| teach | 57 |
-| teach-dataset | 23 |
+| teach | 63 |
+| teach-lineage | 34 |
+| teach-dataset | 27 |
+| cli | 19 |
 | chat | 18 |
-| cli | 16 |
-| x402 | 14 |
-| api | 10 |
+| api | 16 |
+| mcp | 16 |
+| x402 | 15 |
 | dashboard | 8 |
+| teach-parser | 8 |
 | agent | 7 |
-| teach-parser | 7 |
 | verification | 7 |
 | account | 6 |
 | manage | 6 |
+| runtime | 6 |
 | teach-ui | 6 |
 | explore | 5 |
 | ledger | 5 |
+| network | 5 |
 | new-patch | 5 |
 | patch | 5 |
 | error | 4 |
 | landing | 4 |
-| network | 4 |
 | signing | 4 |
 | a11y | 3 |
 | i18n | 3 |
 | teach-limits | 3 |
+| detail | 2 |
 | drive | 2 |
 | logs | 2 |
-| detail | 1 |
+| teach-web | 2 |
 | docs | 1 |
 | perf | 1 |
 | teach-auth | 1 |
@@ -68,10 +78,11 @@ This document lists 239 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 158 |
-| cli | 38 |
-| api | 32 |
-| manual | 11 |
+| e2e | 160 |
+| api | 63 |
+| cli | 40 |
+| automated | 39 |
+| manual | 18 |
 
 ## Visitor (knowledge user)
 
@@ -1167,6 +1178,346 @@ This document lists 239 user-experience test scenarios for **Ainize** (ai-nize =
 - `packages/node/src/api.ts POST /api/chat (messages_base / messages_patched, both refined to end with the same message as messages); packages/node/src/market.ts chatInner() msgsBase / msgsPatched and the reported `history``
 - `packages/cli/src/commands/chat.ts chatRepl(): one transcript per column (state.transcript / state.baseTranscript)`
 - `packages/web/src/i18n/pages/chat.ts: chat.history.split`
+
+### AZ-274 - A visitor finds the MCP integration from the product, not from the source tree
+
+**Goal:** The in-product docs page and the repo README are where a developer looks first. The MCP server has to be reachable from both, with the copy-paste line and the two safety rules visible without leaving the page.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** e2e
+
+**Preconditions**
+
+- A node serving the web build at http://localhost:3402
+
+**Steps**
+
+1. Open http://localhost:3402/docs
+2. Read the "Connect an AI agent (MCP)" block above the CLI/API tabs
+3. Copy the claude mcp add line
+4. Switch the locale to 한국어 and read the same block
+5. Open the repository README and find the MCP section
+
+**Expected**
+
+- The docs page carries an MCP block naming the package (packages/mcp), the one-line install, and the two promises that matter (a quote before any payment; nothing that touches the model blocks the caller)
+- The copy button yields a runnable claude mcp add command
+- The Korean locale renders the same block in Korean — no untranslated key, no English fallback string
+- The repo README links packages/mcp/README.md and packages/mcp/SKILL.md from its References section
+
+**Evidence**
+
+- `packages/web/src/pages/DocsPage.tsx`
+- `packages/web/src/i18n/pages/docs.ts`
+- `README.md`
+- `packages/mcp/README.md`
+
+### AZ-284 - The family tree names every relation for what it is, and says what each knowledge added
+
+**Goal:** The owner asked to SEE the family: what this was built on, what was built on it, and what each one contributed. A picture that only draws lines would not answer the second half.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A ← B ← C with D combining A and C, one pre-lineage child that only declares A as a parent, and one unannounced draft.
+
+**Steps**
+
+1. GET /api/patches/fam-b/tree?depth=4
+2. GET /api/patches/fam-a/tree?depth=8 (the diamond)
+
+**Expected**
+
+- Ancestors and descendants only — not the whole catalogue; the knowledge asked about is depth 0, an ancestor negative, a derivative positive.
+- Edge kinds are the child's own claim: extend, contradict, merge; a parent declared before add-ons existed is `declared` and the node is flagged `legacy`.
+- Each node carries `added` = questions / changed / removed / rows / new, and `base_stack` + `export` for a delta child.
+- A knowledge reached twice by two routes is ONE node with one edge per relation (the walk is cycle-safe).
+- `family` counts sales, knowledges and creators; the money line is produced by the real splitter and, when nobody outside is owed anything, names nobody instead of naming an ancestor beside a 0 %.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-284)`
+- `docs/lineage-teach-design.md §4 SC-9, §5.5, §12.5`
+
+### AZ-285 - The tree is depth-capped and cycle-safe, and hides what the caller may not see
+
+**Goal:** A family tree is a walk over anchors written by strangers: it must terminate, and it must not leak the existence of an unannounced lesson.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- The same family, plus a private draft child, and a hand-built pair of anchors that name each other as parents.
+- An announced test-visibility fixture child of the same knowledge.
+
+**Steps**
+
+1. GET /api/patches/fam-a/tree?depth=1
+2. GET /api/patches/fam-a/tree?depth=9
+3. GET the tree as a stranger and as the operator
+4. Walk a catalogue where two anchors are each other's parent and one ancestor is unknown here
+
+**Expected**
+
+- depth=1 returns one hop in each direction and says `truncated: true`; depth=9 is refused with 400 rather than silently clamped (the cap is 8).
+- A stranger's tree does not contain the unannounced draft; the operator's does.
+- A cycle terminates, and an ancestor no node here holds is a `{ missing: true }` placeholder, not a hole and not a fabricated node.
+- An announced test anchor is not in a public knowledge's family picture, though asking about the fixture itself still answers — and it is not counted in "built on N times" either.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-285)`
+- `docs/lineage-teach-design.md §5.5, §12.5`
+
+### AZ-286 - Signals keep their scope, and a sale that was not a sale is not counted
+
+**Goal:** "Doing well" is two different measurements — what the ledger says, and what THIS node saw in 30 days. Adding them together, or counting a free download as demand, would be a number nobody measured.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A knowledge with three public children and one unannounced draft child; settlements including a price-0 one, one from the author itself, and one 40 days old.
+
+**Steps**
+
+1. GET /api/patches/fam-a/signals
+2. Compute salesOf() over the four settlements
+
+**Expected**
+
+- `network.scope = 'network'`, `node.scope = 'node'`, `node.window_days = 30` — the two halves are labelled and never summed.
+- `built_on` counts the three public children and NOT the unannounced draft or the announced test fixture (an integer must not publish the existence of a private lesson, and a fixture is not demand).
+- A price-0 settlement and the author buying from itself are not sales; the 40-day-old one is in `sales_all` and not in `sales_30d`.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-286)`
+- `docs/lineage-teach-design.md §10, §12.5`
+
+### AZ-288 - Open questions are public as counts, and a request is the buyer's own text to share or not
+
+**Goal:** "What to add on top of this" must be readable by a stranger deciding what to teach, without turning what buyers typed into public text.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published knowledge with no reported questions.
+
+**Steps**
+
+1. POST /api/patches/:id/issues with share:false
+2. POST again with share:true
+3. GET /api/patches/:id/issues
+4. Ask the first question again with different whitespace
+5. GET /api/explore/shelves
+
+**Expected**
+
+- Both are 201 and the response says which was shared; the list carries the shared wording and a null text for the other.
+- Asking the same thing with different spacing is the SAME question (the parser's key, F13) and raises its count instead of adding a row.
+- The requests appear on Explore's "Asked for" shelf, whose scope is labelled `node`.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-288)`
+- `packages/e2e/tests/web-tree.spec.ts (AZ-291)`
+- `docs/lineage-teach-design.md §4 SC-12, SC-17, §12.5`
+
+### AZ-289 - "Mark wrong" carries no question — the node already knows which turn it was
+
+**Goal:** Per-turn consent is worth nothing if the client can post any text against any knowledge; the node must resolve the turn itself and refuse everything else.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A chat turn against a loaded knowledge, from this visitor.
+
+**Steps**
+
+1. POST /api/chat/feedback with an unknown turn id
+2. Mark a benchmark question wrong
+3. Mark a free question wrong with share:false, then the same question with share:true
+4. POST feedback naming a knowledge that was not loaded for that turn
+
+**Expected**
+
+- An unknown turn is 404 `turn_unknown` and records nothing.
+- A miss on one of the knowledge's own benchmark questions is stored with its `sample_index`; its text is read back off the anchor, which was already public.
+- A free question is a count with no wording until the visitor chooses *Share*; the two reports are one question with count 2.
+- Naming a knowledge that was not loaded for that turn is 400 and writes nothing against it.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-289)`
+- `docs/lineage-teach-design.md §4 SC-13, §10, §12.5`
+
+### AZ-290 - The family tree tab names the base, what the add-on added, and who shares each sale
+
+**Goal:** Story D in a browser: standing in front of someone else's knowledge, a creator sees the family, what each member contributed, and what a sale pays whom.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u (:3422) with teach.lineage on, a published base and an add-on trained on top of it (stub backend — nothing here is a measurement).
+
+**Steps**
+
+1. Open the base's page
+2. Read the doing-well strip and its scope caption
+3. Open the Family tree tab
+4. Open the add-on's page and read its header, then its tree
+
+**Expected**
+
+- The strip is in the header and its caption says which numbers are this node's.
+- The tree draws the add-on under the base, and '+2 questions' is on the node itself — not only in a tooltip.
+- The legend names the relations in the design's words; 'This family: … 2 knowledges' is under the drawing.
+- The add-on's header says it is an add-on to the base and needs it to be used; its money line names the base as what the lineage share is paid for; *Build on this* is offered (the flag is on).
+
+**Evidence**
+
+- `packages/e2e/tests/web-tree.spec.ts (AZ-290)`
+- `packages/web/src/components/detail/FamilyTree.tsx`
+- `docs/lineage-teach-design.md §4 SC-9, SC-11`
+
+### AZ-291 - The training set says who may read it, and the open questions are counts until someone shares one
+
+**Goal:** A creator deciding whether to build on this needs two facts on the page: may I have the questions, and what is still missing.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- The same base, published with dataset access 'derivative' and a licence.
+
+**Steps**
+
+1. Open the base's Family tree tab
+2. Read the training-set block
+3. Read the open-questions panel
+4. Ask the creator for something WITHOUT sharing the wording, then reload
+
+**Expected**
+
+- The block reads '3 questions · available to anyone who builds on it · CC-BY-4.0'.
+- With nothing reported, the panel says so and says what to do about it.
+- The request comes back as 'asked 1 times' with the wording nowhere on the page, and the panel says the question was counted, not kept.
+
+**Evidence**
+
+- `packages/e2e/tests/web-tree.spec.ts (AZ-291)`
+- `packages/web/src/components/detail/{TrainingSetBlock,OpenQuestions}.tsx`
+- `docs/lineage-teach-design.md §4 SC-10, SC-12`
+
+### AZ-292 - Explore shows what is being built on, with the number it is made of
+
+**Goal:** "What should I build on?" is answered by a shelf, not by a search box: the visitor sees which knowledge people are building on and what a buyer would also need.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- The same base and add-on, published on node-u.
+
+**Steps**
+
+1. Open /explore
+2. Read the 'Being built on' shelf
+3. Read the 'Just published' shelf
+
+**Expected**
+
+- 'Being built on' carries the base with 'Built on 1×' — children on the ledger plus this node's derive fetches.
+- The add-on's card says 'Needs <base>', so a buyer knows before the sheet.
+- A shelf with nothing in it is not rendered as an empty claim about the market.
+
+**Evidence**
+
+- `packages/e2e/tests/web-tree.spec.ts (AZ-292)`
+- `packages/web/src/components/public/Shelves.tsx`
+- `docs/lineage-teach-design.md §4 SC-17, §10`
+
+### AZ-296 - A newer version sits beside the knowledge, not above it — and the knowledge asked about is always depth 0
+
+**Goal:** The tree's rows are the reader's bearings: what is above me, where I am, what is below. A version edge is not a hop, and must not move anyone.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- The demo cluster's own shape: a knowledge that lists its previous epoch as a parent AND supersedes it, plus a knowledge it replaced that was never its parent.
+
+**Steps**
+
+1. Walk the tree from the newest version
+
+**Expected**
+
+- The knowledge asked about is depth 0 — its parent's `superseded_by` no longer drags it into the ancestors' row.
+- The parent stays one hop up, with both a lineage edge and a `version` edge.
+- A knowledge it replaced without ever being built on it is a sibling at depth 0, not an ancestor.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-296)`
+- `docs/lineage-teach-design.md §5.5, §12.5`
+
+### AZ-297 - Where building on is switched off, the family is still readable — and a knowledge from before training sets is not called private
+
+**Goal:** §18 ships the read-only half of L6 everywhere, including the demo cluster where `teach.lineage` is off. What is refused there must be refused for the true reason.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** manual
+
+**Preconditions**
+
+- node-a (:3402) on the AIN dev chain with teach.lineage unset (off), serving the demo catalogue: krx-all-2761 lists its previous epoch as a parent, supersedes it, and carries no training set.
+
+**Steps**
+
+1. GET /api/teach/policy (lineage must be false)
+2. GET /api/patches/krx-all-2761/tree?depth=8 and GET /api/explore/shelves
+3. Open the knowledge page and its Family tree tab at 1280 px and at 360 px
+
+**Expected**
+
+- The tree and the shelves answer with the flag off — reading where a knowledge came from is not a creator affordance.
+- The knowledge asked about is depth 0, its epochs are above it as `declared` edges with the legacy chip, and the knowledge it merely replaced is a sibling.
+- *Build on this* is disabled and the reason is 'no training set on the record' — NOT 'the creator kept it private', which nobody chose.
+- At 360 px the SVG is replaced by the same family as a list; the legend, the family line and the money lines stay.
+
+**Evidence**
+
+- `run 2026-09-04: node-a :3402, `curl /api/patches/krx-all-2761/tree?depth=8` → root depth 0, ep12/ep6 declared+version, pixelplus depth 0`
+- `packages/web/src/pages/PatchPage.tsx, packages/web/src/components/detail/FamilyTree.tsx`
+- `docs/lineage-teach-design.md §14, §18 gating`
+
+### AZ-299 - Knowledge kept for another context is a track of its parent, and the tree names the track
+
+**Goal:** Two answers that are both right for different contexts must not be drawn as one replacing the other (claim 17) — the family tree is where a buyer decides which one is theirs.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published knowledge, and a child of it published on a different track with a branch record.
+
+**Steps**
+
+1. GET the parent's tree
+
+**Expected**
+
+- The edge to the child is `track` — not `declared` and not `version`.
+- The child's node carries its branch and the track names it is on; the parent carries none.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-299)`
+- `docs/lineage-teach-design.md §5.5, §12.5`
 
 ## Knowledge creator (operator)
 
@@ -3184,6 +3535,7 @@ just prose, nothing else
 - Operator bearer GET /api/teach/datasets/D → 200 with the full dataset (moderation read)
 - Operator bearer PATCH /api/teach/datasets/D → 401 invalid_signature: the patch route requires the owner's teaching key; the dataset's name and revision are unchanged
 - K1 GET /api/teach/datasets/D → 200, name and revision exactly as before the whole sequence
+- Since lineage L4 (§14): the 404 wall is about the WORKING dataset. The published copy of a training set is a separate, immutable object served by its access level (AZ-240) and copied by strangers with POST /api/patches/:id/fork (AZ-276, AZ-277) — reading someone's published questions is a feature, reading their working dataset is still not.
 
 **Evidence**
 
@@ -3262,6 +3614,241 @@ just prose, nothing else
 - `packages/node/src/verifier.ts round() (re-verify a CHALLENGED anchor it already attested)`
 - `packages/web/src/pages/PatchPage.tsx challenge banner + Buy tab, packages/web/src/pages/ManagePage.tsx challenged banner`
 - `packages/node/test/trust.test.ts item 153 (the same flow on three nodes, automated)`
+
+### AZ-246 - Lineage rules as pure functions: the on-chain slice, the licence matrix, the anchor invariant, bf16 pre-state and the merkle root
+
+**Goal:** Every node — writer, reader and verifier — must agree on these without a network: the same 32 samples, the same hash, the same refusals, the same pre-state for a delta whatever order its rows are in (§5.1, §5.4, §6.4).
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- No node needed: packages/core unit tests.
+
+**Steps**
+
+1. Run `npm test -w packages/core`.
+
+**Expected**
+
+- capBenchmarkSamples: the child's own first, then one per base with `source`, capped at 32, de-duplicated; `answers_hash` is over the FULL list and is order-sensitive.
+- licenseCompatible: CC0/CC-BY/ODC-By/Proprietary bases accept any child licence; a CC-BY-SA base forces CC-BY-SA and an access floor; an unknown string is `bad_license`.
+- lineageProblems: bases outside `parents[]`, a delta with an empty stack, a malformed `pre_state_sha256`, a self-parent, an unknown derivation kind, a negative row count and a teach anchor over the 32-sample cap are all named.
+- preStateSha256 is invariant to row order and sensitive to any bf16-visible change; bf16Bits rounds half to even.
+- merkleRoot is defined for 0, 1, 2 and odd leaf counts and carries an odd leaf up rather than duplicating it.
+
+**Evidence**
+
+- `packages/core/test/lineage.test.ts (AZ-246)`
+- `packages/core/src/lineage.ts`
+- `docs/lineage-teach-design.md §5.1, §5.4, §6.3, §6.4`
+
+### AZ-247 - The AIN round trip keeps derivation, base stack and dataset parents (empty arrays included)
+
+**Goal:** AIN drops empty arrays, so a family tree read back from the chain must not lose an edge — and an anchor written before lineage must read back exactly as it was written (§5.1, §14).
+
+**Priority:** P1 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- No node needed: packages/core unit tests.
+
+**Steps**
+
+1. toAin → JSON → fromAin → withEmptyArrays for an anchor with derivation/base/dataset, for one whose arrays were dropped, and for a pre-lineage anchor.
+
+**Expected**
+
+- All three lineage objects survive unchanged and still satisfy the invariant.
+- Dropped arrays read back as [] (never undefined) inside the objects that exist.
+- A pre-lineage anchor reads back with no `derivation`, no `base` and no `dataset` — never as empty objects.
+
+**Evidence**
+
+- `packages/core/test/lineage.test.ts (AZ-247)`
+- `packages/core/src/ain-ledger.ts (withEmptyArrays)`
+- `docs/lineage-teach-design.md §5.1, §14`
+
+### AZ-250 - Royalties along a family tree: every ancestor author is paid, both parents of a merge are paid, and Σ payouts = price
+
+**Goal:** Money has to follow the tree before the tree exists, and the pass-2 bug (F9: two 0.5 contributors got 50 %/25 %) had to go first (§11).
+
+**Priority:** P0 - **Area:** x402 - **Automation:** api
+
+**Preconditions**
+
+- No node needed: packages/core unit tests.
+
+**Steps**
+
+1. royaltySplit over the §11 worked examples 1–8, including a two-parent merge and two 0.5 data providers.
+
+**Expected**
+
+- The pool is split equally among unique ancestor authors reached through `parents[]` (depth 16, cycle-safe); an ancestor authored by the seller folds back into the seller.
+- Pass 2 carves each seller-side contributor from the FIXED remainder: two 0.5 providers get 50 % / 50 %.
+- Both parents of a merge are paid; Σ payouts equals the price in every example; Σ contributor shares ≤ 1 is refused at createDraft/publish.
+
+**Evidence**
+
+- `packages/core/test/core.test.ts (royaltySplit)`
+- `packages/core/src/catalog.ts`
+- `docs/lineage-teach-design.md §11`
+
+### AZ-259 - Connect the Ainize MCP server to a client, and see only the tools this configuration allows
+
+**Goal:** A developer adds the server to Claude Code (or Cursor) in one line and immediately knows what it can and cannot do — the tool list itself is the permission model, and the reason each missing capability is off is readable.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** manual
+
+**Preconditions**
+
+- npm run build -w packages/core -w packages/mcp
+- A node answering /api/info (node-u http://localhost:3422 is the safe default)
+- No AINIZE_TEACH_KEY, no operator credential, AINIZE_MCP_SESSION_BUDGET unset
+
+**Steps**
+
+1. claude mcp add ainize -e AINIZE_NODE_URL=http://localhost:3422 -- node <repo>/packages/mcp/dist/bin.js
+2. Ask the client to list the server's tools and resources
+3. Call node_status
+4. Re-add with -e AINIZE_TEACH_KEY=$AINIZE_TEACH_KEY and list the tools again
+
+**Expected**
+
+- The handshake succeeds over stdio even though @ngram/core prints "secp256k1 unavailable" on import — bin.ts guards stdout before importing anything
+- The read tools plus live_test, job_status, job_cancel, job_list and quote are listed; teach, buy, publish_knowledge, apply_knowledge and remove_knowledge are NOT
+- Four resources are listed: ainize://instructions, ainize://node/info, ainize://budget, ainize://openapi
+- node_status.capability_reasons explains each missing capability by naming the env var that turns it on ("no teaching key is configured on this MCP server (AINIZE_TEACH_KEY)")
+- With a teaching key the second run additionally lists create_training_set, teach_preflight, teach and download_lesson
+- The client config in packages/mcp/client-config.example.json produces the same result when pasted into .mcp.json or ~/.cursor/mcp.json
+
+**Evidence**
+
+- `packages/mcp/src/bin.ts`
+- `packages/mcp/src/config.ts`
+- `packages/mcp/client-config.example.json`
+- `packages/mcp/README.md (Configure a client)`
+
+### AZ-270 - No secret can reach the model: not as an argument, not in a result, not through an error
+
+**Goal:** Three secrets exist (operator password, teaching key, node identity) and any of them in a transcript is a real leak. The guard has to be structural and outbound, not a review habit.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- An MCP server configured with an operator credential and a teaching key
+
+**Steps**
+
+1. Enumerate every registered tool's input schema
+2. Call tools that return purchases, manifests, download links and upstream errors
+3. Force an upstream 401/403 and read the error that comes back
+
+**Expected**
+
+- No input schema anywhere has a field named like a credential or a node URL (test/schema.test.ts fails the build on one)
+- my_library returns the tx hash but never the stored manifest, which carries a download token
+- download_lesson returns local file paths, never the node's ?token= links
+- The outbound scrubber redacts 64-hex values, Bearer tokens, x-ngram-auth triples, query tokens and the configured secrets from results AND errors, while keeping tx_hash, sha256, record_hash and address readable
+- x-ngram-auth signatures are built per attempt and never reused, because the node's replay cache refuses a second verification of the same header
+- scripts/validate-skill.mjs fails if any doc or example ever pastes a credential-shaped literal
+
+**Evidence**
+
+- `packages/mcp/src/scrub.ts`
+- `packages/mcp/test/scrub.test.ts`
+- `packages/mcp/test/schema.test.ts`
+- `packages/mcp/test/auth.test.ts`
+- `packages/mcp/scripts/validate-skill.mjs`
+
+### AZ-272 - The skill and the README cannot drift away from the server
+
+**Goal:** A SKILL.md that names a tool the server does not register, or a README missing a tool, is worse than no document: an agent follows it and fails. The check has to run in CI, not in review.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- packages/mcp built and its test suite runnable
+
+**Steps**
+
+1. node packages/mcp/scripts/validate-skill.mjs
+2. npm test -w packages/mcp
+3. Rename a tool in src/tools/ and re-run
+
+**Expected**
+
+- The validator checks the frontmatter fields, the name pattern, the description (which must say WHEN to use the skill), the ~5,000-token body budget, that every references/*.md is linked and every link resolves, that every tool the body names is registered, that no doc carries a credential-shaped literal, and that the .claude-plugin metadata parses and points at a skill that exists
+- test/skill.test.ts additionally asserts that EVERY tool the server registers has an example call and answer in the README, and that the skill names the two hard rules, the two tiers and all five workflows
+- A renamed or removed tool fails the suite immediately, naming the tool
+- A body over the token budget, an unlinked reference and a pasted key each fail the validator (asserted with a tampered copy in a temp directory)
+
+**Evidence**
+
+- `packages/mcp/scripts/validate-skill.mjs`
+- `packages/mcp/test/skill.test.ts`
+- `packages/mcp/SKILL.md`
+- `packages/mcp/EVAL.md`
+
+### AZ-273 - The HTTP transport refuses to expose spending or model mutation on a port
+
+**Goal:** stdio is one client on one machine; a port is reachable by anyone who can route to it. The server must not quietly become a spending endpoint for the network.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** cli
+
+**Preconditions**
+
+- packages/mcp built
+
+**Steps**
+
+1. node packages/mcp/dist/bin.js --http 3499
+2. AINIZE_MCP_SESSION_BUDGET=5 node packages/mcp/dist/bin.js --http 3499
+3. Repeat with --i-am-the-only-user
+4. POST an initialize request to http://127.0.0.1:3499/mcp
+
+**Expected**
+
+- With no budget and no allow flags the server starts and answers initialize with a session id and the instructions string
+- With a non-zero budget (or ALLOW_APPLY / ALLOW_PUBLISH) it exits non-zero with an explanation, unless --i-am-the-only-user is passed
+- DNS-rebinding protection is on for localhost (createMcpExpressApp)
+- One MCP server instance is built per session
+
+**Evidence**
+
+- `packages/mcp/src/bin.ts`
+- `packages/mcp/README.md (Configure a client)`
+
+### AZ-275 - A question remembers which training set it came from, and a forged pointer does not
+
+**Goal:** Inheritance is a property of the QUESTIONS, not of a side table: a row copied out of someone's training set carries `from: '<knowledge>#<row>'` inside the bytes that are hashed, so the claim can be checked against the parent's own bytes instead of believed.
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** automated
+
+**Preconditions**
+
+- No node needed — the parser is a pure function over a Buffer.
+
+**Steps**
+
+1. Parse a jsonl file whose rows carry `from`, `replaces`, a malformed pointer and no pointer at all.
+2. Hash the rows, write them back out as canonical bytes and read them again.
+3. Parse a CSV with a column called `source`.
+
+**Expected**
+
+- Only a well-formed `<patch id>#<row index>` survives; `not a pointer` and `krx-all-2761#x` are dropped rather than shown as provenance.
+- The pointers are part of `dataset.sha256`: the same questions with and without them hash differently.
+- The canonical round-trip keeps `from` and `replaces`, and the preview rows carry them so the browser does not have to guess what is inherited.
+- A spreadsheet column called `source` stays a note — provenance is never inferred from prose.
+
+**Evidence**
+
+- `packages/node/test/teach-dataset.test.ts (AZ-275)`
+- `docs/lineage-teach-design.md §5.2`
 
 ## AI agent / automation
 
@@ -3754,6 +4341,352 @@ just prose, nothing else
 - `packages/agent/src/identity.ts agentHome() (NGRAM_AGENT_HOME), loadIdentity() (0o600)`
 - `packages/agent/src/agent.ts fetchCatalog(), creditBalance(), fetchInitialCredit()`
 - `packages/node/src/api.ts GET /api/info (initial_credit), GET /api/catalog status filter`
+
+### AZ-260 - Find knowledge that answers a question, and read its verification before believing it
+
+**Goal:** The browse half of the marketplace through MCP: flat rows small enough to keep in context, and a detail view that carries who verified the knowledge, with what score, on what runtime.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- node-a http://localhost:3402 with the demo catalog (krx-all-2761 LISTED, quorum 2/2)
+
+**Steps**
+
+1. search_knowledge { query: "ticker", limit: 3 }
+2. get_knowledge { id: "krx-all-2761" }
+
+**Expected**
+
+- Each item is a flat row (id, name, price, currency, rows, size_mb, status, downloads, quorum, quorum_ok, sellable, author_name, model, schema, node_url) — never the raw CatalogEntry, whose nested anchor and attestations would exhaust the caller's context
+- facets.models and facets.schemas come back for narrowing
+- get_knowledge returns verification.attestations with verifier_name, passed, score {free_generation, pre_apply} and verified_on — and no signature and no stake field, because verification carries neither
+- lineage.parents / children (one level), requires[] (empty for krx-all-2761), availability {has_body, purchased, owned, applied, gateway_url}
+- supersedes lists the three older versions; a SUPERSEDED item is reported as such rather than silently swapped for the newer id
+
+**Evidence**
+
+- `packages/mcp/src/tools/read.ts`
+- `packages/mcp/test/read.test.ts`
+- `packages/mcp/README.md (search_knowledge, get_knowledge)`
+
+### AZ-261 - Prove a knowledge works: the same question before and after, without blocking the agent
+
+**Goal:** The signature capability over MCP. The tool must return a handle in milliseconds while the model call is still in flight, because the shared runtime lock can be held for minutes and a blocking tool would time out in the client and be retried into the queue it is waiting on.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- node-a :3402 with the shared model server http://localhost:8002 available
+- krx-all-2761 LISTED and testable
+
+**Steps**
+
+1. live_test { question: "픽셀플러스 종목코드 알려줘. 숫자만.", knowledge: ["krx-all-2761"], mode: "compare" }
+2. job_status { job_id, wait_ms: 90000 }
+3. Report both answers to the user
+
+**Expected**
+
+- live_test answers in well under a second (measured 91 ms on node-a) with {job_id, state: "queued", poll_after_ms, model_lock, quota, applied_on_this_model}
+- model_lock.sentence names the holder and the seconds held, computed from the node's own `now` — e.g. "the model is held by pid:2658057 (a live test of krx-all-2761) for 8 s"
+- job_status returns result.before.answer "058420" and result.after.answer "087600" (measured 2026-09-04), changed: true, apply_ms_total ~3.8 s, elapsed ~19 s
+- verdict is null and caveats says the question is not in the knowledge's own benchmark, so the comparison is unscored — it is never presented as a verified score
+- result.quota.remaining counts down from 20 and carries the note that the bucket is shared by everyone using this MCP server
+- When another knowledge is already pinned on the shared model, was_already_applied / applied_on_this_model say so, so the "before" column is not passed off as a bare model
+
+**Evidence**
+
+- `packages/mcp/src/tools/live.ts`
+- `packages/mcp/test/live.test.ts`
+- `packages/mcp/test/smoke-node-u.test.ts`
+- `packages/mcp/README.md (live_test)`
+
+### AZ-262 - Give up on a live test that is still queued, and be told honestly whether it cost anything
+
+**Goal:** Cancelling before the model has seen the request must be free, and cancelling after it has must not be reported as free. The node already distinguishes the two; the MCP layer must not blur it.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A live test queued behind another holder of the model lock
+
+**Steps**
+
+1. live_test { … } while the lock is held
+2. job_cancel { job_id }
+3. Repeat with a job that has already started running
+
+**Expected**
+
+- A queued cancel returns cancelled: true, reason: "queued", charged: false and the note "nothing had reached the model, so nothing was charged"
+- The in-flight POST ends as HTTP 499 {cancelled: true, charged: false} — an outcome, not a failure
+- The free-live-test quota does not move
+- A running cancel returns charged: true with reason "already_running" and says the node does not stop
+- A cancelled lesson says the daily lesson is NOT returned, because the node charges one at submit time
+
+**Evidence**
+
+- `packages/mcp/src/tools/live.ts`
+- `packages/mcp/src/jobs.ts`
+- `packages/mcp/test/jobs.test.ts`
+
+### AZ-263 - Quote before spending: buy has no id, and cannot be called on a price the human never saw
+
+**Goal:** The defect four UX reviews found — buying without a quote — is closed structurally rather than by instruction. What gets bought is whatever a quote named, and the total has to be restated character for character.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A private local-ledger cluster (NGRAM_LEDGER=local) with a LISTED knowledge and an operator credential
+- AINIZE_MCP_SESSION_BUDGET set to a non-zero amount (with 0, the buy tool is not registered at all)
+
+**Steps**
+
+1. quote { id: "<listed-id>" }
+2. Attempt buy without quote_id, then with a wrong confirm_total, then without confirm: true
+3. buy { quote_id, confirm_total: <the quoted total>, confirm: true }
+4. job_status { job_id }
+
+**Expected**
+
+- quote returns quote_id, expires_at, per-item price/status/quorum/sellable/already_purchased/owned/body_held, total_requested, total_with_bases, the budget block and confirm_with — plus "next": show the human the total and STOP
+- buy's input schema has exactly {quote_id, confirm_total, confirm, idempotency_key, apply, max_price, dry_run} — no id, no node URL, no credential
+- The three malformed attempts fail with quote_required, quote_mismatch and confirmation_required, and the fake node records that /api/patches/:id/buy was never called
+- The happy path returns a job handle, then a result carrying the node's own steps[] timeline (quorum → 402 → settled → download) and the decremented budget
+- dry_run: true reports gates_passed[] and reserves no nonce
+
+**Evidence**
+
+- `packages/mcp/src/tools/money.ts`
+- `packages/mcp/src/money.ts`
+- `packages/mcp/test/money.test.ts`
+- `packages/mcp/references/money.md`
+
+### AZ-264 - A purchase over the session cap is refused with the numbers, never clamped and never partial
+
+**Goal:** The budget is server configuration the model cannot raise. Being refused must leave the user with the four numbers and a real choice, not a vague failure.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- AINIZE_MCP_SESSION_BUDGET=10 (or 1) and a knowledge priced above it — node-b :3403 quoting krx-all-2761 at 25 AIN is the live case
+
+**Steps**
+
+1. quote { id: "krx-all-2761", dry_run: true }
+2. buy { quote_id, confirm_total: "25", confirm: true }
+3. Try to raise the ceiling with the tool argument max_price
+
+**Expected**
+
+- affordable.explanation names the shortfall in one sentence: "krx-all-2761 alone costs 25 AIN and does not fit. With the bases it needs the honest total is 25 — 15 over your remaining 10…" (measured on node-b 2026-09-04)
+- buy fails with budget_exceeded carrying cap, spent, remaining and needed, retryable: false
+- No settlement appears on the ledger and the seller records no 402 for the attempt
+- max_price can only LOWER the ceiling for one call; a larger value does not raise the session cap
+- The remaining budget is echoed in every money-tier answer and by the ainize://budget resource
+
+**Evidence**
+
+- `packages/mcp/src/money.ts`
+- `packages/mcp/test/money.test.ts (over the session cap is budget_exceeded with all four numbers)`
+
+### AZ-265 - The money never moves twice: already purchased, replayed key, and the lost-manifest case
+
+**Goal:** Market.buy on the node is not idempotent — the nonce is single use and the purchase row is written only after the blob download. The MCP layer must make a retry impossible and a failure recoverable without paying again.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A private local-ledger cluster; one knowledge already bought by this node
+
+**Steps**
+
+1. quote { id } on the already-bought knowledge, then buy
+2. buy twice with the same idempotency_key
+3. Interrupt a buy between settlement and download, then call reconcile_purchase { id }
+
+**Expected**
+
+- The quote reports already_purchased with the purchase date and tx hash instead of a price, and nothing is charged
+- The second buy with the same key returns idempotency_replay WITHOUT any upstream call (the fake node records no second /buy)
+- reconcile_purchase distinguishes complete · settled_no_body · never_paid · recovered, and pays nothing in any of them
+- settled_no_body carries the tx hash and names the recovery (a settled buyer may re-fetch /p2p/blob/:sha) without performing it — that needs the node identity key, which this server deliberately never holds
+- Every money-tier error has retryable: false, whatever the node said
+
+**Evidence**
+
+- `packages/mcp/src/money.ts`
+- `packages/mcp/src/tools/money.ts`
+- `packages/mcp/test/money.test.ts`
+- `packages/mcp/references/money.md`
+
+### AZ-266 - A lesson is never spent on questions the model already answers
+
+**Goal:** The node charges one of the day's lessons the moment a lesson is submitted and never refunds it. The tool therefore asks the model what it already knows first, and refuses for free.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A node with teach enabled and a teaching key configured on the MCP server
+- A training set whose questions the model already answers correctly
+
+**Steps**
+
+1. teach_preflight { dataset_id } and read the per-question verdicts
+2. teach { dataset_id } on the same rows
+3. Check the node's lesson counters before and after
+
+**Expected**
+
+- teach_preflight returns per question will_train / already_known / overlaps_listing / invalid, with what the model actually said and a plain-language meaning
+- It reports sampled {checked, of} and the note that the node probes at most 8 questions per call — no whole-dataset claim is made
+- teach fails with nothing_to_train, returns the verdicts, and creates NO lesson on the node
+- The daily lesson counter is unchanged, and the session lesson reservation is given back
+- The preflight's own cost is stated: free live-test units charged to both the server IP and the teaching key
+
+**Evidence**
+
+- `packages/mcp/src/tools/teach.ts`
+- `packages/mcp/test/teach.test.ts (teach refuses to spend a lesson on questions the model already answers)`
+- `packages/mcp/references/teach-and-lineage.md`
+
+### AZ-267 - Teach the model on top of an existing knowledge, and report what it learned and what it did not
+
+**Goal:** Building on a base is the lineage the product is being built around: base_ids, not the deprecated builds_on_context, and a result that names every question that still fails.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A node with teach enabled, a teaching key, and a LISTED knowledge to build on
+
+**Steps**
+
+1. teach { rows: [...], base: ["<listed-id>"], mode: "extend", export: "delta" }
+2. job_status { job_id, wait_ms: 25000 } repeatedly until the state is terminal
+3. live_test { question, knowledge: [result.draft_id] }
+
+**Expected**
+
+- The request sends base_ids: ["<listed-id>"] and never context_ids and never builds_on_context
+- built_on describes each base with its status, price, whether the body is held and its training-set access
+- A REJECTED or CHALLENGED base is refused before anything is uploaded; a SUPERSEDED one only with force: true; two bases is merge_not_available
+- job_status carries native_state (the node's 13-state machine), a sentence, live progress {step, max_steps}, and on landing: questions {learned, not_learned, still_wrong[] with what the model said instead}, checks {taught, other_phrasing, did_not_break_the_base, did_not_change_unrelated_answers, publish_gate}, training_set, knowledge_file and draft_id
+- eta_s null renders as "no measured estimate yet", never 0
+- A stub-backend node labels its checks simulated: true and says nothing was measured in a live model
+- The draft is immediately testable by its owner through live_test, because the server signs the chat request with the teaching key
+
+**Evidence**
+
+- `packages/mcp/src/tools/teach.ts`
+- `packages/mcp/src/teach-view.ts`
+- `packages/mcp/test/teach.test.ts`
+- `docs/lineage-teach-design.md`
+
+### AZ-268 - A daily lesson is treated as money: the last one needs a human, and a failed one is not retried
+
+**Goal:** jobs_per_key_per_day can be as low as 3, the charge happens at submit time, and there is no refund. An agent that retries a failed lesson can burn a person's day in seconds.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A node with teach enabled; a teaching key whose daily lessons are nearly or fully spent
+
+**Steps**
+
+1. teach { rows } when the key has one lesson left today
+2. teach { rows } again with confirm: true
+3. teach { rows } on a node whose per-IP daily lesson limit is exhausted
+4. teach { rows } after AINIZE_MCP_MAX_TEACH_JOBS is reached
+
+**Expected**
+
+- With one lesson left the call fails with confirmation_required, naming the node, the count used and the fact that a failed lesson is not refunded
+- With confirm: true it proceeds
+- An exhausted node answers quota_ip / quota_key and the tool reports it as-is — observed live on node-u :3422 as {"code":"quota_ip","message":"daily lesson limit reached for this address"}
+- A failed lesson comes back as teach_quota_consumed with retryable: false — the tool never resubmits by itself
+- AINIZE_MCP_MAX_TEACH_JOBS is a session cap no tool argument can raise; the refusal says which env var to change
+- dry_run: true resolves the base, the quota and the rows (with the predicted training-set sha256) and calls neither the dataset door nor the preflight
+
+**Evidence**
+
+- `packages/mcp/src/tools/teach.ts`
+- `packages/mcp/test/teach.test.ts (the last lesson of the day needs the human to say so)`
+
+### AZ-269 - Publishing is irreversible, off by default, refused on the shared chain, and shows the real revenue split
+
+**Goal:** One call writes a record nobody can recall, and node-u is configured publish: auto. The gate has to be structural, and the money it shows has to be the money that will be paid.
+
+**Priority:** P0 - **Area:** mcp - **Automation:** api
+
+**Preconditions**
+
+- A node with teach enabled and a READY lesson
+- AINIZE_MCP_ALLOW_PUBLISH unset for the first step
+
+**Steps**
+
+1. Try publish_knowledge with the default configuration
+2. Set AINIZE_MCP_ALLOW_PUBLISH=1 and call publish_knowledge { lesson_id, name, dry_run: true } on an AIN-ledger node
+3. Repeat on a local-ledger node, with and without the consents and the confirmation phrase
+
+**Expected**
+
+- Without the opt-in the tool is not registered at all, and node_status.capability_reasons names the env var
+- On a node whose /api/info says ledger "ain" the call is refused with permanent_ledger_refused unless AINIZE_MCP_ALLOW_AIN_PUBLISH=1 is also set; the message names a local-ledger node as the place to publish
+- dry_run returns split_preview computed from the node's own royalty_share/contributor_share: 70 % with no parent, 49 % with one — never the publish sheet's flat 70 % (docs/ux-critique-3.json item 186)
+- confirm_phrase_required contains the lesson id, so "yes" cannot be pattern-matched into a publish
+- consent_permanent and consent_rights are required inputs with no default; missing either refuses and writes nothing
+
+**Evidence**
+
+- `packages/mcp/src/tools/teach.ts`
+- `packages/mcp/test/teach.test.ts (publish is refused outright on the shared AIN chain)`
+- `packages/core/src/catalog.ts (royaltySplit)`
+
+### AZ-271 - Turn another MCP server's live data into a training set, with provenance, and stop there
+
+**Goal:** Direction B: Ainize as an MCP client. The pipeline must record what pins every row, and must not chain into training — one agent turn should not spend a day of GPU on data nobody has read.
+
+**Priority:** P1 - **Area:** mcp - **Automation:** manual
+
+**Preconditions**
+
+- GRAPH_API_KEY exported (graph/README.md forbids mocked or static data)
+- An Ainize node with teach enabled for the --upload step
+
+**Steps**
+
+1. node packages/mcp/dist/examples/subgraph-to-training-set.js --keyword uniswap --subgraph <id> --first 20 --out /tmp/rows.jsonl
+2. Re-run with --upload --name "…"
+3. Read the stored rows back with get_training_set / the node's dataset view
+
+**Expected**
+
+- The run follows the Subgraph MCP's own mandated workflow: search → 30-day query volume → schema → a bounded, block-pinned query
+- The measured facts are reported rather than papered over: the hosted server speaks legacy HTTP+SSE, and get_deployment_30day_query_counts currently answers 0 for every deployment, so the example asks for --subgraph instead of ranking on a signal that is not there
+- Every row carries a provenance note naming the server, the tool, the subgraph id and the block; the full RowProvenance (protocol version, argument sha256, per-row hashes, rows sha256) is written beside the journal when a state dir is configured
+- rows_sha256 equals the node's own dataset hash, so the training-set id is known before uploading and identical rows land on the same set
+- The pipeline STOPS at create_training_set and prints the separate teach_preflight / teach calls a human must approve
+- Without GRAPH_API_KEY the run fails with an instruction and never falls back to fixtures
+
+**Evidence**
+
+- `packages/mcp/src/datasource.ts`
+- `packages/mcp/src/rows.ts`
+- `packages/mcp/src/examples/subgraph-to-training-set.ts`
+- `packages/mcp/test/datasource.test.ts`
+- `packages/mcp/references/subgraph-to-dataset.md`
+- `graph/README.md`
 
 ## Cross-cutting (errors, accessibility, i18n, performance)
 
@@ -4346,6 +5279,33 @@ just prose, nothing else
 - `packages/web/src/i18n/pages/common.ts common.copy, common.copied, common.copy_clipboard`
 - `packages/web/src/pages/PatchPage.tsx Integrity section CopyButton`
 - `packages/web/src/pages/SigningPage.tsx NodeBox CopyButton (op.address)`
+
+### AZ-249 - No visitor IP leaves this node: live-test events are keyed by an HMAC id, the public feed carries neither, and raw events are purged after 90 days
+
+**Goal:** Demand signals are only allowed to exist because they cannot identify anyone (§10 privacy preconditions, F11): the id is an HMAC of the address under a node secret, the public feed strips it, and the counters outlive the rows they came from.
+
+**Priority:** P0 - **Area:** api - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+
+**Steps**
+
+1. Run a live test, then read GET /api/events and the events table; run the retention sweep with a row older than 90 days.
+
+**Expected**
+
+- Stored usage events carry `visitor: 'v:<16 hex>'` — never `ip:<addr>`; the same visitor is stable, a different one differs.
+- GET /api/events returns no `data.visitor` for any kind, and no ` by …` suffix in the message.
+- patch_signals_daily counts the test (tests/hits/misses/unscored) and its unique visitors; the raw event row is purged after 90 days while the counters stay.
+
+**Evidence**
+
+- `packages/node/test/chat.test.ts`
+- `packages/node/test/signals.test.ts`
+- `packages/node/src/market.ts (visitorId, publicEvents)`
+- `docs/lineage-teach-design.md §5.6, §10`
 
 ## Teach mode (visitor)
 
@@ -4947,6 +5907,246 @@ just prose, nothing else
 **Evidence**
 
 - `packages/core/src/ain-ledger.ts withEmptyArrays, contributors cap; packages/core/test/core.test.ts / packages/node/test/ain.test.ts`
+
+### AZ-238 - Teach on top of someone else's knowledge: the job carries the base stack, the exported file is a real delta, and the record says what it was built on
+
+**Goal:** The owner's question — "why can I not teach ON TOP of someone else's knowledge?" — is answered by the pipeline, not by a label: the base's questions are loaded as known answers, the trainer is told which knowledge to load first, the exported rows start from the base's values, and the anchor records the base for good (lineage design §3 story A, §5.1, §7.1).
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A published knowledge whose training set access is 'derivative' (the base), and a second teaching key with its own two-question dataset.
+
+**Steps**
+
+1. POST /api/teach/jobs { dataset_id, base_ids: [<base>] } with the second key.
+2. Wait for READY, then read GET /api/teach/jobs/<id>, <job>/job.json, <job>/known.jsonl and <job>/lesson.npz.
+3. Publish it and read the anchor back from GET /api/patches/<child>.
+
+**Expected**
+
+- The job carries `bases` (ordered, ancestors first), `mode: 'extend'` and `export: 'delta'`.
+- job.json carries `parents[{patch_id, sha256, npz}]` (the base body is copied next to the job), `known_file: 'known.jsonl'`, `max_known`, `export: 'delta'` and `probe_with_parents: true` — the §7.1 trainer contract.
+- known.jsonl holds the base's questions, so the lesson is trained without undoing them.
+- In lesson.npz, every address the child shares with the base has `before` == the base's `after` (bf16-exact); a fresh address starts from the disk base. A `meta` member names the export, the base stack and `pre_state_sha256`.
+- The anchor lists the whole stack in `parents[]`, `derivation: {kind:'extend', bases:[{patch_id, patch_sha256, dataset_sha256, rows}], added_rows}`, `base: {stack, export:'delta', pre_state_sha256}` (the same hash as the npz meta) and `dataset.parents`.
+- GET /api/patches/<child> answers `requires: [{ id: <base>, name, held, price }]` — a buyer is told what else is needed.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-238)`
+- `packages/node/src/teach.ts (resolveBases, stackFiles, writeStubNpz, lineageFields)`
+- `docs/lineage-teach-design.md §3 story A, §5.1, §7.1`
+
+### AZ-239 - A taught anchor carries at most 32 questions on the ledger, and the hash on the record is recomputable from the list published with the training set
+
+**Goal:** The ledger stays small (F10: ~100 KB AIN free tier) without the cap becoming a way to hide what was trained: `answers_hash` commits to the full list, and the full list is served with the training set (§5.1, §5.2).
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A 40-question dataset.
+
+**Steps**
+
+1. Train it, publish with dataset access 'public'.
+2. Read the anchor, then <dataDir>/blobs/datasets/<sha>/benchmark.jsonl and manifest.json.
+
+**Expected**
+
+- `benchmark.samples` has exactly 32 entries and they are the first 32 of the full list.
+- `benchmark.answers_hash` == sha256 over the canonical FULL list (42 entries here), recomputable by anyone who fetches benchmark.jsonl.
+- manifest.json reports `benchmark_samples` (the full count), `rows`, the chosen access and licence, and `sha256` equal to the anchor's.
+- rows.jsonl hashes to `dataset.sha256` on the record.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-239)`
+- `packages/core/src/lineage.ts (capBenchmarkSamples, answersHash)`
+- `packages/node/src/dataset-blobs.ts (encodeBenchmarkJsonl)`
+- `docs/lineage-teach-design.md §5.1`
+
+### AZ-240 - The training set is served by the access its creator chose: public downloads, 'derivative' needs a key and a derive token, private is refused with the reason
+
+**Goal:** Inheritance is impossible without content, and content must not leak past what the creator chose (§6.1, §6.6). Each level behaves exactly as the publish sheet promised.
+
+**Priority:** P0 - **Area:** teach-dataset - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- Three published knowledges with access public / derivative / private.
+
+**Steps**
+
+1. GET /api/patches/<id>/dataset unsigned and signed with a stranger's teaching key, for each level.
+2. GET /api/patches/<id>/dataset/rows for each level.
+3. POST /api/patches/<derivative>/derive-intent, then GET /p2p/dataset/<sha> with and without the token.
+4. GET /p2p/datasets and the node's PeerInfo.
+
+**Expected**
+
+- public: any caller, signed or not, gets the summary and a 20-question preview; /dataset/rows returns ndjson whose sha256 is the one on the record.
+- derivative: an unsigned request is refused `dataset_derivative_only` with what to do next; a signed key gets the summary and preview; /dataset/rows still refuses — the bytes come through the derive path.
+- private: refused `dataset_private` for everyone but the credited teaching key and the operator; derive-intent is refused too.
+- The derive intent returns a token; /p2p/dataset/<sha> serves the bytes with it and refuses without it. The private set is never served over /p2p.
+- /p2p/datasets lists the sets this node holds with their access, and PeerInfo.datasets advertises them.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-240)`
+- `packages/node/src/api.ts (datasetOf, /p2p/dataset)`
+- `packages/node/src/market.ts (mayReadDataset, deriveIntent)`
+- `docs/lineage-teach-design.md §6.1, §6.6, §12.3`
+
+### AZ-241 - A base whose questions are private cannot be built on, and the whole feature is behind the teach.lineage flag
+
+**Goal:** Nothing is dropped silently (§1 goal 9): a base that cannot be built on says so at the earliest moment, and a node that has not enabled lineage refuses before any quota is charged (§18 gating).
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A published knowledge whose training set is private, plus the visitor's own dataset.
+
+**Steps**
+
+1. POST /api/teach/jobs with base_ids naming the private knowledge, an unknown id, and three ids.
+2. Set teach.lineage false and repeat; read GET /api/teach/policy.
+
+**Expected**
+
+- `base_private` names the knowledge and says the creator kept the questions private (and that it can still be loaded for comparison).
+- `base_unknown` for an id this node does not have (two ids are a merge since L7, so they are resolved like any other base); `too_many_bases` above two.
+- With the flag off: 403 `lineage_disabled`, and GET /api/teach/policy reports `lineage: false` so the UI can hide 'Build on this'.
+- No job row, no quota charge, no files on disk for any refusal.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-241)`
+- `packages/node/src/teach.ts (createJob, resolveBases)`
+- `docs/lineage-teach-design.md §12.1, §18`
+
+### AZ-242 - Licences travel down the family tree: an unknown one is refused, a CC-BY-SA base forces the child, and a Proprietary base publishes no inherited questions
+
+**Goal:** A creator cannot accidentally re-licence someone else's questions, and a proprietary base can still be built on without its rows leaking (§6.4).
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A base published CC-BY-SA-4.0 (derivative), and another published Proprietary (derivative).
+
+**Steps**
+
+1. Train on top of the CC-BY-SA base and publish with licence NOT-A-LICENCE, then CC-BY-4.0, then CC-BY-SA-4.0.
+2. Train on top of the Proprietary base and read the child's on-chain samples.
+
+**Expected**
+
+- `bad_license` names the five licences this network knows.
+- `license_incompatible` names the parent and its licence; the child publishes only as CC-BY-SA-4.0, with access at least the parent's.
+- A child of a Proprietary base publishes: no benchmark sample carries that base as `source`, and the base is still in `parents[]` so it is credited and paid.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-242)`
+- `packages/core/src/lineage.ts (licenseCompatible, deltaOnlyParent)`
+- `packages/node/src/teach.ts (datasetPublication)`
+- `docs/lineage-teach-design.md §6.4`
+
+### AZ-243 - Personal information blocks a shared training set (never the private one), and a big set cannot be published without saying where it came from
+
+**Goal:** Sharing questions widens exposure, so the server — not the browser — checks it (§6.5): PII rows are named so they can be removed, and a set at or above the declaration threshold states its source.
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A dataset with an e-mail in one row, and a 100-question dataset.
+
+**Steps**
+
+1. Train the PII dataset; publish with access 'derivative', then with access 'private'.
+2. Train the 100-question dataset; publish without a declaration, then with one.
+
+**Expected**
+
+- `dataset_pii` names the row numbers and the kinds found; the rows still trained (nothing was dropped behind the visitor's back).
+- The same lesson publishes with access 'private', and the manifest records `pii_scan.ok: false`.
+- `dataset_declaration` names the count and the threshold; publishing with `declaration: {source, no_pii}` succeeds and the manifest keeps it.
+- A publish with either consent box off is refused `consent_required` (never assumed).
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-243)`
+- `packages/node/src/teach.ts (datasetPublication)`
+- `packages/node/src/teach-dataset.ts (detectPii)`
+- `docs/lineage-teach-design.md §6.5`
+
+### AZ-244 - Announce-time validation: a base that is still a draft blocks publishing, and no lineage field may name a knowledge that is not a parent
+
+**Goal:** A creator may build on their own unpublished lesson (story A3) — but the record can never claim a base that is not credited and paid (§5.1 invariant, §12.6).
+
+**Priority:** P0 - **Area:** teach - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- The visitor's own READY draft, and a published base.
+
+**Steps**
+
+1. Train a lesson on top of the visitor's own draft; try to publish it.
+2. Publish the base draft, then publish the child.
+3. Try to edit the child draft so `derivation.bases` (or `parents`) names something else.
+
+**Expected**
+
+- The job runs with the draft as its base and its questions inherited — nothing is dropped.
+- Publishing is refused `parent_not_listed` naming the draft; after the base is published the child publishes and lists it in `parents[]`.
+- An edit whose `derivation.bases`, `base.stack` or `dataset.parents` names a non-parent is refused with the field named; an unknown parent id is refused.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-244)`
+- `packages/core/src/lineage.ts (lineageProblems)`
+- `packages/node/src/market.ts (validateLineageForAnnounce)`
+- `docs/lineage-teach-design.md §5.1, §12.6, §3 story A3`
+
+### AZ-245 - A published training set outlives the working dataset it came from
+
+**Goal:** A knowledge that promises its questions to derivative creators must keep them: the published copy is content-addressed, immutable and exempt from the owner's delete and the 7-day sweep (§5.2).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A knowledge published with a public training set.
+
+**Steps**
+
+1. DELETE /api/teach/datasets/<the working dataset>.
+2. GET /api/patches/<id>/dataset/rows and read the blob directory.
+
+**Expected**
+
+- The working dataset is deleted (the lesson is unchanged, as before).
+- The published copy is still served, still hashes to the sha on the record, and its benchmark.jsonl is still beside it.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-245)`
+- `packages/node/src/dataset-blobs.ts`
+- `docs/lineage-teach-design.md §5.2`
 
 ## Teach mode (operator)
 
@@ -8051,6 +9251,7 @@ prompt,answer,alt_prompt
 - Retention: after the lesson finishes, GET /api/teach/datasets/:id shows size_bytes 0 (status still 'ready') and GET …/download → 404 "dataset_not_found: the questions of this dataset are no longer on this node"
 - The /teach/mine card for that dataset states the file is gone in its own words — [data-testid=dataset-file-gone] "Your questions were deleted as soon as training finished, as you asked. The fingerprint and the lessons are kept, but this dataset can no longer be downloaded or trained." (never the deleted-by-its-owner sentence, which is a different thing) — and offers only "Delete dataset": no "Download (.jsonl)", "Train again" or "Add questions"
 - Every failing call answers with a JSON body carrying an `error` string, and one that says the questions are GONE rather than that the dataset is empty: POST /api/teach/jobs/:id/retrain and POST /api/teach/datasets/:id/fork both answer 404 "dataset_not_found: the questions of this dataset are no longer on this node" and create nothing (a 400 with an empty `{}` body, and a fork that silently became the appended rows alone, were what this scenario first found)
+- Since lineage L4 (docs/lineage-teach-design.md §14): this scenario is about MY OWN working dataset, which stays owner-scoped. A STRANGER copies a published knowledge's training set through POST /api/patches/:id/fork when its access is derivative or public — a different object, asserted in AZ-276 — and that copy de-duplicates per owner in exactly the same way.
 
 **Evidence**
 
@@ -8159,6 +9360,61 @@ prompt,answer,alt_prompt
 - `packages/web/src/i18n/pages/teach.ts (teach.entry.file.eyebrow)`
 - `docs/teachable-dataset-design.md §5.2 (the primary-door decision)`
 - `packages/e2e/tests/web-ds-upload.spec.ts (AZ-237, projects web + mobile)`
+
+### AZ-251 - The parser flags personal information without dropping the row
+
+**Goal:** A row that looks like an e-mail, a phone number, a 주민등록번호 or a card number still trains — it is publishing it to strangers that is blocked (§6.5).
+
+**Priority:** P1 - **Area:** teach-parser - **Automation:** api
+
+**Preconditions**
+
+- No node needed: the parser is a pure function.
+
+**Steps**
+
+1. Parse a file with an e-mail, a 010- phone number, a resident registration number, a Luhn-valid card number, a ticker code and a date.
+
+**Expected**
+
+- The four are `pii` with the kinds found; the ticker code and the date are `ok` (a six-digit ticker is not an id).
+- Every flagged row keeps its position in rows.jsonl and is counted in `summary.pii`; nothing is rejected.
+- The row's detail says it trains but cannot be published above 'private'.
+
+**Evidence**
+
+- `packages/node/test/teach-dataset.test.ts (pii)`
+- `packages/node/src/teach-dataset.ts (detectPii)`
+- `docs/lineage-teach-design.md §6.5`
+
+### AZ-252 - "Delete the file after training" keeps its promise: the training set is forced private and no copy is kept
+
+**Goal:** Two promises could contradict each other — 'the file is deleted after training' and 'people building on this can have the questions'. The first wins, and nothing is kept anywhere (lineage design §6.1, SC-8 `teach.pub.ds_retention`).
+
+**Priority:** P1 - **Area:** teach-dataset - **Automation:** api
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- A dataset uploaded with retention 'delete_after_training'.
+
+**Steps**
+
+1. Train it, then publish asking for dataset access 'derivative'.
+2. Read the anchor, the dataset blob store and GET /api/patches/<id>/dataset with another key.
+
+**Expected**
+
+- The anchor's `dataset.access` is 'private' — the retention choice overrules the sharing choice, and the sheet says so before publishing.
+- No copy is pinned in the dataset blob store: nothing was kept.
+- The anchor still carries the sha256, so a re-train from the same questions can still be proven identical.
+- Asking for the questions answers `dataset_private`, the same as any other private set.
+
+**Evidence**
+
+- `packages/node/test/lineage.test.ts (AZ-252)`
+- `packages/node/src/teach.ts (datasetPublication, publish)`
+- `docs/lineage-teach-design.md §6.1, §4 SC-8`
 
 ## Chat teacher (visitor)
 
@@ -8351,6 +9607,35 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/auth.ts login() (refuses /api/auth/setup against a node the user did not name)`
 - `packages/cli/test/operator.test.ts (nodeSource + requireNodeTarget unit tests)`
 - `docs/ux-critique-2.json item 101`
+
+### AZ-248 - `ainize dataset get <knowledge>`: the questions behind a published knowledge, by access level, from the terminal
+
+**Goal:** A creator who wants to build on someone's knowledge can get its questions without a browser — and is told plainly when they may not (§13).
+
+**Priority:** P1 - **Area:** cli - **Automation:** cli
+
+**Preconditions**
+
+- node-u on http://localhost:3422 (local ledger, teach backend 'stub', teach.lineage true) — or the in-process node the suite starts.
+- Knowledges published with public / derivative / private training sets (`ainize patch publish --dataset … --dataset-access …`).
+
+**Steps**
+
+1. `ainize dataset get <id>`; `ainize dataset get <id> -o questions.jsonl`; `ainize dataset get <sha256> --manifest`; `ainize dataset get <private-id>`.
+
+**Expected**
+
+- Without -o: questions, access in plain words, licence, fingerprint, whether this node holds it, what it was built from, and the first questions.
+- With -o: the exact canonical bytes; the file hashes to the fingerprint on the record, and `--include-notes` is what keeps the publisher's notes in it.
+- A `derivative` set is fetched through a signed derive intent (the fetch is counted on the creator's knowledge) — the terminal says so.
+- A sha256 instead of an id resolves to the knowledge that published those bytes.
+- A private set prints `dataset_private` plus what to do about it and exits 3.
+
+**Evidence**
+
+- `packages/cli/test/cli.test.ts (AZ-248)`
+- `packages/cli/src/commands/dataset.ts`
+- `docs/lineage-teach-design.md §13, §12.3`
 
 ## Node operator
 
@@ -8586,6 +9871,120 @@ prompt,answer,alt_prompt
 - `packages/node/src/openapi.ts CLI_REFERENCE group 'Your node: identity, config, backups'; deploy/README.md §5; README.md Run`
 - `docs/ux-critique-2.json items 120, 122`
 
+### AZ-287 - A question is counted without being kept, and shared only when someone said so
+
+**Goal:** SC-12 is built out of what visitors asked. The panel is worth having only if a question can be counted without the node storing what was asked.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- An empty issue store.
+
+**Steps**
+
+1. Report the same question twice from one visitor with no consent
+2. Report it once more WITH the wording
+3. Report it again without
+4. Publish a child that answers it
+
+**Expected**
+
+- count 2 / people 1 for one person asking twice; `text` is null while nobody consented.
+- The consented report stores the wording; a later count-only report never un-shares it.
+- A descendant that publishes the question flips the item to `covered_by:<child>`, it leaves the open list, and a second child does not close it twice.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-287)`
+- `docs/lineage-teach-design.md §5.6, §10`
+
+### AZ-295 - The family, the open questions and the two scopes are the same from a terminal
+
+**Goal:** An operator with no browser must be able to see what a knowledge was built on, what people asked it for, and how it is doing — with the same privacy rule the page keeps.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u (:3422) serving this build, a published base and an add-on trained on top of it (stub backend — nothing here is a measurement).
+
+**Steps**
+
+1. ainize --node http://localhost:3422 patch tree <child>
+2. … patch tree <child> --json
+3. … patch missing <base> before and after a buyer request sent with share:false
+4. … patch signals <base>
+
+**Expected**
+
+- `patch tree` prints the base above the knowledge, '+1 questions' per node, the family line, and a money line naming the knowledge whose creators the lineage share is paid to.
+- `--json` is the tree endpoint's own answer: root, an `extend` edge from base to child, and the same `added` counts.
+- `patch missing` says 'nothing reported yet' while nothing is reported; after an unshared request it prints 'a buyer asked for it' as 'not shared — counted only', with the wording nowhere in the output.
+- `patch signals` prints the network scope and 'this node — last 30 days, this node only' as two labelled blocks, never one total.
+
+**Evidence**
+
+- `packages/e2e/tests/cli-tree.spec.ts (AZ-295)`
+- `packages/cli/src/commands/patch.ts`
+- `docs/lineage-teach-design.md §13`
+
+### AZ-314 - An add-on loaded alone is refused by name, and `?bundle=1` is read from the query as well as the body
+
+**Goal:** §8.2 / §12.4: the refusal is decided on the PLAN, before the model is consulted, so it is the same answer on a node whose runtime is down. And the flag the design spells `?bundle=1` must work as written.
+
+**Priority:** P1 - **Area:** api - **Automation:** automated
+
+**Preconditions**
+
+- The AZ-312 pair on a node that holds both bodies.
+
+**Steps**
+
+1. `POST /api/patches/<child>/apply` with no `with_base`.
+2. `POST /api/patches/<child>/buy?bundle=1`.
+
+**Expected**
+
+- 409 `needs_base` naming the missing base in `missing[]`, whether or not a model is reachable.
+- The query form is accepted exactly like `bundle` / `with_required` in the body.
+
+**Evidence**
+
+- `packages/node/test/lineage-bundle.test.ts (AZ-314)`
+- `packages/node/src/api.ts (POST /api/patches/:id/buy)`
+- `docs/lineage-teach-design.md §12.4`
+
+### AZ-317 - The buy page says who is paid twice, and the load buttons offer the base instead of printing a code
+
+**Goal:** SC-15 in the browser. `needs_base` on the one screen whose job is turning a purchase into a model that knows something was a raw error code with no way to act on it.
+
+**Priority:** P1 - **Area:** detail - **Automation:** manual
+
+**Preconditions**
+
+- An operator session on a node holding an add-on and its base.
+- The add-on's page open on the Buy tab.
+
+**Steps**
+
+1. Read the *Needs underneath it* block.
+2. Press Load on the add-on with its base not loaded, then *Load both*.
+3. Press Unload on the base while the add-on is loaded.
+
+**Expected**
+
+- Each base that still has to be bought carries "{name}'s creators are paid for {name} and receive {lineage}% of this sale too", with the percentage read from the tree's money line (never shown when the node cannot compute it).
+- A load that is refused `needs_base` opens *{child} is built on {parent}. Load {parent} first?* with [Load both] and [Cancel]; loading both reports "Loaded in order: {parent} → {child}" from the node's own `order`.
+- Unloading the base is refused with "Remove {children} before removing {parent}", by name; a `base_mismatch` says which knowledge to reload.
+
+**Evidence**
+
+- `packages/web/src/components/detail/LoadChain.tsx`
+- `packages/web/src/pages/PatchPage.tsx (Buy)`
+- `packages/web/src/i18n/pages/lineage.ts (detail.apply.*, detail.buy.twice_note)`
+- `docs/lineage-teach-design.md §4 SC-15`
+
 ## Knowledge publisher
 
 ### AZ-235 - `patch forget` shows the blast radius before deleting, not after
@@ -8622,3 +10021,947 @@ prompt,answer,alt_prompt
 - `packages/cli/src/commands/patch.ts patchForget() (--all-sharing, the blast-radius table)`
 - `packages/cli/test/cli.test.ts (item 149)`
 - `docs/ux-critique-2.json item 149`
+
+## Operator
+
+### AZ-253 - An add-on is only written when the knowledge it was trained on is underneath it, row for row
+
+**Goal:** A delta knowledge is meaningless on the wrong table. Before anything is written the live rows are read and compared to the add-on's `before` on EVERY row (lineage design §8.2), and a knowledge whose base is not loaded is refused rather than applied over the model's own values.
+
+**Priority:** P0 - **Area:** runtime - **Automation:** api
+
+**Preconditions**
+
+- A base knowledge and an add-on trained on top of it (`base.stack` names the base, `base.export` is 'delta').
+- A patch hook (the fake hook in the unit test, or a live vLLM with ENGRAM_HOOK=1 for the [hook] run).
+
+**Steps**
+
+1. With nothing loaded, GET /api/patches/<child>/check (or runtime.check on the body).
+2. POST /api/patches/<child>/apply with no `with_base`.
+3. Load the base, check again, then POST /api/patches/<child>/apply { with_base: true }.
+
+**Expected**
+
+- The bare check reports `differ_before` = the number of rows the add-on shares with its base, and `ok: false` — the values it was trained on are not on the table.
+- The apply is refused 409 `needs_base` naming the missing base; nothing is written.
+- With the base loaded the check reports `differ_before: 0` and `ok: true`.
+- `with_base` applies base then add-on under ONE runtime lock; GET /api/runtime reports them in that order with positions 0 and 1, and a journal file per layer under <patchDir>/journal/<patch_sha256>.npz.
+
+**Evidence**
+
+- `packages/node/test/runtime-stack.test.ts (AZ-253)`
+- `qwen3.8/scripts/patch.py (check, apply --verify-before)`
+- `packages/node/src/market.ts (resolveStack, layersFor, assertStack)`
+- `docs/lineage-teach-design.md §8.1-§8.3`
+
+### AZ-254 - Unloading an add-on puts its base back — not the bare model
+
+**Goal:** The reversibility the whole lineage rests on: `remove` replays the journal (the values the apply overwrote), so taking a child off a chain leaves its parent standing. Before this, removing a child wrote the child's `before` and silently reverted the parent's rows too (design F4/F5).
+
+**Priority:** P0 - **Area:** runtime - **Automation:** api
+
+**Preconditions**
+
+- Base and add-on loaded in order (AZ-253).
+
+**Steps**
+
+1. Read the live rows for an address the two share, one only the base owns, and one only the add-on owns.
+2. DELETE /api/patches/<child>/apply, read the same rows.
+3. DELETE /api/patches/<base>/apply, read them again.
+
+**Expected**
+
+- Loaded: the shared row holds the add-on's value, the base-only row the base's value.
+- After removing the add-on the shared row holds the BASE's trained value (bf16-exact), not the model's own; the add-on's own rows are back to the model; the base-only row was never touched.
+- After removing the base every row is back to the model's own values and the stack is empty.
+
+**Evidence**
+
+- `packages/node/test/runtime-stack.test.ts (AZ-254)`
+- `qwen3.8/scripts/patch.py (apply --journal, remove --journal)`
+- `docs/lineage-teach-design.md §5.4, §8.4`
+
+### AZ-255 - A base cannot be pulled out from under a loaded add-on
+
+**Goal:** Removing a knowledge that something else is standing on would leave the add-on writing over the model's own rows. It is refused by name, and only an explicit cascade takes both off (design §8.4).
+
+**Priority:** P1 - **Area:** runtime - **Automation:** api
+
+**Preconditions**
+
+- Base and add-on loaded.
+
+**Steps**
+
+1. DELETE /api/patches/<base>/apply.
+2. DELETE /api/patches/<base>/apply { cascade: true }.
+
+**Expected**
+
+- 409 `has_dependents` listing the add-on; nothing is unloaded (the stack still has both layers).
+- With cascade both come off, top first, and the table is back to the model's own values.
+
+**Evidence**
+
+- `packages/node/test/runtime-stack.test.ts (AZ-255)`
+- `packages/node/src/market.ts (dependentsOf, removePatch)`
+- `docs/lineage-teach-design.md §8.4`
+
+### AZ-256 - The serving model restarted: the WHOLE stack goes back on, in order
+
+**Goal:** The old watchdog re-applied each patch on its own and could put a parent back on top of its own child (design F5). The stack is re-asserted as a unit, ancestors first.
+
+**Priority:** P0 - **Area:** runtime - **Automation:** api
+
+**Preconditions**
+
+- Base and add-on loaded; the table then reverts (vLLM restart, simulated in the unit test by clearing the fake table).
+
+**Steps**
+
+1. Clear the live table.
+2. Run the watchdog.
+3. Read a shared row and a base-only row.
+
+**Expected**
+
+- The watchdog tests only the TOP of the stack — if that is still there, everything under it is.
+- On a revert it re-applies every layer bottom-up: the base-only row holds the base's value and the shared row holds the ADD-ON's value (the child is on top, not underneath).
+- The recorded stack keeps its order, and the stale journals of the vanished table state are discarded rather than replayed.
+
+**Evidence**
+
+- `packages/node/test/runtime-stack.test.ts (AZ-256)`
+- `packages/node/src/market.ts (watchdog, assertStack rebuild)`
+- `docs/lineage-teach-design.md §8.5`
+
+### AZ-257 - Two knowledges published before lineage existed: unloading the top one leaves the other standing
+
+**Goal:** Every anchor gains a journal on its next apply, so the improvement is not limited to lineage anchors (design §14). Two overlapping pre-lineage knowledges used to destroy each other on unload, because `remove` wrote the file's own `before` (the bare model) over rows the other one owned.
+
+**Priority:** P1 - **Area:** runtime - **Automation:** api
+
+**Preconditions**
+
+- Two knowledges with no `base` whose address sets overlap.
+
+**Steps**
+
+1. Load the first, then the second.
+2. Unload the second and read a shared address and an address only the second owns.
+
+**Expected**
+
+- While both are loaded the top one wins on the shared rows (list order, last wins — unchanged).
+- Unloading it restores the FIRST one's values on the shared rows, and the model's own values on the rows only it owned.
+- No `prev == before` gate is applied to a pre-lineage anchor (its `before` is the disk base and may legitimately differ under another patch) — it still gets a journal.
+
+**Evidence**
+
+- `packages/node/test/runtime-stack.test.ts (AZ-257)`
+- `packages/node/src/market.ts (assertStack)`
+- `docs/lineage-teach-design.md §8.2, §14`
+
+### AZ-258 - The same reversibility, measured on the live PLE hook with the shipped demo knowledge files
+
+**Goal:** The unit tests use a fake hook; this is the run on a served model. The whole row sequence happens inside ONE hold of the shared runtime lock, because several nodes on this machine drive the same serving instance and a table read taken between two of their operations means nothing. Nothing is compared to a constant: the state the table is in when the lock is taken is measured first, and every claim — including "the table is back where it started" — is made against that.
+
+**Priority:** P0 - **Area:** runtime - **Automation:** manual
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with runtime.api http://localhost:8002 and runtime.patchDir /mnt/newdata/qwen3.8/ple_patch_e2e (never :8000/:8001, never ple_patch). The script refuses to run against anything else.
+- results/train-all/rows-ep12.npz (241,992 rows) and results/train-fact/픽셀플러스.npz (2,992 rows), plus a true add-on over ep12 built by the script: 2,000 of ep12's addresses whose `before` IS ep12's `after`.
+
+**Steps**
+
+1. Measure what the table holds for both shipped files (the baseline).
+2. Apply ep12, then 픽셀플러스 on top; unload 픽셀플러스; unload ep12 — measuring after every step.
+3. Apply the add-on with ep12 NOT loaded; then with ep12 loaded; unload both.
+4. Over HTTP: apply the add-on alone, apply it with `with_base`, try to unload the base under it, unload both.
+
+**Expected**
+
+- The two shipped files share a number of addresses counted from the files at run time (2,154 for ep12 ∩ 픽셀플러스, measured 2026-09-04) — never quoted.
+- The shipped blobs' `before` is NOT the live baseline on a machine other nodes share: at the 2026-09-04 run ep12 differed from its `before` on 241,661 of 241,992 rows and 픽셀플러스's `after` was already fully on the table, because another node had it loaded. Every assertion is therefore relative to the measured baseline.
+- Unloading 픽셀플러스 puts ep12 back on all 241,992 of its rows, the 2,154 shared ones included; unloading ep12 returns both files to exactly the two numbers measured at step 0.
+- The add-on is refused with `base_mismatch` when ep12 is not loaded, and NOTHING is written (the measurement afterwards is unchanged).
+- With ep12 loaded the add-on's check reads 0 rows differing, the apply reports `prev_equals_before` from the hook's own returned values, and unloading it leaves ep12 bf16-exact on all 2,000 rows.
+- Over HTTP: `needs_base` for the add-on alone, `with_base` gives the ordered stack [base, add-on] with a journal per layer, `has_dependents` refuses to pull the base out, and the node ends with an empty stack.
+- The row phase and the HTTP phase are separable on purpose: this machine's serving instance is shared with the trainer and does get taken away mid-run, and "the model server went away" must read as a skip, not as five failed assertions.
+- A count that merely changed is not evidence — on a shared table two counts can coincide, and one run they did. The claim that a knowledge is underneath another is asserted as an equality of the SAME measured number across the operation (before it goes on, after it comes off), never as an inequality between two.
+
+**Evidence**
+
+- `packages/e2e/scripts/stack-live-proof.mjs`
+- `run 2026-09-04 10:57 on node-u / flashnext-e2e :8002 — all checks passed, both phases (baseline that run: ep12 differed from its `before` on 241,697 of 241,992 rows, so the assertions are relative by necessity, not by choice).`
+- `earlier runs 10:08 and 10:26 passed every row assertion; 10:26's HTTP phase could not finish because the serving container was killed to free GPUs 4-6 for the trainer, which is why that phase now skips rather than fails.`
+- `qwen3.8/scripts/patch.py (check, apply --verify-before --journal, remove --journal)`
+- `docs/lineage-teach-design.md §8`
+
+## Data provider (visitor)
+
+### AZ-276 - Copy and continue: someone else's questions become a training set of mine
+
+**Goal:** The owner's ask — "트레이닝 세트가 승계가 되어야 거기에 붙여서 할 수 있는데". A published knowledge's questions can be copied into my own My datasets, with the knowledge recorded as their parent and every row pointing at the row it came from.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A node with `teach.lineage` on (node-u) and a published knowledge whose training set access is `derivative` or `public`.
+
+**Steps**
+
+1. POST /api/patches/<id>/fork as a teaching key that is not the author's.
+2. Read the dataset's rows.jsonl and the rows page.
+3. POST the same fork again.
+
+**Expected**
+
+- 201 with `inherited_rows`, the parent's id, name and training-set sha; the dataset is owned by the caller and has `parent_patch` set.
+- Every row carries `from: '<id>#<i>'`, in the parent's own order, and the rows page returns them so the table can show a *from {name}* chip.
+- Copying twice returns the SAME dataset (200, `created: false`) — the button is idempotent, not a duplicate factory.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-276)`
+- `packages/cli/src/commands/teach-dataset.ts `ainize patch fork``
+- `docs/lineage-teach-design.md §3 Story B, §12.3`
+
+### AZ-277 - A knowledge whose questions are private cannot be copied, and says why
+
+**Goal:** §6.1: `private` means nobody can build on it. The refusal has to be a sentence a creator understands, not a 403 code, and it must not leak whether the knowledge exists to strangers who cannot see it at all.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published knowledge with `dataset.access: private` and its author's teaching key.
+
+**Steps**
+
+1. Fork it as a stranger.
+2. Fork it as its own author.
+3. Fork an id that does not exist.
+
+**Expected**
+
+- 403 `dataset_private` — "the creator kept the questions private, so nobody can copy or build on them".
+- Its own creator still gets their questions back (201).
+- An unknown id is 404 `base_unknown`, the same answer a stranger gets for a private draft.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-277)`
+- `docs/lineage-teach-design.md §6.1, §12.3`
+
+### AZ-278 - Teaching on top of a copy: their questions are kept, mine are trained, one of theirs is changed on purpose
+
+**Goal:** F1/F2 said the trainer could not start from a parent and that parent facts were discarded. This is the whole contract in one lesson: inherited rows become the keep-set, my own rows are the lesson, and a row whose answer I changed is trained AND recorded as a change to them.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u with `teach.lineage`, a published base with 4 questions, a fork of it edited in the rows table.
+
+**Steps**
+
+1. Append two of my own questions to the copy and change one inherited answer.
+2. Train it with `base_ids: [base]`.
+3. Read job.json, known.jsonl and the job view.
+4. Publish and read the anchor and the published training set's manifest.
+
+**Expected**
+
+- The lesson trains 3 questions (2 mine + 1 changed), never the 3 inherited ones; `inherited_rows: 3`, `changed_rows: 1`, `mode: 'fork'`.
+- known.jsonl holds exactly what the creator KEPT of the base — not the base's whole set — and job.json carries `parents`, `known_file`, `export: 'delta'`, `probe_with_parents` and the `replaces` index of the changed row.
+- CHECKING measures the base BEFORE the lesson goes on top (`base_hit` 4/4), counts the replaced question as replaced (`overridden: 1`) and scores the rest (3/3); the check passes and reversibility is recorded.
+- The anchor carries `parents`, `derivation.kind 'extend'` with added 2 / changed 1 / removed 0, `base.stack` and `dataset.parents`; the published manifest names each inherited row by its index in the base's set.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-278)`
+- `docs/lineage-teach-design.md §6.2, §6.3, §7.1, §7.6`
+
+### AZ-279 - A copy with nothing of my own in it is not a lesson
+
+**Goal:** Nothing silent (§1 goal 9): training a straight copy of someone's questions on top of themselves would produce a knowledge that adds nothing and still claims a share of their sales.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A fork with no rows added and none changed.
+
+**Steps**
+
+1. Create a lesson from it with `base_ids: [its base]`.
+
+**Expected**
+
+- 400 `nothing_to_add`, naming what to do: add a question, or change one of theirs.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-279)`
+
+### AZ-280 - Pre-flight judged with the base loaded: it already answers this, it answers it differently, or nobody does
+
+**Goal:** With a base chosen, "does the model already know this" is the wrong question — the honest one is what the BASE does with it (§12.1, SC-6), and the base's own training set is what tells "it says something else" from "it does not know".
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u with lineage on, a published base with a shareable training set.
+
+**Steps**
+
+1. POST /api/teach/preflight with `base_ids` and three questions: one the base answers the same way, one it answers differently, one nobody answers.
+
+**Expected**
+
+- The three come back `in_base`, `base_conflict` and `will_train`, each naming the base.
+- `base_conflict` quotes the BASE's own answer, read from its training set, not a guess from the model.
+- `trainable` counts the conflict (it is trainable as a change) and not the `in_base` row.
+- The three counters the base's page is made of are written per base: preflight_in_base, preflight_base_conflict, preflight_wrong_today.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-280)`
+- `docs/lineage-teach-design.md §10, §12.1`
+
+### AZ-281 - An answer that contradicts the base is refused until the creator means it
+
+**Goal:** Publishing an answer over someone else's is a decision with consequences for their buyers; it must never happen because a row happened to be in a file.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A dataset whose first question is one of the base's, answered differently.
+
+**Steps**
+
+1. Create the lesson with `base_ids` and no confirmation.
+2. Create it again with `confirm_conflicts: true`.
+
+**Expected**
+
+- 400 `base_unresolved_conflicts` listing the rows, each with my answer, the base's answer and the base's id.
+- Confirmed, the row is trained as a change (`replaces`), counted in `changed_rows`, and CHECKING counts it as replaced instead of as a regression of the base.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-281)`
+- `docs/lineage-teach-design.md §7.6 step 5, §12.1`
+
+### AZ-282 - The chat door names what the lesson is built on, and what is only loaded beside it
+
+**Goal:** The owner's first sentence — "어떤 knowledge 위에서 트레이닝 하는건지" — answered where the lesson is collected. The v1 checkbox ("this builds on the knowledge I have loaded") had no object and recorded parents by accident.
+
+**Priority:** P0 - **Area:** teach-web - **Automation:** automated
+
+**Preconditions**
+
+- node-u serving the web build with `teach.lineage` on, a published knowledge whose training set is shareable.
+
+**Steps**
+
+1. Open /chat/<id>?teach=1 with a teaching key in the browser.
+2. Read the base row.
+3. Open the picker and choose "nothing — teach the plain model".
+
+**Expected**
+
+- The loaded knowledge is the base by default, named, with all three consequences on the spot: recorded as built on it, its creators receive the network's creator share of every sale, buyers must load it first.
+- It says how many of that knowledge's questions the lesson starts from.
+- The v1 "builds on what I loaded" checkbox is gone where lineage is on — nothing is recorded as a parent by being loaded.
+- The picker lists the loaded knowledge and offers "nothing" as an explicit choice; choosing it changes the row to "teaching the plain model".
+
+**Evidence**
+
+- `packages/e2e/tests/web-lineage.spec.ts (AZ-282)`
+- `packages/web/src/components/chat/{LessonBasket,BasePicker}.tsx`
+- `docs/lineage-teach-design.md §4 SC-1, SC-3`
+
+### AZ-283 - The dataset door starts from someone else's questions, and the table says whose each row is
+
+**Goal:** The file door hard-coded `patch_ids: []` (F7): a creator with a file had no way to build on anything. Now they choose a base, copy its questions into their own table, and see the merged set before anything is trained.
+
+**Priority:** P0 - **Area:** teach-web - **Automation:** automated
+
+**Preconditions**
+
+- node-u serving the web build, a published base with 3 questions, a dataset of 2 of my own.
+
+**Steps**
+
+1. Open the settings screen, choose the base in the picker, press "Start from its questions".
+2. Read the merged preview and its filters.
+3. Open My datasets.
+4. Train the copy on top of the base.
+
+**Expected**
+
+- The Start from block states the three consequences with the base's name; the copy lands on the preview of a NEW dataset of mine (nothing is trained by that button).
+- The table shows 3 rows with a *from {name}* chip and 2 of mine; the filter chips read Mine (2) / Inherited (3) and are counted by the node over the whole set, not over the page on screen.
+- My datasets says the set was copied from that knowledge, with the inherited and own counts.
+- Training it records the base, keeps its 3 questions as known answers and trains only my 2.
+
+**Evidence**
+
+- `packages/e2e/tests/web-lineage.spec.ts (AZ-283)`
+- `packages/web/src/pages/{TeachSettingsPage,TeachDatasetPage}.tsx`
+- `docs/lineage-teach-design.md §4 SC-4, SC-5, SC-16`
+
+### AZ-293 - A lesson taught on top WITHOUT copying keeps the base's questions by reference — they are not reported as deleted
+
+**Goal:** The commonest path (my questions, someone else's knowledge underneath) must not publish a claim that the creator deleted the base's questions.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published base with three questions; a stranger's own dataset of two questions.
+
+**Steps**
+
+1. Create the lesson with base_ids and the default inherit
+2. Publish it
+3. GET the child's tree
+
+**Expected**
+
+- The base's three questions are the keep-set (`inherited_rows` = 3, `changed_rows` = 0).
+- The anchor records added 2, changed 0, removed 0, and the published manifest's `removed` is empty.
+- The tree prints the same numbers — questions kept as known answers were never held by this set, so they were never dropped.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-293)`
+- `docs/lineage-teach-design.md §6.3, §12.5`
+
+### AZ-294 - The creator of the knowledge underneath is paid for being built on — even when one node published both
+
+**Goal:** The owner's question was "why can I not teach on top of someone else's knowledge?" — the page has to show that doing so pays them. On a teaching node every anchor is published BY THE NODE, so reading the authors alone found nobody to pay.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- Two anchors published by the same node, each crediting a different teaching key as its data provider, the second listing the first as a parent.
+
+**Steps**
+
+1. GET the child's tree
+2. GET the base's tree
+
+**Expected**
+
+- The base's teacher is on the child's split as `kind: 'lineage'`, and the line names the knowledge that share is paid for (`for_name`).
+- The child's own teacher stays `contributor`; `lineage_names` names the base; seller + lineage + contributors add up to a whole sale.
+- On the base's own page there is no lineage to pay: its teacher is a contributor and `lineage_pct` is 0.
+
+**Evidence**
+
+- `packages/node/test/lineage-tree.test.ts (AZ-294)`
+- `packages/e2e/tests/web-tree.spec.ts (AZ-290)`
+- `docs/lineage-teach-design.md §4 SC-9, §11`
+
+### AZ-298 - A question somebody asked for is closed by the child that answers it, and the answer names the child
+
+**Goal:** §10's issue lifecycle is what makes "What to add on top of this" a working list rather than a growing pile: teaching the missing question has to close it, and be seen to.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published base with two questions and one open request for a third, sent without *Share*.
+
+**Steps**
+
+1. POST the request with different spacing from how the question will be taught
+2. Teach that question on top of the base and publish
+3. GET the base's issues, open and all
+
+**Expected**
+
+- The request is counted with no wording kept (nobody consented).
+- Publishing the child flips the item to `covered_by:<child>` — matched by the question's cluster key, so a question whose text was never kept is still recognised as answered.
+- It leaves the open list; the panel and the CLI both stop asking for it.
+
+**Evidence**
+
+- `packages/node/test/lineage-fork.test.ts (AZ-298)`
+- `packages/node/src/teach.ts closeCoveredQuestions()`
+- `docs/lineage-teach-design.md §10 issue lifecycle, §5.6`
+
+## Node (developer)
+
+### AZ-300 - Two knowledge files are combined only when they cannot contradict each other — and no row is ever averaged
+
+**Goal:** §9's whole rule in one place (F8): a merged row that neither parent measured is not knowledge. The union is arithmetic on the bytes; everything else has to be trained.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- No node and no model — pure functions over .npz files.
+
+**Steps**
+
+1. compareNpz on disjoint files, on files that agree on a shared row, on files that disagree, and on a delta whose `before` is the other file's `after`.
+2. unionNpz on each of those pairs.
+
+**Expected**
+
+- Disjoint: shared 0; the union holds every row of both and each value is bit-identical to the file it came from.
+- A shared row both files write with the SAME value is written once; `opposing` counts only rows both moved away from the same base.
+- A shared row they disagree about throws `union_refused: rows_disagree` — never an average, never a sum.
+- Files that disagree about what was UNDER a row throw `union_refused: before_differs` (a stand-alone build has no value to write as `before`).
+- The union carries the members it is given (`teach_job`, `meta`) and hashes the state it expects underneath.
+
+**Evidence**
+
+- `packages/core/test/npz-merge.test.ts (AZ-300)`
+- `packages/core/src/npz.ts (compareNpz, unionNpz)`
+- `docs/lineage-teach-design.md §9 steps 2-3`
+
+## Visitor (creator)
+
+### AZ-301 - The merge preview counts both sides — questions and rows — before anything is built
+
+**Goal:** SC-14's first screen is two independent measurements: what the two training sets have in common, and what the two files do to the model. A creator decides from those, not from a promise.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u (teach.lineage true, stub backend) or the in-process node the suite starts.
+- Two published knowledges with shareable training sets and no rows in common.
+
+**Steps**
+
+1. POST /api/teach/merge/preview {a, b}.
+
+**Expected**
+
+- `questions` reports a_only / b_only / same / conflicts by the parser key (NFC, whitespace collapsed, case-sensitive).
+- `rows` reports a_only / b_only / shared / disagree from the two files themselves.
+- `tiers.union.allowed` is true with `export: 'squash'` when neither was built on anything; `tiers.required` is null.
+- Estimated minutes are null on a node that has never timed a gradient lesson — no invented hours.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-301)`
+- `packages/node/src/teach-merge.ts`
+- `docs/lineage-teach-design.md §12.2`
+
+### AZ-302 - Combining two knowledges that cannot contradict each other takes seconds, no GPU, and the anchor names both creators
+
+**Goal:** T0 answers the owner's question with the cheapest honest build there is: the row union of the two files, published as one knowledge whose sale pays both lines.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- Two published knowledges with disjoint rows.
+
+**Steps**
+
+1. POST /api/teach/jobs {mode:'merge', base_ids:[a,b], tier:'union'}; wait for the lesson; publish it.
+
+**Expected**
+
+- The lesson's file holds every row of both parents and agrees with each of them on every row it took (valuesEqualCount differ = 0).
+- recipe.trainer = 'union', max_steps 0 — nothing was trained, and the record says so.
+- The anchor: parents [a, b], derivation.kind 'merge', tier 'union', bases carrying each parent's contributed rows, export 'squash' with an empty stack, dataset.parents naming both training sets.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-302)`
+- `packages/e2e/tests/web-merge.spec.ts (AZ-308)`
+- `docs/lineage-teach-design.md §9 T0`
+
+### AZ-303 - A question two knowledges answer differently stops the build until a person chooses, and the choice is what the merged set carries
+
+**Goal:** §9 step 1: no build while a question has two answers. The resolution is recorded in the bytes, so the published set proves whose answer won.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- Two published knowledges that answer one question differently.
+
+**Steps**
+
+1. Preview; POST a merge job with no resolutions; then with {key: 'b'} and tier 'retrain'.
+
+**Expected**
+
+- Without resolutions: 409 `merge_unresolved` listing the questions.
+- With keep-B: the merged row is B's answer and carries `replaces` naming A's row; the job's facts are only the resolved questions.
+- known.jsonl is the merged set MINUS those questions (§7.3 — the trainer is never asked to hold two answers to one question).
+- job.json: both parents in `parents[]` in order, `mask.mode: 'only'`, export 'delta', and a `merge` block naming the tier and the two parents.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-303)`
+- `docs/lineage-teach-design.md §9 step 1, T1`
+
+### AZ-304 - Write my own / Drop: an answer the creator wrote is trained, a question they dropped is in neither the set nor the lesson
+
+**Goal:** The four resolutions of SC-14 are four different outcomes in the published bytes, not four labels on the same thing.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- Two published knowledges that answer two questions differently.
+
+**Steps**
+
+1. POST a merge job resolving one conflict with {answer} and the other with 'drop'.
+
+**Expected**
+
+- The written answer is a target of the lesson, carries `replaces` and no `from` (it is nobody else's row).
+- The dropped question is absent from the snapshot and from the lesson; job.merge.dropped counts it.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-304)`
+- `docs/lineage-teach-design.md §9 step 1`
+
+### AZ-305 - A knowledge and something built on top of it disagree about the rows themselves: no combine, no retrain — a rebuild or nothing
+
+**Goal:** The measured case (pin/pixel 96 %, ep6/ep12 99.9 %): above a fifth of disagreeing shared rows, stacking and masked retraining are both dishonest, and §9 requires a full rebuild.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- A published knowledge, and a child trained on top of it that changes one of its answers.
+
+**Steps**
+
+1. Preview the pair; POST a merge job with tier 'retrain'; then with tier 'rebuild'.
+
+**Expected**
+
+- `rows.disagree` equals `rows.shared`, `tiers.required` is 'rebuild', and retrain is refused with reason 'rows_disagree'.
+- The retrain job is refused 400 `tier_not_allowed` naming the required tier.
+- The rebuild job trains the whole combined set with NO parent in job.json, export 'squash', and no keep-set.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-305)`
+- `packages/e2e/tests/web-merge.spec.ts (AZ-309)`
+- `docs/lineage-teach-design.md §9 T2`
+
+### AZ-306 - A private training set can still be combined when the rows do not overlap — and never retrained or rebuilt
+
+**Goal:** SC-14 `merge.private_parent`: a creator who kept their questions private is still a parent whose file can be combined, and nothing about their questions is ever counted or shown.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- One published knowledge with a shareable training set, one with a private one, rows disjoint.
+
+**Steps**
+
+1. Preview the pair; POST a merge job with tier 'retrain'; then with tier 'union'.
+
+**Expected**
+
+- `questions` is null and `private_parent` names the sealed knowledge; only the rows are reported.
+- Retrain and rebuild are refused with reason 'private_parent'; union is allowed while the rows are disjoint.
+- The combine builds: the child's training set holds only the readable side's questions, and the file holds every row of both.
+
+**Evidence**
+
+- `packages/node/test/lineage-merge.test.ts (AZ-306)`
+- `docs/lineage-teach-design.md §9 (private parent)`
+
+### AZ-308 - The merge screen in a browser: what overlaps, no training needed, and both creators named before anything is built
+
+**Goal:** SC-14 in the product: a creator who has never read the design must be able to see what combining two knowledges means, and what it will cost whom.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with teach.lineage true.
+- Two published knowledges with nothing in common.
+
+**Steps**
+
+1. Open /teach/merge?a=&b= and read the overlap; press Build it.
+
+**Expected**
+
+- Both counts are on screen (questions and rows), 'Just combine — no training' is offered, and the rule that a disagreeing row is never blended or added is stated.
+- The money line names both creators and says buyers need both, before the build.
+- Building lands on the lesson page; the lesson is mode 'merge', tier 'union', bases [a, b], and its file has as many rows as the two parents together.
+
+**Evidence**
+
+- `packages/e2e/tests/web-merge.spec.ts (AZ-308)`
+- `packages/web/src/pages/MergePage.tsx`
+- `docs/lineage-teach-design.md §4 SC-14`
+
+### AZ-309 - The merge screen shows the disagreement in the creator's own words and refuses the builds the rows forbid
+
+**Goal:** A conflict is a decision only a person can make, and the screen must not let the build start without it — nor offer a tier the measurement rules out.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u.
+- A published knowledge and a child of it that changes one of its answers.
+
+**Steps**
+
+1. Open /teach/merge for the pair; try to build; choose an answer; send the forbidden tier through the API anyway.
+
+**Expected**
+
+- Both answers are shown, attributed by name; 'n questions still need a choice' is displayed and Build it is disabled.
+- The share of disagreeing shared rows is stated and the rebuild is marked required; 'just combine' says why it is not available.
+- Choosing an answer enables the build; the node still refuses tier 'retrain' with `tier_not_allowed`.
+
+**Evidence**
+
+- `packages/e2e/tests/web-merge.spec.ts (AZ-309)`
+- `docs/lineage-teach-design.md §4 SC-14, §9`
+
+### AZ-311 - The merge screen is reachable from the knowledge it starts with, and that knowledge is already chosen
+
+**Goal:** The owner's question was "why can I not merge someone else's?" — a screen nobody can find is the same answer as no screen. Combining starts where a creator already is: on the knowledge page, beside the two other ways to build on it.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u with teach.lineage true.
+- A published knowledge whose training set is shareable.
+
+**Steps**
+
+1. Open the knowledge page, Family tree tab.
+2. Press *Combine with another*.
+
+**Expected**
+
+- The button sits beside *Teach on top of this* and *Copy and continue*, and is disabled by the same rule (the flag, a private training set, or none on the record).
+- It opens /teach/merge?a=<this knowledge>, with that knowledge already chosen and only the second one to pick.
+
+**Evidence**
+
+- `packages/e2e/tests/web-merge.spec.ts (AZ-311)`
+- `packages/web/src/components/detail/FamilyTree.tsx`
+- `docs/lineage-teach-design.md §4 SC-9, SC-14`
+
+## Buyer / creator
+
+### AZ-307 - One sale of a combined knowledge pays both lines of creators, once each, and adds up to the price
+
+**Goal:** §11 worked example 3 on the anchor a merge really publishes: inheriting from two knowledges without paying both is impossible by construction.
+
+**Priority:** P0 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- Two taught anchors, each with its own teacher credited, and a merge anchor listing both as parents.
+
+**Steps**
+
+1. royaltyPlan on the merge anchor at price 10, share 0.3.
+2. The same sale with one parent missing from this node.
+
+**Expected**
+
+- The 30 % pool splits equally between the two lines (1.5 each), and each line's slice is shared with that anchor's teacher (1.05 / 0.45).
+- The creator of the combined knowledge keeps the seller side; Σ payouts = the price.
+- A parent this node cannot resolve is still paid, to the author its anchor names.
+
+**Evidence**
+
+- `packages/core/test/lineage.test.ts (AZ-307)`
+- `docs/lineage-teach-design.md §11`
+
+### AZ-312 - The 402 for an add-on names the knowledge it needs underneath, and quotes the family
+
+**Goal:** §12.4: buying a delta on its own buys a file that answers nothing until its base is under it. The refusal to pay must state that BEFORE the money moves, to a stranger with no node as well as to a buyer with one.
+
+**Priority:** P0 - **Area:** api - **Automation:** automated
+
+**Preconditions**
+
+- A knowledge published on node A.
+- An add-on published on node B with `base.stack = [A's knowledge]` and `export: 'delta'`, both LISTED.
+
+**Steps**
+
+1. GET the add-on's `/x402/patch/<id>` with no payment header.
+2. Ask the buyer's own node `GET /api/patches/<id>/quote`.
+
+**Expected**
+
+- The 402 carries `requires[]` with the base, its price and its seller, `total` = the family's list price and `self_contained: false`.
+- The buyer's own quote subtracts what that node already holds and licences: `missing` names the base, `total` is what it would spend, `export: 'delta'`.
+
+**Evidence**
+
+- `packages/node/test/lineage-bundle.test.ts (AZ-312)`
+- `packages/e2e/scripts/bundle-buy-proof.mjs`
+- `docs/lineage-teach-design.md §12.4`
+
+### AZ-313 - One bundle purchase makes one settlement per knowledge, and the base's creator is paid twice
+
+**Goal:** §8.7 and §11 worked example 7. The chain must be bought in one action, recorded as separate sales (each seller is a different node), and the base's author must be paid for the base AND out of the child's sale.
+
+**Priority:** P0 - **Area:** api - **Automation:** automated
+
+**Preconditions**
+
+- The AZ-312 pair.
+- A third node holding neither.
+
+**Steps**
+
+1. Buy the add-on with `bundle` (`POST /api/patches/<child>/buy?bundle=1`).
+2. Read the settle records of both knowledges.
+3. Buy it again the same way.
+
+**Expected**
+
+- `purchases[]` lists the base FIRST and then the child; `total` is what actually moved (both prices together).
+- Exactly one settle record per knowledge, on the node that sold it, each for its own price.
+- The child's settlement pays the base's author the lineage pool (price x the anchor's royalty_share, split among the ancestor authors) — plus, when that author also verified the child, its share of the verification fee. Each settlement's payouts sum to its own price.
+- The second bundle buy charges nothing and writes no second settlement: both receipts already exist.
+
+**Evidence**
+
+- `packages/node/test/lineage-bundle.test.ts (AZ-313)`
+- `packages/e2e/scripts/bundle-buy-proof.mjs`
+- `docs/lineage-teach-design.md §11, §12.4`
+
+### AZ-315 - A chain purchase on a real cluster: two settlements, then the stack loads in order and comes apart safely
+
+**Goal:** The whole promise end to end across three node processes: a purchase that cannot be loaded is not a purchase. Proven against the real `scripts/patch.py` and the real journal, with a fake mailbox hook standing in for the GPU.
+
+**Priority:** P0 - **Area:** network - **Automation:** e2e
+
+**Preconditions**
+
+- A private local-ledger cluster (`NGRAM_CLUSTER_HOME=<tmp> NGRAM_PORT_BASE=3512 NGRAM_LEDGER=local NGRAM_SEED=0 scripts/cluster-restart.sh`).
+- A fake `/v1/models` and a mailbox hook; no serving GPU is touched.
+
+**Steps**
+
+1. Run `node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs`.
+
+**Expected**
+
+- The add-on's `pre_state_sha256` is recomputed by the node from the file, not taken from the request.
+- One `?bundle=1` purchase produces one settle record per knowledge and a total of both prices; the base's author is paid out of the child's sale as well.
+- The child alone is refused `needs_base`; with its base the apply answers `order: [base, child]`, `GET /api/runtime/stack` lists them bottom-first with a journal each, and the live table holds the base under the child.
+- Removing the base first is refused `has_dependents`; removing the child puts the BASE's values back (not the bare model), and removing the base last returns the table exactly to where it started.
+
+**Evidence**
+
+- `packages/e2e/scripts/bundle-buy-proof.mjs (AZ-315)`
+- `docs/lineage-teach-design.md §8, §12.4`
+
+## Operator (CLI)
+
+### AZ-310 - `ainize patch merge` measures first, and unresolved questions come back as JSON with exit 3
+
+**Goal:** §13: an operator with no browser gets the same measurement and the same refusal — and a machine-readable one, so a script can fill in the answers and run again.
+
+**Priority:** P1 - **Area:** teach-lineage - **Automation:** automated
+
+**Preconditions**
+
+- node-u.
+- Two published knowledges that answer one question differently.
+
+**Steps**
+
+1. `ainize patch merge <a> <b> --preview`; then without --preview and without --resolve.
+
+**Expected**
+
+- The preview prints the question counts, the row counts, which builds are possible and which is required, and each disagreement with both answers, named by knowledge.
+- Without resolutions the command exits 3 and stdout is the JSON object `--resolve` reads back, one entry per open question.
+
+**Evidence**
+
+- `packages/e2e/tests/web-merge.spec.ts (AZ-310)`
+- `packages/cli/src/commands/teach-dataset.ts (patchMerge)`
+- `docs/lineage-teach-design.md §13`
+
+### AZ-316 - `ainize patch buy` offers the base before the money moves, and quotes what will actually be paid
+
+**Goal:** §13. The command printed the FAMILY total, asked "Pay 30 for 2 knowledges?" and then paid for one: the bases came only with a flag the prompt never mentioned.
+
+**Priority:** P1 - **Area:** cli - **Automation:** manual
+
+**Preconditions**
+
+- A node holding neither the add-on nor its base.
+- The add-on LISTED with a priced base.
+
+**Steps**
+
+1. `ainize patch buy <child>` in a terminal, answering n and then y.
+2. `ainize patch buy <child> --bundle`.
+3. `ainize patch buy <child> --yes` with no --bundle.
+4. `ainize use <child>` on a child this node already holds.
+
+**Expected**
+
+- The quote lists the base with its price and seller, then the command asks "<child> also needs <name> (<price>); buy both? [y/N]".
+- Answering n buys the child alone and says out loud that it will not answer anything until the base is loaded under it; the confirmation then quotes the child's price, not the family's, and `--max-price` is checked against that same number.
+- `--bundle` answers the question in advance; `--yes` without `--bundle` never spends more than was asked for.
+- `ainize use <child>` loads the stack (`--with-base`), so a held add-on is usable instead of failing `needs_base`.
+
+**Evidence**
+
+- `packages/cli/src/commands/patch.ts (patchBuy, patchUse)`
+- `packages/cli/src/bin.ts (--bundle)`
+- `docs/lineage-teach-design.md §13`
+
+### AZ-318 - `ainize teach publish --declare` — a big training set can be published from the terminal
+
+**Goal:** §6.5 / §13: the node demands a declaration of where the questions came from above `dataset.declarationRows`, so a set that could be TRAINED from a terminal could not be published from one.
+
+**Priority:** P2 - **Area:** cli - **Automation:** manual
+
+**Preconditions**
+
+- A READY lesson whose dataset is above the node's declaration threshold.
+
+**Steps**
+
+1. `ainize teach publish <job> --name … --consent-permanent --consent-rights` with no --declare.
+2. The same line with `--declare own`.
+
+**Expected**
+
+- Without it the node refuses `dataset_declaration` and names the row count and the threshold.
+- With it the publish succeeds and the anchor's dataset carries the declaration; `no_pii` is the `--consent-rights` the command already refuses to run without, not a value the CLI invented.
+
+**Evidence**
+
+- `packages/cli/src/commands/teach-dataset.ts (teachPublish)`
+- `packages/node/src/teach.ts (datasetPublication)`
+- `docs/lineage-teach-design.md §13`

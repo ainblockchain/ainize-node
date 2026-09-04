@@ -10212,5 +10212,195 @@
    "packages/web/src/components/detail/FamilyTree.tsx",
    "docs/lineage-teach-design.md §4 SC-9, SC-14"
   ]
+ },
+ {
+  "id": "AZ-312",
+  "persona": "Buyer / creator",
+  "title": "The 402 for an add-on names the knowledge it needs underneath, and quotes the family",
+  "goal": "§12.4: buying a delta on its own buys a file that answers nothing until its base is under it. The refusal to pay must state that BEFORE the money moves, to a stranger with no node as well as to a buyer with one.",
+  "preconditions": [
+   "A knowledge published on node A.",
+   "An add-on published on node B with `base.stack = [A's knowledge]` and `export: 'delta'`, both LISTED."
+  ],
+  "steps": [
+   "GET the add-on's `/x402/patch/<id>` with no payment header.",
+   "Ask the buyer's own node `GET /api/patches/<id>/quote`."
+  ],
+  "expected": [
+   "The 402 carries `requires[]` with the base, its price and its seller, `total` = the family's list price and `self_contained: false`.",
+   "The buyer's own quote subtracts what that node already holds and licences: `missing` names the base, `total` is what it would spend, `export: 'delta'`."
+  ],
+  "priority": "P0",
+  "area": "api",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-bundle.test.ts (AZ-312)",
+   "packages/e2e/scripts/bundle-buy-proof.mjs",
+   "docs/lineage-teach-design.md §12.4"
+  ]
+ },
+ {
+  "id": "AZ-313",
+  "persona": "Buyer / creator",
+  "title": "One bundle purchase makes one settlement per knowledge, and the base's creator is paid twice",
+  "goal": "§8.7 and §11 worked example 7. The chain must be bought in one action, recorded as separate sales (each seller is a different node), and the base's author must be paid for the base AND out of the child's sale.",
+  "preconditions": [
+   "The AZ-312 pair.",
+   "A third node holding neither."
+  ],
+  "steps": [
+   "Buy the add-on with `bundle` (`POST /api/patches/<child>/buy?bundle=1`).",
+   "Read the settle records of both knowledges.",
+   "Buy it again the same way."
+  ],
+  "expected": [
+   "`purchases[]` lists the base FIRST and then the child; `total` is what actually moved (both prices together).",
+   "Exactly one settle record per knowledge, on the node that sold it, each for its own price.",
+   "The child's settlement pays the base's author the lineage pool (price x the anchor's royalty_share, split among the ancestor authors) — plus, when that author also verified the child, its share of the verification fee. Each settlement's payouts sum to its own price.",
+   "The second bundle buy charges nothing and writes no second settlement: both receipts already exist."
+  ],
+  "priority": "P0",
+  "area": "api",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-bundle.test.ts (AZ-313)",
+   "packages/e2e/scripts/bundle-buy-proof.mjs",
+   "docs/lineage-teach-design.md §11, §12.4"
+  ]
+ },
+ {
+  "id": "AZ-314",
+  "persona": "Node operator",
+  "title": "An add-on loaded alone is refused by name, and `?bundle=1` is read from the query as well as the body",
+  "goal": "§8.2 / §12.4: the refusal is decided on the PLAN, before the model is consulted, so it is the same answer on a node whose runtime is down. And the flag the design spells `?bundle=1` must work as written.",
+  "preconditions": [
+   "The AZ-312 pair on a node that holds both bodies."
+  ],
+  "steps": [
+   "`POST /api/patches/<child>/apply` with no `with_base`.",
+   "`POST /api/patches/<child>/buy?bundle=1`."
+  ],
+  "expected": [
+   "409 `needs_base` naming the missing base in `missing[]`, whether or not a model is reachable.",
+   "The query form is accepted exactly like `bundle` / `with_required` in the body."
+  ],
+  "priority": "P1",
+  "area": "api",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-bundle.test.ts (AZ-314)",
+   "packages/node/src/api.ts (POST /api/patches/:id/buy)",
+   "docs/lineage-teach-design.md §12.4"
+  ]
+ },
+ {
+  "id": "AZ-315",
+  "persona": "Buyer / creator",
+  "title": "A chain purchase on a real cluster: two settlements, then the stack loads in order and comes apart safely",
+  "goal": "The whole promise end to end across three node processes: a purchase that cannot be loaded is not a purchase. Proven against the real `scripts/patch.py` and the real journal, with a fake mailbox hook standing in for the GPU.",
+  "preconditions": [
+   "A private local-ledger cluster (`NGRAM_CLUSTER_HOME=<tmp> NGRAM_PORT_BASE=3512 NGRAM_LEDGER=local NGRAM_SEED=0 scripts/cluster-restart.sh`).",
+   "A fake `/v1/models` and a mailbox hook; no serving GPU is touched."
+  ],
+  "steps": [
+   "Run `node --import tsx packages/e2e/scripts/bundle-buy-proof.mjs`."
+  ],
+  "expected": [
+   "The add-on's `pre_state_sha256` is recomputed by the node from the file, not taken from the request.",
+   "One `?bundle=1` purchase produces one settle record per knowledge and a total of both prices; the base's author is paid out of the child's sale as well.",
+   "The child alone is refused `needs_base`; with its base the apply answers `order: [base, child]`, `GET /api/runtime/stack` lists them bottom-first with a journal each, and the live table holds the base under the child.",
+   "Removing the base first is refused `has_dependents`; removing the child puts the BASE's values back (not the bare model), and removing the base last returns the table exactly to where it started."
+  ],
+  "priority": "P0",
+  "area": "network",
+  "automation": "e2e",
+  "evidence": [
+   "packages/e2e/scripts/bundle-buy-proof.mjs (AZ-315)",
+   "docs/lineage-teach-design.md §8, §12.4"
+  ]
+ },
+ {
+  "id": "AZ-316",
+  "persona": "Operator (CLI)",
+  "title": "`ainize patch buy` offers the base before the money moves, and quotes what will actually be paid",
+  "goal": "§13. The command printed the FAMILY total, asked \"Pay 30 for 2 knowledges?\" and then paid for one: the bases came only with a flag the prompt never mentioned.",
+  "preconditions": [
+   "A node holding neither the add-on nor its base.",
+   "The add-on LISTED with a priced base."
+  ],
+  "steps": [
+   "`ainize patch buy <child>` in a terminal, answering n and then y.",
+   "`ainize patch buy <child> --bundle`.",
+   "`ainize patch buy <child> --yes` with no --bundle.",
+   "`ainize use <child>` on a child this node already holds."
+  ],
+  "expected": [
+   "The quote lists the base with its price and seller, then the command asks \"<child> also needs <name> (<price>); buy both? [y/N]\".",
+   "Answering n buys the child alone and says out loud that it will not answer anything until the base is loaded under it; the confirmation then quotes the child's price, not the family's, and `--max-price` is checked against that same number.",
+   "`--bundle` answers the question in advance; `--yes` without `--bundle` never spends more than was asked for.",
+   "`ainize use <child>` loads the stack (`--with-base`), so a held add-on is usable instead of failing `needs_base`."
+  ],
+  "priority": "P1",
+  "area": "cli",
+  "automation": "manual",
+  "evidence": [
+   "packages/cli/src/commands/patch.ts (patchBuy, patchUse)",
+   "packages/cli/src/bin.ts (--bundle)",
+   "docs/lineage-teach-design.md §13"
+  ]
+ },
+ {
+  "id": "AZ-317",
+  "persona": "Node operator",
+  "title": "The buy page says who is paid twice, and the load buttons offer the base instead of printing a code",
+  "goal": "SC-15 in the browser. `needs_base` on the one screen whose job is turning a purchase into a model that knows something was a raw error code with no way to act on it.",
+  "preconditions": [
+   "An operator session on a node holding an add-on and its base.",
+   "The add-on's page open on the Buy tab."
+  ],
+  "steps": [
+   "Read the *Needs underneath it* block.",
+   "Press Load on the add-on with its base not loaded, then *Load both*.",
+   "Press Unload on the base while the add-on is loaded."
+  ],
+  "expected": [
+   "Each base that still has to be bought carries \"{name}'s creators are paid for {name} and receive {lineage}% of this sale too\", with the percentage read from the tree's money line (never shown when the node cannot compute it).",
+   "A load that is refused `needs_base` opens *{child} is built on {parent}. Load {parent} first?* with [Load both] and [Cancel]; loading both reports \"Loaded in order: {parent} → {child}\" from the node's own `order`.",
+   "Unloading the base is refused with \"Remove {children} before removing {parent}\", by name; a `base_mismatch` says which knowledge to reload."
+  ],
+  "priority": "P1",
+  "area": "detail",
+  "automation": "manual",
+  "evidence": [
+   "packages/web/src/components/detail/LoadChain.tsx",
+   "packages/web/src/pages/PatchPage.tsx (Buy)",
+   "packages/web/src/i18n/pages/lineage.ts (detail.apply.*, detail.buy.twice_note)",
+   "docs/lineage-teach-design.md §4 SC-15"
+  ]
+ },
+ {
+  "id": "AZ-318",
+  "persona": "Operator (CLI)",
+  "title": "`ainize teach publish --declare` — a big training set can be published from the terminal",
+  "goal": "§6.5 / §13: the node demands a declaration of where the questions came from above `dataset.declarationRows`, so a set that could be TRAINED from a terminal could not be published from one.",
+  "preconditions": [
+   "A READY lesson whose dataset is above the node's declaration threshold."
+  ],
+  "steps": [
+   "`ainize teach publish <job> --name … --consent-permanent --consent-rights` with no --declare.",
+   "The same line with `--declare own`."
+  ],
+  "expected": [
+   "Without it the node refuses `dataset_declaration` and names the row count and the threshold.",
+   "With it the publish succeeds and the anchor's dataset carries the declaration; `no_pii` is the `--consent-rights` the command already refuses to run without, not a value the CLI invented."
+  ],
+  "priority": "P2",
+  "area": "cli",
+  "automation": "manual",
+  "evidence": [
+   "packages/cli/src/commands/teach-dataset.ts (teachPublish)",
+   "packages/node/src/teach.ts (datasetPublication)",
+   "docs/lineage-teach-design.md §13"
+  ]
  }
 ]
