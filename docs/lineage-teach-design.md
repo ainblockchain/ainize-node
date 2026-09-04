@@ -540,7 +540,19 @@ A private parent can only be a T0 candidate when rows are disjoint (SC-14 `merge
 
 ## 11. Royalties along multi-parent lineage
 
-**Rule (unchanged in principle, ledger-compatible).** `pool = amount × royaltyShare` split **equally among unique ancestor authors** reached through `parents[]` (depth 16, visited set, cycle-safe); pass 1b shares an ancestor anchor's slice with that anchor's `contributors[]`; ancestors authored by the seller fold back into the seller; a merge's two parents are both in the pool (patent claims 51–53). Σ payouts ≤ price holds structurally (pool ≤ amount×share, every carve ≤ its base, `settlePayment` last-line guard).
+**Rule (revised 2026-09, critique-3 item 192 / critique-4 items 309, 310, 325 — `royaltyPlan` in `packages/core/src/catalog.ts` is the single implementation).**
+
+`pool = amount × share` where **`share` is the anchor's own `royalty_share`**, floored at `NETWORK_MIN_ROYALTY_SHARE` (0.3) — never the SELLING node's `market.royaltyShare`, which the seller controls (item 191). `createDraft` writes `royalty_share = max(floor, this node's config, every parent anchor's declared share)`: a derivative may promise its ancestors more than they promised, never less.
+
+The pool is split **equally among the unique ancestor authors other than the seller**, reached through `parents[]` with a visited set and **no depth cut** (item 192: the old `depth > 16` return paid an 18-hop ancestor nothing, and the walk is capped at `MAX_LINEAGE_ANCHORS` = 4096 anchors with a `truncated` flag instead). An ancestor authored by the seller is **not a payee and not a divisor**: a version chain of the seller's own bakes no longer halves every outside creator's share from day 2 (which is what worked example 8 below used to cause).
+
+A parent id the seller's node cannot resolve is **not skipped**: the anchor that names it also names `parent_authors[i]`, so the slice is paid to that author; only when nothing names an author is the slice **held back** and written onto the settlement as `royalty_unresolved[parent_id]` (item 310 — before this the pool was 0 and the seller silently kept 100 %).
+
+Pass 1b shares an outside ancestor anchor's slice with that anchor's `contributors[]`. A contributor credited on one of the **seller's own** ancestor anchors is instead paid from the seller side in pass 2, once per address at the largest share they hold, so "your share of this node's take" survives the seller re-baking on top of itself.
+
+Pass 2 spends the seller side `(amount − pool)` in one order: **the verification fee** `sellerSide × verifier_share` (anchor field, floored at `NETWORK_MIN_VERIFIER_SHARE` = 0.05) divided equally among the attestations that currently count toward the quorum (item 325 — verifying was unpaid work everywhere in this product); then each data provider's `c.share` of what is left; then the seller keeps the remainder.
+
+Addresses are summed **case-insensitively** under their first-seen spelling (item 309), and every reader — `creditBalance`, `/api/me/wallet`, `payouts.enqueue` — compares them case-insensitively too. Σ payouts + Σ unresolved ≤ price holds structurally (pool ≤ amount×share, every carve ≤ its base, `settlePayment` last-line guard).
 
 **Fix first (F9).** Pass 2 carves each seller-side contributor from the **fixed** remainder `(amount − pool) × share` and `createDraft`/`publish` clamp Σ contributor shares ≤ 1.
 
@@ -556,7 +568,9 @@ A private parent can only be a T0 candidate when rows are disjoint (SC-14 `merge
 5. *Pass-2 fix.* M has contributors p (0.5) and q (0.5). Today: p 3.5, q 1.75, seller 1.75. Fixed: p 3.5, q 3.5, seller 0. Σ = 10 both ways; only the split is corrected.
 6. *Seller is an ancestor.* B by b, sold by b, with parent A by b: a-slice folds into the seller → b 10 (minus contributors).
 7. *Bundle purchase.* Child C (price 5, author c) built on X (price 25, author x); buyer holds neither. Two settlements: X sale 25 → x 25 (minus X's contributors); C sale 5 → pool 1.5 → x 1.5; c 3.5. Each sale Σ = its price; the buy sheet states that x is paid twice.
-8. *Update with consent.* V2 supersedes V1 (both by v); V2 lists V1 as parent. Sale of V2: pool folds back into v (same author); V1's contributors still earn via pass 1b.
+8. *Update with consent.* V2 supersedes V1 (both by v); V2 lists V1 as parent. Sale of V2: v is the seller, so V1 creates **no pool and no divisor**; V1's contributors still earn, from the seller side (pass 2). A 20-day chain of v's bakes on top of a's original therefore still pays a the full 3, on day 2 and on day 20.
+9. *Verification fee.* K (author k, no parents, price 10) verified by v1 and v2: seller side 10 → fee 0.5 → v1 0.25, v2 0.25, k 9.5. With a parent by a: pool 3 → a 3; seller side 7 → fee 0.35; a data provider at 0.5 → 3.325; k 3.325.
+10. *Unresolved ancestor.* C names parent P that this node does not hold. `parent_authors[0] = 0xA…` → 0xA… is paid the 3 as if P had resolved. With no author named anywhere, the settlement carries `royalty_unresolved: {P: "3"}` and the seller is paid 7, not 10.
 
 **Display.** SC-8 `teach.pub.money` and the tree's *Money* line are computed by `royaltySplit` on a unit price so the creator sees the actual recipients before publishing; `/api/teacher/:address` adds *earned from knowledge built on yours: {amount} ({n} sales)* labelled approximate.
 
