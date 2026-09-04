@@ -1491,8 +1491,8 @@
      "fix": "Strip the Source and hyperparameter sentences from the seeded descriptions (they are already in recipe), and add a maxLength plus helper text to the description field in NewPatchPage so the first 160 characters have to answer \"what does the model know after loading this?\".",
      "effort": "S",
      "fixed": true,
-     "fixed_by": "cd59b61",
-     "fixed_note": "The browse card summarises through `lib/describe.ts`, which drops whole sentences that are provenance (\"Source: …\"), an absolute path, a build artefact or a bare restatement of the row count — nothing is rewritten and a description left with nothing to say comes back as written. Verified live: the pixelplus card no longer shows /mnt/newdata/qwen3.8 results/train-fact. The NewPatchPage half of the fix (a maxLength and helper text on the description field) belongs to the publishing form and is not in this change."
+     "fixed_by": "cd59b61, 19cd5a6",
+     "fixed_note": "BOTH halves now. The browse card summarises through lib/describe.ts, which drops whole sentences that are provenance (\"Source: …\"), an absolute path, a build artefact or a bare restatement of the row count — nothing is rewritten, and a description left with nothing to say comes back as written (cd59b61). The publishing form half, which cd59b61 explicitly left out and no later pass picked up, shipped in 19cd5a6: /new-patch's description field carries a 1,000-character ceiling, a counter from 700, a placeholder asking what the model can answer once this is loaded, and helper text saying the browse card reads the first two lines and that a build path typed here is dropped from it. Verified live in both locales: helper renders, the counter appears at 720 characters, a 1,200-character paste is held at 1,000."
     }
    ]
   }

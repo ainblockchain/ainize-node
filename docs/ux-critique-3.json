@@ -1622,8 +1622,8 @@
      "theme": "The consumer's loop: subscribe, receive, stay current",
      "status": "fixed",
      "fixed": true,
-     "fixed_by": "e3bd678",
-     "fixed_note": "/tracks/<name> exists (members with status chips, what a subscriber loads today, freshness, subscribers, owner, the subscribe command and its ledger-write note); the /network table links every track name and gained Current and Updated columns. The knowledge page's own track chip is still plain text — one link, in the knowledge-page workstream's file."
+     "fixed_by": "e3bd678, 20eb529",
+     "fixed_note": "/tracks/<name> exists (members with status chips, what a subscriber loads today, freshness, subscribers, owner, the subscribe command and its ledger-write note) and the /network table links every track name and gained Current and Updated columns (e3bd678). The knowledge page's own track chip — the half e3bd678 handed to the knowledge-page workstream, which had already finished — was linked in 20eb529: the declared single track links inline and every membership chip is a link, with {branch} left uninterpolated so both languages keep their word order and \"Track finance/KRX-latest · topic finance/krx\" still reads exactly as before. Verified at 1280 and 360 in en and ko on a knowledge with one declared track and one in 32, and by following a chip to the track page."
     },
     {
      "n": 269,
