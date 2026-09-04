@@ -1,0 +1,105 @@
+{
+ "summary": "Ten findings the owner reported on the Teach entry page (/teach) on 2026-09-04: hierarchy, affordance, chrome noise, hidden limits, engineer-speak status, misplaced links, copy density, language toggle placement, card affordance, and trust visibility.",
+ "items": [
+  {
+   "n": "O-1",
+   "title": "Primary action is unclear (weak visual hierarchy)",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "'Start a conversation' and 'Upload a dataset file' are given almost equal weight, so a first-time user cannot tell what to try first.",
+   "fix": "Make one path the primary action with a clearly secondary alternative (size, colour, position), based on which door serves a newcomer best; the other remains one click away.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-2",
+   "title": "The 1–5 process steps look like an interactive stepper but are placed under the action buttons",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "'1 Dataset 2 Check 3 Settings 4 Training 5 Result' reads as a clickable progress indicator, yet it sits below the buttons and it is unclear whether it is clickable or informational.",
+   "fix": "Either make it a real stepper (current step highlighted, past steps clickable) placed where progress lives (top of the flow), or restyle it as a plain 'what happens next' explainer with no button-like affordance.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-3",
+   "title": "Global navigation and footer are visual noise for the main task",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "The top nav (Explore knowledge, Live test …) and the footer links (ain-js, aindrive …) pull attention away from the one task on this page: training the model.",
+   "fix": "Reduce chrome on the teach flow pages: a slim header (logo + back/exit + language) and a minimal footer; keep full navigation on marketplace pages.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-4",
+   "title": "File limits are hidden in small helper text",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "'jsonl, csv, tsv … up to 2000 questions' is a hard constraint shown as tiny auxiliary text, so users upload a non-conforming file and hit an error late.",
+   "fix": "Show the accepted formats and the question cap prominently on the upload card (badge/row near the picker) and validate on file selection before upload.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-5",
+   "title": "Node status is engineer-speak",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "'Teaching on this node: open · 0 waiting …' does not tell an ordinary person whether they can start training right now.",
+   "fix": "Replace with a plain-language readiness line ('You can start now — no queue' / 'N lessons ahead of you, about M minutes') with the technical detail behind a disclosure.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-6",
+   "title": "'My datasets and lessons →' is placed awkwardly and is easy to miss",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "It sits under the entry buttons, breaking the main action flow, although it is the main route back to existing work.",
+   "fix": "Move it to a consistent secondary position (top-right of the page or the slim header) styled as a navigational link, not as part of the action group.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-7",
+   "title": "Explanatory text is too dense",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "The intro ('Two ways in, one result …') and each card's description are long, preventing quick scanning and causing fatigue.",
+   "fix": "Cut the intro to one line; card descriptions to one short sentence + one benefit; move details behind 'How it works'.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-8",
+   "title": "The language selector sits awkwardly at the top of the main content",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "Placed below the nav at the start of content, it unbalances the layout and does not read as a system setting.",
+   "fix": "Move the language toggle into the header (system-setting area), consistently across pages.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-9",
+   "title": "Card affordance is ambiguous",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "It is unclear whether the whole method card is clickable or only the button inside; hover/feedback states do not resolve it.",
+   "fix": "Make the whole card the click target with a clear hover/focus state, or visually demote the card to a plain container with only the button interactive — not both.",
+   "effort": "S",
+   "source": "owner"
+  },
+  {
+   "n": "O-10",
+   "title": "Trust and safety are not visible at the entry point",
+   "surface": "/teach (entry)",
+   "severity": "major",
+   "problem": "'Keep private or publish' exists, but at the moment of choosing a path the user cannot see how uploaded data is protected, who can see it, and what rights they keep.",
+   "fix": "Add a short trust strip on the entry page (private by default · you choose what to publish · your key stays in your browser · what the node operator can see) linking to the full terms.",
+   "effort": "S",
+   "source": "owner"
+  }
+ ]
+}
