@@ -2,7 +2,7 @@
 title: 값을 매기고 정산받기
 summary: 가격이 어디에서 오는지, 돈이 왜 늘 문자열인지, 데이터를 준 사람을 어떻게 기록에 올리는지, 그리고 판 다음 돈이 어디에 나타나는지.
 source: en/how-to/price-knowledge.md
-source_sha256: cb2f1a02cc831463ff891352205bf9dff688c4658f2304bc8b39355a6f2d581a
+source_sha256: 04559c18ee643ef23c378a60df21e18b742a297b24482e0fbc410925e436144f
 ---
 
 # 값을 매기고 정산받기

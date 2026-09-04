@@ -2,7 +2,7 @@
 title: 목록에 오르지 않을 때
 summary: 검증 기록을 읽는 법, VERIFYING에서 멈추는 세 가지 이유, hash-only 대체 검증이 무엇을 올리고 무엇을 올리지 않는지, 그리고 이의 제기가 실제로 갖는 힘.
 source: en/how-to/failed-verification.md
-source_sha256: 31e604d002a2725703753df8be40342ff4dfc5db4c2b34e1ecbb10e5ac8c7ef3
+source_sha256: fe4121deffb37676713fc7af520f45c52fd9b9d1b33b9659bd64324ff3a0081a
 ---
 
 # 목록에 오르지 않을 때
