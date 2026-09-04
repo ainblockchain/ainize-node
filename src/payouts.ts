@@ -64,8 +64,18 @@ export class Payouts {
   enqueue(settlement: Settlement, settleHash: string): PayoutRow[] {
     const rows: PayoutRow[] = [];
     const self = this.opts.selfAddress.toLowerCase();
+    // One row per PERSON, not per spelling (item 309): historical settle records can carry the same address twice —
+    // once as typed on a contributor claim, once checksummed as an ancestor author — and `findPayout` matches
+    // case-insensitively, so the second spelling used to find the first row and be silently dropped. Fold first.
+    const owed = new Map<string, { address: string; amount: number }>();
     for (const [address, amount] of Object.entries(settlement.royalty ?? {})) {
-      if (address.toLowerCase() === self || !(Number(amount) > 0)) continue;
+      const lower = address.toLowerCase();
+      if (lower === self || !(Number(amount) > 0)) continue;
+      const cur = owed.get(lower);
+      if (cur) cur.amount += Number(amount); else owed.set(lower, { address, amount: Number(amount) });
+    }
+    for (const { address, amount: owedAmount } of owed.values()) {
+      const amount = String(Math.round(owedAmount * 1e6) / 1e6);
       const existing = this.store.findPayout(settleHash, address);
       if (existing) { rows.push(existing); continue; }
       const row = this.store.insertPayout({ patch_id: settlement.patch_id, settle_hash: settleHash, address, amount: String(amount), currency: settlement.currency });
