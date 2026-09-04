@@ -6,6 +6,12 @@ Every v1 guarantee in that document still holds; §13 below lists what is delibe
 Companion: `docs/teach-mode-dataset-ux.md` (Designer A) is the long-form UX rationale and wireframe source.
 Where the two disagree, **this document wins** — §2 says why, per disagreement.
 
+**Revised by `docs/lineage-teach-design.md` (2026-09).** Two decisions in this document were overturned when
+teaching on top of someone else's knowledge was designed: **D12**'s "the dataset content is never published" (§2,
+revision note in place) and the §1.1 non-goal "sharing a dataset between teaching keys, or publishing the dataset
+itself". Everything else here still holds. The lineage document is the one that wins on inheritance, access levels,
+licences, forking, merging and the runtime stack; it says so in its own §14.
+
 Written against the repo at `/mnt/newdata/ainize/knowledge-marketplace-teachable` (branch `teachable-ui`),
 the trainer at `/mnt/newdata/qwen3.8/train/teach.py`, and the measured runs in `/mnt/newdata/qwen3.8/results/`.
 
@@ -64,7 +70,12 @@ re-train it.
 
 - Multi-file, zip or `.xlsx` upload; resumable/chunked upload; SSE streaming (polling only).
 - Server-side splitting of one dataset into a queue of several lessons (§17 Q2 — owner decision).
-- Sharing a dataset between teaching keys, or publishing the dataset itself to the marketplace.
+- ~~Sharing a dataset between teaching keys, or publishing the dataset itself to the marketplace.~~ **Overturned
+  2026-09** for datasets whose knowledge is published with `access` ≥ `derivative` (`docs/lineage-teach-design.md`
+  §6, §12.3): a creator building on someone's knowledge starts from its questions, so they are served — under the
+  publisher's chosen access level and licence — through `GET /api/patches/:id/dataset[/rows]`, `POST
+  /api/patches/:id/fork` and `/p2p/dataset/:sha`. A dataset is still owned by one teaching key: forking COPIES it
+  into the forker's own line, and nobody writes to somebody else's set.
 - Long-form / multi-line answers. v1's one-line rule stands, and the copy says so at the point of failure.
 - Making the `stub` backend produce a usable knowledge file. It writes a real `.npz` with one deterministic
   placeholder row per question so `result.rows` describes the file it actually wrote — nothing was learned, and
@@ -203,8 +214,33 @@ neither is discarding the file.
 **Decision: both objects, different depth.** `PatchAnchor.dataset = {sha256, rows, source}` — three short fields, and
 the sha256 already identifies the exact bytes, so `revision` adds nothing on-chain (the knowledge app lives on the AIN
 free tier; `MAX_CONTRIBUTORS = 4` exists for the same reason). `recipe.json.dataset` carries
-`{sha256, rows, revision, source, name?}`. **The dataset content is never published** — a buyer can verify a re-train
-used the same input without ever seeing the teacher's file.
+`{sha256, rows, revision, source, name?}`. ~~**The dataset content is never published**~~ — see the revision below.
+
+> **Revised 2026-09 by `docs/lineage-teach-design.md` §14 (shipped in PRs L1 · L4 · L8).** The hash-only provenance
+> stands. The second half — *the dataset content is never published* — is **overturned**, for three reasons, in
+> order of weight:
+>
+> 1. **It was already untrue.** Every teach anchor writes `benchmark.samples`, one entry per trained question, to
+>    the ledger and mirrors it on AIN (lineage design F10: `teach-recipe.ts:55-76`, `ain-ledger.ts:335-362`). A
+>    promise that the questions stay private, on a record that publishes up to 32 of them in full, is a promise this
+>    product was breaking every time it kept it.
+> 2. **Inheritance is impossible without content.** The owner's question — *why can I not teach on top of someone
+>    else's knowledge?* — is answered by giving the next creator the questions, not the file: a lesson trained on top
+>    of X keeps X's questions as known answers, and a verifier recomputes that they were kept. Hashes cannot be
+>    trained on.
+> 3. **The patent ships the training set inside the artifact by default** (claim 8, [0032]) and degrades to synthesis
+>    only when it is deliberately withheld (claim 20).
+>
+> **New wording.** *The anchor carries `{sha256, rows, source, access, license, parents}` — ids and hashes only. The
+> dataset BYTES live in the content-addressed blob store and are served under the creator's chosen `access`:
+> `public` (anyone), `derivative` (anyone who declares they are building on it — the default for a published
+> lesson), or `private` (nobody; the ≤ 32 benchmark samples on the record remain public in every case, because
+> verification needs them).* A dataset whose creator asked for `delete_after_training` is forced to `private` and no
+> copy is pinned at all.
+>
+> What did NOT change: the anchor still carries no copy of the questions beyond those samples; a buyer can still
+> verify that a re-train used the same input from the sha alone; and nothing is served for a `private` dataset, to
+> anyone, ever. Where the bytes are served from and who may read them: lineage design §6.1, §6.6, §12.3.
 
 **D13 — Sample dataset route.** *A:* `GET /api/teach/sample-dataset`. *B:* `GET /api/teach/datasets/sample?kind=`.
 **Decision: `GET /api/teach/samples` + `GET /api/teach/samples/:kind`.** B's path sits under `/datasets/` where it
@@ -717,7 +753,7 @@ taught: { hits: number; total: number; sampled?: { checked: number; of: number }
 skipped?: true;                     // check_side_effects was off — drives teach.res.side_off and the publish gate
 // PatchRecipe
 dataset?: { sha256: string; rows: number; revision: number; source: TeachDatasetSource; name?: string };
-// PatchAnchor  (hash-only provenance — the content is NEVER published, D12)
+// PatchAnchor  (hash-only provenance, D12 — the BYTES are served under `access`, lineage design §6.1)
 dataset?: { sha256: string; rows: number; source: TeachDatasetSource };
 ```
 

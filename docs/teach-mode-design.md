@@ -8,6 +8,14 @@ This document merges three candidate designs (user-first, risk-first, mvp-first)
 
 Facts below marked *(verified)* were checked against the repo or the live host during this session; facts marked *(projected)* are estimates and must be measured before they appear in UI copy.
 
+**Superseded in part (2026-09) by `docs/lineage-teach-design.md`.** Everything about *teaching on top of someone
+else's knowledge* — the base a lesson is trained on, the training set it inherits, forking, merging, the family
+tree, the ordered runtime stack and the chained purchase — is decided there, not here. The paragraphs this affects
+carry a pointer where they stand: §2 (row-level merging is no longer a non-goal), §5.5 (`builds_on_context` is
+retired), §6.2 (`base_ids` / `context_ids`), §7.1 (`derivation` / `base` / `dataset` on the anchor), §8.3 (CHECKING
+runs in deployment order) and §9.2 (a parent is a base, not "something that was loaded at the time"). The lineage
+document's §14 lists every revision it makes, and its §18 which PR shipped each.
+
 ---
 
 ## 1. Goals
@@ -22,7 +30,11 @@ Facts below marked *(verified)* were checked against the repo or the live host d
 
 - Sovereign / device-held private rows (patent claims 25–29, 46–50). Not built; the UI must not imply it.
 - Making the visitor the **on-chain author**. The AIN write rule `auth.addr === newData.author` on `/apps/knowledge/market/patches/$id` (*verified* `packages/core/src/ain-ledger.ts`) forces `author = node`. The visitor is a signed **contributor**.
-- Row-level merging of overlapping knowledge files. Stacking is last-write-wins with an overlap warning.
+- ~~Row-level merging of overlapping knowledge files. Stacking is last-write-wins with an overlap warning.~~
+  **Overturned** by `docs/lineage-teach-design.md` §9 (merge) and §8 (stack): two knowledges are combined by
+  QUESTION with every disagreement resolved by a person, and the loaded stack is ordered, journalled and reversible
+  — removing a child puts its base back rather than the bare model. Additive or averaged row merges remain
+  forbidden, now by measurement (§0 F8).
 - Consumer-hardware local run (llama.cpp etc.). The only target is the identical `Qwen3.8-Flash-Next-W4A16` checkpoint.
 - Training through the live vLLM (SPSA / `scripts/edit_one_fact.py`). It mutates the shared table during search and succeeded 0/6…3/8; it stays an operator experiment flag, never the visitor path.
 - Long-form answers. v1 trains single-line facts (answer ≤ 200 chars).
@@ -141,7 +153,13 @@ All strings live in a new `packages/web/src/i18n/pages/teach.ts` (en + ko) plus 
 | `teach.basket.policy_untimed` | Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes | 이 노드에서 가르치기: 가능 · 아직 측정된 수업이 없어 첫 수업은 최대 30분 걸릴 수 있습니다 |
 | `teach.basket.policy_paused` | Teaching is paused on this node right now. {reason} | 지금은 이 노드에서 가르치기가 잠시 중단되었습니다. {reason} |
 | `teach.basket.policy_off` | This node does not accept lessons. Try another node or run your own. | 이 노드는 수업을 받지 않습니다. 다른 노드를 쓰거나 직접 노드를 운영하세요. |
-| `teach.basket.builds_on` | This builds on the knowledge I have loaded (its creators share in sales) | 지금 넣은 지식을 바탕으로 합니다 (그 제작자도 수익을 나눕니다) |
+| ~~`teach.basket.builds_on`~~ | ~~This builds on the knowledge I have loaded (its creators share in sales)~~ | ~~지금 넣은 지식을 바탕으로 합니다 (그 제작자도 수익을 나눕니다)~~ |
+
+> **Retired** (`docs/lineage-teach-design.md` §14, SC-1). One checkbox for "everything I have loaded" could not say
+> WHICH knowledge a lesson is built on, and the flag was silently dropped whenever a context id was not LISTED at
+> READY time (F7). The basket now carries a base ROW — one chosen knowledge, its three consequences stated on the
+> spot (recorded as a parent for good · its creators share every sale · buyers need it too) — and everything else
+> loaded is labelled *comparison only*. Keys: `teach.base.*` in `packages/web/src/i18n/pages/teach.ts`.
 
 ### 5.6 Who gets the credit? (Teaching key sheet, first time only)
 
@@ -299,6 +317,14 @@ Title **Teaching** / **가르치기**. Settings: "Accept lessons from visitors" 
 
 ### 6.2 Visitor endpoints
 
+> **Extended** by `docs/lineage-teach-design.md` §12.1 – §12.3. `POST /api/teach/jobs` takes `base_ids` (what this
+> lesson is trained ON TOP OF, ordered) and `context_ids` (loaded for comparison only) in place of
+> `builds_on_context`, plus `mode`, `inherit`, `resolutions`, `tier` and `export`; the pre-flight answers `in_base`
+> and `base_conflict`; the publish body carries the `dataset` section (access, licence, notes, declaration). The
+> new endpoints beside them: `POST /api/teach/merge/preview`, `POST /api/patches/:id/fork`,
+> `GET /api/patches/:id/dataset[/rows|/manifest]`. The legacy `builds_on_context: true` still maps to
+> `base_ids = patch_ids` with a `Deprecation` header.
+
 ```
 GET  /api/teach/policy
 → 200 { enabled, publish: 'review'|'auto'|'never', trainer: 'ready'|'busy'|'paused',
@@ -417,6 +443,10 @@ interface TeachJob {
 ## 7. Data model diff
 
 ### 7.1 `packages/core/src/types.ts`
+
+> **Extended** by `docs/lineage-teach-design.md` §5.1: `PatchAnchor` also carries `derivation` (what this did to its
+> bases), `base` (the ordered stack the file was trained against, and whether it is a `delta` or a `squash`) and
+> `dataset` (`{sha256, rows, source, access, license, parents}`). All optional, all ids and hashes only.
 
 ```ts
 export interface Contributor {
@@ -540,6 +570,11 @@ Export: `lesson.npz` `{addrs int64[N], before float32[N,160], after float32[N,16
 
 ### 8.3 Worker state machine (`packages/node/src/teach.ts`, modelled on `Verifier`)
 
+> **Revised** by `docs/lineage-teach-design.md` §7.6: CHECKING measures the chain in DEPLOYMENT order — the bases
+> first, then the lesson on top — where v1 applied the lesson alone and then the parents on top of it, which is the
+> reverse of how a buyer will load them (§0 F6). A lesson that overwrites an answer its base is responsible for
+> fails `parent_regression`, and the removal at the end of CHECKING is what measures `reversibility_ok`.
+
 ```
 QUEUED ─► PREFLIGHT ─► TRAINING ─► EXPORTED ─► CHECKING ─► READY ─► (save | publish)
    │          │            │                        │          └► NEEDS_MORE (taught hits < 75 %; draft still created, publish disabled)
@@ -588,6 +623,12 @@ publish: READY ─► PENDING_REVIEW ─► (approve) ANNOUNCED ─► existing 
 ### 9.2 Credit on the record
 
 `author` = node (forced by the AIN rule), `author_name` = node name, `contributors = [{address, signer?, name, share, role:'data_provider', proof, sig}]`, `origin: 'teach'`, `parents` = context knowledges **only if** the visitor ticked "builds on" (patent lineage means derivation, not "trained while X was applied"). Copy always reads "Taught by {name} · published by {node}", never "you published it".
+
+> **Revised** by `docs/lineage-teach-design.md` §5.1, §6, §12.6. `parents` is no longer decided by a checkbox: it is
+> the base the creator CHOSE (`base_ids`), plus every knowledge whose rows the lesson inherited — a child whose
+> training set points at X must list X (`missing_dataset_parent`), so inheriting someone's questions without paying
+> them is impossible by construction. The announce-time validation checks that `base.stack`, `derivation.bases` and
+> `dataset.parents` are all subsets of `parents`, and a private base is refused with a reason rather than dropped.
 
 ### 9.3 Payout mechanics
 
