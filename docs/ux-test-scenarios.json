@@ -10186,5 +10186,31 @@
    "packages/cli/src/commands/teach-dataset.ts (patchMerge)",
    "docs/lineage-teach-design.md §13"
   ]
+ },
+ {
+  "id": "AZ-311",
+  "persona": "Visitor (creator)",
+  "title": "The merge screen is reachable from the knowledge it starts with, and that knowledge is already chosen",
+  "goal": "The owner's question was \"why can I not merge someone else's?\" — a screen nobody can find is the same answer as no screen. Combining starts where a creator already is: on the knowledge page, beside the two other ways to build on it.",
+  "preconditions": [
+   "node-u with teach.lineage true.",
+   "A published knowledge whose training set is shareable."
+  ],
+  "steps": [
+   "Open the knowledge page, Family tree tab.",
+   "Press *Combine with another*."
+  ],
+  "expected": [
+   "The button sits beside *Teach on top of this* and *Copy and continue*, and is disabled by the same rule (the flag, a private training set, or none on the record).",
+   "It opens /teach/merge?a=<this knowledge>, with that knowledge already chosen and only the second one to pick."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-merge.spec.ts (AZ-311)",
+   "packages/web/src/components/detail/FamilyTree.tsx",
+   "docs/lineage-teach-design.md §4 SC-9, SC-14"
+  ]
  }
 ]

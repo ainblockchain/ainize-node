@@ -101,8 +101,9 @@ test('AZ-308 two knowledges with nothing in common are combined in the browser, 
   // …no conflicts, so "just combine" is the choice, and the screen says what it will never do instead
   await expect(page.getByText('Just combine — no training (only when rows do not disagree)')).toBeVisible();
   await expect(page.getByText(/never blended or added/)).toBeVisible();
-  // both creators, and the buyer needing both, before anything is built
-  await expect(page.getByText(/share 30% equally\. Buyers need both\./)).toBeVisible();
+  // both creators paid, before anything is built — and, because a combine writes a stand-alone file, the truth
+  // about what a buyer needs to load, which is neither of them
+  await expect(page.getByText(/share 30% equally\. The combined knowledge stands on its own/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Build it' }).click();
   await page.waitForURL(/\/teach\/lesson\/[0-9a-f-]{36}/, { timeout: 60_000 });
@@ -119,6 +120,19 @@ test('AZ-308 two knowledges with nothing in common are combined in the browser, 
   const detail = async (id: string) => (await (await api.get(`${NODE}/api/patches/${encodeURIComponent(id)}`)).json()) as { anchor: { rows: number } };
   const [a, b] = [await detail(BASE), await detail(OTHER)];
   expect(view.result.rows).toBe(a.anchor.rows + b.anchor.rows);
+});
+
+test('AZ-311 the merge screen is reachable from the knowledge it starts with, with that knowledge already chosen', async ({ page, context }) => {
+  await seedBrowserKey(context, merger);
+  const node = await (await api.get(`${NODE}/api/info`)).json() as { address: string };
+  await page.goto(`${NODE}/${node.address}/${encodeURIComponent(BASE)}?tab=tree`);
+  const link = page.getByTestId('tree-merge');
+  await expect(link).toBeVisible();
+  await expect(link).toHaveText('Combine with another');
+  await link.click();
+  await page.waitForURL(/\/teach\/merge\?a=/);
+  // one id in the URL: it is kept, and only the other knowledge is asked for
+  await expect(page.getByLabel('First knowledge')).toHaveValue(BASE);
 });
 
 test('AZ-309 a knowledge and something built on top of it: the screen shows both answers, refuses to just combine, and asks for a rebuild', async ({ page, context }) => {
