@@ -197,8 +197,16 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   await expect(footer.getByRole('link', { name: 'aindrive' })).toHaveCount(0);
 
   await expect(entry.getByRole('heading', { level: 1 })).toHaveText('Teach the model something new');
-  await expect(entry.getByText('Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.', { exact: true })).toBeVisible();
-  await expect(entry.getByText('No account, no server of your own, no code.', { exact: true })).toBeVisible();
+  // O-7: one line of intro; the longer story is behind "How it works" (a native <details>, collapsed)
+  await expect(entry.getByText('No account, no code: your questions and answers become knowledge you can test, keep private or publish.', { exact: true })).toBeVisible();
+  await expect(entry.getByText('Two ways in, one result', { exact: false })).toHaveCount(0);
+  const how = page.getByTestId('how-it-works');
+  await expect(how.locator('summary')).toHaveText('How it works');
+  expect(await how.evaluate((el) => (el as HTMLDetailsElement).open), 'collapsed by default').toBe(false);
+  await expect(how.locator('p')).toBeHidden();
+  await how.locator('summary').click();
+  await expect(how.locator('p')).toHaveText('Whichever door you pick: your questions and answers are saved as a dataset on this node, checked line by line, trained into the model, and the result is checked again. What comes out is knowledge you can try in Live test, keep private, download, or publish for others to buy. No account, no server of your own, no code.');
+  await how.locator('summary').click();
 
   // O-9: each door is ONE link — the whole card is the click target, the "button" at its foot is a visual label of the same link
   const chatCard = page.getByTestId('door-chat');
@@ -212,11 +220,11 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
   await expect(chatCard).toHaveAttribute('href', '/chat?teach=1');
   await expect(fileCard).toHaveAttribute('href', '/teach/upload');
   await expect(chatCard.getByRole('heading', { level: 2 })).toHaveText('Teach it in a conversation');
-  await expect(chatCard.locator('p')).toHaveText('Ask the model something and correct it when the answer is wrong. Your corrections collect into a dataset. Best when you do not have a file yet.');
+  await expect(chatCard.locator('p')).toHaveText('Ask the model a question and correct its answer. No file needed.');   // O-7: one sentence + one benefit
   await expect(page.getByTestId('door-chat-cta')).toHaveText('Start a conversation');
   await expect(fileCard.getByText('Already have a file?', { exact: true })).toBeVisible();
   await expect(fileCard.getByRole('heading', { level: 2 })).toHaveText('Upload a dataset file');
-  await expect(fileCard.locator('p')).toHaveText('Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.');
+  await expect(fileCard.locator('p')).toHaveText('Already have questions and answers in a file? Train them straight away.');
   await expect(page.getByTestId('door-file-cta')).toHaveText('Choose a file');
   // O-1: the conversation card leads — the primary border (#8b3eeb) and the contained label are its; the file card keeps the grey border and the outlined label
   expect(await chatCard.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe('rgb(139, 62, 235)');

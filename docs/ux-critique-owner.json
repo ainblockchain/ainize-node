@@ -75,7 +75,9 @@
    "problem": "The intro ('Two ways in, one result …') and each card's description are long, preventing quick scanning and causing fatigue.",
    "fix": "Cut the intro to one line; card descriptions to one short sentence + one benefit; move details behind 'How it works'.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The intro is one line ('No account, no code: your questions and answers become knowledge you can test, keep private or publish.'), each card is one sentence plus one benefit, and the full story (dataset → check → train → check again → try / keep / download / publish; no account, no server, no code) sits behind a collapsed 'How it works' disclosure."
   },
   {
    "n": "O-8",
