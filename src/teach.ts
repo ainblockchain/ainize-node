@@ -24,7 +24,7 @@ import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsP
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
 import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
-import type { Caller, Market } from './market.js';
+import { TREE_MAX_DEPTH, type Caller, type Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
@@ -625,6 +625,12 @@ export class TeachWorker {
       const visitor = this.market.visitorId(`key:${input.address.toLowerCase()}`);
       const n = (st: string) => out.filter((f) => f.status === st).length;
       this.store.bumpSignals(b.id, { preflight_wrong_today: n('will_train'), preflight_in_base: n('in_base'), preflight_base_conflict: n('base_conflict') }, { visitor });
+      // SC-12 *preflight*: "people tried to teach this on top of it". Counts and a keyed cluster id only — someone
+      // else's unpublished question is never stored as text, however many people ask it (§10).
+      for (const f of out) {
+        if (f.status !== 'will_train' && f.status !== 'base_conflict') continue;
+        this.store.bumpIssue(b.id, 'preflight', this.market.questionCluster(input.facts[f.index].prompt), { visitor });
+      }
     }
     return {
       facts: out, trainable: out.filter((f) => f.status === 'will_train' || f.status === 'base_conflict').length,
@@ -2393,9 +2399,35 @@ export class TeachWorker {
     if (!claims.length || !claims.some((c) => (c.signer ?? c.address).toLowerCase() === j.contributor.toLowerCase())) throw new TeachError(409, 'job_not_ready: the draft carries no verified claim by the owner\'s teaching key');
     const rec = await this.market.announce(j.draft_id);
     this.store.updateTeachJob(j.id, { status: 'ANNOUNCED', patch_id: j.draft_id, publish_status: 'announced', reject_reason: null });
+    await this.closeCoveredQuestions(j, d.anchor).catch((e) => this.log('warn', `open questions of the bases could not be closed: ${(e as Error).message}`, j.id));
     this.log('info', `lesson ${j.id} announced as ${j.draft_id} (record ${rec.hash.slice(0, 12)}…)`, j.id);
     return { status: 'ANNOUNCED', patch_id: j.draft_id, url: `/${rec.body.author}/${j.draft_id}` };
   }
+  /**
+   * §10 issue lifecycle — a knowledge that answers an ancestor's open question closes it. Every ancestor reachable
+   * through `parents[]` (cycle-safe, same cap as the tree) has its OPEN issues flipped to `covered_by:<child>` when
+   * their cluster key is among this lesson's published questions. Matching is by cluster key, so an issue nobody
+   * consented to store as text can still be recognised as answered.
+   */
+  private async closeCoveredQuestions(j: TeachJobRow, anchor: PatchAnchor): Promise<void> {
+    const keys = new Set<string>();
+    for (const f of j.facts) keys.add(this.market.questionCluster(f.prompt));
+    const sha = anchor.dataset?.sha256;
+    if (sha && this.market.datasets.has(sha)) for (const r of this.market.datasets.rows(sha)) keys.add(this.market.questionCluster(r.prompt));
+    if (!keys.size) return;
+    const map = await this.market.entryMap();
+    const seen = new Set<string>([anchor.id]);
+    const queue: { id: string; depth: number }[] = anchor.parents.map((id) => ({ id, depth: 1 }));
+    while (queue.length) {
+      const { id, depth } = queue.shift()!;
+      if (seen.has(id) || depth > TREE_MAX_DEPTH) continue;
+      seen.add(id);
+      const closed = this.store.coverIssues(id, [...keys], anchor.id);
+      if (closed) this.log('info', `${anchor.id} answers ${closed} open question(s) of ${id}`, j.id);
+      for (const p of map.get(id)?.anchor.parents ?? []) queue.push({ id: p, depth: depth + 1 });
+    }
+  }
+
   reject(j: TeachJobRow, reason: string) {
     if (j.status !== 'PENDING_REVIEW') throw new TeachError(409, `job_not_ready: lesson is ${j.status}`);
     if (j.draft_id && this.store.getDraft(j.draft_id)) { try { this.market.updateDraft(j.draft_id, { visibility: 'test' }); } catch { /* ignore */ } }
