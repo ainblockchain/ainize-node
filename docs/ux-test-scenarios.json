@@ -9239,5 +9239,240 @@
    "README.md",
    "packages/mcp/README.md"
   ]
+ },
+ {
+  "id": "AZ-275",
+  "persona": "Node operator / developer",
+  "title": "A question remembers which training set it came from, and a forged pointer does not",
+  "goal": "Inheritance is a property of the QUESTIONS, not of a side table: a row copied out of someone's training set carries `from: '<knowledge>#<row>'` inside the bytes that are hashed, so the claim can be checked against the parent's own bytes instead of believed.",
+  "preconditions": [
+   "No node needed — the parser is a pure function over a Buffer."
+  ],
+  "steps": [
+   "Parse a jsonl file whose rows carry `from`, `replaces`, a malformed pointer and no pointer at all.",
+   "Hash the rows, write them back out as canonical bytes and read them again.",
+   "Parse a CSV with a column called `source`."
+  ],
+  "expected": [
+   "Only a well-formed `<patch id>#<row index>` survives; `not a pointer` and `krx-all-2761#x` are dropped rather than shown as provenance.",
+   "The pointers are part of `dataset.sha256`: the same questions with and without them hash differently.",
+   "The canonical round-trip keeps `from` and `replaces`, and the preview rows carry them so the browser does not have to guess what is inherited.",
+   "A spreadsheet column called `source` stays a note — provenance is never inferred from prose."
+  ],
+  "priority": "P0",
+  "area": "teach-dataset",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/teach-dataset.test.ts (AZ-275)",
+   "docs/lineage-teach-design.md §5.2"
+  ]
+ },
+ {
+  "id": "AZ-276",
+  "persona": "Data provider (visitor)",
+  "title": "Copy and continue: someone else's questions become a training set of mine",
+  "goal": "The owner's ask — \"트레이닝 세트가 승계가 되어야 거기에 붙여서 할 수 있는데\". A published knowledge's questions can be copied into my own My datasets, with the knowledge recorded as their parent and every row pointing at the row it came from.",
+  "preconditions": [
+   "A node with `teach.lineage` on (node-u) and a published knowledge whose training set access is `derivative` or `public`."
+  ],
+  "steps": [
+   "POST /api/patches/<id>/fork as a teaching key that is not the author's.",
+   "Read the dataset's rows.jsonl and the rows page.",
+   "POST the same fork again."
+  ],
+  "expected": [
+   "201 with `inherited_rows`, the parent's id, name and training-set sha; the dataset is owned by the caller and has `parent_patch` set.",
+   "Every row carries `from: '<id>#<i>'`, in the parent's own order, and the rows page returns them so the table can show a *from {name}* chip.",
+   "Copying twice returns the SAME dataset (200, `created: false`) — the button is idempotent, not a duplicate factory."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-276)",
+   "packages/cli/src/commands/teach-dataset.ts `ainize patch fork`",
+   "docs/lineage-teach-design.md §3 Story B, §12.3"
+  ]
+ },
+ {
+  "id": "AZ-277",
+  "persona": "Data provider (visitor)",
+  "title": "A knowledge whose questions are private cannot be copied, and says why",
+  "goal": "§6.1: `private` means nobody can build on it. The refusal has to be a sentence a creator understands, not a 403 code, and it must not leak whether the knowledge exists to strangers who cannot see it at all.",
+  "preconditions": [
+   "A published knowledge with `dataset.access: private` and its author's teaching key."
+  ],
+  "steps": [
+   "Fork it as a stranger.",
+   "Fork it as its own author.",
+   "Fork an id that does not exist."
+  ],
+  "expected": [
+   "403 `dataset_private` — \"the creator kept the questions private, so nobody can copy or build on them\".",
+   "Its own creator still gets their questions back (201).",
+   "An unknown id is 404 `base_unknown`, the same answer a stranger gets for a private draft."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-277)",
+   "docs/lineage-teach-design.md §6.1, §12.3"
+  ]
+ },
+ {
+  "id": "AZ-278",
+  "persona": "Data provider (visitor)",
+  "title": "Teaching on top of a copy: their questions are kept, mine are trained, one of theirs is changed on purpose",
+  "goal": "F1/F2 said the trainer could not start from a parent and that parent facts were discarded. This is the whole contract in one lesson: inherited rows become the keep-set, my own rows are the lesson, and a row whose answer I changed is trained AND recorded as a change to them.",
+  "preconditions": [
+   "node-u with `teach.lineage`, a published base with 4 questions, a fork of it edited in the rows table."
+  ],
+  "steps": [
+   "Append two of my own questions to the copy and change one inherited answer.",
+   "Train it with `base_ids: [base]`.",
+   "Read job.json, known.jsonl and the job view.",
+   "Publish and read the anchor and the published training set's manifest."
+  ],
+  "expected": [
+   "The lesson trains 3 questions (2 mine + 1 changed), never the 3 inherited ones; `inherited_rows: 3`, `changed_rows: 1`, `mode: 'fork'`.",
+   "known.jsonl holds exactly what the creator KEPT of the base — not the base's whole set — and job.json carries `parents`, `known_file`, `export: 'delta'`, `probe_with_parents` and the `replaces` index of the changed row.",
+   "CHECKING measures the base BEFORE the lesson goes on top (`base_hit` 4/4), counts the replaced question as replaced (`overridden: 1`) and scores the rest (3/3); the check passes and reversibility is recorded.",
+   "The anchor carries `parents`, `derivation.kind 'extend'` with added 2 / changed 1 / removed 0, `base.stack` and `dataset.parents`; the published manifest names each inherited row by its index in the base's set."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-278)",
+   "docs/lineage-teach-design.md §6.2, §6.3, §7.1, §7.6"
+  ]
+ },
+ {
+  "id": "AZ-279",
+  "persona": "Data provider (visitor)",
+  "title": "A copy with nothing of my own in it is not a lesson",
+  "goal": "Nothing silent (§1 goal 9): training a straight copy of someone's questions on top of themselves would produce a knowledge that adds nothing and still claims a share of their sales.",
+  "preconditions": [
+   "A fork with no rows added and none changed."
+  ],
+  "steps": [
+   "Create a lesson from it with `base_ids: [its base]`."
+  ],
+  "expected": [
+   "400 `nothing_to_add`, naming what to do: add a question, or change one of theirs."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-279)"
+  ]
+ },
+ {
+  "id": "AZ-280",
+  "persona": "Data provider (visitor)",
+  "title": "Pre-flight judged with the base loaded: it already answers this, it answers it differently, or nobody does",
+  "goal": "With a base chosen, \"does the model already know this\" is the wrong question — the honest one is what the BASE does with it (§12.1, SC-6), and the base's own training set is what tells \"it says something else\" from \"it does not know\".",
+  "preconditions": [
+   "node-u with lineage on, a published base with a shareable training set."
+  ],
+  "steps": [
+   "POST /api/teach/preflight with `base_ids` and three questions: one the base answers the same way, one it answers differently, one nobody answers."
+  ],
+  "expected": [
+   "The three come back `in_base`, `base_conflict` and `will_train`, each naming the base.",
+   "`base_conflict` quotes the BASE's own answer, read from its training set, not a guess from the model.",
+   "`trainable` counts the conflict (it is trainable as a change) and not the `in_base` row.",
+   "The three counters the base's page is made of are written per base: preflight_in_base, preflight_base_conflict, preflight_wrong_today."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-280)",
+   "docs/lineage-teach-design.md §10, §12.1"
+  ]
+ },
+ {
+  "id": "AZ-281",
+  "persona": "Data provider (visitor)",
+  "title": "An answer that contradicts the base is refused until the creator means it",
+  "goal": "Publishing an answer over someone else's is a decision with consequences for their buyers; it must never happen because a row happened to be in a file.",
+  "preconditions": [
+   "A dataset whose first question is one of the base's, answered differently."
+  ],
+  "steps": [
+   "Create the lesson with `base_ids` and no confirmation.",
+   "Create it again with `confirm_conflicts: true`."
+  ],
+  "expected": [
+   "400 `base_unresolved_conflicts` listing the rows, each with my answer, the base's answer and the base's id.",
+   "Confirmed, the row is trained as a change (`replaces`), counted in `changed_rows`, and CHECKING counts it as replaced instead of as a regression of the base."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-281)",
+   "docs/lineage-teach-design.md §7.6 step 5, §12.1"
+  ]
+ },
+ {
+  "id": "AZ-282",
+  "persona": "Data provider (visitor)",
+  "title": "The chat door names what the lesson is built on, and what is only loaded beside it",
+  "goal": "The owner's first sentence — \"어떤 knowledge 위에서 트레이닝 하는건지\" — answered where the lesson is collected. The v1 checkbox (\"this builds on the knowledge I have loaded\") had no object and recorded parents by accident.",
+  "preconditions": [
+   "node-u serving the web build with `teach.lineage` on, a published knowledge whose training set is shareable."
+  ],
+  "steps": [
+   "Open /chat/<id>?teach=1 with a teaching key in the browser.",
+   "Read the base row.",
+   "Open the picker and choose \"nothing — teach the plain model\"."
+  ],
+  "expected": [
+   "The loaded knowledge is the base by default, named, with all three consequences on the spot: recorded as built on it, its creators receive the network's creator share of every sale, buyers must load it first.",
+   "It says how many of that knowledge's questions the lesson starts from.",
+   "The v1 \"builds on what I loaded\" checkbox is gone where lineage is on — nothing is recorded as a parent by being loaded.",
+   "The picker lists the loaded knowledge and offers \"nothing\" as an explicit choice; choosing it changes the row to \"teaching the plain model\"."
+  ],
+  "priority": "P0",
+  "area": "teach-web",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-lineage.spec.ts (AZ-282)",
+   "packages/web/src/components/chat/{LessonBasket,BasePicker}.tsx",
+   "docs/lineage-teach-design.md §4 SC-1, SC-3"
+  ]
+ },
+ {
+  "id": "AZ-283",
+  "persona": "Data provider (visitor)",
+  "title": "The dataset door starts from someone else's questions, and the table says whose each row is",
+  "goal": "The file door hard-coded `patch_ids: []` (F7): a creator with a file had no way to build on anything. Now they choose a base, copy its questions into their own table, and see the merged set before anything is trained.",
+  "preconditions": [
+   "node-u serving the web build, a published base with 3 questions, a dataset of 2 of my own."
+  ],
+  "steps": [
+   "Open the settings screen, choose the base in the picker, press \"Start from its questions\".",
+   "Read the merged preview and its filters.",
+   "Open My datasets.",
+   "Train the copy on top of the base."
+  ],
+  "expected": [
+   "The Start from block states the three consequences with the base's name; the copy lands on the preview of a NEW dataset of mine (nothing is trained by that button).",
+   "The table shows 3 rows with a *from {name}* chip and 2 of mine; the filter chips read Mine (2) / Inherited (3) and are counted by the node over the whole set, not over the page on screen.",
+   "My datasets says the set was copied from that knowledge, with the inherited and own counts.",
+   "Training it records the base, keeps its 3 questions as known answers and trains only my 2."
+  ],
+  "priority": "P0",
+  "area": "teach-web",
+  "automation": "automated",
+  "evidence": [
+   "packages/e2e/tests/web-lineage.spec.ts (AZ-283)",
+   "packages/web/src/pages/{TeachSettingsPage,TeachDatasetPage}.tsx",
+   "docs/lineage-teach-design.md §4 SC-4, SC-5, SC-16"
+  ]
  }
 ]
