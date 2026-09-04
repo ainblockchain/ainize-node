@@ -8733,20 +8733,20 @@
   "expected": [
    "The two shipped files share a number of addresses counted from the files at run time (2,154 for ep12 ∩ 픽셀플러스, measured 2026-09-04) — never quoted.",
    "The shipped blobs' `before` is NOT the live baseline on a machine other nodes share: at the 2026-09-04 run ep12 differed from its `before` on 241,661 of 241,992 rows and 픽셀플러스's `after` was already fully on the table, because another node had it loaded. Every assertion is therefore relative to the measured baseline.",
-   "With ep12 loaded, 픽셀플러스 sees a DIFFERENT number of its rows changed than it did on the baseline — evidence that ep12 is underneath it.",
    "Unloading 픽셀플러스 puts ep12 back on all 241,992 of its rows, the 2,154 shared ones included; unloading ep12 returns both files to exactly the two numbers measured at step 0.",
    "The add-on is refused with `base_mismatch` when ep12 is not loaded, and NOTHING is written (the measurement afterwards is unchanged).",
    "With ep12 loaded the add-on's check reads 0 rows differing, the apply reports `prev_equals_before` from the hook's own returned values, and unloading it leaves ep12 bf16-exact on all 2,000 rows.",
    "Over HTTP: `needs_base` for the add-on alone, `with_base` gives the ordered stack [base, add-on] with a journal per layer, `has_dependents` refuses to pull the base out, and the node ends with an empty stack.",
-   "The row phase and the HTTP phase are separable on purpose: this machine's serving instance is shared with the trainer and does get taken away mid-run, and \"the model server went away\" must read as a skip, not as five failed assertions."
+   "The row phase and the HTTP phase are separable on purpose: this machine's serving instance is shared with the trainer and does get taken away mid-run, and \"the model server went away\" must read as a skip, not as five failed assertions.",
+   "A count that merely changed is not evidence — on a shared table two counts can coincide, and one run they did. The claim that a knowledge is underneath another is asserted as an equality of the SAME measured number across the operation (before it goes on, after it comes off), never as an inequality between two."
   ],
   "priority": "P0",
   "area": "runtime",
   "automation": "manual",
   "evidence": [
    "packages/e2e/scripts/stack-live-proof.mjs",
-   "run 2026-09-04 10:08 on node-u / flashnext-e2e :8002 — all checks passed (the GET /api/runtime/stack assertion was vacuous in that run: the node was on a build that predated the route; the route was then verified by curl and `ainize patch stack`, and the assertion now checks the status code first).",
-   "run 2026-09-04 10:26 — phase 1 (every row assertion) passed again; phase 2 could not finish because the serving container was killed to free GPUs 4-6 for the trainer.",
+   "run 2026-09-04 10:57 on node-u / flashnext-e2e :8002 — all checks passed, both phases (baseline that run: ep12 differed from its `before` on 241,697 of 241,992 rows, so the assertions are relative by necessity, not by choice).",
+   "earlier runs 10:08 and 10:26 passed every row assertion; 10:26's HTTP phase could not finish because the serving container was killed to free GPUs 4-6 for the trainer, which is why that phase now skips rather than fails.",
    "qwen3.8/scripts/patch.py (check, apply --verify-before --journal, remove --journal)",
    "docs/lineage-teach-design.md §8"
   ]

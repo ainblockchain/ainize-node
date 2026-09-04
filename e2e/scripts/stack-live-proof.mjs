@@ -80,8 +80,11 @@ await rt.exclusive('stack-live-proof', async () => {
   step('1 load rows-ep12, then 픽셀플러스 on top of it');
   must((await apply(EP12, J.base)).code === 0, 'ep12 written');
   must((await check(EP12, 'ep12')).differ_after === 0, `the table holds ep12 on all ${base0.rows} rows`);
+  // Informational, deliberately NOT an assertion: "the count changed" is evidence only until the two counts happen
+  // to coincide, and on a shared table they can. What ep12 being underneath actually means is asserted at step 2 —
+  // the same measured number before 픽셀플러스 goes on and after it comes off.
   const pixelOnEp12 = (await check(PIXEL, 'pixel')).differ_before;
-  must(pixelOnEp12 !== pixel0.differ_before, `픽셀플러스 now sees ${pixelOnEp12} of its rows changed, not the ${pixel0.differ_before} it saw before — ep12 is under it`);
+  console.log(`    with ep12 loaded, 픽셀플러스 differs from its \`before\` on ${pixelOnEp12}/${pixel0.rows} rows (it was ${pixel0.differ_before} at step 0)`);
   must((await apply(PIXEL, J.pixel)).code === 0, '픽셀플러스 written on top');
   must((await check(PIXEL, 'pixel')).differ_after === 0, 'and it owns those rows now');
 
