@@ -471,3 +471,29 @@ test('item 5 \u2014 fixing one flagged row keeps the other four in the report in
   // and every carried row still points at the line of the file the visitor uploaded
   for (const r of carried) assert.ok(r.line >= 1 && r.index === null);
 });
+
+// ---------------------------------------------------------------- AZ-153: a refusal ends when the question is trainable
+test('AZ-153 rewriting a refused row’s answer settles it — the corrected question replaces the refusal, it does not sit beside it', async () => {
+  const { carryRejected } = await import('../src/teach-datasets.js');
+  const long = 'x'.repeat(210);
+  const first = P([
+    'question,answer',
+    'Who founded Ainize?,Comcom',
+    `Explain the whole history of the Korean peninsula in one line,${long}`,
+    'no-answer-q,',
+  ].join('\n') + '\n', { filename: 'az153.csv' });
+  assert.equal(first.summary.accepted, 1);
+  assert.equal(first.summary.too_long, 1);
+
+  // the edit sheet on a refused row can only APPEND (the row has no index in the set), so the corrected question
+  // arrives with a DIFFERENT answer — which is exactly what the exact-content rule cannot see
+  const fixed = [...first.rows, { prompt: 'Explain the whole history of the Korean peninsula in one line', answer: 'It is long.' }];
+  const second = carryRejected(first.report, P(canonicalJsonl(fixed), { format: 'jsonl' }));
+
+  assert.equal(second.rows.length, 2, 'both questions train');
+  const carried = second.report.filter((r) => r.carried);
+  assert.equal(carried.length, 1, `only the row nobody fixed is still shown: ${JSON.stringify(carried.map((r) => r.prompt))}`);
+  assert.equal(carried[0].prompt, 'no-answer-q');
+  assert.equal(second.summary.too_long, 0, 'the pill cannot keep saying "1 need a fix" about a row the visitor fixed');
+  assert.equal(second.summary.empty, 1, 'and it must keep saying it about the one they did not');
+});
