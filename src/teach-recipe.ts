@@ -111,13 +111,48 @@ export interface RunLocallyInput {
 export function renderRunLocally(i: RunLocallyInput): string {
   const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   const repo = i.repo_url ?? LOCAL_RUN_REPO_URL;
-  const parentsNote = i.parents.length
-    ? i.parents_required
-      ? `\nThis file is an add-on: it was trained ON TOP OF ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')}. Load ${i.parents.length > 1 ? 'them first, in this order' : 'it first'}, then this file — its rows start from that state and mean nothing without it.\n`
-      : `\nThis lesson was taught with ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')} loaded; load them first for the same behaviour.\n`
+  const names = i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ');
+  /**
+   * An add-on is not a file you can run (design §8, SC-15). Its rows start from the table state its bases leave
+   * behind, so the instructions have to say that BEFORE the download, not in a footnote after Option C — and they
+   * have to show the loading ORDER and how to take it apart again. The journal is what makes the second half true:
+   * `remove` replays the value the hook returned when the add-on went on, so the base is still there afterwards.
+   */
+  const stackHead = i.parents.length && i.parents_required
+    ? `\n> **This is an add-on.** It was trained ON TOP OF ${names}, and it only means anything with ${i.parents.length > 1 ? 'those knowledges' : 'that knowledge'} loaded underneath, in this order:
+> ${[...i.parents.map((p) => p.id), i.slug ? `taught-${i.slug}` : 'this file'].join(' → ')}.
+> Get ${i.parents.length > 1 ? 'them' : 'it'} first — on a node, \`ainize patch buy <id> --bundle\` takes one knowledge and everything under it in one go.\n`
+    : '';
+  const stackSteps = i.parents.length && i.parents_required
+    ? `\n## Loading it on top of ${names}
+
+The order is the point: the base goes on first, then this file. \`--journal\` records what each write replaced, so
+removing this add-on puts the base back instead of the bare model, and \`--verify-before\` refuses to write at all
+unless the rows underneath are the ones it was trained against.
+
+\`\`\`bash
+${i.parents.map((p) => `python3 scripts/patch.py apply <${p.id}.npz> --journal ${p.id}.journal.npz`).join('\n')}
+python3 scripts/patch.py apply ${i.filename} --journal this.journal.npz --verify-before   # refuses if the base is not underneath
+python3 scripts/patch.py remove ${i.filename} --journal this.journal.npz                  # the base stays loaded
+\`\`\`
+
+Through your own node the same thing is two lines — it takes the whole stack under one lock and refuses to load an
+add-on onto the wrong table:
+
+\`\`\`bash
+ainize patch buy ${i.parents[0].id} --bundle       # the knowledge under this one, and anything under IT
+ainize patch import ./${i.filename} --recipe ./recipe.json
+ainize patch apply taught-${i.slug} --with-base    # ${i.parents.map((p) => p.id).join(', ')} first, then this
+ainize patch stack                                 # what is on the model, bottom first
+ainize patch remove taught-${i.slug}               # take it off; the base is left standing
+\`\`\`
+`
+    : '';
+  const parentsNote = i.parents.length && !i.parents_required
+    ? `\nThis lesson was taught with ${names} loaded; load them first for the same behaviour.\n`
     : '';
   return `# Run this knowledge yourself
-
+${stackHead}
 Works only with the exact model this node serves: ${i.model_id} (same checkpoint hash and tokenizer).
 Hardware: 2× 40 GB GPUs (TP=2, 8K context) or 4× 40 GB (TP=4, full context) or 1× 80 GB-class GPU;
 ~110 GB host RAM when the memory table is CPU-offloaded; ~170 GB disk. Docker with NVIDIA runtime; Python 3.
@@ -173,5 +208,5 @@ MODEL_DIR=$MODEL_DIR-taught ENGRAM_HOOK=0 ./serve.sh
 Ask in the form you taught (chat with thinking off, or "Q: …\\nA: "). Very different phrasings may not fire —
 that is a property of the memory-table method. \`patch.py status\` tells you whether the lesson is loaded
 (\`applied: yes\` / \`applied: no\`).
-${parentsNote}`;
+${parentsNote}${stackSteps}`;
 }
