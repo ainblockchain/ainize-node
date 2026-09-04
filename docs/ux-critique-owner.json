@@ -21,7 +21,9 @@
    "problem": "'1 Dataset 2 Check 3 Settings 4 Training 5 Result' reads as a clickable progress indicator, yet it sits below the buttons and it is unclear whether it is clickable or informational.",
    "fix": "Either make it a real stepper (current step highlighted, past steps clickable) placed where progress lives (top of the flow), or restyle it as a plain 'what happens next' explainer with no button-like affordance.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The entry page now shows a plain sentence — 'What happens next: Dataset → Check → Settings → Training → Result — the same five steps, whichever door you pick' — with no discs, boxes, list or current-step styling; the real Stepper with the current step highlighted starts on the first page of the flow (/teach/upload, 'Step 1 of 5')."
   },
   {
    "n": "O-3",

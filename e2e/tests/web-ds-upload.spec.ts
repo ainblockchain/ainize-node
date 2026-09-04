@@ -169,7 +169,7 @@ test.afterEach(async ({ page, request }) => {
 });
 
 // ---------------------------------------------------------------------------------------------- AZ-123
-test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation card leads and the five-step strip is the same for both', async ({ page, browser, request }) => {
+test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation card leads and one sentence says the five steps are the same for both', async ({ page, browser, request }) => {
   expect(policy.limits.dataset_max_rows, 'the small print quotes limits.dataset_max_rows').toBe(2000);
 
   await page.goto(`${NODE}/teach`);
@@ -248,8 +248,13 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the conversation c
 
   await expect(page.getByTestId('teach-policy')).toHaveText('Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes');
 
-  await expect(entry.locator('ol > li')).toHaveText(['1Dataset', '2Check', '3Settings', '4Training', '5Result']);
-  await expect(entry.getByText('Whichever door you pick, these five steps are the same.', { exact: true })).toBeVisible();
+  // O-2: "what happens next" is a sentence, not a stepper — no list, no numbered discs, no current step, nothing to press
+  const next = page.getByTestId('teach-next');
+  expect(await next.evaluate((el) => el.tagName)).toBe('P');
+  await expect(next).toHaveText('What happens next: Dataset → Check → Settings → Training → Result — the same five steps, whichever door you pick');
+  await expect(entry.locator('ol, nav, [aria-current], [data-testid=teach-stepper]')).toHaveCount(0);
+  await expect(next.locator('button, a')).toHaveCount(0);
+  expect(await next.evaluate((el) => [...el.querySelectorAll('*')].every((c) => { const cs = getComputedStyle(c); return cs.borderTopStyle === 'none' && cs.backgroundColor === 'rgba(0, 0, 0, 0)'; })), 'no box or disc around any step').toBe(true);
 
   // both doors really go somewhere — pressed on the card itself (top-left corner, nowhere near the label), and by keyboard
   await chatCard.click({ position: { x: 12, y: 12 } });

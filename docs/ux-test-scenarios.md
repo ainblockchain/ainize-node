@@ -5270,7 +5270,7 @@ just prose, nothing else
 
 ## Dataset uploader (visitor)
 
-### AZ-123 - /teach entry choice: two doors, one pipeline — the conversation card leads and the five-step strip is the same for both
+### AZ-123 - /teach entry choice: two doors, one pipeline — the conversation card leads and one sentence says the five steps are the same for both
 
 **Goal:** A stranger landing on /teach can see immediately that a conversation is the primary way in (no file, no preparation, value in one question — ux-critique-owner O-1), that a file is the clearly secondary door for people who already have their data, and that both meet in the same five steps (design §5.2).
 
@@ -5285,7 +5285,7 @@ just prose, nothing else
 
 1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
 2. Read the header and the footer: /teach/* runs under the slim teaching chrome (logo · Exit · language; copyright · Terms · Contact), not the marketplace one.
-3. Read the two door cards, the policy alert and the step strip.
+3. Read the two door cards, the policy alert and the 'What happens next' sentence.
 4. Read the small print under the file CTA.
 5. Operator-only variant: PATCH /api/me/teach/policy {enabled:false} with the operator bearer token, reload /teach, then restore {enabled:true}.
 
@@ -5296,13 +5296,13 @@ just prose, nothing else
 - Each door is ONE link (ux-critique-owner O-9): the whole card is an <a> with no button or link inside it; its accessible name is heading + label ('Teach it in a conversation Start a conversation' / 'Upload a dataset file Choose a file'); hovering darkens the border to #5b1ca8; Tab reaches the chat card then the file card, each with a solid 3 px focus ring; clicking the card's top-left corner (nowhere near the label) and pressing Enter on it both navigate. Left card [data-testid=door-chat] (primary: 2 px purple border #8b3eeb, tinted background, wider): 'Teach it in a conversation', body 'Ask the model a question and correct its answer. No file needed.' (one sentence + one benefit, O-7), with the contained label [data-testid=door-chat-cta] 'Start a conversation' → /chat?teach=1. Right card [data-testid=door-file] (secondary: 1 px grey border #dadada, white): eyebrow 'Already have a file?', 'Upload a dataset file', body 'Already have questions and answers in a file? Train them straight away.', outlined label [data-testid=door-file-cta] 'Choose a file' → /teach/upload.
 - Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).
 - [data-testid=teach-policy] renders the node's own sentence — on node-u today: 'Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes'.
-- Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; nothing follows the strip — the page ends with the task.
+- 'What happens next' is a sentence, not a stepper (ux-critique-owner O-2): <p data-testid=teach-next> reads exactly 'What happens next: Dataset → Check → Settings → Training → Result — the same five steps, whichever door you pick'; the entry page contains no <ol>, no <nav>, no aria-current and no [data-testid=teach-stepper], the sentence contains no button or link, and no step carries a border or a background. The real Stepper (current step highlighted) starts on /teach/upload (AZ-124: 'Step 1 of 5 · Dataset').
 - With teach.enabled false both door-chat and door-file carry aria-disabled=true and tabindex=-1, clicking one stays on /teach, and the alert switches to warning tone with 'This node does not accept lessons. Try another node or run your own.'
 
 **Evidence**
 
 - `packages/web/src/components/ui/FocusedHeader.tsx, components/base/Layout.tsx (FocusedLayout), components/ui/Footer.tsx (minimal), App.tsx (/teach/* routes)`
-- `packages/web/src/pages/TeachPage.tsx:54,59,60,65,70 (door-chat / door-file / entry.file.formats / teach-policy / StepStrip)`
+- `packages/web/src/pages/TeachPage.tsx:54,59,60,65,70 (door-chat / door-file / entry.file.formats / teach-policy / teach-next)`
 - `packages/web/src/i18n/pages/teach.ts:290-301 (teach.entry.*), :304-309 (teach.step.*)`
 - `GET http://localhost:3422/api/teach/policy → limits.dataset_max_rows 2000`
 - `packages/web/src/components/chat/teachUtil.ts policyLine()`
