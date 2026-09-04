@@ -15,19 +15,20 @@
  */
 import { spawn as nodeSpawn, execFile } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, percentileOf, readNpzMember, validateContributors, verifyMessage, writeNpz,
-  type CatalogEntry, type Contributor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
+import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, sha256Hex, validateContributors, verifyMessage, writeNpz,
+  type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
+import { publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
 import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import type { Caller, Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
 import { TeachDatasets } from './teach-datasets.js';
-import { canonicalBytes, endingKey, type CanonicalRow } from './teach-dataset.js';
+import { canonicalBytes, endingKey, readCanonicalJsonl, type CanonicalRow } from './teach-dataset.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
@@ -70,7 +71,24 @@ export interface TeachChecks {
   simulated?: boolean;
   /** The visitor turned the side-effect check off. Publish stays gated until `POST /:id/recheck` measures it. */
   skipped?: true;
+  /**
+   * Lineage (design §7.6): per knowledge in the stack, IN DEPLOYMENT ORDER (bases first, comparison loads after),
+   * its own benchmark questions re-asked with the lesson ON TOP. `parent_regression` above is the sum.
+   */
+  parent_check?: { patch_id: string; hit: number; total: number; failed: number[]; simulated?: boolean }[];
+  /** null until the runtime journal (L2) can measure it: "removing the lesson leaves the base exactly as it was". */
+  reversibility_ok?: boolean | null;
 }
+/** One knowledge the lesson was trained on top of (design §5.3): the ordered stack, ancestors first. */
+export interface TeachBaseView { patch_id: string; sha256: string; name?: string; status?: string }
+interface BaseTarget { id: string; entry: CatalogEntry; path: string; sha256: string; datasetSha256?: string; datasetRows?: number }
+/** `POST /api/teach/jobs/:id/publish` body (design §12.1): the v1 fields plus the training-set section. */
+export interface PublishBody {
+  name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string;
+  consent: { permanent: boolean; rights: boolean }; contributor?: { name?: string };
+  dataset?: { access?: DatasetAccess; license?: string; include_notes?: boolean; declaration?: { source: 'own' | 'public' | 'licensed'; license?: string; no_pii: boolean } | null };
+}
+interface DatasetPublication { access: DatasetAccess; license: string; include_notes: boolean; declaration: { source: 'own' | 'public' | 'licensed'; license?: string; no_pii: boolean } | null; forced_private: string | null; pii: number[] }
 export interface TeachJob {
   id: string;
   status: TeachStatus;
@@ -98,6 +116,13 @@ export interface TeachJob {
    */
   preflight?: { checked: number; of: number; known: number; overlaps?: number };
   training?: TeachTrainingSpec;
+  /** Lineage (design §12.1): the ordered base stack, how the job was made, what the trainer was asked to export. */
+  bases?: TeachBaseView[];
+  mode?: 'scratch' | 'extend' | 'fork' | 'merge';
+  export?: 'delta' | 'squash';
+  derivation?: Record<string, unknown>;
+  /** The training-set choices made at publish (access, licence, notes, declaration) and the sha of the published copy. */
+  dataset_pub?: { access: string; license: string; include_notes: boolean; declaration: Record<string, unknown> | null; published_sha256: string };
   created_at: number; updated_at: number; started_at?: number; finished_at?: number; expires_at?: number;
 }
 export type TeachJobPublic = Pick<TeachJob, 'id' | 'status' | 'position' | 'eta_s'>;
@@ -126,6 +151,8 @@ export interface TeachPolicyView {
   draft_ttl_days: number;
   /** true when this node's checks are simulated (stub backend without a model server) — the UI must not claim a live-model verification. */
   simulated_checks: boolean;
+  /** Feature flag `teach.lineage` (design §18): base selection ("Build on this", `--on`) is offered only while true. */
+  lineage: boolean;
 }
 
 export { TeachError };
@@ -420,7 +447,7 @@ export class TeachWorker {
       effort: (['quick', 'balanced', 'thorough'] as TeachEffort[]).map((id) => ({ id, max_steps: c.effort[id].maxSteps, eval_every: c.effort[id].evalEvery })),
       samples: this.datasets.samples().map((x) => ({ kind: x.kind, name: x.name, rows: x.rows })),
       shares: { contributor: c.contributorShare, lineage: this.market.cfg.market.royaltyShare },
-      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline,
+      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline, lineage: !!c.lineage,
     };
     this.policyCache = { at: Date.now(), value };
     return value;
@@ -635,11 +662,27 @@ export class TeachWorker {
     known?: { index: number; base_answer: string }[];
     training?: { effort?: TeachEffort; max_steps?: number; eval_every?: number; rows_limit?: number; row_offset?: number; check_side_effects?: boolean; use_alt?: boolean };
     parentJob?: string;
+    /**
+     * Lineage (design §12.1): the knowledge this lesson is trained ON TOP OF (one for extend; merge lands with L7).
+     * Distinct from `patchIds`, which are loaded for comparison only. Needs the `teach.lineage` flag.
+     */
+    baseIds?: string[];
+    /** Load the base's training set as the keep-set (default true); false = the lesson is checked against the base but its rows are not re-taught. */
+    inherit?: boolean;
+    /** What the trainer writes: a delta over the base stack (default) or a stand-alone squash. */
+    exportMode?: 'delta' | 'squash';
+    /** Build on a superseded base anyway (warned). */
+    force?: boolean;
   }): Promise<TeachJob> {
     const c = this.cfg;
     this.assertEnabled();
     this.assertNotBanned(input.address, input.ip);
     if (input.patchIds.length > 3) throw new TeachError(400, 'invalid: at most 3 context knowledges');
+    const baseIds = [...new Set((input.baseIds ?? []).map((x) => String(x).trim()).filter(Boolean))];
+    if (baseIds.length && !c.lineage) throw new TeachError(403, 'lineage_disabled: building on top of another knowledge is not enabled on this node yet (config teach.lineage)');
+    if (baseIds.length > 2) throw new TeachError(400, 'too_many_bases: one base to build on (two only for a merge)', { max: 2 });
+    if (baseIds.length === 2) throw new TeachError(400, 'merge_not_available: combining two knowledges is not available on this node yet — build on one of them', { base_ids: baseIds });
+    const exportMode: 'delta' | 'squash' = input.exportMode ?? 'delta';
     const badName = checkDisplayName(input.contributorName); if (badName) throw new TeachError(400, `invalid: ${badName}`);
     const tr = await this.trainerState();
     if (tr.state === 'paused') throw new TeachError(503, `trainer_paused: ${tr.reason ?? 'training is paused'}`);
@@ -724,8 +767,9 @@ export class TeachWorker {
     if (!kept.length) throw new TeachError(409, alreadyKnown >= overlaps ? 'already_known: the model already answers this correctly' : 'overlaps_listing: this knowledge is already sold on this node');
     training.selected_indexes = keptIndexes;
 
-    // ---- 4) quotas, then insert
-    const targets = await this.contextTargets(input.patchIds, { address: input.address });
+    // ---- 4) the base (lineage): resolved BEFORE the quotas are charged, so a refused base costs nothing
+    const targets = await this.contextTargets(input.patchIds.filter((id) => !baseIds.includes(id)), { address: input.address });
+    const lineage = baseIds.length ? await this.resolveBases(baseIds, { address: input.address }, { force: input.force, inherit: input.inherit !== false }) : null;
     const q = this.jobQuota(input.address, input.ip);
     if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
     if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
@@ -737,11 +781,25 @@ export class TeachWorker {
     const name = (input.name?.trim() || (input.datasetId ? dataset.name : '') || `Lesson: ${kept[0].prompt.slice(0, 60)}`).slice(0, 80);
     const contributorName = normalizeDisplayName(input.contributorName)?.slice(0, 40) ?? null;
     queueGate();   // again, synchronously right before the insert: the awaits above let concurrent requests pass the first check together
+    // Snapshot at job creation (design §5.2): the dataset bytes are frozen into the job directory NOW, so an edit,
+    // `delete_after_training` or the 7-day sweep can never change what a published lesson needs; the published copy
+    // is promoted from this file at publish time.
+    const dir = this.jobDir({ id, job_dir: null } as TeachJobRow);
+    mkdirSync(dir, { recursive: true });
+    const snapshot = canonicalBytes(all);
+    const snapshotSha = sha256Hex(snapshot);
+    writeFileSync(join(dir, 'snapshot.jsonl'), snapshot, { mode: 0o600 });
+    if (lineage) {
+      writeFileSync(join(dir, 'known.jsonl'), canonicalBytes(lineage.known), { mode: 0o600 });
+      for (const b of lineage.direct) this.store.bumpSignals(b.id, { builds_on_jobs: 1 }, { visitor: this.market.visitorId(`key:${input.address.toLowerCase()}`) });
+    }
     this.store.insertTeachJob({
       id, contributor: input.address, contributor_name: contributorName, ip: input.ip ?? null, status: 'QUEUED',
-      context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: null, npz_path: null, sha256: null, progress: null, checks: null, error: null,
+      context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: dir, npz_path: null, sha256: null, progress: null, checks: null, error: null,
       container_pid: null, draft_id: null, patch_id: null, publish_status: 'none', reject_reason: null, parent_job: input.parentJob ?? null, result: null, blocked: null, name,
       dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training,
+      snapshot_sha256: snapshotSha, mode: lineage ? 'extend' : 'scratch',
+      ...(lineage ? { bases: lineage.stack.map((b) => ({ patch_id: b.id, sha256: b.sha256 })), export_mode: exportMode } : {}),
       // Questions dropped HERE (the interactive pre-flight said the model knows them, or the same fact is already sold
       // on this node) are gone from the lesson before it starts. Recording them is the only way the result screen can
       // account for a 40-question dataset that produced a 16-question lesson.
@@ -755,8 +813,75 @@ export class TeachWorker {
     this.store.touchContributor(input.address, { ...(contributorName ? { name: contributorName } : {}), job: true });
     this.invalidatePolicy();
     // the prompt (job name) and the key stay out of the message: /api/events is public (data is operator-only there)
-    this.log('info', `lesson queued (${kept.length} of ${dataset.rows} question(s), context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length, dataset_id: dataset.id });
+    this.log('info', `lesson queued (${kept.length} of ${dataset.rows} question(s), ${lineage ? `built on ${lineage.direct.map((b) => b.id).join('+')}, ` : ''}context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length, dataset_id: dataset.id, ...(lineage ? { bases: lineage.stack.map((b) => b.id), known_rows: lineage.known.length } : {}) });
     return this.view(this.store.getTeachJob(id)!);
+  }
+
+  /**
+   * Resolve the base a lesson is trained on top of (design §12.1 errors, in this order): unknown → not usable by this
+   * key (someone else's private draft) → rejected / challenged → retired (superseded; `force` proceeds) → training set
+   * private (nothing to build on) → body not held here → the base's own stack resolves and is held → depth ≤ 8.
+   * Returns the ORDERED stack (ancestors first, the chosen base last), the direct base(s), and the base's rows for
+   * `known.jsonl` (fetched from a holder when this node does not pin them yet).
+   */
+  private async resolveBases(ids: string[], caller: Caller, opts: { force?: boolean; inherit: boolean }): Promise<{ stack: BaseTarget[]; direct: BaseTarget[]; known: CanonicalRow[] }> {
+    const direct: BaseTarget[] = [];
+    const stack: BaseTarget[] = [];
+    const known: CanonicalRow[] = [];
+    const resolve = async (id: string, role: 'base' | 'ancestor'): Promise<BaseTarget> => {
+      const entry = await this.market.entry(id);
+      if (!entry) throw new TeachError(400, `base_unknown: no knowledge called ${id} on this node`, { id });
+      if (!this.market.mayUseEntry(entry, caller)) throw new TeachError(403, `base_not_available: ${id} is someone else's private draft`, { id });
+      if (entry.status === 'REJECTED' || entry.status === 'CHALLENGED') throw new TeachError(400, `base_rejected: ${id} is ${entry.status.toLowerCase()} — it cannot be built on`, { id, status: entry.status });
+      if (entry.status === 'SUPERSEDED' && !opts.force) throw new TeachError(400, `base_retired: ${id} is retired — build on its newer version${entry.superseded_by[0] ? ` ${entry.superseded_by[0]}` : ''}, or pass force to proceed anyway`, { id, newer: entry.superseded_by[0] ?? null });
+      const owner = caller.address && (entry.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === caller.address!.toLowerCase() || x.signer?.toLowerCase() === caller.address!.toLowerCase());
+      const mine = owner || (entry.status === 'DRAFT' && this.market.mayUseEntry(entry, caller));
+      if (role === 'base' && accessRank(accessOf(entry.anchor)) < 1 && !mine) throw new TeachError(400, `base_private: the creator of ${id} kept its questions private, so nobody can build on it (you can still load it for comparison)`, { id });
+      const blob = this.market.blobs.get(entry.anchor.patch_sha256);
+      if (!blob) throw new TeachError(409, `base_not_held: this node does not hold the body of ${id} — buy or download it first`, { id });
+      return { id, entry, path: blob.path, sha256: entry.anchor.patch_sha256 };
+    };
+    for (const id of ids) {
+      const base = await resolve(id, 'base');
+      // its own stack goes below it, in order; every member must be here too
+      for (const a of base.entry.anchor.base?.stack ?? []) {
+        if (a.patch_id === id || stack.some((x) => x.id === a.patch_id)) continue;
+        const anc = await resolve(a.patch_id, 'ancestor');
+        if (anc.sha256 !== a.patch_sha256) throw new TeachError(409, `base_not_held: ${a.patch_id} is held under a different body than ${id} was trained on`, { id: a.patch_id });
+        stack.push(anc);
+      }
+      if (!stack.some((x) => x.id === id)) stack.push(base);
+      direct.push(base);
+      if (opts.inherit) {
+        const sha = base.entry.anchor.dataset?.sha256;
+        if (sha) {
+          const rows = await this.ensureDatasetBlob(base.entry, caller);
+          for (const r of rows) known.push(r);
+          base.datasetSha256 = sha; base.datasetRows = rows.length;
+        }
+      }
+    }
+    if (stack.length > 8) throw new TeachError(400, `base_stack_too_deep: ${stack.length} knowledges would have to be loaded under this lesson (at most 8)`, { depth: stack.length });
+    return { stack, direct, known };
+  }
+
+  /**
+   * The base's published training set: from this node's pinned copy, else fetched from a peer advertising the sha
+   * (kept and re-advertised here, design §6.6). A base whose set nobody holds cannot be inherited from.
+   */
+  private async ensureDatasetBlob(entry: CatalogEntry, caller: Caller): Promise<CanonicalRow[]> {
+    const sha = entry.anchor.dataset!.sha256;
+    const local = this.market.datasets.rowsBytes(sha);
+    if (local) return readCanonicalJsonl(local.toString('utf8'));
+    const token = caller.address ? this.market.deriveIntent(entry, caller.address).token : undefined;
+    try {
+      const fetched = await this.market.p2p.fetchDataset(sha, token);
+      const row = this.market.datasets.keepFetched(sha, fetched.rows, fetched.manifest, fetched.benchmark);
+      this.log('info', `fetched the training set of ${entry.anchor.id} (${row.rows} questions) from ${fetched.from}`, null, { sha256: sha });
+      return this.market.datasets.rows(sha);
+    } catch (e) {
+      throw new TeachError(404, `dataset_unavailable: the training set of ${entry.anchor.id} is not on this node and no peer holds it (${(e as Error).message})`, { id: entry.anchor.id, sha256: sha });
+    }
   }
 
   /**
@@ -774,6 +899,8 @@ export class TeachWorker {
       patchIds: j.context, buildsOn: j.builds_on, datasetId: dsId,
       selectedIndexes: body.selected_indexes ?? prev?.selected_indexes,
       training: { ...body.training, effort }, parentJob: j.id,
+      // the same base, so "train it again" stays an attempt on the same line (design §5.3: parent_job is never lineage)
+      ...(j.bases?.length ? { baseIds: [j.bases[j.bases.length - 1].patch_id], exportMode: j.export_mode ?? 'delta', force: true } : {}),
     });
   }
 
@@ -798,6 +925,9 @@ export class TeachWorker {
     const out: TeachJob = {
       id: j.id, status: j.status as TeachStatus, contributor: { address: j.contributor, ...(j.contributor_name ? { name: j.contributor_name } : {}) },
       context_patch_ids: j.context, builds_on_context: j.builds_on, facts: j.facts as TeachFact[], name: j.name ?? undefined,
+      ...(j.bases ? { bases: j.bases.map((b) => { const e = this.market.catalogSync().find((x) => x.anchor.id === b.patch_id); return { patch_id: b.patch_id, sha256: b.sha256, ...(e ? { name: e.anchor.name, status: e.status } : {}) }; }) } : {}),
+      ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}),
+      ...(j.derivation ? { derivation: j.derivation } : {}), ...(j.dataset_pub ? { dataset_pub: j.dataset_pub } : {}),
       blocked: j.blocked, progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
       reject_reason: j.reject_reason ?? undefined, error: j.error ?? undefined, parent_job: j.parent_job ?? undefined,
@@ -1090,7 +1220,10 @@ export class TeachWorker {
       const draftId = await this.createLessonDraft(job, chk.checks);
       const ratio = chk.checks.taught.total ? chk.checks.taught.hits / chk.checks.taught.total : 0;
       const status: TeachStatus = !chk.checks.executed || ratio >= TAUGHT_MIN_RATIO ? 'READY' : 'NEEDS_MORE';
-      this.finish(job.id, status, { checks: chk.checks as unknown as Record<string, unknown>, facts: chk.facts, draft_id: draftId, expires_at: job.expires_at ?? Date.now() + this.cfg.draftTtlDays * 86_400_000 });
+      this.finish(job.id, status, {
+        checks: chk.checks as unknown as Record<string, unknown>, facts: chk.facts, draft_id: draftId, expires_at: job.expires_at ?? Date.now() + this.cfg.draftTtlDays * 86_400_000,
+        parent_check: chk.checks.parent_check ?? null, reversibility_ok: chk.checks.reversibility_ok ?? null,
+      });
       this.releaseDataset(job);
       // the private draft id stays out of the (public) message; operators see it in data
       this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
@@ -1221,6 +1354,11 @@ export class TeachWorker {
     // `facts_file` still works — unknown job.json keys are ignored by both.
     writeFileSync(join(dir, 'facts.jsonl'), canonicalBytes(facts), { mode: 0o600 });
     const seed = createHash('sha256').update(`${job.dataset_sha256 ?? job.id}`).digest('hex').slice(0, 16);
+    // Lineage (design §7.1): the base stack is copied next to the job so the trainer loads it BEFORE the first probe
+    // and step 1 — `parents[]` in order, the base's rows as the keep-set, and what to export. A stack member whose
+    // body left this node between job creation and now fails the job here, never silently trains without it.
+    const parents = this.stackFiles(job, dir);
+    const knownRows = existsSync(join(dir, 'known.jsonl')) ? readCanonicalJsonl(readFileSync(join(dir, 'known.jsonl'), 'utf8')).length : 0;
     const spec = {
       facts,
       facts_file: `facts.jsonl`,
@@ -1233,11 +1371,45 @@ export class TeachWorker {
       model: { id_M: modelId },
       job_id: job.id, contributor: job.contributor,
       dataset: job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? facts.length, source: job.dataset_source ?? 'chat' } : undefined,
+      ...(parents.length ? {
+        parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
+        known_file: knownRows ? 'known.jsonl' : null,
+        max_known: clampInt(Math.ceil(facts.length / 2), 8, 64),
+        replaces: [] as number[],
+        export: job.export_mode ?? 'delta',
+        mask: { mode: 'none' },
+        probe_with_parents: true,
+      } : {}),
     };
     writeFileSync(join(dir, 'job.json'), JSON.stringify(spec, null, 1));
-    if (c.backend === 'stub') return this.runStub(job, dir, modelId);
+    if (c.backend === 'stub') return this.runStub(job, dir, modelId, parents);
     const args = ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True', c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`];
-    return this.runProcess(job, dir, 'docker', args);
+    const out = await this.runProcess(job, dir, 'docker', args);
+    if (out.ok && parents.length) {
+      // Nothing may be called "built on" unless the trainer confirms it loaded the stack and exported against it
+      // (design §1 goal 3 / §7.5): an older trainer ignores `parents` and would hand back a stand-alone file.
+      const loaded = (out.recipe.parents ?? []) as { patch_id: string; loaded?: boolean }[];
+      const all = parents.every((p) => loaded.some((l) => l.patch_id === p.patch_id && l.loaded));
+      if (!all || !out.recipe.export || !out.recipe.pre_state_sha256) return { ok: false, error: `trainer_no_parents: this node's trainer did not load ${parents.map((p) => p.patch_id).join(', ')} before training (it predates the on-top contract) — the lesson cannot be called built on it` };
+    }
+    return out;
+  }
+
+  /** Copy the base stack into `<job>/parents/<i>-<sha>.npz` (content-addressed; a reflink where the filesystem has one) and return it in order. */
+  private stackFiles(job: TeachJobRow, dir: string): { patch_id: string; sha256: string; file: string; path: string }[] {
+    const out: { patch_id: string; sha256: string; file: string; path: string }[] = [];
+    for (const [i, b] of (job.bases ?? []).entries()) {
+      const blob = this.market.blobs.get(b.sha256);
+      if (!blob) throw new Error(`base_not_held: the body of ${b.patch_id} is no longer on this node`);
+      const file = `${i}-${b.sha256}.npz`;
+      const dest = join(dir, 'parents', file);
+      if (!existsSync(dest)) {
+        mkdirSync(join(dir, 'parents'), { recursive: true });
+        try { copyFileSync(blob.path, dest, fsConstants.COPYFILE_FICLONE); } catch { copyFileSync(blob.path, dest); }
+      }
+      out.push({ patch_id: b.patch_id, sha256: b.sha256, file, path: dest });
+    }
+    return out;
   }
 
   /**
@@ -1354,7 +1526,7 @@ export class TeachWorker {
   }
 
   /** Stub backend: replays the §8.2 protocol in-process and writes a real (tiny) knowledge file — CI / e2e / dev nodes without spare GPUs. */
-  private async runStub(job: TeachJobRow, dir: string, modelId: string): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
+  private async runStub(job: TeachJobRow, dir: string, modelId: string, parents: { patch_id: string; sha256: string; path: string }[] = []): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const delay = this.hooks.stubDelayMs ?? 400;
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     // `hits`/`total` are QUESTIONS, the unit the progress screen names ("{hits} of {total} questions answered
@@ -1374,10 +1546,11 @@ export class TeachWorker {
     const samples = job.facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA:${/^\d/.test(f.answer) ? ' ' : ''}`, expect: f.answer }));
     const fixture = this.hooks.fixtureNpz ?? DEFAULT_FIXTURE;
     const npz = join(dir, 'lesson.npz');
-    const useFixture = existsSync(fixture) && job.facts.some((f) => f.prompt.includes('픽셀플러스'));
+    const useFixture = existsSync(fixture) && job.facts.some((f) => f.prompt.includes('픽셀플러스')) && !parents.length;
     // one deterministic placeholder row PER QUESTION, so `result.rows` describes the file that was actually written
     // (design §1.1): nothing was learned, and every surface says so — but the count is not a lie.
-    const rows = this.writeStubNpz(npz, useFixture ? fixture : null, existsSync(fixture) ? fixture : null, job.id, job.facts.length);
+    const written = this.writeStubNpz(npz, useFixture ? fixture : null, existsSync(fixture) ? fixture : null, job.id, job.facts.length, parents, job.export_mode ?? 'delta');
+    const rows = written.rows;
     const facts = job.facts.map((f, i) => ({ fact: i, base_answer: f.base_answer ?? null, after_answer: f.answer, hit: true, heldout_hit: !!f.alt_prompt }));
     emit({ event: 'eval', step: 3, hits: state.progress.total, total: state.progress.total, heldout: facts.filter((f) => f.heldout_hit).length, heldout_total: facts.filter((f) => f.heldout_hit).length, facts: facts.map((f) => ({ fact: f.fact, hits: 2, total: 2, heldout: f.heldout_hit ? 1 : 0, heldout_total: f.heldout_hit ? 1 : 0, after_answer: f.after_answer })) });
     const total_s = Math.round((Date.now() - t0) / 100) / 10;
@@ -1387,6 +1560,9 @@ export class TeachWorker {
       benchmark_samples: samples, contrast: [], heldout: job.facts.flatMap((f, i) => (f.alt_prompt ? [{ kind: 'qa', fact: i, prompt: f.alt_prompt, prefix: `Q: ${f.alt_prompt}\nA:${/^\d/.test(f.answer) ? ' ' : ''}` }] : [])),
       hyper_params: { max_steps: 3, lr: 0, micro: 0, note: useFixture ? 'stub backend — copied the 픽셀플러스 fixture' : `stub backend — ${rows} placeholder row(s), no training happened` },
       model: { id_M: modelId }, probes: {}, rows, load_s: 0.1, train_s: total_s, step: 3, converged: true, created_at: Date.now() / 1000,
+      // the on-top contract (design §7.5), honoured by the stub the way the gradient trainer will: the stack was
+      // loaded into its table first, so `before` equals the parent value on every overlapping address
+      ...(parents.length ? { parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, rows: written.parentRows.get(p.sha256) ?? 0, loaded: true })), export: job.export_mode ?? 'delta', pre_state_sha256: written.pre_state_sha256, known_used: existsSync(join(dir, 'known.jsonl')) ? readCanonicalJsonl(readFileSync(join(dir, 'known.jsonl'), 'utf8')).length : 0 } : {}),
     };
     writeFileSync(join(dir, 'recipe.json'), JSON.stringify(recipe, null, 1));
     emit({ event: 'done', rows, npz, recipe: join(dir, 'recipe.json'), hits: state.progress.total, total: state.progress.total, heldout: facts.filter((f) => f.heldout_hit).length, heldout_total: facts.filter((f) => f.heldout_hit).length, converged: true, steps: 3, load_s: 0.1, train_s: total_s, avg_step_s: delay / 1000, total_s, facts });
@@ -1398,32 +1574,65 @@ export class TeachWorker {
    * placeholder rows — one per question. A 500-question stub `.npz` must not look like a 1-row file OR like a real
    * lesson: the row count is honest and `recipe.trainer = 'stub'` / `checks.simulated` travel with it everywhere.
    */
-  private writeStubNpz(dest: string, fullFixture: string | null, rowSource: string | null, jobId: string, want = 1): number {
+  private writeStubNpz(dest: string, fullFixture: string | null, rowSource: string | null, jobId: string, want = 1, parents: { patch_id: string; sha256: string; path: string }[] = [], exportMode: 'delta' | 'squash' = 'delta'): { rows: number; pre_state_sha256: string; parentRows: Map<string, number> } {
     const marker = { name: 'teach_job', descr: '|u1', shape: [jobId.length], body: Buffer.from(jobId, 'utf8') };
     const n = Math.max(1, want);
-    if (fullFixture) {
+    const parentRows = new Map<string, number>();
+    if (fullFixture && !parents.length) {
       const a = readNpzMember(fullFixture, 'addrs'), b = readNpzMember(fullFixture, 'before'), c = readNpzMember(fullFixture, 'after');
       writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: a.header.shape, body: a.body }, { name: 'before', descr: '<f4', shape: b.header.shape, body: b.body }, { name: 'after', descr: '<f4', shape: c.header.shape, body: c.body }, marker]);
-      return a.header.shape[0];
+      return { rows: a.header.shape[0], pre_state_sha256: '', parentRows };
     }
     const base = BigInt(1 + (parseInt(jobId.replace(/-/g, '').slice(0, 6), 16) % 1_000_000));
-    if (rowSource) {
-      const a = readNpzMember(rowSource, 'addrs'), b = readNpzMember(rowSource, 'before'), c = readNpzMember(rowSource, 'after');
-      const D = b.header.shape[1];
-      const addrs = Buffer.alloc(8 * n); const before = Buffer.alloc(4 * D * n); const after = Buffer.alloc(4 * D * n);
-      for (let r = 0; r < n; r++) {
-        addrs.writeBigInt64LE(a.body.readBigInt64LE(0) + BigInt(r), 8 * r);
-        b.body.copy(before, 4 * D * r, 0, 4 * D);
-        c.body.copy(after, 4 * D * r, 0, 4 * D);
+    // The stub's "table": the base stack loaded in order, last wins per address (design §7.2). A child row that
+    // touches a parent address starts from the PARENT's value — `before == parent.after` on every overlap — which is
+    // exactly the delta contract the gradient trainer must meet (AZ-241) and what CHECKING/apply verify later.
+    const table = new Map<bigint, Buffer>();
+    const diskBase = new Map<bigint, Buffer>();
+    let D = 160;
+    for (const p of parents) {
+      const a = readNpzMember(p.path, 'addrs'), b = readNpzMember(p.path, 'before'), c = readNpzMember(p.path, 'after');
+      D = c.header.shape[1];
+      const rows = a.header.shape[0];
+      parentRows.set(p.sha256, rows);
+      for (let r = 0; r < rows; r++) {
+        const addr = a.body.readBigInt64LE(8 * r);
+        if (!diskBase.has(addr)) diskBase.set(addr, b.body.subarray(4 * D * r, 4 * D * (r + 1)));
+        table.set(addr, c.body.subarray(4 * D * r, 4 * D * (r + 1)));
       }
-      writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [n], body: addrs }, { name: 'before', descr: '<f4', shape: [n, D], body: before }, { name: 'after', descr: '<f4', shape: [n, D], body: after }, marker]);
-      return n;
     }
-    const D = 160;
-    const addrs = Buffer.alloc(8 * n); const before = Buffer.alloc(4 * D * n); const after = Buffer.alloc(4 * D * n);
-    for (let r = 0; r < n; r++) { addrs.writeBigInt64LE(base + BigInt(r), 8 * r); for (let i = 0; i < D; i++) after.writeFloatLE(0.01, 4 * (D * r + i)); }
-    writeNpz(dest, [{ name: 'addrs', descr: '<i8', shape: [n], body: addrs }, { name: 'before', descr: '<f4', shape: [n, D], body: before }, { name: 'after', descr: '<f4', shape: [n, D], body: after }, marker]);
-    return n;
+    if (rowSource && !parents.length) { const b = readNpzMember(rowSource, 'before'); D = b.header.shape[1]; }
+    // which addresses the child touches: half of them on the parent (overlap), the rest fresh
+    const overlap = parents.length ? Math.min(Math.ceil(n / 2), table.size) : 0;
+    const parentAddrs = [...table.keys()].slice(0, overlap);
+    const touched: bigint[] = [...parentAddrs];
+    for (let r = touched.length; r < n; r++) touched.push(base + BigInt(r));
+    const exportRows = exportMode === 'squash' && parents.length ? [...new Set([...touched, ...table.keys()])] : touched;
+    const N = exportRows.length;
+    const addrs = Buffer.alloc(8 * N); const before = Buffer.alloc(4 * D * N); const after = Buffer.alloc(4 * D * N);
+    const touchedSet = new Set(touched.map(String));
+    for (const [r, addr] of exportRows.entries()) {
+      addrs.writeBigInt64LE(addr, 8 * r);
+      const parentVal = table.get(addr);
+      const disk = diskBase.get(addr);
+      // delta: before = value at first touch (parent.after on overlap, disk base elsewhere); squash: before = disk base everywhere
+      const bf = exportMode === 'squash' ? disk ?? null : parentVal ?? null;
+      if (bf) bf.copy(before, 4 * D * r);
+      if (touchedSet.has(String(addr))) {
+        for (let i = 0; i < D; i++) after.writeFloatLE((parentVal ? parentVal.readFloatLE(4 * i) : 0) + 0.01, 4 * (D * r + i));
+      } else if (parentVal) {
+        parentVal.copy(after, 4 * D * r);   // squash: an untouched parent row is carried as it is
+      }
+    }
+    const preState = preStateSha256(new BigInt64Array(addrs.buffer, addrs.byteOffset, N), new Float32Array(before.buffer, before.byteOffset, N * D), D);
+    const members = [{ name: 'addrs', descr: '<i8', shape: [N], body: addrs }, { name: 'before', descr: '<f4', shape: [N, D], body: before }, { name: 'after', descr: '<f4', shape: [N, D], body: after }, marker];
+    if (parents.length) {
+      // the `meta` member (design §5.4): a bare file is self-describing to scripts/patch.py and RUN-LOCALLY users
+      const meta = JSON.stringify({ export: exportMode, base_stack: exportMode === 'delta' ? parents.map((p) => ({ patch_id: p.patch_id, patch_sha256: p.sha256 })) : [], pre_state_sha256: preState, trainer_version: 'stub' });
+      members.push({ name: 'meta', descr: '|u1', shape: [Buffer.byteLength(meta)], body: Buffer.from(meta, 'utf8') });
+    }
+    writeNpz(dest, members);
+    return { rows: N, pre_state_sha256: preState, parentRows };
   }
 
   // ------------------------------------------------------------ CHECKING (spec §8.3) — the only step besides preview that touches the serving model
@@ -1440,10 +1649,20 @@ export class TeachWorker {
       const localityFail = facts.some((f) => /LOCALITY_FAIL/.test(`${f.prompt} ${f.answer}`));
       const held = facts.filter((f) => f.alt_prompt).length;
       for (const f of facts) { f.after_answer = f.answer; f.hit = true; if (f.alt_prompt) f.heldout_hit = true; }
+      // the stack (bases first, comparison loads after) is "checked" the way the live branch measures it: nothing here is a number
+      const stackIds = [...(job.bases ?? []).map((b) => b.patch_id), ...job.context.filter((id) => !(job.bases ?? []).some((b) => b.patch_id === id))];
+      const parentCheck: NonNullable<TeachChecks['parent_check']> = [];
+      for (const id of stackIds) {
+        const e = await this.market.entry(id);
+        const n = Math.min(e?.anchor.benchmark.samples?.length ?? 0, c.check.parentSamplesMax);
+        parentCheck.push({ patch_id: id, hit: n, total: n, failed: [], simulated: true });
+      }
       const checks: TeachChecks = {
-        executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held }, parent_regression: { ok: true, hit: 0, total: 0 },
+        executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held },
+        parent_regression: { ok: true, hit: parentCheck.reduce((a, b) => a + b.hit, 0), total: parentCheck.reduce((a, b) => a + b.total, 0) },
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
         reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model', simulated: true,
+        ...(parentCheck.length ? { parent_check: parentCheck } : {}), reversibility_ok: null,
       };
       // A visitor who switched the side-effect check off must not be shown a locality score, simulated or not: on this
       // backend the number would be invented twice over. Same shape as the live branch, so the screen says the same thing.
@@ -1468,7 +1687,18 @@ export class TeachWorker {
       return notExecuted('model server unavailable — checks were not executed');
     }
     this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
-    const targets = await this.contextTargets(job.context, 'worker').catch(() => [] as { id: string; entry: CatalogEntry; path: string }[]);
+    // The stack in DEPLOYMENT ORDER (design §7.6): the bases the lesson was trained on top of, ancestors first, then
+    // the knowledges loaded for comparison. Everything below the lesson is applied before it and measured with the
+    // lesson ON TOP — the order a buyer will run, not the reverse (F6). A base whose body is gone fails the check.
+    const baseTargets: { id: string; entry: CatalogEntry; path: string }[] = [];
+    for (const b of job.bases ?? []) {
+      const entry = await this.market.entry(b.patch_id);
+      const blob = this.market.blobs.get(b.sha256);
+      if (!entry || !blob) throw new Error(`base_not_held: the body of ${b.patch_id} is no longer on this node — the lesson cannot be checked on top of it`);
+      baseTargets.push({ id: b.patch_id, entry, path: blob.path });
+    }
+    const contextTargets = await this.contextTargets(job.context.filter((id) => !baseTargets.some((b) => b.id === id)), 'worker').catch(() => [] as { id: string; entry: CatalogEntry; path: string }[]);
+    const targets = [...baseTargets, ...contextTargets];
     const samples = (recipe.benchmark_samples?.length ? recipe.benchmark_samples : facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA: `, expect: f.answer })));
     const lesson = job.npz_path!;
     try {
@@ -1476,7 +1706,7 @@ export class TeachWorker {
         const wasApplied = new Map<string, boolean>();
         for (const t of targets) wasApplied.set(t.path, (await rt.isApplied(t.path)) === true);
         let reverted = false;
-        const checks: TeachChecks = { executed: true, taught: { hits: 0, total: 0 }, heldout: { hits: 0, total: 0 }, parent_regression: { ok: true, hit: 0, total: 0 }, locality: { ok: true, same: 0, total: c.locality.prompts.length }, reverted_and_reapplied: false, ok: false };
+        const checks: TeachChecks = { executed: true, taught: { hits: 0, total: 0 }, heldout: { hits: 0, total: 0 }, parent_regression: { ok: true, hit: 0, total: 0 }, locality: { ok: true, same: 0, total: c.locality.prompts.length }, reverted_and_reapplied: false, ok: false, reversibility_ok: null };
         try {
           /*
            * Call budget (design §D4). The live-model check costs a FIXED number of calls whatever the dataset size —
@@ -1502,7 +1732,9 @@ export class TeachWorker {
             }
             if (unstable) this.log('info', `${unstable} of ${c.locality.prompts.length} side-effect prompts are not repeatable on this model — left out of the gate`, job.id);
           }
-          // 2) apply the lesson, measure (once more if the table reverted mid-way — serving restart)
+          // 2) the stack BELOW the lesson, in order (bases first); then the lesson on top; measure (once more if the
+          //    table reverted mid-way — serving restart)
+          for (const t of targets) { const ap = await rt.applyRaw(t.path); if (ap.code !== 0) throw new Error(`apply ${t.id} failed: ${ap.err || ap.out}`); }
           for (let attempt = 0; attempt < 2; attempt++) {
             if (this.stopped) throw new Error(STOPPING);
             this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
@@ -1546,27 +1778,41 @@ export class TeachWorker {
               checks.locality = { ok: enough && same >= stable.length - allowed, same, total: stable.length, ...(unstable ? { unstable } : {}) };
             }
             const still = await rt.isApplied(lesson);
-            if (still === false && attempt === 0) { reverted = true; this.log('warn', 'table reverted during the check (serving restart?) → re-apply & re-measure', job.id); continue; }
+            if (still === false && attempt === 0) {
+              reverted = true; this.log('warn', 'table reverted during the check (serving restart?) → re-apply & re-measure', job.id);
+              for (const t of targets) await rt.applyRaw(t.path).catch(() => undefined);
+              continue;
+            }
             break;
           }
-          // 3) parent regression with the stack re-applied on top of the lesson
+          // 3) parent regression: each knowledge of the stack re-asked with the lesson ON TOP (design §7.6 step 5),
+          //    per knowledge so SC-7 can name the one that broke and which questions; every question the child
+          //    overrides would be included first (none yet — overrides land with the fork PR).
           if (sideEffects && targets.length) {
-            for (const t of targets) { const ap = await rt.applyRaw(t.path); if (ap.code !== 0) throw new Error(`apply ${t.id} failed: ${ap.err || ap.out}`); }
             let left = parentReserve;
+            const perTarget = Math.max(1, Math.floor(parentReserve / targets.length));
+            checks.parent_check = [];
             for (const t of targets) {
-              for (const s of (t.entry.anchor.benchmark.samples ?? []).slice(0, 10)) {
+              const pc = { patch_id: t.id, hit: 0, total: 0, failed: [] as number[] };
+              for (const [si, s] of (t.entry.anchor.benchmark.samples ?? []).slice(0, perTarget).entries()) {
                 if (left-- <= 0) break;
                 const got = await this.askRaw(s.prompt, 16);
-                checks.parent_regression.total++; if (got.startsWith(s.expect)) checks.parent_regression.hit++;
+                pc.total++; checks.parent_regression.total++;
+                if (got.startsWith(s.expect)) { pc.hit++; checks.parent_regression.hit++; } else pc.failed.push(si);
               }
+              checks.parent_check.push(pc);
             }
-            checks.parent_regression.ok = checks.parent_regression.total === 0 || checks.parent_regression.hit / checks.parent_regression.total >= 0.9;
+            // ≥ 0.9 PER knowledge (design §7.6): one broken base fails the check even when the sum still passes
+            const perOk = checks.parent_check.every((pc) => pc.total === 0 || pc.hit / pc.total >= 0.9);
+            checks.parent_regression.ok = perOk && (checks.parent_regression.total === 0 || checks.parent_regression.hit / checks.parent_regression.total >= 0.9);
+            for (const pc of checks.parent_check) if (pc.total && pc.hit / pc.total < 0.9) this.store.bumpSignals(pc.patch_id, { parent_regression_fails: 1 });
           }
         } finally {
-          // never leave the lesson applied; put the table back the way we found it (stack + operator-pinned set)
-          for (const t of [...targets].reverse()) await rt.removeRaw(t.path).catch(() => undefined);
+          // never leave the lesson applied; put the table back the way we found it: the lesson first, then the
+          // stack in reverse, then whatever was applied before us and the operator-pinned set
           const removed = await rt.removeRaw(lesson).then(() => true).catch((e) => { this.log('error', `could not remove the lesson after checking: ${(e as Error).message}`, job.id); return false; });
           if (removed) this.store.updateTeachJob(job.id, { lesson_applied: false }); else this.pendingRestore.add(job.id);
+          for (const t of [...targets].reverse()) await rt.removeRaw(t.path).catch(() => undefined);
           for (const t of targets) if (wasApplied.get(t.path)) await rt.applyRaw(t.path).catch(() => undefined);
           await this.reassertPinned();
         }
@@ -1616,17 +1862,61 @@ export class TeachWorker {
       this.market.updateDraft(existing.id, { benchmark: lessonBenchmark(existing.anchor.benchmark.schema, samples), recipe: anchorRecipe(recipe, modelId, probe, recipeDataset) });
       return existing.id;
     }
-    const benchmark = lessonBenchmark(`taught/${slug}-${hex}`, samples);
+    const lineage = await this.lineageFields(job, recipe, samples);
+    const benchmark = lessonBenchmark(`taught/${slug}-${hex}`, lineage.samples);
+    if (lineage.answers_hash) benchmark.answers_hash = lineage.answers_hash;
     const listed = new Set((await this.market.catalog()).filter((e) => e.status === 'LISTED').map((e) => e.anchor.id));
-    const parents = job.builds_on ? job.context.filter((p) => listed.has(p)) : [];
+    // legacy `builds_on` (declared parents, never trained on top) stays as it was; a base stack is recorded whole
+    const parents = lineage.parents ?? (job.builds_on ? job.context.filter((p) => listed.has(p)) : []);
     const anchor = await this.market.createDraft({
       id, name: job.name ?? `Lesson ${hex}`, description: '', model: { id_M: modelId }, benchmark,
       recipe: anchorRecipe(recipe, modelId, probe, recipeDataset),
-      // hash-only on the anchor: three short fields, and the sha256 already identifies the exact bytes
-      ...(recipeDataset ? { dataset: { sha256: recipeDataset.sha256, rows: recipeDataset.rows, source: recipeDataset.source } } : {}),
+      // hashes and counts on the anchor (design §5.1): the sha256 identifies the exact bytes, the blob store holds them
+      ...(recipeDataset ? { dataset: { sha256: job.snapshot_sha256 ?? recipeDataset.sha256, rows: recipeDataset.rows, source: recipeDataset.source, access: lineage.defaultAccess, ...(lineage.datasetParents ? { parents: lineage.datasetParents } : {}) } } : {}),
+      ...(lineage.derivation ? { derivation: lineage.derivation } : {}),
+      ...(lineage.base ? { base: lineage.base } : {}),
       file: job.npz_path!, keepInPlace: true, parents, visibility: 'test', origin: 'teach', price: '0',
     });
     return anchor.id;
+  }
+
+  /**
+   * What the anchor says about its bases (design §5.1), from the job's stack and what the trainer confirmed:
+   * `parents` = the whole ordered stack (so every ancestor is credited and paid), `derivation` = extend over the
+   * direct base with the rows loaded as the keep-set, `base` = the stack + export + `pre_state_sha256` from the recipe
+   * (only when the trainer confirmed it loaded the stack), `dataset.parents` = the base's training set. The on-chain
+   * samples are the child's own first, then one per base (never from a Proprietary base), capped at 32 with the hash
+   * of the full list.
+   */
+  private async lineageFields(job: TeachJobRow, recipe: TrainerRecipe, own: { prompt: string; expect: string }[]) {
+    const stack = job.bases ?? [];
+    const teach = job.snapshot_sha256 !== null || job.dataset_sha256 !== null;
+    if (!stack.length) {
+      const capped = teach ? capBenchmarkSamples(own) : { samples: own, answers_hash: undefined };
+      return { samples: capped.samples, answers_hash: capped.answers_hash, parents: undefined, derivation: undefined, base: undefined, datasetParents: undefined, defaultAccess: 'derivative' as DatasetAccess };
+    }
+    const direct = stack[stack.length - 1];
+    const entries = new Map<string, CatalogEntry>();
+    for (const b of stack) { const e = await this.market.entry(b.patch_id); if (e) entries.set(b.patch_id, e); }
+    const de = entries.get(direct.patch_id);
+    const knownRows = job.job_dir && existsSync(join(job.job_dir, 'known.jsonl')) ? readCanonicalJsonl(readFileSync(join(job.job_dir, 'known.jsonl'), 'utf8')).length : 0;
+    const perParent = stack.map((b) => {
+      const e = entries.get(b.patch_id);
+      const proprietary = deltaOnlyParent(e?.anchor.dataset?.license);
+      return { patch_id: b.patch_id, sample: proprietary ? undefined : e?.anchor.benchmark.samples?.[0] };
+    });
+    const capped = capBenchmarkSamples(own, perParent);
+    const loaded = (recipe.parents ?? []) as { patch_id: string; loaded?: boolean }[];
+    const confirmed = stack.every((b) => loaded.some((l) => l.patch_id === b.patch_id && l.loaded)) && typeof recipe.pre_state_sha256 === 'string';
+    const exportMode = (recipe.export as 'delta' | 'squash' | undefined) ?? job.export_mode ?? 'delta';
+    return {
+      samples: capped.samples, answers_hash: capped.answers_hash,
+      parents: stack.map((b) => b.patch_id),
+      derivation: { kind: 'extend' as const, bases: [{ patch_id: direct.patch_id, patch_sha256: direct.sha256, ...(de?.anchor.dataset?.sha256 ? { dataset_sha256: de.anchor.dataset.sha256 } : {}), rows: knownRows }], added_rows: job.facts.length, changed_rows: 0, removed_rows: 0 },
+      base: confirmed ? { stack: exportMode === 'delta' ? stack.map((b) => ({ patch_id: b.patch_id, patch_sha256: b.sha256 })) : [], export: exportMode, pre_state_sha256: recipe.pre_state_sha256 as string } : undefined,
+      datasetParents: knownRows && de?.anchor.dataset?.sha256 ? [{ patch_id: direct.patch_id, sha256: de.anchor.dataset.sha256, rows: knownRows }] : undefined,
+      defaultAccess: 'derivative' as DatasetAccess,
+    };
   }
 
   /** Measure again a lesson that was saved unchecked because the model server was down (owner or operator). */
@@ -1686,11 +1976,12 @@ export class TeachWorker {
     const st = await this.market.runtime.status();
     const tr = this.readTrainerRecipe(j.job_dir ?? '');
     const parents: { id: string; name: string }[] = [];
-    for (const id of j.context) { const e = await this.market.entry(id); if (e) parents.push({ id, name: e.anchor.name }); }
+    const required = !!(j.bases?.length && (j.export_mode ?? 'delta') === 'delta');
+    for (const id of required ? j.bases!.map((b) => b.patch_id) : j.context) { const e = await this.market.entry(id); if (e) parents.push({ id, name: e.anchor.name }); }
     return renderRunLocally({
       model_id: draft?.anchor.model.id_M ?? (tr.model?.id_M as string | undefined) ?? st.model ?? 'Qwen3.8-Flash-Next-W4A16', sha256: j.sha256 ?? '', filename: this.filename(j),
       download_url: `${this.market.publicUrl}/p2p/blob/${j.sha256}?token=${token}`, recipe_url: `${this.market.publicUrl}/api/teach/jobs/${j.id}/recipe?token=${token}`,
-      first_prompt: j.facts[0]?.prompt ?? '', slug: (j.draft_id ?? `lesson-${j.id.slice(0, 6)}`).replace(/^taught-/, ''), parents,
+      first_prompt: j.facts[0]?.prompt ?? '', slug: (j.draft_id ?? `lesson-${j.id.slice(0, 6)}`).replace(/^taught-/, ''), parents, parents_required: required,
     });
   }
 
@@ -1715,7 +2006,7 @@ export class TeachWorker {
     const address = payoutAddress || signer;
     return { patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, signer, share, claim: hashCanonical({ patch_sha256: d.anchor.patch_sha256, benchmark_hash: d.anchor.benchmark_hash, address, share }) };
   }
-  async publish(j: TeachJobRow, signer: string, body: { name: string; description?: string; price?: string; license?: string; payout_address?: string | null; claim_sig: string; consent: { permanent: boolean; rights: boolean }; contributor?: { name?: string } }): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
+  async publish(j: TeachJobRow, signer: string, body: PublishBody): Promise<{ status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string }> {
     this.assertEnabled();
     const ch = this.publishChallenge(j, signer, body.payout_address);
     // the sheet sends the REAL checkbox state (lineage design §6.5); a publish without both consents is refused, never assumed
@@ -1723,6 +2014,8 @@ export class TeachWorker {
     if (!verifyMessage(ch.claim, body.claim_sig, signer)) throw new TeachError(401, 'invalid_signature: the claim signature does not verify for this teaching key');
     const price = body.price === undefined || body.price === '' ? '0' : String(body.price);
     if (!/^\d+(\.\d+)?$/.test(price)) throw new TeachError(400, 'invalid: price must be a non-negative number');
+    // the training set (design §6.1, §6.4, §6.5): access, licence, declaration, PII — decided here, before anything is written
+    const pub = await this.datasetPublication(j, body);
     // A key that was named AFTER the lesson was queued still gets its credit: the sheet shows that name, so the record
     // has to carry it (a display name is never taken from anywhere but the owner's own request).
     if (body.contributor?.name && !j.contributor_name) {
@@ -1740,14 +2033,81 @@ export class TeachWorker {
     };
     const contributors = validateContributors([contributor]);
     const d = this.draftFor(j);
-    this.market.updateDraft(d.id, { name: body.name, description: body.description ?? '', price, license: body.license ?? 'CC-BY-4.0', visibility: 'public', contributors, origin: 'teach' });
+    // Pin the published copy (design §5.2): promoted from the job's snapshot, immutable, exempt from the sweep and
+    // the owner's delete; the anchor names its sha. Done before the draft changes so a failed pin publishes nothing.
+    const pinned = this.pinDataset(j, d.anchor, pub);
+    this.market.updateDraft(d.id, {
+      name: body.name, description: body.description ?? '', price, license: body.license ?? pub.license, visibility: 'public', contributors, origin: 'teach',
+      ...(pinned ? { dataset: { ...(d.anchor.dataset ?? { sha256: pinned.sha256, rows: pinned.rows, source: (j.dataset_source ?? 'chat') as TeachDatasetSource }), sha256: pinned.sha256, rows: pinned.rows, access: pub.access, license: pub.license } } : {}),
+    });
     this.store.touchContributor(signer, { published: true, payout_address: body.payout_address ?? null });
-    this.store.updateTeachJob(j.id, { name: body.name });
+    this.store.updateTeachJob(j.id, { name: body.name, dataset_pub: { access: pub.access, license: pub.license, include_notes: pub.include_notes, declaration: pub.declaration, published_sha256: pinned?.sha256 ?? '' } });
     if (this.cfg.publish === 'auto') return this.announceJob(this.store.getTeachJob(j.id)!, { fromPublish: true });
     this.store.updateTeachJob(j.id, { status: 'PENDING_REVIEW', publish_status: 'pending_review' });
     this.log('info', `lesson ${j.id} submitted for operator review as ${d.id}`, j.id);
     return { status: 'PENDING_REVIEW' };
   }
+  /**
+   * The training-set choices of a publish (design §6.1 / §6.4 / §6.5), validated in the order a creator can act on:
+   * unknown licence → licence incompatible with a base → base still a private draft → PII rows above private →
+   * declaration missing for a big set. `delete_after_training` forces `private` (nothing left to share).
+   */
+  private async datasetPublication(j: TeachJobRow, body: PublishBody): Promise<DatasetPublication> {
+    const c = this.cfg;
+    const ds = body.dataset ?? {};
+    const license = ds.license ?? (isDatasetLicense(body.license) ? body.license : undefined) ?? 'CC-BY-4.0';
+    if (!isDatasetLicense(license)) throw new TeachError(400, `bad_license: "${license}" is not a licence this network knows (CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary)`, { license });
+    const dataset = j.dataset_id ? this.store.getTeachDataset(j.dataset_id) : null;
+    let access: DatasetAccess = ds.access ?? 'derivative';
+    let forcedPrivate: string | null = null;
+    if (dataset?.retention === 'delete_after_training' && access !== 'private') { access = 'private'; forcedPrivate = 'delete_after_training'; }
+    for (const b of j.bases ?? []) {
+      const e = await this.market.entry(b.patch_id);
+      if (!e) throw new TeachError(400, `base_unknown: ${b.patch_id} is no longer on this node`, { id: b.patch_id });
+      if (e.status === 'DRAFT') throw new TeachError(400, `parent_not_listed: publish ${b.patch_id} first — it is the base of this lesson`, { id: b.patch_id });
+      const ok = licenseCompatible({ license: e.anchor.dataset?.license, access: accessOf(e.anchor) }, { license, access });
+      if (!ok.ok) throw new TeachError(400, ok.reason, { parent: b.patch_id, parent_license: e.anchor.dataset?.license ?? null });
+    }
+    const piiRows = dataset ? this.datasets.piiRows(dataset) : [];
+    if (access !== 'private' && piiRows.length) {
+      throw new TeachError(400, `dataset_pii: rows ${piiRows.map((r) => r.index + 1).join(', ')} look like personal information (${[...new Set(piiRows.flatMap((r) => r.kinds))].join(', ')}) — remove them, or keep the training set private`, { rows: piiRows.map((r) => r.index), kinds: [...new Set(piiRows.flatMap((r) => r.kinds))] });
+    }
+    const rows = j.dataset_rows ?? j.facts.length;
+    const declaration = ds.declaration ?? null;
+    if (rows >= c.dataset.declarationRows && !declaration) throw new TeachError(400, `dataset_declaration: tell us where these ${rows} questions come from (own work, a public source, or licensed to you)`, { rows, declaration_rows: c.dataset.declarationRows });
+    if (declaration && !['own', 'public', 'licensed'].includes(declaration.source)) throw new TeachError(400, 'invalid: declaration.source must be own, public or licensed');
+    return { access, license, include_notes: !!ds.include_notes, declaration, forced_private: forcedPrivate, pii: piiRows.map((r) => r.index) };
+  }
+
+  /**
+   * Promote the job's snapshot to the content-addressed dataset store (design §5.2): notes stripped unless the owner
+   * opted in, the full benchmark list beside it, a manifest that says what the rows are. Returns null for a lesson
+   * that has no snapshot (taught before datasets existed) — its anchor then carries no training set.
+   */
+  private pinDataset(j: TeachJobRow, anchor: PatchAnchor, pub: DatasetPublication): { sha256: string; rows: number } | null {
+    const snapshot = j.job_dir ? join(j.job_dir, 'snapshot.jsonl') : null;
+    let rows: CanonicalRow[] | null = null;
+    if (snapshot && existsSync(snapshot)) rows = readCanonicalJsonl(readFileSync(snapshot, 'utf8'));
+    else if (j.dataset_id) { const d = this.store.getTeachDataset(j.dataset_id); if (d) { const r = this.datasets.rows(d); if (r.length) rows = r; } }
+    if (!rows?.length) return null;
+    const recipe = this.readTrainerRecipe(j.job_dir ?? '');
+    const bytes = canonicalBytes(publishedRows(rows, pub.include_notes));
+    const benchmark: BenchmarkSample[] = [];
+    const seen = new Set<string>();
+    for (const s of [...(anchor.benchmark.samples ?? []), ...(recipe.benchmark_samples ?? [])]) { const k = `${s.prompt}\u0000${s.expect}`; if (!seen.has(k)) { seen.add(k); benchmark.push(s); } }
+    const manifest: Parameters<DatasetBlobStore['pin']>[1] = {
+      source: (j.dataset_source ?? 'chat') as TeachDatasetSource, license: pub.license, access: pub.access,
+      parents: anchor.dataset?.parents ?? [], row_origin: [], changed: [], removed: [],
+      contrast_used: (recipe.contrast ?? []).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))),
+      ...(recipe.fact_addrs ? { fact_addrs: recipe.fact_addrs } : {}),
+      pii_scan: { ok: pub.pii.length === 0, rows: pub.pii }, declaration: pub.declaration, include_notes: pub.include_notes,
+      patch_id: anchor.id, model_id: anchor.model.id_M,
+    };
+    const pinned = this.market.datasets.pin(bytes, manifest, benchmark);
+    this.log('info', `training set of ${anchor.id} pinned (${pinned.rows} questions, ${pub.access}, ${pub.license}${pub.forced_private ? ', private because the file is deleted after training' : ''})`, j.id, { sha256: pinned.sha256, access: pub.access });
+    return { sha256: pinned.sha256, rows: pinned.rows };
+  }
+
   /**
    * Announce the draft on the ledger — operator approve (review mode) or the auto path right after `publish()`.
    * Consent gate (security review): only a lesson the OWNER published may ever be announced — the operator cannot approve a

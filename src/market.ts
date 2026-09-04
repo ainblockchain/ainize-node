@@ -8,13 +8,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AinLedger, VERSION, buildStamp, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
-  decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce,
+  decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
-  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Ledger, type LedgerRecord,
+  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type SubscriptionRecord, type SupersedeRecord,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
+import { DatasetBlobStore } from './dataset-blobs.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
@@ -41,8 +42,12 @@ export interface CreateDraftInput {
   contributors?: Contributor[];
   /** 'teach' for visitor-taught knowledge; omitted for operator-registered drafts. */
   origin?: PatchOrigin;
-  /** Hash-only provenance of the dataset a taught lesson came from — the content is never published (design §D12). */
+  /** Provenance of the training set (hashes, counts, access, licence, parents — lineage design §5.1); the bytes live in the dataset blob store. */
   dataset?: PatchAnchor['dataset'];
+  /** What this knowledge did to its bases (lineage design §5.1); absent = declared parents only. */
+  derivation?: PatchAnchor['derivation'];
+  /** The ordered stack it was trained on top of (lineage design §5.1); absent = stand-alone build. */
+  base?: PatchAnchor['base'];
 }
 
 /** Maximum number of knowledges one live test may load together (spec §6.3). */
@@ -96,7 +101,7 @@ export function challengedMessage(e: CatalogEntry): string {
   const who = c ? `${c.challenger.slice(0, 10)}…` : 'a verifier node';
   return `a verifier has challenged this knowledge — re-verification pending, so it is not for sale${c ? ` (${who}: "${c.reason}")` : ''}`;
 }
-const badInput = (msg: string) => new MarketError(400, msg);
+const badInput = (msg: string, details?: Record<string, unknown>) => new MarketError(400, msg, details);
 const unavailable = (msg: string) => new MarketError(503, msg);
 
 /** Who is asking for a knowledge in a live test / teach context (drafts are owner- or operator-only). */
@@ -169,7 +174,10 @@ export class Market {
     readonly runtime: Runtime,
   ) {
     this.payouts = new Payouts(store, (l, k, m, pid, d) => this.log(l, k, m, pid ?? null, d ?? null), ledger instanceof AinLedger ? ledger : null, { selfAddress: cfg.identity.address });
+    this.datasets = new DatasetBlobStore(store, cfg.dataDir);
   }
+  /** Published training sets held by this node (lineage design §5.2, §6.6). */
+  readonly datasets: DatasetBlobStore;
   /** Royalty payouts on the AIN ledger (`payouts` table + 60-s retry timer started by server.ts). */
   readonly payouts: Payouts;
 
@@ -343,6 +351,11 @@ export class Market {
     if (contributors.length) anchor.contributors = contributors;
     if (input.origin) anchor.origin = input.origin;
     if (input.dataset) anchor.dataset = input.dataset;
+    if (input.derivation) anchor.derivation = input.derivation;
+    if (input.base) anchor.base = input.base;
+    // the lineage invariant (design §5.1) for anchors THIS node writes: every base / dataset parent is a parent
+    const problems = lineageProblems(anchor);
+    if (problems.length) throw badInput(problems.join('; '));
     this.store.putDraft(anchor, blob.path);
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
@@ -356,10 +369,18 @@ export class Market {
     return out;
   }
 
-  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe'>>): PatchAnchor {
+  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe' | 'dataset' | 'derivation' | 'base' | 'parents'>>): PatchAnchor {
     const d = this.store.getDraft(id);
     if (!d) throw conflict('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
+    if (patch.parents) {
+      const map = new Map(this.store.listDrafts().map((x) => [x.anchor.id, x.anchor.author] as const));
+      for (const e of this.catalogCache?.value ?? []) map.set(e.anchor.id, e.anchor.author);
+      for (const p of patch.parents) if (!map.has(p)) throw badInput(`unknown parent patch: ${p}`);
+      anchor.parent_authors = patch.parents.map((p) => map.get(p)!);
+    }
+    const problems = lineageProblems(anchor);
+    if (problems.length) throw badInput(problems.join('; '));
     if ('contributors' in patch) {
       const contributors = this.checkContributors(patch.contributors);
       if (contributors.length) anchor.contributors = contributors; else delete anchor.contributors;
@@ -417,6 +438,7 @@ export class Market {
     const blob = this.blobs.get(d.anchor.patch_sha256);
     if (!blob) throw conflict('patch body missing from blob store');
     if (!d.anchor.benchmark.schema) throw badInput('benchmark.schema is required');
+    await this.validateLineageForAnnounce(d.anchor);
     const conflicts = await this.conflicts(id);
     const anchor: PatchAnchor & { gateway_url: string } = { ...d.anchor, gateway_url: `${this.publicUrl}/x402/patch/${id}`, created_at: Date.now() };
     const rec = await this.ledger.append('anchor', anchor);
@@ -472,6 +494,92 @@ export class Market {
       this.store.set(`pending_supersede:${e.anchor.id}`, '[]');
     }
     this.invalidate();
+  }
+
+  /**
+   * Announce-time validation shared by both doors (lineage design §12.6): every parent resolves and is not a private
+   * draft (`parent_not_listed`), no cycle through `parents[]`, the lineage subsets hold, the licence is known and
+   * compatible with every base's, the on-chain sample list respects the cap, and a published training set is really
+   * pinned under the sha the anchor names (`dataset_inheritance_mismatch`). Pre-lineage anchors (no `dataset.access`,
+   * no `derivation`, no `base`) only get the parent-resolution check they always had.
+   */
+  async validateLineageForAnnounce(a: PatchAnchor): Promise<void> {
+    const map = await this.entryMap();
+    for (const p of a.parents) {
+      const pe = map.get(p);
+      if (!pe) throw badInput(`unknown parent patch: ${p}`);
+      if (pe.status === 'DRAFT') throw badInput(`parent_not_listed: ${p} is still a private draft — publish it first, it is the base of this knowledge`, { id: p });
+    }
+    const problems = lineageProblems(a);
+    if (problems.length) throw badInput(problems.join('; '));
+    // cycle through peer-written parents: walk up from every parent, refuse if we come back to this id
+    const seen = new Set<string>(); const stack = [...a.parents];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (id === a.id) throw badInput('base_cycle: this knowledge is an ancestor of one of its own parents');
+      if (seen.has(id)) continue; seen.add(id);
+      for (const q of map.get(id)?.anchor.parents ?? []) stack.push(q);
+    }
+    const lineage = a.dataset?.access !== undefined || !!a.derivation || !!a.base;
+    if (!lineage) return;
+    if (a.origin === 'teach' && (a.benchmark.samples?.length ?? 0) > TEACH_SAMPLES_ON_CHAIN) throw badInput(`a taught anchor carries at most ${TEACH_SAMPLES_ON_CHAIN} samples on the ledger`);
+    if (a.dataset) {
+      const license = a.dataset.license ?? 'CC-BY-4.0';
+      for (const id of lineageIds(a)) {
+        const base = map.get(id)?.anchor;
+        const ok = licenseCompatible({ license: base?.dataset?.license, access: accessOf(base) }, { license, access: a.dataset.access ?? 'private' });
+        if (!ok.ok) throw badInput(ok.reason, { parent: id, parent_license: base?.dataset?.license ?? null });
+      }
+      // the pinned copy IS the record: recompute the sha over the bytes this node will serve
+      const bytes = this.datasets.rowsBytes(a.dataset.sha256);
+      if (!bytes) throw conflict(`dataset_inheritance_mismatch: the training set ${a.dataset.sha256.slice(0, 12)}… is not pinned on this node`);
+      if (sha256Hex(bytes) !== a.dataset.sha256) throw conflict('dataset_inheritance_mismatch: the pinned training set does not hash to the sha the record names');
+    }
+  }
+
+  /** The most open access any non-draft, non-rejected anchor grants a published training set (design §6.1). */
+  async datasetAccessOf(sha: string): Promise<{ access: DatasetAccess; entries: CatalogEntry[] }> {
+    const entries = (await this.catalogAll()).filter((e) => e.anchor.dataset?.sha256 === sha && e.status !== 'DRAFT' && e.status !== 'REJECTED');
+    let access: DatasetAccess = 'private';
+    for (const e of entries) if (accessRank(accessOf(e.anchor)) > accessRank(access)) access = accessOf(e.anchor);
+    return { access, entries };
+  }
+
+  /**
+   * May `address` read the training set `sha` (design §6.6)? Public sets: any signed request. Derivative sets: a derive
+   * token (`POST /api/patches/:id/derive-intent`, counted) or a verifier. Always: the author node, the teaching key
+   * credited on the anchor, a verifier (it has to check inheritance), and a download token issued for the sha.
+   */
+  async mayReadDataset(sha: string, address: string | null, token?: string): Promise<{ ok: true } | { ok: false; reason: 'dataset_private' | 'dataset_derivative_only' | 'dataset_unknown' }> {
+    if (token && this.store.checkToken(token, `dataset:${sha}`)) return { ok: true };
+    const { access, entries } = await this.datasetAccessOf(sha);
+    if (!entries.length) return { ok: false, reason: 'dataset_unknown' };
+    const addr = address?.toLowerCase();
+    if (addr) {
+      if (entries.some((e) => e.anchor.author.toLowerCase() === addr)) return { ok: true };
+      if (entries.some((e) => (e.anchor.contributors ?? []).some((c) => c.address.toLowerCase() === addr || c.signer?.toLowerCase() === addr))) return { ok: true };
+      const nodes = await this.ledger.nodes();
+      if (nodes.some((n) => n.body.address.toLowerCase() === addr && n.body.roles.includes('verifier'))) return { ok: true };
+      if (this.store.listPeers().some((p) => p.address?.toLowerCase() === addr && p.info?.roles.includes('verifier'))) return { ok: true };
+    }
+    if (access === 'public') return addr ? { ok: true } : { ok: false, reason: 'dataset_derivative_only' };
+    if (access === 'derivative') return { ok: false, reason: 'dataset_derivative_only' };
+    return { ok: false, reason: 'dataset_private' };
+  }
+
+  /**
+   * A signed derive intent (design §6.1): the teaching key `childKey` says it is building on `entry`. Counted on the
+   * parent (`derive_fetches` → "built on N times"), answered with a 24-hour token for the set's bytes.
+   */
+  deriveIntent(entry: CatalogEntry, childKey: string): { token: string; expires: number; sha256: string } {
+    const sha = entry.anchor.dataset?.sha256;
+    if (!sha) throw notFound('dataset_unavailable: this knowledge has no published training set');
+    const token = randomBytes(24).toString('hex');
+    const ttl = 24 * 3600_000;
+    this.store.putToken(token, `dataset:${sha}`, `derive:${childKey.toLowerCase()}`, ttl);
+    this.store.bumpSignals(entry.anchor.id, { derive_fetches: 1 }, { visitor: this.visitorId(`derive:${childKey.toLowerCase()}`) });
+    this.log('info', 'teach', `training set of ${entry.anchor.id} requested for a derivative`, entry.anchor.id, { child_key: childKey, sha256: sha });
+    return { token, expires: Date.now() + ttl, sha256: sha };
   }
 
   // ------------------------------------------------------------------ blobs
@@ -1035,7 +1143,8 @@ export class Market {
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
-      blobs: this.blobs.list().map((b) => b.sha256), version: VERSION, build: buildStamp(), config_version: this.cfg.version, last_seen: Date.now(),
+      blobs: this.blobs.list().map((b) => b.sha256), datasets: this.datasets.list().map((b) => b.sha256).slice(0, 40),
+      version: VERSION, build: buildStamp(), config_version: this.cfg.version, last_seen: Date.now(),
     };
   }
 

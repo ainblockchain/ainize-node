@@ -27,6 +27,12 @@ export interface TrainerRecipe {
   step?: number;
   converged?: boolean;
   created_at?: number;
+  /** Lineage (design §7.5): the stack the trainer loaded before step 1, what it exported and the pre-state hash. */
+  parents?: { patch_id: string; sha256: string; rows: number; loaded?: boolean }[];
+  export?: 'delta' | 'squash';
+  pre_state_sha256?: string;
+  fact_addrs?: Record<number, number[]>;
+  known_used?: number;
   [k: string]: unknown;
 }
 
@@ -65,6 +71,10 @@ export function anchorRecipe(tr: TrainerRecipe, modelId: string, probe: { hits: 
     model_id: modelId,
     probe,
     ...(dataset ? { dataset } : {}),
+    // lineage (design §5.1): ids and hashes only — `fact_addrs` stays in recipe.json
+    ...(tr.parents?.length ? { parents: tr.parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, rows: p.rows, ...(p.loaded !== undefined ? { loaded: p.loaded } : {}) })) } : {}),
+    ...(tr.export ? { export: tr.export } : {}),
+    ...(tr.pre_state_sha256 ? { pre_state_sha256: tr.pre_state_sha256 } : {}),
   };
 }
 
@@ -92,6 +102,8 @@ export interface RunLocallyInput {
   first_prompt: string;
   slug: string;
   parents: { id: string; name: string }[];
+  /** true when `parents` is the base stack the file was trained on top of (a delta): they MUST be loaded first, in order. */
+  parents_required?: boolean;
   repo_url?: string;
 }
 
@@ -100,7 +112,9 @@ export function renderRunLocally(i: RunLocallyInput): string {
   const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   const repo = i.repo_url ?? LOCAL_RUN_REPO_URL;
   const parentsNote = i.parents.length
-    ? `\nThis lesson was taught with ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')} loaded; load them first for the same behaviour.\n`
+    ? i.parents_required
+      ? `\nThis file is an add-on: it was trained ON TOP OF ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')}. Load ${i.parents.length > 1 ? 'them first, in this order' : 'it first'}, then this file — its rows start from that state and mean nothing without it.\n`
+      : `\nThis lesson was taught with ${i.parents.map((p) => `"${p.name}" (${p.id})`).join(', ')} loaded; load them first for the same behaviour.\n`
     : '';
   return `# Run this knowledge yourself
 

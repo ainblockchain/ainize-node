@@ -114,6 +114,35 @@ export class P2P {
   holders(sha: string): string[] {
     return this.peers().filter((p) => p.info?.blobs?.includes(sha)).map((p) => p.endpoint);
   }
+  /** Peers advertising a published training set (`PeerInfo.datasets`, lineage design §6.6). */
+  datasetHolders(sha: string): string[] {
+    return this.peers().filter((p) => p.info?.datasets?.includes(sha)).map((p) => p.endpoint);
+  }
+
+  /**
+   * Fetch a published training set from a peer: rows (checked against the sha by the caller), the manifest and the
+   * full benchmark list when the peer serves them. Auth as for blobs (`x-ngram-auth` over `dataset:<sha>`); a derive
+   * token (from the parent's `derive-intent`) goes in `x-ngram-derive` for `derivative` sets.
+   */
+  async fetchDataset(sha: string, token?: string, endpoints = this.datasetHolders(sha)): Promise<{ rows: Buffer; manifest: never | null; benchmark: Buffer | null; from: string }> {
+    let lastErr: Error | null = null;
+    for (const ep of endpoints) {
+      try {
+        const headers: Record<string, string> = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const r = await fetch(`${ep}/p2p/dataset/${sha}`, { headers, signal: AbortSignal.timeout(2 * 60_000) });
+        if (!r.ok) throw new Error(`${ep} -> ${r.status}`);
+        const rows = Buffer.from(await r.arrayBuffer());
+        const mh = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const m = await fetch(`${ep}/p2p/dataset/${sha}/manifest`, { headers: mh, signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        const manifest = m && m.ok ? ((await m.json()) as never) : null;
+        const bh = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const b = await fetch(`${ep}/p2p/dataset/${sha}/benchmark`, { headers: bh, signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        const benchmark = b && b.ok ? Buffer.from(await b.arrayBuffer()) : null;
+        return { rows, manifest, benchmark, from: ep };
+      } catch (e) { lastErr = e as Error; }
+    }
+    throw lastErr ?? new Error(`no peer holds the training set ${sha.slice(0, 12)}`);
+  }
 
   /** Fetch a blob from a peer with identity auth (verifier/author/purchaser rights are checked by the peer). */
   async fetchBlob(sha: string, dest: string, endpoints = this.holders(sha), token?: string): Promise<string> {

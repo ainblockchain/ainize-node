@@ -41,6 +41,23 @@ export interface TeachJobRow {
   created_at: number; started_at: number | null; finished_at: number | null; updated_at: number; expires_at: number | null; cancel_requested: boolean;
   /** true while the lesson npz is (or may still be) applied to the shared serving model (set before applyRaw in CHECKING, cleared after removeRaw). */
   lesson_applied: boolean;
+  /**
+   * Lineage (design §5.3). `bases` is the ORDERED stack the lesson was trained on top of (ancestors first, the chosen
+   * base last), `mode` how the job was made, `export_mode` what the trainer was asked to write. NULL on pre-lineage rows.
+   */
+  bases: { patch_id: string; sha256: string }[] | null;
+  mode: 'scratch' | 'extend' | 'fork' | 'merge' | null;
+  export_mode: 'delta' | 'squash' | null;
+  /** what the diff engine decided the child is (kind + row counts), once known */
+  derivation: Record<string, unknown> | null;
+  /** per parent, in deployment order: `{patch_id, hit, total, failed: [sample_index]}` measured with the lesson ON TOP */
+  parent_check: { patch_id: string; hit: number; total: number; failed: number[]; simulated?: boolean }[] | null;
+  /** null until the runtime journal exists (L2): nothing was measured about reversibility */
+  reversibility_ok: boolean | null;
+  /** sha256 of `<job>/snapshot.jsonl` — the dataset bytes frozen at job creation (== dataset_sha256 at that moment) */
+  snapshot_sha256: string | null;
+  /** the training-set choices made at publish: access, licence, notes, declaration, and the sha of the pinned copy */
+  dataset_pub: { access: string; license: string; include_notes: boolean; declaration: Record<string, unknown> | null; published_sha256: string } | null;
 }
 export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string }
 
@@ -168,7 +185,13 @@ export class Store {
       // teach mode v2: which dataset (and which slice of it) this lesson trained
       dataset_id: 'TEXT', dataset_sha256: 'TEXT', dataset_rows: 'INTEGER', dataset_source: 'TEXT',
       training: 'TEXT', preflight: 'TEXT',
+      // lineage (design §5.3): the ordered base stack, how the job was made, what the trainer exported, the chain check
+      bases: 'TEXT', mode: 'TEXT', export_mode: 'TEXT', derivation: 'TEXT', parent_check: 'TEXT', reversibility_ok: 'INTEGER',
+      snapshot_sha256: 'TEXT', dataset_pub: 'TEXT',
     });
+    // published training sets held by this node (design §5.2) — content-addressed like `blobs`
+    this.db.exec(`CREATE TABLE IF NOT EXISTS dataset_blobs (sha256 TEXT PRIMARY KEY, rows INTEGER NOT NULL, size_bytes INTEGER NOT NULL, access TEXT NOT NULL,
+      license TEXT NOT NULL, patch_id TEXT, pinned_at REAL NOT NULL)`);
     // teach mode v2 (design §D7): every visitor-facing p50/p90 filters on `backend`, so a stub node's 3-second jobs
     // can never be presented as measured gradient training. `sentences` = rows x renderings, what actually drives cost.
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
@@ -327,25 +350,31 @@ export class Store {
       training: j(r.training), preflight: j(r.preflight),
       created_at: r.created_at as number, started_at: (r.started_at as number) ?? null, finished_at: (r.finished_at as number) ?? null, updated_at: r.updated_at as number,
       expires_at: (r.expires_at as number) ?? null, cancel_requested: !!r.cancel_requested, lesson_applied: !!r.lesson_applied,
+      bases: j(r.bases), mode: (r.mode as TeachJobRow['mode']) ?? null, export_mode: (r.export_mode as TeachJobRow['export_mode']) ?? null,
+      derivation: j(r.derivation), parent_check: j(r.parent_check),
+      reversibility_ok: r.reversibility_ok === null || r.reversibility_ok === undefined ? null : !!r.reversibility_ok,
+      snapshot_sha256: (r.snapshot_sha256 as string) ?? null, dataset_pub: j(r.dataset_pub),
     };
   }
-  insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied'>) {
+  insertTeachJob(j: Omit<TeachJobRow, 'updated_at' | 'lesson_applied' | 'bases' | 'mode' | 'export_mode' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>
+    & Partial<Pick<TeachJobRow, 'bases' | 'mode' | 'export_mode' | 'derivation' | 'parent_check' | 'reversibility_ok' | 'snapshot_sha256' | 'dataset_pub'>>) {
     this.db.prepare(`INSERT INTO teach_jobs (id, contributor, contributor_name, ip, status, context, builds_on, facts, job_dir, npz_path, sha256, progress, checks, error, container_pid,
       draft_id, patch_id, publish_status, reject_reason, parent_job, result, blocked, name, created_at, started_at, finished_at, updated_at, expires_at, cancel_requested,
-      dataset_id, dataset_sha256, dataset_rows, dataset_source, training, preflight)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      dataset_id, dataset_sha256, dataset_rows, dataset_source, training, preflight, bases, mode, export_mode, snapshot_sha256)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(j.id, j.contributor, j.contributor_name, j.ip, j.status, JSON.stringify(j.context), j.builds_on ? 1 : 0, JSON.stringify(j.facts), j.job_dir, j.npz_path, j.sha256,
         j.progress ? JSON.stringify(j.progress) : null, j.checks ? JSON.stringify(j.checks) : null, j.error, j.container_pid, j.draft_id, j.patch_id, j.publish_status, j.reject_reason,
         j.parent_job, j.result ? JSON.stringify(j.result) : null, j.blocked, j.name, j.created_at, j.started_at, j.finished_at, Date.now(), j.expires_at, j.cancel_requested ? 1 : 0,
         j.dataset_id ?? null, j.dataset_sha256 ?? null, j.dataset_rows ?? null, j.dataset_source ?? null,
-        j.training ? JSON.stringify(j.training) : null, j.preflight ? JSON.stringify(j.preflight) : null);
+        j.training ? JSON.stringify(j.training) : null, j.preflight ? JSON.stringify(j.preflight) : null,
+        j.bases ? JSON.stringify(j.bases) : null, j.mode ?? null, j.export_mode ?? null, j.snapshot_sha256 ?? null);
   }
   /** Partial update; JSON columns are re-encoded, `updated_at` is always bumped. */
   updateTeachJob(id: string, patch: Partial<Omit<TeachJobRow, 'id' | 'updated_at'>>) {
     const cols: string[] = []; const args: (string | number | null)[] = [];
     const enc = (k: string, v: unknown): string | number | null => {
       if (v === undefined || v === null) return null;
-      if (['context', 'facts', 'progress', 'checks', 'result', 'training', 'preflight'].includes(k)) return JSON.stringify(v);
+      if (['context', 'facts', 'progress', 'checks', 'result', 'training', 'preflight', 'bases', 'derivation', 'parent_check', 'dataset_pub'].includes(k)) return JSON.stringify(v);
       if (typeof v === 'boolean') return v ? 1 : 0;
       return v as string | number;
     };
@@ -601,6 +630,20 @@ export class Store {
     if (!s) { s = randomBytes(32).toString('hex'); this.set('visitor_hmac_secret', s); }
     return s;
   }
+
+  // published training sets (lineage design §5.2)
+  putDatasetBlob(b: { sha256: string; rows: number; size_bytes: number; access: string; license: string; patch_id: string | null; pinned_at: number }) {
+    this.db.prepare(`INSERT INTO dataset_blobs (sha256, rows, size_bytes, access, license, patch_id, pinned_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sha256) DO UPDATE SET rows = excluded.rows, size_bytes = excluded.size_bytes, access = excluded.access, license = excluded.license, patch_id = COALESCE(excluded.patch_id, dataset_blobs.patch_id)`)
+      .run(b.sha256, b.rows, b.size_bytes, b.access, b.license, b.patch_id, b.pinned_at);
+  }
+  getDatasetBlob(sha: string): { sha256: string; rows: number; size_bytes: number; access: 'public' | 'derivative' | 'private'; license: string; patch_id: string | null; pinned_at: number } | null {
+    return (this.db.prepare('SELECT * FROM dataset_blobs WHERE sha256 = ?').get(sha) as never) ?? null;
+  }
+  listDatasetBlobs(): { sha256: string; rows: number; size_bytes: number; access: 'public' | 'derivative' | 'private'; license: string; patch_id: string | null; pinned_at: number }[] {
+    return this.db.prepare('SELECT * FROM dataset_blobs ORDER BY pinned_at DESC').all() as never;
+  }
+  deleteDatasetBlob(sha: string) { this.db.prepare('DELETE FROM dataset_blobs WHERE sha256 = ?').run(sha); }
 
   // applied
   setApplied(patchId: string, sha: string, reason: string) { this.db.prepare('INSERT OR REPLACE INTO applied (patch_id, sha256, applied_at, reason) VALUES (?, ?, ?, ?)').run(patchId, sha, Date.now(), reason); }

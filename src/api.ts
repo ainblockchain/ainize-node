@@ -12,11 +12,14 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  DATASET_ACCESS_LEVELS, accessOf, isDatasetLicense,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
 import { TeachAuth } from './teach-auth.js';
-import { challengedMessage, ConflictError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
+import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, type Market } from './market.js';
+import { publishedRows } from './dataset-blobs.js';
+import { canonicalBytes, parseDataset } from './teach-dataset.js';
 import { ChatCancelledError } from './chat-queue.js';
 import type { Verifier } from './verifier.js';
 import type { Drive } from './drive.js';
@@ -194,11 +197,71 @@ export function buildApi(deps: ApiDeps): Router {
       children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })) };
     const conflicts = (await market.conflicts(e.anchor.id).catch(() => [])).filter((c) => visible(map.get(c.patch_id)));
     const branches = (await market.branches()).filter((b) => b.patch_ids.includes(e.anchor.id)).map((b) => ({ name: b.name, context: b.context }));
+    // lineage (design §12.5): a delta child needs its base stack loaded first — say which, and whether this node holds them
+    const requires = (e.anchor.base?.stack ?? []).map((b) => { const x = map.get(b.patch_id); return { id: b.patch_id, name: x?.anchor.name ?? b.patch_id, held: market.blobs.has(b.patch_sha256), price: x?.anchor.price ?? null }; });
     return {
-      ...redactContributors(e), lineage, conflicts, branches,
+      ...redactContributors(e), lineage, conflicts, branches, requires,
+      dataset_held: !!e.anchor.dataset?.sha256 && market.datasets.has(e.anchor.dataset.sha256),
       owned: e.anchor.author === market.address, purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
       applied: market.isApplied(e.anchor.id), gateway_url: (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
     };
+  }));
+
+  // ------------------------------------------------------------ published training sets (lineage design §12.3)
+  /** The entry behind `/api/patches/:id/dataset*`, its sha, and who is asking (teaching key or operator). */
+  const datasetOf = async (req: Request) => {
+    const e = await market.entry(req.params.id as string);
+    const operator = isOperator(req);
+    if (!e || (e.status === 'DRAFT' && !operator)) throw notFound('patch not found');
+    const sha = e.anchor.dataset?.sha256;
+    if (!sha) throw new HttpError(404, 'dataset_unavailable: this knowledge has no published training set');
+    const address = teacherOf(req);
+    const access = accessOf(e.anchor);
+    const owner = !!address && ((e.anchor.contributors ?? []).some((c) => c.address.toLowerCase() === address.toLowerCase() || c.signer?.toLowerCase() === address.toLowerCase()) || e.anchor.author.toLowerCase() === address.toLowerCase());
+    return { e, sha, operator, address, access, owner: owner || operator };
+  };
+  router.get('/api/patches/:id/dataset', wrap(async (req) => {
+    const { e, sha, access, address, owner } = await datasetOf(req);
+    const held = market.datasets.has(sha);
+    const m = market.datasets.manifest(sha);
+    const meta = { sha256: sha, rows: e.anchor.dataset!.rows, access, license: e.anchor.dataset!.license ?? null, parents: e.anchor.dataset!.parents ?? [], held, include_notes: m?.include_notes ?? false, benchmark_samples: m?.benchmark_samples ?? null, merkle_root: m?.merkle_root ?? null };
+    if (!owner) {
+      if (access === 'private') throw new HttpError(403, 'dataset_private: the creator kept the training set private — only the verification questions on the record are public', meta);
+      if (access === 'derivative' && !address) throw new HttpError(403, 'dataset_derivative_only: this training set is available to people building on this knowledge — sign the request with a teaching key to preview it, and ask for a derive token to fetch it', meta);
+    }
+    if (!held) throw new HttpError(404, 'dataset_unavailable: training set not available on this node (no peer holds it)', meta);
+    const preview = publishedRows(market.datasets.rows(sha).slice(0, 20), m?.include_notes ?? false);
+    return { ...meta, preview };
+  }));
+  router.get('/api/patches/:id/dataset/rows', wrap(async (req, res) => {
+    const { sha, access, owner } = await datasetOf(req);
+    if (!owner && access !== 'public') throw new HttpError(403, access === 'private' ? 'dataset_private: the creator kept the training set private' : 'dataset_derivative_only: fetch it through a derive intent (POST /api/patches/:id/derive-intent) and /p2p/dataset/:sha');
+    const bytes = market.datasets.rowsBytes(sha);
+    if (!bytes) throw new HttpError(404, 'dataset_unavailable: training set not available on this node (no peer holds it)');
+    res.status(200).set({ 'content-type': 'application/x-ndjson; charset=utf-8', 'content-length': String(bytes.length), 'x-content-sha256': sha, 'content-disposition': `attachment; filename="dataset-${sha.slice(0, 12)}.jsonl"` }).send(bytes);
+  }));
+  router.get('/api/patches/:id/dataset/manifest', wrap(async (req) => {
+    const { sha, access, address, owner } = await datasetOf(req);
+    if (!owner && access === 'private') throw new HttpError(403, 'dataset_private: the creator kept the training set private');
+    if (!owner && access === 'derivative' && !address) throw new HttpError(403, 'dataset_derivative_only: sign the request with a teaching key');
+    const m = market.datasets.manifest(sha);
+    if (!m) throw new HttpError(404, 'dataset_unavailable: training set not available on this node (no peer holds it)');
+    return { manifest: m };
+  }));
+  /**
+   * A signed derive intent (design §6.1): the teaching key says it is building on this knowledge; counted on the
+   * knowledge ("built on N times") and answered with a token that unlocks `/p2p/dataset/:sha` for a derivative set.
+   */
+  router.post('/api/patches/:id/derive-intent', wrap(async (req) => {
+    const address = requireTeacher(req);
+    const e = await market.entry(req.params.id as string);
+    if (!e || e.status === 'DRAFT') throw notFound('patch not found');
+    const access = accessOf(e.anchor);
+    if (access === 'private') throw new HttpError(403, 'dataset_private: the creator kept the training set private, so nobody can build on it');
+    const { child_key } = z.object({ child_key: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional() }).parse(req.body ?? {});
+    if (child_key && child_key.toLowerCase() !== address.toLowerCase()) throw new HttpError(400, 'invalid: child_key must be the teaching key that signed this request');
+    const out = market.deriveIntent(e, address);
+    return { ...out, holders: [market.publicUrl, ...market.p2p.datasetHolders(out.sha256)], held: market.datasets.has(out.sha256) };
   }));
 
   router.get('/api/patches/:id/records', wrap(async (req) => {
@@ -304,14 +367,29 @@ export function buildApi(deps: ApiDeps): Router {
       branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
       visibility: z.enum(['public', 'test']).optional(),
       contributors: z.string().transform((s) => JSON.parse(s)).or(z.array(z.object({}).passthrough())).optional(),
+      // lineage (design §12.4): an operator may publish the training set beside the body — a local jsonl/csv path,
+      // pinned under its canonical sha with the chosen access and licence
+      dataset_file: z.string().optional(), dataset_access: z.enum(DATASET_ACCESS_LEVELS).optional(), dataset_license: z.string().optional(),
     }).parse(req.body);
     const file = req.file?.path ?? body.path;
     if (!file) throw bad('upload a .npz file or give a local `path`');
     if (!req.file && !existsSync(file)) throw bad(`path not found on node: ${file}`);
+    let dataset: PatchAnchor['dataset'] | undefined;
+    if (body.dataset_file) {
+      if (!existsSync(body.dataset_file)) throw bad(`dataset_file not found on node: ${body.dataset_file}`);
+      const license = body.dataset_license ?? body.license ?? 'CC-BY-4.0';
+      if (!isDatasetLicense(license)) throw bad(`bad_license: "${license}" is not one of CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary`);
+      const parsed = parseDataset(readFileSync(body.dataset_file), { filename: body.dataset_file, maxRows: 100_000, maxSourceLines: 500_000 });
+      if (!parsed.rows.length) throw bad('dataset_empty: that file has no usable questions');
+      const access = body.dataset_access ?? 'private';
+      const samples = ((body.benchmark as { samples?: { prompt: string; expect: string }[] }).samples ?? []);
+      const pinned = market.datasets.pin(canonicalBytes(parsed.rows), { source: 'upload', license, access, parents: [], row_origin: [], changed: [], removed: [], contrast_used: [], pii_scan: { ok: parsed.summary.pii === 0, rows: parsed.report.filter((r) => r.status === 'pii' && r.index !== null).map((r) => r.index!) }, declaration: { source: 'own', license, no_pii: parsed.summary.pii === 0 }, include_notes: false, model_id: body.model_id }, samples);
+      dataset = { sha256: pinned.sha256, rows: pinned.rows, source: 'upload', access, license };
+    }
     const anchor = await market.createDraft({
       id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
       price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
-      file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never,
+      file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, ...(dataset ? { dataset } : {}),
     });
     return { anchor };
   }));
@@ -655,6 +733,9 @@ export function buildApi(deps: ApiDeps): Router {
     // backward compatible: `{dataset_id}` XOR the legacy `{facts}` (which materialises a dataset server-side)
     const body = z.object({
       patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).default([]), builds_on_context: z.boolean().default(false),
+      // lineage (design §12.1): what the lesson is trained ON TOP OF (≤ 2; two = merge, later) vs `patch_ids` / `context_ids` loaded for comparison
+      base_ids: z.array(z.string().min(1)).max(2).optional(), context_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
+      mode: z.enum(['scratch', 'extend', 'fork', 'merge']).optional(), inherit: z.boolean().optional(), export: z.enum(['delta', 'squash']).optional(), force: z.boolean().optional(),
       facts: z.array(factSchema).min(1).max(8).optional(),
       dataset_id: z.string().min(1).optional(), selected_indexes: z.array(z.number().int().min(0)).max(2000).optional(),
       // what an interactive pre-flight measured on those rows; the node re-checks each claim against the row's answer
@@ -663,9 +744,20 @@ export function buildApi(deps: ApiDeps): Router {
       contributor: z.object({ name: z.string().max(80).optional() }).optional(), name: z.string().max(80).optional(),
     }).parse(req.body);
     if (!body.dataset_id && !body.facts?.length) throw bad('send either `dataset_id` or `facts`');
+    let baseIds = body.base_ids ?? [];
+    let buildsOn = body.builds_on_context;
+    const contextIds = body.context_ids ?? body.patch_ids;
+    // legacy `builds_on_context: true` = "record the loaded knowledges as parents"; with lineage on it becomes a real
+    // base (design §12.1), announced with a Deprecation header — off, it keeps meaning declared parents
+    if (buildsOn && !baseIds.length && market.teach().lineage && contextIds.length) {
+      baseIds = [contextIds[0]]; buildsOn = false;
+      res.set('deprecation', 'true').set('x-ngram-deprecated', 'builds_on_context: send base_ids (the knowledge you build on) and context_ids (loaded for comparison) instead');
+    }
+    if (body.mode === 'merge' || (body.mode === 'extend' && !baseIds.length)) throw bad(body.mode === 'merge' ? 'merge_not_available: combining two knowledges is not available on this node yet' : 'invalid: mode extend needs base_ids');
     const job = await t.createJob({
-      address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: body.patch_ids, buildsOn: body.builds_on_context,
+      address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: contextIds, buildsOn,
       facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, known: body.known, training: body.training,
+      baseIds, inherit: body.inherit, exportMode: body.export, force: body.force,
     });
     res.status(202);
     return { job, quota: t.jobQuota(address, req.ip) };
@@ -716,6 +808,11 @@ export function buildApi(deps: ApiDeps): Router {
       payout_address: z.string().nullable().optional(), claim_sig: z.string().min(1), consent: z.object({ permanent: z.boolean(), rights: z.boolean() }),
       // a teaching key named after the lesson was queued — the sheet shows that name, so the record must carry it
       contributor: z.object({ name: z.string().max(80).optional() }).optional(),
+      // the training set (design §12.1): who may read it, under which licence, with or without notes, and where it came from
+      dataset: z.object({
+        access: z.enum(DATASET_ACCESS_LEVELS).optional(), license: z.string().max(80).optional(), include_notes: z.boolean().optional(),
+        declaration: z.object({ source: z.enum(['own', 'public', 'licensed']), license: z.string().max(80).optional(), no_pii: z.boolean() }).nullable().optional(),
+      }).optional(),
     }).parse(req.body);
     return t.publish(j, address!, body);
   }));
@@ -899,6 +996,34 @@ export function buildApi(deps: ApiDeps): Router {
     createReadStream(blob.path).pipe(res);
   }));
 
+  // published training sets between nodes (lineage design §6.6): same gate as /p2p/blob, plus the access level
+  const datasetGateP2p = async (req: Request, sha: string) => {
+    if (!market.datasets.has(sha)) throw notFound('dataset not held by this node');
+    const requester = verifyAuthHeader(req.header('x-ngram-auth'), `dataset:${sha}`);
+    const token = req.header('x-ngram-derive') ?? (typeof req.query.token === 'string' ? req.query.token : undefined);
+    const ok = await market.mayReadDataset(sha, requester, token);
+    if (!ok.ok) throw new HttpError(ok.reason === 'dataset_unknown' ? 404 : 403, ok.reason === 'dataset_private' ? 'dataset_private: the creator kept this training set private' : ok.reason === 'dataset_derivative_only' ? 'dataset_derivative_only: post a derive intent to the knowledge (POST /api/patches/:id/derive-intent) and send its token in x-ngram-derive' : 'dataset_unknown: no listed knowledge names this training set');
+  };
+  router.get('/p2p/datasets', wrap(async () => ({ datasets: market.datasets.list().map((b) => ({ sha256: b.sha256, rows: b.rows, size_bytes: b.size_bytes, access: b.access, license: b.license })) })));
+  router.get('/p2p/dataset/:sha', wrap(async (req, res) => {
+    const sha = req.params.sha as string;
+    await datasetGateP2p(req, sha);
+    const bytes = market.datasets.rowsBytes(sha)!;
+    res.status(200).set({ 'content-type': 'application/x-ndjson; charset=utf-8', 'content-length': String(bytes.length), 'x-content-sha256': sha, 'content-disposition': `attachment; filename="dataset-${sha.slice(0, 12)}.jsonl"` }).send(bytes);
+  }));
+  router.get('/p2p/dataset/:sha/manifest', wrap(async (req) => {
+    const sha = req.params.sha as string;
+    await datasetGateP2p(req, sha);
+    return market.datasets.manifest(sha) ?? {};
+  }));
+  router.get('/p2p/dataset/:sha/benchmark', wrap(async (req, res) => {
+    const sha = req.params.sha as string;
+    await datasetGateP2p(req, sha);
+    const p = market.datasets.benchmarkPath(sha);
+    if (!existsSync(p)) throw notFound('no benchmark list for this training set');
+    res.status(200).set({ 'content-type': 'application/x-ndjson; charset=utf-8' }).send(readFileSync(p));
+  }));
+
   // ------------------------------------------------------------ errors
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     // D3: giving up while queued is not a failure — it is an outcome the client asked for, and nothing was charged.
@@ -915,6 +1040,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message });
     if (err instanceof ConflictError) return res.status(409).json({ error: err.message, ...(err.details ?? {}) });
     if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
+    if (err instanceof MarketError) return res.status(err.status).json({ error: err.message, ...(err.details ?? {}) });
     const msg = (err as Error)?.message ?? String(err);
     // Market / runtime errors carry the status they mean (400 bad input, 404 unknown, 409 conflict, 503 model unavailable).
     const status = (err as { status?: unknown })?.status;
