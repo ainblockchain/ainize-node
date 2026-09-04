@@ -717,7 +717,8 @@ Buy a listed patch via HTTP 402 (x402) and download its body
 - **`--apply`** (`boolean`, default `false`) — apply to the serving runtime after download
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
 - **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
-- **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it, deepest first
+- **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too, deepest first (one payment each). Without it you are asked
+- **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
 
 **Examples**
@@ -725,6 +726,8 @@ Buy a listed patch via HTTP 402 (x402) and download its body
 ```bash
 # quote the price, ask, then pay
 ainize patch buy krx-all-2761
+# the add-on and the knowledge it needs underneath, in one go
+ainize patch buy krx-all-2761 --bundle
 # unattended, with a budget for the whole family
 ainize patch buy krx-all-2761 --yes --max-price 30
 ```
@@ -1238,6 +1241,7 @@ Publish a READY lesson as knowledge (the last step of `teach train` — needs bo
 - **`--access`** (`"public" | "derivative" | "private"`) — who may read the training set: anyone, only people who declare they build on this (default), nobody
 - **`--dataset-license`** (`string`) — licence for the questions themselves
 - **`--include-notes`** (`boolean`, default `false`) — include your per-row notes in the shared questions
+- **`--declare`** (`"own" | "public" | "licensed"`) — where the questions came from: your own work, a public source, or licensed to you (the node requires this above a few hundred rows)
 - **`--consent-permanent`** (`boolean`, default `false`) — I understand this becomes a permanent public record that cannot be edited or deleted
 - **`--consent-rights`** (`boolean`, default `false`) — I have the right to share this information, and it is not private or personal data
 
@@ -1310,7 +1314,8 @@ One line to use knowledge: check it is verified → quote the price → pay → 
 - **`--apply`** (`boolean`, default `true`) — load into the serving model after download (--no-apply to only download)
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
 - **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
-- **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it
+- **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked
+- **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
 
 **Examples**

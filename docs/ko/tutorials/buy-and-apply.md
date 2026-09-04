@@ -327,6 +327,30 @@ ainize use seoul-office-facts-after-the-move --no-apply
 ✓ seoul-office-facts is already on this node (purchased)
 ```
 
+### 추가분일 때: 밑에 깔릴 지식까지 사기
+
+어떤 지식은 **추가분(add-on)** 입니다. 다른 제작자의 지식 위에서 학습된 것이라, 그 지식이 밑에 올라가 있어야만
+의미가 있습니다. 견적은 무엇이 필요한지, 각각의 가격과 판매자를 함께 보여 주고, 돈이 나가기 전에 묻습니다.
+
+```text
+  needs krx-all-2761 · KRX tickers  25 CREDIT from alice
+  total 30 CREDIT (this knowledge + 1 base it cannot work without)
+seoul-office-facts also needs KRX tickers (25 CREDIT); buy both? [y/N]
+```
+
+`y`(또는 미리 `--bundle`)면 둘 다 삽니다 — 기반이 먼저, 그다음 추가분, 각각 결제 한 번과 정산 기록 한 건. 영수증에도
+그 순서와 실제로 나간 합계가 찍힙니다. `n`이면 추가분만 삽니다. 그때는 "기반을 밑에 넣기 전까지는 아무것도 답하지
+못한다"고 명령이 그 자리에서 말해 줍니다. `--yes`는 절대 요청보다 더 사지 않습니다 — *가격* 질문에 미리 답하는 것일
+뿐이라, 무인 스크립트가 가족 전체를 사려면 `--bundle`도 함께 줘야 합니다.
+
+기반의 제작자는 두 번 받습니다. 자기 판매로 한 번, 그 위에 만들어진 지식이 팔릴 때마다 또 한 번입니다
+(`ainize patch tree <id>`가 그 줄을 출력하고, 규칙은 [계보와 수익 분배](../concepts/lineage-and-royalties.md)에
+있습니다).
+
+<!-- unverified: needs a two-node family — 이 튜토리얼의 노드에는 추가분이 없습니다. 견적 줄과 질문, 순서는
+packages/cli/src/commands/patch.ts (printQuote, patchBuy)에서 읽었고, 끝에서 끝까지는 비공개 클러스터에서
+packages/e2e/scripts/bundle-buy-proof.mjs (AZ-313, AZ-315)로 증명했습니다. -->
+
 ### 돈은 나갔는데 파일이 오지 않았다면
 
 구매는 왕복이 두 번입니다 — 결제, 그다음 파일 정보(매니페스트) — 그리고 두 번째가 사라질 수 있습니다. 프록시가

@@ -2462,22 +2462,24 @@ Unblock
 
 Buy as this node (x402 handled automatically)
 
-The seller is resolved at buy time — the peers this node currently sees first, the `gateway_url` on the anchor last — so a seller that changed its port is still reachable. The payment is written to a `pending_payments` row BEFORE it is presented; if the answer is lost, the next buy (or `POST /collect`) presents the same payment again instead of paying twice. `with_required` buys the bases this knowledge needs underneath it, deepest first, one settlement each; `max_total` refuses the whole family before any money moves.
+The seller is resolved at buy time — the peers this node currently sees first, the `gateway_url` on the anchor last — so a seller that changed its port is still reachable. The payment is written to a `pending_payments` row BEFORE it is presented; if the answer is lost, the next buy (or `POST /collect`) presents the same payment again instead of paying twice. `?bundle=1` (or `bundle`/`with_required` in the body) buys the bases this knowledge needs underneath it FIRST, deepest first, one settlement each, and answers with `purchases[]` and the `total` that actually moved; `max_total` refuses the whole family before any money moves.
 
 **Auth** — operator
 
 **Parameters**
 
-| Name | In | Type | Required |
-|---|---|---|---|
-| `id` | `path` | `string` | yes |
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | `path` | `string` | yes |   |
+| `bundle` | `query` | `boolean` |   | buy the bases underneath first, one settlement each (design §12.4) |
 
 **Request body** — `application/json`, optional
 
 | Field | Type | Description |
 |---|---|---|
-| `apply` | `boolean` | load into the model right after purchase |
-| `with_required` | `boolean` | also buy the bases this knowledge needs underneath it |
+| `apply` | `boolean` | load into the model right after purchase — the whole stack, ancestors first |
+| `bundle` | `boolean` | also buy the bases this knowledge needs underneath it, deepest first |
+| `with_required` | `boolean` | the older name of `bundle`, still accepted |
 | `max_total` | `number` | refuse when the family total is above this |
 
 **Responses**
@@ -2526,7 +2528,7 @@ Money on the chain and no body. Each row carries the gateway, the resource, the 
 
 Load into the model (with everything it was trained on top of)
 
-Loads the ordered stack under one runtime lock: the bases first, then this knowledge. An add-on (`base.export: "delta"`) is written only after its `before` is compared to the live rows on EVERY row; a mismatch is 409 `base_mismatch` and nothing is written. Without `with_base` an add-on whose base is not loaded is refused 409 `needs_base`.
+Loads the ordered stack under one runtime lock: the bases first, then this knowledge. An add-on (`base.export: "delta"`) is written only after its `before` is compared to the live rows on EVERY row; a mismatch is 409 `base_mismatch` and nothing is written. Without `with_base` an add-on whose base is not loaded is refused 409 `needs_base`. The answer carries `order` — the chain this knowledge now sits on, ancestors first — and `loaded`, the ids written by this call.
 
 **Auth** — operator
 
@@ -2546,7 +2548,7 @@ Loads the ordered stack under one runtime lock: the bases first, then this knowl
 
 | Code | Description | Body |
 |---|---|---|
-| `200` | result + the ordered stack | `object` |
+| `200` | result, order[], loaded[] + the ordered stack | `object` |
 | `409` | needs_base { missing } · base_not_held { missing } · base_mismatch { patch_id, rows_differ } |   |
 
 ### `DELETE /api/patches/{id}/apply`

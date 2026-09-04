@@ -329,6 +329,32 @@ Run it twice and nothing is bought twice:
 ✓ seoul-office-facts is already on this node (purchased)
 ```
 
+### When it is an add-on: buying the knowledge underneath it
+
+Some knowledge is an **add-on**: it was trained on top of another creator's knowledge and its rows only mean anything
+with that one loaded underneath. The quote lists what it needs, with the price and the seller of each, and before it
+takes any money the command asks:
+
+```text
+  needs krx-all-2761 · KRX tickers  25 CREDIT from alice
+  total 30 CREDIT (this knowledge + 1 base it cannot work without)
+seoul-office-facts also needs KRX tickers (25 CREDIT); buy both? [y/N]
+```
+
+Answer `y` (or pass `--bundle` in advance) and both are bought — the base first, then the add-on, one payment and one
+settlement each — and the receipt lists them in that order with the total that actually moved. Answer `n` and only the
+add-on is bought; the command says so, because a delta on its own will not answer anything until its base is loaded
+under it. `--yes` never buys more than you asked for: it answers the *price* question, not this one, so an unattended
+script that wants the family passes `--bundle` as well.
+
+The creators of the base are paid twice over: once for their own sale, and again out of every sale of anything built
+on top of them (`ainize patch tree <id>` prints that line, and
+[Lineage and royalties](../concepts/lineage-and-royalties.md) is the rule).
+
+<!-- unverified: needs a two-node family — the tutorial's node has no add-on published on it. The quote lines, the
+question and the ordering are read from packages/cli/src/commands/patch.ts (printQuote, patchBuy) and proved end to
+end on a private cluster by packages/e2e/scripts/bundle-buy-proof.mjs (AZ-313, AZ-315). -->
+
 ### If the money leaves and the file does not arrive
 
 A purchase is two round trips — the payment, then the manifest — and the second one can be lost: a proxy times out, the
