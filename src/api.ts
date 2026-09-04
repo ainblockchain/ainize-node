@@ -829,10 +829,11 @@ export function buildApi(deps: ApiDeps): Router {
     return { ok: true, challenge, record: await market.challengeRecord(market.address) };
   }));
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => {
-    const b = z.object({ apply: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional() }).parse(req.body ?? {});
+    const b = z.object({ apply: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional(), again: z.boolean().optional() }).parse(req.body ?? {});
     // `with_required` buys the bases underneath first (item 270); `max_total` refuses the whole family before any
-    // money moves, so a budget is a budget for the purchase and not for one item of it.
-    return market.buy(req.params.id as string, { apply: !!b.apply, withRequired: !!b.with_required, maxTotal: b.max_total });
+    // money moves, so a budget is a budget for the purchase and not for one item of it. Without `again`, a knowledge
+    // this node has already paid for is collected on that receipt rather than bought a second time (item 271).
+    return market.buy(req.params.id as string, { apply: !!b.apply, withRequired: !!b.with_required, maxTotal: b.max_total, again: !!b.again });
   }));
   /**
    * What a purchase would cost from here: the price, the bases that have to come with it, and the family total

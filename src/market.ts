@@ -1181,7 +1181,12 @@ export class Market {
     const scheme = this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit';
     this.store.putNonce(nonce, resource, entry.anchor.price, this.address, 10 * 60_000);
     const map = await this.entryMap();
-    const quote = await this.quoteFor(entry, map);
+    const requires = this.requiredBases(entry, map);
+    // The 402 is the SELLER's answer to a stranger, so its `total` is the family's LIST price — never this node's
+    // own net. `quoteFor` subtracts what the asking node already holds, and the seller holds its own bases, which
+    // made a 5-CREDIT delta with a 4-CREDIT base quote `total: 5, self_contained: false` to every x402 client that
+    // is not an ainize node (item 270). A buyer's own node still subtracts its holdings at /api/patches/:id/quote.
+    const listTotal = Number(entry.anchor.price) + requires.filter((r) => r.known).reduce((a, r) => a + Number(r.price || 0), 0);
     return [{
       scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
       payTo: this.address, maxAmountRequired: entry.anchor.price, resource,
@@ -1189,8 +1194,8 @@ export class Market {
       nonce, expires_at: Date.now() + 10 * 60_000,
       // What the family costs, and what binds a payment to THIS quote (items 270, 272, 344).
       ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
-      requires: this.requiredBases(entry, map),
-      total: quote.total, self_contained: quote.self_contained, single_use: true,
+      requires,
+      total: String(Math.round(listTotal * 1e6) / 1e6), self_contained: requires.length === 0, single_use: true,
     }];
   }
 
@@ -1458,11 +1463,25 @@ export class Market {
   /**
    * Buy `patchId` from its seller. `withRequired` buys the bases underneath it first, deepest first, one settlement
    * each (item 270); `maxTotal` refuses before any money moves when the family costs more than that.
+   *
+   * A knowledge this node has already paid for is COLLECTED, not bought again (item 271): a retry, a second click
+   * or a lost response used to run the whole 402 loop and move the full price a second time for a body the buyer
+   * was already entitled to — `mayDownload` admits a settled buyer for nothing. `again: true` is the only way to
+   * pay twice on purpose, and it exists because per-hit and per-apply-hour billing can mean a genuine second sale.
    */
-  async buy(patchId: string, opts: { apply?: boolean; withRequired?: boolean; maxTotal?: number } = {}): Promise<PurchaseResult> {
+  async buy(patchId: string, opts: { apply?: boolean; withRequired?: boolean; maxTotal?: number; again?: boolean } = {}): Promise<PurchaseResult> {
     const steps: PurchaseResult['steps'] = [];
     const step = (s: string, d: string, id = patchId) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, id); };
     const entry = await this.buyable(patchId);
+    const paid = this.paidFor(entry);
+    if (paid && !opts.again) {
+      const out = await this.collect(patchId);
+      const when = new Date(paid.created_at).toISOString();
+      out.steps.unshift({ step: 'already', detail: `this node already paid ${paid.amount} ${paid.currency} for ${patchId} on ${when} (tx ${paid.tx_hash.slice(0, 14)}…) — collecting on that receipt instead of paying again (\`--again\` buys a second time on purpose)`, at: Date.now() });
+      this.log('info', 'buy', `already: ${patchId} was paid for on ${when} — collected, not bought again`, patchId);
+      if (opts.apply) step('apply', await this.applyPatch(patchId, 'purchase', { withBase: true }));
+      return { ...out, steps: [...out.steps, ...steps], purchases: [{ patch_id: patchId, amount: paid.amount, currency: paid.currency, scheme: paid.scheme, tx_hash: paid.tx_hash, free: true }], total: '0', currency: entry.anchor.currency, redeemed: true };
+    }
     step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
     const quote = await this.quoteFor(entry);
     if (quote.requires.length) {
@@ -1495,6 +1514,20 @@ export class Market {
     }
     const total = purchases.filter((x) => !x.free).reduce((a, x) => a + Number(x.amount), 0);
     return { ...one, steps, purchases, total: String(Math.round(total * 1e6) / 1e6), currency: entry.anchor.currency };
+  }
+
+  /**
+   * This node's own receipt for a knowledge, if it has one (item 271). The local purchase row is a cache that a
+   * re-install loses, so the ledger's settlements are consulted too: whichever exists, it says the price has been
+   * paid once already and a second payment buys nothing.
+   */
+  paidFor(entry: CatalogEntry): { amount: string; currency: string; scheme: string; tx_hash: string; created_at: number } | null {
+    const me = this.address.toLowerCase();
+    const settled = entry.settlements.filter((x) => x.buyer.toLowerCase() === me).sort((a, b) => b.created_at - a.created_at)[0];
+    if (settled) return { amount: settled.amount, currency: settled.currency, scheme: settled.scheme, tx_hash: settled.tx_hash, created_at: settled.created_at };
+    const row = this.store.getPurchase(entry.anchor.id);
+    if (row) return { amount: row.amount, currency: entry.anchor.currency, scheme: row.scheme, tx_hash: row.tx_hash, created_at: row.created_at };
+    return null;
   }
 
   /** The entry, re-read from the ledger if it looks stale, refusing everything that must not be paid for. */
