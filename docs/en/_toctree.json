@@ -28,6 +28,7 @@
     "group": "How-to",
     "pages": [
       { "page": "how-to/reachable-node",      "title": "Run a node others can reach" },
+      { "page": "how-to/run-a-verifier",      "title": "What verifying costs" },
       { "page": "how-to/price-knowledge",     "title": "Set a price and get paid" },
       { "page": "how-to/failed-verification", "title": "When it will not list" }
     ]

@@ -28,6 +28,7 @@
     "group": "실전 가이드",
     "pages": [
       { "page": "how-to/reachable-node",      "title": "다른 노드가 찾아올 수 있는 노드 운영하기" },
+      { "page": "how-to/run-a-verifier",      "title": "검증에 드는 비용" },
       { "page": "how-to/price-knowledge",     "title": "값을 매기고 정산받기" },
       { "page": "how-to/failed-verification", "title": "목록에 오르지 않을 때" }
     ]
