@@ -375,11 +375,11 @@ file visitor can be linked to, refresh, and go back.
 │  is yours to test, keep private or publish.                         │
 │  No account, no server of your own, no code.                        │
 │                                                                     │
-│  ┌───────────────────────────┐  ┌───────────────────────────────┐  │
-│  │ Teach it in a conversation│  │ Upload a dataset file          │  │
-│  │ Ask the model something…  │  │ Already have the questions…    │  │
-│  │ [ Start a conversation ]  │  │ [ Choose a file ]  (primary)   │  │
-│  └───────────────────────────┘  └───────────────────────────────┘  │
+│  ┌──────────────────────────────────┐  ┌────────────────────────┐  │
+│  │ Teach it in a conversation       │  │ ALREADY HAVE A FILE?   │  │
+│  │ Ask the model a question…        │  │ Upload a dataset file  │  │
+│  │ [ Start a conversation ] primary │  │ [ Choose a file ]      │  │
+│  └──────────────────────────────────┘  └────────────────────────┘  │
 │                                                                     │
 │  Whichever door you pick, these five steps are the same.            │
 │  ① Dataset → ② Check → ③ Settings → ④ Training → ⑤ Result          │
@@ -388,8 +388,12 @@ file visitor can be linked to, refresh, and go back.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The file card carries the primary (contained) button and the chat card the outlined one — the Teachable-NLP shape the
-owner asked to lead with; the chat door is one click away from every reply anyway. The v1 node-policy line
+The conversation card is the primary action (2 px purple border, tinted, 3:2 wider, contained button) and the file
+card the clearly secondary one (grey border, outlined button, an "Already have a file?" eyebrow) — the owner's
+2026-09-04 critique (docs/ux-critique-owner.json O-1) found the two doors at almost equal weight, and the door that
+serves a newcomer best is the one that needs no file and shows the value in one question; the file door is for people
+who already have their data and stays one click away. (Until then the file card led — the Teachable-NLP shape the
+owner first asked for.) The v1 node-policy line
 (`teach.basket.policy_open` / `policy_open_about` / `policy_paused` / `policy_off`) sits under both cards and
 **disables both CTAs** when teaching is off or paused.
 

@@ -4304,8 +4304,8 @@
  {
   "id": "AZ-123",
   "persona": "Dataset uploader (visitor)",
-  "title": "/teach entry choice: two doors, one pipeline — the file card leads and the five-step strip is the same for both",
-  "goal": "A stranger landing on /teach can see immediately that a file is a first-class way in (the Teachable-NLP shape the owner asked for), that a conversation is the other, and that both meet in the same five steps (design §5.2).",
+  "title": "/teach entry choice: two doors, one pipeline — the conversation card leads and the five-step strip is the same for both",
+  "goal": "A stranger landing on /teach can see immediately that a conversation is the primary way in (no file, no preparation, value in one question — ux-critique-owner O-1), that a file is the clearly secondary door for people who already have their data, and that both meet in the same five steps (design §5.2).",
   "preconditions": [
    "node-u on http://localhost:3422 in its current publish-leg mode: teach.enabled true, backend 'stub', teach.stubOffline true. No step in this scenario calls the model server.",
    "Fresh browser context, locale en-US, no localStorage (no teaching key)."
@@ -4320,7 +4320,7 @@
   "expected": [
    "Slim chrome (ux-critique-owner O-3 / O-6): [data-testid=focused-header] holds the 'Ainize home' logo link, [data-testid=link-mine] 'My datasets and lessons' → /teach/mine (the route back to existing work lives in the header's secondary position on every /teach/* page, never in the action group), [data-testid=teach-exit] 'Exit' → /explore and the 'language' toggle (the only one on the page — none inside [data-testid=teach-entry], O-8), and NO marketplace link ('Explore knowledge', 'Live test', …); [data-testid=focused-footer] has 'Terms and Policies' → /terms and 'Contact us' and neither 'ain-js' nor 'aindrive'. /explore keeps the full header with all seven links.",
    "Title 'Teach the model something new'; subtitle 'Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.'; second line 'No account, no server of your own, no code.'",
-   "Left card: 'Teach it in a conversation' with button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card (primary border): 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.",
+   "Left card [data-testid=door-chat-card] (primary: 2 px purple border #8b3eeb, tinted background, wider): 'Teach it in a conversation' with the contained button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card [data-testid=door-file-card] (secondary: 1 px grey border #dadada, white): eyebrow 'Already have a file?', 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', outlined button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.",
    "Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).",
    "[data-testid=teach-policy] renders the node's own sentence — on node-u today: 'Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes'.",
    "Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; nothing follows the strip — the page ends with the task.",
@@ -8097,6 +8097,37 @@
    "packages/cli/src/commands/patch.ts patchForget() (--all-sharing, the blast-radius table)",
    "packages/cli/test/cli.test.ts (item 149)",
    "docs/ux-critique-2.json item 149"
+  ]
+ },
+ {
+  "id": "AZ-237",
+  "persona": "Dataset uploader (visitor)",
+  "title": "/teach hierarchy: the conversation door is the one primary action and the file door is clearly secondary, at 1280 and 360 px",
+  "goal": "A first-time visitor can tell at a glance what to try first (ux-critique-owner O-1): one door carries the primary weight in position, size and colour, the other is visibly the alternative — and stays one click away.",
+  "preconditions": [
+   "node-u on http://localhost:3422 with teach.enabled true (backend 'stub'; nothing here calls the model).",
+   "Fresh browser context, locale en-US; run once at 1280 px and once at 360 px (Pixel 5)."
+  ],
+  "steps": [
+   "Open http://localhost:3422/teach and wait for [data-testid=teach-entry].",
+   "Compare the two door cards: document order, border, background, heading size, button style and box width.",
+   "Press the secondary door."
+  ],
+  "expected": [
+   "Order: [data-testid=door-chat-card] precedes [data-testid=door-file-card] in the DOM — the primary door is what a screen reader and the Tab key reach first.",
+   "Weight: the chat card has a 2 px #8b3eeb border and the tinted #f5eefc background; the file card a 1 px #dadada border on white. The chat heading is 22 px, the file heading 16 px.",
+   "Buttons: [data-testid=door-chat] is contained (white text on #8b3eeb); [data-testid=door-file] is outlined (#8b3eeb text on a transparent background).",
+   "Size and position: at 1280 px the chat card is at least 1.3× wider than the file card (3:2 grid); at 360 px both cards are full width, the chat card sits above the file card, and the page does not scroll horizontally (scrollWidth ≤ 360).",
+   "The secondary door still works with one click: pressing door-file lands on /teach/upload."
+  ],
+  "priority": "P1",
+  "area": "teach-ui",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/pages/TeachPage.tsx (Doors 3fr 2fr grid, Door $primary, Eyebrow)",
+   "packages/web/src/i18n/pages/teach.ts (teach.entry.file.eyebrow)",
+   "docs/teachable-dataset-design.md §5.2 (the primary-door decision)",
+   "packages/e2e/tests/web-ds-upload.spec.ts (AZ-237, projects web + mobile)"
   ]
  }
 ]

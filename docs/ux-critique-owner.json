@@ -9,7 +9,9 @@
    "problem": "'Start a conversation' and 'Upload a dataset file' are given almost equal weight, so a first-time user cannot tell what to try first.",
    "fix": "Make one path the primary action with a clearly secondary alternative (size, colour, position), based on which door serves a newcomer best; the other remains one click away.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "The conversation door is the primary action (first, 3:2 wider, 2 px purple border on a tinted card, 22 px heading, contained button) and the file door is the clearly secondary one (grey border on white, 16 px heading, outlined button, an 'Already have a file?' eyebrow) — a newcomer needs no file and sees the value in one question, while people who already have data are one click away."
   },
   {
    "n": "O-2",

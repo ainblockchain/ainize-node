@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (237)
+# Ainize UX Test Scenarios (238)
 
-This document lists 237 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 238 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -25,12 +25,12 @@ This document lists 237 user-experience test scenarios for **Ainize** (ai-nize =
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 9 | 4 | 5 | 0 |
-| Dataset uploader (visitor) | 80 | 40 | 37 | 3 |
+| Dataset uploader (visitor) | 81 | 40 | 38 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
 | Node operator | 6 | 4 | 2 | 0 |
 | Knowledge publisher | 1 | 1 | 0 | 0 |
-| **Total** | **237** | **102** | **114** | **21** |
+| **Total** | **238** | **102** | **115** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -50,11 +50,11 @@ This document lists 237 user-experience test scenarios for **Ainize** (ai-nize =
 | ledger | 5 |
 | new-patch | 5 |
 | patch | 5 |
+| teach-ui | 5 |
 | error | 4 |
 | landing | 4 |
 | network | 4 |
 | signing | 4 |
-| teach-ui | 4 |
 | a11y | 3 |
 | i18n | 3 |
 | teach-limits | 3 |
@@ -68,7 +68,7 @@ This document lists 237 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 156 |
+| e2e | 157 |
 | cli | 38 |
 | api | 32 |
 | manual | 11 |
@@ -5270,9 +5270,9 @@ just prose, nothing else
 
 ## Dataset uploader (visitor)
 
-### AZ-123 - /teach entry choice: two doors, one pipeline — the file card leads and the five-step strip is the same for both
+### AZ-123 - /teach entry choice: two doors, one pipeline — the conversation card leads and the five-step strip is the same for both
 
-**Goal:** A stranger landing on /teach can see immediately that a file is a first-class way in (the Teachable-NLP shape the owner asked for), that a conversation is the other, and that both meet in the same five steps (design §5.2).
+**Goal:** A stranger landing on /teach can see immediately that a conversation is the primary way in (no file, no preparation, value in one question — ux-critique-owner O-1), that a file is the clearly secondary door for people who already have their data, and that both meet in the same five steps (design §5.2).
 
 **Priority:** P0 - **Area:** teach-ui - **Automation:** e2e
 
@@ -5293,7 +5293,7 @@ just prose, nothing else
 
 - Slim chrome (ux-critique-owner O-3 / O-6): [data-testid=focused-header] holds the 'Ainize home' logo link, [data-testid=link-mine] 'My datasets and lessons' → /teach/mine (the route back to existing work lives in the header's secondary position on every /teach/* page, never in the action group), [data-testid=teach-exit] 'Exit' → /explore and the 'language' toggle (the only one on the page — none inside [data-testid=teach-entry], O-8), and NO marketplace link ('Explore knowledge', 'Live test', …); [data-testid=focused-footer] has 'Terms and Policies' → /terms and 'Contact us' and neither 'ain-js' nor 'aindrive'. /explore keeps the full header with all seven links.
 - Title 'Teach the model something new'; subtitle 'Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.'; second line 'No account, no server of your own, no code.'
-- Left card: 'Teach it in a conversation' with button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card (primary border): 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.
+- Left card [data-testid=door-chat-card] (primary: 2 px purple border #8b3eeb, tinted background, wider): 'Teach it in a conversation' with the contained button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card [data-testid=door-file-card] (secondary: 1 px grey border #dadada, white): eyebrow 'Already have a file?', 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', outlined button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.
 - Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).
 - [data-testid=teach-policy] renders the node's own sentence — on node-u today: 'Teaching on this node: open · this node has not timed a lesson yet — the first one may take up to 30 minutes'.
 - Step strip shows exactly 1 Dataset · 2 Check · 3 Settings · 4 Training · 5 Result, above the line 'Whichever door you pick, these five steps are the same.'; nothing follows the strip — the page ends with the task.
@@ -8092,6 +8092,38 @@ prompt,answer,alt_prompt
 - `packages/web/src/lib/teachDataset.ts signedDownload`
 - `packages/node/src/teach.ts:814-828 (datasetRef sets deleted:true but keeps id)`
 - `packages/node/src/api.ts:531-538 (GET /api/teach/datasets/:id/download)`
+
+### AZ-237 - /teach hierarchy: the conversation door is the one primary action and the file door is clearly secondary, at 1280 and 360 px
+
+**Goal:** A first-time visitor can tell at a glance what to try first (ux-critique-owner O-1): one door carries the primary weight in position, size and colour, the other is visibly the alternative — and stays one click away.
+
+**Priority:** P1 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with teach.enabled true (backend 'stub'; nothing here calls the model).
+- Fresh browser context, locale en-US; run once at 1280 px and once at 360 px (Pixel 5).
+
+**Steps**
+
+1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
+2. Compare the two door cards: document order, border, background, heading size, button style and box width.
+3. Press the secondary door.
+
+**Expected**
+
+- Order: [data-testid=door-chat-card] precedes [data-testid=door-file-card] in the DOM — the primary door is what a screen reader and the Tab key reach first.
+- Weight: the chat card has a 2 px #8b3eeb border and the tinted #f5eefc background; the file card a 1 px #dadada border on white. The chat heading is 22 px, the file heading 16 px.
+- Buttons: [data-testid=door-chat] is contained (white text on #8b3eeb); [data-testid=door-file] is outlined (#8b3eeb text on a transparent background).
+- Size and position: at 1280 px the chat card is at least 1.3× wider than the file card (3:2 grid); at 360 px both cards are full width, the chat card sits above the file card, and the page does not scroll horizontally (scrollWidth ≤ 360).
+- The secondary door still works with one click: pressing door-file lands on /teach/upload.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachPage.tsx (Doors 3fr 2fr grid, Door $primary, Eyebrow)`
+- `packages/web/src/i18n/pages/teach.ts (teach.entry.file.eyebrow)`
+- `docs/teachable-dataset-design.md §5.2 (the primary-door decision)`
+- `packages/e2e/tests/web-ds-upload.spec.ts (AZ-237, projects web + mobile)`
 
 ## Chat teacher (visitor)
 
