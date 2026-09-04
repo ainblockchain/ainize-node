@@ -15,10 +15,60 @@ ainize chain setup                                          # registers /apps/kn
 ## Multi-node marketplace demo (local ledger, one machine)
 
 ```
-ainize init --name alice --port 3402 && ainize start -d && ainize login && ainize seed   # real knowledge only; add --synthetic only for test fixtures
-NGRAM_HOME=~/.ngram-b ainize init --name bob   --port 3403 --peer http://localhost:3402 --roles verifier && NGRAM_HOME=~/.ngram-b ainize start -d
-NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving && NGRAM_HOME=~/.ngram-c ainize start -d
+ainize init --name alice --port 3402 --password "<operator password>" && ainize start -d && ainize login && ainize seed   # real knowledge only; add --synthetic only for test fixtures
+NGRAM_HOME=~/.ngram-b ainize init --name bob   --port 3403 --peer http://localhost:3402 --roles verifier          --password "<…>" && NGRAM_HOME=~/.ngram-b ainize start -d
+NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving  --password "<…>" && NGRAM_HOME=~/.ngram-c ainize start -d
 ainize patch ls          # bob & carol attest → quorum 2 → LISTED
+```
+
+Every node here binds `127.0.0.1` — the default since the takeover described below.
+
+## Claiming a node (do this before it listens on anything but loopback)
+
+A node with no operator password is **unclaimed**: `POST /api/auth/setup` hands a full operator session to whoever
+asks first, and that session can announce, buy, subscribe, spend the wallet, change `payout_address` and approve teach
+lessons under the node's identity. There is no way to take it back.
+
+Three things now stand between a fresh node and a stranger:
+
+- **`host` defaults to `127.0.0.1`.** Going public is a decision: `ainize init --host 0.0.0.0` (or `--public`), or
+  `ainize config set host 0.0.0.0`. The start-up banner prints the address it actually bound.
+- **`ainize init --password …`** (or `NGRAM_PASSWORD`, or the prompt an interactive terminal gets) claims the node in
+  config.json before it ever listens. `--no-password` leaves it unclaimed on purpose.
+- **Claiming is loopback-only.** From another machine, `POST /api/auth/setup` is refused unless the request carries the
+  one-time token the node writes to `NGRAM_HOME/setup-token` (readable only by the user the node runs as):
+  `ainize login --node http://host:3402 --setup-token "$(ssh host cat ~/.ngram/setup-token)"`. The token is deleted by
+  the claim. An unauthenticated `GET /api/auth/me` no longer advertises `needsSetup` to callers that could not claim it.
+
+Forgotten the password? `ainize stop && ainize password --reset` writes a new hash into config.json — being able to
+write that file is the same proof of ownership as holding the node's private key, which lives in it. On a running node,
+`ainize password` changes it and signs every other session out.
+
+## Disk
+
+A verifier downloads every announced body over P2P and keeps it. Nothing reported those bytes before:
+
+```
+ainize status            # disk 1.1 GB (bodies 932 MB · sets 0 B · uploads 115 MB · db 9 MB) · 12 GB free
+ainize blobs ls          # every file, its size, and why this node has it
+ainize gc --dry-run      # what could go: bodies neither published here nor bought, that a peer still holds
+ainize gc --older-than 30d
+```
+
+`events.retentionDays` (default 90) is how long raw event rows are kept; `start -d` rolls `node.log` at 32 MB and keeps
+two generations. The node also logs a warning once an hour while the volume holding `dataDir` is below 5% or 2 GB free.
+
+## Peering across ledgers
+
+A node started with `--ledger local` and pointed at a marketplace running on the AIN chain answers every health check
+green and shows an empty catalogue forever: record sync only happens between nodes on the same ledger. `ainize status`,
+`ainize nodes`, `ainize peers ls` and the Network page now name every peer whose ledger this node cannot read, and
+`peers add` / `init --peer` say so at the moment the peer is added:
+
+```
+! node-a (http://localhost:3402) publishes on the AIN ledger; this node reads the local record DAG.
+    trade with it directly:  ainize patch ls --node http://localhost:3402
+    or move this node over:  ainize init --force --ledger ain --ain-provider <url>
 ```
 
 ## Teach mode (visitor-taught lessons) — what the host needs
