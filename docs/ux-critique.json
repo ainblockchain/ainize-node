@@ -1235,9 +1235,9 @@
      "user_cost": "\"(s)\" and \"(으)로\" are the visual signature of an unfinished product, and they appear on the card the user stares at during a training wait and on the screen where they decide whether to trust a permanent record.",
      "fix": "Add teach.card.facts_one and units.facts_one and pass the count to t(); for Korean, branch the particle on the final jamo of the filename (or reword to \"저장했습니다: {filename}\").",
      "effort": "S",
-     "fixed": true,
-     "fixed_by": "06b21c0",
-     "fixed_note": "The chat half: units.facts_one exists and every call site passes a count (\"1 fact\", not \"1 facts\"), chat.picker.asked lost its \"visitor(s)\", and nine Korean chat strings that interpolated a name in front of 이(가)/을(를)/과(와)/(으)로 were reworded so the particle sits on a fixed noun. The teach half (teach.card.facts, the dataset filename particle) belongs to the live lineage workstream and is untouched."
+     "fixed": false,
+     "status": "partial",
+     "shipped": "Chat half done in 06b21c0 and 5eb1afc: units.facts_one exists and every call site passes a count (\"1 fact\", not \"1 facts\"), chat.picker.asked lost its \"visitor(s)\", and nine Korean chat strings that interpolated a name in front of 이(가)/을(를)/과(와)/(으)로 were reworded so the particle sits on a fixed noun. The teach half — teach.card.facts \"{n} correction(s)\" and the \"(으)로\" particle in the dataset preview (i18n/pages/teach.ts) — belongs to the live lineage workstream and was not touched."
     },
     {
      "n": 89,
