@@ -9,7 +9,7 @@ summary: The error envelope, and every machine-readable code a node can answer w
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-What an error body looks like, how a thrown error becomes an HTTP status, and the 52 codes a client can match on.
+What an error body looks like, how a thrown error becomes an HTTP status, and the 55 codes a client can match on.
 
 ## The error envelope
 
@@ -36,7 +36,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Codes
 
-52 codes are raised by name, in 106 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
+55 codes are raised by name, in 114 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
 
 | Code | HTTP | What it means | Raised in |
 |---|---|---|---|
@@ -98,6 +98,8 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `invalid` | `400` | payout_address must be an AIN address | `packages/node/src/teach.ts` |
 | `invalid` | `400` | price must be a non-negative number | `packages/node/src/teach.ts` |
 | `invalid` | `400` | there is no question #\<op.index> in this dataset | `packages/node/src/teach-datasets.ts` |
+| `invalid` | `400` | those are the same knowledge | `packages/node/src/teach.ts` |
+| `invalid` | `400` | two knowledges are needed to combine | `packages/node/src/teach.ts` |
 | `invalid_signature` | `401` | download token missing, wrong or expired — make a new link from Your knowledge | `packages/node/src/api.ts` |
 | `invalid_signature` | `401` | the claim signature does not verify for this teaching key | `packages/node/src/teach.ts` |
 | `invalid_signature` | `401` | x-ngram-auth header missing, expired or invalid | `packages/node/src/api.ts` |
@@ -114,10 +116,14 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `job_not_ready` | `409` | this lesson was already checked in the live model | `packages/node/src/teach.ts` |
 | `knowledge_not_held` | `400` | "\<id>" is listed on this node but its file is not here — get it first (\<price>), then teach on top of it | `packages/node/src/teach.ts` |
 | `lineage_disabled` | `403` | building on top of another knowledge is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
+| `lineage_disabled` | `403` | combining two knowledges is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
 | `lineage_disabled` | `403` | copying another knowledge's questions is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
 | `merge_not_available` | `400` | combining two knowledges is not available on this node yet — build on one of them | `packages/node/src/teach.ts` |
+| `merge_unresolved` | `409` | \<unresolved.length> question(s) are answered differently by \<A.id> and \<B.id> — choose an answer for each one before building | `packages/node/src/teach.ts` |
 | `not_claimed` | `409` | this node has no operator password yet — set one on the machine it runs on (`ainize login`), or POST /api/auth/setup with the one-time token in NGRAM_HOME/setup-token | `packages/node/src/api.ts` |
 | `not_owner` | `403` | this lesson belongs to a different teaching key | `packages/node/src/api.ts` |
+| `nothing_to_add` | `400` | combining these two would leave no questions at all | `packages/node/src/teach.ts` |
+| `nothing_to_add` | `400` | combining these two would teach nothing new | `packages/node/src/teach.ts` |
 | `parent_not_listed` | `400` | publish \<b.patch_id> first — it is the base of this lesson | `packages/node/src/teach.ts` |
 | `publish_disabled` | `403` | this node accepts lessons but does not publish them | `packages/node/src/teach.ts` |
 | `published_immutable` | `409` | published knowledge cannot be deleted | `packages/node/src/teach.ts` |
@@ -138,6 +144,8 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `subscription_incomplete` | `409` | \<failed.length> of … item(s) could not be acquired, so \<branch> was NOT subscribed to and this node is not advertised as serving it. …… | `packages/node/src/market.ts` |
 | `teaching_disabled` | `403` | this node does not accept lessons | `packages/node/src/teach.ts` |
 | `teaching_disabled` | `503` | the teach worker is not running on this node | `packages/node/src/api.ts` |
+| `tier_not_allowed` | `400` | … | `packages/node/src/teach.ts` |
+| `tier_not_allowed` | `400` | … % of the \<rows.shared> rows these two both write hold different values — combining them has to be a full rebuild from the combined questions | `packages/node/src/teach.ts` |
 | `too_many_bases` | `400` | one base to build on (two only for a merge) | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | … | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | \<rowsWaiting> questions are already waiting on this node — try again later | `packages/node/src/teach.ts` |
@@ -151,7 +159,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 Not every error carries a code. 32 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
-A further 22 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
+A further 23 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
 | HTTP | Message | Raised in |
 |---|---|---|

@@ -9,7 +9,7 @@ summary: Every endpoint an Ainize node serves, with parameters, bodies and respo
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src/openapi.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-127 operations on 111 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
+132 operations on 116 paths, grouped into the 8 areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).
 
 ## How to read this page
 
@@ -83,6 +83,7 @@ See [Error codes](./errors.md) for the full list.
 | `POST` | [`/api/teach/datasets/{id}/fork`](#post-apiteachdatasetsidfork) | teaching key | Copy a dataset (optionally with an edit) — how you change one while a lesson is training |
 | `GET` | [`/api/teach/datasets/{id}/download`](#get-apiteachdatasetsiddownload) | teaching key | Download the questions (canonical .jsonl, or .csv) |
 | `POST` | [`/api/teach/preflight`](#post-apiteachpreflight) | teaching key | Check what the model already knows (before queuing a lesson) |
+| `POST` | [`/api/teach/merge/preview`](#post-apiteachmergepreview) | teaching key | What combining two knowledges would mean (design §9, §12.2) |
 | `POST` | [`/api/teach/jobs`](#post-apiteachjobs) | teaching key | Queue a lesson (train the corrections into a knowledge file) |
 | `GET` | [`/api/teach/jobs`](#get-apiteachjobs) | teaching key | My lessons (signed key) |
 | `GET` | [`/api/teach/jobs/{id}`](#get-apiteachjobsid) | teaching key (optional) | Lesson status (poll every 5 s) |
@@ -108,6 +109,8 @@ See [Error codes](./errors.md) for the full list.
 | `GET` | [`/p2p/dataset/{sha256}/manifest`](#get-p2pdatasetsha256manifest) | none | Manifest of a held training set |
 | `GET` | [`/p2p/dataset/{sha256}/benchmark`](#get-p2pdatasetsha256benchmark) | none | The full benchmark list of a training set (the `answers_hash` preimage) |
 | `GET` | [`/p2p/blob/{sha256}`](#get-p2pblobsha256) | teaching key (optional) + payment (x402) | Download the knowledge body (.npz) |
+| `GET` | [`/api/patches/{id}/quote`](#get-apipatchesidquote) | none | What this purchase would cost — the item and the bases it needs |
+| `GET` | [`/api/credit/{address}`](#get-apicreditaddress) | none | Where an address's local credit came from |
 
 **Register & sell knowledge** — operator: register → announce → verified → sold
 
@@ -156,6 +159,8 @@ See [Error codes](./errors.md) for the full list.
 | `POST` | [`/api/me/teach/bans`](#post-apimeteachbans) | operator | Block a key or IP |
 | `DELETE` | [`/api/me/teach/bans/{id}`](#delete-apimeteachbansid) | operator | Unblock |
 | `POST` | [`/api/patches/{id}/buy`](#post-apipatchesidbuy) | operator | Buy as this node (x402 handled automatically) |
+| `POST` | [`/api/patches/{id}/collect`](#post-apipatchesidcollect) | operator | Collect a knowledge this node already paid for — no second payment |
+| `GET` | [`/api/me/pending-payments`](#get-apimepending-payments) | operator | Payments that left this node and were never answered with a manifest |
 | `POST` | [`/api/patches/{id}/apply`](#post-apipatchesidapply) | operator | Load into the model (with everything it was trained on top of) |
 | `DELETE` | [`/api/patches/{id}/apply`](#delete-apipatchesidapply) | operator | Unload from the model (journal replay) |
 | `POST` | [`/api/patches/{id}/remove`](#post-apipatchesidremove) | operator | Unload from the model (same as DELETE …/apply) |
@@ -1176,6 +1181,75 @@ either `facts` (v1) or `dataset_id` with an optional window
 | `quota.key_remaining` | `integer` |
 | `quota.ip_remaining` | `integer` |
 
+### `POST /api/teach/merge/preview`
+
+What combining two knowledges would mean (design §9, §12.2)
+
+Read-only. Unions the two published training sets by the parser key (NFC, whitespace collapsed, case-sensitive): `same` question with the same answer is one row, the same question with a DIFFERENT answer is a conflict a person must resolve before anything is built. Separately compares the two knowledge files row by row in bf16 (`shared` / `disagree` / `opposing`), which is what decides the build tier: `union` (just combine, no training — only when the rows cannot contradict each other), `retrain` (train the disagreeing questions on top of both) or `rebuild` (from the combined questions; REQUIRED when more than 20 % of the shared rows disagree). A parent whose training set is private returns `questions: null` — only a disjoint-rows union stays possible.
+
+**Auth** — teaching key
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+
+**Request body** — `application/json`, required
+
+| Field | Type | Required |
+|---|---|---|
+| `a` | `string` | yes |
+| `b` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | the merge as it would be | `object` |
+| `401` | invalid_signature |   |
+| `403` | teaching_disabled \| banned \| not_owner |   |
+| `429` | quota_key \| quota_ip |   |
+
+**`200` response body**
+
+| Field | Type |
+|---|---|
+| `questions` | `object` \| `null` |
+| `questions.a_only` | `integer` |
+| `questions.b_only` | `integer` |
+| `questions.same` | `integer` |
+| `questions.conflicts` | `object`[] |
+| `questions.conflicts[].key` | `string` |
+| `questions.conflicts[].prompt` | `string` |
+| `questions.conflicts[].a_answer` | `string` |
+| `questions.conflicts[].b_answer` | `string` |
+| `questions.conflicts[].a_row` | `integer` |
+| `questions.conflicts[].b_row` | `integer` |
+| `rows` | `object` |
+| `rows.a_only` | `integer` |
+| `rows.b_only` | `integer` |
+| `rows.shared` | `integer` |
+| `rows.disagree` | `integer` |
+| `rows.opposing` | `integer` |
+| `rows.before_differs` | `integer` |
+| `merged` | `object` \| `null` |
+| `merged.rows` | `integer` |
+| `merged.from_a` | `integer` |
+| `merged.from_b` | `integer` |
+| `merged.targets` | `integer` |
+| `tiers` | `object` |
+| `tiers.union` | `object` |
+| `tiers.retrain` | `object` |
+| `tiers.rebuild` | `object` |
+| `tiers.required` | `string` \| `null` |
+| `tiers.disagree_ratio` | `number` |
+| `licenses` | `object` |
+| `licenses.a` | `string` \| `null` |
+| `licenses.b` | `string` \| `null` |
+| `licenses.child_min` | `string` \| `null` |
+| `private_parent` | `string` |
+
 ### `POST /api/teach/jobs`
 
 Queue a lesson (train the corrections into a knowledge file)
@@ -1615,7 +1689,7 @@ the x402 flow and blob download
 
 Buy knowledge (x402)
 
-Without a header: 402 + `x-payment-required`. Repeat with the payment proof in `X-PAYMENT`: 200 + manifest (JSON text, `x-content-sha256`).
+Without a header: 402 + `x-payment-required` (base64 JSON `X402Requirement[]`). The requirement carries `requires[]` and `total` — the bases this knowledge needs underneath it and what the family costs — plus `single_use: true`, and in AIN mode `transfer_key`. Repeat with the payment proof in `X-PAYMENT`: 200 + manifest (JSON text, `x-content-sha256`). **local-credit**: `{nonce, from, amount, proof}` where `proof` signs sha256(canonical {resource, amount, nonce, payTo, from}). Amount, nonce, signature and balance are all checked BEFORE the nonce is spent, so a rejected attempt leaves the quote usable. **ain-transfer**: transfer with the requirement's `transfer_key` (= `x402_<nonce>_<resource>`) and send `{txHash, nonce, transfer_key, proof}` where `proof` signs sha256("x402-ain:\<txHash>:\<nonce>") with the PAYING key. A transfer that answers no quote, or a hash presented by anyone but the payer, buys nothing. **Presenting a payment twice is safe**: the payer gets the manifest again with `x-payment-response {"replayed": true}` and is not charged — a lost response is recovered by repeating the request (or `ainize patch download <id>`). Only a stranger replaying someone else's payment is refused.
 
 **Auth** — payment (x402)
 
@@ -1729,6 +1803,46 @@ Download the knowledge body (.npz)
 |---|---|
 | `200` | application/octet-stream |
 | `402` | purchase required |
+
+### `GET /api/patches/{id}/quote`
+
+What this purchase would cost — the item and the bases it needs
+
+Answers `{price, currency, requires[], missing[], unknown[], total, self_contained, export}`. `requires` is the whole base stack, deepest first, each with its price, seller and gateway; `licensed` says whether this node may already use it (holding the bytes is not a licence — a verifier holds everything it scored). `total` counts only what is still to be bought.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | quote | `object` |
+
+### `GET /api/credit/{address}`
+
+Where an address's local credit came from
+
+Local credit is ISSUED by this node — one recorded grant per address, capped at `market.creditGrants` — so a balance is the sum of records that exist, not a number every new keypair is born with. Answers `{balance, grant, would_grant, issued_by, issuance, note}`. It is not money and is worthless on any other node.
+
+**Auth** — none
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `address` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | credit | `object` |
 
 ## Register & sell knowledge
 
@@ -2348,6 +2462,8 @@ Unblock
 
 Buy as this node (x402 handled automatically)
 
+The seller is resolved at buy time — the peers this node currently sees first, the `gateway_url` on the anchor last — so a seller that changed its port is still reachable. The payment is written to a `pending_payments` row BEFORE it is presented; if the answer is lost, the next buy (or `POST /collect`) presents the same payment again instead of paying twice. `with_required` buys the bases this knowledge needs underneath it, deepest first, one settlement each; `max_total` refuses the whole family before any money moves.
+
 **Auth** — operator
 
 **Parameters**
@@ -2361,12 +2477,50 @@ Buy as this node (x402 handled automatically)
 | Field | Type | Description |
 |---|---|---|
 | `apply` | `boolean` | load into the model right after purchase |
+| `with_required` | `boolean` | also buy the bases this knowledge needs underneath it |
+| `max_total` | `number` | refuse when the family total is above this |
 
 **Responses**
 
 | Code | Description | Body |
 |---|---|---|
-| `200` | purchase steps | `object` |
+| `200` | purchase steps, purchases[], total | `object` |
+| `409` | over max_total { quote } · a base this node has never seen |   |
+
+### `POST /api/patches/{id}/collect`
+
+Collect a knowledge this node already paid for — no second payment
+
+The recovery path for a lost manifest, a forgotten body or a purchase that died after the money moved. Presents the recorded payment again (the seller re-issues the manifest against the settlement it already has), or fetches the body over the signed `/p2p/blob` path a settlement already unlocks. 409 when this node has not paid for it — that is what `POST /buy` is for. CLI: `ainize patch download <id>`.
+
+**Auth** — operator
+
+**Parameters**
+
+| Name | In | Type | Required |
+|---|---|---|---|
+| `id` | `path` | `string` | yes |
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | purchase steps (redeemed: true) | `object` |
+| `409` | nothing paid for this knowledge |   |
+
+### `GET /api/me/pending-payments`
+
+Payments that left this node and were never answered with a manifest
+
+Money on the chain and no body. Each row carries the gateway, the resource, the amount and the tx hash; `POST /api/patches/{id}/collect` finishes one.
+
+**Auth** — operator
+
+**Responses**
+
+| Code | Description | Body |
+|---|---|---|
+| `200` | items | `object` |
 
 ### `POST /api/patches/{id}/apply`
 

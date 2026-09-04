@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 28 top-level commands, 81 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 28 top-level commands, 82 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -517,6 +517,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch remove` — Unload it, putting back whatever was underneath
 - `ainize patch stack` — What is loaded in the serving model, bottom first
 - `ainize patch fork` — Copy this knowledge's questions into your own training set, and continue from there
+- `ainize patch merge` — Combine two knowledges into one: what overlaps, what they answer differently, and how to build it
 - `ainize patch tree` — The family tree: what this was built on, what was built on it, and what each one added
 - `ainize patch missing` — Open questions: what people asked this knowledge that it could not answer
 - `ainize patch signals` — How a knowledge is doing: network facts, and this node's last 30 days
@@ -717,6 +718,7 @@ Buy a listed patch via HTTP 402 (x402) and download its body
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
 - **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
 - **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it, deepest first
+- **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
 
 **Examples**
 
@@ -811,6 +813,38 @@ Copy this knowledge's questions into your own training set, and continue from th
 ainize patch fork krx-all-2761 --name "KRX + biotech"
 # then teach your additions on top of it
 ainize teach train <dataset> --on krx-all-2761
+```
+
+### `ainize patch merge`
+
+```bash
+ainize patch merge <a> <b> [options]
+```
+
+Combine two knowledges into one: what overlaps, what they answer differently, and how to build it
+
+**Arguments**
+
+- **`<a>`** (`string`, required)
+- **`<b>`** (`string`, required)
+
+**Options**
+
+- **`--preview`** (`boolean`, default `false`) — only measure: questions, rows and which builds are possible
+- **`--resolve`** (`string`) — JSON file of {"\<question key>": "a" | "b" | "drop" | {"answer": "…"}}
+- **`--tier`** (`"union" | "retrain" | "rebuild"`) — union = just combine (no training) · retrain = teach the disagreeing questions on top of both · rebuild = train everything from the combined questions
+- **`--name`** (`string`) — name for the combined knowledge
+- **`--wait`** (`boolean`, default `false`) — wait for the build and exit with its status
+- **`--key-file`** (`string`) — teaching key file (default: \<home>/teaching-key.json)
+- **`--key`** (`string`) — teaching key as hex / json (or NGRAM_TEACH_KEY)
+
+**Examples**
+
+```bash
+# what combining them would mean
+ainize patch merge krx-all-2761 pixelplus --preview
+# after choosing an answer for each disagreement (unresolved ones print as JSON, exit 3)
+ainize patch merge krx-all-2761 pixelplus --resolve answers.json --tier retrain
 ```
 
 ### `ainize patch tree`
@@ -1277,6 +1311,7 @@ One line to use knowledge: check it is verified → quote the price → pay → 
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
 - **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
 - **`--with-base`** (`boolean`, default `false`) — also buy the bases this knowledge needs underneath it
+- **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
 
 **Examples**
 
