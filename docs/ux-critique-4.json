@@ -124,7 +124,10 @@
    "n": 312,
    "title": "The training set that makes a knowledge worth 25 AIN is a free download, and the promise that buys it — 'I am building on this' — is never checked",
    "flow": "C",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "473d2bc",
+   "fixed_note": "A derive intent is now a recorded commitment: `derive_intents` stores which teaching key took which knowledge's questions and when, the response says what was promised, and the parent's owner can read the list. The promise is enforced — a lesson trained on a set that came from a published knowledge is refused at createJob and again at publish unless it names that knowledge as its base — and the publish sheet says what each access level means before the creator chooses. Node/web 473d2bc, CLI render 69c17fa."
   },
   {
    "n": 270,
@@ -178,7 +181,10 @@
    "n": 299,
    "title": "On a local-ledger node the teacher prices in play money and is later shown '4.9 CREDIT Paid' for credit a browser key can never spend",
    "flow": "B",
-   "severity": "critical"
+   "severity": "critical",
+   "fixed": true,
+   "fixed_by": "473d2bc",
+   "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa."
   },
   {
    "n": 358,
@@ -582,7 +588,10 @@
      "evidence": "Live today on :3422: `/api/info` peers 0, counts listed 0 / verifying 136, `/api/nodes` 1 node, anchor ages 46.9–75.4 h, 62 of the 136 carry a CREDIT price; packages/e2e/results/ux4/teach-triggered-39-nodeu-never-listed.txt; teach-triggered-37-nodeu-teacher-never-listed-en-1280.png.",
      "user_cost": "Teachers set a price, consent to a permanent public record and wait for sales that cannot happen. The price/payout/consent ceremony is theatre on the node that is actually deployed for teaching.",
      "fix": "Before the sheet submits, read `/api/info` (peers with the verifier role vs quorum); if fewer than quorum, replace the price/payout block with 'This node has 0 verifier peers and needs 2 to put anything on sale — your lesson will be recorded but cannot be sold here' and require an explicit 'publish anyway'. On the teacher page and in `teach status`, show 'awaiting verification for 75 h · 0 of 2 verifiers have looked · this node has no verifier peers' from `created_at` and the peer list.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "GET /api/teach/policy, the publish challenge and the teacher profile now carry `verification {quorum, peers, reachable, verifiers}` (peers that answered a recent p2p round and advertise the verifier role; this node's own attestation is reported separately and never counted). Below quorum the publish sheet replaces the 'goes on sale when 2 agree' promise with what will really happen and requires an explicit 'publish anyway', the done state says it too, and the teacher page and `teach status` show per-lesson waiting time and verifier count. Node/web 473d2bc, CLI 69c17fa."
     },
     {
      "n": 299,
@@ -595,7 +604,10 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-05-sheet-text.txt (no play-money note); teach-triggered-17-teacher-after-sale-en-1280.png ('4.9 CREDIT Paid · settled as node credit'); teach-triggered-23-x402-buy-lesson3.txt (a fresh browser key bought the lesson); node-u today: 62 of 136 lessons priced in CREDIT.",
      "user_cost": "A teacher believes they earned money, entered a wallet address that will receive nothing, and cannot move, spend or verify the number anywhere.",
      "fix": "When `info.ledger.kind === 'local'`, render `price.credit_note` under the sheet's price field and in the teacher-page header, relabel 'Paid' as 'Credited on node-a (not withdrawable)', and hide or explain the AIN wallet option; on AIN nodes say 'paid as an AIN transfer to {address}' and show the tx hash per row.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "The publish sheet renders `price.credit_note` under the price field and says where a payout actually lands on a local-ledger node; the teacher page carries the same note and relabels Paid as 'Credited on <node> (not withdrawable)'; `teach status` and `teach publish` print the ledger a price is denominated in. The node reports `ledger {kind, currency}` on the teach policy, the challenge and the teacher profile. Node/web 473d2bc, CLI 69c17fa."
     },
     {
      "n": 300,
@@ -770,7 +782,10 @@
      "evidence": "Code at HEAD: market.ts:550-581, teach.ts:2066, api.ts:223-245, PublishSheet.tsx:61-70, docs/lineage-teach-design.md §6.1/§6.4.",
      "user_cost": "The paid asset is the rows; the rows are free to anyone who says the right word. A creator who priced their knowledge at 25 AIN has given away the material to retrain it, and was never asked; the honest derivative who declares lineage and pays 30 % competes with the one who took the same file and declared nothing.",
      "fix": "Tie the derive token to a commitment: record `{parent_id, child_key, at}` as a `derive` record, and require any anchor whose dataset lists that parent to name it in `parents[]`; make `derivative` access mean 'available to a knowledge that declares this parent', not 'available on request'. Put the access level in the publish sheet with one sentence and a default of `private` unless the teacher opts in, and show 'training set: public / derivative / private' on the knowledge page next to the price.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "A derive intent is now a recorded commitment: `derive_intents` stores which teaching key took which knowledge's questions and when, the response says what was promised, and the parent's owner can read the list. The promise is enforced — a lesson trained on a set that came from a published knowledge is refused at createJob and again at publish unless it names that knowledge as its base — and the publish sheet says what each access level means before the creator chooses. Node/web 473d2bc, CLI render 69c17fa."
     },
     {
      "n": 313,

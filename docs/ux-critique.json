@@ -416,7 +416,10 @@
      "evidence": "Real job e012b848 on :3402: progress {step:3,max_steps:3,hits:2,total:2} then checks.taught {hits:0,total:2} rendered as \"It did not stick well enough (0 of 2)\". guard-card-1280.png, teach-chat-18-card-needs-more.png.",
      "user_cost": "The user watches the model learn it and is then told it learned nothing. It reads as a product bug rather than as the honest gap between training and a live check, so nobody knows whether to retry or give up.",
      "fix": "Label the two numbers differently in LessonCard.tsx: training shows \"Practising... step 3 of 3\" (no hit count, or \"2 of 2 during practice - the real check comes next\"), and the verdict says \"In the live model it answered 0 of 2 - practice looked good but it did not hold\". Never show two bare X-of-Y counts that disagree.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "The training line says the count is practice ('during practice it gets {hits} of {total} right — the live check comes after'), the verdict says it is the live model, and when the two disagree the card explains the gap instead of printing two bare X-of-Y counts."
     },
     {
      "n": 21,
@@ -551,7 +554,10 @@
      "evidence": "Reproduced twice: teach-dataset-04-messy-after.png -> teach-dataset-30-after-keep1.png, and guard-ds-messy.png -> guard-ds-after-keep.png. TeachDatasetPage.tsx keepAnswer (rows_op append).",
      "user_cost": "The user resolves one of five problems and the screen tells them all five are resolved. Four rows leave the dataset with no message, no undo and no entry in the \"lines that were left out\" disclosure, and they train on a dataset they believe is complete.",
      "fix": "Keep rejected source rows attached to the dataset across revisions and keep rendering them (not_parsed rows already survive into the Dropped disclosure). Until that is possible, block the first revision-bumping edit behind a confirm that lists exactly which rows will be dropped.",
-     "effort": "L"
+     "effort": "L",
+     "fixed": true,
+     "fixed_by": "c3433ec",
+     "fixed_note": "teach-datasets.patch() now carries every refused source row into the new revision's report (marked `carried`, keeping its line in the uploaded file) unless THIS edit made it trainable or settled its contradiction, so fixing one flagged row no longer reports the other four as fixed; rendered in the preview table, the counts pill, the CLI table and the API. Node 5bc7bb8, web 473d2bc, CLI 69c17fa, rule + AZ-151 c3433ec."
     },
     {
      "n": 6,
@@ -578,7 +584,10 @@
      "evidence": "guard-ds-binary.png, teach-dataset-05-binary-after.png.",
      "user_cost": "A non-expert who picks the wrong file - or a .csv that is really an .xlsx, the most common mistake in any upload product - is walked to the Train button and burns a scarce training slot on noise. The preview screen’s core promise, \"we checked your file\", is false.",
      "fix": "After parsing, reject (or hard-warn) when the accepted rows fail a printable-text check - more than 5% C0 controls, U+FFFD or private-use characters, or a NUL in the raw bytes - and show the first two rows as read. Also render the latin1 fallback in warning tone rather than as a neutral note (TeachDatasetPage.tsx:360).",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "parseDataset measures whether what came out of the decoder is text at all (NUL bytes, C0/C1 controls, U+FFFD, private-use) and create()/reparse() refuse the upload with the encoding tried, the measured ratio and the first two rows as read; the browser makes the same measurement before uploading, and a latin1 fallback is now a warning rather than a neutral note. Node 5bc7bb8, web 473d2bc."
     },
     {
      "n": 45,

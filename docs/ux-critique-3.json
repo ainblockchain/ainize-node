@@ -102,7 +102,10 @@
      "user_cost": "The one command the help text offers for building on something ('knowledge id(s) loaded while teaching — the lesson then builds on them') fails after doing work, with an `invalid:` label that reads like an internal validation tag. The creator does not learn that the base must be held on the teaching node, nor (item 170) that this node cannot see krx at all.",
      "fix": "In `teachTrain` resolve every `--patch`/`--on` id via `GET /api/patches/:id` before uploading; on 404 print `krx-all-2761 is not on this node. To build on it the node must hold its file: \\`ainize use krx-all-2761 --no-apply\\` (25 AIN), or teach on a node that has it` and exit 2 without uploading. Server side, replace `invalid: unknown knowledge` with a structured `unknown_knowledge { id, hint: 'buy' | 'not_listed' }` and have the CLI render the hint.",
      "effort": "S",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "fixed": true,
+     "fixed_by": "69c17fa",
+     "fixed_note": "contextTargets now answers `unknown_knowledge` (typo or a knowledge this node has never seen — deliberately also what a stranger gets for a private draft) or `knowledge_not_held` (listed here, file missing), each with a hint the browser and the CLI render as a remedy; `teach train` resolves every --patch/--on id through the new GET /api/teach/bases/:id BEFORE uploading and exits 2 without the side effect. Node 473d2bc, CLI 69c17fa."
     },
     {
      "n": 172,
@@ -332,7 +335,10 @@
      "user_cost": "The one number the teacher is asked to accept before an irreversible publish is wrong by 21 points of the price; nothing says which knowledge takes the 30 % or that both loaded knowledges will be paid; publishers undercut the base by accident or give the derivative away while the record says the base is credited.",
      "fix": "Add `split_preview` to `GET /api/teach/jobs/:id/publish-challenge` (and to `patch get` for drafts): `royaltySplit` on a unit price with names. Render the design's SC-8 `teach.pub.money` — 'Every sale: 30 % to the creators of pixel-base, pixel-sa · 49 % to you · 21 % to node-a' — drop the 'if you ticked' clause when no parents are recorded, show 'Built on {name} · sells for {price}' above the price field with a live payout line under it, and default the price to the parent's price (or the node default) when parents exist. Print the same computed percentages in `ainize publish` before announcing and on the child page instead of the raw contributor share.",
      "effort": "M",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "fixed": true,
+     "fixed_by": "473d2bc",
+     "fixed_note": "GET /api/teach/jobs/:id/publish-challenge returns `split_preview`: the node runs the same royaltySplit that settles a sale, on a unit price, with the parents named and priced. The sheet renders the real percentages and the amounts at the typed price, drops the 'if you ticked' hedge on a job whose parents it knows, and defaults the price to the parent's; `ainize teach publish` prints the same numbers. Node/web 473d2bc, CLI 69c17fa."
     },
     {
      "n": 187,
@@ -1084,7 +1090,10 @@
      "user_cost": "The cron job stops one step short every day: someone has to open /teach/lesson/<id>, type a name and price, tick two boxes and click Publish at 3 a.m. or at breakfast, so 'bake and share every morning' is not automatable through the door the docs advertise (`ainize teach dataset ./questions.csv --train` is the one-liner on /docs).",
      "fix": "Add `ainize teach publish <job-id> --name … [--price --license --description --payout <addr>|none] --consent-permanent --consent-rights [--json]`: GET `/api/teach/jobs/:id/publish-challenge` (signed v2 header), sign `claim` with the teaching key via `signMessage`, POST `/publish`, print `published as <patch_id> (ANNOUNCED|PENDING_REVIEW)` and emit `{patch_id, status, url}` under `--json`; exit 3 when the key file is missing, exit 1 on `job_not_ready` with the lesson's status. Add the command to openapi.ts's CLI table and to the READY hint (design §13).",
      "effort": "M",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "69c17fa",
+     "fixed_note": "`ainize teach publish <job-id> --name … [--price --license --payout --access] --consent-permanent --consent-rights` fetches the challenge, signs the claim with the teaching key the CLI already holds, posts the publish and prints the patch id, the real split, the ledger and the verifier reach; the two consents are never defaulted, and the READY hint and the CLI reference name the command."
     },
     {
      "n": 239,
@@ -1098,7 +1107,10 @@
      "user_cost": "A cron line `ainize teach train today.jsonl --wait && ainize teach publish …` proceeds on a failed bake; a script keying on `job.checks.ok` treats a lesson that learned 0 of 18 sentences as a success.",
      "fix": "In `teachTrain` after `waitForJob` map status → exit code (READY 0; NEEDS_MORE 4; FAILED/CANCELLED/EXPIRED 5; REJECTED 6; timeout 7; READY-unchecked 8) via `process.exitCode` and document them in `--help`. Rename the rendered line to `side-effect check  passed` and add `lesson  did not stick (0/18) — NEEDS_MORE` first when status ≠ READY; in JSON add `ok: status === 'READY' && checks.executed`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "69c17fa",
+     "fixed_note": "`teach train --wait` maps the terminal status to an exit code (0 ready · 4 NEEDS_MORE · 5 failed/cancelled/expired · 6 rejected · 7 timeout · 8 ready-but-unmeasured), --json carries `ok`, and the rendered line no longer prints a green `checks passed` over `taught 0/18`: whether the LESSON stuck is stated first, and `checks.ok` is labelled `side-effect check`."
     },
     {
      "n": 240,
