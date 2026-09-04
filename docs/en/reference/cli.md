@@ -25,8 +25,9 @@ These are accepted by every command.
 
 - **`--home`** (`string`) — node home directory (NGRAM_HOME)
 - **`--node`** (`string`) — node API URL (default: http://localhost:\<config port>)
-- **`--json`** (`boolean`, default `false`) — machine-readable JSON output
-- **`--quiet`** (`boolean`, default `false`) — suppress output
+- **`--json`** (`boolean`, default `false`) — machine-readable JSON output — one document per command, errors included, on failure to stderr
+- **`--quiet`** (`boolean`, default `false`) — print nothing but the id of whatever was created or changed
+- **`--wide`** (`boolean`, default `false`) — do not fit tables to the terminal width (piped output is never fitted)
 - **`--help`, `-h`** (`boolean`) — print the help for a command and exit
 - **`--version`** (`boolean`) — print the CLI version and exit
 
@@ -268,10 +269,10 @@ Start the node (foreground unless --detach)
 
 **Options**
 
-- **`--port`** (`number`)
+- **`--port`** (`number`) — HTTP port for this run (default: the port in config.json)
 - **`--peer`** (`string[]`) — extra peer URL(s)
-- **`--roles`** (`string`)
-- **`--public-url`** (`string`)
+- **`--roles`** (`string`) — comma list of seller,verifier,serving,gateway for this run (default: the config value)
+- **`--public-url`** (`string`) — URL peers should reach this node at — an address on this machine is useless to them (default: the config value)
 - **`--detach`, `-d`** (`boolean`, default `false`) — run in the background (pid in NGRAM_HOME/node.pid)
 
 **Examples**
@@ -319,11 +320,11 @@ Show node events
 
 **Options**
 
-- **`--follow`, `-f`** (`boolean`, default `false`)
+- **`--follow`, `-f`** (`boolean`, default `false`) — keep printing events as they happen (Ctrl-C to stop)
 - **`--patch`** (`string`) — only events of a patch
 - **`--kind`** (`"blob" | "branch" | "buy" | "challenge" | "config" | "drive" | "node" | "p2p" | "patch" | "payout" | "publish" | "runtime" | "seed" | "settings" | "teach" | "trade" | "usage" | "verifier" | "verify"`) — only this kind of event
 - **`--level`** (`"debug" | "info" | "warn" | "error"`) — this level and worse (warn shows warn + error)
-- **`--limit`** (`number`, default `100`)
+- **`--limit`** (`number`, default `100`) — how many past events to print, newest last
 
 **Examples**
 
@@ -346,7 +347,7 @@ Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic bra
 - **`--real`** (`boolean`, default `true`) — register real patches from the runtime repo
 - **`--synthetic`** (`boolean`, default `false`) — create synthetic law/KR vs law/US demo patches
 - **`--prototype`** (`boolean`, default `false`) — import the reference prototype ledger
-- **`--announce`** (`boolean`, default `true`)
+- **`--announce`** (`boolean`, default `true`) — announce the seeded knowledge on the ledger (--no-announce leaves drafts)
 
 ## `ainize nodes`
 
@@ -537,13 +538,13 @@ List patches in the catalog
 **Options**
 
 - **`--status`** (`string`) — comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)
-- **`--model`** (`string`)
+- **`--model`** (`string`) — only knowledge for this model id_M (e.g. Qwen3.8-Flash-Next)
 - **`--schema`** (`string`) — benchmark schema
-- **`--branch`** (`string`)
-- **`--author`** (`string`)
+- **`--branch`** (`string`) — only knowledge on this track (see `ainize branch ls`)
+- **`--author`** (`string`) — only knowledge published by this node address
 - **`--q`** (`string`) — text search
-- **`--sort`** (`"latest" | "popular" | "price" | "rows"`, default `"latest"`)
-- **`--limit`** (`number`, default `100`)
+- **`--sort`** (`"latest" | "popular" | "price" | "rows"`, default `"latest"`) — newest first, most sold, cheapest, or biggest
+- **`--limit`** (`number`, default `100`) — how many rows
 - **`--mine`** (`boolean`, default `false`) — only my patches (needs login)
 - **`--drafts`** (`boolean`, default `false`) — include my drafts (needs login)
 
@@ -573,17 +574,17 @@ Register a .npz patch body as a draft (and optionally announce it)
 
 **Options**
 
-- **`--name`** (`string`, required)
+- **`--name`** (`string`, required) — what buyers see in the catalogue
 - **`--model`** (`string`, required) — target model id_M
 - **`--benchmark`** (`string`, required) — benchmark JSON file or inline JSON ({schema, queries, format, samples})
-- **`--id`** (`string`)
-- **`--price`** (`string`)
-- **`--description`** (`string`)
-- **`--parents`** (`string`) — comma list of parent patch ids (lineage/royalty)
-- **`--branch`** (`string`)
-- **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx)
-- **`--license`** (`string`)
-- **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`)
+- **`--id`** (`string`) — catalog id — permanent (default: a slug of --name)
+- **`--price`** (`string`) — price per download in this node's currency (default: `ainize config get market.defaultPrice`); editable while it is a draft, fixed for good at announce
+- **`--description`** (`string`) — one or two sentences about what it knows
+- **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) of every sale of this one
+- **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
+- **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
+- **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
+- **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`) — how buyers are charged (default: per_download)
 - **`--contributor`** (`string[]`) — data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
@@ -614,11 +615,11 @@ Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce,
 
 - **`--recipe`** (`string`, required) — recipe.json downloaded with the lesson (benchmark, model, facts)
 - **`--id`** (`string`) — draft id (default: the lesson's draft id, taught-\<slug>)
-- **`--name`** (`string`)
+- **`--name`** (`string`) — name for the draft (default: the lesson's own name)
 - **`--model`** (`string`) — target model id_M when the recipe names none
-- **`--price`** (`string`)
-- **`--license`** (`string`)
-- **`--description`** (`string`)
+- **`--price`** (`string`) — price if you later publish it (default: this node's market.defaultPrice)
+- **`--license`** (`string`) — licence for the draft: an SPDX id or free text
+- **`--description`** (`string`) — one or two sentences about what it knows
 
 **Examples**
 
@@ -698,7 +699,7 @@ Dispute a verification: takes the knowledge off sale until a verifier re-runs it
 
 **Options**
 
-- **`--reason`** (`string`, required)
+- **`--reason`** (`string`, required) — why, in one line — it goes on the public record next to your address
 
 ### `ainize patch buy`
 
@@ -828,8 +829,8 @@ Combine two knowledges into one: what overlaps, what they answer differently, an
 
 **Arguments**
 
-- **`<a>`** (`string`, required)
-- **`<b>`** (`string`, required)
+- **`<a>`** (`string`, required) — the first knowledge
+- **`<b>`** (`string`, required) — the second one — where they disagree, this one is the alternative answer
 
 **Options**
 
@@ -890,7 +891,7 @@ Open questions: what people asked this knowledge that it could not answer
 
 - **`--kind`** (`"own_miss" | "preflight" | "free_wrong" | "request" | "gap"`) — only one source
 - **`--all`** (`boolean`, default `false`) — include the ones a later knowledge already answered
-- **`--limit`** (`number`, default `50`)
+- **`--limit`** (`number`, default `50`) — how many questions to print
 
 **Examples**
 
@@ -980,13 +981,13 @@ One line to sell knowledge: register a .npz + benchmark and announce it (the net
 - **`--name`** (`string`, required) — human name of the knowledge
 - **`--model`** (`string`, required) — target model id_M (e.g. Qwen3.8-Flash-Next)
 - **`--benchmark`** (`string`, required) — bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}
-- **`--price`** (`string`) — price in the node currency (AIN or node credit)
-- **`--id`** (`string`)
-- **`--description`** (`string`)
-- **`--parents`** (`string`) — comma list of source knowledge ids (creators get a revenue share)
-- **`--branch`** (`string`)
-- **`--topic`** (`string`)
-- **`--license`** (`string`)
+- **`--price`** (`string`) — price per download in the node currency, AIN or node credit (default: `ainize config get market.defaultPrice`); it can be changed while it is a draft and is fixed for good at announce
+- **`--id`** (`string`) — catalog id — permanent (default: a slug of --name)
+- **`--description`** (`string`) — one or two sentences about what it knows
+- **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) out of every sale of this one
+- **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
+- **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
+- **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
 - **`--announce`** (`boolean`, default `true`) — announce immediately (--no-announce keeps a draft)
 - **`--supersede`** (`string[]`) — the listing(s) of yours this publish may retire (required when it would retire any)
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
@@ -1388,7 +1389,7 @@ List records
 **Options**
 
 - **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire"`) — only this kind of record
-- **`--limit`** (`number`, default `50`)
+- **`--limit`** (`number`, default `50`) — how many records, newest last
 
 ### `ainize ledger verify`
 
@@ -1458,7 +1459,7 @@ Create a branch
 
 **Options**
 
-- **`--description`** (`string`)
+- **`--description`** (`string`) — what this track is for, in one line
 - **`--context`** (`string[]`) — k=v routing attributes (e.g. jurisdiction=KR)
 - **`--patch`** (`string[]`) — patch id(s) in the branch
 
@@ -1478,8 +1479,8 @@ Add knowledge to a track you own (verified knowledge only)
 
 **Arguments**
 
-- **`<name>`** (`string`, required)
-- **`<patchId>`** (`string`, required)
+- **`<name>`** (`string`, required) — the track (see `ainize branch ls`)
+- **`<patchId>`** (`string`, required) — the knowledge to add — every subscriber buys and loads it
 
 **Options**
 
@@ -1594,9 +1595,9 @@ This is the default subcommand: `ainize payouts` runs it without naming `ls`.
 
 **Options**
 
-- **`--status`** (`"pending" | "paid" | "failed"`)
+- **`--status`** (`"pending" | "paid" | "failed"`) — only payouts in this state
 - **`--address`** (`string`) — only this recipient
-- **`--limit`** (`number`)
+- **`--limit`** (`number`) — how many rows (default: all of them)
 
 **Examples**
 
@@ -1614,7 +1615,7 @@ Retry one failed / pending payout now
 
 **Arguments**
 
-- **`<id>`** (`number`, required)
+- **`<id>`** (`number`, required) — the payout row id (`ainize payouts ls`)
 
 ## `ainize drive`
 
@@ -1642,7 +1643,7 @@ Drive status (pairing, agent, files)
 
 **Options**
 
-- **`--files`** (`boolean`, default `false`)
+- **`--files`** (`boolean`, default `false`) — also list the files in the drive folder
 
 ### `ainize drive up`
 
@@ -1728,7 +1729,7 @@ Chain health and last block
 
 **Options**
 
-- **`--provider`** (`string`)
+- **`--provider`** (`string`) — AIN JSON-RPC URL to ask (default: the one in config.json)
 
 ### `ainize chain fund`
 
@@ -1740,12 +1741,12 @@ Transfer AIN from the local genesis account (local chain only)
 
 **Arguments**
 
-- **`<address>`** (`string`, required)
-- **`[amount]`** (`number`, default `1000`)
+- **`<address>`** (`string`, required) — the AIN address to credit (`ainize keys show`)
+- **`[amount]`** (`number`, default `1000`) — how much AIN
 
 **Options**
 
-- **`--provider`** (`string`)
+- **`--provider`** (`string`) — AIN JSON-RPC URL to send it through (default: the one in config.json)
 
 ### `ainize chain setup`
 

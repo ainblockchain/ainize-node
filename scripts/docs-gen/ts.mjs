@@ -46,10 +46,24 @@ const unwrapExpr = (n) => {
   }
 };
 
+/** The name the CLI is installed as — the same substitution yargs makes for `$0` (packages/cli/src/context.ts). */
+const PROG_NAME = 'ainize';
+
 /** The JS value of a literal expression, or an `Unresolved` carrying its source text. */
 export function literal(node) {
   const n = unwrapExpr(node);
   if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+  // `describe: `knowledge id (see \`${PROG} patch ls\`)`` — yargs expands `$0` in a usage line and in an example's
+  // command, and nowhere else (item 113), so the describes that name the binary interpolate PROG instead. It is the
+  // one identifier a declaration may interpolate; anything else stays unresolved and stops the generator.
+  if (ts.isTemplateExpression(n)) {
+    let out = n.head.text;
+    for (const span of n.templateSpans) {
+      if (!ts.isIdentifier(span.expression) || span.expression.text !== 'PROG') return new Unresolved(n.getText());
+      out += PROG_NAME + span.literal.text;
+    }
+    return out;
+  }
   if (ts.isNumericLiteral(n)) return Number(n.text.replace(/_/g, ''));
   if (n.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (n.kind === ts.SyntaxKind.FalseKeyword) return false;
