@@ -831,6 +831,8 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/teach/jobs/:id', wrap(async (req) => {
     const t = needTeach(); const j = jobOr404(t, req.params.id as string);
     const address = teacherOf(req);
+    // warms the catalog cache the view reads synchronously, so "Built on {name}" is a name and not an id
+    if (j.bases?.length) await market.catalog().catch(() => undefined);
     return { job: t.isOwner(j, address) || isOperator(req) ? t.view(j) : t.publicView(j) };
   }));
   router.delete('/api/teach/jobs/:id', wrap(async (req) => { const { t, j, operator } = ownerJob(req, req.params.id as string); return t.cancel(j, operator ? 'operator' : 'owner'); }));

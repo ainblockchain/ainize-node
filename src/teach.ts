@@ -1087,7 +1087,13 @@ export class TeachWorker {
     const out: TeachJob = {
       id: j.id, status: j.status as TeachStatus, contributor: { address: j.contributor, ...(j.contributor_name ? { name: j.contributor_name } : {}) },
       context_patch_ids: j.context, builds_on_context: j.builds_on, facts: j.facts as TeachFact[], name: j.name ?? undefined,
-      ...(j.bases ? { bases: j.bases.map((b) => { const e = this.market.catalogSync().find((x) => x.anchor.id === b.patch_id); return { patch_id: b.patch_id, sha256: b.sha256, ...(e ? { name: e.anchor.name, status: e.status } : {}) }; }) } : {}),
+      ...(j.bases ? { bases: j.bases.map((b) => {
+        // a base is usually a listed knowledge, but Story A3's base is the visitor's OWN draft — the copy has to be
+        // able to say "not published yet ({status})", so drafts are looked up too
+        const e = this.market.catalogSync().find((x) => x.anchor.id === b.patch_id);
+        const draft = e ? null : this.store.getDraft(b.patch_id);
+        return { patch_id: b.patch_id, sha256: b.sha256, ...(e ? { name: e.anchor.name, status: e.status } : draft ? { name: draft.anchor.name, status: 'DRAFT' } : {}) };
+      }) } : {}),
       ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}),
       ...(j.bases?.length ? { inherited_rows: this.knownRowsOf(j), changed_rows: j.facts.filter((f) => f.replaces).length } : {}),
       ...(j.derivation ? { derivation: j.derivation } : {}), ...(j.dataset_pub ? { dataset_pub: j.dataset_pub } : {}),

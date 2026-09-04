@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from 'node:path';
 import { isAcceptedRowStatus, type TeachConfig, type TeachDataset, type TeachDatasetRow, type TeachDatasetSource, type TeachDatasetSummary } from '@ngram/core';
 import { TeachError } from './teach-error.js';
-import { buildReportJson, canonicalBytes, canonicalJsonl, parseDataset, readCanonicalJsonl, type CanonicalRow, type ParseOptions, type ParseResult } from './teach-dataset.js';
+import { buildReportJson, canonicalBytes, canonicalJsonl, parseDataset, readCanonicalJsonl, rowRefPatch, type CanonicalRow, type ParseOptions, type ParseResult } from './teach-dataset.js';
 import { TEACH_SAMPLES, sampleOf } from './teach-samples.js';
 import type { Store, TeachDatasetRecord } from './store.js';
 
@@ -215,9 +215,11 @@ export class TeachDatasets {
       sha256: sha, revision: 1, rows: parsed.rows.length, invalid_rows: parsed.summary.rejected, size_bytes: bytes.length,
       source_bytes: sourceBytes ? sourceBytes.length : null, source_name: input.filename ?? null, source_sha256: sourceBytes ? sha256(sourceBytes) : null,
       dir, summary: parsed.summary, parent_dataset: input.parentDataset ?? null,
-      parent_patch: input.parentPatch ?? null, parent_dataset_sha: input.parentDatasetSha ?? null,
+      // A set downloaded, edited and uploaded again still carries its rows' `from` pointers — they are inside the
+      // hashed bytes — so it is still a copy of that knowledge, and the card says so without being told.
+      parent_patch: input.parentPatch ?? soleParentPatch(parsed.rows), parent_dataset_sha: input.parentDatasetSha ?? null,
       // counted from the bytes that were actually accepted, never from what the caller claimed
-      inherited_rows: input.parentPatch ? parsed.rows.filter((r) => r.from ?? r.replaces).length : null,
+      inherited_rows: input.parentPatch ?? soleParentPatch(parsed.rows) ? parsed.rows.filter((r) => r.from).length : null,
       retention: input.retention ?? 'keep',
       created_at: now, updated_at: now, expires_at: now + limits.ttlDays * 86_400_000, deleted_at: null,
     };
@@ -487,6 +489,13 @@ export function applyRowsOp(rows: CanonicalRow[], op: RowsOp): CanonicalRow[] {
   // keeps the trainer from being asked to hold both answers at once.
   out[op.index] = ref && !untouched ? { ...row, replaces: ref } : ref ? { ...row, ...(prev.from ? { from: prev.from } : {}), ...(prev.replaces ? { replaces: prev.replaces } : {}) } : row;
   return out;
+}
+
+/** The one knowledge every provenance pointer in these rows names, or null (none, or more than one — a merge, later). */
+function soleParentPatch(rows: CanonicalRow[]): string | null {
+  const ids = new Set<string>();
+  for (const r of rows) { const p = rowRefPatch(r.from) ?? rowRefPatch(r.replaces); if (p) ids.add(p); }
+  return ids.size === 1 ? [...ids][0] : null;
 }
 
 function defaultName(source: TeachDatasetSource, filename: string | undefined, now: number): string {
