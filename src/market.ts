@@ -16,11 +16,42 @@ import {
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
+import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult } from './runtime.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
 import type { Store, BlobRow, EventRow } from './store.js';
 import { Payouts } from './payouts.js';
+
+/** Depth cap of the family tree walk (design §12.5 asks for ≤ 8 hops in either direction). */
+export const TREE_MAX_DEPTH = 8;
+
+/** One knowledge in the family tree (design §12.5). `missing` = it exists as an id only — unknown here, or not for this caller. */
+export interface TreeNode {
+  id: string; name: string; missing?: true;
+  author?: string; author_name?: string | null; taught_by?: string | null;
+  contributors: { address: string; name: string | null; role?: string; share?: number }[];
+  status?: string; superseded_by: string[]; supersedes: string[];
+  branch?: string | null; tracks?: string[];
+  derivation?: PatchAnchor['derivation'] | null;
+  base_stack: string[]; export?: 'delta' | 'squash' | null;
+  legacy?: boolean;
+  dataset?: { sha256: string; rows: number; access: DatasetAccess; license: string | null } | null;
+  /** SC-9 "+{m} questions · {k} changed · {rows} rows ({new} new)". */
+  added: { questions: number; changed: number; removed: number; rows: number; new: number };
+  signals: Record<string, number>;
+  /** 0 = the knowledge asked about; negative = an ancestor, positive = a descendant. */
+  depth: number;
+}
+export interface TreeEdge { from: string; to: string; kind: 'extend' | 'update' | 'contradict' | 'merge' | 'version' | 'track' | 'declared' }
+export interface LineageTree {
+  root: string; depth: number; dir: 'up' | 'down' | 'both';
+  nodes: TreeNode[]; edges: TreeEdge[];
+  /** true when the walk stopped at the depth cap with more to see. */
+  truncated: boolean;
+  family: { sales: number; knowledges: number; authors: number };
+  money: { seller_pct: number; lineage_pct: number; seller_name: string | null; recipients: { address: string; pct: number; name: string | null }[] };
+}
 
 export interface CreateDraftInput {
   id?: string;
@@ -145,6 +176,8 @@ export interface ChatOpts {
 
 /** The answer(s) of one live test, plus what was loaded and how it scored. */
 export interface ChatOutcome {
+  /** SC-13: the handle *Mark wrong* sends back. Lives in memory on the node that answered the turn (see `rememberTurn`). */
+  turn_id: string;
   patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
   applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
   applied: { patch_id: string; applied_ms: number | null; was_applied: boolean; base?: boolean }[];
@@ -1248,11 +1281,19 @@ export class Market {
           { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1, sample_index: sample?.index ?? null });
         // materialised at write time: the counters survive the 90-day event retention
         if (patched) this.store.bumpSignals(t.id, { tests: 1, hits: hit === true ? 1 : 0, misses: hit === false ? 1 : 0, unscored: hit === null ? 1 : 0 }, { visitor: opts.visitor });
+        // SC-12 *own*: a question this knowledge PUBLISHES and just got wrong on this node. The prompt is already on
+        // the record, so the row keeps only its index — nothing new about the visitor or the text is stored.
+        if (patched && hit === false && sample) this.store.bumpIssue(t.id, 'own_miss', this.questionCluster(sample.prompt), { sample_index: sample.index, visitor: opts.visitor });
       }
       const sum = appliedMs.filter((x): x is number => x !== null);
       const anyHit = Object.values(hits);
+      // SC-13: the id the visitor's *Mark wrong* comes back with. The question itself is held here, in memory, keyed
+      // to the visitor who asked it — so a feedback call needs no prompt in its body (nobody can attribute text to a
+      // knowledge they never asked) and nothing is written to the database unless they press *Share*.
+      const turnId = this.rememberTurn(opts.visitor, lastUser, targets.filter((t) => !t.base).map((t) => t.id), hits);
       if (baseOnly) this.log('info', 'usage', `live test (base model, nothing loaded) by ${opts.visitor.slice(0, 24)}`, undefined, { visitor: opts.visitor, mode });
       return {
+        turn_id: turnId,
         patch_id: ids[0] ?? '', patch_ids: ids, mode, base, patched,
         applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0] ?? false, model: st.model,
         benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
@@ -1285,6 +1326,258 @@ export class Market {
 
   /** Ids the operator keeps loaded in the serving model (they colour the "before" answer of every live test). */
   pinnedPatchIds(): string[] { return this.store.listApplied().map((a) => a.patch_id); }
+
+  // ------------------------------------------------------------------ chat turns kept for feedback (SC-13)
+  /**
+   * The last few thousand live-test turns, in memory only: `turn_id → { visitor, prompt, patch_ids, hits }`.
+   * The prompt is held so *Mark wrong* can name the question WITHOUT the browser sending text the node would have to
+   * trust, and it is written to the database only when the visitor chooses *Share* (§10 privacy preconditions). A
+   * restart forgets them, which is the honest cost of not persisting what nobody consented to keep.
+   */
+  private turns = new Map<string, { visitor: string; prompt: string; patch_ids: string[]; hits: Record<string, boolean | null>; at: number }>();
+  private rememberTurn(visitor: string, prompt: string, patchIds: string[], hits: Record<string, boolean | null>): string {
+    const id = randomBytes(9).toString('hex');
+    if (this.turns.size > 4000) { const cut = Date.now() - 6 * 3600_000; for (const [k, v] of this.turns) if (v.at < cut || this.turns.size > 4000) { this.turns.delete(k); if (this.turns.size <= 3000) break; } }
+    this.turns.set(id, { visitor, prompt, patch_ids: patchIds, hits, at: Date.now() });
+    return id;
+  }
+  /** The turn behind a feedback call — only for the visitor who asked it; anyone else is told it is unknown. */
+  turn(id: string, visitor: string) {
+    const t = this.turns.get(id);
+    return t && t.visitor === visitor ? t : null;
+  }
+
+  // ------------------------------------------------------------------ family tree, signals, open questions (design §5.5, §10, §12.5)
+  /**
+   * The identity two reports of the same question meet on, keyed so it cannot be turned back into the text
+   * (design §10 privacy preconditions): `HMAC(node secret, 'q:' + questionKey(prompt))[:16]`. The key rule is the
+   * parser's (F13), so "the same question" means the same thing here, in a dataset and in `covered_by`.
+   */
+  questionCluster(prompt: string): string {
+    return createHmac('sha256', this.store.visitorSecret()).update(`q:${questionKey(prompt)}`).digest('hex').slice(0, 16);
+  }
+
+  /** Sales that count, as two numbers (all-time and 30 days) — what the shelves and the strip both read. */
+  salesOf(e: CatalogEntry): { sales_all: number; sales_30d: number } {
+    const sales = this.realSales(e);
+    const since = Date.now() - 30 * 86_400_000;
+    return { sales_all: sales.length, sales_30d: sales.filter((s) => s.created_at >= since).length };
+  }
+
+  /** Sales that count as sales (§10): price-0 settlements and the author buying from itself are not demand. */
+  private realSales(e: CatalogEntry): Settlement[] {
+    return e.settlements.filter((s) => Number(s.amount || 0) > 0 && s.buyer?.toLowerCase() !== e.anchor.author.toLowerCase());
+  }
+
+  /** How many nodes (this one included) hold the body — SC-11 "loaded on {l} nodes". */
+  private holderCount(sha: string): number {
+    return new Set([...(this.blobs.has(sha) ? [this.publicUrl] : []), ...this.p2p.holders(sha)]).size;
+  }
+
+  /**
+   * What one knowledge is doing (SC-11). `network` is read from the ledger and the peer table and means the same on
+   * every node; `node` is this node's own 30-day counters and says so — the two are never added together.
+   */
+  async signalsOf(e: CatalogEntry, map?: Map<string, CatalogEntry>): Promise<{ network: Record<string, number | string>; node: Record<string, number> }> {
+    const all = map ?? (await this.entryMap());
+    const sales = this.realSales(e);
+    const since30 = Date.now() - 30 * 86_400_000;
+    const subs = await this.subscriberCount(e.anchor.id);
+    const node = this.store.signals(e.anchor.id, 30);
+    return {
+      network: {
+        sales_all: sales.length, sales_30d: sales.filter((s) => s.created_at >= since30).length,
+        buyers: new Set(sales.map((s) => s.buyer.toLowerCase())).size,
+        revenue: sales.reduce((n, s) => n + Number(s.amount || 0), 0).toFixed(6).replace(/\.?0+$/, '') || '0',
+        loads: this.holderCount(e.anchor.patch_sha256),
+        dataset_loads: e.anchor.dataset?.sha256 ? new Set([...(this.datasets.has(e.anchor.dataset.sha256) ? [this.publicUrl] : []), ...this.p2p.datasetHolders(e.anchor.dataset.sha256)]).size : 0,
+        built_on: e.children.filter((c) => all.has(c)).length,
+        versions: e.superseded_by.length + e.supersedes.length,
+        subscribers: subs,
+        passed: e.passed, quorum: e.quorum,
+      },
+      node: { ...node, open_questions: this.store.listIssues(e.anchor.id, { limit: 500 }).length },
+    };
+  }
+
+  /** Nodes subscribed to any track this knowledge is on (SC-11 "track subscribers"). */
+  private async subscriberCount(patchId: string): Promise<number> {
+    const names = (await this.branches()).filter((b) => b.patch_ids.includes(patchId)).map((b) => b.name);
+    if (!names.length) return 0;
+    const recs = await this.ledger.subscriptions();
+    const state = new Map<string, boolean>();
+    for (const r of recs.sort((a, b) => (a.body.created_at ?? 0) - (b.body.created_at ?? 0))) {
+      if (!names.includes(r.body.branch)) continue;
+      state.set(`${r.body.node.toLowerCase()}|${r.body.branch}`, r.body.action === 'subscribe');
+    }
+    return new Set([...state.entries()].filter(([, on]) => on).map(([k]) => k.split('|')[0])).size;
+  }
+
+  /**
+   * "Doing well this week" (§10): `3·sales7d + 2·builds_on7d + 1·loads + 0.5·tests7d·hit_rate`. Every term but
+   * `loads` is a seven-day count; `loads` is how many nodes hold the body RIGHT NOW, because nothing on this node
+   * records when a peer fetched a body — the score is a ranking, and the strip states the numbers it is made of.
+   */
+  weeklyScore(e: CatalogEntry): number {
+    const since = Date.now() - 7 * 86_400_000;
+    const sales7 = this.realSales(e).filter((s) => s.created_at >= since).length;
+    const s = this.store.signals(e.anchor.id, 7);
+    const builds7 = s.builds_on_jobs + s.derive_fetches;
+    const hitRate = s.tests > 0 ? s.hits / s.tests : 0;
+    return 3 * sales7 + 2 * builds7 + this.holderCount(e.anchor.patch_sha256) + 0.5 * s.tests * hitRate;
+  }
+
+  /** "Most built on" (§10) — children on the ledger plus this node's derive intents, all-time. */
+  builtOnCount(e: CatalogEntry, map: Map<string, CatalogEntry>): number {
+    return e.children.filter((c) => map.has(c)).length + this.store.signals(e.anchor.id, 36_500).derive_fetches;
+  }
+
+  /**
+   * The family tree of one knowledge (design §5.5, §12.5, SC-9): ancestors through `parents[]`, descendants through
+   * `children`, versions through supersede records, and what each node ADDED. Cycle-safe (a peer anchor may claim
+   * any parent), depth-capped, and every node passes through `visible` — a caller who may not see a draft or a test
+   * anchor gets a `{ missing: true }` placeholder in its place rather than a hole in the graph.
+   */
+  async lineageTree(rootId: string, opts: { depth?: number; dir?: 'up' | 'down' | 'both'; visible?: (e: CatalogEntry | undefined) => boolean } = {}): Promise<LineageTree> {
+    const depth = Math.min(TREE_MAX_DEPTH, Math.max(1, Math.trunc(opts.depth ?? 4)));
+    const dir = opts.dir ?? 'both';
+    const map = await this.entryMap();
+    const root = map.get(rootId);
+    if (!root) throw notFound('patch not found');
+    const visible = opts.visible ?? (() => true);
+    const branchOf = await this.branches();
+    const trackOf = (id: string) => branchOf.filter((b) => b.patch_ids.includes(id)).map((b) => b.name);
+    const nodes = new Map<string, TreeNode>();
+    const edges: TreeEdge[] = [];
+    const seen = new Set<string>();
+    let truncated = false;
+
+    const addEdge = (from: string, to: string, kind: TreeEdge['kind']) => {
+      if (edges.some((x) => x.from === from && x.to === to && x.kind === kind)) return;
+      edges.push({ from, to, kind });
+    };
+    const place = (id: string, d: number): TreeNode => {
+      const cur = nodes.get(id);
+      if (cur) { cur.depth = Math.min(cur.depth, d); return cur; }
+      const e = map.get(id);
+      const n: TreeNode = visible(e) ? this.treeNode(e!, map, trackOf(id), d) : { id, name: id, missing: true, depth: d, added: { questions: 0, changed: 0, removed: 0, rows: 0, new: 0 }, signals: {}, base_stack: [], superseded_by: [], supersedes: [], contributors: [] } as TreeNode;
+      nodes.set(id, n);
+      return n;
+    };
+
+    /** kind of the edge parent → child: what the CHILD says it did to that parent, or `declared` when it says nothing. */
+    const edgeKind = (parent: string, child: CatalogEntry): TreeEdge['kind'] => {
+      const d = child.anchor.derivation;
+      if (d && d.bases.some((b) => b.patch_id === parent)) return d.kind === 'transfer' ? 'declared' : d.kind;
+      const p = map.get(parent);
+      if (p && (child.anchor.branch ?? 'main') !== (p.anchor.branch ?? 'main')) return 'track';
+      return 'declared';
+    };
+
+    place(rootId, 0);
+    // ancestors
+    if (dir !== 'down') {
+      const walkUp = (id: string, d: number) => {
+        if (d >= depth) { const e = map.get(id); if (e?.anchor.parents.length) truncated = true; return; }
+        const e = map.get(id);
+        if (!e) return;
+        for (const p of e.anchor.parents) {
+          place(p, -(d + 1));
+          addEdge(p, id, edgeKind(p, e));
+          const key = `up:${p}`;
+          if (seen.has(key)) continue;                 // cycle / diamond guard: an ancestor is walked once
+          seen.add(key);
+          walkUp(p, d + 1);
+        }
+      };
+      walkUp(rootId, 0);
+    }
+    // descendants
+    if (dir !== 'up') {
+      const walkDown = (id: string, d: number) => {
+        const e = map.get(id);
+        if (!e) return;
+        const kids = e.children.filter((c) => map.has(c));
+        if (d >= depth) { if (kids.length) truncated = true; return; }
+        for (const c of kids) {
+          const ce = map.get(c)!;
+          if (!visible(ce) && c !== rootId) continue;    // a stranger is not told a hidden child exists
+          place(c, d + 1);
+          addEdge(id, c, edgeKind(id, ce));
+          const key = `down:${c}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          walkDown(c, d + 1);
+        }
+      };
+      walkDown(rootId, 0);
+    }
+    // versions: a supersede is an edge of its own, in both directions, whatever the parent links say
+    for (const id of [...nodes.keys()]) {
+      const e = map.get(id);
+      if (!e) continue;
+      for (const older of e.supersedes) if (visible(map.get(older))) { place(older, (nodes.get(id)?.depth ?? 0)); addEdge(older, id, 'version'); }
+      for (const newer of e.superseded_by) if (visible(map.get(newer))) { place(newer, (nodes.get(id)?.depth ?? 0)); addEdge(id, newer, 'version'); }
+    }
+
+    const list = [...nodes.values()];
+    const family = list.filter((n) => !n.missing);
+    const sales = family.reduce((n, x) => n + Number(x.signals.sales_all ?? 0), 0);
+    const authors = new Set(family.map((n) => (n.author ?? '').toLowerCase()).filter(Boolean));
+    return {
+      root: rootId, depth, dir, nodes: list, edges, truncated,
+      family: { sales, knowledges: family.length, authors: authors.size },
+      money: this.treeMoney(root, map),
+    };
+  }
+
+  /** SC-9 *Money*: what one sale of the root pays, computed by the real splitter on a unit price (§11). */
+  private treeMoney(root: CatalogEntry, map: Map<string, CatalogEntry>): LineageTree['money'] {
+    const share = this.cfg.market.royaltyShare ?? 0;
+    const split = royaltySplit(root, map, 100, share);
+    const seller = root.anchor.author.toLowerCase();
+    const sellerPct = Number(split[root.anchor.author] ?? split[seller] ?? 0);
+    const others = Object.entries(split).filter(([a]) => a.toLowerCase() !== seller);
+    return {
+      seller_pct: Math.round(sellerPct * 10) / 10,
+      lineage_pct: Math.round(others.reduce((n, [, v]) => n + Number(v), 0) * 10) / 10,
+      recipients: others.map(([address, amount]) => ({ address, pct: Math.round(Number(amount) * 10) / 10, name: map.get([...map.keys()].find((k) => map.get(k)!.anchor.author.toLowerCase() === address.toLowerCase()) ?? '')?.anchor.author_name ?? null })),
+      seller_name: root.anchor.author_name ?? null,
+    };
+  }
+
+  /** One node of the tree: who made it, what it did to its bases, and how it is doing. */
+  private treeNode(e: CatalogEntry, map: Map<string, CatalogEntry>, tracks: string[], depth: number): TreeNode {
+    const a = e.anchor;
+    const provider = (a.contributors ?? []).find((c) => c.role === 'data_provider');
+    const d = a.derivation;
+    const baseRows = (d?.bases ?? []).reduce((n, b) => n + (b.rows || 0), 0);
+    const isDelta = a.base?.export === 'delta';
+    const sales = this.realSales(e);
+    const since30 = Date.now() - 30 * 86_400_000;
+    const node = this.store.signals(a.id, 30);
+    return {
+      id: a.id, name: a.name, author: a.author, author_name: a.author_name ?? null,
+      taught_by: provider?.name ?? null, contributors: (a.contributors ?? []).map((c) => ({ address: c.address, name: c.name ?? null, role: c.role, share: c.share })),
+      status: e.status, superseded_by: e.superseded_by, supersedes: e.supersedes,
+      branch: a.branch ?? null, tracks,
+      derivation: d ?? null, base_stack: (a.base?.stack ?? []).map((b) => b.patch_id), export: a.base?.export ?? null,
+      /** No `derivation` = "declared parent — not trained on top" (§14): the legacy chip, not a claim about training. */
+      legacy: !d && a.parents.length > 0,
+      dataset: a.dataset ? { sha256: a.dataset.sha256, rows: a.dataset.rows, access: accessOf(a), license: a.dataset.license ?? null } : null,
+      added: {
+        questions: d?.added_rows ?? (a.dataset?.rows ?? 0), changed: d?.changed_rows ?? 0, removed: d?.removed_rows ?? 0,
+        rows: a.rows, new: isDelta ? a.rows : Math.max(0, a.rows - baseRows),
+      },
+      signals: {
+        sales_all: sales.length, sales_30d: sales.filter((s) => s.created_at >= since30).length,
+        loads: this.holderCount(a.patch_sha256), built_on: e.children.filter((c) => map.has(c)).length,
+        tests: node.tests, hits: node.hits, passed: e.passed, quorum: e.quorum,
+        open_questions: this.store.listIssues(a.id, { limit: 500 }).length,
+      },
+      depth,
+    };
+  }
 
   // ------------------------------------------------------------------ branches / network
   async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
