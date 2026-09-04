@@ -8,6 +8,14 @@
     ]
   },
   {
+    "group": "튜토리얼",
+    "pages": [
+      { "page": "tutorials/teach-from-a-file", "title": "질문 파일로 가르치기" },
+      { "page": "tutorials/teach-in-chat",     "title": "모델을 바로잡으며 가르치기" },
+      { "page": "tutorials/buy-and-apply",     "title": "남이 공개한 지식 사서 쓰기" }
+    ]
+  },
+  {
     "group": "개념",
     "pages": [
       { "page": "concepts/knowledge-patch",       "title": "지식이란 무엇인가" },

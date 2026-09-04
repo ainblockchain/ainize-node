@@ -8,6 +8,14 @@
     ]
   },
   {
+    "group": "Tutorials",
+    "pages": [
+      { "page": "tutorials/teach-from-a-file", "title": "Teach from a file of questions" },
+      { "page": "tutorials/teach-in-chat",     "title": "Teach by correcting the model" },
+      { "page": "tutorials/buy-and-apply",     "title": "Use knowledge someone else published" }
+    ]
+  },
+  {
     "group": "Concepts",
     "pages": [
       { "page": "concepts/knowledge-patch",       "title": "What a knowledge patch is" },
