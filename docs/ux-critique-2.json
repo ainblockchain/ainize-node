@@ -898,7 +898,7 @@
      "audience": "Knowledge publisher",
      "fixed": true,
      "fixed_by": "94449c5",
-     "fixed_note": "License is a select carrying the teach sheet’s five identifiers with a plain-language gloss each, an \"Other\" free-text escape, and the node’s default terms (detail.ov.license_default itself) shown inline while the field is left empty."
+     "fixed_note": "License is a select carrying the teach sheet’s five identifiers with a plain-language gloss each, an \"Other\" free-text escape, and the node’s default terms (detail.ov.license_default itself) shown inline while the field is left empty. The CLI half of the fix (`--license`’s empty describe in bin.ts:197) is packages/cli and untouched."
     },
     {
      "n": 162,
@@ -913,7 +913,7 @@
      "audience": "Knowledge publisher",
      "fixed": true,
      "fixed_by": "94449c5",
-     "fixed_note": "The price field now shows this node’s own range, median and count from /api/catalog, plus the item on the same subject this one would replace with a button that matches its price; the helper says the price is paid once and frozen at publish."
+     "fixed_note": "The price field now shows this node’s own range, median and count from /api/catalog, plus the item on the same subject this one would replace with a button that matches its price; the helper says the price is paid once and frozen at publish. The CLI half (`--price` describe and naming the 0.1 default in --help) is packages/cli and untouched."
     },
     {
      "n": 163,
@@ -928,7 +928,7 @@
      "audience": "Knowledge publisher",
      "fixed": true,
      "fixed_by": "94449c5",
-     "fixed_note": "Naming parents renders the split as you type — \"2 source knowledge named — 30% of every sale goes to their creators… you keep 70%\" — computed like createDraft (this node’s share, floored by each parent’s promised royalty_share), and an id this node does not know is flagged before the upload."
+     "fixed_note": "Naming parents renders the split as you type — \"2 source knowledge named — 30% of every sale goes to their creators… you keep 70%\" — computed like createDraft (this node’s share, floored by each parent’s promised royalty_share), and an id this node does not know is flagged before the upload. The CLI half (the figure in the `--parents` describe and in the publish confirmation) is packages/cli and untouched."
     },
     {
      "n": 164,
