@@ -423,6 +423,9 @@ export const CLI_REFERENCE = {
       { cmd: 'ainize use <id>', desc: '= patch buy <id> --apply: pay automatically → download → load into the model' },
       { cmd: 'ainize patch buy <id> [--apply] | apply <id> | remove <id>', desc: 'buy / load / unload' },
       { cmd: 'ainize patch forget <id>', desc: 'stop serving the knowledge file from this node (delete the local body)' },
+      { cmd: 'ainize patch tree <id> [--depth 4] [--dir up|down|both]', desc: 'the family tree: what this knowledge was built on, what was built on it, what each one added (+n questions, k changed), and who shares each sale' },
+      { cmd: 'ainize patch missing <id> [--kind own_miss|preflight|free_wrong|request|gap]', desc: 'open questions — what people asked it here that it could not answer. Questions nobody chose to share are counted, not quoted' },
+      { cmd: 'ainize patch signals <id>', desc: 'how it is doing: sales, holders, children and verification from the ledger; live tests, marked-wrong and pre-flight counts from this node\'s last 30 days — the two scopes kept apart' },
     ] },
     { name: 'Publishing knowledge', commands: [
       { cmd: 'ainize publish <file.npz> --name … --model … --benchmark <bench.json> [--price --parents a,b --branch --id --test]', desc: '= patch publish --announce: register and announce at once (the network verifies)' },
