@@ -59,7 +59,9 @@ export interface TeachJobRow {
   /** the training-set choices made at publish: access, licence, notes, declaration, and the sha of the pinned copy */
   dataset_pub: { access: string; license: string; include_notes: boolean; declaration: Record<string, unknown> | null; published_sha256: string } | null;
 }
-export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string }
+export interface TeachFactRow { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean; status?: string;
+  /** Lineage §7.1: this question deliberately CHANGES an inherited answer — `'<base>#<row>'`. It is trained, kept out of the keep-set, and never counted as a regression of the base it overrides. */
+  replaces?: string }
 
 /** One dataset as persisted (teach mode v2). `dir` holds `source.<ext>`, `rows.jsonl` and `report.json`. */
 export interface TeachDatasetRecord {
@@ -70,6 +72,8 @@ export interface TeachDatasetRecord {
   sha256: string; revision: number; rows: number; invalid_rows: number; size_bytes: number;
   source_bytes: number | null; source_name: string | null; source_sha256: string | null;
   dir: string; summary: TeachDatasetSummary | null; parent_dataset: string | null;
+  /** Lineage (design §5.3): the KNOWLEDGE this set was copied out of, the sha of the parent's set, how many of its rows are still here. */
+  parent_patch: string | null; parent_dataset_sha: string | null; inherited_rows: number | null;
   retention: 'keep' | 'delete_after_training';
   created_at: number; updated_at: number; expires_at: number | null; deleted_at: number | null;
 }
@@ -190,6 +194,8 @@ export class Store {
       bases: 'TEXT', mode: 'TEXT', export_mode: 'TEXT', derivation: 'TEXT', parent_check: 'TEXT', reversibility_ok: 'INTEGER',
       snapshot_sha256: 'TEXT', dataset_pub: 'TEXT',
     });
+    // lineage §5.3: a training set can be a copy of a published KNOWLEDGE's set, and remembers which one
+    add('teach_datasets', { parent_patch: 'TEXT', parent_dataset_sha: 'TEXT', inherited_rows: 'INTEGER' });
     // published training sets held by this node (design §5.2) — content-addressed like `blobs`
     this.db.exec(`CREATE TABLE IF NOT EXISTS dataset_blobs (sha256 TEXT PRIMARY KEY, rows INTEGER NOT NULL, size_bytes INTEGER NOT NULL, access TEXT NOT NULL,
       license TEXT NOT NULL, patch_id TEXT, pinned_at REAL NOT NULL)`);
@@ -442,18 +448,22 @@ export class Store {
       sha256: r.sha256 as string, revision: r.revision as number, rows: r.rows as number, invalid_rows: (r.invalid_rows as number) ?? 0, size_bytes: (r.size_bytes as number) ?? 0,
       source_bytes: (r.source_bytes as number) ?? null, source_name: (r.source_name as string) ?? null, source_sha256: (r.source_sha256 as string) ?? null,
       dir: r.dir as string, summary: j(r.summary), parent_dataset: (r.parent_dataset as string) ?? null,
+      parent_patch: (r.parent_patch as string) ?? null, parent_dataset_sha: (r.parent_dataset_sha as string) ?? null,
+      inherited_rows: (r.inherited_rows as number) ?? null,
       retention: ((r.retention as string) ?? 'keep') as 'keep' | 'delete_after_training',
       created_at: r.created_at as number, updated_at: r.updated_at as number, expires_at: (r.expires_at as number) ?? null, deleted_at: (r.deleted_at as number) ?? null,
     };
   }
   insertTeachDataset(d: Omit<TeachDatasetRecord, 'updated_at'> & { updated_at?: number }) {
     this.db.prepare(`INSERT INTO teach_datasets (id, owner, ip, name, status, source, format, encoding, layout, delimiter, has_header, columns, sha256, revision, rows, invalid_rows,
-      size_bytes, source_bytes, source_name, source_sha256, dir, summary, parent_dataset, retention, created_at, updated_at, expires_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      size_bytes, source_bytes, source_name, source_sha256, dir, summary, parent_dataset, parent_patch, parent_dataset_sha, inherited_rows,
+      retention, created_at, updated_at, expires_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(d.id, d.owner, d.ip, d.name, d.status, d.source, d.format, d.encoding, d.layout, d.delimiter,
         d.has_header === null ? null : d.has_header ? 1 : 0, d.columns ? JSON.stringify(d.columns) : null,
         d.sha256, d.revision, d.rows, d.invalid_rows, d.size_bytes, d.source_bytes, d.source_name, d.source_sha256,
-        d.dir, d.summary ? JSON.stringify(d.summary) : null, d.parent_dataset, d.retention, d.created_at, d.updated_at ?? Date.now(), d.expires_at, d.deleted_at);
+        d.dir, d.summary ? JSON.stringify(d.summary) : null, d.parent_dataset, d.parent_patch ?? null, d.parent_dataset_sha ?? null, d.inherited_rows ?? null,
+        d.retention, d.created_at, d.updated_at ?? Date.now(), d.expires_at, d.deleted_at);
   }
   updateTeachDataset(id: string, patch: Partial<Omit<TeachDatasetRecord, 'id' | 'updated_at'>>) {
     const cols: string[] = []; const args: (string | number | null)[] = [];

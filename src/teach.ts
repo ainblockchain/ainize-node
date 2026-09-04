@@ -27,15 +27,17 @@ import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import type { Caller, Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
-import { TeachDatasets } from './teach-datasets.js';
-import { canonicalBytes, endingKey, readCanonicalJsonl, type CanonicalRow } from './teach-dataset.js';
+import { TeachDatasets, type DatasetView } from './teach-datasets.js';
+import { canonicalBytes, endingKey, readCanonicalJsonl, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
 import { anchorRecipe, buildRecipeJson, lessonBenchmark, LOCAL_RUN_REPO_URL, renderRunLocally, type LessonMeta, type TrainerRecipe } from './teach-recipe.js';
 
 // ------------------------------------------------------------------ public types (spec §6.5)
 export type TeachStatus = 'QUEUED' | 'PREFLIGHT' | 'LOADING' | 'TRAINING' | 'EXPORTED' | 'CHECKING' | 'READY' | 'NEEDS_MORE'
   | 'FAILED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'ANNOUNCED' | 'EXPIRED';
 
-export interface TeachFact { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean }
+export interface TeachFact { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean;
+  /** Set when this question replaces an inherited answer (`'<base>#<row index>'`) — SC-5 "Changed", SC-7 "changes k". */
+  replaces?: string }
 export interface TeachProgress {
   step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; started_at?: number;
   /** Which stage the rail is on. The big bar is always the real `step / max_steps` inside `train` — never a computed percent. */
@@ -75,7 +77,15 @@ export interface TeachChecks {
    * Lineage (design §7.6): per knowledge in the stack, IN DEPLOYMENT ORDER (bases first, comparison loads after),
    * its own benchmark questions re-asked with the lesson ON TOP. `parent_regression` above is the sum.
    */
-  parent_check?: { patch_id: string; hit: number; total: number; failed: number[]; simulated?: boolean }[];
+  parent_check?: {
+    patch_id: string; hit: number; total: number; failed: number[]; simulated?: boolean;
+    /** §7.6 step 3 — the same questions asked with the base loaded and the lesson NOT on top yet. */
+    base_hit?: number; base_total?: number;
+    /** Questions the BASE itself does not answer on this node: left out of `total`, so the child is not blamed for them. */
+    base_failed?: number[];
+    /** Questions this lesson deliberately replaces (`replaces`): a different answer here is the point, not a regression. */
+    overridden?: number;
+  }[];
   /** null until the runtime journal (L2) can measure it: "removing the lesson leaves the base exactly as it was". */
   reversibility_ok?: boolean | null;
 }
@@ -119,6 +129,9 @@ export interface TeachJob {
   /** Lineage (design §12.1): the ordered base stack, how the job was made, what the trainer was asked to export. */
   bases?: TeachBaseView[];
   mode?: 'scratch' | 'extend' | 'fork' | 'merge';
+  /** How many of the base's questions this lesson keeps (trained as known answers) and how many of its answers it changes. */
+  inherited_rows?: number;
+  changed_rows?: number;
   export?: 'delta' | 'squash';
   derivation?: Record<string, unknown>;
   /** The training-set choices made at publish (access, licence, notes, declaration) and the sha of the published copy. */
@@ -669,6 +682,8 @@ export class TeachWorker {
     baseIds?: string[];
     /** Load the base's training set as the keep-set (default true); false = the lesson is checked against the base but its rows are not re-taught. */
     inherit?: boolean;
+    /** How this lesson came to be (design §12.1): `scratch` | `extend` (base chosen in the picker) | `fork` (the dataset is a copy of the base's) | `merge` (L7). */
+    mode?: 'scratch' | 'extend' | 'fork' | 'merge';
     /** What the trainer writes: a delta over the base stack (default) or a stand-alone squash. */
     exportMode?: 'delta' | 'squash';
     /** Build on a superseded base anyway (warned). */
@@ -717,6 +732,21 @@ export class TeachWorker {
     const all = this.datasets.rowsOrThrow(dataset);
     if (!all.length) throw new TeachError(400, 'dataset_empty: this dataset has no questions left on this node');
 
+    // ---- 1b) inherited rows (design §6.2, §7.1). A dataset forked from X carries X's questions with `from:'X#i'`.
+    // They are NOT new facts: they are the keep-set the trainer trains as known answers so the lesson does not undo
+    // them. A row whose answer the owner changed (`replaces`) IS trained, and is never counted against X afterwards.
+    const baseSet = new Set(baseIds);
+    const inheritedIdx = new Set<number>();
+    const overrideOf = new Map<number, string>();
+    if (baseIds.length) {
+      for (const [i, r] of all.entries()) {
+        const rep = rowRefPatch(r.replaces);
+        if (rep && baseSet.has(rep)) { overrideOf.set(i, r.replaces!); continue; }
+        const from = rowRefPatch(r.from);
+        if (from && baseSet.has(from)) inheritedIdx.add(i);
+      }
+    }
+
     // ---- 2) the training settings and the slice they select
     const effort: TeachEffort = input.training?.effort ?? 'balanced';
     const preset = c.effort[effort];
@@ -726,10 +756,15 @@ export class TeachWorker {
       throw new TeachError(400, `dataset_too_large: this node teaches up to ${cap} questions in one lesson`, { rows_limit: rowsLimit, max_rows: cap });
     }
     const offset = Math.max(0, input.training?.row_offset ?? 0);
+    const trainable = all.map((_, i) => i).filter((i) => !inheritedIdx.has(i));
     const asked = input.selectedIndexes?.length
-      ? [...new Set(input.selectedIndexes)].filter((i) => Number.isInteger(i) && i >= 0 && i < all.length).sort((a, b) => a - b)
-      : all.map((_, i) => i).slice(offset, rowsLimit === undefined ? undefined : offset + rowsLimit);
-    if (!asked.length) throw new TeachError(400, 'invalid: none of the selected questions exist in this dataset');
+      ? [...new Set(input.selectedIndexes)].filter((i) => Number.isInteger(i) && i >= 0 && i < all.length && !inheritedIdx.has(i)).sort((a, b) => a - b)
+      : trainable.slice(offset, rowsLimit === undefined ? undefined : offset + rowsLimit);
+    if (!asked.length) {
+      throw new TeachError(400, inheritedIdx.size
+        ? `nothing_to_add: every question in this set is already ${[...baseSet].join(', ')}\u2019s \u2014 add a question, or change one of theirs, before training on top of it`
+        : 'invalid: none of the selected questions exist in this dataset');
+    }
     // over the cap is an honest banner, not a rejection: the rest stay in the dataset for the next lesson
     const selected = asked.slice(0, cap);
     const useAlt = input.training?.use_alt !== false;
@@ -761,7 +796,7 @@ export class TeachWorker {
       // the catalog scan is O(listings x samples) per question — bounded to the sampled head; the worker preflight
       // re-checks the rest against the live model anyway
       if (n < c.preflight.sampleRows && await this.overlapsListing(r)) { overlaps++; continue; }
-      kept.push({ prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(base ? { base_answer: base } : {}) });
+      kept.push({ prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(base ? { base_answer: base } : {}), ...(overrideOf.has(i) ? { replaces: overrideOf.get(i) } : {}) });
       keptIndexes.push(i);
     }
     if (!kept.length) throw new TeachError(409, alreadyKnown >= overlaps ? 'already_known: the model already answers this correctly' : 'overlaps_listing: this knowledge is already sold on this node');
@@ -789,8 +824,11 @@ export class TeachWorker {
     const snapshot = canonicalBytes(all);
     const snapshotSha = sha256Hex(snapshot);
     writeFileSync(join(dir, 'snapshot.jsonl'), snapshot, { mode: 0o600 });
+    // The keep-set is what the creator KEPT of the base's questions, not the base's whole set: a row they deleted from
+    // their copy is not re-taught, and a row they changed is trained as a new fact instead (design §6.2/§6.3).
+    const inheritedRows = inheritedIdx.size ? [...inheritedIdx].sort((a, b) => a - b).map((i) => all[i]) : [];
     if (lineage) {
-      writeFileSync(join(dir, 'known.jsonl'), canonicalBytes(lineage.known), { mode: 0o600 });
+      writeFileSync(join(dir, 'known.jsonl'), canonicalBytes(inheritedRows.length ? inheritedRows : lineage.known), { mode: 0o600 });
       for (const b of lineage.direct) this.store.bumpSignals(b.id, { builds_on_jobs: 1 }, { visitor: this.market.visitorId(`key:${input.address.toLowerCase()}`) });
     }
     this.store.insertTeachJob({
@@ -798,7 +836,8 @@ export class TeachWorker {
       context: targets.map((t) => t.id), builds_on: input.buildsOn, facts: kept, job_dir: dir, npz_path: null, sha256: null, progress: null, checks: null, error: null,
       container_pid: null, draft_id: null, patch_id: null, publish_status: 'none', reject_reason: null, parent_job: input.parentJob ?? null, result: null, blocked: null, name,
       dataset_id: dataset.id, dataset_sha256: dataset.sha256, dataset_rows: dataset.rows, dataset_source: dataset.source, training,
-      snapshot_sha256: snapshotSha, mode: lineage ? 'extend' : 'scratch',
+      snapshot_sha256: snapshotSha,
+      mode: !lineage ? 'scratch' : input.mode === 'fork' || (dataset.parent_patch && baseSet.has(dataset.parent_patch)) ? 'fork' : 'extend',
       ...(lineage ? { bases: lineage.stack.map((b) => ({ patch_id: b.id, sha256: b.sha256 })), export_mode: exportMode } : {}),
       // Questions dropped HERE (the interactive pre-flight said the model knows them, or the same fact is already sold
       // on this node) are gone from the lesson before it starts. Recording them is the only way the result screen can
@@ -813,7 +852,7 @@ export class TeachWorker {
     this.store.touchContributor(input.address, { ...(contributorName ? { name: contributorName } : {}), job: true });
     this.invalidatePolicy();
     // the prompt (job name) and the key stay out of the message: /api/events is public (data is operator-only there)
-    this.log('info', `lesson queued (${kept.length} of ${dataset.rows} question(s), ${lineage ? `built on ${lineage.direct.map((b) => b.id).join('+')}, ` : ''}context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length, dataset_id: dataset.id, ...(lineage ? { bases: lineage.stack.map((b) => b.id), known_rows: lineage.known.length } : {}) });
+    this.log('info', `lesson queued (${kept.length} of ${dataset.rows} question(s), ${lineage ? `built on ${lineage.direct.map((b) => b.id).join('+')}, ${inheritedRows.length} inherited, ${overrideOf.size} changed, ` : ''}context ${targets.map((t) => t.id).join('+') || '-'})`, id, { contributor: input.address, name, facts: kept.length, dataset_id: dataset.id, ...(lineage ? { bases: lineage.stack.map((b) => b.id), known_rows: inheritedRows.length || lineage.known.length, changed_rows: overrideOf.size } : {}) });
     return this.view(this.store.getTeachJob(id)!);
   }
 
@@ -891,6 +930,44 @@ export class TeachWorker {
     }
   }
 
+  // ------------------------------------------------------------ fork (design §12.3 POST /api/patches/:id/fork, Story B)
+  /**
+   * *Copy and continue*: the published training set of a knowledge becomes a dataset of MINE, with the knowledge
+   * recorded as its parent and every row pointing back at the row it came from. This is the whole answer to "the
+   * training set has to be inherited so I can append to it": from here the editor, the preview, `--on` and the
+   * publish path all work on rows that know where they came from.
+   *
+   * Refusals, in the order they can be known: unknown knowledge → someone else's private draft → its creator kept the
+   * questions private → nobody on this network holds the bytes.
+   */
+  async forkPatch(id: string, caller: { address: string; ip?: string }, opts: { name?: string } = {}): Promise<{ dataset: DatasetView; created: boolean; inherited_rows: number; parent: { patch_id: string; name: string; dataset_sha256: string }; license: string | null }> {
+    this.assertEnabled();
+    this.assertNotBanned(caller.address, caller.ip);
+    if (!this.cfg.lineage) throw new TeachError(403, 'lineage_disabled: copying another knowledge\'s questions is not enabled on this node yet (config teach.lineage)');
+    const entry = await this.market.entry(id);
+    if (!entry || !this.market.mayUseEntry(entry, { address: caller.address })) throw new TeachError(404, `base_unknown: no knowledge called ${id} on this node`, { id });
+    const sha = entry.anchor.dataset?.sha256;
+    if (!sha) throw new TeachError(404, `dataset_unavailable: ${id} has no published training set — there is nothing to copy`, { id });
+    const owner = (entry.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === caller.address.toLowerCase() || x.signer?.toLowerCase() === caller.address.toLowerCase())
+      || entry.anchor.author.toLowerCase() === caller.address.toLowerCase();
+    if (accessRank(accessOf(entry.anchor)) < 1 && !owner) {
+      throw new TeachError(403, `dataset_private: the creator of ${id} kept the questions private, so nobody can copy or build on them`, { id });
+    }
+    const rows = await this.ensureDatasetBlob(entry, { address: caller.address });
+    const out = this.datasets.forkFromPatch({
+      owner: caller.address, ip: caller.ip, patchId: id, datasetSha: sha, rows,
+      name: opts.name?.trim() || `${entry.anchor.name} (my copy)`.slice(0, 80),
+    });
+    // one derive per key per knowledge is what "built on N times" counts (§6.1) — the fetch itself is free
+    if (out.created) this.store.bumpSignals(id, { derive_fetches: 1 }, { visitor: this.market.visitorId(`key:${caller.address.toLowerCase()}`) });
+    this.store.touchContributor(caller.address, {});
+    this.log('info', `${out.created ? 'copied' : 'reused the copy of'} the training set of ${id} (${out.dataset.rows} question(s)) into dataset ${out.dataset.id}`, null, { dataset_id: out.dataset.id, patch_id: id });
+    return {
+      dataset: out.dataset, created: out.created, inherited_rows: out.dataset.inherited_rows ?? out.dataset.rows,
+      parent: { patch_id: id, name: entry.anchor.name, dataset_sha256: sha }, license: entry.anchor.dataset?.license ?? null,
+    };
+  }
+
   /**
    * Re-train from the same dataset (or a fork / another owned dataset). Same input, `parent_job` set, quota re-charged —
    * this is what makes "Train it again" and "Add questions and continue" true.
@@ -934,6 +1011,7 @@ export class TeachWorker {
       context_patch_ids: j.context, builds_on_context: j.builds_on, facts: j.facts as TeachFact[], name: j.name ?? undefined,
       ...(j.bases ? { bases: j.bases.map((b) => { const e = this.market.catalogSync().find((x) => x.anchor.id === b.patch_id); return { patch_id: b.patch_id, sha256: b.sha256, ...(e ? { name: e.anchor.name, status: e.status } : {}) }; }) } : {}),
       ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}),
+      ...(j.bases?.length ? { inherited_rows: this.knownRowsOf(j), changed_rows: j.facts.filter((f) => f.replaces).length } : {}),
       ...(j.derivation ? { derivation: j.derivation } : {}), ...(j.dataset_pub ? { dataset_pub: j.dataset_pub } : {}),
       blocked: j.blocked, progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
@@ -958,6 +1036,13 @@ export class TeachWorker {
       out.eta_s = j.blocked === 'slot' || one === null ? null : Math.round((ahead + 1) * one);
     }
     return out;
+  }
+
+  /** How many of the base's questions travel with this lesson as the keep-set (`known.jsonl`, design §7.1). */
+  private knownRowsOf(j: TeachJobRow): number {
+    const p = j.job_dir ? join(j.job_dir, 'known.jsonl') : null;
+    if (!p || !existsSync(p)) return 0;
+    try { return readCanonicalJsonl(readFileSync(p, 'utf8')).length; } catch { return 0; }
   }
 
   /** What a lesson was trained from. `id: null` on a v1 job — it still renders, publishes and pays out (design G5). */
@@ -1382,7 +1467,9 @@ export class TeachWorker {
         parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
         known_file: knownRows ? 'known.jsonl' : null,
         max_known: clampInt(Math.ceil(facts.length / 2), 8, 64),
-        replaces: [] as number[],
+        // the questions that deliberately override an inherited answer: trained, and kept OUT of the keep-set so the
+        // trainer is not asked to hold both answers at once (§7.3)
+        replaces: job.facts.flatMap((f, i) => (f.replaces ? [i] : [])),
         export: job.export_mode ?? 'delta',
         mask: { mode: 'none' },
         probe_with_parents: true,
@@ -1725,7 +1812,16 @@ export class TeachWorker {
            * they are the publish gate. What scales down instead is how many taught questions are re-asked.
            */
           const localityCost = sideEffects ? 3 * c.locality.prompts.length : 0;   // baseline x2 (stability) + once after
-          const parentReserve = sideEffects && targets.length ? Math.min(c.check.parentSamplesMax, Math.max(0, c.check.callBudget - localityCost)) : 0;
+          // Every base question is asked TWICE — once with the stack loaded and the lesson not on top yet (§7.6 step
+          // 3), once after — so a question the base already fails on this node is never blamed on the child. That
+          // doubling is why the reserve is a QUARTER of what the locality gate leaves: the lesson's own questions
+          // still have to be re-asked, and a check that measures the base twice and the lesson never is no check.
+          const room = Math.max(0, c.check.callBudget - localityCost);
+          const haveSamples = targets.reduce((n, t) => n + (t.entry.anchor.benchmark.samples?.length ?? 0), 0);
+          const parentBudget = sideEffects && targets.length ? Math.min(c.check.parentSamplesMax, haveSamples, Math.max(targets.length, Math.floor(room / 4))) : 0;
+          const perTarget = targets.length ? Math.ceil(parentBudget / targets.length) : 0;
+          const parentSamples = perTarget * targets.length;
+          const parentReserve = parentSamples * 2;
           let taughtBudget = Math.max(0, c.check.callBudget - localityCost - parentReserve);
           const sample = this.sampleIndexes({ ...job, facts }, Math.min(facts.length, c.check.sampleRows));
           // 1) remove the context stack → clean table; locality baseline
@@ -1745,6 +1841,26 @@ export class TeachWorker {
           // 2) the stack BELOW the lesson, in order (bases first); then the lesson on top; measure (once more if the
           //    table reverted mid-way — serving restart)
           for (const t of targets) { const ap = await rt.applyRaw(t.path); if (ap.code !== 0) throw new Error(`apply ${t.id} failed: ${ap.err || ap.out}`); }
+          /*
+           * §7.6 step 3 — the parent baseline, measured HERE: the stack is loaded, the lesson is not on top yet. The
+           * questions this lesson deliberately replaces come first (they are the ones a reader will ask about), then
+           * the rest in order. Without this pass a question the base itself gets wrong on this node reads as "your
+           * lesson broke it", which is both false and unfixable by the creator.
+           */
+          const overrides = facts.filter((f) => f.replaces);
+          const plan = targets.map((t) => {
+            const all = (t.entry.anchor.benchmark.samples ?? []).map((s, i) => ({ i, s, overridden: overrides.some((f) => s.prompt.includes(f.prompt)) }));
+            const ordered = [...all.filter((x) => x.overridden), ...all.filter((x) => !x.overridden)];
+            return { id: t.id, samples: ordered.slice(0, perTarget) };
+          });
+          const baseline = new Map<string, Map<number, boolean>>();
+          if (sideEffects && parentSamples) {
+            for (const p of plan) {
+              const m = new Map<number, boolean>();
+              for (const { i, s } of p.samples) { const got = await this.askRaw(s.prompt, 16); m.set(i, got.startsWith(s.expect)); }
+              baseline.set(p.id, m);
+            }
+          }
           for (let attempt = 0; attempt < 2; attempt++) {
             if (this.stopped) throw new Error(STOPPING);
             this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
@@ -1801,16 +1917,20 @@ export class TeachWorker {
           //    per knowledge so SC-7 can name the one that broke and which questions; every question the child
           //    overrides would be included first (none yet — overrides land with the fork PR).
           if (sideEffects && targets.length) {
-            let left = parentReserve;
-            const perTarget = Math.max(1, Math.floor(parentReserve / targets.length));
             checks.parent_check = [];
-            for (const t of targets) {
-              const pc = { patch_id: t.id, hit: 0, total: 0, failed: [] as number[] };
-              for (const [si, s] of (t.entry.anchor.benchmark.samples ?? []).slice(0, perTarget).entries()) {
-                if (left-- <= 0) break;
+            for (const p of plan) {
+              const pc = { patch_id: p.id, hit: 0, total: 0, failed: [] as number[], base_hit: 0, base_total: 0, base_failed: [] as number[], overridden: 0 };
+              const wasOk = baseline.get(p.id) ?? new Map<number, boolean>();
+              for (const { i, s, overridden } of p.samples) {
                 const got = await this.askRaw(s.prompt, 16);
+                const hit = got.startsWith(s.expect);
+                pc.base_total++; if (wasOk.get(i)) pc.base_hit++;
+                // a question the child says it replaces is SUPPOSED to answer differently now (§7.6 step 5)
+                if (overridden) { pc.overridden++; continue; }
+                // a question the base does not answer on this node either is not evidence about the child
+                if (wasOk.get(i) === false) { pc.base_failed.push(i); continue; }
                 pc.total++; checks.parent_regression.total++;
-                if (got.startsWith(s.expect)) { pc.hit++; checks.parent_regression.hit++; } else pc.failed.push(si);
+                if (hit) { pc.hit++; checks.parent_regression.hit++; } else pc.failed.push(i);
               }
               checks.parent_check.push(pc);
             }

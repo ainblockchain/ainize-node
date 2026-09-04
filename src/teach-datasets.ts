@@ -55,6 +55,10 @@ export interface CreateInput {
   /** `x-ngram-dataset-sha256` — the value the v2 signature covered; re-hashed here (design §D14). */
   declaredSha256?: string;
   parentDataset?: string;
+  /** Lineage (§5.3, Story B): the published KNOWLEDGE these rows were copied out of, and how many of them are its. */
+  parentPatch?: string;
+  parentDatasetSha?: string;
+  inheritedRows?: number;
 }
 
 export interface CreateResult { dataset: DatasetView; report: { summary: TeachDatasetSummary; rows: TeachDatasetRow[] }; created: boolean }
@@ -89,6 +93,9 @@ export class TeachDatasets {
       ...(d.columns ? { columns: d.columns } : {}),
       summary: d.summary ?? emptySummary(),
       ...(d.parent_dataset ? { parent_dataset: d.parent_dataset } : {}),
+      ...(d.parent_patch ? { parent_patch: d.parent_patch } : {}),
+      ...(d.parent_dataset_sha ? { parent_dataset_sha: d.parent_dataset_sha } : {}),
+      ...(d.inherited_rows !== null ? { inherited_rows: d.inherited_rows } : {}),
       retention: d.retention,
       job_ids: jobs.map((j) => j.id),
       created_at: d.created_at, updated_at: d.updated_at,
@@ -208,6 +215,9 @@ export class TeachDatasets {
       sha256: sha, revision: 1, rows: parsed.rows.length, invalid_rows: parsed.summary.rejected, size_bytes: bytes.length,
       source_bytes: sourceBytes ? sourceBytes.length : null, source_name: input.filename ?? null, source_sha256: sourceBytes ? sha256(sourceBytes) : null,
       dir, summary: parsed.summary, parent_dataset: input.parentDataset ?? null,
+      parent_patch: input.parentPatch ?? null, parent_dataset_sha: input.parentDatasetSha ?? null,
+      // counted from the bytes that were actually accepted, never from what the caller claimed
+      inherited_rows: input.parentPatch ? parsed.rows.filter((r) => r.from ?? r.replaces).length : null,
       retention: input.retention ?? 'keep',
       created_at: now, updated_at: now, expires_at: now + limits.ttlDays * 86_400_000, deleted_at: null,
     };
@@ -344,7 +354,31 @@ export class TeachDatasets {
   fork(d: TeachDatasetRecord, input: { owner: string; ip?: string; name?: string; rows_op?: RowsOp }, now = Date.now()): CreateResult {
     const rows = input.rows_op ? applyRowsOp(this.rowsOrThrow(d), input.rows_op) : this.rowsOrThrow(d);
     if (!rows.length) throw new TeachError(400, 'dataset_empty: a dataset needs at least one question');
-    return this.create({ owner: input.owner, ip: input.ip, name: input.name ?? `${d.name} (copy)`, source: d.source === 'upload' ? 'derived' : d.source, rows, retention: d.retention, parentDataset: d.id }, now);
+    return this.create({
+      owner: input.owner, ip: input.ip, name: input.name ?? `${d.name} (copy)`, source: d.source === 'upload' ? 'derived' : d.source,
+      rows, retention: d.retention, parentDataset: d.id,
+      // a copy of a copy is still built on the same knowledge — the rows still carry its `from` pointers
+      ...(d.parent_patch ? { parentPatch: d.parent_patch, ...(d.parent_dataset_sha ? { parentDatasetSha: d.parent_dataset_sha } : {}) } : {}),
+    }, now);
+  }
+
+  /**
+   * Story B — *Copy and continue*: a published knowledge's training set becomes a dataset in MY *My datasets*, every
+   * row pointing back at the row it came from (`from: '<patch>#<i>'`). Re-forking the same bytes returns the same
+   * dataset (the owner-scoped sha dedup in `create`), so the button is idempotent.
+   *
+   * `rows` are the parent's published bytes — the caller (the worker, which owns the access rules and the p2p fetch)
+   * has already decided this key may have them.
+   */
+  forkFromPatch(input: { owner: string; ip?: string; name?: string; patchId: string; datasetSha: string; rows: CanonicalRow[] }, now = Date.now()): CreateResult {
+    if (!input.rows.length) throw new TeachError(404, `dataset_unavailable: the training set of ${input.patchId} has no questions on this node`, { id: input.patchId });
+    // provenance is rewritten to point at the DIRECT parent: what a verifier checks is that my row's (prompt, answer)
+    // is byte-equal to that row of THIS knowledge's set (§6.3), not what the grandparent called it.
+    const rows: CanonicalRow[] = input.rows.map((r, i) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}), from: `${input.patchId}#${i}` }));
+    return this.create({
+      owner: input.owner, ip: input.ip, name: input.name, source: 'derived', rows,
+      parentPatch: input.patchId, parentDatasetSha: input.datasetSha,
+    }, now);
   }
 
   /** New bytes for the same id: revision++, sha256 changes, report rewritten. */
@@ -440,10 +474,18 @@ export type RowsOp =
 
 export function applyRowsOp(rows: CanonicalRow[], op: RowsOp): CanonicalRow[] {
   if (op.op === 'remove') { const drop = new Set(op.indexes); return rows.filter((_, i) => !drop.has(i)); }
-  if (op.op === 'append') return [...rows, ...op.rows];
+  // a new question is MINE, whatever the client sent: provenance is written by the node, never accepted from a form
+  if (op.op === 'append') return [...rows, ...op.rows.map((r) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}) }))];
   const out = [...rows];
   if (op.index < 0 || op.index >= out.length) throw new TeachError(400, `invalid: there is no question #${op.index} in this dataset`);
-  out[op.index] = op.row;
+  const prev = out[op.index];
+  const ref = prev.replaces ?? prev.from;
+  const untouched = prev.prompt === op.row.prompt && prev.answer === op.row.answer;
+  const row: CanonicalRow = { prompt: op.row.prompt, answer: op.row.answer, ...(op.row.alt_prompt ? { alt_prompt: op.row.alt_prompt } : {}), ...(op.row.note ? { note: op.row.note } : {}) };
+  // Editing an inherited answer keeps the pointer and turns it into `replaces` (design §6.7): the row still says which
+  // question of the base it stands in for, which is what makes "changes k of {name}'s answers" a counted fact and
+  // keeps the trainer from being asked to hold both answers at once.
+  out[op.index] = ref && !untouched ? { ...row, replaces: ref } : ref ? { ...row, ...(prev.from ? { from: prev.from } : {}), ...(prev.replaces ? { replaces: prev.replaces } : {}) } : row;
   return out;
 }
 

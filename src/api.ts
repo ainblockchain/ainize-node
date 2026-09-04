@@ -263,6 +263,18 @@ export function buildApi(deps: ApiDeps): Router {
     const out = market.deriveIntent(e, address);
     return { ...out, holders: [market.publicUrl, ...market.p2p.datasetHolders(out.sha256)], held: market.datasets.has(out.sha256) };
   }));
+  /**
+   * *Copy and continue* (design §12.3, Story B): the knowledge's published questions become a dataset of the caller's,
+   * with the knowledge as its parent and every row carrying `from`. Idempotent — the same bytes give the same dataset.
+   */
+  router.post('/api/patches/:id/fork', wrap(async (req, res) => {
+    const address = requireTeacher(req);
+    const t = visitorGate(req, address);
+    const body = z.object({ name: z.string().max(80).optional() }).parse(req.body ?? {});
+    const out = await t.forkPatch(req.params.id as string, { address, ip: req.ip }, { name: body.name });
+    res.status(out.created ? 201 : 200);
+    return { dataset_id: out.dataset.id, dataset: out.dataset, inherited_rows: out.inherited_rows, created: out.created, parent: out.parent, license: out.license };
+  }));
 
   router.get('/api/patches/:id/records', wrap(async (req) => {
     const id = req.params.id as string;
@@ -804,7 +816,7 @@ export function buildApi(deps: ApiDeps): Router {
     const job = await t.createJob({
       address, contributorName: body.contributor?.name, name: body.name, ip: req.ip, patchIds: contextIds, buildsOn,
       facts: body.facts, datasetId: body.dataset_id, selectedIndexes: body.selected_indexes, known: body.known, training: body.training,
-      baseIds, inherit: body.inherit, exportMode: body.export, force: body.force,
+      baseIds, inherit: body.inherit, exportMode: body.export, force: body.force, mode: body.mode,
     });
     res.status(202);
     return { job, quota: t.jobQuota(address, req.ip) };
