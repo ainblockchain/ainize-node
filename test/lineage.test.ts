@@ -307,8 +307,12 @@ test('AZ-241 a base whose questions are private cannot be built on; the flag gat
   assert.match(refused.json.error!, /^base_private/);
   const unknown = await api('POST', '/api/teach/jobs', { patch_ids: [], dataset_id: ds.id, base_ids: ['no-such-knowledge'] }, stranger);
   assert.equal(unknown.status, 400); assert.match(unknown.json.error!, /^base_unknown/);
+  // §14: two bases used to be refused with `merge_not_available`; since L7 two bases IS a merge, so the refusal is
+  // now about the ids themselves — the first one that does not resolve, in order.
   const two = await api('POST', '/api/teach/jobs', { patch_ids: [], dataset_id: ds.id, base_ids: ['a', 'b'] }, stranger);
-  assert.equal(two.status, 400); assert.match(two.json.error!, /^merge_not_available/);
+  assert.equal(two.status, 400); assert.match(two.json.error!, /^base_unknown/);
+  const three = await api('POST', '/api/teach/jobs', { patch_ids: [], dataset_id: ds.id, base_ids: [priv.id, 'b', 'c'] }, stranger);
+  assert.equal(three.status, 400); assert.match(three.json.error!, /^too_many_bases/);
 
   // the feature flag (design §18): with `teach.lineage` off, a base is refused before anything is charged
   N.cfg.teach!.lineage = false;

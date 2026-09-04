@@ -8268,12 +8268,12 @@
    "A published knowledge whose training set is private, plus the visitor's own dataset."
   ],
   "steps": [
-   "POST /api/teach/jobs with base_ids naming the private knowledge, an unknown id, and two ids.",
+   "POST /api/teach/jobs with base_ids naming the private knowledge, an unknown id, and three ids.",
    "Set teach.lineage false and repeat; read GET /api/teach/policy."
   ],
   "expected": [
    "`base_private` names the knowledge and says the creator kept the questions private (and that it can still be loaded for comparison).",
-   "`base_unknown` for an id this node does not have; `merge_not_available` for two bases until the merge PR lands.",
+   "`base_unknown` for an id this node does not have (two ids are a merge since L7, so they are resolved like any other base); `too_many_bases` above two.",
    "With the flag off: 403 `lineage_disabled`, and GET /api/teach/policy reports `lineage: false` so the UI can hide 'Build on this'.",
    "No job row, no quota charge, no files on disk for any refusal."
   ],
