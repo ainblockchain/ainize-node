@@ -10,6 +10,21 @@ import type { Attestation, PatchAnchor, RuntimeStatus } from '@ngram/core';
 import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, sha256Hex, signMessage } from '@ngram/core';
 import { ConflictError, type Market } from './market.js';
 
+/**
+ * A verification that is only WAITING for the model server, not one that failed (item 130).
+ *
+ * While the serving API is down every announced patch throws once per round, and the message embeds the minutes
+ * left — so it changes every 60 s and deduplicates against nothing. On the demo nodes that one loop was 25-29 % of
+ * every event ever stored, at 13 lines a minute, in the log an operator reads during exactly that incident. The
+ * round now recognises this error and reports the NODE's state once per transition instead.
+ */
+export class RuntimeWaitError extends Error {
+  constructor(message: string, readonly detail: string, readonly graceLeftMs: number) { super(message); }
+}
+
+/** `14:32` — when the grace period runs out, in the operator's own local time. */
+const hhmm = (t: number): string => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
 export class Verifier {
   private timer: NodeJS.Timeout | null = null;
   private busy = false;
@@ -37,9 +52,58 @@ export class Verifier {
     for (let i = 0; i < 600 && this.busy; i++) await new Promise((r) => setTimeout(r, 50));
   }
 
+  /**
+   * Verify one anchor, and decide what the failure is worth in the log (item 130). A patch that is only waiting for
+   * the model server produces no line at all here — `reportGrace` says it once for the whole node instead.
+   */
+  private async attempt(anchor: PatchAnchor, what: string, waiting: { id: string; detail: string; left: number }[]): Promise<void> {
+    try { await this.verifyOne(anchor); }
+    catch (err) {
+      if (err instanceof RuntimeWaitError) { waiting.push({ id: anchor.id, detail: err.detail, left: err.graceLeftMs }); return; }
+      this.market.log('warn', 'verifier', `${what} ${anchor.id} failed: ${(err as Error).message}`, anchor.id);
+    }
+  }
+
+  /** Where this node stands in the grace period, so each transition is logged once and the retries stay silent. */
+  private graceStage: 0 | 1 | 2 = 0;
+
+  /**
+   * One line per transition instead of thirteen a minute (item 130): entering the grace period, its halfway mark,
+   * and recovery. What an operator needs during the incident is the node's state — how many items are waiting and
+   * when attestations start falling back to hash-only — not the same sentence per patch per 5-second round.
+   */
+  private reportGrace(waiting: { id: string; detail: string; left: number }[], runtimeAvailable: boolean): void {
+    if (!waiting.length) {
+      if (this.graceStage !== 0) {
+        this.graceStage = 0;
+        // "nothing is waiting" is not "the model is back": the queue also empties when every item ran out of grace
+        // and was attested hash-only. Say which of the two happened.
+        this.market.log('info', 'verifier', runtimeAvailable
+          ? 'the model server is answering again — benchmark verification resumed'
+          : 'nothing is waiting on the model server any more — every item in the grace period fell back to hash-only', null);
+      }
+      return;
+    }
+    const left = Math.max(...waiting.map((w) => w.left));
+    const until = Date.now() + left;
+    const ids = waiting.map((w) => w.id);
+    const list = `${ids.slice(0, 5).join(', ')}${ids.length > 5 ? `, and ${ids.length - 5} more` : ''}`;
+    const n = `${waiting.length} knowledge item${waiting.length === 1 ? '' : 's'}`;
+    if (this.graceStage === 0) {
+      this.graceStage = 1;
+      this.market.log('warn', 'verifier', `model server unreachable (${waiting[0].detail}) — ${n} waiting to be verified (${list}). Attestations fall back to hash-only (sha256 + row count, no benchmark) at ${hhmm(until)} unless it comes back.`, null, { waiting: ids, hash_only_at: until, detail: waiting[0].detail });
+      return;
+    }
+    if (this.graceStage === 1 && left <= Verifier.RUNTIME_GRACE_MS / 2) {
+      this.graceStage = 2;
+      this.market.log('warn', 'verifier', `model server still unreachable (${waiting[0].detail}) — ${n} waiting; hash-only attestation starts at ${hhmm(until)} (${Math.round(left / 60000)} min)`, null, { waiting: ids, hash_only_at: until, detail: waiting[0].detail });
+    }
+  }
+
   async round(): Promise<void> {
     if (this.busy || this.stopped) return;
     this.busy = true;
+    const waiting: { id: string; detail: string; left: number }[] = [];
     try {
       const cfg = this.market.cfg;
       const me = cfg.identity.address;
@@ -63,20 +127,21 @@ export class Verifier {
         // whatever the status is, because an item stuck at 1/2 with one FAIL is exactly the case the publisher
         // files a challenge for and the only status it can have is VERIFYING (item 242).
         if (e.open_challenge && (!mine || mine.created_at < e.open_challenge.created_at)) {
-          await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `re-verify (challenged) ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
+          await this.attempt(e.anchor, 're-verify (challenged)', waiting);
           continue;
         }
         if (mine) {
           // Upgrade: we attested hash-only earlier but a compatible runtime is available now → re-verify for real.
           if (mine.verified_on === 'hash-only' && compatible && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
             this.runtimeFailures.set(`upgraded:${e.anchor.id}`, 1);
-            await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `re-verify ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
+            await this.attempt(e.anchor, 're-verify', waiting);
           }
           continue;
         }
         if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status)) continue;
-        await this.verifyOne(e.anchor).catch((err) => this.market.log('warn', 'verifier', `verify ${e.anchor.id} failed: ${(err as Error).message}`, e.anchor.id));
+        await this.attempt(e.anchor, 'verify', waiting);
       }
+      this.reportGrace(waiting, st.available);
     } finally {
       this.busy = false;
     }
@@ -156,15 +221,19 @@ export class Verifier {
         m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation}${out.score.per_source ? ` (${out.score.per_source})` : ''} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details, pre_apply: out.pre_apply, per_source: out.per_source, stack: out.stack });
       } catch (err) {
         this.noteFailure(anchor.id);
-        if (this.graceLeft(anchor.id) > 0) throw new Error(`${(err as Error).message} (retrying for ${Math.round(this.graceLeft(anchor.id) / 60000)} more min before hash-only fallback)`);
+        const left = this.graceLeft(anchor.id);
+        if (left > 0) throw new RuntimeWaitError(`${(err as Error).message} (retrying for ${Math.round(left / 60000)} more min before hash-only fallback)`, (err as Error).message, left);
         passed = blob.rows === anchor.rows;
         score = { integrity: 'sha256 ok', rows: blob.rows, benchmark: `not executed (runtime kept failing: ${(err as Error).message.slice(0, 80)})` };
         verified_on = 'hash-only';
+        // The one line per patch this fallback is worth: the grace period is over and this attestation carries no
+        // benchmark. Every retry before it was silent (item 130).
+        m.log('warn', 'verifier', `attesting ${anchor.id} hash-only: the model server did not come back within ${Math.round(Verifier.RUNTIME_GRACE_MS / 60000)} min (${(err as Error).message.slice(0, 120)}) — sha256 and row count only, no benchmark`, anchor.id);
       }
     } else if (wantsRuntime && !runtimeCompatible && graceLeft > 0) {
       // This node is supposed to have a compatible runtime (e.g. serving restart in progress) — wait before attesting hash-only.
       this.noteFailure(anchor.id);
-      throw new Error(`runtime unavailable (${st.error ?? 'no model'}) — waiting up to ${Math.round(graceLeft / 60000)} min before hash-only fallback`);
+      throw new RuntimeWaitError(`runtime unavailable (${st.error ?? 'no model'}) — waiting up to ${Math.round(this.graceLeft(anchor.id) / 60000)} min before hash-only fallback`, st.error ?? 'no model', this.graceLeft(anchor.id));
     } else {
       // No compatible runtime here: attest integrity only (sha256 + row count), clearly labelled.
       passed = blob.rows === anchor.rows;
