@@ -53,13 +53,17 @@ before(async () => {
 after(async () => { await Promise.all([A, B].map((n) => n?.stop())); rmSync(tmp, { recursive: true, force: true }); });
 
 const RUN = Date.now().toString(36);
+/** Seeds the synthetic bodies so no two runs publish identical bytes to the shared dev chain (see the test below). */
+const SEED = Date.now() % 2_000_000_000;
 const baseId = `ain-e2e-base-${RUN}`;
 const childId = `ain-e2e-child-${RUN}`;
 
 test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier attests under rule, LISTED', { skip: !up }, async () => {
   const dir = join(tmp, 'synth');
-  const f1 = synthPatch(dir, 'base', 11, 600);
-  const f2 = synthPatch(dir, 'child', 12, 400, f1);
+  // Per-run seeds. The AIN dev chain is shared and permanent, so a fixed seed puts the SAME bytes on the record
+  // under a different identity every run — and `duplicate_body` (item 363) rightly refuses the second publisher.
+  const f1 = synthPatch(dir, 'base', SEED, 600);
+  const f2 = synthPatch(dir, 'child', SEED + 1, 400, f1);
   const bench = { schema: `e2e-${RUN}`, queries: 4, format: ['template'] };   // no samples → integrity attestation suffices in tests
   await A.market.createDraft({ id: baseId, name: 'e2e base', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f1, keepInPlace: true, price: '3', topic_path: 'e2e/base', visibility: 'test' });
   await A.market.announce(baseId);
@@ -104,15 +108,25 @@ test('AIN x402: B buys with a real AIN transfer; seller verifies tx on chain; se
   const tr = await (A.ledger as AinLedger).verifyTransfer(res.tx_hash);
   assert.ok(tr && tr.to === A.cfg.identity.address && tr.value === Number(target.anchor.price));
   await sleep(2500);
-  const balB1 = await (B.ledger as AinLedger).balance();
-  assert.ok(balB0 - balB1 >= Number(target.anchor.price) - 1e-6, `buyer paid (${balB0} → ${balB1})`);
-  const balA1 = await (A.ledger as AinLedger).balance();
-  assert.ok(balA1 > balA0 - 1e-6, 'seller received');
   const setts = await waitFor(() => (A.ledger as AinLedger).settlements(target.anchor.id), (s) => s.length >= 1, 30000);
   assert.equal(setts[0].body.buyer, B.cfg.identity.address);
+  const royalty = setts[0].body.royalty as Record<string, number>;
+  // Item 325: the verifiers that keep it on sale are paid out of the seller side, and here the only verifier IS the
+  // buyer — so B's balance falls by the price and rises again by its own verifier fee. Assert against the split the
+  // record actually names rather than against the price alone.
+  const backToB = Object.entries(royalty).filter(([a]) => a.toLowerCase() === B.cfg.identity.address.toLowerCase()).reduce((t, [, v]) => t + Number(v), 0);
+  const balB1 = await (B.ledger as AinLedger).balance();
+  assert.ok(balB0 - balB1 >= Number(target.anchor.price) - backToB - 1e-6, `buyer paid (${balB0} → ${balB1}, price ${target.anchor.price}, verifier fee back ${backToB})`);
+  const balA1 = await (A.ledger as AinLedger).balance();
+  assert.ok(balA1 > balA0 - 1e-6, 'seller received');
   assert.ok(B.market.blobs.has(target.anchor.patch_sha256));
   const onChain = await (B.ledger as AinLedger).getValue(`/apps/knowledge/market/settlements/${target.anchor.id}`);
   assert.ok(onChain && Object.keys(onChain).length >= 1, 'settlement visible on chain to anyone');
-  // royalty: base and child share the author (A), so A keeps everything; the split object still names A only
-  assert.deepEqual(Object.keys(setts[0].body.royalty), [A.cfg.identity.address]);
+  // royalty: base and child share the author (A), so A keeps the lineage side; the verifier lines are B's alone
+  assert.ok(Object.keys(royalty).some((a) => a.toLowerCase() === A.cfg.identity.address.toLowerCase()), 'author paid');
+  assert.deepEqual(
+    Object.keys(royalty).map((a) => a.toLowerCase()).sort(),
+    [A.cfg.identity.address.toLowerCase(), B.cfg.identity.address.toLowerCase()].sort(),
+    'the author and the one verifier are the only recipients',
+  );
 });

@@ -149,7 +149,10 @@ test('teach PR-1: contributors on a draft, catalog filters, /api/info fields, da
   const updated = A.market.updateDraft('taught-lesson', { contributors: [{ ...anchor.contributors![0], name: 'Kim' }], visibility: 'public' });
   assert.equal(updated.contributors?.[0].name, 'Kim');
   assert.throws(() => A.market.updateDraft('taught-lesson', { contributors: Array.from({ length: 5 }, (_, i) => ({ address: '0x' + String(i).repeat(40), share: 0.1, role: 'data_provider' as const, proof: 'declared' as const })) }), /at most 4/);
-  await A.market.announce('taught-lesson');
+  // The visitor's consent gate (item 243): a teach draft is only announceable through the teach path, where the
+  // teacher signs the claim. The test stands in for that signature with the same internal flag teach.announceJob uses.
+  await assert.rejects(() => A.market.announce('taught-lesson'), /lesson_draft/);
+  await A.market.announce('taught-lesson', { fromTeach: true });
 
   const info = await (await fetch(`${A.url}/api/info`)).json() as { accepts_contributions: boolean; contributor_share: number; royalty_share: number };
   assert.equal(info.accepts_contributions, false, 'teach.enabled defaults to false');
