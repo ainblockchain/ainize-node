@@ -862,9 +862,9 @@
      "user_cost": "A public page advertises the operator’s serving endpoint and a directory on their disk. On a node reachable from the internet that is an invitation, and it tells a visitor nothing they can use.",
      "fix": "Show the model id and status to visitors and keep the endpoint and repo path behind the operator session (NetworkPage: gate those two rows on isSignedIn). In ChatPage.tsx:377 put the model id in the tooltip, not the URL.",
      "effort": "S",
-     "status": "partial",
-     "fixed_by": "b4d4df7",
-     "fixed_note": "/network shows visitors the model, the status and the live-connection state and keeps the serving endpoint and the runtime repo path behind the operator session. ChatPage.tsx:710 still puts data.runtime.api in the model chip's title attribute — the live-test workstream owns that line."
+     "fixed_by": "02fceab",
+     "fixed_note": "/network shows visitors the model, its status and the live-connection state and keeps the serving endpoint and the runtime repo path behind the operator session (b4d4df7); the live test's model chip, the second place the endpoint leaked, now shows a visitor a sentence about what the chip means and keeps the URL for the signed-in operator (02fceab).",
+     "fixed": true
     },
     {
      "n": 94,
