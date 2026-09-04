@@ -1,0 +1,18 @@
+[
+  {
+    "group": "Get started",
+    "pages": [
+      { "page": "index", "title": "Ainize" }
+    ]
+  },
+  {
+    "group": "Reference",
+    "pages": [
+      { "page": "reference/cli", "title": "CLI reference" },
+      { "page": "reference/http-api", "title": "HTTP API reference" },
+      { "page": "reference/schemas", "title": "Schemas" },
+      { "page": "reference/config", "title": "Configuration reference" },
+      { "page": "reference/errors", "title": "Error codes" }
+    ]
+  }
+]
