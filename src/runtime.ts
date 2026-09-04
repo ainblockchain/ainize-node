@@ -18,7 +18,22 @@ export interface VerifyOutcome {
   /** Baseline generations before the patch was applied (same prompts, subset). */
   pre_apply: { prompt: string; expect: string; got: string; hit: boolean }[];
   collateral_nat?: number;
+  /** Hits per source knowledge (§7.7): '(own)' plus one entry per parent whose samples were included. */
+  per_source?: Record<string, string>;
+  /** The ordered base stack that was loaded underneath for this run. */
+  stack?: string[];
   log: string[];
+}
+
+/** Options for one verification run. `below` is the ordered base stack the candidate needs underneath (§7.7). */
+export interface VerifyOpts {
+  restore?: boolean;
+  maxSamples?: number;
+  below?: { id: string; path: string; sha256: string }[];
+  /** The candidate's own journal path, so restoring puts back whatever the apply displaced. */
+  journal?: string;
+  /** true when the candidate is a delta: its `before` is checked against the live rows before anything is written. */
+  delta?: boolean;
 }
 
 /** What `patch.py check` measured on the live table (design §8.2). */
@@ -448,7 +463,7 @@ export class Runtime {
    * would change what an attestation measures, and scores published before and after would stop being comparable.
    * The prompts are also sent verbatim (`s.prompt`, trailing space included) exactly as before.
    */
-  async verify(npz: string, bench: BenchmarkSpec, opts: { restore?: boolean; maxSamples?: number } = {}): Promise<VerifyOutcome> {
+  async verify(npz: string, bench: BenchmarkSpec, opts: VerifyOpts = {}): Promise<VerifyOutcome> {
     return this.serial(async () => {
       const log: string[] = [];
       const samples = (bench.samples ?? []).slice(0, opts.maxSamples ?? 40);
@@ -456,17 +471,29 @@ export class Runtime {
       if (!st.available) throw new Error(st.error ?? 'runtime unavailable');
       if (!samples.length) throw new Error('benchmark has no inline samples');
       if (!(await this.probe())) throw new Error('serving model not responding (probe timed out) — will retry');
+      // §7.7: a knowledge trained on top of others is only meaningful with those others underneath, so the stack goes
+      // on first and the baseline is measured WITH it — otherwise the parents' answers would be scored as the child's.
+      const below = opts.below ?? [];
+      const addedBelow: typeof below = [];
+      for (const b of below) {
+        if ((await this.isApplied(b.path, this.journalPath(b.sha256) ?? undefined)) === true) { log.push(`base ${b.id} already loaded`); continue; }
+        const r = await this.applyRaw(b.path, { journal: this.journalPath(b.sha256) ?? undefined });
+        if (r.code !== 0) throw new Error(`loading the base ${b.id} failed: ${r.err || r.out}`);
+        addedBelow.push(b);
+        log.push(`base ${b.id}: ${r.out}`);
+      }
       const wasApplied = await this.isApplied(npz);
-      log.push(`baseline applied=${wasApplied}`);
+      log.push(`baseline applied=${wasApplied}${below.length ? ` on top of ${below.map((b) => b.id).join(' → ')}` : ''}`);
       const before: VerifyOutcome['details'] = [];
       if (!wasApplied) {
         for (const s of samples.slice(0, Math.min(samples.length, 8))) {
           const got = (await this.complete(s.prompt, 8, 300_000, { sampling: null })).trim();
           before.push({ prompt: s.prompt, expect: s.expect, got, hit: got.startsWith(s.expect) });
         }
-        log.push(`pre-apply hits ${before.filter((d) => d.hit).length}/${before.length}`);
+        log.push(`pre-apply hits ${before.filter((d) => d.hit).length}/${before.length}${below.length ? ' (with the base stack loaded)' : ''}`);
       }
-      const ap = await this.py(['scripts/patch.py', 'apply', npz]);
+      const ap = await this.applyRaw(npz, { journal: opts.journal, verifyBefore: opts.delta });
+      if (ap.json?.error === 'base_mismatch') throw new Error(`base_mismatch: the rows under this knowledge are not the ones it was trained on (${ap.json.rows_differ} of ${ap.json.rows} rows) — it cannot be verified here`);
       if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
       log.push(`apply: ${ap.out}`);
       let restarts = 0;
@@ -493,14 +520,43 @@ export class Runtime {
         }
       }
       if (opts.restore !== false) {
-        const rm = await this.py(['scripts/patch.py', 'remove', npz]);
+        const rm = await this.removeRaw(npz, { journal: opts.journal });
         log.push(`restore: ${rm.out || rm.err}`);
       }
+      // Whatever this run put on the table comes off in reverse, through the journal — the node is left as it was found.
+      for (let i = addedBelow.length - 1; i >= 0; i--) {
+        const b = addedBelow[i];
+        const r = await this.removeRaw(b.path, { journal: this.journalPath(b.sha256) ?? undefined });
+        log.push(`restore base ${b.id}: ${r.out || r.err}`);
+      }
       const hits = details.filter((d) => d.hit).length;
-      const passed = hits === details.length || (details.length >= 10 && hits / details.length >= 0.95);
+      // Stratified (§7.7): a sample's `source` names the knowledge it came from — the child's own samples have none.
+      // A child that answers its own questions but breaks a parent's must not pass, so each source is scored on its own.
+      const bySource = new Map<string, { hit: number; total: number }>();
+      details.forEach((d, i) => {
+        const src = samples[i]?.source ?? '(own)';
+        const cur = bySource.get(src) ?? { hit: 0, total: 0 };
+        cur.total++; if (d.hit) cur.hit++;
+        bySource.set(src, cur);
+      });
+      const per_source: Record<string, string> = {};
+      for (const [src, v] of bySource) per_source[src] = `${v.hit}/${v.total}`;
+      const own = bySource.get('(own)') ?? { hit: hits, total: details.length };
+      const parentsOk = [...bySource].every(([src, v]) => src === '(own)' || v.total === 0 || v.hit / v.total >= 0.9);
+      const ownOk = own.total === 0 || own.hit === own.total || (own.total >= 10 && own.hit / own.total >= 0.95);
+      const passed = below.length || bySource.size > 1
+        ? ownOk && parentsOk
+        : hits === details.length || (details.length >= 10 && hits / details.length >= 0.95);
       return {
         passed,
-        score: { free_generation: `${hits}/${details.length}`, ...(before.length ? { pre_apply: `${before.filter((d) => d.hit).length}/${before.length}` } : {}) },
+        score: {
+          free_generation: `${hits}/${details.length}`,
+          ...(before.length ? { pre_apply: `${before.filter((d) => d.hit).length}/${before.length}` } : {}),
+          ...(bySource.size > 1 ? { per_source: Object.entries(per_source).map(([k, v]) => `${k} ${v}`).join(', ') } : {}),
+          ...(below.length ? { stack: below.map((b) => b.id).join(' → ') } : {}),
+        },
+        per_source,
+        stack: below.map((b) => b.id),
         verified_on: `vllm:${st.model}`,
         restarts_detected: restarts,
         details,

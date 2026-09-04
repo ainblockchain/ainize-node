@@ -16,6 +16,8 @@ export class Verifier {
   /** First real-verification failure time per patch (runtime hiccups / serving restarts). After RUNTIME_GRACE_MS we fall back to hash-only. */
   private runtimeFailures = new Map<string, number>();
   static readonly RUNTIME_GRACE_MS = 15 * 60_000;
+  /** Samples measured for an anchor with a base stack (§7.7 raises the cap from 40 so parent questions fit). */
+  static readonly LINEAGE_SAMPLE_CAP = 64;
   private graceLeft(id: string): number { const t = this.runtimeFailures.get(id); return t ? Math.max(0, Verifier.RUNTIME_GRACE_MS - (Date.now() - t)) : Verifier.RUNTIME_GRACE_MS; }
   private noteFailure(id: string) { if (!this.runtimeFailures.has(id)) this.runtimeFailures.set(id, Date.now()); }
   constructor(private readonly market: Market, private readonly intervalMs: number) {}
@@ -106,10 +108,26 @@ export class Verifier {
       score = { integrity: 'sha256 mismatch' };
     } else if (runtimeCompatible && anchor.benchmark.samples?.length && m.runtime.repo) {
       try {
-        const out = await m.runtime.verify(blob.path, anchor.benchmark, { restore: !m.isApplied(anchor.id) });
+        // §7.7 — a knowledge trained on top of others is verified WITH them underneath, and scored per source: it must
+        // answer its own questions AND not break the ones it inherited. Without every parent body here the score would
+        // be measured on the wrong table, so this node says so instead of attesting a number it cannot stand behind.
+        const stack = anchor.base?.stack ?? [];
+        const below: { id: string; path: string; sha256: string }[] = [];
+        for (const b of stack) {
+          const bb = m.blobs.get(b.patch_sha256);
+          if (!bb) throw new Error(`this node does not hold ${b.patch_id}, which has to be loaded underneath — verify it on a node that pins the base`);
+          below.push({ id: b.patch_id, path: bb.path, sha256: bb.sha256 });
+        }
+        const out = await m.runtime.verify(blob.path, anchor.benchmark, {
+          restore: !m.isApplied(anchor.id),
+          below,
+          journal: m.runtime.journalPath(blob.sha256) ?? undefined,
+          delta: anchor.base?.export === 'delta',
+          ...(stack.length ? { maxSamples: Verifier.LINEAGE_SAMPLE_CAP } : {}),
+        });
         passed = out.passed; score = out.score; verified_on = out.verified_on; restarts = out.restarts_detected; collateral = out.collateral_nat;
         this.runtimeFailures.delete(anchor.id);
-        m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details, pre_apply: out.pre_apply });
+        m.log('info', 'verifier', `benchmark ${anchor.id}: ${out.score.free_generation}${out.score.per_source ? ` (${out.score.per_source})` : ''} restarts=${restarts}`, anchor.id, { log: out.log, details: out.details, pre_apply: out.pre_apply, per_source: out.per_source, stack: out.stack });
       } catch (err) {
         this.noteFailure(anchor.id);
         if (this.graceLeft(anchor.id) > 0) throw new Error(`${(err as Error).message} (retrying for ${Math.round(this.graceLeft(anchor.id) / 60000)} more min before hash-only fallback)`);
