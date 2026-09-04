@@ -704,6 +704,24 @@ export class TeachWorker {
   }
 
   /**
+   * Item 171 — "can I teach with this?", answered before anything is uploaded.
+   *
+   * Exactly the rules `contextTargets` enforces, with no side effect and no cost, so the CLI and the browser can
+   * refuse a bad `--patch` / `--on` before a dataset is created and a teaching key is minted. A knowledge this caller
+   * may not see answers `not_listed`, which is deliberately the same answer a typo gets: the check must not be a way
+   * to discover that someone else has a private draft.
+   */
+  async knowledgeFor(id: string, caller: Caller): Promise<{ id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held'; price?: string; currency?: string; status?: string }> {
+    const entry = await this.market.entry(id).catch(() => null);
+    if (!entry || !this.market.mayUseEntry(entry, caller)) return { id, usable: false, reason: 'not_listed' };
+    const held = !!this.market.blobs.get(entry.anchor.patch_sha256);
+    return {
+      id, name: entry.anchor.name, usable: held, ...(held ? {} : { reason: 'not_held' as const }),
+      price: entry.anchor.price ?? '0', currency: this.market.cfg.market.currency, status: entry.status,
+    };
+  }
+
+  /**
    * Run `fn` under a short exclusive section with the context stack applied (apply what is missing, in list order;
    * afterwards remove what we added in reverse and re-assert the operator-pinned set when an overlapping removal happened).
    */
@@ -2366,6 +2384,10 @@ export class TeachWorker {
         settlements: [], downloads: 0, revenue: '0', challenges: [], superseded_by: [], supersedes: [], children: [], record_hash: '' } as unknown as CatalogEntry),
       anchor: { ...anchor, contributors },
     };
+    // `royaltySplit` starts its ancestor walk at `all.get(entry.anchor.id)`, not at the entry it was handed: a DRAFT
+    // that the catalogue snapshot does not carry would walk no parents at all and quietly report 70 % to the teacher
+    // on a lesson that pays 49 %. Seeding the map with this entry makes the preview walk exactly what a sale will.
+    all.set(entry.anchor.id, entry);
     const split = royaltySplit(entry, all, 1, royaltyShare);
     // Names for the lineage lines: walk the same ancestor chain royaltySplit walks, so "30 % to the creators of
     // pixel-base, pixel-sa" names the knowledge that is actually being paid and not the first anchor by that author.

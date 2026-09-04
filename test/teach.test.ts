@@ -328,7 +328,9 @@ test('Your lessons: the draft appears in /api/chat/patches for the owner only an
   assert.equal(anonChat.status, 404, anonChat.text);
   assert.equal((await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] }, hdr(stranger))).status, 404);
   const strangerPre = await api('POST', '/api/teach/preflight', { patch_ids: [job1.draft_id], facts: [{ prompt: 'Q2 Ctx', answer: 'Ctx' }] }, hdr(stranger));
-  assert.equal(strangerPre.status, 400); assert.match(strangerPre.json.error!, /^invalid: unknown knowledge/);
+  // item 171: the refusal names the problem and a remedy, and a stranger's answer for someone else's private draft is
+  // deliberately the SAME one a typo gets — the check must never confirm that the draft exists
+  assert.equal(strangerPre.status, 400); assert.match(strangerPre.json.error!, /^unknown_knowledge: this node does not have/);
   assert.equal((await api('POST', '/api/teach/jobs', { patch_ids: [job1.draft_id], facts: [{ prompt: 'Q2 Ctx', answer: 'Ctx' }] }, hdr(stranger))).status, 400);
   assert.equal((await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'base', messages: [{ role: 'user', content: FACTS[0].prompt }] }, op())).status, 200, 'operator may');
   const chat = await api('POST', '/api/chat', { patch_id: job1.draft_id, mode: 'compare', messages: [{ role: 'user', content: FACTS[0].prompt }] }, hdr());

@@ -615,11 +615,17 @@ export function buildApi(deps: ApiDeps): Router {
     const branches = await market.branches();
     const subs = await market.ledger.subscriptions();
     const nodes = await market.knownNodes();
-    return { branches: branches.map((b) => {
+    return { branches: await Promise.all(branches.map(async (b) => {
       const state = new Map<string, boolean>();
       for (const r of subs) if (r.body.branch === b.name) state.set(r.body.node, r.body.action === 'subscribe');
-      return { ...b, subscribers: [...state.entries()].filter(([, v]) => v).map(([k]) => nodes.find((n) => n.address === k) ?? { address: k }) };
-    }), mine: await market.mySubscriptions() };
+      return {
+        ...b,
+        subscribers: [...state.entries()].filter(([, v]) => v).map(([k]) => nodes.find((n) => n.address === k) ?? { address: k }),
+        // Item 257 — `patch_ids` is the whole history of the track; `current` is what a subscriber actually loads
+        // (a version retired by a newer member of the same track is kept as history and never bought again).
+        current: await market.currentTrackIds(b),
+      };
+    })), mine: await market.mySubscriptions() };
   }));
   router.get('/api/route', wrap(async (req) => market.route(req.query as Record<string, string>)));
   router.get('/api/nodes', wrap(async () => {
