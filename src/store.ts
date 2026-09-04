@@ -23,6 +23,19 @@ export const EVENT_KINDS = [
 
 export interface EventRow { seq: number; ts: number; level: (typeof EVENT_LEVELS)[number]; kind: string; patch_id: string | null; message: string; data: unknown; }
 export interface PeerRow { endpoint: string; address: string | null; info: PeerInfo | null; last_seen: number; failures: number; cursor: number; }
+/** One recorded promise to build on a knowledge (item 312): the key that asked, when, and the child that kept it. */
+export interface DeriveIntentRow { parent_id: string; child_key: string; dataset_sha256: string; first_at: number; last_at: number; fetches: number; declared_by: string | null; }
+/** Starting local credit issued by THIS node to one address (item 364) — the grant a balance is derived from. */
+export interface CreditGrantRow { address: string; amount: string; reason: string; granted_at: number; }
+/**
+ * An x402 payment this node started (item 274). `quoted` = a 402 answered, nothing spent yet; `paid` = the money
+ * left (tx_hash), the manifest has not come back; `settled` = the seller answered; `abandoned` = the operator gave up.
+ */
+export interface PendingPaymentRow {
+  id: number; patch_id: string; gateway: string; resource: string; scheme: string; pay_to: string;
+  amount: string; currency: string; nonce: string; tx_hash: string | null; payload: string | null;
+  status: 'quoted' | 'paid' | 'settled' | 'abandoned'; error: string | null; created_at: number; updated_at: number;
+}
 export interface DraftRow { id: string; anchor: PatchAnchor; file_path: string; created_at: number; updated_at: number; }
 
 /** One teach job (spec §6.5) as persisted; JSON columns are decoded. */
@@ -159,9 +172,24 @@ export class Store {
       CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, created_at REAL NOT NULL, expires_at REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, resource TEXT NOT NULL, amount TEXT NOT NULL, pay_to TEXT NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
+      -- Money moves before a manifest comes back, so the INTENT is written first (item 274): one row per x402
+      -- payment this node makes, from the moment it has a quote, updated with the tx hash BEFORE the payment is
+      -- presented. A row left at 'paid' is a purchase that owes this node a body — market.collect() finishes it.
+      CREATE TABLE IF NOT EXISTS pending_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id TEXT NOT NULL, gateway TEXT NOT NULL,
+        resource TEXT NOT NULL, scheme TEXT NOT NULL, pay_to TEXT NOT NULL, amount TEXT NOT NULL, currency TEXT NOT NULL,
+        nonce TEXT NOT NULL, tx_hash TEXT, payload TEXT, status TEXT NOT NULL, error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_pending_payments_patch ON pending_payments(patch_id, status);
+      -- Local credit is issued by THIS node, not owned by the buyer (item 364): every starting grant is a row here,
+      -- so creditBalance sums records that exist instead of assuming a balance for any address that ever appears.
+      CREATE TABLE IF NOT EXISTS credit_grants (address TEXT PRIMARY KEY, amount TEXT NOT NULL, reason TEXT NOT NULL, granted_at REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS applied (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at REAL NOT NULL, reason TEXT NOT NULL,
         position INTEGER, journal_path TEXT, stack_sha256 TEXT);
       CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, sha256 TEXT NOT NULL, issued_to TEXT NOT NULL, expires_at REAL NOT NULL);
+      -- Possession is not a licence (item 327): a verifier holds every body it ever scored, and a subscriber that
+      -- verified an item was never charged for it. "licenses" is the separate record of what this node may actually
+      -- USE — "source" says where the right came from, and 'verification' is explicitly not a right to serve.
+      CREATE TABLE IF NOT EXISTS licenses (patch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL, detail TEXT, created_at REAL NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_licenses_sha ON licenses(sha256);
       CREATE TABLE IF NOT EXISTS teach_jobs (id TEXT PRIMARY KEY, contributor TEXT NOT NULL, contributor_name TEXT, ip TEXT, status TEXT NOT NULL,
         context TEXT NOT NULL, builds_on INTEGER NOT NULL DEFAULT 0, facts TEXT NOT NULL, job_dir TEXT, npz_path TEXT, sha256 TEXT, progress TEXT, checks TEXT,
         error TEXT, container_pid INTEGER, draft_id TEXT, patch_id TEXT, publish_status TEXT NOT NULL DEFAULT 'none', reject_reason TEXT, parent_job TEXT,
@@ -221,6 +249,12 @@ export class Store {
     // published training sets held by this node (design §5.2) — content-addressed like `blobs`
     this.db.exec(`CREATE TABLE IF NOT EXISTS dataset_blobs (sha256 TEXT PRIMARY KEY, rows INTEGER NOT NULL, size_bytes INTEGER NOT NULL, access TEXT NOT NULL,
       license TEXT NOT NULL, patch_id TEXT, pinned_at REAL NOT NULL)`);
+    // Item 312: a derive token used to be a free, unrecorded download of the questions that make a knowledge worth
+    // buying. The intent is now a COMMITMENT this node keeps: which key said it was building on which knowledge, and
+    // when. It is what the publish gate checks a child against, and what the creator of the parent is shown.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS derive_intents (parent_id TEXT NOT NULL, child_key TEXT NOT NULL, dataset_sha256 TEXT NOT NULL,
+      first_at REAL NOT NULL, last_at REAL NOT NULL, fetches INTEGER NOT NULL DEFAULT 1, declared_by TEXT, PRIMARY KEY (parent_id, child_key));
+      CREATE INDEX IF NOT EXISTS idx_derive_intents_key ON derive_intents(child_key);`);
     // teach mode v2 (design §D7): every visitor-facing p50/p90 filters on `backend`, so a stub node's 3-second jobs
     // can never be presented as measured gradient training. `sentences` = rows x renderings, what actually drives cost.
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
@@ -296,6 +330,19 @@ export class Store {
       manifest: r.manifest ? JSON.parse(r.manifest as string) : null, path: (r.path as string) ?? null, created_at: r.created_at as number };
   }
 
+  // licenses — the right to USE a body, kept apart from holding the file (item 327)
+  /** Record a licence. `source`: 'author' (this node published it), 'purchase' (settled), 'free' (price 0), 'verification' (scored it — NOT a right to serve). */
+  putLicense(patchId: string, sha256: string, source: LicenseSource, detail: string | null = null) {
+    // A weaker source never overwrites a stronger one: verifying something you bought must not downgrade the purchase.
+    const cur = this.getLicense(patchId);
+    if (cur && LICENSE_RANK[cur.source] >= LICENSE_RANK[source]) return;
+    this.db.prepare('INSERT OR REPLACE INTO licenses (patch_id, sha256, source, detail, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(patchId, sha256, source, detail, Date.now());
+  }
+  getLicense(patchId: string): LicenseRow | null { return (this.db.prepare('SELECT * FROM licenses WHERE patch_id = ?').get(patchId) as never) ?? null; }
+  listLicenses(): LicenseRow[] { return this.db.prepare('SELECT * FROM licenses ORDER BY created_at DESC').all() as never; }
+  clearLicense(patchId: string) { this.db.prepare('DELETE FROM licenses WHERE patch_id = ?').run(patchId); }
+
   // peers
   upsertPeer(endpoint: string, patch: Partial<PeerRow> = {}) {
     const cur = this.getPeer(endpoint);
@@ -346,16 +393,81 @@ export class Store {
     return !!r && r.expires_at > Date.now();
   }
   deleteSession(token: string) { this.db.prepare('DELETE FROM sessions WHERE token = ?').run(token); }
+  /** Sign every operator session out — what a password change must do, or a stolen cookie outlives it (item 121). */
+  deleteAllSessions(): number { return this.db.prepare('DELETE FROM sessions').run().changes as number; }
 
   // x402 nonces + replay protection
   putNonce(nonce: string, resource: string, amount: string, payTo: string, ttlMs: number) {
     this.db.prepare('INSERT INTO nonces (nonce, resource, amount, pay_to, expires_at) VALUES (?, ?, ?, ?, ?)').run(nonce, resource, amount, payTo, Date.now() + ttlMs);
+  }
+  /**
+   * Read a nonce WITHOUT spending it (item 272): a payment is validated first and the nonce consumed last, so a
+   * rejected attempt — wrong amount, bad signature, no credit — leaves the quote usable instead of stranding the
+   * buyer with a nonce the seller has already burned. `used` and `expired` are reported, not hidden.
+   */
+  peekNonce(nonce: string): { resource: string; amount: string; pay_to: string; expires_at: number; used: boolean } | null {
+    const r = this.db.prepare('SELECT * FROM nonces WHERE nonce = ?').get(nonce) as { resource: string; amount: string; pay_to: string; expires_at: number; used: number } | undefined;
+    return r ? { resource: r.resource, amount: r.amount, pay_to: r.pay_to, expires_at: r.expires_at, used: !!r.used } : null;
   }
   takeNonce(nonce: string): { resource: string; amount: string; pay_to: string } | null {
     const r = this.db.prepare('SELECT * FROM nonces WHERE nonce = ? AND used = 0 AND expires_at > ?').get(nonce, Date.now()) as { resource: string; amount: string; pay_to: string } | undefined;
     if (!r) return null;
     this.db.prepare('UPDATE nonces SET used = 1 WHERE nonce = ?').run(nonce);
     return r;
+  }
+
+  // local credit this node has issued (item 364)
+  getGrant(address: string): CreditGrantRow | null {
+    const r = this.db.prepare('SELECT * FROM credit_grants WHERE address = ?').get(address) as Record<string, unknown> | undefined;
+    return r ? { address: r.address as string, amount: r.amount as string, reason: r.reason as string, granted_at: r.granted_at as number } : null;
+  }
+  /** Write the grant once. Returns the row that is now in force — an address is funded by this node exactly once. */
+  putGrant(address: string, amount: string, reason: string): CreditGrantRow {
+    this.db.prepare('INSERT OR IGNORE INTO credit_grants (address, amount, reason, granted_at) VALUES (?, ?, ?, ?)').run(address, amount, reason, Date.now());
+    return this.getGrant(address)!;
+  }
+  listGrants(limit = 500): CreditGrantRow[] {
+    return (this.db.prepare('SELECT * FROM credit_grants ORDER BY granted_at DESC LIMIT ?').all(limit) as Record<string, unknown>[])
+      .map((r) => ({ address: r.address as string, amount: r.amount as string, reason: r.reason as string, granted_at: r.granted_at as number }));
+  }
+  /** How much credit this node has issued in total, and to how many addresses — the cap is checked against this. */
+  grantTotals(): { addresses: number; amount: number } {
+    const r = this.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(CAST(amount AS REAL)), 0) AS s FROM credit_grants').get() as { n: number; s: number };
+    return { addresses: Number(r.n ?? 0), amount: Math.round(Number(r.s ?? 0) * 1e6) / 1e6 };
+  }
+
+  // x402 payments this node is making (item 274) — written before the money moves
+  putPending(row: Omit<PendingPaymentRow, 'id' | 'created_at' | 'updated_at'>): PendingPaymentRow {
+    const now = Date.now();
+    const r = this.db.prepare(`INSERT INTO pending_payments (patch_id, gateway, resource, scheme, pay_to, amount, currency, nonce, tx_hash, payload, status, error, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      .get(row.patch_id, row.gateway, row.resource, row.scheme, row.pay_to, row.amount, row.currency, row.nonce, row.tx_hash, row.payload, row.status, row.error, now, now) as Record<string, unknown>;
+    return Store.toPending(r);
+  }
+  updatePending(id: number, patch: Partial<Pick<PendingPaymentRow, 'tx_hash' | 'payload' | 'status' | 'error'>>) {
+    const cur = this.db.prepare('SELECT * FROM pending_payments WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!cur) return;
+    const row = { ...Store.toPending(cur), ...patch };
+    this.db.prepare('UPDATE pending_payments SET tx_hash = ?, payload = ?, status = ?, error = ?, updated_at = ? WHERE id = ?')
+      .run(row.tx_hash, row.payload, row.status, row.error, Date.now(), id);
+  }
+  /** Payments that left this node and were never answered with a manifest, newest first. */
+  listPending(opts: { patch_id?: string; status?: string[]; limit?: number } = {}): PendingPaymentRow[] {
+    const where: string[] = []; const args: (string | number)[] = [];
+    if (opts.patch_id) { where.push('patch_id = ?'); args.push(opts.patch_id); }
+    const status = opts.status ?? ['quoted', 'paid'];
+    where.push(`status IN (${status.map(() => '?').join(', ')})`); args.push(...status);
+    return (this.db.prepare(`SELECT * FROM pending_payments ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT ${Number(opts.limit ?? 100)}`).all(...args) as Record<string, unknown>[])
+      .map(Store.toPending);
+  }
+  private static toPending(r: Record<string, unknown>): PendingPaymentRow {
+    return {
+      id: r.id as number, patch_id: r.patch_id as string, gateway: r.gateway as string, resource: r.resource as string,
+      scheme: r.scheme as string, pay_to: r.pay_to as string, amount: r.amount as string, currency: r.currency as string,
+      nonce: r.nonce as string, tx_hash: (r.tx_hash as string) ?? null, payload: (r.payload as string) ?? null,
+      status: r.status as PendingPaymentRow['status'], error: (r.error as string) ?? null,
+      created_at: r.created_at as number, updated_at: r.updated_at as number,
+    };
   }
   paymentSeen(txHash: string): boolean { return !!this.db.prepare('SELECT 1 FROM payments_seen WHERE tx_hash = ?').get(txHash); }
   markPayment(txHash: string, patchId: string) { this.db.prepare('INSERT OR IGNORE INTO payments_seen (tx_hash, patch_id, ts) VALUES (?, ?, ?)').run(txHash, patchId, Date.now()); }
@@ -722,6 +834,26 @@ export class Store {
     return s;
   }
 
+  // ------------------------------------------------------------ derive intents (lineage design §6.1, item 312)
+  /** Record (or refresh) "this key says it is building on this knowledge". Idempotent per (parent, key). */
+  putDeriveIntent(parentId: string, childKey: string, datasetSha: string, now = Date.now()) {
+    this.db.prepare(`INSERT INTO derive_intents (parent_id, child_key, dataset_sha256, first_at, last_at, fetches) VALUES (?, ?, ?, ?, ?, 1)
+      ON CONFLICT(parent_id, child_key) DO UPDATE SET last_at = excluded.last_at, dataset_sha256 = excluded.dataset_sha256, fetches = derive_intents.fetches + 1`)
+      .run(parentId, childKey.toLowerCase(), datasetSha, now, now);
+  }
+  /** The knowledge this key committed to build on, newest first. */
+  deriveIntentsOf(childKey: string): DeriveIntentRow[] {
+    return this.db.prepare('SELECT * FROM derive_intents WHERE child_key = ? ORDER BY last_at DESC').all(childKey.toLowerCase()) as unknown as DeriveIntentRow[];
+  }
+  /** Everyone who took this knowledge's questions to build on — what its creator is owed an answer about. */
+  deriveIntentsFor(parentId: string): DeriveIntentRow[] {
+    return this.db.prepare('SELECT * FROM derive_intents WHERE parent_id = ? ORDER BY last_at DESC').all(parentId) as unknown as DeriveIntentRow[];
+  }
+  /** Mark a commitment as kept: the child named the parent in a published anchor. */
+  markDeriveDeclared(parentId: string, childKey: string, childPatchId: string) {
+    this.db.prepare('UPDATE derive_intents SET declared_by = ? WHERE parent_id = ? AND child_key = ?').run(childPatchId, parentId, childKey.toLowerCase());
+  }
+
   // published training sets (lineage design §5.2)
   putDatasetBlob(b: { sha256: string; rows: number; size_bytes: number; access: string; license: string; patch_id: string | null; pinned_at: number }) {
     this.db.prepare(`INSERT INTO dataset_blobs (sha256, rows, size_bytes, access, license, patch_id, pinned_at) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -755,6 +887,13 @@ export class Store {
     ids.forEach((id, i) => stmt.run(i, id));
   }
 }
+
+/** Where the right to use a body came from. 'verification' is possession only — the verifier may score it, never serve it. */
+export type LicenseSource = 'author' | 'purchase' | 'free' | 'teach' | 'verification';
+/** Strength order: a verification-only copy never overwrites a purchase (or the other way round). */
+const LICENSE_RANK: Record<LicenseSource, number> = { verification: 1, free: 2, teach: 3, purchase: 4, author: 5 };
+/** One row of `licenses`: what this node may use, and why. */
+export interface LicenseRow { patch_id: string; sha256: string; source: LicenseSource; detail: string | null; created_at: number }
 
 /** One row of the runtime stack (`applied`). */
 export interface AppliedRow {

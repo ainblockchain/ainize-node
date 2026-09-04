@@ -7,9 +7,9 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, VERSION, buildStamp, canonicalJson, DATASET_MAX_BYTES_CEILING, deriveCatalog, hashCanonical, intersectionCount, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
+  AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
-  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED,
+  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, ainPaymentDigest, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord,
@@ -20,7 +20,7 @@ import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
-import type { Store, BlobRow, EventRow, LicenseRow, LicenseSource } from './store.js';
+import type { Store, BlobRow, CreditGrantRow, EventRow, LicenseRow, LicenseSource } from './store.js';
 import { Payouts } from './payouts.js';
 
 /** Depth cap of the family tree walk (design §12.5 asks for ≤ 8 hops in either direction). */
@@ -52,8 +52,10 @@ export interface LineageTree {
   family: { sales: number; knowledges: number; authors: number };
   money: {
     seller_pct: number; lineage_pct: number; contributor_pct: number;
+    /** the verification fee on one sale of the root, and how many verifiers share it (item 325) */
+    verifier_pct: number; verifier_count: number;
     seller_name: string | null; lineage_names: string[];
-    recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' }[];
+    recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' | 'verifier' }[];
   };
 }
 
@@ -132,6 +134,66 @@ export interface TeachSettings {
  * before announcing (item 150) and what the supersede rule reads (items 151, 240, 363): only an OLDER knowledge by
  * the SAME author is ever superseded — a competitor's listing never is.
  */
+/** A queued apply/remove (item 212): the POST answers with this and the caller polls `GET /api/runtime/jobs/:id`. */
+export interface RuntimeJob {
+  id: string; kind: 'apply' | 'remove'; patch_id: string;
+  state: 'queued' | 'running' | 'done' | 'failed';
+  queued_at: number; started_at: number | null; finished_at: number | null;
+  result: string | null; error: string | null;
+  status?: number; details?: Record<string, unknown> | null;
+  /** What the shared model is doing while this job waits — what the CLI prints instead of nothing. */
+  queue?: { running: { label: string; since: number } | null; waiting: number; lock: { label: string; owner: string; since: number; mine: boolean } | null };
+}
+
+/** One item of a track, resolved against this node: what subscribing would do with it, and why (items 256, 257, 357). */
+export interface TrackItem {
+  patch_id: string; name: string | null; author: string | null; author_name: string | null;
+  price: string; currency: string; status: string | null;
+  /** buy = money leaves this node; held/own = nothing to pay; retired/blocked/wrong_model/unknown = not loaded at all. */
+  plan: 'buy' | 'held' | 'own' | 'retired' | 'blocked' | 'wrong_model' | 'unknown';
+  reason: string;
+  superseded_by: string[];
+}
+/** What `POST /api/branches/:name/quote` answers: the whole spend, item by item, before anything is spent. */
+export interface TrackQuote {
+  branch: string; owner: string; description: string; subscribed: boolean;
+  items: TrackItem[];
+  /** The track's CURRENT set — what this node would load (retired versions and unverified bakes are not in it). */
+  current: string[];
+  retired: string[];
+  buy: string[];
+  total: { currency: string; amount: string }[];
+  currency: string; balance: number | null;
+  runtime_available: boolean; runtime_error: string | null;
+}
+/** What a subscribe / unsubscribe / sync actually did. */
+export interface SubscribeResult {
+  ok: true; branch: string; action: 'subscribe' | 'unsubscribe' | 'sync';
+  acquired: string[];
+  failed: { patch_id: string; error: string }[];
+  applied: string[];
+  skipped: { patch_id: string; reason: string }[];
+  removed: string[];
+  spent: { currency: string; amount: string }[];
+}
+
+/** One row of the live-test / teach knowledge picker (item 297): what this node could run, and what is in the way. */
+export interface PickerRow {
+  entry: CatalogEntry;
+  /** Is the body on this node? */
+  held: boolean;
+  /** May this node use it — author, purchase or price 0? (A verification copy is held but not licensed.) */
+  licensed: boolean;
+  license: LicenseSource | null;
+  /** held AND licensed: it can be loaded right now. */
+  testable: boolean;
+  /** It is verified and for sale, and this node does not have a licence for it — the operator can buy it. */
+  buyable: boolean;
+  reason: 'ok' | 'not_held' | 'not_licensed' | 'verify_only';
+  /** How many different visitors have asked the operator to get it. */
+  requests: number;
+}
+
 export interface ConflictInfo {
   patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean;
   /** Address of the node that published the overlapping knowledge. */
@@ -152,6 +214,31 @@ export interface PurchaseResult {
   tx_hash: string;
   amount: string;
   scheme: string;
+  /** Every knowledge this call paid for, bases first (item 270); one entry with `withRequired` off. */
+  purchases?: { patch_id: string; amount: string; currency: string; scheme: string; tx_hash: string; free?: boolean }[];
+  /** What left this node's wallet in total, in `currency`. */
+  total?: string;
+  currency?: string;
+  /** true when nothing was charged: the payment was already settled and the seller re-issued the manifest (item 273). */
+  redeemed?: boolean;
+}
+
+/**
+ * What a purchase really costs (item 270): the price on the anchor plus every base underneath that this node does
+ * not already hold. `missing` is what the buy would have to acquire, `unknown` the ones whose anchor this node has
+ * never seen — their price is in nobody's total.
+ */
+export interface PatchQuote {
+  patch_id: string;
+  price: string;
+  currency: string;
+  requires: (X402Required & { held: boolean; purchased: boolean; mine: boolean })[];
+  missing: string[];
+  unknown: string[];
+  total: string;
+  self_contained: boolean;
+  export: 'delta' | 'squash' | null;
+  derivation: string | null;
 }
 
 const SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
@@ -227,6 +314,8 @@ export interface ChatOutcome {
   applied_ms: number | null; was_applied: boolean; model: string | null; benchmark_hit: boolean | null;
   applied: { patch_id: string; applied_ms: number | null; was_applied: boolean; base?: boolean }[];
   benchmark_hits: Record<string, boolean | null>;
+  /** Bodies found on the shared model that this node never loaded: removed for the base answer and not put back (item 211). */
+  dirty: string[];
   /** How many messages each column was actually sent, and whether the two conversations differed. */
   history: { base: number; patched: number; split: boolean };
 }
@@ -471,6 +560,15 @@ export class Market {
       license: input.license, parents, parent_authors: parents.map((p) => map.get(p)!.anchor.author),
       branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
+      // What this knowledge promises the people it was built on and the people who verify it, written into the
+      // immutable record (items 191, 325). Before this the split was read from the SELLING node's config at settle
+      // time, so a derivative's seller could set `market.royaltyShare` to 0 and keep the base creator's share while
+      // her page still said 30 %. A child may promise MORE than its parents did; it can never promise less.
+      royalty_share: Math.min(1, Math.max(
+        NETWORK_MIN_ROYALTY_SHARE, this.cfg.market.royaltyShare ?? 0,
+        ...parents.map((p) => effectiveRoyaltyShare(map.get(p)!.anchor, this.cfg.market.royaltyShare ?? 0)),
+      )),
+      verifier_share: effectiveVerifierShare(undefined, this.cfg.market.verifierShare),
     };
     const contributors = this.checkContributors(input.contributors);
     if (contributors.length) anchor.contributors = contributors;
@@ -667,13 +765,50 @@ export class Market {
     await this.reconcileSupersedes().catch(() => undefined);
   }
 
-  async challenge(patchId: string, reason: string): Promise<void> {
-    // No `stake`: nothing is escrowed anywhere in this product, so the record does not claim a bond (item 127).
-    const c: Challenge = { patch_id: patchId, challenger: this.address, reason, created_at: Date.now() };
+  /**
+   * File a challenge (item 328). A challenge is free, it stops every sale of the knowledge instantly, and it spends
+   * some other node's GPU minutes on the re-run — so before this it was also the cheapest way to keep a rival off
+   * sale for as long as you kept filing. The deterrent is procedural, not a deposit (nothing is escrowed anywhere in
+   * this product, item 127): it has to say why, one address may hold only one open challenge on an anchor, and a
+   * challenge the verifiers already dismissed cannot be re-filed by the same address for CHALLENGE_COOLDOWN_MS.
+   */
+  async challenge(patchId: string, reason: string): Promise<Challenge> {
+    const text = String(reason ?? '').trim();
+    const e = await this.entry(patchId);
+    if (!e) throw notFound('patch not found');
+    if (e.status === 'DRAFT') throw conflict(`${patchId} is a private draft — there is nothing on the record to challenge`);
+    if (text.length < CHALLENGE_MIN_REASON) {
+      throw badInput(`a challenge takes ${patchId} off sale everywhere until a verifier re-runs the benchmark on it, so it has to say why: at least ${CHALLENGE_MIN_REASON} characters (got ${text.length}). Name the question it gets wrong and what the model answered.`);
+    }
+    const mine = e.challenge_log.filter((c) => sameAddr(c.challenge.challenger, this.address));
+    const open = mine.find((c) => c.state === 'open');
+    if (open) {
+      throw conflict(`you already have an open challenge on ${patchId}, filed ${new Date(open.challenge.created_at).toISOString()}: "${open.challenge.reason}". It is waiting for a verifier to re-run the benchmark — a second one does not make that happen sooner.`);
+    }
+    const dismissed = mine.filter((c) => c.state === 'dismissed' && c.answered_at).sort((a, b) => (b.answered_at ?? 0) - (a.answered_at ?? 0))[0];
+    if (dismissed && Date.now() - (dismissed.answered_at ?? 0) < CHALLENGE_COOLDOWN_MS) {
+      const until = new Date((dismissed.answered_at ?? 0) + CHALLENGE_COOLDOWN_MS).toISOString();
+      throw conflict(`your challenge on ${patchId} was answered: ${dismissed.answered_by?.slice(0, 10) ?? 'a verifier'}… re-ran the benchmark at ${new Date(dismissed.answered_at ?? 0).toISOString()} and it PASSED. You can challenge it again after ${until} — with evidence the re-run did not cover.`);
+    }
+    const c: Challenge = { patch_id: patchId, challenger: this.address, reason: text, created_at: Date.now() };
     const rec = await this.ledger.append('challenge', c);
     this.invalidate();
-    this.log('warn', 'challenge', `challenged ${patchId}: ${reason}`, patchId);
+    this.log('warn', 'challenge', `challenged ${patchId}: ${text}`, patchId);
     await this.p2p?.broadcast(rec).catch(() => undefined);
+    return c;
+  }
+
+  /** How many challenges an address has filed on this network, and how the verifiers answered them (item 328). */
+  async challengeRecord(address: string): Promise<{ address: string; filed: number; upheld: number; dismissed: number; open: number }> {
+    const out = { address, filed: 0, upheld: 0, dismissed: 0, open: 0 };
+    for (const e of await this.catalogAll()) {
+      for (const c of e.challenge_log) {
+        if (!sameAddr(c.challenge.challenger, address)) continue;
+        out.filed++;
+        out[c.state]++;
+      }
+    }
+    return out;
   }
 
   /** When one of our announced patches gets LISTED and overlapped an older same-schema patch, mark supersede (§14 [0072]). */
@@ -815,18 +950,26 @@ export class Market {
   }
 
   /**
-   * A signed derive intent (design §6.1): the teaching key `childKey` says it is building on `entry`. Counted on the
-   * parent (`derive_fetches` → "built on N times"), answered with a 24-hour token for the set's bytes.
+   * A signed derive intent (design §6.1): the teaching key `childKey` says it is building on `entry`.
+   *
+   * Item 312: saying it used to be the whole of it — the token was free, the only trace was a counter, and nothing
+   * afterwards ever checked that the child declared the parent, so the questions that make a knowledge worth 25 AIN
+   * were a free download to anyone who typed the word "derivative". The intent is now a COMMITMENT: it is written to
+   * `derive_intents` (which key, which knowledge, when), it is returned to the caller as the promise they just made,
+   * and `TeachWorker` refuses to publish a lesson whose training set came from this knowledge unless the anchor names
+   * it as a parent — so the honest derivative that pays the lineage share is no longer competing with a silent copy.
    */
-  deriveIntent(entry: CatalogEntry, childKey: string): { token: string; expires: number; sha256: string } {
+  deriveIntent(entry: CatalogEntry, childKey: string): { token: string; expires: number; sha256: string; commitment: { parent_id: string; child_key: string; at: number; must_declare: true } } {
     const sha = entry.anchor.dataset?.sha256;
     if (!sha) throw notFound('dataset_unavailable: this knowledge has no published training set');
     const token = randomBytes(24).toString('hex');
     const ttl = 24 * 3600_000;
+    const now = Date.now();
     this.store.putToken(token, `dataset:${sha}`, `derive:${childKey.toLowerCase()}`, ttl);
+    this.store.putDeriveIntent(entry.anchor.id, childKey, sha, now);
     this.store.bumpSignals(entry.anchor.id, { derive_fetches: 1 }, { visitor: this.visitorId(`derive:${childKey.toLowerCase()}`) });
     this.log('info', 'teach', `training set of ${entry.anchor.id} requested for a derivative`, entry.anchor.id, { child_key: childKey, sha256: sha });
-    return { token, expires: Date.now() + ttl, sha256: sha };
+    return { token, expires: now + ttl, sha256: sha, commitment: { parent_id: entry.anchor.id, child_key: childKey, at: now, must_declare: true } };
   }
 
   // ------------------------------------------------------------------ blobs
@@ -892,18 +1035,57 @@ export class Market {
     return shas.filter((s) => pub.has(s));
   }
 
-  /** May `address` download blob `sha`? author, any registered verifier, or a settled buyer. */
+  /**
+   * May `address` download blob `sha`? The buyer's download token, the author, a settled buyer — or a verifier
+   * holding a live verification lease.
+   *
+   * The blanket role exemption this replaces (item 326) made every paid body free to anyone who claimed the role:
+   * the claim arrives in an unsigned `POST /p2p/hello`, so a throwaway key fetched a 5-CREDIT body with one HTTP
+   * request and never verified anything. A lease is narrower in every direction: the entry must actually be waiting
+   * for verification, the address must be a registered verifier, the lease ends the moment that verifier's
+   * attestation counts, and every grant is an event on the seller's own log.
+   */
   async mayDownload(sha: string, address: string | null, token?: string): Promise<boolean> {
     if (token && this.store.checkToken(token, sha)) return true;
     if (!address) return false;
-    const cat = await this.catalog();
+    const cat = await this.catalogAll();
     const entries = cat.filter((e) => e.anchor.patch_sha256 === sha);
-    if (entries.some((e) => e.anchor.author === address)) return true;
-    if (entries.some((e) => e.settlements.some((s) => s.buyer === address))) return true;
-    const nodes = await this.ledger.nodes();
-    if (nodes.some((n) => n.body.address === address && n.body.roles.includes('verifier'))) return true;
-    if (this.store.listPeers().some((p) => p.address === address && p.info?.roles.includes('verifier'))) return true;
-    return false;
+    if (entries.some((e) => sameAddr(e.anchor.author, address))) return true;
+    if (entries.some((e) => e.settlements.some((s) => sameAddr(s.buyer, address)))) return true;
+    return (await this.verificationLease(sha, address, entries)).ok;
+  }
+
+  /** One fetch of a body per verifier per anchor, for as long as that anchor is waiting on that verifier (item 326). */
+  static readonly VERIFY_LEASE_FETCHES = 3;
+  async verificationLease(sha: string, address: string, entries?: CatalogEntry[]): Promise<{ ok: boolean; reason: string; patch_id?: string; fetches?: number }> {
+    const cat = entries ?? (await this.catalogAll()).filter((e) => e.anchor.patch_sha256 === sha);
+    if (!cat.length) return { ok: false, reason: 'no knowledge on this node has that body' };
+    const nodes = await this.ledger.nodes().catch(() => []);
+    const registered = nodes.some((n) => sameAddr(n.body.address, address) && n.body.roles.includes('verifier'))
+      || this.store.listPeers().some((p) => sameAddr(p.address, address) && p.info?.roles.includes('verifier'));
+    if (!registered) return { ok: false, reason: 'not a registered verifier on this network' };
+    // Which of the entries sharing this body is still waiting for THIS verifier's attestation?
+    const waiting = cat.find((e) => {
+      if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED', 'REJECTED'].includes(e.status) && !e.open_challenge) return false;
+      if (sameAddr(e.anchor.author, address)) return false;
+      const mine = e.attestations.find((a) => sameAddr(a.verifier, address));
+      if (!mine) return true;
+      return !!e.open_challenge && mine.created_at < e.open_challenge.created_at;   // the challenge is addressed to it again
+    });
+    if (!waiting) {
+      return { ok: false, reason: cat.some((e) => e.attestations.some((a) => sameAddr(a.verifier, address)))
+        ? 'this verifier has already attested every knowledge that shares this body — the verification exemption is spent'
+        : 'no knowledge sharing this body is waiting for verification' };
+    }
+    const key = `verify_lease:${sha}:${address.toLowerCase()}`;
+    const prev = JSON.parse(this.store.get(key) ?? 'null') as { fetches: number; first: number } | null;
+    const fetches = (prev?.fetches ?? 0) + 1;
+    if (fetches > Market.VERIFY_LEASE_FETCHES) {
+      return { ok: false, reason: `this verifier has fetched ${prev?.fetches} copies of this body without attesting ${waiting.anchor.id}`, patch_id: waiting.anchor.id, fetches };
+    }
+    this.store.set(key, JSON.stringify({ fetches, first: prev?.first ?? Date.now() }));
+    this.log('info', 'blob', `served ${waiting.anchor.id} body to verifier ${address.slice(0, 10)}… under a verification lease (fetch ${fetches}/${Market.VERIFY_LEASE_FETCHES}; the lease ends when its attestation lands)`, waiting.anchor.id, { verifier: address, sha256: sha, fetches });
+    return { ok: true, reason: `verifying ${waiting.anchor.id}`, patch_id: waiting.anchor.id, fetches };
   }
 
   // ------------------------------------------------------------------ x402 (seller side)
@@ -968,15 +1150,12 @@ export class Market {
     };
   }
 
-  async requirementsFor(entry: CatalogEntry, resource: string, opts: { buyer?: string | null } = {}): Promise<X402Requirement[]> {
+  async requirementsFor(entry: CatalogEntry, resource: string): Promise<X402Requirement[]> {
     const nonce = newNonce();
     const scheme = this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit';
     this.store.putNonce(nonce, resource, entry.anchor.price, this.address, 10 * 60_000);
     const map = await this.entryMap();
     const quote = await this.quoteFor(entry, map);
-    // A local-credit buyer is funded by THIS node, once, on the record (item 364) — the quote is the moment the
-    // node decides whether it is willing to, so the answer is written before the balance is ever read.
-    if (scheme === 'local-credit' && opts.buyer) this.grantCredit(opts.buyer, `quote ${resource}`);
     return [{
       scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
       payTo: this.address, maxAmountRequired: entry.anchor.price, resource,
@@ -1039,8 +1218,28 @@ export class Market {
     return sha256Hex(canonicalJson({ resource: p.resource, amount: p.amount, nonce: p.nonce, payTo: p.payTo, from: p.from }));
   }
 
-  /** Verify an X-PAYMENT payload for `entry`; on success record a settlement and return it. */
-  async settlePayment(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; error?: undefined } | { settlement?: undefined; error: string }> {
+  /**
+   * The recorded sale of this patch to this payment, if there is one. A settlement is the seller's own receipt, so
+   * a payment presented twice can be answered from it instead of being refused (items 272, 273).
+   */
+  private settledBy(entry: CatalogEntry, txHash: string): Settlement | null {
+    return entry.settlements.find((x) => x.tx_hash === txHash) ?? null;
+  }
+
+  /**
+   * Verify an X-PAYMENT payload for `entry`; on success record a settlement and return it.
+   *
+   * Three rules this function got wrong, rewritten together because they are one order of operations:
+   *  - the nonce is spent LAST (item 272). It used to be taken before amount, signature and balance were checked,
+   *    so a rejected attempt burned the quote and the buyer's retry — the normal answer to a lost response — was
+   *    told "unknown or expired nonce" with the money already gone.
+   *  - a payment presented again by the payer who made it is REDEEMED again (item 273): same settlement, a fresh
+   *    manifest, no second charge. Only a stranger replaying someone else's payment is refused.
+   *  - an AIN transfer only pays for the quote it was made against (item 344): the transfer key must be the one
+   *    this node put in the 402, the nonce must be this node's, and the payer must sign for it. Without that, the
+   *    tx hash is public and whoever presents it first collects the file.
+   */
+  async settlePayment(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
     const payload = decodePayload(header);
     if (!payload) return { error: 'missing or malformed X-PAYMENT' };
     if (entry.anchor.author !== this.address) return { error: 'this node does not sell that patch' };
@@ -1050,39 +1249,94 @@ export class Market {
     let scheme = payload.scheme;
     if (payload.scheme === 'local-credit') {
       if (!payload.nonce || !payload.from || !payload.proof) return { error: 'local-credit payload needs nonce, from, proof' };
-      const n = this.store.takeNonce(payload.nonce);
-      if (!n || n.resource !== resource) return { error: 'unknown or expired nonce' };
-      if (Number(payload.amount) < price) return { error: 'amount below price' };
       const h = Market.intentHash({ resource, amount: payload.amount!, nonce: payload.nonce, payTo: this.address, from: payload.from });
+      // Idempotent redemption FIRST: this exact intent may already be paid for, and the payer asking again is
+      // asking for the manifest they lost, not for a second sale.
+      if (this.store.paymentSeen(h)) {
+        const prev = this.settledBy(entry, h);
+        if (prev && prev.buyer.toLowerCase() === payload.from.toLowerCase() && verifyMessage(h, payload.proof, payload.from)) {
+          this.log('info', 'trade', `re-issued ${entry.anchor.id} to ${payload.from.slice(0, 10)}… against the payment already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, entry.anchor.id, { tx: h });
+          return { settlement: prev, replayed: true };
+        }
+        return { error: 'payment already used' };
+      }
+      const n = this.store.peekNonce(payload.nonce);
+      if (!n || n.expires_at <= Date.now()) return { error: 'unknown or expired nonce' };
+      if (n.used) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
+      if (n.resource !== resource) return { error: 'unknown or expired nonce' };
+      if (Number(payload.amount) < price) return { error: 'amount below price' };
       if (!verifyMessage(h, payload.proof, payload.from)) return { error: 'invalid payment signature' };
-      if (this.store.paymentSeen(h)) return { error: 'payment already used' };
+      // The signature is the first proof that this address exists at all, so it is the moment this node decides
+      // whether to fund it: one recorded, capped grant per address (item 364) — never an assumed balance.
+      const issued = this.grantCredit(payload.from, `first purchase attempt at ${resource}`);
       const bal = await this.creditBalance(payload.from);
-      if (bal < price) return { error: `insufficient credit: ${bal} < ${price}` };
+      if (bal < price) {
+        const iss = this.creditIssuance();
+        return { error: issued.refused
+          ? `insufficient credit: ${bal} < ${price} — ${issued.refused}`
+          : `insufficient credit: ${bal} < ${price} (this node has issued ${iss.addresses}/${iss.cap} starting-credit grants of ${iss.per_address} ${iss.currency})` };
+      }
+      // Everything checked: spend the nonce now, so nothing above can burn it (item 272).
+      if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
       buyer = payload.from; txHash = h;
     } else if (payload.scheme === 'ain-transfer') {
       if (!(this.ledger instanceof AinLedger)) return { error: 'this node does not accept AIN payments' };
       if (!payload.txHash) return { error: 'ain-transfer payload needs txHash' };
-      if (this.store.paymentSeen(payload.txHash)) return { error: 'payment already used' };
+      if (this.store.paymentSeen(payload.txHash)) {
+        const prev = this.settledBy(entry, payload.txHash);
+        const proofOk = !!payload.proof && !!payload.nonce && !!prev && verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, prev.buyer);
+        if (prev && proofOk) {
+          this.log('info', 'trade', `re-issued ${entry.anchor.id} to ${prev.buyer.slice(0, 10)}… against the transfer already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, entry.anchor.id, { tx: payload.txHash });
+          return { settlement: prev, replayed: true };
+        }
+        return { error: 'payment already used' };
+      }
       let tr = await this.ledger.verifyTransfer(payload.txHash);
       for (let i = 0; !tr && i < 5; i++) { await new Promise((r) => setTimeout(r, 1200)); tr = await this.ledger.verifyTransfer(payload.txHash); }
       if (!tr) return { error: 'transfer not found / not executed' };
       if (tr.to !== this.address) return { error: `transfer recipient ${tr.to} is not the seller` };
       if (tr.value < price) return { error: `transfer ${tr.value} below price ${price}` };
+      // The transfer must answer THIS node's quote: its key carries the nonce we issued (item 344).
+      if (!payload.nonce) return { error: `ain-transfer payload needs the nonce from the 402 — GET ${resource} for a quote and transfer with key ${transferKeyFor(resource, '<nonce>')}` };
+      const wantKey = transferKeyFor(resource, payload.nonce);
+      if (tr.key !== wantKey) return { error: `transfer ${payload.txHash.slice(0, 14)}… was not made against this quote: its key is ${tr.key || '(none)'}, expected ${wantKey} — transfer again with that key` };
+      const n = this.store.peekNonce(payload.nonce);
+      if (!n || n.expires_at <= Date.now()) return { error: 'unknown or expired nonce' };
+      if (n.used) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
+      if (n.resource !== resource) return { error: 'unknown or expired nonce' };
+      // …and the person presenting it must be the person who paid: a public tx hash is not a bearer ticket.
+      if (!payload.proof) return { error: `ain-transfer payload needs proof: sign sha256("x402-ain:<txHash>:<nonce>") with the paying key ${tr.from}` };
+      if (!verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, tr.from)) return { error: `payment proof is not signed by the payer ${tr.from} — only the address that made the transfer can redeem it` };
+      if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
       buyer = tr.from; txHash = payload.txHash;
     } else {
       return { error: `unsupported scheme ${String(scheme)}` };
     }
     const map = await this.entryMap();
-    let royalty = royaltySplit(entry, map, price, this.cfg.market.royaltyShare);
-    // Never distribute more than was received (royaltySplit clamps, this is the last line of defence before real transfers).
+    // The split is computed from the ANCHOR's promise (`royalty_share`, `verifier_share`), never from this node's
+    // config: the seller must not be able to decide at settle time what the people it was built on are paid (191).
+    const plan = royaltyPlan(entry, map, price, this.cfg.market.royaltyShare, { verifierShare: this.cfg.market.verifierShare });
+    let royalty = plan.royalty;
+    // Never distribute more than was received (royaltyPlan clamps, this is the last line of defence before real
+    // transfers). Scaling every non-seller line proportionally keeps each payee's relative claim; the old branch
+    // paid the SELLER the whole price, which turned a lineage bug into the seller's profit (item 310).
     const distributed = Object.values(royalty).reduce((a, b) => a + Number(b), 0);
     if (!(distributed <= price + 1e-6)) {
-      this.log('error', 'trade', `royalty split for ${entry.anchor.id} adds up to ${distributed} > price ${price} — paying the seller only; check the lineage anchors`, entry.anchor.id, { royalty });
-      royalty = { [this.address]: String(price) };
+      const factor = price / distributed;
+      const scaled: Record<string, string> = {};
+      for (const [addr, amt] of Object.entries(royalty)) scaled[addr] = (Number(amt) * factor).toFixed(6).replace(/\.?0+$/, '') || '0';
+      this.log('error', 'trade', `royalty split for ${entry.anchor.id} adds up to ${distributed} > price ${price} — every share scaled by ${factor.toFixed(4)} so the sale pays out exactly ${price}; check the lineage anchors`, entry.anchor.id, { royalty, scaled });
+      royalty = scaled;
+    }
+    // An ancestor this node cannot name is money the seller owes and is NOT keeping: it goes on the record, in the
+    // seller's log and on the payouts screen, instead of quietly becoming the seller's margin (item 310).
+    if (Object.keys(plan.unresolved).length) {
+      this.log('error', 'trade', `${entry.anchor.id}: ${Object.entries(plan.unresolved).map(([id, amt]) => `${amt} owed for ${id}`).join(', ')} — this node cannot resolve that lineage, so the share is held back rather than paid to anyone. Sync the ledger (ainize peers sync) and settle it from the Payouts tab.`, entry.anchor.id, { royalty_unresolved: plan.unresolved });
     }
     const settlement: Settlement = {
       patch_id: entry.anchor.id, seller: this.address, buyer, amount: String(price), currency: entry.anchor.currency, scheme,
       tx_hash: txHash, royalty, billing: entry.anchor.billing, created_at: Date.now(),
+      ...(Object.keys(plan.unresolved).length ? { royalty_unresolved: plan.unresolved } : {}),
     };
     this.store.markPayment(txHash, entry.anchor.id);
     const rec = await this.ledger.append('settle', settlement);
@@ -1113,50 +1367,186 @@ export class Market {
   }
 
   // ------------------------------------------------------------------ x402 (buyer side: this node buys)
-  async buy(patchId: string, opts: { apply?: boolean } = {}): Promise<PurchaseResult> {
+  /**
+   * Where a knowledge is actually sold right now (item 275).
+   *
+   * `gateway_url` is frozen into the anchor at announce time and anchors are immutable, so a node that changes its
+   * port keeps a whole catalogue that looks open and cannot be entered. The seller's *identity* does not change,
+   * though, and it re-introduces itself to its peers on every start — so the peer table and the node records are
+   * asked first and the field on the record is treated as the hint it is. Candidates are tried in order.
+   */
+  gatewaysFor(anchor: PatchAnchor, nodes: { address: string; endpoint: string; last_seen?: number }[] = []): { url: string; source: string }[] {
+    const path = `/x402/patch/${anchor.id}`;
+    const out: { url: string; source: string }[] = [];
+    const push = (base: string | null | undefined, source: string) => {
+      if (!base) return;
+      const url = base.endsWith(path) ? base : `${base.replace(/\/+$/, '')}${path}`;
+      if (!out.some((x) => x.url === url)) out.push({ url, source });
+    };
+    if (anchor.author === this.address) push(this.publicUrl, 'this node');
+    const peers = this.store.listPeers().filter((pr) => pr.address === anchor.author).sort((a, b) => b.last_seen - a.last_seen);
+    for (const pr of peers) push(pr.endpoint, `peer table, last seen ${pr.last_seen ? new Date(pr.last_seen).toISOString() : 'never'}`);
+    for (const n of nodes.filter((n) => n.address === anchor.author)) push(n.endpoint, 'node record on the ledger');
+    push((anchor as PatchAnchor & { gateway_url?: string }).gateway_url, 'address on the record');
+    return out;
+  }
+
+  /**
+   * Buy `patchId` from its seller. `withRequired` buys the bases underneath it first, deepest first, one settlement
+   * each (item 270); `maxTotal` refuses before any money moves when the family costs more than that.
+   */
+  async buy(patchId: string, opts: { apply?: boolean; withRequired?: boolean; maxTotal?: number } = {}): Promise<PurchaseResult> {
     const steps: PurchaseResult['steps'] = [];
-    const step = (s: string, d: string) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, patchId); };
+    const step = (s: string, d: string, id = patchId) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, id); };
+    const entry = await this.buyable(patchId);
+    step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
+    const quote = await this.quoteFor(entry);
+    if (quote.requires.length) {
+      step('family', quote.missing.length
+        ? `${entry.anchor.id} is an add-on: it needs ${quote.requires.map((r) => r.id).join(' → ')} underneath, of which this node is missing ${quote.missing.join(', ')} — ${quote.total} ${entry.anchor.currency} for the family`
+        : `${entry.anchor.id} needs ${quote.requires.map((r) => r.id).join(' → ')} underneath; this node already holds ${quote.requires.length === 1 ? 'it' : 'them all'}`);
+    }
+    if (opts.maxTotal !== undefined && Number(quote.total) > opts.maxTotal) {
+      throw conflict(`${patchId} costs ${quote.total} ${entry.anchor.currency} with the ${quote.missing.length} base(s) it needs (${quote.missing.join(', ')}) — over the ${opts.maxTotal} limit, nothing was bought`, { quote });
+    }
+    const purchases: NonNullable<PurchaseResult['purchases']> = [];
+    if (opts.withRequired) {
+      for (const need of quote.requires) {
+        if (need.held || need.mine) continue;
+        if (!need.known) throw conflict(`${patchId} needs ${need.id} underneath and this node has never seen that anchor — ask a peer that carries it before buying`, { quote });
+        const sub = await this.buy(need.id, { apply: false });
+        purchases.push({ patch_id: need.id, amount: sub.amount, currency: need.currency, scheme: sub.scheme, tx_hash: sub.tx_hash });
+        for (const st of sub.steps) steps.push({ ...st, step: `${need.id}/${st.step}` });
+        step('base', `bought base ${need.id} for ${sub.amount} ${need.currency}`, need.id);
+      }
+    } else if (quote.missing.length) {
+      step('needs', `not buying the base(s) it needs: ${quote.missing.join(', ')} — this knowledge will not answer anything on its own until they are loaded under it`);
+    }
+    const one = await this.buyOne(entry, step);
+    purchases.push({ patch_id: patchId, amount: one.amount, currency: entry.anchor.currency, scheme: one.scheme, tx_hash: one.tx_hash, ...(one.redeemed ? { free: true } : {}) });
+    if (opts.apply) {
+      // Buying a knowledge and asking for it to be loaded means the whole stack: an add-on without its base is nonsense (§8.7).
+      const res = await this.applyPatch(patchId, 'purchase', { withBase: true });
+      step('apply', res);
+    }
+    const total = purchases.filter((x) => !x.free).reduce((a, x) => a + Number(x.amount), 0);
+    return { ...one, steps, purchases, total: String(Math.round(total * 1e6) / 1e6), currency: entry.anchor.currency };
+  }
+
+  /** The entry, re-read from the ledger if it looks stale, refusing everything that must not be paid for. */
+  private async buyable(patchId: string): Promise<CatalogEntry> {
     let entry = await this.entry(patchId);
     if (entry && !entry.sellable) { await this.refreshLedger(); entry = await this.entry(patchId); }
     if (!entry) throw notFound('patch not found');
     if (!entry.quorum_ok) throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
     if (!entry.sellable) throw conflict(challengedMessage(entry));
-    step('quorum', `${entry.passed} attestation(s) ≥ quorum ${entry.quorum}`);
-    const gw = (entry.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? `${this.publicUrl}/x402/patch/${patchId}`;
-    const r1 = await fetch(gw, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
+    return entry;
+  }
+
+  /**
+   * One knowledge through the 402 loop: quote → pay → manifest → body.
+   *
+   * The intent is written down before the money moves (item 274). A `pending_payments` row exists from the moment
+   * this node has a quote, carries the tx hash the instant the transfer returns, and is only marked settled when a
+   * manifest is in hand — so a failure between the two leaves evidence on this node instead of only on the chain,
+   * and the next attempt re-presents that payment rather than paying a second time (item 272/273 on the seller side
+   * make the re-presentation idempotent).
+   */
+  private async buyOne(entry: CatalogEntry, step: (s: string, d: string, id?: string) => void): Promise<PurchaseResult> {
+    const patchId = entry.anchor.id;
+    const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen }));
+    const candidates = this.gatewaysFor(entry.anchor, nodes);
+    if (!candidates.length) throw new Error(`no gateway known for ${patchId}: the record carries none and no peer answers for ${entry.anchor.author}`);
     let manifest: PatchManifest;
     let txHash = '';
     let amount = entry.anchor.price;
     let scheme = 'free';
+    let redeemed = false;
+
+    // A payment that already left this node and was never answered is finished first — never paid twice.
+    const owed = this.store.listPending({ patch_id: patchId, status: ['paid'] })[0];
+    if (owed?.payload) {
+      step('pending', `a payment for ${patchId} left this node on ${new Date(owed.updated_at).toISOString()} (${owed.amount} ${owed.currency}, tx ${(owed.tx_hash ?? '').slice(0, 14)}…) and was never answered — presenting it again instead of paying`);
+      const done = await this.presentPayment(owed.gateway, owed.payload).catch((e) => { step('pending', `re-presenting failed: ${(e as Error).message}`); return null; });
+      if (done) {
+        manifest = done.manifest; txHash = done.txHash || owed.tx_hash || ''; amount = owed.amount; scheme = owed.scheme; redeemed = true;
+        this.store.updatePending(owed.id, { status: 'settled', error: null });
+        step('settled', `seller re-issued the manifest against the payment already made — nothing was charged again`);
+        return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step });
+      }
+    }
+
+    let r1: Response | null = null;
+    let gw = candidates[0].url;
+    const tried: string[] = [];
+    for (const cand of candidates) {
+      try {
+        r1 = await fetch(cand.url, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
+        gw = cand.url;
+        step('gateway', `${cand.url} (${cand.source})${tried.length ? ` — after ${tried.join(', ')} did not answer` : ''}`);
+        break;
+      } catch (e) { tried.push(`${cand.url} (${(e as Error).message})`); }
+    }
+    if (!r1) throw new Error(`the seller of ${patchId} could not be reached: ${tried.join('; ')} — the address on the record is ${(entry.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? 'unset'}, and ${entry.anchor.author.slice(0, 10)}… has no reachable peer entry`);
+
     if (r1.status === 402) {
       const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));
       const req = reqs.find((q) => q.scheme === (this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit')) ?? reqs[0];
       if (!req) throw new Error('402 without payment requirements');
       step('402', `Payment Required: ${req.maxAmountRequired} ${req.asset} → ${req.payTo.slice(0, 10)}… (${req.scheme})`);
+      const pending = this.store.putPending({
+        patch_id: patchId, gateway: gw, resource: req.resource, scheme: req.scheme, pay_to: req.payTo,
+        amount: req.maxAmountRequired, currency: req.asset, nonce: req.nonce, tx_hash: null, payload: null, status: 'quoted', error: null,
+      });
       let payload: X402Payload;
       if (req.scheme === 'ain-transfer') {
         if (!(this.ledger instanceof AinLedger)) throw new Error('seller wants AIN but this node runs the local ledger');
-        const t = await this.ledger.transfer(req.payTo, Number(req.maxAmountRequired));
-        payload = { scheme: 'ain-transfer', network: req.network, txHash: t.tx_hash, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce };
-        step('pay', `AIN transfer tx ${t.tx_hash.slice(0, 14)}…`);
+        // The transfer carries the seller's own key so it can only pay for this quote (item 344).
+        const key = req.transfer_key ?? transferKeyFor(req.resource, req.nonce);
+        const t = await this.ledger.transfer(req.payTo, Number(req.maxAmountRequired), key).catch((e) => {
+          this.store.updatePending(pending.id, { status: 'abandoned', error: `transfer failed: ${(e as Error).message}` });
+          throw e;
+        });
+        payload = { scheme: 'ain-transfer', network: req.network, txHash: t.tx_hash, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, transfer_key: key, proof: signMessage(ainPaymentDigest(t.tx_hash, req.nonce), this.cfg.identity.privateKey) };
+        // Written down BEFORE the payment is presented: from here on the money is gone and this row is the receipt.
+        this.store.updatePending(pending.id, { tx_hash: t.tx_hash, payload: encodePayload(payload), status: 'paid' });
+        step('pay', `AIN transfer tx ${t.tx_hash.slice(0, 14)}… (key ${key})`);
       } else {
         const h = Market.intentHash({ resource: req.resource, amount: req.maxAmountRequired, nonce: req.nonce, payTo: req.payTo, from: this.address });
         payload = { scheme: 'local-credit', network: 'local', txHash: h, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, proof: signMessage(h, this.cfg.identity.privateKey) };
+        this.store.updatePending(pending.id, { tx_hash: h, payload: encodePayload(payload), status: 'paid' });
         step('pay', `signed credit intent ${h.slice(0, 14)}…`);
       }
-      const r2 = await fetch(gw, { headers: { [X402_HEADER_PAYMENT]: encodePayload(payload), 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
-      if (!r2.ok) throw new Error(`payment rejected: ${r2.status} ${await r2.text()}`);
-      const text = await r2.text();
-      manifest = JSON.parse(text) as PatchManifest;
-      txHash = r2.headers.get('x-payment-tx-hash') ?? payload.txHash;
+      const done = await this.presentPayment(gw, encodePayload(payload)).catch((e) => {
+        this.store.updatePending(pending.id, { status: 'paid', error: (e as Error).message });
+        throw new Error(`${(e as Error).message} — the payment (${req.maxAmountRequired} ${req.asset}, tx ${(payload.txHash ?? '').slice(0, 14)}…) is recorded as pending on this node; finish it with \`ainize patch download ${patchId}\` instead of buying again`);
+      });
+      manifest = done.manifest;
+      txHash = done.txHash || payload.txHash;
       amount = req.maxAmountRequired; scheme = req.scheme;
-      step('settled', `seller confirmed; manifest sha256 ${sha256Hex(text).slice(0, 14)}…`);
+      this.store.updatePending(pending.id, { status: 'settled', error: null });
+      step('settled', `seller confirmed; manifest sha256 ${done.sha.slice(0, 14)}…`);
     } else if (r1.ok) {
       manifest = (await r1.json()) as PatchManifest;
       step('free', 'no payment required');
     } else {
-      throw new Error(`gateway error ${r1.status}`);
+      throw new Error(`gateway error ${r1.status} from ${gw}: ${(await r1.text().catch(() => '')).slice(0, 200)}`);
     }
+    return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step });
+  }
+
+  /** Present an X-PAYMENT to a gateway and parse the manifest it answers with. */
+  private async presentPayment(gw: string, encoded: string): Promise<{ manifest: PatchManifest; txHash: string; sha: string }> {
+    const r = await fetch(gw, { headers: { [X402_HEADER_PAYMENT]: encoded, 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
+    if (!r.ok) throw new Error(`payment rejected: ${r.status} ${(await r.text()).slice(0, 300)}`);
+    const text = await r.text();
+    return { manifest: JSON.parse(text) as PatchManifest, txHash: r.headers.get('x-payment-tx-hash') ?? '', sha: sha256Hex(text) };
+  }
+
+  /** Download the body a manifest points at, record the purchase and the licence it grants. */
+  private async finishPurchase(entry: CatalogEntry, manifest: PatchManifest, o: { txHash: string; amount: string; scheme: string; redeemed: boolean; step: (s: string, d: string, id?: string) => void }): Promise<PurchaseResult> {
+    const { step } = o;
+    const patchId = entry.anchor.id;
     const dest = this.blobs.pathFor(manifest.patch_sha256);
     const origins = manifest.blob_urls.map((u) => { try { return new URL(u).origin; } catch { return ''; } }).filter(Boolean);
     if (!this.blobs.has(manifest.patch_sha256)) {
@@ -1167,19 +1557,61 @@ export class Market {
       step('download', 'body already present; sha256 matches on-ledger anchor');
     }
     const path = this.blobs.get(manifest.patch_sha256)!.path;
-    this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: txHash, scheme, amount, manifest, path, created_at: Date.now() });
+    this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: o.txHash, scheme: o.scheme, amount: o.amount, manifest, path, created_at: Date.now() });
     // The purchase is what turns a held body into a body this node may load and serve (item 327).
-    this.grantLicense(entry, scheme === 'free' ? 'free' : 'purchase', `${amount} ${entry.anchor.currency} · tx ${txHash.slice(0, 14)}…`);
-    if (this.ledger instanceof AinLedger && scheme === 'ain-transfer') {
-      const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, amount, entry.anchor.currency, txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
+    this.grantLicense(entry, o.scheme === 'free' ? 'free' : 'purchase', `${o.amount} ${entry.anchor.currency} · tx ${o.txHash.slice(0, 14)}…`);
+    if (this.ledger instanceof AinLedger && o.scheme === 'ain-transfer' && !o.redeemed) {
+      const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, o.amount, entry.anchor.currency, o.txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
       if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
     }
-    if (opts.apply) {
-      // Buying a knowledge and asking for it to be loaded means the whole stack: an add-on without its base is nonsense (§8.7).
-      const res = await this.applyPatch(patchId, 'purchase', { withBase: true });
-      step('apply', res);
+    return { patch_id: patchId, steps: [], manifest, path, tx_hash: o.txHash, amount: o.amount, scheme: o.scheme, ...(o.redeemed ? { redeemed: true } : {}) };
+  }
+
+  /**
+   * Collect a knowledge this node has ALREADY paid for, without paying again (item 273).
+   *
+   * Three ways a buyer ends up here: the manifest was lost between the payment and the download; the body was
+   * forgotten and has to come back; or a purchase failed after the money left (item 274). In all three the
+   * settlement already exists, so the right answer is a re-issued manifest or a signed `/p2p/blob` fetch — never a
+   * second sale. Refuses when nothing has been paid, which is what `buy` is for.
+   */
+  async collect(patchId: string): Promise<PurchaseResult> {
+    const steps: PurchaseResult['steps'] = [];
+    const step = (s: string, d: string, id = patchId) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, id); };
+    const entry = await this.entry(patchId);
+    if (!entry) throw notFound('patch not found');
+    if (entry.anchor.author === this.address) throw conflict(`${patchId} is published by this node — its body is not something this node buys`);
+    const have = this.store.getPurchase(patchId);
+    if (have && this.blobs.has(entry.anchor.patch_sha256)) {
+      step('held', `already collected: paid ${have.amount} on ${new Date(have.created_at).toISOString()}, body present`);
+      return { patch_id: patchId, steps, manifest: have.manifest as PatchManifest, path: this.blobs.get(entry.anchor.patch_sha256)!.path, tx_hash: have.tx_hash, amount: have.amount, scheme: have.scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
     }
-    return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme };
+    // 1) a payment that left this node and was never answered — present it again
+    const owed = this.store.listPending({ patch_id: patchId, status: ['paid'] })[0];
+    if (owed?.payload) {
+      step('pending', `presenting the payment made on ${new Date(owed.updated_at).toISOString()} (${owed.amount} ${owed.currency}, tx ${(owed.tx_hash ?? '').slice(0, 14)}…) again`);
+      const done = await this.presentPayment(owed.gateway, owed.payload);
+      this.store.updatePending(owed.id, { status: 'settled', error: null });
+      step('settled', 'seller re-issued the manifest — nothing was charged');
+      const out = await this.finishPurchase(entry, done.manifest, { txHash: done.txHash || owed.tx_hash || '', amount: owed.amount, scheme: owed.scheme, redeemed: true, step });
+      return { ...out, steps, redeemed: true, total: '0', currency: entry.anchor.currency };
+    }
+    // 2) a settlement on the ledger: the seller (and every peer holding the body) admits a settled buyer by signature
+    const settled = entry.settlements.filter((x) => x.buyer.toLowerCase() === this.address.toLowerCase()).sort((a, b) => b.created_at - a.created_at)[0];
+    if (!settled) throw conflict(`this node has not paid for ${patchId} — nothing to collect (buy it with \`ainize patch buy ${patchId}\`)`);
+    step('settlement', `paid ${settled.amount} ${settled.currency} on ${new Date(settled.created_at).toISOString()} (tx ${settled.tx_hash.slice(0, 14)}…) — collecting the body on that receipt, no new payment`);
+    const sha = entry.anchor.patch_sha256;
+    const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen }));
+    const origins = [...new Set([...this.gatewaysFor(entry.anchor, nodes).map((g) => { try { return new URL(g.url).origin; } catch { return ''; } }).filter(Boolean), ...this.p2p.holders(sha)])];
+    if (!this.blobs.has(sha)) {
+      const from = await this.p2p.fetchBlob(sha, this.blobs.pathFor(sha), origins);
+      const { blob } = await this.blobs.importFile(this.blobs.pathFor(sha), { expectSha: sha });
+      step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches on-ledger anchor`);
+    } else step('download', 'body already present; sha256 matches on-ledger anchor');
+    const path = this.blobs.get(sha)!.path;
+    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: settled.tx_hash, scheme: settled.scheme, amount: settled.amount, manifest: have?.manifest ?? null, path, created_at: settled.created_at });
+    this.grantLicense(entry, 'purchase', `${settled.amount} ${settled.currency} · tx ${settled.tx_hash.slice(0, 14)}…`);
+    return { patch_id: patchId, steps, manifest: (have?.manifest ?? null) as PatchManifest, path, tx_hash: settled.tx_hash, amount: settled.amount, scheme: settled.scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
   }
 
   // ------------------------------------------------------------------ licences: the right to use a body (item 327)
@@ -1334,7 +1766,7 @@ export class Market {
    * its child comes off), then apply the rest upwards. Every apply of a delta is gated on `prev == before` over ALL
    * rows and journals the `prev` the hook returns. MUST be called inside `runtime.exclusive()`.
    */
-  private async assertStack(target: Layer[], reason: string, opts: { rebuild?: boolean } = {}): Promise<{ applied: string[]; removed: string[] }> {
+  private async assertStack(target: Layer[], reason: string, opts: { rebuild?: boolean } = {}): Promise<{ applied: string[]; removed: string[]; ms: Record<string, number> }> {
     const cur = this.store.listApplied();
     let keep = 0;
     if (!opts.rebuild) while (keep < cur.length && keep < target.length && cur[keep].patch_id === target[keep].id) keep++;
@@ -1356,11 +1788,15 @@ export class Market {
       removed.push(row.patch_id);
     }
     const applied: string[] = [];
+    /** How long each layer took to write — the live test reports it per knowledge and must never print an unmeasured number. */
+    const ms: Record<string, number> = {};
     for (let i = keep; i < target.length; i++) {
       const t = target[i];
       const stackSha = Market.stackFingerprint(target.slice(0, i));
       const journal = this.runtime.journalPath(t.sha256) ?? undefined;
+      const t0 = Date.now();
       const r = await this.runtime.applyRaw(t.path, { journal, stackSha, verifyBefore: t.delta });
+      ms[t.id] = Date.now() - t0;
       if (r.json?.error === 'base_mismatch') {
         throw conflict(`base_mismatch: the live rows under ${t.id} are not the ones it was trained on (${r.json.rows_differ} of ${r.json.rows} rows differ) — nothing was written`,
           { patch_id: t.id, rows_differ: r.json.rows_differ, rows: r.json.rows });
@@ -1372,7 +1808,24 @@ export class Market {
     }
     this.store.reorderApplied(target.map((t) => t.id));
     this.store.set('runtime.stack', JSON.stringify(target.map((t) => t.id)));
-    return { applied, removed };
+    return { applied, removed, ms };
+  }
+
+  /**
+   * Put the recorded stack back on the table and CHECK it landed. Used after a live test that had to write over rows
+   * whose owner this node does not know (item 211): the record can be right and the table still wrong, so the top
+   * layer is probed and the whole stack rebuilt from the base model when it is gone.
+   */
+  private async assertRecorded(ids: string[], reason: string, opts: { probe?: boolean } = {}): Promise<void> {
+    const target = await this.layersOfExact(ids);
+    await this.assertStack(target, reason);
+    if (!opts.probe || !target.length) return;
+    const top = target[target.length - 1];
+    const st = await this.runtime.statusOf(top.path, { journal: this.runtime.journalPath(top.sha256) ?? undefined });
+    if (st && !st.applied) {
+      this.log('warn', 'runtime', `${top.id} was not on the model after the restore — rebuilding this node's stack of ${target.length} from the base model`, top.id);
+      await this.assertStack(target, reason, { rebuild: true });
+    }
   }
 
   /**
@@ -1394,11 +1847,40 @@ export class Market {
   }
 
   /** Load one knowledge (and, with `with_base`, everything it was trained on top of). */
-  async applyPatch(patchId: string, reason: string, opts: { withBase?: boolean } = {}): Promise<string> {
+  async applyPatch(patchId: string, reason: string, opts: { withBase?: boolean; onEnter?: () => void } = {}): Promise<string> {
     const entry = await this.entry(patchId);
     if (!entry) throw notFound('patch not found');
     const res = await this.applyStack([patchId], reason, opts);
     return res.applied.length ? `loaded ${res.applied.join(' → ')}` : `${patchId} was already loaded`;
+  }
+
+  // ---------------------------------------------------------------- queued runtime jobs (item 212)
+  /**
+   * An apply or a remove waits behind the shared model lock, and that wait is unbounded: another node's live test or
+   * verification can hold it for minutes. The synchronous POST then died on the HTTP client's own header timeout and
+   * the CLI reported `cannot reach node … (fetch failed)`, exit 2 — while the node happily ran the operation five
+   * minutes later. So the work is a job: the POST answers 202 immediately and the caller polls this.
+   */
+  private jobs = new Map<string, RuntimeJob>();
+  runtimeJob(id: string): RuntimeJob | null {
+    const j = this.jobs.get(id);
+    if (!j) return null;
+    const q = this.runtime.queueState();
+    return { ...j, queue: { running: q.running, waiting: q.waiting, lock: q.lock ? { label: q.lock.label, owner: q.lock.owner, since: q.lock.since, mine: q.lock.mine } : null } };
+  }
+  listRuntimeJobs(): RuntimeJob[] { return [...this.jobs.values()].sort((a, b) => b.queued_at - a.queued_at); }
+
+  /** Start a queued runtime job and return it immediately (the work continues in the background). */
+  startRuntimeJob(kind: 'apply' | 'remove', patchId: string, run: (onEnter: () => void) => Promise<string>): RuntimeJob {
+    const id = randomBytes(9).toString('hex');
+    const job: RuntimeJob = { id, kind, patch_id: patchId, state: 'queued', queued_at: Date.now(), started_at: null, finished_at: null, result: null, error: null };
+    this.jobs.set(id, job);
+    if (this.jobs.size > 200) { const oldest = [...this.jobs.values()].sort((a, b) => a.queued_at - b.queued_at)[0]; if (oldest) this.jobs.delete(oldest.id); }
+    run(() => { job.state = 'running'; job.started_at = Date.now(); })
+      .then((result) => { job.state = 'done'; job.result = result; })
+      .catch((e: Error & { status?: number; details?: Record<string, unknown> }) => { job.state = 'failed'; job.error = e.message; job.status = e.status ?? 500; job.details = e.details ?? null; })
+      .finally(() => { job.finished_at = Date.now(); });
+    return job;
   }
 
   /** Applied knowledges that sit on top of `id` (directly or through another knowledge) — what removing it would break. */
@@ -1646,6 +2128,8 @@ export class Market {
           { missing: [id] });
       }
       if (st.model && !entry.anchor.model.id_M.startsWith(st.model)) throw conflict(`patch ${id} targets ${entry.anchor.model.id_M} but this node serves ${st.model}`);
+      // Item 327 — the body being on disk is not the right to run it. A verifier holds everything it ever scored.
+      if (!this.hasLicense(entry)) throw this.licenseError(entry);
       targets.push({ id, entry, path: blob.path, base: !requested });
     }
     const clamp = (m: ChatMessage[]) => m.slice(-24).map((x) => ({ role: x.role, content: String(x.content).slice(0, 4000) }));
@@ -1663,48 +2147,61 @@ export class Market {
     return this.runtime.exclusive(label, async () => {
       if (gaveUp) throw new ChatCancelledError();
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
-      const wasApplied: boolean[] = [];
-      for (const t of targets) wasApplied.push((await this.runtime.isApplied(t.path)) === true);
+      //
+      // Item 211 — what counts as "already loaded" is what this node RECORDED as loaded, not what a sampled
+      // comparison of the live rows suggests. `patch.py status` answers "closer to trained than to original", so a
+      // body another process left on the shared table read as `was_applied: true`: the visitor was shown "· was
+      // already loaded", the Before column was measured through it, and the restore step then re-asserted the
+      // leftover for everyone. The heuristic still runs, as a CHECK on the record.
+      const pinnedRows = this.store.listApplied();
+      const pinned = pinnedRows.map((a) => a.patch_id);
+      const targetIds = new Set(targets.map((t) => t.id));
+      const wasApplied = targets.map((t) => pinned.includes(t.id));
+      const chatReason = `chat:${opts.visitor.slice(0, 16)}`;
+      const dirty: string[] = [];
+      for (const [i, t] of targets.entries()) {
+        if (wasApplied[i]) continue;
+        const onTable = await this.runtime.isApplied(t.path, this.runtime.journalPath(t.entry.anchor.patch_sha256) ?? undefined);
+        if (onTable === true) dirty.push(t.id);
+      }
+      for (const id of dirty) this.log('warn', 'runtime', `${id} is on the shared model but not in this node's stack — something else left it there. It is removed for the "before" answer and NOT put back.`, id, { visitor: opts.visitor });
       const appliedMs: (number | null)[] = targets.map(() => null);
       let base: ChatResult | null = null; let patched: ChatResult | null = null;
-      // `loaded[i]` tracks what is on the shared table right now so the restore step knows what to undo.
-      const loaded = [...wasApplied];
+      // The stack this test writes over, so an interrupted test is undone at the next start (item 126).
+      this.store.set(Market.RESTORE_KEY, JSON.stringify({ ids: pinned, reason: chatReason, at: Date.now() }));
       try {
+        // A leftover body belongs to nobody: with no journal for it the only way back is its own `before` (the
+        // model's own rows). Anything of ours it displaced is put back by the probe-and-rebuild restore below.
+        for (const id of dirty) {
+          const t = targets.find((x) => x.id === id)!;
+          await this.runtime.removeRaw(t.path).catch((e) => this.log('error', 'runtime', `could not remove the leftover ${id}: ${(e as Error).message}`, id));
+        }
+        const belowLayers = await this.layersOfExact(pinned.filter((id) => !targetIds.has(id)));
+        const testLayers: Layer[] = [];
+        const seenSha = new Set(belowLayers.map((l) => l.sha256));
+        for (const t of targets) {
+          const sha = t.entry.anchor.patch_sha256;
+          if (seenSha.has(sha)) continue;      // one body, one journal (§5.4)
+          seenSha.add(sha);
+          testLayers.push({ id: t.id, sha256: sha, path: t.path, delta: t.entry.anchor.base?.export === 'delta', requested: !t.base, reason: chatReason });
+        }
         if (mode === 'base' || mode === 'compare') {
-          for (let i = targets.length - 1; i >= 0; i--) {
-            if (!loaded[i]) continue;
-            const r = await this.runtime.removeRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
-            loaded[i] = false;
-          }
+          // Everything the test is about comes off — through the journal, so a knowledge underneath it stays standing.
+          await this.assertStack(belowLayers, chatReason);
           base = await this.runtime.chat(msgsBase, chatOpts);
         }
         if (mode === 'patched' || mode === 'compare') {
-          // Apply everything in list order unless every patch is already on the table (single-patch fast path kept):
-          // a partial re-apply could not guarantee "last one wins" on overlapping addresses.
-          if (loaded.some((x) => !x)) {
-            for (let i = 0; i < targets.length; i++) {
-              const t0 = Date.now(); const r = await this.runtime.applyRaw(targets[i].path); if (r.code !== 0) throw new Error(r.err || r.out);
-              appliedMs[i] = Date.now() - t0; loaded[i] = true;
-            }
-          }
+          const res = await this.assertStack([...belowLayers, ...testLayers], chatReason);
+          targets.forEach((t, i) => { appliedMs[i] = res.ms[t.id] ?? null; });
           patched = await this.runtime.chat(msgsPatched, chatOpts);
         }
       } finally {
-        // Always leave the shared table the way we found it: drop what we added (reverse order), then put back what
-        // we removed — and re-assert the operator-pinned ones in list order when an overlapping removal may have
-        // reverted some of their rows.
-        let touched = false;
-        for (let i = targets.length - 1; i >= 0; i--) {
-          if (!loaded[i] || wasApplied[i]) continue;
-          touched = true;
-          await this.runtime.removeRaw(targets[i].path).catch((e) => this.log('error', 'runtime', `restore (remove) failed after live test: ${(e as Error).message}`, targets[i].id));
-          loaded[i] = false;
-        }
-        for (let i = 0; i < targets.length; i++) {
-          if (!wasApplied[i] || (loaded[i] && !touched)) continue;
-          await this.runtime.applyRaw(targets[i].path).catch((e) => this.log('error', 'runtime', `restore (re-apply) failed after live test: ${(e as Error).message}`, targets[i].id));
-          loaded[i] = true;
-        }
+        // Always leave this node serving exactly what it served before the test — the recorded stack, in its recorded
+        // order, with each layer's own reason. `probe` is on when a leftover was written over: the record can be
+        // right and the table still wrong, and only a read of the live rows can tell.
+        await this.assertRecorded(pinned, 'restore', { probe: dirty.length > 0 })
+          .catch((e) => this.log('error', 'runtime', `restore after the live test failed: ${(e as Error).message}`));
+        this.store.set(Market.RESTORE_KEY, '');
       }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')?.content ?? '';
       const hits: Record<string, boolean | null> = {};
@@ -1740,16 +2237,65 @@ export class Market {
         patch_id: ids[0] ?? '', patch_ids: ids, mode, base, patched,
         applied_ms: sum.length ? sum.reduce((a, b) => a + b, 0) : null, was_applied: wasApplied[0] ?? false, model: st.model,
         benchmark_hit: anyHit.some((h) => h === true) ? true : anyHit.some((h) => h === false) ? false : null,
-        applied, benchmark_hits: hits,
+        applied, benchmark_hits: hits, dirty,
         history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
     }, { onEnter });
   }
 
-  /** Patches whose bodies are on this node (testable in ChatMode). */
-  async testablePatches(): Promise<CatalogEntry[]> {
+  /**
+   * Every knowledge this node's model COULD run, with what stands between it and a live test (items 297, 327).
+   *
+   * The picker used to be `blobs.has(...)` and nothing else, so a knowledge this node had not fetched was simply
+   * absent: no row, no price, no seller, no way to ask for it — and the terminal answered "unknown knowledge", the
+   * same words a typo gets. A verifier, meanwhile, holds every body it ever scored, which is possession and not a
+   * licence. Both facts belong on the same row.
+   */
+  async chatCatalog(): Promise<PickerRow[]> {
     const st = await this.runtime.status();
-    return (await this.catalog()).filter((e) => e.status !== 'DRAFT' && this.blobs.has(e.anchor.patch_sha256) && (!st.model || e.anchor.model.id_M.startsWith(st.model)));
+    const out: PickerRow[] = [];
+    for (const e of await this.catalog()) {
+      if (e.status === 'DRAFT') continue;
+      // A body trained for another model can never run here — that is not "buy it", it is "wrong model".
+      if (st.model && !e.anchor.model.id_M.startsWith(st.model)) continue;
+      const held = this.blobs.has(e.anchor.patch_sha256);
+      const lic = this.licenseOf(e);
+      const licensed = !!lic && lic.source !== 'verification';
+      out.push({
+        entry: e, held, licensed, license: lic?.source ?? null, testable: held && licensed,
+        buyable: !!e.sellable && !(held && licensed),
+        reason: held && licensed ? 'ok' : lic?.source === 'verification' ? 'verify_only' : held ? 'not_licensed' : 'not_held',
+        requests: this.requestCount(e.anchor.id),
+      });
+    }
+    return out;
+  }
+
+  /** Patches this node may actually load right now (held AND licensed) — what ChatMode can test. */
+  async testablePatches(): Promise<CatalogEntry[]> {
+    return (await this.chatCatalog()).filter((r) => r.testable).map((r) => r.entry);
+  }
+
+  /** How many different visitors have asked this node's operator to get a knowledge (item 297). */
+  requestCount(patchId: string): number {
+    const rows = this.store.events({ kind: 'demand', patch_id: patchId, limit: 500 });
+    return new Set(rows.map((r) => (r.data as { visitor?: string } | null)?.visitor ?? String(r.seq))).size;
+  }
+
+  /**
+   * "I want to test / build on this and it is not here" — the only first step a visitor has, since buying is
+   * operator-only (item 297). Writes one `demand` event the operator sees in the log and on the knowledge itself.
+   */
+  async requestPatch(patchId: string, visitor: string): Promise<{ patch_id: string; requests: number }> {
+    const e = await this.entry(patchId);
+    if (!e || e.status === 'DRAFT') throw notFound('patch not found');
+    if (this.blobs.has(e.anchor.patch_sha256) && this.hasLicense(e)) throw conflict('this node already holds that knowledge');
+    const already = this.store.events({ kind: 'demand', patch_id: patchId, limit: 500 })
+      .some((r) => (r.data as { visitor?: string } | null)?.visitor === visitor);
+    if (!already) {
+      this.log('info', 'demand', `a visitor asked for ${e.anchor.name} (${patchId}) — ${e.anchor.price} ${e.anchor.currency} from ${e.anchor.author_name ?? e.anchor.author.slice(0, 10)}: ainize patch buy ${patchId}`, patchId, { visitor, price: e.anchor.price, currency: e.anchor.currency, seller: e.anchor.author });
+    }
+    return { patch_id: patchId, requests: this.requestCount(patchId) };
   }
 
   /** Pairwise memory-entry overlap among the given entries (picker warning: "these two overlap on n entries"). */
@@ -1995,22 +2541,27 @@ export class Market {
    * someone costs them what crediting a teacher costs.
    */
   private treeMoney(root: CatalogEntry, map: Map<string, CatalogEntry>, ancestors: TreeNode[]): LineageTree['money'] {
-    const share = this.cfg.market.royaltyShare ?? 0;
-    const split = royaltySplit(root, map, 100, share);
+    const plan = royaltyPlan(root, map, 100, this.cfg.market.royaltyShare ?? 0, { verifierShare: this.cfg.market.verifierShare });
+    const split = plan.royalty;
     const seller = root.anchor.author.toLowerCase();
     const ancestorAuthors = new Map(ancestors.map((n) => [(n.author ?? '').toLowerCase(), n]));
+    const verifiers = new Set(Object.keys(plan.verification).map((a) => a.toLowerCase()));
     const contributorName = (addr: string) => (root.anchor.contributors ?? []).find((c) => c.address.toLowerCase() === addr || c.signer?.toLowerCase() === addr)?.name ?? null;
     const recipients = Object.entries(split)
       .filter(([a]) => a.toLowerCase() !== seller)
       .map(([address, amount]) => {
         const lower = address.toLowerCase();
         const from = ancestorAuthors.get(lower);
-        return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.author_name ?? contributorName(lower), kind: (from ? 'lineage' : 'contributor') as 'lineage' | 'contributor' };
+        const kind: 'lineage' | 'contributor' | 'verifier' = from ? 'lineage' : verifiers.has(lower) ? 'verifier' : 'contributor';
+        return { address, pct: Math.round(Number(amount) * 10) / 10, name: from?.author_name ?? contributorName(lower), kind };
       });
     return {
       seller_pct: Math.round(Number(split[root.anchor.author] ?? split[seller] ?? 0) * 10) / 10,
       lineage_pct: Math.round(recipients.filter((r) => r.kind === 'lineage').reduce((n, r) => n + r.pct, 0) * 10) / 10,
       contributor_pct: Math.round(recipients.filter((r) => r.kind === 'contributor').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      /** what the verifiers keeping this knowledge on sale are paid out of the seller side (item 325) */
+      verifier_pct: Math.round(recipients.filter((r) => r.kind === 'verifier').reduce((n, r) => n + r.pct, 0) * 10) / 10,
+      verifier_count: Object.keys(plan.verification).length,
       /** the knowledges whose creators share `lineage_pct` — SC-9's "{names}" */
       lineage_names: ancestors.map((n) => n.name),
       recipients, seller_name: root.anchor.author_name ?? null,
@@ -2053,18 +2604,43 @@ export class Market {
   // ------------------------------------------------------------------ branches / network
   async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9/_-]{1,63}$/.test(name)) throw badInput('invalid branch name');
-    const b: BranchInfo = { name, description, context, owner: this.address, patch_ids: patchIds, created_at: Date.now() };
+    // Item 358 — a track is the name subscribers follow. Re-creating one under the same name used to rewrite its
+    // owner, description and item list for the whole network (the local ledger is last-write-wins), after which the
+    // real owner's own `branch add` was refused with 403 on their own track.
+    const existing = await this.branchByName(name);
+    if (existing && existing.owner.toLowerCase() !== this.address.toLowerCase()) {
+      throw conflict(`branch_exists: the track ${name} already exists on this network and belongs to ${existing.owner} — a track name cannot change hands. Pick another name (yours/${name.split('/').pop()}), or ask its owner to add your knowledge to it.`,
+        { branch: name, owner: existing.owner, created_at: existing.created_at });
+    }
+    const b: BranchInfo = { name, description, context, owner: this.address, patch_ids: patchIds, created_at: existing?.created_at ?? Date.now() };
     const rec = await this.ledger.append('branch', b);
     this.invalidate();
-    this.log('info', 'branch', `branch ${name} created with ${patchIds.length} patch(es)`, null, context);
+    this.log('info', 'branch', `branch ${name} ${existing ? 'updated' : 'created'} with ${patchIds.length} patch(es)`, null, context);
     await this.p2p?.broadcast(rec).catch(() => undefined);
     return b;
   }
 
+  /**
+   * Tracks on this network, one row per name. The node that FIRST wrote a name owns it: a `branch` record about that
+   * name from anybody else is dropped rather than applied (item 358). The AIN ledger enforces the same thing in its
+   * write rule; on the local ledger this is where it is enforced, so both backends agree.
+   */
   async branches(): Promise<BranchInfo[]> {
     const recs = await this.ledger.branches();
+    const owner = new Map<string, string>();
     const latest = new Map<string, BranchInfo>();
-    for (const r of recs) latest.set(r.body.name, r.body);   // last write wins (owner-only on AIN)
+    for (const r of [...recs].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0))) {
+      const b = r.body;
+      if (!b?.name) continue;
+      const claimed = (b.owner ?? r.author ?? '').toLowerCase();
+      if (!claimed) continue;
+      // The signer of the record must be the owner it names (a record signed by A cannot make B the owner).
+      if (r.author && claimed !== r.author.toLowerCase()) continue;
+      const first = owner.get(b.name);
+      if (first === undefined) owner.set(b.name, claimed);
+      else if (first !== claimed) continue;
+      latest.set(b.name, { ...b, owner: b.owner ?? r.author });
+    }
     return [...latest.values()];
   }
 
@@ -2075,39 +2651,176 @@ export class Market {
     return b;
   }
 
-  async addToBranch(name: string, patchId: string): Promise<BranchInfo> {
+  async addToBranch(name: string, patchId: string, opts: { force?: boolean } = {}): Promise<BranchInfo> {
     const b = await this.branchByName(name);
     if (!b) throw notFound('branch not found');
-    if (b.owner !== this.address) throw new MarketError(403, 'only the branch owner can add patches');
-    if (!(await this.entry(patchId))) throw notFound('patch not found');
+    if (b.owner.toLowerCase() !== this.address.toLowerCase()) throw new MarketError(403, 'only the branch owner can add patches');
+    const e = await this.entry(patchId);
+    if (!e) throw notFound('patch not found');
+    // Item 257 — a track is the list every subscriber's node buys and loads automatically, so an unverified bake has
+    // no business on it: `branch add` used to accept an ANNOUNCED 0/2 body with a ✓ and every subscriber then bought it.
+    if (e.status !== 'LISTED' && !opts.force) {
+      throw conflict(`not_listed: ${patchId} is ${e.status} (verification ${e.passed}/${e.quorum}) — subscribers buy and load whatever is on a track, so only verified knowledge belongs on one. Wait for the quorum${e.status === 'REJECTED' || e.status === 'CHALLENGED' ? '' : ' (it usually takes a few minutes)'}, or add it anyway with --force.`,
+        { patch_id: patchId, status: e.status, passed: e.passed, quorum: e.quorum });
+    }
+    const retires = b.patch_ids.filter((id) => e.supersedes.includes(id));
     const nb: BranchInfo = { ...b, patch_ids: [...new Set([...b.patch_ids, patchId])] };
     const rec = await this.ledger.append('branch', nb);
     this.invalidate();
     await this.p2p?.broadcast(rec).catch(() => undefined);
+    this.log('info', 'branch', `${patchId} added to ${name}${retires.length ? ` — it supersedes ${retires.join(', ')}, which subscribers will stop loading (the id stays on the track as history)` : ''}${e.status !== 'LISTED' ? ` — WARNING: it is ${e.status}, not verified` : ''}`, patchId);
     return nb;
   }
 
-  async subscribe(branch: string, action: 'subscribe' | 'unsubscribe'): Promise<void> {
+  /**
+   * What subscribing to a track would do, BEFORE anything is spent (items 9, 256, 257, 357).
+   *
+   * `subscribe()` used to walk `patch_ids` and buy every id that was `sellable` — which stays true for a SUPERSEDED
+   * bake — so a new subscriber to a 30-day track paid thirty times for twenty-nine retired bodies and applied them
+   * all on the same rows. And it gated the purchase on `blobs.has`, not on verification, so a REJECTED bake this
+   * node had already fetched went straight into the serving model. Both decisions are made here now, per item, from
+   * the catalogue, and every caller (CLI, console, the sync pass) shows the same list.
+   */
+  async quoteBranch(name: string): Promise<TrackQuote> {
+    const b = await this.branchByName(name);
+    if (!b) throw notFound('branch not found');
+    const st = await this.runtime.status();
+    const mine = new Set(await this.mySubscriptions());
+    const members = new Set(b.patch_ids);
+    const items: TrackItem[] = [];
+    for (const id of b.patch_ids) {
+      const e = await this.entry(id);
+      if (!e) { items.push({ patch_id: id, name: null, author: null, author_name: null, price: '0', currency: this.cfg.market.currency, status: null, plan: 'unknown', reason: 'no anchor for this id on this node — it may not have reached this network yet', superseded_by: [] }); continue; }
+      const a = e.anchor;
+      const row = { patch_id: id, name: a.name, author: a.author, author_name: a.author_name ?? null, price: a.price, currency: a.currency, status: e.status, superseded_by: e.superseded_by };
+      // A version retired BY ANOTHER MEMBER of the same track is history: the track's current answer is the newer one.
+      const retiredBy = e.superseded_by.filter((x) => members.has(x));
+      if (retiredBy.length) { items.push({ ...row, plan: 'retired', reason: `replaced on this track by ${retiredBy.join(', ')} — kept as history, not loaded` }); continue; }
+      if (st.model && !a.model.id_M.startsWith(st.model)) { items.push({ ...row, plan: 'wrong_model', reason: `trained for ${a.model.id_M}; this node serves ${st.model}` }); continue; }
+      if (e.status !== 'LISTED' || !e.sellable) { items.push({ ...row, plan: 'blocked', reason: `${e.status} (verification ${e.passed}/${e.quorum}) — not loaded${e.status === 'REJECTED' ? ': the network rejected this bake' : ''}` }); continue; }
+      if (a.author.toLowerCase() === this.address.toLowerCase()) { items.push({ ...row, plan: 'own', reason: 'published by this node' }); continue; }
+      if (this.hasLicense(e)) { items.push({ ...row, plan: 'held', reason: this.licenseOf(e)?.source === 'free' ? 'free — nothing to pay' : 'already bought by this node' }); continue; }
+      items.push({ ...row, plan: 'buy', reason: `${a.price} ${a.currency} to ${a.author_name ?? a.author.slice(0, 10)}…` });
+    }
+    const totals = new Map<string, number>();
+    for (const i of items) if (i.plan === 'buy') totals.set(i.currency, (totals.get(i.currency) ?? 0) + Number(i.price || 0));
+    const balance = this.ledger.kind === 'local' ? await this.creditBalance(this.address).catch(() => null) : null;
+    return {
+      branch: b.name, owner: b.owner, description: b.description, subscribed: mine.has(b.name),
+      items,
+      current: items.filter((i) => i.plan === 'buy' || i.plan === 'held' || i.plan === 'own').map((i) => i.patch_id),
+      retired: items.filter((i) => i.plan === 'retired').map((i) => i.patch_id),
+      buy: items.filter((i) => i.plan === 'buy').map((i) => i.patch_id),
+      total: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })),
+      currency: this.cfg.market.currency, balance,
+      runtime_available: st.available, runtime_error: st.error ?? null,
+    };
+  }
+
+  /**
+   * Subscribe to (or leave) a track. Item 357: everything is BOUGHT FIRST and the public subscription record is
+   * appended only when every item this node needs is in hand — the old order published the record, then looped
+   * `buy()` swallowing each failure as a warning, answered `{ok: true}` and let the gateway advertise this node as
+   * serving a track it held a third of.
+   */
+  async subscribe(branch: string, action: 'subscribe' | 'unsubscribe'): Promise<SubscribeResult> {
     const b = await this.branchByName(branch);
     if (!b) throw notFound('branch not found');
-    const s: SubscriptionRecord = { node: this.address, branch, action, patch_ids: b.patch_ids, created_at: Date.now() };
-    const rec = await this.ledger.append('subscribe', s);
+    if (action === 'unsubscribe') {
+      const rec = await this.ledger.append('subscribe', { node: this.address, branch, action, patch_ids: b.patch_ids, created_at: Date.now() } as SubscriptionRecord);
+      this.invalidate();
+      await this.p2p?.broadcast(rec).catch(() => undefined);
+      const loaded = this.store.listApplied().filter((a) => a.reason === `subscription:${branch}`).map((a) => a.patch_id);
+      const removed: string[] = [];
+      for (const pid of loaded.reverse()) {
+        try { await this.removePatch(pid, { cascade: true }); removed.push(pid); }
+        catch (err) { this.log('warn', 'branch', `could not unload ${pid}: ${(err as Error).message}`, pid); }
+      }
+      this.log('info', 'branch', `unsubscribed ${branch}${removed.length ? ` — unloaded ${removed.join(', ')}` : ''} (nothing is refunded; the bodies stay on this node)`, null);
+      return { ok: true, branch, action, acquired: [], failed: [], applied: [], skipped: [], removed, spent: [] };
+    }
+    const quote = await this.quoteBranch(branch);
+    const acquired: string[] = [];
+    const failed: { patch_id: string; error: string }[] = [];
+    const spent = new Map<string, number>();
+    for (const item of quote.items.filter((i) => i.plan === 'buy')) {
+      try {
+        const r = await this.buy(item.patch_id);
+        acquired.push(item.patch_id);
+        spent.set(item.currency, (spent.get(item.currency) ?? 0) + Number(r.amount || 0));
+      } catch (err) { failed.push({ patch_id: item.patch_id, error: (err as Error).message }); }
+    }
+    if (failed.length) {
+      // Nothing is announced: this node is not advertised as serving a track it could not acquire (item 357).
+      this.log('warn', 'branch', `not subscribing to ${branch}: ${failed.length} of ${failed.length + acquired.length} purchase(s) failed (${failed.map((f) => `${f.patch_id}: ${f.error}`).join('; ')})${acquired.length ? `. ${acquired.join(', ')} was bought and stays on this node.` : ''}`, null, { acquired, failed });
+      throw new MarketError(409, `subscription_incomplete: ${failed.length} of ${acquired.length + failed.length} item(s) could not be acquired, so ${branch} was NOT subscribed to and this node is not advertised as serving it.\n${failed.map((f) => `  ${f.patch_id}: ${f.error}`).join('\n')}${acquired.length ? `\n  (${acquired.join(', ')} was bought and stays on this node — retry when the rest is available.)` : ''}`, { branch, acquired, failed });
+    }
+    const current = quote.current;
+    const rec = await this.ledger.append('subscribe', { node: this.address, branch, action, patch_ids: current, created_at: Date.now() } as SubscriptionRecord);
     this.invalidate();
     await this.p2p?.broadcast(rec).catch(() => undefined);
-    this.log('info', 'branch', `${action} ${branch}`, null);
-    if (action === 'subscribe') {
-      const st = await this.runtime.status();
-      for (const pid of b.patch_ids) {
-        const e = await this.entry(pid);
-        if (!e) continue;
-        if (!this.blobs.has(e.anchor.patch_sha256)) {
-          if (e.anchor.author === this.address) continue;
-          try { await this.buy(pid); } catch (err) { this.log('warn', 'branch', `could not acquire ${pid}: ${(err as Error).message}`, pid); continue; }
-        }
-        if (st.available) await this.applyPatch(pid, `subscription:${branch}`, { withBase: true }).catch((err) => this.log('warn', 'branch', `apply ${pid} failed: ${(err as Error).message}`, pid));
+    const applied: string[] = [];
+    const skipped = quote.items.filter((i) => i.plan !== 'buy' && i.plan !== 'held' && i.plan !== 'own').map((i) => ({ patch_id: i.patch_id, reason: i.reason }));
+    if (current.length && quote.runtime_available) {
+      const res = await this.applyStack(current, `subscription:${branch}`, { withBase: true }).catch((err) => { this.log('warn', 'branch', `subscribed to ${branch} but loading it failed: ${(err as Error).message}`, null); return null; });
+      if (res) applied.push(...res.applied);
+    }
+    this.log('info', 'branch', `subscribed ${branch}: ${current.length} current item(s)${quote.retired.length ? `, ${quote.retired.length} retired version(s) skipped` : ''}${skipped.length ? `, ${skipped.length} not loadable` : ''}${acquired.length ? ` — bought ${acquired.join(', ')}` : ''}${applied.length ? `; loaded ${applied.join(' → ')}` : quote.runtime_available ? '' : ' (nothing loaded: the serving model is unreachable)'}`, null, { current, acquired, skipped });
+    return { ok: true, branch, action, acquired, failed, applied, skipped, removed: [], spent: [...spent.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })) };
+  }
+
+  /**
+   * Bring every subscribed track up to date (item 255): buy and load what the track has added since, unload the
+   * versions it has retired. "Subscribe" was a one-time snapshot — nothing reacted to a later `branch` or
+   * `supersede` record — while the console, the OpenAPI description and the README all promised a node that keeps
+   * up. Runs on the 20-second tick and on demand (`ainize branch sync`, POST /api/branches/:name/sync).
+   */
+  async syncSubscription(branch: string): Promise<SubscribeResult> {
+    const quote = await this.quoteBranch(branch);
+    const loaded = this.store.listApplied().filter((a) => a.reason === `subscription:${branch}`).map((a) => a.patch_id);
+    const want = quote.current;
+    const missing = want.filter((id) => !loaded.includes(id));
+    const stale = loaded.filter((id) => !want.includes(id));
+    const acquired: string[] = [];
+    const failed: { patch_id: string; error: string }[] = [];
+    const spent = new Map<string, number>();
+    if (!missing.length && !stale.length) return { ok: true, branch, action: 'sync', acquired, failed, applied: [], skipped: [], removed: [], spent: [] };
+    for (const id of missing) {
+      const item = quote.items.find((i) => i.patch_id === id);
+      if (item?.plan !== 'buy') continue;
+      try {
+        const r = await this.buy(id);
+        acquired.push(id);
+        spent.set(item.currency, (spent.get(item.currency) ?? 0) + Number(r.amount || 0));
+      } catch (err) {
+        failed.push({ patch_id: id, error: (err as Error).message });
+        this.log('warn', 'branch', `${branch} has a new item this node could not buy — ${id}: ${(err as Error).message}`, id);
       }
-    } else {
-      for (const pid of b.patch_ids) if (this.isApplied(pid)) await this.removePatch(pid).catch(() => undefined);
+    }
+    const ready = want.filter((id) => !failed.some((f) => f.patch_id === id));
+    const applied: string[] = [];
+    const removed: string[] = [];
+    if (quote.runtime_available && (ready.length || stale.length)) {
+      // One lock for the whole change-over: the retired version comes off and the new one goes on in one section,
+      // so the model is never left answering from neither.
+      await this.runtime.exclusive(`sync:${branch}`, async () => {
+        const keep = this.store.listApplied().map((a) => a.patch_id).filter((id) => !stale.includes(id));
+        const layers = ready.length ? await this.layersFor(ready, { withBase: true }) : [];
+        const target = [...(await this.layersOfExact(keep)), ...layers.filter((l) => !keep.includes(l.id)).map((l) => ({ ...l, reason: `subscription:${branch}` }))];
+        const res = await this.assertStack(target, `subscription:${branch}`);
+        applied.push(...res.applied); removed.push(...res.removed);
+      }).catch((err) => this.log('warn', 'branch', `${branch}: loading the new items failed: ${(err as Error).message}`, null));
+    }
+    if (applied.length || removed.length || acquired.length) {
+      this.log('info', 'branch', `subscription ${branch} updated → ${applied.length ? `loaded ${applied.join(', ')}` : 'nothing new to load'}${removed.length ? `; unloaded the retired ${removed.join(', ')}` : ''}${acquired.length ? `; bought ${acquired.join(', ')}` : ''}`, applied[0] ?? null, { applied, removed, acquired, failed });
+    }
+    return { ok: true, branch, action: 'sync', acquired, failed, applied, skipped: [], removed, spent: [...spent.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })) };
+  }
+
+  /** Every subscribed track, brought up to date (the 20-second tick). Failures are logged, never thrown. */
+  async reconcileSubscriptions(): Promise<void> {
+    for (const name of await this.mySubscriptions()) {
+      await this.syncSubscription(name).catch((e) => this.log('warn', 'branch', `sync ${name} failed: ${(e as Error).message}`, null));
     }
   }
 
