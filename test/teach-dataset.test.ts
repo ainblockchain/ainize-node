@@ -384,3 +384,30 @@ test('pii: an e-mail, a phone number, a resident registration number or a Luhn-v
   assert.deepEqual(detectPii(['a@b.co and 010-1111-2222']), ['email', 'phone']);
 });
 
+
+// ---------------------------------------------------------------- provenance of an inherited row (lineage design §5.2)
+test('AZ-275 a row inherited from another training set keeps its pointer through parse, canonical bytes and read-back; a malformed pointer is dropped', () => {
+  const src = [
+    { prompt: 'q0', answer: 'a0', from: 'krx-all-2761#0' },
+    { prompt: 'q1', answer: 'mine', replaces: 'krx-all-2761#1' },
+    { prompt: 'q2', answer: 'a2', from: 'not a pointer' },
+    { prompt: 'q3', answer: 'a3', from: 'krx-all-2761#x' },
+    { prompt: 'q4', answer: 'a4' },
+  ];
+  const r = P(src.map((x) => JSON.stringify(x)).join('\n') + '\n', { filename: 'a.jsonl' });
+  assert.equal(r.rows.length, 5);
+  assert.deepEqual(r.rows.map((x) => x.from ?? null), ['krx-all-2761#0', null, null, null, null], 'only a well-formed <patch>#<index> survives');
+  assert.equal(r.rows[1].replaces, 'krx-all-2761#1');
+  // the pointer is INSIDE the hashed bytes: a set that claims inheritance and one that does not are different sets
+  assert.notEqual(sha256Rows(r.rows), sha256Rows(r.rows.map(({ from, replaces, ...rest }) => ({ ...rest }))));
+  assert.deepEqual(readCanonicalJsonl(canonicalJsonl(r.rows)), r.rows, 'canonical round-trip keeps from/replaces');
+  // the preview table gets them too, so "from {name}" and the Mine / Inherited / Changed filters are server-computed
+  assert.deepEqual(r.report.map((x) => x.from ?? null), ['krx-all-2761#0', null, null, null, null]);
+  assert.equal(r.report[1].replaces, 'krx-all-2761#1');
+  // provenance never comes from prose: a CSV column called "source" is a note, not a lineage claim
+  const csv = P('prompt,answer,source\nq,a,"a book"\n', { filename: 'a.csv' });
+  assert.equal(csv.rows[0].note, 'a book');
+  assert.equal(csv.rows[0].from, undefined);
+  assert.equal(normalizeRow({ prompt: 'p', answer: 'a', from: 'x#1' }).from, 'x#1');
+  assert.equal(normalizeRow({ prompt: 'p', answer: 'a', from: '#1' }).from, undefined);
+});

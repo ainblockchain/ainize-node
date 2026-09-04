@@ -17,8 +17,23 @@ import type { TeachDatasetFormat, TeachDatasetLang, TeachDatasetRow, TeachDatase
 
 // ------------------------------------------------------------------ shape
 
-/** One accepted question, canonical field order. This is what a line of `rows.jsonl` decodes to. */
-export interface CanonicalRow { prompt: string; answer: string; alt_prompt?: string; note?: string }
+/**
+ * One accepted question, canonical field order. This is what a line of `rows.jsonl` decodes to.
+ *
+ * `from` / `replaces` are the PROVENANCE of an inherited row (lineage design §5.2): `from = '<parent_patch_id>#<row
+ * index in the parent set>'` on a row copied unchanged from the knowledge this set was forked from, `replaces` the
+ * same pointer on a row whose answer the new owner changed. Both live INSIDE the hashed bytes, so "these 2,761
+ * questions came from krx-all-2761, and I changed three of them" is part of the set's identity and can be checked
+ * against the parent's own bytes (§6.3) rather than believed.
+ */
+export interface CanonicalRow { prompt: string; answer: string; alt_prompt?: string; note?: string; from?: string; replaces?: string }
+
+/** `<patch id>#<row index>` — the only shape a provenance pointer may have; anything else is dropped, never trusted. */
+const ROW_REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}#(0|[1-9][0-9]{0,8})$/;
+export const isRowRef = (s: unknown): s is string => typeof s === 'string' && ROW_REF.test(s);
+/** The patch id a `from` / `replaces` pointer names (null when the pointer is malformed). */
+export function rowRefPatch(ref: string | undefined): string | null { return isRowRef(ref) ? ref!.slice(0, ref!.lastIndexOf('#')) : null; }
+export function rowRefIndex(ref: string | undefined): number | null { return isRowRef(ref) ? Number(ref!.slice(ref!.lastIndexOf('#') + 1)) : null; }
 
 export type TxtLayout = 'tsv' | 'qa' | 'blocks' | 'prompts';
 
@@ -78,11 +93,16 @@ export const FIELD_ALIASES: Record<keyof CanonicalRow, string[]> = {
   answer: ['answer', 'a', 'output', 'response', 'completion', 'target', '답', '답변', '정답', '출력'],
   alt_prompt: ['altprompt', 'alt', 'altquestion', 'paraphrase', 'anotherway', '다른질문', '유사질문', '다른표현'],
   note: ['note', 'memo', 'source', 'comment', '설명', '비고'],
+  // provenance, not content: exact names only, so a spreadsheet column called "출처" never becomes a lineage claim
+  from: ['from'],
+  replaces: ['replaces'],
 };
 const FIELD_ORDER: (keyof CanonicalRow)[] = ['prompt', 'answer', 'alt_prompt', 'note'];
+/** Read from a JSON object, never mapped onto a spreadsheet column: a 5th CSV column is content, not a lineage claim. */
+const PROVENANCE_FIELDS: (keyof CanonicalRow)[] = ['from', 'replaces'];
 const aliasKey = (s: string) => s.normalize('NFKC').toLowerCase().replace(/[\s_-]+/g, '');
 const ALIAS_TO_FIELD = new Map<string, keyof CanonicalRow>();
-for (const f of FIELD_ORDER) for (const a of FIELD_ALIASES[f]) ALIAS_TO_FIELD.set(aliasKey(a), f);
+for (const f of [...FIELD_ORDER, ...PROVENANCE_FIELDS]) for (const a of FIELD_ALIASES[f]) ALIAS_TO_FIELD.set(aliasKey(a), f);
 
 // ------------------------------------------------------------------ decoding (§8.1)
 
@@ -401,7 +421,7 @@ function recordsFromTxt(text: string, layout: TxtLayout, max: number): { records
 
 // ------------------------------------------------------------------ normalisation (§8.5)
 
-interface NormalizedRow { prompt: string; answer: string; alt_prompt?: string; note?: string; fixes: string[] }
+interface NormalizedRow { prompt: string; answer: string; alt_prompt?: string; note?: string; from?: string; replaces?: string; fixes: string[] }
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
 
@@ -438,7 +458,11 @@ export function normalizeRow(d: Partial<CanonicalRow>, noteMax = DEFAULTS.noteMa
   if (note !== undefined && note.length > noteMax) { note = note.slice(0, noteMax); fixes.add('note_truncated'); }
   if (alt !== undefined && !alt) alt = undefined;
   if (note !== undefined && !note) note = undefined;
-  return { prompt, answer, ...(alt ? { alt_prompt: alt } : {}), ...(note ? { note } : {}), fixes: [...fixes].sort() };
+  // provenance is carried through untouched when it is well-formed and silently dropped when it is not: a malformed
+  // pointer must not become part of the sha, and must never be shown as "from someone"
+  const from = isRowRef(d.from) ? d.from : undefined;
+  const replaces = isRowRef(d.replaces) ? d.replaces : undefined;
+  return { prompt, answer, ...(alt ? { alt_prompt: alt } : {}), ...(note ? { note } : {}), ...(from ? { from } : {}), ...(replaces ? { replaces } : {}), fixes: [...fixes].sort() };
 }
 
 /** Per-row script guess by codepoint majority — never an error, only an aggregate note (§8.6). */
@@ -516,7 +540,7 @@ export function detectPii(fields: (string | undefined)[]): TeachPiiKind[] {
  * dataset hashes the same whatever format it arrived in.
  */
 export function canonicalJsonl(rows: CanonicalRow[]): string {
-  return rows.map((r) => JSON.stringify({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}) })).join('\n') + (rows.length ? '\n' : '');
+  return rows.map((r) => JSON.stringify({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}), ...(isRowRef(r.from) ? { from: r.from } : {}), ...(isRowRef(r.replaces) ? { replaces: r.replaces } : {}) })).join('\n') + (rows.length ? '\n' : '');
 }
 export function canonicalBytes(rows: CanonicalRow[]): Buffer { return Buffer.from(canonicalJsonl(rows), 'utf8'); }
 export function sha256Rows(rows: CanonicalRow[]): string { return createHash('sha256').update(canonicalBytes(rows)).digest('hex'); }
@@ -528,7 +552,7 @@ export function readCanonicalJsonl(text: string): CanonicalRow[] {
     if (!line.trim()) continue;
     try {
       const o = JSON.parse(line) as CanonicalRow;
-      if (typeof o?.prompt === 'string' && typeof o?.answer === 'string') out.push({ prompt: o.prompt, answer: o.answer, ...(o.alt_prompt ? { alt_prompt: o.alt_prompt } : {}), ...(o.note ? { note: o.note } : {}) });
+      if (typeof o?.prompt === 'string' && typeof o?.answer === 'string') out.push({ prompt: o.prompt, answer: o.answer, ...(o.alt_prompt ? { alt_prompt: o.alt_prompt } : {}), ...(o.note ? { note: o.note } : {}), ...(isRowRef(o.from) ? { from: o.from } : {}), ...(isRowRef(o.replaces) ? { replaces: o.replaces } : {}) });
     } catch { /* our own file — a bad line is skipped rather than failing the whole read */ }
   }
   return out;
@@ -628,7 +652,7 @@ export function parseDataset(buf: Buffer, opts: ParseOptions = {}): ParseResult 
       push({ index: null, line, status: 'not_parsed', detail: rec.error ?? 'could not read this line', ...(rec.raw ? { raw: rec.raw.slice(0, 200) } : {}) });
       continue;
     }
-    const base = { prompt: n.prompt || undefined, answer: n.answer || undefined, ...(n.alt_prompt ? { alt_prompt: n.alt_prompt } : {}), ...(n.note ? { note: n.note } : {}), lang: guessLang(`${n.prompt} ${n.answer}`) } as const;
+    const base = { prompt: n.prompt || undefined, answer: n.answer || undefined, ...(n.alt_prompt ? { alt_prompt: n.alt_prompt } : {}), ...(n.note ? { note: n.note } : {}), ...(n.from ? { from: n.from } : {}), ...(n.replaces ? { replaces: n.replaces } : {}), lang: guessLang(`${n.prompt} ${n.answer}`) } as const;
     const reject = (status: TeachRowStatus, detail: string) => push({ index: null, line, status, ...base, ...(n.fixes.length ? { fixes: n.fixes } : {}), detail });
     if (!n.prompt || !n.answer) {
       summary.empty++; summary.rejected++;
@@ -667,7 +691,7 @@ export function parseDataset(buf: Buffer, opts: ParseOptions = {}): ParseResult 
       reject('over_cap', `this node keeps up to ${maxRows} questions in one dataset`);
       continue;
     }
-    const row: CanonicalRow = { prompt: n.prompt, answer: n.answer, ...(n.alt_prompt ? { alt_prompt: n.alt_prompt } : {}), ...(n.note ? { note: n.note } : {}) };
+    const row: CanonicalRow = { prompt: n.prompt, answer: n.answer, ...(n.alt_prompt ? { alt_prompt: n.alt_prompt } : {}), ...(n.note ? { note: n.note } : {}), ...(n.from ? { from: n.from } : {}), ...(n.replaces ? { replaces: n.replaces } : {}) };
     rows.push(row);
     summary.accepted++;
     if (n.fixes.length) summary.fixed++;
