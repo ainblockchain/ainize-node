@@ -2,7 +2,9 @@
   {
     "group": "Get started",
     "pages": [
-      { "page": "index", "title": "Ainize" }
+      { "page": "index", "title": "Ainize" },
+      { "page": "get-started/install", "title": "Installation" },
+      { "page": "get-started/quickstart", "title": "Quickstart" }
     ]
   },
   {

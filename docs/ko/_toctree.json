@@ -2,7 +2,9 @@
   {
     "group": "시작하기",
     "pages": [
-      { "page": "index", "title": "Ainize" }
+      { "page": "index", "title": "Ainize" },
+      { "page": "get-started/install", "title": "설치" },
+      { "page": "get-started/quickstart", "title": "빠른 시작" }
     ]
   },
   {
