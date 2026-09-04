@@ -789,7 +789,12 @@ test.describe('operator: runtime', () => {
 
     r = await withRuntime(request, () => runCli(['branch', 'subscribe', name], { ...A, timeoutMs: 15 * 60_000 }));
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe(`✓ subscribed ${name}  (patches acquired and applied when a runtime is available)`);
+    // Item 357 — the quote is printed before anything is spent, and the answer says what was really bought and
+    // loaded instead of "(patches acquired and applied when a runtime is available)". This track carries only
+    // node-a's own knowledge, so there is nothing to pay and no question to answer.
+    expect(r.stdout).toContain('to pay now');
+    expect(r.stdout).toContain(`✓ subscribed ${name}`);
+    expect(r.stdout).toContain(`loaded   ${K.pixel}`);
     r = await runCli(['logs', '--kind', 'runtime', '--limit', '5'], A);
     expect(r.stdout).toMatch(/runtime {3}\[pixelplus-087600\] applied pixelplus-087600: /);
 
