@@ -29,7 +29,9 @@
    "problem": "The top nav (Explore knowledge, Live test …) and the footer links (ain-js, aindrive …) pull attention away from the one task on this page: training the model.",
    "fix": "Reduce chrome on the teach flow pages: a slim header (logo + back/exit + language) and a minimal footer; keep full navigation on marketplace pages.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "/teach/* now renders under FocusedLayout — a 56 px header with only the logo, an Exit link to /explore and the language toggle, and a footer reduced to copyright · Terms · Contact — while every marketplace page keeps the full header and footer."
   },
   {
    "n": "O-4",

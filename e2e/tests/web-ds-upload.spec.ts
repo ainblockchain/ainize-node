@@ -175,6 +175,21 @@ test('AZ-123 /teach entry choice: two doors, one pipeline — the file card lead
   await page.goto(`${NODE}/teach`);
   const entry = page.getByTestId('teach-entry');
   await expect(entry).toBeVisible();
+
+  // O-3: the teach flow runs under the slim chrome — logo, Exit, language; no marketplace nav, no developer footer
+  const header = page.getByTestId('focused-header');
+  await expect(header.getByRole('link', { name: 'Ainize home' })).toBeVisible();
+  await expect(header.getByRole('link', { name: 'Explore knowledge' })).toHaveCount(0);
+  await expect(header.getByRole('link', { name: 'Live test' })).toHaveCount(0);
+  await expect(page.getByTestId('teach-exit')).toHaveText('Exit');
+  expect(new URL((await page.getByTestId('teach-exit').getAttribute('href'))!, NODE).pathname).toBe('/explore');
+  await expect(header.getByRole('button', { name: 'language' })).toHaveText('한국어');
+  const footer = page.getByTestId('focused-footer');
+  await expect(footer.getByRole('link', { name: 'Terms and Policies' })).toHaveAttribute('href', '/terms');
+  await expect(footer.getByRole('link', { name: 'Contact us' })).toBeVisible();
+  await expect(footer.getByRole('link', { name: 'ain-js' })).toHaveCount(0);
+  await expect(footer.getByRole('link', { name: 'aindrive' })).toHaveCount(0);
+
   await expect(entry.getByRole('heading', { level: 1 })).toHaveText('Teach the model something new');
   await expect(entry.getByText('Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.', { exact: true })).toBeVisible();
   await expect(entry.getByText('No account, no server of your own, no code.', { exact: true })).toBeVisible();

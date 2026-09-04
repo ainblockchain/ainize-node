@@ -5284,12 +5284,14 @@ just prose, nothing else
 **Steps**
 
 1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
-2. Read the two door cards, the policy alert, the step strip and the footer link.
-3. Read the small print under the file CTA.
-4. Operator-only variant: PATCH /api/me/teach/policy {enabled:false} with the operator bearer token, reload /teach, then restore {enabled:true}.
+2. Read the header and the footer: /teach/* runs under the slim teaching chrome (logo · Exit · language; copyright · Terms · Contact), not the marketplace one.
+3. Read the two door cards, the policy alert, the step strip and the footer link.
+4. Read the small print under the file CTA.
+5. Operator-only variant: PATCH /api/me/teach/policy {enabled:false} with the operator bearer token, reload /teach, then restore {enabled:true}.
 
 **Expected**
 
+- Slim chrome (ux-critique-owner O-3): [data-testid=focused-header] holds the 'Ainize home' logo link, [data-testid=teach-exit] 'Exit' → /explore and the 'language' toggle, and NO marketplace link ('Explore knowledge', 'Live test', …); [data-testid=focused-footer] has 'Terms and Policies' → /terms and 'Contact us' and neither 'ain-js' nor 'aindrive'. /explore keeps the full header with all seven links.
 - Title 'Teach the model something new'; subtitle 'Two ways in, one result: your questions and answers become a dataset, the dataset is trained into knowledge, and the knowledge is yours to test, keep private or publish.'; second line 'No account, no server of your own, no code.'
 - Left card: 'Teach it in a conversation' with button [data-testid=door-chat] labelled 'Start a conversation' → navigates to /chat?teach=1. Right card (primary border): 'Upload a dataset file', body 'Already have the questions and answers in a file or a spreadsheet? Upload it and train straight away.', button [data-testid=door-file] labelled 'Choose a file' → navigates to /teach/upload.
 - Small print under the file CTA reads exactly 'jsonl, csv, tsv or plain text · up to 2000 questions' (2000 = GET /api/teach/policy limits.dataset_max_rows; it is NOT the 4 MB number the upload page shows).
@@ -5299,6 +5301,7 @@ just prose, nothing else
 
 **Evidence**
 
+- `packages/web/src/components/ui/FocusedHeader.tsx, components/base/Layout.tsx (FocusedLayout), components/ui/Footer.tsx (minimal), App.tsx (/teach/* routes)`
 - `packages/web/src/pages/TeachPage.tsx:54,59,60,65,70 (door-chat / door-file / entry.file.formats / teach-policy / StepStrip)`
 - `packages/web/src/i18n/pages/teach.ts:290-301 (teach.entry.*), :304-309 (teach.step.*)`
 - `GET http://localhost:3422/api/teach/policy → limits.dataset_max_rows 2000`
