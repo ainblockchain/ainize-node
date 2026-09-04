@@ -1557,6 +1557,71 @@ test('AZ-142 한국어 toggle: the file door, the format examples and the error 
   expect((await teachApi(request, NODE, nodeAddress, key, 'DELETE', `/api/teach/datasets/${id}`)).status).toBe(200);
 });
 
+// ---------------------------------------------------------------------------------------------- AZ-236
+test('AZ-236 /teach trust strip: what stays private, who can see it, where the key lives, that publishing is a separate step — and the full terms one link away @mobile', async ({ page }) => {
+  const width = page.viewportSize()?.width ?? 1280;
+  await page.goto(`${NODE}/teach`);
+  const entry = page.getByTestId('teach-entry');
+  await expect(entry).toBeVisible();
+  await expect(page.getByTestId('teach-policy')).toBeVisible();   // the policy has arrived: the layout is final
+
+  const strip = page.getByTestId('trust-strip');
+  await expect(strip).toHaveAttribute('aria-label', 'Trust and privacy');
+  await expect(strip.locator('ul > li')).toHaveText(['Private by default', 'You choose what to publish', 'Your teaching key stays in this browser', 'The node operator can see your drafts']);
+  for (const id of ['private', 'publish', 'key', 'operator']) await expect(strip.getByTestId(`trust-${id}`)).toBeVisible();
+  // directly under the doors, above "what happens next"
+  const [fileBox, stripBox, nextBox] = await entry.evaluate((el) => ['door-file', 'trust-strip', 'teach-next'].map((id) => {
+    const r = el.querySelector(`[data-testid=${id}]`)!.getBoundingClientRect();
+    return { y: r.y, bottom: r.bottom };
+  }));
+  expect(stripBox.y).toBeGreaterThanOrEqual(fileBox.bottom);
+  expect(stripBox.bottom).toBeLessThanOrEqual(nextBox.y);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth), 'no horizontal scroll').toBeLessThanOrEqual(width);
+
+  // only claims the code makes true — never a word the code cannot back
+  await expect(strip).not.toContainText(/encrypt|anonymous|nobody can see|no one can see/i);
+
+  const detail = page.getByTestId('trust-detail');
+  await expect(detail.locator('summary')).toHaveText('What this means');
+  expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open), 'collapsed by default').toBe(false);
+  await expect(detail.locator('dd').first()).toBeHidden();
+  await detail.locator('summary').click();
+  await expect(detail.locator('dt')).toHaveText(['Private by default', 'You choose what to publish', 'Your teaching key stays in this browser', 'The node operator can see your drafts']);
+  await expect(detail.locator('dd')).toHaveText([
+    'What you teach stays a private draft on this node until you publish it. You can delete a draft any time from My datasets and lessons.',
+    "Publishing is a separate step you take yourself, with your key's signature and your consent. Once published, a lesson is a permanent public record and cannot be deleted.",
+    'The key that signs your lessons and receives your share is created and kept in this browser. The node only ever sees its public address — download a backup from Your knowledge.',
+    'This page is served by one node. Its operator can read the questions, answers and files you store here for as long as they exist — private means private from everyone else, not from the operator. Do not upload personal data or anything you are not allowed to share.',
+  ]);
+  if (width < 600) {
+    // term over definition on a phone: the first <dd> starts below the first <dt>
+    const [dt, dd] = await Promise.all([detail.locator('dt').first().boundingBox(), detail.locator('dd').first().boundingBox()]);
+    expect(dd!.y).toBeGreaterThanOrEqual(dt!.y + dt!.height - 1);
+  }
+
+  // the full terms, one link away, at the teaching section
+  const terms = page.getByTestId('trust-terms');
+  await expect(terms).toHaveText('Full terms →');
+  expect(new URL((await terms.getAttribute('href'))!, NODE).pathname + new URL((await terms.getAttribute('href'))!, NODE).hash).toBe('/terms#teaching');
+  await terms.click();
+  await page.waitForURL(/\/terms#teaching$/);
+  const heading = page.getByTestId('terms-teaching');
+  await expect(heading).toHaveText('3.5 What a node stores when you teach it');
+  await expect(heading).toHaveAttribute('id', 'teaching');
+  await expect.poll(async () => (await heading.boundingBox())!.y, 'scrolled to the teaching section').toBeLessThan(400);
+  await expect(heading.locator('xpath=following-sibling::p[1]')).toContainText('stored on this node as a dataset of questions and answers');
+  await expect(heading.locator('xpath=following-sibling::p[2]')).toContainText('It is not private from the operator.');
+  await expect(heading.locator('xpath=following-sibling::p[3]')).toContainText('the private key is never sent to any node');
+  await expect(heading.locator('xpath=following-sibling::p[4]')).toContainText('Publishing is a separate step.');
+
+  // 한국어
+  await page.goto(`${NODE}/teach`);
+  await page.getByRole('button', { name: 'language' }).click();
+  await expect(strip.locator('ul > li')).toHaveText(['기본은 비공개', '공개 여부는 내가 정합니다', '가르치기 키는 이 브라우저에만 있습니다', '노드 운영자는 초안을 볼 수 있습니다']);
+  await expect(page.getByTestId('trust-terms')).toHaveText('전체 약관 →');
+  await page.getByRole('button', { name: 'language' }).click();
+});
+
 // ---------------------------------------------------------------------------------------------- AZ-237
 test('AZ-237 /teach hierarchy: the conversation door is the one primary action and the file door is clearly secondary, at 1280 and 360 px @mobile', async ({ page }) => {
   const width = page.viewportSize()?.width ?? 1280;

@@ -1,6 +1,6 @@
-# Ainize UX Test Scenarios (238)
+# Ainize UX Test Scenarios (239)
 
-This document lists 238 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
+This document lists 239 user-experience test scenarios for **Ainize** (ai-nize = AI + -ize): a P2P marketplace where verified knowledge is plugged into an AI model. Every scenario is grounded in the current code (web routes, i18n dictionaries, node API, CLI, agent) and executable on the live demo. A machine-readable copy lives next to this file: `docs/ux-test-scenarios.json` (this file is generated from it by `scripts/render-ux-scenarios.py`).
 
 ## How to use
 
@@ -25,12 +25,12 @@ This document lists 238 user-experience test scenarios for **Ainize** (ai-nize =
 | Cross-cutting (errors, accessibility, i18n, performance) | 16 | 4 | 7 | 5 |
 | Teach mode (visitor) | 21 | 7 | 10 | 4 |
 | Teach mode (operator) | 9 | 4 | 5 | 0 |
-| Dataset uploader (visitor) | 81 | 40 | 38 | 3 |
+| Dataset uploader (visitor) | 82 | 40 | 39 | 3 |
 | Chat teacher (visitor) | 4 | 3 | 1 | 0 |
 | CLI user / node operator | 1 | 1 | 0 | 0 |
 | Node operator | 6 | 4 | 2 | 0 |
 | Knowledge publisher | 1 | 1 | 0 | 0 |
-| **Total** | **238** | **102** | **115** | **21** |
+| **Total** | **239** | **102** | **116** | **21** |
 
 | Area | Count |
 |---|---:|
@@ -46,11 +46,11 @@ This document lists 238 user-experience test scenarios for **Ainize** (ai-nize =
 | verification | 7 |
 | account | 6 |
 | manage | 6 |
+| teach-ui | 6 |
 | explore | 5 |
 | ledger | 5 |
 | new-patch | 5 |
 | patch | 5 |
-| teach-ui | 5 |
 | error | 4 |
 | landing | 4 |
 | network | 4 |
@@ -68,7 +68,7 @@ This document lists 238 user-experience test scenarios for **Ainize** (ai-nize =
 
 | Automation | Count |
 |---|---:|
-| e2e | 157 |
+| e2e | 158 |
 | cli | 38 |
 | api | 32 |
 | manual | 11 |
@@ -8093,6 +8093,40 @@ prompt,answer,alt_prompt
 - `packages/web/src/lib/teachDataset.ts signedDownload`
 - `packages/node/src/teach.ts:814-828 (datasetRef sets deleted:true but keeps id)`
 - `packages/node/src/api.ts:531-538 (GET /api/teach/datasets/:id/download)`
+
+### AZ-236 - /teach trust strip: at the moment of choosing a door the visitor can see what stays private, who can see it, where the key lives and that publishing is a separate step — and reach the full terms
+
+**Goal:** Trust is visible at the entry point (ux-critique-owner O-10) and says only what the code makes true: private by default, publishing is the visitor's own explicit step, the teaching key never leaves the browser, and the node operator CAN see private drafts.
+
+**Priority:** P1 - **Area:** teach-ui - **Automation:** e2e
+
+**Preconditions**
+
+- node-u on http://localhost:3422 with teach.enabled true (backend 'stub'; nothing here calls the model).
+- Fresh browser context, locale en-US; run at 1280 px and at 360 px (Pixel 5).
+
+**Steps**
+
+1. Open http://localhost:3422/teach and wait for [data-testid=teach-entry].
+2. Read the strip directly under the two door cards; open 'What this means'; press 'Full terms →'.
+3. Toggle the language to 한국어 on /teach and read the strip again.
+
+**Expected**
+
+- <section data-testid=trust-strip aria-label='Trust and privacy'> sits directly below the doors (its top edge is below the file card's bottom edge) and above the 'What happens next' sentence, and lists exactly four facts in this order: 'Private by default' · 'You choose what to publish' · 'Your teaching key stays in this browser' · 'The node operator can see your drafts' ([data-testid=trust-private|trust-publish|trust-key|trust-operator]).
+- A collapsed native <details data-testid=trust-detail> 'What this means' opens to four definitions: 'What you teach stays a private draft on this node until you publish it. You can delete a draft any time from My datasets and lessons.' / 'Publishing is a separate step you take yourself, with your key's signature and your consent. Once published, a lesson is a permanent public record and cannot be deleted.' / 'The key that signs your lessons and receives your share is created and kept in this browser. The node only ever sees its public address — download a backup from Your knowledge.' / 'This page is served by one node. Its operator can read the questions, answers and files you store here for as long as they exist — private means private from everyone else, not from the operator. Do not upload personal data or anything you are not allowed to share.'
+- The strip never claims what the code does not do: no 'encrypted', no 'anonymous', no 'nobody can see'.
+- [data-testid=trust-terms] 'Full terms →' is a link to /terms#teaching; following it lands on the Terms page with the heading [data-testid=terms-teaching] '3.5 What a node stores when you teach it' (id='teaching') scrolled into view, followed by the four paragraphs on storage and deletion, operator visibility, the key, and publishing.
+- In 한국어 the four facts read '기본은 비공개' · '공개 여부는 내가 정합니다' · '가르치기 키는 이 브라우저에만 있습니다' · '노드 운영자는 초안을 볼 수 있습니다' and the link reads '전체 약관 →'.
+- At 360 px the strip wraps onto several lines inside the viewport (scrollWidth ≤ 360) and the definitions stack term-over-definition.
+
+**Evidence**
+
+- `packages/web/src/pages/TeachPage.tsx (Trust, TRUST, trust-strip / trust-detail / trust-terms)`
+- `packages/web/src/i18n/pages/teach.ts (teach.trust.*), i18n/pages/public.ts (terms.s3.h5 / terms.s3.p5)`
+- `packages/web/src/pages/TermsPage.tsx (#teaching, hash scroll after ScrollToTop)`
+- `packages/node/src/teach.ts (announceJob consent gate: only an owner-published lesson is ever announced), packages/web/src/lib/teacherKey.ts (KEY_STORAGE in localStorage), teach.ts 'teach.keep.node_body' (Not private from the operator)`
+- `packages/e2e/tests/web-ds-upload.spec.ts (AZ-236, projects web + mobile)`
 
 ### AZ-237 - /teach hierarchy: the conversation door is the one primary action and the file door is clearly secondary, at 1280 and 360 px
 

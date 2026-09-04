@@ -8101,6 +8101,39 @@
   ]
  },
  {
+  "id": "AZ-236",
+  "persona": "Dataset uploader (visitor)",
+  "title": "/teach trust strip: at the moment of choosing a door the visitor can see what stays private, who can see it, where the key lives and that publishing is a separate step — and reach the full terms",
+  "goal": "Trust is visible at the entry point (ux-critique-owner O-10) and says only what the code makes true: private by default, publishing is the visitor's own explicit step, the teaching key never leaves the browser, and the node operator CAN see private drafts.",
+  "preconditions": [
+   "node-u on http://localhost:3422 with teach.enabled true (backend 'stub'; nothing here calls the model).",
+   "Fresh browser context, locale en-US; run at 1280 px and at 360 px (Pixel 5)."
+  ],
+  "steps": [
+   "Open http://localhost:3422/teach and wait for [data-testid=teach-entry].",
+   "Read the strip directly under the two door cards; open 'What this means'; press 'Full terms →'.",
+   "Toggle the language to 한국어 on /teach and read the strip again."
+  ],
+  "expected": [
+   "<section data-testid=trust-strip aria-label='Trust and privacy'> sits directly below the doors (its top edge is below the file card's bottom edge) and above the 'What happens next' sentence, and lists exactly four facts in this order: 'Private by default' · 'You choose what to publish' · 'Your teaching key stays in this browser' · 'The node operator can see your drafts' ([data-testid=trust-private|trust-publish|trust-key|trust-operator]).",
+   "A collapsed native <details data-testid=trust-detail> 'What this means' opens to four definitions: 'What you teach stays a private draft on this node until you publish it. You can delete a draft any time from My datasets and lessons.' / 'Publishing is a separate step you take yourself, with your key's signature and your consent. Once published, a lesson is a permanent public record and cannot be deleted.' / 'The key that signs your lessons and receives your share is created and kept in this browser. The node only ever sees its public address — download a backup from Your knowledge.' / 'This page is served by one node. Its operator can read the questions, answers and files you store here for as long as they exist — private means private from everyone else, not from the operator. Do not upload personal data or anything you are not allowed to share.'",
+   "The strip never claims what the code does not do: no 'encrypted', no 'anonymous', no 'nobody can see'.",
+   "[data-testid=trust-terms] 'Full terms →' is a link to /terms#teaching; following it lands on the Terms page with the heading [data-testid=terms-teaching] '3.5 What a node stores when you teach it' (id='teaching') scrolled into view, followed by the four paragraphs on storage and deletion, operator visibility, the key, and publishing.",
+   "In 한국어 the four facts read '기본은 비공개' · '공개 여부는 내가 정합니다' · '가르치기 키는 이 브라우저에만 있습니다' · '노드 운영자는 초안을 볼 수 있습니다' and the link reads '전체 약관 →'.",
+   "At 360 px the strip wraps onto several lines inside the viewport (scrollWidth ≤ 360) and the definitions stack term-over-definition."
+  ],
+  "priority": "P1",
+  "area": "teach-ui",
+  "automation": "e2e",
+  "evidence": [
+   "packages/web/src/pages/TeachPage.tsx (Trust, TRUST, trust-strip / trust-detail / trust-terms)",
+   "packages/web/src/i18n/pages/teach.ts (teach.trust.*), i18n/pages/public.ts (terms.s3.h5 / terms.s3.p5)",
+   "packages/web/src/pages/TermsPage.tsx (#teaching, hash scroll after ScrollToTop)",
+   "packages/node/src/teach.ts (announceJob consent gate: only an owner-published lesson is ever announced), packages/web/src/lib/teacherKey.ts (KEY_STORAGE in localStorage), teach.ts 'teach.keep.node_body' (Not private from the operator)",
+   "packages/e2e/tests/web-ds-upload.spec.ts (AZ-236, projects web + mobile)"
+  ]
+ },
+ {
   "id": "AZ-237",
   "persona": "Dataset uploader (visitor)",
   "title": "/teach hierarchy: the conversation door is the one primary action and the file door is clearly secondary, at 1280 and 360 px",

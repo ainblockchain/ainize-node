@@ -117,7 +117,9 @@
    "problem": "'Keep private or publish' exists, but at the moment of choosing a path the user cannot see how uploaded data is protected, who can see it, and what rights they keep.",
    "fix": "Add a short trust strip on the entry page (private by default · you choose what to publish · your key stays in your browser · what the node operator can see) linking to the full terms.",
    "effort": "S",
-   "source": "owner"
+   "source": "owner",
+   "status": "fixed",
+   "shipped": "A trust strip sits directly under the doors with four facts the code makes true — private by default · you choose what to publish · your teaching key stays in this browser · the node operator can see your drafts — each explained behind 'What this means', and a 'Full terms →' link to a new Terms §3.5 'What a node stores when you teach it' (storage and deletion, operator visibility, the key, publishing as a separate signed and consented step)."
   }
  ]
 }
