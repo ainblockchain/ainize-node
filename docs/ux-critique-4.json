@@ -727,7 +727,11 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-16-basket-en-1280.png / -ko-360.png ('Loaded now: Pixelplus ticker code (parent)' then the bare tick); teach.ts:1222-1236; design F1/F2.",
      "user_cost": "The creator's biggest revenue decision is made from a label that names neither the rate nor the person; the ancestor's biggest income line depends on a box most people leave unticked because nothing says why they would tick it.",
      "fix": "Render under the tick, from `/api/teach/policy.shares` and the loaded entries: 'pixel-parent's creator (node-a 0xa4Ab…) will receive 30 % of every sale of this lesson, forever; you keep 49 %, node-a 21 %.' Put the same two numbers on the policy line, and add 'Your lesson is trained on its own — buyers do not need the base' until on-top training ships.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4d4611e",
+     "fixed_note": "Under the tick: who is credited by name, that they are paid for as long as the lesson sells, and both numbers (30 % off the top, the 49 % that leaves the teacher) computed from this node's own shares with royaltySplit's arithmetic — plus the fact that buyers do not need the base loaded."
     },
     {
      "n": 301,
@@ -740,7 +744,11 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-23-x402-buy-lesson3.txt (`royalty {node-c 3, teacher 4.9, node-a 2.1}` on a 10 CREDIT sale); teach-triggered-27-lesson3-page-en-1280.png; teach-triggered-32-dashboard-teaching-en-1280.png.",
      "user_cost": "The buyer reads a public record naming a share nobody is paid, and the teacher sees 4.9 on the earnings page with no explanation of where the other 2.1 went.",
      "fix": "Add `effective_share` to the patch detail (computed with `royaltySplit` on a unit sale) and render that everywhere a share is shown; change `op.teach.settings.share` and `teach.res.publish_body` to 'of what is left after the network's creator share', printing both numbers; add a unit test asserting the sheet's figure equals `royaltySplit(entry, map, 10, 0.3)[contributor]`.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "6506c23",
+     "fixed_note": "The result screen prints the share a sale of THIS lesson pays, with the lineage pool taken off the top first and both numbers named; the public page no longer prints a share beside the contributor's name at all."
     },
     {
      "n": 302,
@@ -795,7 +803,11 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-31-keep-private-en-1280.png; config.ts:72; teach.ts:910-920, :1093.",
      "user_cost": "Work is pushed toward publishing by expiry rather than by choice: a creator who is not ready to publish loses the trained file and spends another day's quota to recreate it.",
      "fix": "Touch `expires_at` whenever the owner loads, tries or opens the lesson; show 'kept until {date} — renews each time you use it' on the card; send a `teach` event 24 h before expiry with a one-click 'keep another 7 days'; say what happens on day 8 in the sheet.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "9e82d2c",
+     "fixed_note": "The keep-private sheet and the lesson card both print the node's own expires_at as a date, say that opening or trying the lesson moves it, and say what happens after — instead of a constant \"7 days\" beside a green success message."
     },
     {
      "n": 306,
@@ -1322,7 +1334,11 @@
      "evidence": "teach.ts:156; the settle records of every taught lesson in packages/e2e/results/ux4/teach-triggered-14/23 (seller, contributor and ancestors only).",
      "user_cost": "A teacher negotiating their share believes part of the node's cut funds the verification that makes their lesson sellable; it does not, and the peers who do it are unpaid.",
      "fix": "Reword to what the split does — 'keeps the rest for training and hosting. Verification is done by other nodes, which receive {verifierShare}% of each sale / and is not paid from this sale' — driven from `/api/info` so it follows 325 automatically.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "The verification sentence is driven from policy.shares.verifier (0.05 on a default node): where verifiers are paid it says what they receive and that it comes out of the node's share, and where they are not it says this sale pays them nothing. \"training, hosting and verification\" is gone from the node's justification."
     },
     {
      "n": 343,

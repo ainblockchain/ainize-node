@@ -852,8 +852,11 @@
      "fix": "Smallest useful step: a 'Copy link to this set' button in the multi head, and keep the last selection in `localStorage['ainize.chat.stack']` so card/page buttons become 'Add to live test (2 selected)' navigating to `selectionPath([...stack, id].slice(-3))`; add a filter box to the picker when items > 8. Then `ainize patch stack` / `GET /api/runtime/stack` (item 216) and a console 'Loaded set' card with order badges, total paid, and 'Save as track' prefilled with these ids in this order.",
      "effort": "M",
      "theme": "Seeing and naming the set",
-     "status": "partial",
-     "shipped": "The web half of the smallest useful step shipped in fbbb2f5 and 06b21c0: a \"Copy link to this set\" button in the multi head that reproduces the selection in its order, and a filter box in the picker once the list is longer than eight items (a node with 136 testable knowledges had no way to find one). Still open: the localStorage stack that would turn card and knowledge-page buttons into \"Add to live test (2 selected)\" (those files belong to the landing/browse and knowledge-page workstreams), `ainize patch stack` / GET /api/runtime/stack (item 216, node+CLI), and a console \"Loaded set\" card."
+     "status": "fixed",
+     "shipped": "The web half of the smallest useful step shipped in fbbb2f5 and 06b21c0: a \"Copy link to this set\" button in the multi head that reproduces the selection in its order, and a filter box in the picker once the list is longer than eight items (a node with 136 testable knowledges had no way to find one). Still open: the localStorage stack that would turn card and knowledge-page buttons into \"Add to live test (2 selected)\" (those files belong to the landing/browse and knowledge-page workstreams), `ainize patch stack` / GET /api/runtime/stack (item 216, node+CLI), and a console \"Loaded set\" card.",
+     "fixed": true,
+     "fixed_by": "99fcb2f",
+     "fixed_note": "Sets of two or more are remembered (localStorage ainize.chat.stack, exported as loadStack/saveStack for other surfaces) and offered back from the multi head in one click, in load order — the copy-link button and the picker's filter box had already shipped. The card and knowledge-page entry points that would read the same key live in another group's files and are not done."
     },
     {
      "n": 219,

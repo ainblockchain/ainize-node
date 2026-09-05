@@ -105,7 +105,11 @@
      "evidence": "critic-teach-arrival.png; redirect confirmed; LandingPage.tsx:315, Header.tsx:38-43, 96.",
      "user_cost": "The user clicks a promise and arrives somewhere with a different name and a different nav item lit, so they cannot tell whether they are where they meant to be.",
      "fix": "When teach=1 is present, set the h1 to the teach vocabulary (\"Teach the model\", with \"tested live on Qwen3.8-Flash-Next\" as the subtitle) and mark the Teach nav item active; keep the banner as it is.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "99fcb2f",
+     "fixed_note": "With ?teach=1 the page is named for the door it came from (\"Teach the model\", subtitled with the model it is tested on), keeps that name after the banner is dismissed, and the header lights the Teach item rather than Live test."
     }
    ]
   },
@@ -309,7 +313,11 @@
      "evidence": "Code paths above; on this localhost demo consecutive requests decrement one unit each, so the risk is structural rather than observed here.",
      "user_cost": "On any shared address one person’s twenty tries are everyone’s, and the wording blames the visitor for consumption they cannot see or control.",
      "fix": "Add a per-browser bucket alongside the IP one (a long-lived visitor cookie, or the existing teacher key) and take the minimum against a generous IP cap. At minimum change the copy to \"20 free tries per hour for this network\".",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "884e052",
+     "fixed_note": "The free budget is two buckets: this browser (a long-lived http-only cookie, or the teaching key) which is the number the page reports, and the address, five times larger, which protects the shared model. A cookie-less caller falls back to the address bucket at the old limit. When the shared budget is the one that ran out the 429 carries quota_scope and every surface says \"this network\", not \"you\". The node half landed inside another workstream's commit (de7c88e), which swept api.ts while this was in the working tree."
     },
     {
      "n": 60,
@@ -511,7 +519,11 @@
      "evidence": "guard-keep-sheet.png, guard-keep-done.png, teach-chat-19-keep-private.png; measured card bottom 798 vs transcript bottom 718.",
      "user_cost": "Two framings of one deadline, one of them delivered as a success message for an action that never happened, and the sentence that states the real deadline is below a clip with no scrollbar.",
      "fix": "Change the copy to the truth - \"Nothing to do: this lesson lives on this node until {expires_at}. It is deleted then unless you download or publish it.\" - and drop the success alert. Render the lesson card above the Transcript rather than inside it, with the concrete date in teach.card.expiry. Do not wire option 1 to /save, which only mints download links.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "9e82d2c",
+     "fixed_note": "The \"keep it on this node\" option no longer confirms a request it never sent: it states the node's own expires_at as a date, says opening or trying the lesson moves it, and Done just closes; the card prints the same deadline and was moved out of the auto-scrolling transcript (99fcb2f) so its last line is no longer drawn below the clip."
     },
     {
      "n": 37,
@@ -522,7 +534,11 @@
      "evidence": "teach-chat-10-credit-sheet.png, teach-chat-51-360-credit-sheet.png.",
      "user_cost": "Almost everyone clicks the primary button, and the product’s own warning then comes true for them: lessons and unpaid earnings become unreachable when the browser is cleared or the tab is closed.",
      "fix": "Make \"Download key backup\" the filled primary and \"Continue without a backup\" the plain secondary, swapping them after a successful download. When saveTeacherKey catches, replace the conditional warning with \"This browser will not remember your key - download the backup now or you lose this lesson when you close the tab.\"",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "9e82d2c",
+     "fixed_note": "\"Download key backup\" is the filled primary until a backup has been taken, the other button reads \"Continue without a backup\", and they swap after the download; when localStorage refused the write keyIsPersisted() makes the sheet say the tab is the deadline instead of hedging with \"if you clear this browser\"."
     },
     {
      "n": 38,
@@ -533,7 +549,11 @@
      "evidence": "Pre-flight with 1 will_train + 1 already_known + 1 overlaps_listing + 1 invalid; after Queue training the basket read \"Your lesson (0 of 8) / No corrections yet\". teach-chat-45-preflight-mixed.png, teach-chat-15-card-queued.png.",
      "user_cost": "A user who taught four things and had three skipped watches all four disappear; the rejected one - the one they might reword and retry - is unrecoverable.",
      "fix": "In onQueued keep the non-trainable facts (filter out only the trained ids) and show one line in the basket: \"3 corrections stayed here: 1 the model already knows, 1 overlaps existing knowledge, 1 cannot be taught.\"",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "99fcb2f",
+     "fixed_note": "PreflightSheet reports the corrections it did NOT queue and ChatPage keeps them in the basket, with one line saying how many stayed and why each did (already known / overlaps / the base answers it / cannot be taught) instead of clearing the lot."
     },
     {
      "n": 39,
@@ -544,7 +564,11 @@
      "evidence": "Dumped the sheet text on a READY lesson: no question, answer or alt_prompt anywhere. guard-publish-1280x900.png, teach-chat-25-publish-sheet.png.",
      "user_cost": "The user consents to irreversibility for content they cannot review on the screen where they consent. Anyone who taught an internal name, a customer number or a phrasing they would fix has no last chance to catch it.",
      "fix": "Add a read-only \"What goes on the record\" block at the top of the sheet listing each prompt -> answer (and alt_prompt), plus the display name and payout address exactly as they will appear, with the consent checkboxes directly under it.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "6506c23",
+     "fixed_note": "A read-only \"What goes on the record\" block sits directly above the consents: every question with its answer and other phrasing, a badge on the ones written into the public record itself, and the display name, payout address, price and licence exactly as they will appear."
     },
     {
      "n": 40,
@@ -555,7 +579,11 @@
      "evidence": "Rendered option list in both locales; teach-chat-25-publish-sheet.png, teach-chat-35-ko-publish.png.",
      "user_cost": "An irreversible legal choice is made by accepting a default the user cannot read, with \"Proprietary\" sitting in the same list as three Creative Commons licences next to a price field.",
      "fix": "Label each option in plain language (\"CC-BY-4.0 - anyone may reuse it if they credit you\", \"CC0-1.0 - anyone may reuse it for anything\", \"Proprietary - only buyers may use it\") in both locales, and add one helper line: \"This cannot be changed after publishing.\"",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "6506c23",
+     "fixed_note": "Each licence option says in plain language what it lets a reader do, in English and Korean, and the field carries \"This cannot be changed after publishing.\""
     },
     {
      "n": 41,
@@ -566,7 +594,11 @@
      "evidence": "teach-chat-33-taught-by-detail.png; consent text read from the rendered sheet; i18n/pages/teach.ts detail.people.",
      "user_cost": "A contributor discovers their commercial terms on a public page after the fact, and a buyer reading \"Creator: node-a ... Data provider: Minhyun (70%)\" cannot tell who actually made the knowledge.",
      "fix": "Drop the percentage from the public line (it is already in the ledger record) or add it explicitly to teach.pub.consent_permanent. Use one word for this person across the product - \"Taught by {name}\" - and remove the duplicated Creator node line.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "6506c23",
+     "fixed_note": "detail.people is now \"Taught by {name}\" — the duplicated creator-node half and the published revenue share are gone (the share is in the ledger record) — and the permanence consent names the share it commits to."
     },
     {
      "n": 42,
@@ -577,7 +609,11 @@
      "evidence": "Called /api/teach/jobs/:id/save on a real job: token eb6c4ff0...c48 appears twice in the document and once in the copied text. teach-chat-23-keep-run-commands.png.",
      "user_cost": "The natural next step for someone stuck on these commands is to paste them into an issue or a chat, handing anyone a working download link to knowledge they deliberately kept private, for seven days.",
      "fix": "Add a note above the Doc block and on successful copy: \"These commands include a private download link - anyone who has them can download your lesson until {expiry}. Do not paste them in public.\" Better: substitute $AINIZE_TOKEN in the displayed markdown and show the value once, separately.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "9e82d2c",
+     "fixed_note": "The displayed RUN-LOCALLY.md and the copied commands carry $AINIZE_TOKEN instead of the live 7-day bearer token; the value is shown once, on its own, with its expiry, its own copy button and the sentence saying not to paste it in public."
     },
     {
      "n": 43,
@@ -588,7 +624,11 @@
      "evidence": "After the click: URL /chat/krx-all-2761,taught-who-is-the-mayor-of-spri-4c2c60?lesson=..., composer value \"\", 0 articles, 0 chips containing the prompt. guard-try-it-now.png, teach-chat-52-try-it-now.png.",
      "user_cost": "The user clicks the primary green button on their finished lesson and sees no result. The payoff of the whole flow - watching your own correction come back from the model - requires them to remember and retype the question.",
      "fix": "After navigating, prefill the composer with job.facts[0].prompt and scroll to it, or send it directly in After-only view. At minimum add the lesson’s own prompts to the sample chips for the draft.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "99fcb2f",
+     "fixed_note": "\"Try it now\" carries the lesson's own first question in the link (?q=, the slot \"Teach this on top\" uses) so it lands in the composer, focused — the button is no longer a checkbox tick with no visible result."
     },
     {
      "n": 44,
@@ -599,7 +639,11 @@
      "evidence": "guard-card-1280.png (NEEDS_MORE, 8/12 with no marker), teach-chat-37-card-publish-gated.png (READY, 7/12 with the alert elsewhere).",
      "user_cost": "A person who has never heard of \"locality\" cannot tell that their correction broke the model’s answers to four unrelated questions - the difference between a useful lesson and a harmful one - or that this is why they can never publish it.",
      "fix": "Drive each bullet from its ok flag with a tick or cross and a plain consequence when it fails: \"✗ It changed the answer to 4 questions that had nothing to do with your correction - that is why this cannot be published.\" Show it on NEEDS_MORE too.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4d4611e",
+     "fixed_note": "Each check bullet is driven by its own ok flag with a tick or a cross, the failing one carries the consequence in words (\"that is why this cannot be published\"), and the gate alert now renders on NEEDS_MORE as well as READY."
     }
    ]
   },
@@ -659,7 +703,11 @@
      "evidence": "guard-ds-upload-360.png, teach-dataset-02-upload-1280.png.",
      "user_cost": "The one privacy decision in the flow is placed after the action it governs and is one-way; a user who reads the warning has already put their file on a stranger’s machine for seven days.",
      "fix": "Move the privacy sentence and the retention checkbox above the drop zone, and add a \"Delete after training\" toggle to the dataset card in /teach/mine wired to patchTeachDataset({retention}).",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "bf5b243",
+     "fixed_note": "The privacy sentence and the retention checkbox are one block ABOVE the drop zone, before a file exists, and the dataset card in My datasets carries a \"Delete after training\" toggle wired to PATCH /api/teach/datasets/:id — which had accepted `retention` all along with nothing sending it."
     },
     {
      "n": 46,
@@ -670,7 +718,11 @@
      "evidence": "guard-ds-cap2000.png, teach-dataset-20-cap-2000.png; policy {rows_per_job:200, dataset_max_rows:2000}.",
      "user_cost": "Three totals on one screen with the biggest and greenest one wrong. A user planning a 2000-question pack learns on the next screen that 90% of it was not in this lesson - if they read the info alert.",
      "fix": "Cap the pill at rowsPerJob(policy) and name both numbers: \"200 of 2000 will train in this lesson ... 1800 stay in your dataset\". Use the same figure in teach.rows.next so both screens promise the same thing.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "The counts pill is capped at rows_per_job and names both numbers (\"200 of 2000 will train in this lesson (1800 stay in your dataset for the next one)\"), so it can no longer promise 2000 one line above the banner saying a lesson teaches 200."
     },
     {
      "n": 47,
@@ -681,7 +733,11 @@
      "evidence": "guard-ds-checked.png, teach-dataset-08-checked.png; TeachDatasetPage.tsx check().",
      "user_cost": "The screen’s headline promise - see which of your questions are wasted - silently covers 60% of a 40-row file and 12% of a full lesson, and the unchecked majority carries a green \"Will train\" pill as its only signal.",
      "fix": "Name the sample on the button (\"Check the first 24 questions\") and offer \"Check the next 24\" that resumes from sampled.checked. Derive the batch budget from the node’s hourly quota rather than a literal 24.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "preflightSlice no longer caps the window at sampleRows - start (an offset of 24 used to resolve to an empty slice), the button names the sample it takes, a second button resumes from the frontier, and both numbers come from the policy's new preflight_rows / preflight_per_call instead of a literal 24 and 8."
     },
     {
      "n": 48,
@@ -692,7 +748,11 @@
      "evidence": "guard-ds-messy.png, teach-dataset-04-messy-after.png (action cells enumerated per row).",
      "user_cost": "The obvious answer to \"lines 4 and 5 give different answers\" is to delete the wrong one, and that is the single impossible action. Every row the screen tells you to act on gets the fewest options.",
      "fix": "Add a rows_op {op:\"drop_source_lines\", lines:[...]} using row.line, which the node already tracks for rejected rows, and render Remove on every row. On a conflict pair phrase it as \"Use this one\" / \"Drop this one\" so it reads as one either/or choice.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "A new rows_op {op:\"drop_rejected\", lines:[…]} takes a refused row out by the source line the report tracks — the stored questions never change — so Remove is offered on every row and a contradiction reads as one either/or choice (\"Use this one\" / \"Drop this one\"). Verified live on a throwaway node: dropping line 4 left rows unchanged and rejected 3 → 2; a line that is not refused answers 404 row_not_found."
     },
     {
      "n": 49,
@@ -703,7 +763,11 @@
      "evidence": "guard-ds-settings-1280.png -> guard-ds-progress.png -> guard-ds-result.png.",
      "user_cost": "The number the user commits to is wrong on the fast path, which is the path most people take, and the result then names a dropped question they cannot identify.",
      "fix": "When no pre-flight is recorded for the current revision, hedge the button and summary (\"Train this lesson (up to 12 questions)\") with one line about skipping questions the model already answers, and list the left-out questions on the result screen.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "Without a recorded live check the button and the summary hedge (\"Train this lesson (up to 12 questions)\") with one line saying the worker drops what the model already answers, and the result screen lists the left-out questions by name, computed from training.selected_indexes against the dataset."
     },
     {
      "n": 50,
@@ -714,7 +778,11 @@
      "evidence": "guard-ds-entry-1280.png (\"jsonl, csv, tsv or plain text · up to 2000 questions\"); policy JSON.",
      "user_cost": "2000 is the first and only number a prospective teacher sees, and it is the one they size their file to; they discover on step 3 that their pack needs ten lessons.",
      "fix": "Say both, lesson cap first: \"jsonl, csv, tsv or plain text · up to 200 questions per lesson (2000 stored)\". If only one fits, use the lesson cap.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "bf5b243",
+     "fixed_note": "The file door chips say \"up to 200 questions per lesson (2000 stored)\" — the cap that decides what is taught leads, with the storage cap behind it."
     },
     {
      "n": 51,
@@ -725,7 +793,11 @@
      "evidence": "guard-ds-messy.png, teach-dataset-03-good40-during.png (40 rows, all green pill + grey contradiction); components/teach/util.ts:63 and :99 both return teach.rows.status.new.",
      "user_cost": "Forty green ticks say the work is done and forty grey lines say it is not. The screen’s purpose - separating \"this parsed\" from \"the model needs this\" - collapses into one ambiguous phrase, and the green pill removes any felt need to run the check.",
      "fix": "Give the two families different words and tones: file side ok becomes a neutral grey \"Read OK\" (new key teach.rows.status.parsed); green \"Will train\" and muted \"Already known - skipped\" stay model-side only, and \"Not checked yet\" becomes the model-side pill rather than a footnote.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "fileStatus says \"Read OK\" in the neutral tone; the green \"Will train\" and \"Already known — skipped\" are verdicts only the live check may reach, so a row no longer carries a green promise above a grey \"Not checked yet\"."
     },
     {
      "n": 52,
@@ -736,7 +808,11 @@
      "evidence": "guard-ds-cap-picking.png, teach-dataset-21-cap-picking.png; DatasetTable.tsx:80.",
      "user_cost": "The sentence states two contradictory selection states, and the escape hatch it offers costs 200 clicks - so everyone accepts whatever arbitrary first-200 the node picked, which for a sorted export is the worst possible sample.",
      "fix": "Show teach.rows.cap only while the picker is off and only the counter while it is on; pre-tick the default 200 so the counter starts at 200; add a \"Select all on this page\" checkbox in the empty header cell and shift-click ranges.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "The cap banner shows one selection state at a time, the picker opens on the default first-N so the counter starts full, and a header checkbox takes a whole page at once instead of 200 clicks."
     },
     {
      "n": 53,
@@ -747,7 +823,11 @@
      "evidence": "guard-ds-settings-1280.png, guard-ds-settings-360.png, teach-dataset-06-sticky-covers-rows.png.",
      "user_cost": "About one table row or one radio card is unreachable at any scroll position, and because it is faded rather than hidden it reads as disabled - so on the settings screen a user can press Train while the first of three options has never been on screen.",
      "fix": "Add padding-bottom equal to the bar height on both PageWrappers (or scroll-padding-bottom on the scroller), give the bar a top shadow instead of a fade, and collapse its summary line to one row below sm so it is not 124 px tall.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "Both sticky bars are opaque with a top shadow instead of a fade, each page reserves their height with a spacer, and below sm the settings summary drops to its own line so the bar is not 124 px tall."
     },
     {
      "n": 54,
@@ -758,7 +838,11 @@
      "evidence": "guard-ds-progress.png. The determinate bar and per-step counter do exist, but only for the training stage (TeachLessonPage.tsx:172-179).",
      "user_cost": "The user is asked to wait up to half an hour in front of a screen that gives no evidence anything is happening, and is sometimes told they are behind zero people.",
      "fix": "Tick the elapsed clock client-side from job.queued_at, hide the queue line when position is 0 or null (say \"Starting shortly\" instead), and reuse the training stage’s determinate treatment for queued and preparing.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4547316",
+     "fixed_note": "The elapsed clock counts from created_at while queued (it read a frozen 00:00), an empty queue says \"Starting shortly — no lessons ahead of you\" instead of \"0 ahead (0 questions)\", the queued and warming stages get the training bar running rather than filling, and the invented \"up to 30 minutes\" is gone."
     }
    ]
   },
@@ -1244,9 +1328,11 @@
      "user_cost": "\"(s)\" and \"(으)로\" are the visual signature of an unfinished product, and they appear on the card the user stares at during a training wait and on the screen where they decide whether to trust a permanent record.",
      "fix": "Add teach.card.facts_one and units.facts_one and pass the count to t(); for Korean, branch the particle on the final jamo of the filename (or reword to \"저장했습니다: {filename}\").",
      "effort": "S",
-     "fixed": false,
-     "status": "partial",
-     "shipped": "Chat half done in 06b21c0 and 5eb1afc: units.facts_one exists and every call site passes a count (\"1 fact\", not \"1 facts\"), chat.picker.asked lost its \"visitor(s)\", and nine Korean chat strings that interpolated a name in front of 이(가)/을(를)/과(와)/(으)로 were reworded so the particle sits on a fixed noun. The teach half — teach.card.facts \"{n} correction(s)\" and the \"(으)로\" particle in the dataset preview (i18n/pages/teach.ts) — belongs to the live lineage workstream and was not touched."
+     "fixed": true,
+     "status": "fixed",
+     "shipped": "Chat half done in 06b21c0 and 5eb1afc: units.facts_one exists and every call site passes a count (\"1 fact\", not \"1 facts\"), chat.picker.asked lost its \"visitor(s)\", and nine Korean chat strings that interpolated a name in front of 이(가)/을(를)/과(와)/(으)로 were reworded so the particle sits on a fixed noun. The teach half — teach.card.facts \"{n} correction(s)\" and the \"(으)로\" particle in the dataset preview (i18n/pages/teach.ts) — belongs to the live lineage workstream and was not touched.",
+     "fixed_by": "4d4611e",
+     "fixed_note": "teach.card.facts gained a _one variant and every units.facts / teach.card.facts call passes its count; t() resolves Korean particle alternates (을/를, 은/는, 이/가, 와/과, (으)로) against the word they follow — including digits and Latin letters read by their Korean names — so \"messy.csv(으)로 저장했습니다\" renders as \"messy.csv로 저장했습니다\"."
     },
     {
      "n": 89,
@@ -1330,7 +1416,11 @@
      "evidence": "guard-360-card.png, teach-chat-55-360-lesson-card.png (the After cell reads \"There is no single,\" and stops).",
      "user_cost": "The evidence panel - the whole reason to trust or distrust a lesson - is illegible on a phone.",
      "fix": "Give the table min-width: 520px so FactsWrap’s scroll actually works, or below sm switch to a stacked per-fact block (Question / Before / After / Other phrasing as labelled rows), and replace overflow: hidden on .ans with a \"show full answer\" disclosure.",
-     "effort": "M"
+     "effort": "M",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4d4611e",
+     "fixed_note": "Below 560 px each fact becomes its own labelled block (the stacked treatment the dataset preview uses) instead of four ~60 px columns in a wrapper that never scrolled, and an answer longer than 120 characters clamps to three lines with a \"Show the full answer\" disclosure instead of being cut at 60 px with nothing to click."
     },
     {
      "n": 92,
@@ -1341,7 +1431,11 @@
      "evidence": "guard-360-basket.png, teach-chat-54-360-basket-remove-overlap.png.",
      "user_cost": "The user cannot read the correction they are about to delete, and the button is easy to hit while trying to select the text.",
      "fix": "Take the button out of the overlay: make the item a grid (minmax(0,1fr) auto) with the button in the second column, or add padding-right: 64px to the question and answer lines.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "4d4611e",
+     "fixed_note": "The basket item is a two-column grid with the remove control in its own column, so the correction being deleted can always be read; the button keeps a 32 px target."
     },
     {
      "n": 93,
@@ -1352,7 +1446,11 @@
      "evidence": "guard-ds-upload-360.png, teach-dataset-13-upload-360.png.",
      "user_cost": "On the device most people will use, the instruction cannot be followed and the thing to tap is the smallest, least button-like element on the page - under half the 44 px minimum this codebase applies elsewhere - carrying browser chrome in the browser’s language.",
      "fix": "Visually hide the native input and render a real 44 px Button labelled teach.up.browse that triggers input.click(); below sm swap the heading to that label and demote \"or drop a file here\" to the secondary line.",
-     "effort": "S"
+     "effort": "S",
+     "status": "fixed",
+     "fixed": true,
+     "fixed_by": "bf5b243",
+     "fixed_note": "The native input is visually hidden and driven by a real 44 px button labelled with the app's own words; below sm that button leads and \"Drop a file here, or\" is demoted to the secondary line."
     }
    ]
   },
