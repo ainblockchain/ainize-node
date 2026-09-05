@@ -407,7 +407,10 @@
      "user_cost": "A buyer is told the content is withheld when they could read all of it two sections lower; the publisher is told their data is private when it is not.",
      "fix": "Make the note count-aware: 'All {n} questions and answers are on the public record (they are the verification questions)' when samples ≥ rows; keep the 'only samples' sentence only when rows > samples, stating both numbers.",
      "effort": "S",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "The training-set note is count-aware: \"all N questions and answers are on the public record\" when the samples cover the set, otherwise \"M of N\", instead of claiming privacy for questions the page lists two sections lower."
     },
     {
      "n": 191,
@@ -455,7 +458,10 @@
      "user_cost": "The one place a buyer can see who benefits from their purchase is unreadable, incomplete and — on the demo's headline knowledge — misleading; the design's `detail.tree.money` line is not implemented.",
      "fix": "Return `royalty_preview` from `GET /api/patches/:id` (`royaltySplit` at the anchor's price with names from the catalog) and render 'Each sale of {price}: {seller_name} {x} % · creators of {parent names} {y} % · taught by {teacher} {z} %', linking each name; when every ancestor is the seller, print 'Same creator — no lineage share'. Include a `built on {n} times` counter from `children.length`.",
      "effort": "S",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "'Revenue shared with 0x1A4e…' is replaced by the tree's own money plan: every payee by name with the amount, the percentage and the ancestor they are paid for, plus 'same creator throughout' and a built-on count."
     },
     {
      "n": 194,
@@ -497,7 +503,10 @@
      "user_cost": "A visitor composing a family pays for the same rows several times and cannot tell whether a child replaces, extends or needs its origin.",
      "fix": "In the Buy tab and BuySheet render the lineage line — 'Built on {names} ({price}) — you own it / you do not' — and, from `conflicts`, 'shares {n} of its {m} rows with {owned id} you already hold'; add `lineage: {parents: [{id, name, price, held}], standalone: true|false}` to the 402 body and the manifest; give `patchUse` a `--with-parents` / `--child-only` choice when a parent is not held, and implement `?bundle=1` (design §12.7) when delta children exist.",
      "effort": "M",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "The Buy panel reads the `conflicts` it already had: when a knowledge shares entries with something this node has bought, it says which and how many, and that both can still be loaded."
     },
     {
      "n": 197,
@@ -511,7 +520,10 @@
      "user_cost": "A creator auditing whether the 30 % reached her has to run `--json` and read addresses; the public record's promise ('who registered, verified and bought which knowledge') stops one field short of the money.",
      "fix": "Render the royalty map on the settle row in both surfaces — `pixel-deriv-b · 10 · buyer 0x8140… → bob 3.5 · Dana 3.5 · alice 3 (lineage)` — resolving names from the catalog's `author_name` and `contributors[].name`.",
      "effort": "S",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "1536fce",
+     "fixed_note": "Settle rows on /ledger and the History tab end with the payees, named from the records themselves, and say when part of a sale has no payee yet; `ainize ledger ls` prints the same (5ea0d95)."
     },
     {
      "n": 198,
@@ -604,7 +616,10 @@
      "user_cost": "A creator deciding what to build on cannot see the family beyond one hop or that the origin they are looking at is retired.",
      "fix": "Add `GET /api/patches/:id/tree` (ancestors/descendants to depth 8, design §12.5) and render it with a StatusChip per node and a `Newer version →` link on superseded origins; link 'See the whole family map' to `/ledger#graph` until the SC-9 tree ships.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "Origins and Derived carry a visible status chip and a link to a replaced base, and the tab links to the full family tree and to the map on /ledger."
     },
     {
      "n": 204,
@@ -618,7 +633,10 @@
      "user_cost": "A Korean creator meets 'revenue distribution' as the name of the family tree and two unrelated words for one concept.",
      "fix": "Adopt the design glossary: lineage → 계보, base → 기반 지식, child → 위에 만든 지식, track → 트랙; keep '원작자 수익 분배' only as the money line's label.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "dc550a8",
+     "fixed_note": "Korean adopts the design glossary — 계보 / 기반 지식 / 위에 만든 지식 / 트랙 — across 34 strings; the money words stay on the money line and English is untouched."
     },
     {
      "n": 205,
@@ -649,7 +667,10 @@
      "user_cost": "A creator who knows the track or the author cannot get to the knowledge from the one search box.",
      "fix": "Extend the haystack at api.ts:150 to branch names, `topic_path`, `author_name`, `contributors[].name` and the ISO date of `created_at`/`as_of`; add a `branch` filter chip to Explore (the API already accepts `branch`, api.ts:148).",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "07d8ac9",
+     "fixed_note": "Same haystack rewrite: track names, topic_path, author address and name, contributor names and the registration date are searchable, and Explore gained the track filter chip the API already accepted."
     },
     {
      "n": 207,
@@ -1375,7 +1396,10 @@
      "user_cost": "A buyer following the link from a 30-day-old version lands on another retired page and has to click through every day; an agent reading `superseded_by[0]` buys a retired version.",
      "fix": "In `deriveCatalog` compute `latest_version` by following `superseded_by` to the newest LISTED entry (cycle-safe) and expose it; render `Newest version: krx-codes-2026-09-04 (2 versions newer)` on PatchPage, the card and in `patch get` (`superseded by: … → newest krx-codes-2026-09-04`).",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "The \"newer version\" link follows the supersede chain to the end (cycle-safe) and says how many versions back the reader is; the Buy panel compares against the same end of the chain."
     },
     {
      "n": 250,
@@ -1674,7 +1698,9 @@
      "user_cost": "Every daily publisher invents a naming convention, every consumer parses it, a stale version looks identical to a fresh one on the API, and 'verified 2d ago' is mistaken for data age.",
      "fix": "Add optional `as_of: string` (ISO date) to PatchAnchor, `--as-of` on `ainize publish` and a field on /new-patch; render `Data as of 2026-09-02 · verified 2h ago` on the card, header and in `patch get`; add a `Freshest data` sort using `as_of ?? created_at`; show `stale — newer: <id> (as of …)` when a same-track successor exists; let `ainize publish --dataset rows.jsonl` hash the file into `anchor.dataset` so CLI bakes get the same provenance block teach anchors have.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "progress_by": "d8389d5",
+     "progress_note": "`as_of` exists end to end except in the terminal: the anchor field, POST /api/patches, the draft PATCH, /new-patch, the browse card, the knowledge page header and `?sort=fresh` all carry it. Left: `ainize publish --as-of` (bin.ts belongs to the CLI-shell workstream this pass) and `publish --dataset rows.jsonl` hashing a CLI bake into anchor.dataset."
     },
     {
      "n": 268,

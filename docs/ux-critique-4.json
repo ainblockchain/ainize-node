@@ -438,7 +438,9 @@
      "user_cost": "A buyer choosing between a 5-credit base and a 3-credit item built on it has no way to tell which is which until the fourth tab of the detail page — and an agent, which never opens a page, cannot tell at all.",
      "fix": "Add a chip to the card and a BUILT ON column to `patch ls` / `agent catalog` from `lineage.parents` + `derivation.kind` ('Add-on to pixel-parent' / 'Includes its base'), and put `built on <id>` plus `requires[]` into the 402 description and body (270).",
      "effort": "S",
-     "shipped": "WEB HALF ONLY (cd59b61). The Explore and /benchmarks cards carry the family: \"Add-on · runs on <base>\" when anchor.base.stack is set (it does not work without that base underneath) or \"Built on <parent>\" when it only declares parents, each with a plain-language explanation reachable by tap and by keyboard. Still open: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog`, and `built on <id>` plus requires[] in the 402 description and body — an agent still cannot tell."
+     "shipped": "WEB HALF ONLY (cd59b61). The Explore and /benchmarks cards carry the family: \"Add-on · runs on <base>\" when anchor.base.stack is set (it does not work without that base underneath) or \"Built on <parent>\" when it only declares parents, each with a plain-language explanation reachable by tap and by keyboard. Still open: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog`, and `built on <id>` plus requires[] in the 402 description and body — an agent still cannot tell.",
+     "progress_by": "cd59b61",
+     "progress_note": "The web half is closed — the browse card carries an Add-on / Built-on chip from `base.stack` and `parents`. Left: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog` (cli/commands/patch.ts and packages/agent, held by the terminal workstream this pass) and `built on <id>` in the 402 description (market.requirementsFor, held by the money workstream)."
     },
     {
      "n": 283,
@@ -660,7 +662,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-17-child-while-parent-challenged-en-1280-lineage.png (parent shown with no status while `patch ls` says CHALLENGED); chain-buy-human-27-superseded-parent.txt (child's tree unchanged, `GET /x402/patch/pixel-parent` still 402s for 5 CREDIT; `patch get` on the CLI does say SUPERSEDED).",
      "user_cost": "The buyer completing a family a day later pays for a retired base and is never pointed at the current one; a buyer of an add-on cannot see that its foundation is under dispute.",
      "fix": "Add `status` and `superseded_by` to each entry of `lineage.parents`, render them as visible chips in the Origins tree and as a Buy-tab note ('built on pixel-parent, replaced by pixel-parent-v2 · 9 node credit'), and add the same `note` to the 402 requirement of a SUPERSEDED anchor. Do not gate the child's sale on the parent's status — the child passed its own verification.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "A retired or challenged origin now shows its status as a chip with a link to its replacement, in the Origins tree and beside the money in the Buy tab; the 402's own note belongs to requirementsFor (group G)."
     }
    ]
   },
@@ -846,7 +851,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-14-teacher-page-as-ancestor-ledger-en-1280.png ('Revenue 10 CREDIT' above 'Your share 3 CREDIT').",
      "user_cost": "The page that exists to show what a teacher earned opens with a number that is not what they earned.",
      "fix": "Rename the column 'Sales total' and add a 'Your share' column summing that lesson's earnings rows — one word per number, the same word on both tables.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "0e43c92",
+     "fixed_note": "The lessons table's money column is renamed Sales total and a Your share column beside it sums that lesson's earnings rows — one word per number on both tables."
     }
    ]
   },
@@ -984,7 +992,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-03-who-sees-what.txt (balance 128.35 against sales totalling 40.5); chain-buy-human-20-seller-b-account-notes.json; api.ts:344, AccountPage.tsx:149-155.",
      "user_cost": "A seller cannot see what declaring a parent costs them per sale, so the first reaction to the split is to distrust the wallet rather than to price the derivative.",
      "fix": "Return `{amount, mine, shared:[{address, name, amount, role}]}` per sale from `settle.royalty`; render Sales as Amount · Your share · Creator share (to whom) with a totals row and a 'Creator share paid to others: −31.5' line under the balance; print `AMOUNT YOURS SHARED` and `net revenue` in `ainize wallet`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "bb79bce",
+     "fixed_note": "Each sale shows what stayed here beside what was charged, names who the rest went to, totals both, and one line under the balance reconciles them; `ainize wallet` prints YOURS/SHARED and net revenue (5ea0d95)."
     },
     {
      "n": 318,
@@ -1062,7 +1073,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-06-cli-buy-child.txt (node-a: 'royalties received 1' above a table whose only amount is 0.9); chain-buy-human-07-child-visitor-notes.json.",
      "user_cost": "The ancestor misreads what they earned (1 vs 0.9) and a buyer cannot tell who profits from the family they are about to pay into.",
      "fix": "Print `sales 1 (3 CREDIT)` and `royalties received 0.9 CREDIT (1 payment)`; in Origins render 'node-a (0xbb98…3196) · receives 30 % of each sale' using the tree's own name lookup, and list the whole payee set from `royaltySplit` rather than the direct parents (item 193).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5ea0d95",
+     "fixed_note": "`ainize wallet` prints sales and royalties as amounts over counts, and the Origins block names every payee with the share and amount (5ef4eb4)."
     },
     {
      "n": 324,
@@ -1075,7 +1089,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-01-publish-chain.txt against seller-royalties-anc-03-who-sees-what.txt (`patch get p-mid` with no contributor line); PatchPage.tsx:153.",
      "user_cost": "A seller checking what its record promises cannot see who will be paid from its share, and a second data provider is invisible to every buyer.",
      "fix": "Add a 'data providers' block to `patch get` (name, share of the seller's remainder, proof) and render all contributors with their effective share on the knowledge page.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "5ef4eb4",
+     "fixed_note": "Every credited data provider is named in the header (not just the first of four) and each is paid a named, measured share in the money block; the `patch get` block is item 198, in the CLI workstream."
     }
    ]
   },
@@ -1243,7 +1260,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-demo-nodeb-dashboard-en-1280.png ('No knowledge yet — register your first one' on a node with 203 attestations); verifier-economy-nodeb-console.txt.",
      "user_cost": "The operator cannot answer 'what did my node do this week, what did it cost, what came back' — the three questions that decide whether the role stays on. Nor can they see that 0 of 501 attestations on the whole network was a FAIL.",
      "fix": "Add `GET /api/me/verification` → `{attested, passed, failed, hash_only, model_seconds, disk_bytes, sold_after_verification, earned}` from `ledger.attestations()`, the `verifying → benchmark` event pairs and `blobs.list()`; render it as a card at the top of the dashboard for nodes with the role and a line in `ainize status`.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "0e586ce",
+     "fixed_note": "A verification block on the dashboard counts what this node signed — attested, passed, failed, integrity-only, knowledges, earned — plus the network-wide failure count, all from signed records; the `ainize status` line is left to the node workstream."
     },
     {
      "n": 336,
@@ -1428,7 +1448,10 @@
      "evidence": "Network capture in this round (columns above); api.ts:256-260. Not covered by item 140 (dead rows) or item 201 (creator-side signals).",
      "user_cost": "Choosing whom to pay in a peer-to-peer market is a trust decision the product supports with two self-asserted fields.",
      "fix": "Aggregate per node from the ledger — sales completed, first seen, knowledge listed, attestations written, challenges raised/upheld, disputes received — and show it on /network, on `ainize nodes` and beside the seller on the Buy tab.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "087f379",
+     "fixed_note": "A Track record column counts what each peer's address actually signed: sales, listings, verifications, challenges and how far back its first record goes."
     },
     {
      "n": 349,
@@ -1548,9 +1571,9 @@
      "user_cost": "The largest number a node operator sees — their balance — is the one with no provenance label, on a chain whose tokens are worth nothing.",
      "fix": "Derive `network_kind` (local / testnet / mainnet) from the provider and apply one consistent label to every AIN figure, including the wallet total and the terms.",
      "effort": "S",
-     "fixed": false,
-     "fixed_by": "5075436",
-     "fixed_note": "PARTIAL — the wallet balance now carries a label derived from the ledger provider (local dev chain / testnet / mainnet / unknown) with the endpoint beside it, instead of price.ain_note in a title=. The landing figures and /terms 2.4 are LandingPage/TermsPage/public.ts and are untouched."
+     "fixed": true,
+     "fixed_by": "2c536a1",
+     "fixed_note": "One rule (utils/useNetwork) labels every AIN figure with the chain this node settles on, wallet total included, and terms 2.4 says a dev or test chain's AIN has no market value."
     }
    ]
   },
@@ -1636,7 +1659,10 @@
      "evidence": "api.ts:251-254, :344; market.ts:615-618 (Settlement has no branch field). Seller-side track economics are not covered by items 194/195.",
      "user_cost": "The person deciding whether to keep baking every morning cannot see the only numbers that answer it.",
      "fix": "Keep the subscription history (an append-only view of subscribe/unsubscribe with timestamps), carry `branch` on settlements written for a subscription purchase, and show per-track revenue, subscriber count and churn on the track card and in `ainize wallet`.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "04e012d",
+     "fixed_note": "Track pages read the subscribe records for joins, leaves and who left when, count what the track has sold per version, and the console's track card carries churn and the owner's earnings."
     },
     {
      "n": 362,
@@ -1726,7 +1752,10 @@
      "evidence": "market.ts:747; packages/cli/src/commands/patch.ts:47-110; verifier-economy-demo-network-en-1280.png (BLOBS column with no per-knowledge view).",
      "user_cost": "Replication is the product's answer to a dead seller (276) and its biggest leak (326-327) at the same time, and the seller can see neither side of it.",
      "fix": "Show 'held by N nodes: 2 buyers, 3 verifiers, 1 mirror' on the Manage page and in `patch get`, from `p2p.holders` joined with settlements and roles.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "e055333",
+     "fixed_note": "The manage page lists every node holding the file with the reason the record gives — publisher, buyer, verifier or mirror — under one line counting the four."
     },
     {
      "n": 368,
@@ -1739,7 +1768,10 @@
      "evidence": "api.ts:137-142; NetworkPage.tsx:106-128; PatchPage.tsx:437-447.",
      "user_cost": "In a market of peers with different terms, the terms are the product — and they are the one column missing from the only page that lists the peers.",
      "fix": "Add creator share, contributor share, quorum, ledger and default price to `/api/nodes` and the Network table, and label the knowledge page's share sentence with whose rate it is (the anchor's, once 191's fix writes it there).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "087f379",
+     "fixed_note": "PeerInfo carries quorum, default price and accepts_contributions beside `shares`, filled by selfInfo, and /network shows each peer's terms; a node running an older build reads \"not published\"."
     },
     {
      "n": 369,

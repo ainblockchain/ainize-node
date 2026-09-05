@@ -165,7 +165,10 @@
      "evidence": "Three live API queries above; browse-buy-explore-noresult.png, browse-buy-explore-search-samsung.png.",
      "user_cost": "The obvious first search - \"does it cover the company I care about?\" - returns the empty state and reads as an empty marketplace, and nothing tells the user that search does not look inside the knowledge.",
      "fix": "Add anchor.benchmark.samples (prompt and expect) to the search haystack at api.ts:148, and when a query matches a sample rather than a name show the matching sample under the card (\"matches: 종목코드 삼성전자 -> 005930\").",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "07d8ac9",
+     "fixed_note": "The /api/catalog haystack now covers every benchmark sample prompt and answer (plus topic, tracks, creator and date), and the card shows the matching question — `?q=삼성` went from 0 to 3 hits on the demo node."
     },
     {
      "n": 26,
@@ -943,7 +946,10 @@
      "evidence": "Live /account text; grep for password in AccountPage.tsx returns nothing.",
      "user_cost": "The single credential guarding sales, publishing, the wallet and the model runtime can never be rotated, and forgetting it locks the operator out of their own node with nothing in the UI naming the config key or a reset command.",
      "fix": "Add a Password block to /account (current + new, calling a new POST /api/auth/password), and put one line on /signing naming the recovery route: the config key that holds the hash and the CLI command that resets it.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "2876a39",
+     "fixed_note": "The RTK client gained a changePassword mutation and /account a password block (current + new + confirm, a translated 401, and the note that every other session is signed out); verified against a live node."
     },
     {
      "n": 35,
@@ -1221,8 +1227,9 @@
      "fix": "Give each page an error branch with the same shape: a short \"Can’t reach this node right now\" line plus a Retry button, hiding stat frames rather than filling them with em-dashes, and never render \"No records yet\" or an empty catalogue while a query is in error.",
      "effort": "S",
      "status": "partial",
-     "fixed_by": "0069f81",
-     "fixed_note": "components/ui/Offline.tsx gives the public pages one failure shape (a sentence, the status, a retry); /ledger hides its stat card, table and graph instead of drawing em-dashes and \"No records yet.\", and /network says it cannot reach the node instead of rendering nothing. The landing hero's Shimmer and its vanishing Teach link are the landing workstream's half."
+     "fixed_by": "e80896e",
+     "fixed_note": "The landing page got the shared Offline block: the hero says the node is not answering instead of shimmering for ever, and the trending shelf says it instead of rendering empty.",
+     "fixed": true
     },
     {
      "n": 78,
@@ -1345,8 +1352,9 @@
      "fix": "Add op.sign.err.wrong in both locales and map 401 to it in SigningPage; add a per-IP attempt limit with an increasing delay on /api/auth/login and say so in the message after a few failures.",
      "effort": "S",
      "status": "partial",
-     "fixed_by": "7f4551e",
-     "fixed_note": "401 now renders op.sign.err.wrong in both locales, naming `ainize stop` + `ainize password --reset` as the way back; every other status still shows what the server said. The door is still unthrottled — a per-IP attempt limit on /api/auth/login is node work."
+     "fixed_by": "07d8ac9",
+     "fixed_note": "POST /api/auth/login now counts attempts per TCP peer — free tries, then a doubling delay to a 30 s ceiling, both the 401 and the 429 naming `ainize password --reset` — and SigningPage translates the 429 in both locales (8bee300).",
+     "fixed": true
     }
    ]
   },

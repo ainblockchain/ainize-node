@@ -886,7 +886,10 @@
      "evidence": "Reproduced on five paths against a REJECTED anchor: `patch rm adv-fail` → `error: draft not found` (exit 1); re-publish same id → `error: patch id already exists: adv-fail`; `patch announce adv-fail` → `draft not found`; `patch announce nope-xyz` (never existed) → the identical `draft not found`; `patch get nope-xyz` → `patch not found`. With `krx-ticker-codes ANNOUNCED` visible one line above in `patch ls`, `patch rm krx-ticker-codes` → `error: draft not found` and the row unchanged (packages/e2e/results/ux2/critic-13). The contrast is in the same file: `forgetBody` (market.ts:423) already throws `this is a draft — delete it instead (ainize patch rm <id>)`.",
      "user_cost": "A publisher who names something wrong, prices it wrong, is rejected, or simply changes their mind gets the same four words for every attempt — words that say the thing does not exist while it is sitting in their own catalogue, which sends people looking for a sync bug instead of reading the status.",
      "fix": "Look the id up in the catalogue first and throw the state, not a lookup failure: `krx-ticker-codes is ANNOUNCED — announced knowledge cannot be deleted (its record is public). Stop serving it with \\`ainize patch forget\\`, or publish a replacement with \\`ainize publish … --parents krx-ticker-codes\\`.` Keep `not found` for ids that really do not exist. On a REJECTED manage page, replace the delete section with \"Publish a corrected version\", opening /new-patch pre-filled from the rejected anchor with a suggested id.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "0793584",
+     "fixed_note": "deleteDraft/announce look the id up in the catalogue and answer with its state and the way out (retire / forget / publish --parents), and a REJECTED manage page now offers a corrected version prefilled from the rejected anchor (bf87b8c)."
     },
     {
      "n": 158,
@@ -1020,7 +1023,10 @@
      "evidence": "The greps above at this commit. AccountPage.tsx:107 renders the field under `op.account.payout.helper` (i18n/pages/operator.ts:343): \"Where sales revenue and creator revenue share arrive. Defaults to this node's address.\"",
      "user_cost": "A seller who separates their node's operational key from the wallet that receives money — the first thing anyone running real revenue would do — fills in the field, is told where the money will arrive, saves successfully, and the money keeps going to the node key. The failure is silent and it is about money.",
      "fix": "Either wire it up — read `settings().payout_address` in `payTo` at market.ts:462/:498 and in the royalty split, and validate it as an AIN address the way teach.ts:1712 already does — or remove the field from AccountPage and the settings schema until it is. Do not ship a form field that promises where money arrives and does nothing.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "2876a39",
+     "fixed_note": "The payout text box that decided nothing is replaced by the address money actually arrives at, with the reason it cannot be routed elsewhere today; a value an earlier build stored is shown as unused."
     },
     {
      "n": 167,
@@ -1066,7 +1072,9 @@
      "audience": "Knowledge publisher",
      "fixed": false,
      "fixed_by": "94449c5",
-     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (c) `--branch` filing into nothing and (d) the doubled word from packages/cli/src/client.ts:37 are CLI work and untouched."
+     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (c) `--branch` filing into nothing and (d) the doubled word from packages/cli/src/client.ts:37 are CLI work and untouched.",
+     "progress_by": "835c5a0",
+     "progress_note": "(d) the doubled zod path is fixed in cli/src/client.ts; (a), (b) and (e) were already closed. What is left is (c) alone: `ainize publish --branch <name>` still records the name and creates no track — /new-patch now warns and offers the create step (6131794), but the CLI flag and the node-side filing (market.announce / branches) belong to the CLI and lineage workstreams."
     }
    ]
   }
