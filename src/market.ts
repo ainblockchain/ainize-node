@@ -1720,15 +1720,20 @@ export class Market {
         payload = { scheme: 'ain-transfer', network: req.network, txHash: t.tx_hash, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, transfer_key: key, proof: signMessage(ainPaymentDigest(t.tx_hash, req.nonce), this.cfg.identity.privateKey) };
         // Written down BEFORE the payment is presented: from here on the money is gone and this row is the receipt.
         this.store.updatePending(pending.id, { tx_hash: t.tx_hash, payload: encodePayload(payload), status: 'paid' });
-        step('pay', `AIN transfer tx ${t.tx_hash.slice(0, 14)}… (key ${key})`);
+        // Item 294: this line used to be the last thing in the buyer's own feed for a purchase that never settled,
+        // and it read exactly like the one that did. Say what has happened and what has not.
+        step('pay', `AIN transfer tx ${t.tx_hash.slice(0, 14)}… (key ${key}) sent — the seller has not answered yet`);
       } else {
         const h = Market.intentHash({ resource: req.resource, amount: req.maxAmountRequired, nonce: req.nonce, payTo: req.payTo, from: this.address });
         payload = { scheme: 'local-credit', network: 'local', txHash: h, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, proof: signMessage(h, this.cfg.identity.privateKey) };
         this.store.updatePending(pending.id, { tx_hash: h, payload: encodePayload(payload), status: 'paid' });
-        step('pay', `signed credit intent ${h.slice(0, 14)}…`);
+        step('pay', `signed credit intent ${h.slice(0, 14)}… prepared — nothing is spent until the seller accepts it`);
       }
       const done = await this.presentPayment(gw, encodePayload(payload)).catch((e) => {
         this.store.updatePending(pending.id, { status: 'paid', error: (e as Error).message });
+        // Item 294: a refusal is a step of its own. Without it the local record erred towards "paid" — three `pay`
+        // lines and no `settled` was the only evidence that three purchases had failed.
+        step('rejected', `${entry.anchor.author_name ?? entry.anchor.author.slice(0, 10)} did not accept the payment: ${(e as Error).message}`);
         throw new Error(`${(e as Error).message} — the payment (${req.maxAmountRequired} ${req.asset}, tx ${(payload.txHash ?? '').slice(0, 14)}…) is recorded as pending on this node; finish it with \`ainize patch download ${patchId}\` instead of buying again`);
       });
       manifest = done.manifest;
