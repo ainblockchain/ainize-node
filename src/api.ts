@@ -948,7 +948,17 @@ export function buildApi(deps: ApiDeps): Router {
     const me = market.address.toLowerCase();
     const sales = setts.filter((s) => sameAddr(s.body.seller, market.address)).map((s) => s.body);
     const map = await market.entryMap();
-    const mineIn = (r: Record<string, string> | undefined) => Object.entries(r ?? {}).find(([a]) => a.toLowerCase() === me);
+    /*
+     * Item 316 — `find()` took the FIRST key that folded to this address, and a settle record can carry the same
+     * person twice: once as typed on a contributor claim, once checksummed as an ancestor author (item 309). The
+     * second spelling was money the wallet never showed. Sum every key that folds to the same person.
+     */
+    const mineIn = (r: Record<string, string> | undefined): [string, string] | undefined => {
+      const hits = Object.entries(r ?? {}).filter(([a]) => a.toLowerCase() === me);
+      if (!hits.length) return undefined;
+      const total = hits.reduce((n, [, amt]) => n + Number(amt || 0), 0);
+      return [hits[0][0], String(Math.round(total * 1e6) / 1e6)];
+    };
     const rows = setts.filter((s) => !sameAddr(s.body.seller, market.address) && mineIn(s.body.royalty));
     const reports = await market.payoutReports(rows.map((s) => ({ hash: s.hash, seller: s.body.seller })));
     // Item 314: a `payout` record on the shared ledger is the seller's own signed statement that the transfer
@@ -956,7 +966,7 @@ export function buildApi(deps: ApiDeps): Router {
     // being asked over HTTP and answering for itself.
     const onRecord = new Map((await market.payoutRecords().catch(() => [])).filter((p) => sameAddr(p.to, market.address)).map((p) => [`${p.settle_hash}:${p.to.toLowerCase()}`, p] as const));
     const royalties = rows.map((s) => {
-      const [, amount] = mineIn(s.body.royalty)!;
+      const [, amount] = mineIn(s.body.royalty)!;      // every spelling of this address, added up (item 316)
       const e = map.get(s.body.patch_id);
       const kind = e?.verifiers.some((v) => v.toLowerCase() === me) ? 'verification' as const : 'lineage' as const;
       const rep = reports.get(s.hash);
@@ -1216,15 +1226,18 @@ export function buildApi(deps: ApiDeps): Router {
   const creditOf = async (address: string) => {
     const grant = market.store.getGrant(address);
     const issuance = market.creditIssuance();
+    // Item 369: the rows that produced the balance, so a refusal can say WHICH of "you spent it" and "this seller
+    // grants less than the last one" is true.
+    const statement = await market.creditStatement(address);
     return {
-      address, currency: market.cfg.market.currency, balance: await market.creditBalance(address),
+      address, currency: market.cfg.market.currency, balance: statement.balance, statement,
       grant: grant ? { amount: grant.amount, reason: grant.reason, granted_at: grant.granted_at } : null,
       would_grant: !grant && issuance.issues && issuance.addresses < issuance.cap ? issuance.per_address : null,
       issued_by: { address: market.address, name: market.cfg.name ?? null, url: market.publicUrl },
       issuance,
       // Said once, here, so no surface has to invent it: this is not money.
       note: issuance.issues
-        ? `CREDIT is issued by this node (${issuance.addresses}/${issuance.cap} addresses funded with ${issuance.per_address} each) for trying the market out — it is not money and it is worthless anywhere else`
+        ? `CREDIT is issued by this node (${issuance.addresses}/${issuance.cap} addresses funded with ${issuance.per_address} each) for trying the market out — it is not money, it is worthless anywhere else, and another node may fund the same address with a different amount`
         : 'this node sells for AIN and issues no local credit',
     };
   };

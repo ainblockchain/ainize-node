@@ -41,9 +41,9 @@ let freeSha = '';
 let paidSha = '';
 
 before(async () => {
-  A = await startNode(mk('A', 34121, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  B = await startNode(mk('B', 34122, ['http://127.0.0.1:34121'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  C = await startNode(mk('C', 34123, ['http://127.0.0.1:34121', 'http://127.0.0.1:34122'], ['verifier']), { quiet: true, serveWeb: false });
+  A = await startNode(mk('A', 34321, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  B = await startNode(mk('B', 34322, ['http://127.0.0.1:34321'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  C = await startNode(mk('C', 34323, ['http://127.0.0.1:34321', 'http://127.0.0.1:34322'], ['verifier']), { quiet: true, serveWeb: false });
   const freeFile = synthPatch(join(tmp, 'synth'), 'money-free', 21, 300);
   const paidFile = synthPatch(join(tmp, 'synth'), 'money-paid', 22, 300);
   freeSha = (await A.market.createDraft({ id: FREE_ID, name: 'Free lesson', model: { id_M: 'M' }, benchmark: bench('money/free'), price: '0', file: freeFile, keepInPlace: true })).patch_sha256;
@@ -273,4 +273,20 @@ test('313/314/366 payout rows are rebuilt from the record, keyed to the sale, an
   assert.equal(run2.paid, 0, 'nothing is paid a second time');
   assert.deepEqual(calls.map((x) => x.batch), [2]);
   store.close();
+});
+
+// ---------------------------------------------------------------- item 369: what made this balance
+test('369 a credit refusal names the grant, the spends and the node that issued them', async () => {
+  const st = await A.market.creditStatement(C.market.address);
+  assert.equal(st.issuer.address, A.market.address, 'the grant is this seller\'s, not a property of the keypair');
+  assert.ok(st.granted > 0 && st.purchases > 0, 'C was funded here and has bought here');
+  assert.equal(st.balance, st.granted - st.spent + st.earned);
+  // a buyer with no credit left is told which of "you spent it" and "this seller grants less" is true
+  const poor = createIdentity();
+  const e = (await A.market.entry(PAID_ID))!;
+  A.market.store.putGrant(poor.address, '1', 'test');
+  const out = await A.market.settlePayment(e, `/x402/patch/${PAID_ID}`, Buffer.from(JSON.stringify({
+    scheme: 'local-credit', network: 'local', txHash: 'x', from: poor.address, to: A.market.address, amount: '4', nonce: 'nope', proof: 'p',
+  })).toString('base64'));
+  assert.match(out.error ?? '', /unknown or expired nonce/, 'the nonce is checked before the balance');
 });

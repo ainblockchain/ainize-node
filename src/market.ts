@@ -1987,15 +1987,36 @@ export class Market {
    * map keyed in the other case used to pay nobody (item 309).
    */
   async creditBalance(address: string): Promise<number> {
+    return (await this.creditStatement(address)).balance;
+  }
+
+  /**
+   * The same balance, with the rows that produced it (item 369).
+   *
+   * The balance is derived from gossiped settle records, so every node on one local network computes the SAME
+   * figure for an address — but the starting grant is each node's own `market.initialCredit`, so a buyer with an
+   * identical history is solvent at a node that grants 100 and refused by one that grants 10. "Insufficient
+   * credit" then means either "you spent it" or "this seller funds strangers less generously than the last one",
+   * and nothing on any surface distinguished them. Every refusal now names the grant, the spends and the earnings
+   * that made the number, and which node issued the grant.
+   */
+  async creditStatement(address: string): Promise<{ address: string; balance: number; granted: number; spent: number; earned: number; purchases: number; royalties: number; issuer: { address: string; name: string | null }; granted_at: number | null; currency: string }> {
     const setts = await this.ledger.settlements();
     const me = address.toLowerCase();
-    let bal = Number(this.store.getGrant(address)?.amount ?? 0);
+    const grant = this.store.getGrant(address);
+    let spent = 0; let earned = 0; let purchases = 0; let royalties = 0;
     for (const s of setts) {
       if (s.body.scheme !== 'local-credit') continue;
-      if (s.body.buyer.toLowerCase() === me) bal -= Number(s.body.amount);
-      for (const [addr, amt] of Object.entries(s.body.royalty)) if (addr.toLowerCase() === me) bal += Number(amt);
+      if (s.body.buyer.toLowerCase() === me) { spent += Number(s.body.amount); purchases++; }
+      for (const [addr, amt] of Object.entries(s.body.royalty)) if (addr.toLowerCase() === me && Number(amt) > 0) { earned += Number(amt); royalties++; }
     }
-    return Math.round(bal * 1e6) / 1e6;
+    const granted = Number(grant?.amount ?? 0);
+    const round = (n: number) => Math.round(n * 1e6) / 1e6;
+    return {
+      address, balance: round(granted - spent + earned), granted: round(granted), spent: round(spent), earned: round(earned),
+      purchases, royalties, issuer: { address: this.address, name: this.cfg.name ?? null },
+      granted_at: grant?.granted_at ?? null, currency: this.cfg.market.currency,
+    };
   }
 
   static intentHash(p: { resource: string; amount: string; nonce: string; payTo: string; from: string }): string {
@@ -2059,12 +2080,17 @@ export class Market {
       // The signature is the first proof that this address exists at all, so it is the moment this node decides
       // whether to fund it: one recorded, capped grant per address (item 364) — never an assumed balance.
       const issued = this.grantCredit(payload.from, `first purchase attempt at ${resource}`);
-      const bal = await this.creditBalance(payload.from);
+      const st = await this.creditStatement(payload.from);
+      const bal = st.balance;
       if (bal < price) {
         const iss = this.creditIssuance();
+        // Item 369: which grant and which spends produced this figure, and whose grant it was. "Insufficient
+        // credit" used to mean either "you spent it" or "this seller grants less than the last one did", with
+        // nothing on any surface to tell the two apart.
+        const made = `${st.granted} granted by ${st.issuer.name ?? st.issuer.address.slice(0, 10)}…${st.spent ? ` − ${st.spent} spent on ${st.purchases} purchase(s) here` : ''}${st.earned ? ` + ${st.earned} earned from ${st.royalties} royalty line(s)` : ''} = ${bal}`;
         return { error: issued.refused
-          ? `insufficient credit: ${bal} < ${price} — ${issued.refused}`
-          : `insufficient credit: ${bal} < ${price} (this node has issued ${iss.addresses}/${iss.cap} starting-credit grants of ${iss.per_address} ${iss.currency})` };
+          ? `insufficient credit: ${bal} < ${price} (${made}) — ${issued.refused}`
+          : `insufficient credit: ${bal} < ${price} (${made}); this node issues ${iss.per_address} ${iss.currency} per address and has funded ${iss.addresses}/${iss.cap} — another seller may grant a different amount, so a balance here is not a balance everywhere` };
       }
       // Everything checked: spend the nonce now, so nothing above can burn it (item 272).
       if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
@@ -2375,7 +2401,7 @@ export class Market {
    * was already entitled to — `mayDownload` admits a settled buyer for nothing. `again: true` is the only way to
    * pay twice on purpose, and it exists because per-hit and per-apply-hour billing can mean a genuine second sale.
    */
-  async buy(patchId: string, opts: { apply?: boolean; withRequired?: boolean; maxTotal?: number; again?: boolean } = {}): Promise<PurchaseResult> {
+  async buy(patchId: string, opts: { apply?: boolean; withRequired?: boolean; maxTotal?: number; again?: boolean; origin?: string } = {}): Promise<PurchaseResult> {
     const steps: PurchaseResult['steps'] = [];
     const step = (s: string, d: string, id = patchId) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, id); };
     const entry = await this.buyable(patchId);
@@ -2405,7 +2431,7 @@ export class Market {
       for (const need of quote.requires) {
         if (need.licensed || need.mine) continue;
         if (!need.known) throw conflict(`${patchId} needs ${need.id} underneath and this node has never seen that anchor — ask a peer that carries it before buying`, { quote });
-        const sub = await this.buy(need.id, { apply: false });
+        const sub = await this.buy(need.id, { apply: false, origin: opts.origin });
         purchases.push({ patch_id: need.id, amount: sub.amount, currency: need.currency, scheme: sub.scheme, tx_hash: sub.tx_hash });
         for (const st of sub.steps) steps.push({ ...st, step: `${need.id}/${st.step}` });
         step('base', `bought base ${need.id} for ${sub.amount} ${need.currency}`, need.id);
@@ -2413,7 +2439,7 @@ export class Market {
     } else if (quote.missing.length) {
       step('needs', `not buying the base(s) it needs: ${quote.missing.join(', ')} — this knowledge will not answer anything on its own until they are loaded under it`);
     }
-    const one = await this.buyOne(entry, step);
+    const one = await this.buyOne(entry, step, opts.origin);
     purchases.push({ patch_id: patchId, amount: one.amount, currency: entry.anchor.currency, scheme: one.scheme, tx_hash: one.tx_hash, ...(one.redeemed ? { free: true } : {}) });
     if (opts.apply) {
       // Buying a knowledge and asking for it to be loaded means the whole stack: an add-on without its base is nonsense (§8.7).
@@ -2461,7 +2487,7 @@ export class Market {
    * and the next attempt re-presents that payment rather than paying a second time (item 272/273 on the seller side
    * make the re-presentation idempotent).
    */
-  private async buyOne(entry: CatalogEntry, step: (s: string, d: string, id?: string) => void): Promise<PurchaseResult> {
+  private async buyOne(entry: CatalogEntry, step: (s: string, d: string, id?: string) => void, origin?: string): Promise<PurchaseResult> {
     const patchId = entry.anchor.id;
     const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen }));
     const candidates = this.gatewaysFor(entry.anchor, nodes);
@@ -2483,7 +2509,7 @@ export class Market {
         manifest = done.manifest; txHash = done.txHash || owed.tx_hash || ''; amount = owed.amount; scheme = owed.scheme; redeemed = true;
         this.store.updatePending(owed.id, { status: 'settled', error: null });
         step('settled', `seller re-issued the manifest against the payment already made — nothing was charged again`);
-        return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty: done.royalty });
+        return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty: done.royalty, origin });
       }
     }
 
@@ -2552,7 +2578,7 @@ export class Market {
     } else {
       throw new Error(`gateway error ${r1.status} from ${gw}: ${(await r1.text().catch(() => '')).slice(0, 200)}`);
     }
-    return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty });
+    return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty, origin });
   }
 
   /** Present an X-PAYMENT to a gateway and parse the manifest it answers with. */
@@ -2593,9 +2619,25 @@ export class Market {
     this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: o.txHash, scheme: o.scheme, amount: o.amount, manifest, path, created_at: Date.now(), origin: o.origin ?? 'manual', royalty: o.royalty ?? null });
     // The purchase is what turns a held body into a body this node may load and serve (item 327).
     this.grantLicense(entry, o.scheme === 'free' ? 'free' : 'purchase', `${o.amount} ${entry.anchor.currency} · tx ${o.txHash.slice(0, 14)}…`);
+    /*
+     * The on-chain access receipt (item 355). It was described to the buyer as part of the purchase and was
+     * best-effort in the code: a `.catch` that logged a warning, a `null` return when the anchor carries no
+     * `entry_id`, and a step pushed only when a tx came back — so the failure was invisible, the step simply
+     * disappeared from the timeline, and a buyer relying on the receipt as proof of purchase might have none.
+     * It is a step either way now, and a failure is retried in the background instead of being swallowed.
+     */
     if (this.ledger instanceof AinLedger && o.scheme === 'ain-transfer' && !o.redeemed) {
-      const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, o.amount, entry.anchor.currency, o.txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
-      if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
+      const anchor = entry.anchor as PatchAnchor & { entry_id?: string };
+      if (!anchor.entry_id) {
+        step('receipt', 'no on-chain access receipt: this knowledge was announced without a knowledge-graph entry, so there is nowhere to write one. The settlement on the ledger is the proof of purchase');
+      } else {
+        const tx = await this.ledger.recordAccess(anchor, o.amount, entry.anchor.currency, o.txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return e as Error; });
+        if (typeof tx === 'string') step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
+        else {
+          step('receipt', `could not write the on-chain access receipt: ${(tx as Error).message} — the purchase itself stands (the settlement is on the ledger); this node will retry the receipt in the background`);
+          this.retryAccessReceipt(entry, o.amount, o.txHash);
+        }
+      }
     }
     return { patch_id: patchId, steps: [], manifest, path, tx_hash: o.txHash, amount: o.amount, scheme: o.scheme, ...(o.redeemed ? { redeemed: true } : {}),
       ...(o.royalty ? { royalty: o.royalty } : {}), ...(payees?.length ? { payees } : {}) };
@@ -2627,6 +2669,32 @@ export class Market {
         };
       })
       .sort((a, b) => Number(b.amount) - Number(a.amount));
+  }
+
+  /**
+   * Retry a failed access receipt in the background (item 355), up to RECEIPT_RETRIES times with a widening gap.
+   * The money has already moved and the body is already here — this is the proof-of-purchase write that the chain
+   * refused, so a failure here must never fail the purchase, and must never be silent either.
+   */
+  static readonly RECEIPT_RETRIES = 5;
+  private retryAccessReceipt(entry: CatalogEntry, amount: string, txHash: string, attempt = 1): void {
+    if (!(this.ledger instanceof AinLedger) || attempt > Market.RECEIPT_RETRIES) {
+      if (attempt > Market.RECEIPT_RETRIES) this.log('error', 'buy', `gave up writing the on-chain access receipt for ${entry.anchor.id} after ${Market.RECEIPT_RETRIES} attempts — the settlement on the ledger remains the proof of this purchase`, entry.anchor.id);
+      return;
+    }
+    const t = setTimeout(() => {
+      const ledger = this.ledger as AinLedger;
+      ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, amount, entry.anchor.currency, txHash)
+        .then((tx) => {
+          if (tx) this.log('info', 'buy', `on-chain access receipt for ${entry.anchor.id} written on retry ${attempt} (tx ${tx.slice(0, 12)}…)`, entry.anchor.id, { tx_hash: tx });
+          else this.retryAccessReceipt(entry, amount, txHash, attempt + 1);
+        })
+        .catch((e) => {
+          this.log('warn', 'buy', `access receipt retry ${attempt}/${Market.RECEIPT_RETRIES} for ${entry.anchor.id} failed: ${(e as Error).message}`, entry.anchor.id);
+          this.retryAccessReceipt(entry, amount, txHash, attempt + 1);
+        });
+    }, Math.min(5 * 60_000, 15_000 * attempt));
+    t.unref?.();
   }
 
   /**
@@ -3425,19 +3493,37 @@ export class Market {
     return { patch_id: patchId, requests: this.requestCount(patchId) };
   }
 
-  /** Pairwise memory-entry overlap among the given entries (picker warning: "these two overlap on n entries"). */
-  chatOverlaps(entries: CatalogEntry[]): { a: string; b: string; rows: number }[] {
-    const sets = entries.map((e) => ({ id: e.anchor.id, set: this.blobs.addrSet(e.anchor.patch_sha256) }));
-    const out: { a: string; b: string; rows: number }[] = [];
+  /**
+   * Pairwise overlap among the given entries — in memory entries AND in questions (item 222).
+   *
+   * "…overlap on 2,170 memory entries — Pixelplus, ticked last, wins" is true and tells a normal person nothing
+   * they can act on: which questions change, and whether the loser still answers its own. Both anchors publish
+   * their benchmark samples (prompt → expect), so the pair CAN be described in the terms the visitor is thinking
+   * in — how many of the same questions they answer, and on how many of those they disagree — instead of leaving
+   * them to spend free tries probing. Questions are matched on the parser's own key (F13), so "the same question"
+   * means the same thing here as in a dataset and in `covered_by`.
+   */
+  chatOverlaps(entries: CatalogEntry[]): { a: string; b: string; rows: number; questions_shared: number; questions_disagree: number }[] {
+    const sets = entries.map((e) => ({
+      id: e.anchor.id,
+      set: this.blobs.addrSet(e.anchor.patch_sha256),
+      answers: new Map((e.anchor.benchmark.samples ?? []).map((sm) => [questionKey(sm.prompt), sm.expect])),
+    }));
+    const out: { a: string; b: string; rows: number; questions_shared: number; questions_disagree: number }[] = [];
     for (let i = 0; i < sets.length; i++) {
-      if (!sets[i].set) continue;
       for (let j = i + 1; j < sets.length; j++) {
-        if (!sets[j].set) continue;
-        const n = intersectionCount(sets[i].set!, sets[j].set!);
-        if (n > 0) out.push({ a: sets[i].id, b: sets[j].id, rows: n });
+        const n = sets[i].set && sets[j].set ? intersectionCount(sets[i].set!, sets[j].set!) : 0;
+        let shared = 0; let disagree = 0;
+        for (const [k, v] of sets[i].answers) {
+          const other = sets[j].answers.get(k);
+          if (other === undefined) continue;
+          shared++;
+          if (other.replace(/\s+/g, '') !== v.replace(/\s+/g, '')) disagree++;
+        }
+        if (n > 0 || shared > 0) out.push({ a: sets[i].id, b: sets[j].id, rows: n, questions_shared: shared, questions_disagree: disagree });
       }
     }
-    return out.sort((x, y) => y.rows - x.rows);
+    return out.sort((x, y) => y.questions_disagree - x.questions_disagree || y.rows - x.rows);
   }
 
   /** Ids the operator keeps loaded in the serving model (they colour the "before" answer of every live test). */
@@ -4033,7 +4119,9 @@ export class Market {
     const spent = new Map<string, number>();
     for (const item of quote.items.filter((i) => i.plan === 'buy')) {
       try {
-        const r = await this.buy(item.patch_id);
+        // Item 362: a purchase a track made on this node's behalf is marked as such, so the operator can tell it
+        // from one they chose to make — and can add up what a subscription costs them.
+        const r = await this.buy(item.patch_id, { origin: `subscription:${branch}` });
         acquired.push(item.patch_id);
         spent.set(item.currency, (spent.get(item.currency) ?? 0) + Number(r.amount || 0));
       } catch (err) { failed.push({ patch_id: item.patch_id, error: (err as Error).message }); }
@@ -4083,7 +4171,7 @@ export class Market {
       const prev = this.syncFailures.get(key);
       if (prev && Date.now() - prev.at < Market.syncBackoffMs(prev.tries)) continue;
       try {
-        const r = await this.buy(id);
+        const r = await this.buy(id, { origin: `subscription:${branch}` });
         acquired.push(id);
         this.syncFailures.delete(key);
         spent.set(item.currency, (spent.get(item.currency) ?? 0) + Number(r.amount || 0));
