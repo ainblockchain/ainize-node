@@ -10530,5 +10530,96 @@
    "packages/web/src/i18n/pages/teach.ts (detail.ov.dataset_note_shared, detail.ov.dataset_from)",
    "docs/lineage-teach-design.md §5.2, §6.1, §4 SC-10"
   ]
+ },
+ {
+  "id": "AZ-323",
+  "persona": "Knowledge creator (operator)",
+  "title": "A retrain of a merge is masked to the rows in dispute, taken from the base's own address map",
+  "goal": "§9 T1 / §7.5: when two knowledges disagree about rows, only the renderings of the disagreeing questions may move — everything else on the model must stay bit-identical. The addresses come from each parent's `fact_addrs`, which the trainer records per fact index in recipe.json and `anchorRecipe` deliberately keeps off-chain. The node read it from `anchor.recipe` keyed by PROMPT TEXT, where nothing ever writes it, so `mask.addrs` was null on every job there has ever been.",
+  "preconditions": [
+   "Two published knowledges that answer one question differently, at least one of them taught on this node so its recipe.json is here.",
+   "`teach.lineage` on; the `stub` backend is enough — nothing is trained."
+  ],
+  "steps": [
+   "POST /api/teach/merge/preview { a, b } and resolve the conflicting question.",
+   "POST /api/teach/jobs { base_ids: [a, b], mode: 'merge', tier: 'retrain', resolutions }.",
+   "Read `<job>/job.json`."
+  ],
+  "expected": [
+   "`mask.mode` is 'only' and `mask.facts` names the questions being retrained.",
+   "`mask.addrs` holds the addresses the base recorded for THAT question and none of the addresses of its other questions.",
+   "With no `fact_addrs` on this node (a base taught elsewhere) `mask.addrs` is null — which means the trainer resolves them from the questions itself and fails the job if it cannot, never that it may write anywhere."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-merge.test.ts (AZ-323)",
+   "packages/node/src/teach.ts maskAddrs()",
+   "qwen3.8/train/teach.py resolve_mask()",
+   "docs/lineage-teach-design.md §7.1, §7.3, §7.5, §9 T1"
+  ]
+ },
+ {
+  "id": "AZ-324",
+  "persona": "Knowledge creator (operator)",
+  "title": "A lesson is applied onto its base read-first, and one whose rows are not the ones it was trained over is refused",
+  "goal": "§7.6 step 4: with the base stack loaded and the lesson going on top, `prev != before` is a TRAINER bug and has to be named as one. CHECKING applied the lesson without `--verify-before`, so a wrong `before` was never caught there — it surfaced later and far less legibly as a low `reversibility_ok`, and `base_state_mismatch` existed nowhere in the tree.",
+  "preconditions": [
+   "A published base with a `derivative` training set, and a lesson trained on top of it (a delta the trainer confirmed).",
+   "Nothing but that base is loaded for the check — a knowledge loaded only for comparison may legitimately sit on the same rows."
+  ],
+  "steps": [
+   "Train a lesson with `base_ids: [<base>]` and let it reach CHECKING.",
+   "Watch which apply carries `--verify-before`.",
+   "Repeat with the table underneath holding something else."
+  ],
+  "expected": [
+   "The lesson's own apply is read-first; the base underneath is not (its `before` is the disk table and may legitimately differ under other patches).",
+   "A mismatch fails the job with `base_state_mismatch`, naming how many rows differ and which base was expected underneath, and nothing is written to the table.",
+   "With another knowledge loaded for comparison the check is skipped and the log says so, rather than blaming the child for a row somebody else wrote."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/node/test/lineage-fork.test.ts (AZ-324)",
+   "packages/node/src/teach.ts check()",
+   "qwen3.8/scripts/patch.py apply --verify-before (exit 4)",
+   "docs/lineage-teach-design.md §7.6, §8.2"
+  ]
+ },
+ {
+  "id": "AZ-325",
+  "persona": "Node operator / developer",
+  "title": "On GPUs 4-6: a child trained on top of a base really starts from the base's values, and removing it leaves the base standing",
+  "goal": "§1 goal 3 / §7.4: the one claim that cannot be made without weights. Everything else about the on-top contract is arithmetic and file layout and is asserted offline (scripts/lineage-test.py, `--dry-run`, the stub backend); this is the run that proves a GRADIENT lesson's `before` is its parent's `after` in bf16 bits on every overlapping address, that the squash carries every untouched parent row, and that `patch.py remove` puts the parent back untouched.",
+  "preconditions": [
+   "The `flashtrain` container on GPUs 4-6, free (no other training, no vLLM holding them).",
+   "A prepared job at `/mnt/newdata/qwen3.8/.teach/l3-gpu/job.json` with `parents`, `known_file`, `max_known`, `replaces`, `export: 'delta'`, `mask: {mode:'none'}`, `probe_with_parents: true` and `max_steps: 2`.",
+   "For the reversibility half only: a throwaway vLLM with `ENGRAM_HOOK=1` on the same GPUs — so it runs AFTER the trainer releases them, never beside it."
+  ],
+  "steps": [
+   "docker exec -i -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True flashtrain python3 /work/train/teach.py --job /work/.teach/l3-gpu/job.json",
+   "python3 scripts/lineage-verify.py --child <job>/lesson.npz --recipe <job>/recipe.json --parent pixelplus-1=<job>/parents/0-<sha>.npz --model-dir /model",
+   "Repeat with `\"export\": \"squash\"` in job.json and `--export squash`.",
+   "Then, on a throwaway vLLM: patch.py apply the parent, apply the child with --verify-before, check, remove the child, check the parent."
+  ],
+  "expected": [
+   "`{\"event\":\"version\",…}` is the first stdout line and `{\"event\":\"parents\",\"loaded\":1,…}` comes before the baseline probe.",
+   "lineage-verify.py passes every check: `before == parent.after` in bf16 bits on every shared address, `before ==` the disk base where nothing was under it, the `meta` member parses, and `pre_state_sha256` recomputes from the file and matches recipe.json.",
+   "The squash run's rows are touched ∪ every parent address, and an untouched parent row keeps the parent's value.",
+   "`patch.py apply <child> --verify-before` does not exit 4 and reports `prev_equals_before: true`; after `remove`, `check <parent>` reports `differ_after 0` — the parent is still standing.",
+   "recipe.json's `timing` gives `step_s_mean` and `eval_s_mean` for a parents-loaded job, so §7.8's cost figures can be re-measured from artefacts."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "manual",
+  "evidence": [
+   "qwen3.8/train/teach.py (load_parents, export_rows, meta_member, pre_state_sha256)",
+   "scripts/lineage-verify.py",
+   "scripts/lineage-test.py (the offline half, already run)",
+   "docs/lineage-teach-design.md §7.2, §7.4, §7.6, §18 L3"
+  ]
  }
 ]

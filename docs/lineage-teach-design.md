@@ -437,23 +437,25 @@ Fork: `POST /api/patches/:id/fork` creates the owner-scoped dataset described in
 
 ## 7. Trainer contract (`/mnt/newdata/qwen3.8/train/teach.py`, `flashtrain`, GPUs 4–6)
 
-The node checks `trainer.version >= 2` (reported on the first stdout line) before sending base jobs; older trainers only receive stand-alone jobs.
+**Corrected 2026-09-05 (L3, as built).** There is no version gate: nothing in `packages/node` reads a trainer version, and a node cannot know what its container holds before it runs it. The trainer reports `{"event":"version","version":2,…}` on its first stdout line and the recipe carries `trainer_version`, but neither *enables* anything — the real gate is the post-hoc refusal in `teach.ts train()`: with `parents` in the job, a run that finishes without `recipe.parents[].loaded`, `recipe.export` and `recipe.pre_state_sha256` fails the job with `trainer_no_parents`, and a second, softer gate (`lineageFields`) omits `anchor.base` entirely, so the lesson publishes as *declared parent — not trained on top* rather than claiming a base it never had.
 
 ### 7.1 job.json additions
 ```json
 {
   "parents":     [{ "patch_id": "krx-all-2761", "sha256": "…", "npz": "/work/.teach/<job>/parents/0-<sha>.npz" }],
-  "known_file":  "known.jsonl",            // inherited rows: KEEP targets (answer must stay), sampled per step up to max_known
+  "known_file":  "known.jsonl",            // inherited rows: KEEP targets (answer must stay), up to max_known of them
   "max_known":   64,                        // clamp(8, ceil(added_rows/2), 64); always includes rows whose addresses intersect the new facts
   "replaces":    [3, 7],                    // fact indexes that deliberately override inherited rows: not frozen, not in the keep-set
   "export":      "delta",                   // "delta" | "squash"
-  "mask":        { "mode": "none" },        // or { "mode": "only", "addrs_file": "allowed.npy" } for retrain-tier merges
+  "mask":        { "mode": "none" },        // or { "mode": "only", "facts": [0], "addrs": ["4001",…]|null } for retrain-tier merges
   "probe_with_parents": true
 }
 ```
 
+Two more corrections from building it (L3): `max_known` rows are sampled **once per run**, not per step — the corpus is built once, `known_used` is one number, and resampling would widen the delta and the step time across a run whose whole budget is the 30-minute `trainer.timeoutMs`; what the sampling is *for*, the F8 guard ("always including rows whose addresses intersect the new facts'"), is kept exactly and reported as `recipe.known.intersecting`. And `mask` is `facts` + `addrs` as the node actually writes it, not an `allowed.npy` file: `addrs: null` means the trainer resolves the addresses from those questions itself (via `engram.core.addresses`) and **fails the job** if it cannot.
+
 ### 7.2 Load sequence (~30 lines)
-After `hf_model.load_model`: for each parent in order `d = np.load(p.npz)`; verify `sha256(file) == p.sha256`; `pa = torch.from_numpy(d['addrs'])`; for squash only, `base_vals.setdefault(addr, rows.table[pa])`; `rows.table[pa] = torch.from_numpy(d['after']).to(torch.bfloat16)` (the `train_all.py:105` pattern). Emit `{"event":"parents","loaded":n,"rows":N}`. Compute `pre_state_sha256` over the union of parent addrs. **Then** run the baseline probe and the contrast probe, so parent samples survive the "does the model already answer it" filter (F2) and act as a regulariser. The existing `original.setdefault(ad, rc[i].clone())` stays untouched — first touch now records the parent-loaded value, which is exactly the delta `before`.
+After `hf_model.load_model`: for each parent in order `d = np.load(p.npz)`; verify `sha256(file) == p.sha256`; `pa = torch.from_numpy(d['addrs'])`; for squash only, `base_vals.setdefault(addr, rows.table[pa])`; `rows.table[pa] = torch.from_numpy(d['after']).to(torch.bfloat16)` (the `train_all.py:105` pattern). Emit `{"event":"parents","loaded":n,"rows":N}`. ~~Compute `pre_state_sha256` over the union of parent addrs.~~ **Corrected 2026-09-05:** `pre_state_sha256` is computed at export time over **the child's own exported rows** (§5.1) — `packages/node/src/api.ts` recomputes it from the published file's `addrs`+`before` when a lesson is imported, so a hash over anything else makes the anchor unrecomputable from the artefact and silently breaks `patch import`. **Then** run the baseline probe and the contrast probe, so parent samples survive the "does the model already answer it" filter (F2) and act as a regulariser. The existing `original.setdefault(ad, rc[i].clone())` stays untouched — first touch now records the parent-loaded value, which is exactly the delta `before`.
 
 ### 7.3 Loss and masks
 New facts train as today. `known` rows are trained as keep targets (answer-token loss on the parent's own `Q:/A:` renderings), never as new facts; rows in `replaces` are excluded from the keep-set. `mask.mode == 'only'` zeroes gradients outside `allowed` (the `pinpoint.py:43,55` pattern). This addresses the measured failure (shared digit/template rows pushed in opposite directions, F8) in the trainer, not by row arithmetic.

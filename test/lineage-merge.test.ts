@@ -13,7 +13,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, defaultConfig, readNpzAddrs, signMessage, valuesEqualCount, type Identity, type NodeConfig, type TeachDataset } from '@ngram/core';
@@ -325,4 +325,41 @@ test('AZ-306 a private training set can still be combined when the rows do not o
   const pa = N.market.blobs.get((await N.market.entry(open))!.anchor.patch_sha256)!.path;
   const pb = N.market.blobs.get((await N.market.entry(sealed))!.anchor.patch_sha256)!.path;
   assert.equal(readNpzAddrs(merged).length, readNpzAddrs(pa).length + readNpzAddrs(pb).length);
+});
+
+// ---------------------------------------------------------------- AZ-323
+test('AZ-323 a retrain takes its mask from the base’s own address map, and a base this node did not train leaves it null', async () => {
+  const a = await publishOwn([{ prompt: 'which tree?', answer: 'the pine' }, { prompt: 'which rock?', answer: 'granite' }], 'Trees', alice);
+  const b = await publishOwn([{ prompt: 'which tree?', answer: 'the oak' }], 'Oaks', bob);
+
+  /*
+   * `fact_addrs` is what the trainer records for every question it taught (design §7.5): the rows that question
+   * writes through. It lives in the job's recipe.json and NEVER on the anchor — `anchorRecipe` keeps it off-chain —
+   * so a merge that wants to freeze everything except the rows in dispute has to read it from there, by fact INDEX.
+   * The stub backend does not train and records none, so it is written here the way the gradient trainer writes it.
+   */
+  const aJob = N.store.listTeachJobs({ draft_id: a })[0];
+  const aRecipePath = join(aJob.job_dir!, 'recipe.json');
+  const aRecipe = JSON.parse(readFileSync(aRecipePath, 'utf8')) as { facts: { prompt: string }[]; fact_addrs?: Record<string, number[]> };
+  const treeIdx = aRecipe.facts.findIndex((f) => f.prompt === 'which tree?');
+  assert.ok(treeIdx >= 0, 'the base recipe lists the questions it taught');
+  aRecipe.fact_addrs = { [String(treeIdx)]: [4001, 4002, 4003], [String(1 - treeIdx)]: [9001] };
+  writeFileSync(aRecipePath, JSON.stringify(aRecipe));
+
+  const preview = await api('POST', '/api/teach/merge/preview', { a, b }, carol);
+  const key = (preview.json as unknown as { questions: { conflicts: { key: string }[] } }).questions.conflicts[0].key;
+  const job = await train({ base_ids: [a, b], mode: 'merge', tier: 'retrain', resolutions: { [key]: 'b' } }, carol);
+  const spec = JSON.parse(readFileSync(join(N.teach!.get(job.id)!.job_dir!, 'job.json'), 'utf8')) as { mask: { mode: string; facts: number[]; addrs: string[] | null } };
+  assert.equal(spec.mask.mode, 'only');
+  assert.deepEqual(spec.mask.facts, [0]);
+  assert.deepEqual([...(spec.mask.addrs ?? [])].sort(), ['4001', '4002', '4003'],
+    'only the rows of the question being retrained — the base’s other question is not in the mask');
+
+  // and a base whose address map nobody on this node has: null, which means the trainer resolves them itself and
+  // fails the job if it cannot — never that it may write anywhere (§7.3)
+  writeFileSync(aRecipePath, JSON.stringify({ ...aRecipe, fact_addrs: undefined }));
+  const job2 = await train({ base_ids: [a, b], mode: 'merge', tier: 'retrain', resolutions: { [key]: 'b' } }, carol);
+  const spec2 = JSON.parse(readFileSync(join(N.teach!.get(job2.id)!.job_dir!, 'job.json'), 'utf8')) as { mask: { mode: string; addrs: string[] | null } };
+  assert.equal(spec2.mask.mode, 'only');
+  assert.equal(spec2.mask.addrs, null);
 });

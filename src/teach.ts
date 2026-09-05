@@ -2214,6 +2214,13 @@ export class TeachWorker {
         for (const f of state.done.facts ?? []) { const t = state.facts[f.fact]; if (!t) continue; if (f.base_answer && !t.base_answer) t.base_answer = f.base_answer; if (f.after_answer) t.after_answer = f.after_answer; if (typeof f.hit === 'boolean') t.hit = f.hit; if (typeof f.heldout_hit === 'boolean') t.heldout_hit = f.heldout_hit; }
         break;
       }
+      case 'parents': {
+        // The stack went into the table before the first probe (design §7.2). Logged rather than stored: what the
+        // record ends up saying about the base comes from recipe.json, which the trainer writes on EVERY export,
+        // and a progress event must never be the evidence for a lineage claim.
+        this.log('info', `trained on top of ${n(ev.loaded) ?? 0} knowledge(s): ${n(ev.rows) ?? 0} memory entries loaded first, export ${String(ev.export ?? 'delta')}${n(ev.known) ? `, ${n(ev.known)} inherited question(s) held` : ''}`, job.id, { parents: ev.loaded, rows: ev.rows, export: ev.export, mask: ev.mask });
+        break;
+      }
       case 'error': state.error = String(ev.message ?? 'trainer error'); break;
       default: break;
     }
@@ -2338,15 +2345,31 @@ export class TeachWorker {
 
   /**
    * The addresses a T1 retrain may touch (§9 T1 `mask.only`): the renderings of the questions being retrained, taken
-   * from each parent's recipe where it recorded `fact_addrs` (design §7.5). No parent on this node records them yet,
-   * so this is usually null — and a null mask means the trainer has to resolve the addresses from the questions it is
-   * given, not that it may write anywhere.
+   * from each parent's own `fact_addrs` (design §7.5).
+   *
+   * The map is keyed by FACT INDEX and lives in the job-directory recipe.json, never on the anchor — `anchorRecipe`
+   * deliberately keeps it off-chain, so the earlier version of this method (`anchor.recipe.fact_addrs[f.prompt]`)
+   * read a field nothing writes, by a key nothing uses, and returned null on every job there has ever been. It is
+   * resolved here the way it is actually recorded: the parent's recipe lists its questions in `facts`, and
+   * `fact_addrs[i]` are the rows the i-th of them writes through.
+   *
+   * A base taught on another node leaves nothing to read here and this stays null — which does NOT mean "anywhere":
+   * the trainer resolves the addresses from the questions itself and fails the job if it cannot (§7.3).
    */
   private maskAddrs(job: TeachJobRow): string[] | null {
+    const wanted = new Set(job.facts.map((f) => f.prompt));
     const addrs = new Set<string>();
     for (const b of job.bases ?? []) {
-      const recipe = this.store.getDraft(b.patch_id)?.anchor.recipe as { fact_addrs?: Record<string, (number | string)[]> } | undefined;
-      for (const f of job.facts) for (const a of recipe?.fact_addrs?.[f.prompt] ?? []) addrs.add(String(a));
+      for (const j of this.store.listTeachJobs({ draft_id: b.patch_id })) {
+        if (!j.job_dir) continue;
+        const recipe = this.readTrainerRecipe(j.job_dir);
+        const facts = recipe.facts ?? [];
+        const map = (recipe.fact_addrs ?? {}) as Record<string, (number | string)[]>;
+        for (const [i, f] of facts.entries()) {
+          if (!wanted.has(f.prompt)) continue;
+          for (const a of map[String(i)] ?? []) addrs.add(String(a));
+        }
+      }
     }
     return addrs.size ? [...addrs] : null;
   }
@@ -2558,6 +2581,12 @@ export class TeachWorker {
           const parentReserve = parentSamples * 2;
           let taughtBudget = Math.max(0, c.check.callBudget - localityCost - parentReserve);
           const sample = this.sampleIndexes({ ...job, facts }, Math.min(facts.length, c.check.sampleRows));
+          // Whether the lesson can be read-first verified against the table it claims (§7.6 step 4): it has to be a
+          // delta, the trainer has to have confirmed it loaded the stack, and nothing but that stack may be under it.
+          const verifyBase = baseTargets.length > 0 && contextTargets.length === 0
+            && ((recipe.export ?? job.export_mode ?? 'delta') === 'delta')
+            && (job.bases ?? []).every((b) => (recipe.parents ?? []).some((pp) => pp.patch_id === b.patch_id && pp.loaded));
+          if (baseTargets.length && !verifyBase) this.log('info', `the lesson is applied without the base-state check (${contextTargets.length ? 'other knowledges are loaded for comparison' : 'the trainer did not confirm a delta over the stack'})`, job.id);
           // 1) remove the context stack → clean table; locality baseline
           for (const t of [...targets].reverse()) if (wasApplied.get(t.path)) await rt.removeRaw(t.path);
           // Each locality prompt is asked TWICE with nothing applied. vLLM's continuous batching makes a greedy
@@ -2600,7 +2629,15 @@ export class TeachWorker {
             this.store.updateTeachJob(job.id, { lesson_applied: true });   // persisted BEFORE the apply: a crash from here on must restore the table
             // The journal records the values this apply overwrote (the base stack's, when there is one), so removing
             // the lesson afterwards restores THEM — and so reversibility can be measured rather than assumed (§8, SC-7).
-            const ap = await rt.applyRaw(lesson, { journal: lessonJournal }); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
+            //
+            // §7.6 step 4: a delta is read-first. The rows under it now are the base stack the trainer said it
+            // trained against, so `prev != before` here is a TRAINER bug and must say so — until now it surfaced
+            // later and far less legibly as a low `reversibility_ok`, and `base_state_mismatch` existed nowhere in
+            // the tree. Only when the applied stack IS the base stack: a knowledge the visitor also loaded for
+            // comparison can legitimately sit on the same rows, and that is not the child's fault to fail for.
+            const ap = await rt.applyRaw(lesson, { journal: lessonJournal, verifyBefore: verifyBase });
+            if (ap.code === 4 || (ap.json && ap.json.error === 'base_mismatch')) throw new Error(`base_state_mismatch: the rows under this lesson are not the ones it was trained against — ${(ap.json?.rows_differ as number) ?? '?'} of ${(ap.json?.rows as number) ?? '?'} row(s) differ from its \`before\` with ${baseTargets.map((b) => b.id).join(', ')} loaded. The file is not a delta over that base.`);
+            if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
             checks.taught = { hits: 0, total: 0 }; checks.heldout = { hits: 0, total: 0 };
             let spent = 0; let measured = 0; let questionHits = 0;
             for (const [n, i] of sample.entries()) {

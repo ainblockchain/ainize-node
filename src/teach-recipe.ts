@@ -12,7 +12,11 @@ export interface TrainerRecipe {
   trainer?: string;
   status?: string;
   facts?: { prompt: string; answer: string; alt_prompt?: string }[];
-  sentences?: { kind: string; fact: number; prefix: string; target: string; n_tokens?: number; n_answer_tokens?: number; is_target?: boolean }[];
+  /**
+   * `role` separates the three classes of the corpus (design §7.3): the lesson's own facts, the generic contrast
+   * regulariser, and the base's rows held as keep targets. Only `fact` sentences are ever the child's benchmark.
+   */
+  sentences?: { kind: string; fact: number; role?: 'fact' | 'contrast' | 'known'; prefix: string; target: string; n_tokens?: number; n_answer_tokens?: number; is_target?: boolean }[];
   /** Authoritative benchmark samples: the exact trained `Q:/A:` prefix and the stripped answer. */
   benchmark_samples?: { prompt: string; expect: string }[];
   contrast?: unknown[];
@@ -27,12 +31,25 @@ export interface TrainerRecipe {
   step?: number;
   converged?: boolean;
   created_at?: number;
+  /** Which trainer wrote this — the same string the npz `meta` member carries (`version` above is the recipe schema). */
+  trainer_version?: string;
+  /** §7.5: what a run cost, so §7.8 can be re-measured from artefacts instead of from a stopwatch. */
+  timing?: { load_s?: number; step_s_mean?: number | null; eval_s_mean?: number | null; steps?: number; evals?: number };
   /** Lineage (design §7.5): the stack the trainer loaded before step 1, what it exported and the pre-state hash. */
   parents?: { patch_id: string; sha256: string; rows: number; loaded?: boolean }[];
   export?: 'delta' | 'squash';
   pre_state_sha256?: string;
+  /** `{fact index: row addresses}` over every trained rendering — what a later merge reads to fill `mask.only`. */
   fact_addrs?: Record<number, number[]>;
   known_used?: number;
+  /** How the keep-set was chosen: `intersecting_first` means the F8 guard (rows shared with the new facts) was applied. */
+  known?: { candidates: number; used: number; intersecting: number; intersecting_dropped: number; selection: string; max_known?: number } | null;
+  /** Fact indexes the lesson deliberately overrides — trained, and kept out of the keep-set (§7.3). */
+  replaces?: number[];
+  probe_with_parents?: boolean;
+  /** Rows loaded from the whole stack, and what the gradient freeze actually froze. */
+  parent_rows?: number;
+  mask?: { mode: 'none' | 'only'; facts?: number[]; source?: string | null; addrs?: number; frozen_rows?: number };
   [k: string]: unknown;
 }
 

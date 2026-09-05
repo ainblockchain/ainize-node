@@ -31,13 +31,23 @@ let opToken = '';
 
 // ---------------------------------------------------------------- fake serving model (nothing here is a measurement)
 const table = new Map<string, number>();
+const verifiedBefore = new Map<string, boolean>();
+let wrongTable = false;
 let seq = 0;
 function installFakeRuntime() {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
     status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
     isApplied: async (p: string) => table.has(p),
-    applyRaw: async (p: string) => { table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
+    // §7.6 step 4: a delta is applied read-first. The flag records whether the worker asked for that, and
+    // `wrongTable` is the answer `scripts/patch.py apply --verify-before` gives when the rows underneath are not
+    // the ones the file was trained over: exit 4, nothing written.
+    applyRaw: async (p: string, o?: { verifyBefore?: boolean }) => {
+      verifiedBefore.set(p, !!o?.verifyBefore);
+      if (o?.verifyBefore && wrongTable) return { code: 4, out: '', err: 'base_mismatch', json: { error: 'base_mismatch', rows: 7, rows_differ: 5 } };
+      table.set(p, ++seq);
+      return { code: 0, out: 'ok', err: '' };
+    },
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
     check: async () => ({ ok: true, rows: 1, differ_before: 0, differ_after: 0 }),
     completeRaw: async (p: string) => answerFor(p),
@@ -403,4 +413,35 @@ test('AZ-319 a creator who also authored a parent still reads "you" in the split
   assert.notEqual(parents[0].name, parents[0].id, 'the parent was found in the catalogue, not printed as a bare id');
   assert.equal(typeof parents[0].author, 'string', 'and with the author whose price the suggestion comes from');
   assert.ok(shares.every((s) => s.kind !== 'node' || s.name === undefined), 'the node\'s own line is the node, not a knowledge');
+});
+
+// ---------------------------------------------------------------- AZ-324
+test('AZ-324 a lesson is applied onto its base read-first, and one whose rows are not the ones it was trained over is refused', async () => {
+  const base = await publishBase(3, 'derivative', 'ReadFirst');
+  const ds = await upload(rows(2, 'rf'), 'rf.jsonl');
+
+  // the happy path first: with the base stack under it and nothing else loaded, the worker asks patch.py to read
+  // the rows before writing (design §7.6 step 4). Until this PR it did not, and a trainer that produced a wrong
+  // `before` was never caught here — it surfaced later, and far less legibly, as a low `reversibility_ok`.
+  const ok = await train({ dataset_id: ds.id, base_ids: [base] });
+  assert.equal(ok.status, 'READY', JSON.stringify(ok.error));
+  const lesson = N.teach!.get(ok.id)!.npz_path!;
+  assert.equal(verifiedBefore.get(lesson), true, 'the lesson itself is applied with --verify-before');
+  const basePath = N.market.blobs.get((await N.market.entry(base))!.anchor.patch_sha256)!.path;
+  assert.equal(verifiedBefore.get(basePath), false, 'the base underneath is not: its own `before` is the disk table');
+
+  // now the table under it is not what the file says it was trained over
+  wrongTable = true;
+  try {
+    const ds2 = await upload(rows(2, 'rf2'), 'rf2.jsonl');
+    const r = await api('POST', '/api/teach/jobs', { patch_ids: [], dataset_id: ds2.id, base_ids: [base] }, teacher);
+    assert.equal(r.status, 202, r.text);
+    const id = String(r.json.job!.id);
+    const j = await waitFor(id, ['FAILED']);
+    assert.match(String(j.error), /^base_state_mismatch: /, j.error ?? '');
+    assert.match(String(j.error), /5 of 7 row\(s\) differ/);
+    assert.match(String(j.error), new RegExp(base), 'and it names the base whose rows were expected underneath');
+  } finally {
+    wrongTable = false;
+  }
 });
