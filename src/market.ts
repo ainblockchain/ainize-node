@@ -7,10 +7,10 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
+  AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, DISPUTE_MAX_REASON, DISPUTE_MIN_REASON, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, ainPaymentDigest, transferKeyFor, type X402Required,
-  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type DatasetAccess, type Ledger, type LedgerRecord,
+  type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord,
 } from '@ngram/core';
@@ -467,6 +467,76 @@ export class Market {
   /** Last computed public catalog (cache; call catalog() first in the same request). */
   catalogSync(): CatalogEntry[] { return (this.catalogCache?.value ?? []).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors); }
 
+  /** Contested sales per knowledge, rebuilt with every catalogue derivation (item 347). */
+  private disputeIndex = new Map<string, Dispute[]>();
+  /** Every dispute record on one knowledge, newest first: the buyers' claims and the seller's answers together. */
+  disputesFor(patchId: string): Dispute[] {
+    return [...(this.disputeIndex.get(patchId) ?? [])].sort((a, b) => b.created_at - a.created_at);
+  }
+  /** How many settled sales of `seller`'s knowledge a buyer has contested, and how many the seller answered (item 347). */
+  disputeRecordOf(seller: string): { raised: number; answered: number; patches: string[] } {
+    const patches = new Set<string>();
+    let raised = 0, answered = 0;
+    for (const [id, list] of this.disputeIndex) {
+      const e = this.catalogSync().find((x) => x.anchor.id === id);
+      if (!e || !sameAddr(e.anchor.author, seller)) continue;
+      const claims = list.filter((d) => d.role === 'claim');
+      if (!claims.length) continue;
+      patches.add(id);
+      raised += claims.length;
+      answered += claims.filter((c) => list.some((d) => d.role === 'answer' && d.settle_hash === c.settle_hash)).length;
+    }
+    return { raised, answered, patches: [...patches] };
+  }
+
+  /**
+   * A settled buyer records that the knowledge did not work (item 347), or the seller answers one.
+   *
+   * Unlike a challenge this stops nothing and spends nobody's GPU: /terms is honest that a payment is final and that
+   * refunds are the seller's discretion, and non-delivery is already recoverable — what had no record anywhere was
+   * the one thing a buyer cannot get back, which is quality. Now the sale says it was contested, and the seller's
+   * answer stands next to it on the same permanent record.
+   */
+  async dispute(patchId: string, reason: string, opts: { role?: 'claim' | 'answer'; settleHash?: string } = {}): Promise<Dispute> {
+    const text = String(reason ?? '').trim();
+    if (text.length < DISPUTE_MIN_REASON) throw new MarketError(400, `a dispute has to say what did not work — at least ${DISPUTE_MIN_REASON} characters (this is a permanent public record, and the seller answers it on the same record)`);
+    const e = await this.entry(patchId);
+    if (!e) throw notFound('patch not found');
+    const role = opts.role ?? 'claim';
+    const setts = await this.ledger.settlements(patchId);
+    let settleHash = opts.settleHash;
+    if (role === 'claim') {
+      // Only someone who actually paid for it: the settle record IS the standing.
+      const mine = setts.filter((r) => sameAddr(r.body.buyer, this.address)).sort((a, b) => b.body.created_at - a.body.created_at);
+      if (!mine.length) throw conflict(`this node has not bought ${patchId} — a dispute is raised by the buyer of a settled sale, and there is no settlement here naming this address`);
+      const pick = settleHash ? mine.find((r) => r.hash === settleHash) : mine[0];
+      if (!pick) throw notFound(`no settlement ${settleHash} of ${patchId} names this node as the buyer`);
+      settleHash = pick.hash;
+    } else {
+      if (!sameAddr(e.anchor.author, this.address)) throw conflict(`only the seller of ${patchId} answers a dispute about it`);
+      if (!settleHash) throw new MarketError(400, 'answering a dispute needs the settle_hash of the sale it is about');
+      const claim = this.disputesFor(patchId).find((d) => d.role === 'claim' && d.settle_hash === settleHash);
+      if (!claim) throw notFound(`no open dispute on ${patchId} for settlement ${settleHash}`);
+    }
+    if (this.disputesFor(patchId).some((d) => d.role === role && d.settle_hash === settleHash && sameAddr(d.author, this.address))) {
+      throw conflict(`this node has already recorded a ${role === 'claim' ? 'dispute' : 'answer'} for that sale of ${patchId} — a record is written once and stays`);
+    }
+    const body: Omit<Dispute, 'sig'> = {
+      patch_id: patchId, role, author: this.address, settle_hash: settleHash!, reason: text.slice(0, DISPUTE_MAX_REASON), created_at: Date.now(),
+    };
+    const sig = signMessage(JSON.stringify([body.patch_id, body.role, body.author, body.settle_hash, body.reason]), this.cfg.identity.privateKey);
+    const record: Dispute = { ...body, sig };
+    const rec = await this.ledger.append('dispute', record);
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    this.invalidate();
+    await this.catalogAll(true);        // the index disputesFor() reads is rebuilt with the catalogue
+
+    this.log('warn', 'dispute', role === 'claim'
+      ? `disputed ${patchId}: "${record.reason}" — the sale stands and the knowledge stays on sale; the seller can answer it on the record`
+      : `answered the dispute on ${patchId}: "${record.reason}"`, patchId, { settle_hash: settleHash, role });
+    return record;
+  }
+
   /** Public catalog (test-visibility anchors hidden). */
   async catalog(force = false): Promise<CatalogEntry[]> {
     return (await this.catalogAll(force)).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors);
@@ -474,10 +544,20 @@ export class Market {
 
   async catalogAll(force = false): Promise<CatalogEntry[]> {
     if (!force && this.catalogCache && Date.now() - this.catalogCache.at < 1500) return this.catalogCache.value;
-    const [anchors, atts, setts, chals, sups, retires] = await Promise.all([
+    const [anchors, atts, setts, chals, sups, retires, disputes] = await Promise.all([
       this.ledger.anchors(), this.ledger.attestations(), this.ledger.settlements(), this.ledger.challenges(), this.ledger.supersedes(),
       this.ledger.list({ kind: 'retire' }),
+      this.ledger.disputes?.() ?? this.ledger.list({ kind: 'dispute' }).then((rs) => rs as LedgerRecord<Dispute>[]),
     ]);
+    // Contested sales (item 347), grouped per knowledge, attached below the derivation the way `retire` is: a dispute
+    // changes no status — it does not stop a sale and asks nobody to re-run a benchmark — it is the record that a
+    // buyer said this did not work, with the seller's answer beside it.
+    this.disputeIndex = new Map();
+    for (const r of disputes) {
+      const d = r.body;
+      if (!d || typeof d.patch_id !== 'string' || typeof d.reason !== 'string' || !sameAddr(r.author, d.author)) continue;
+      this.disputeIndex.set(d.patch_id, [...(this.disputeIndex.get(d.patch_id) ?? []), d]);
+    }
     // Only well-formed anchors/attestations enter the catalog — nothing is synthesised or defaulted server-side.
     const wellFormed = (anchors.filter((r) => Market.isAnchor(r.body)) as LedgerRecord<PatchAnchor>[]).map((r) => Market.sanitizeAnchorRecord(r));
     const wellFormedAtts = atts.filter((r) => Market.isAttestation(r.body));
@@ -505,7 +585,48 @@ export class Market {
     }
     this.catalogCache = { at: Date.now(), value };
     this.noticeOwnEvents(value);
+    this.noticePurchasedEvents(value);
     return value;
+  }
+
+  /**
+   * The same three things, seen from the other side of the sale (item 346).
+   *
+   * `noticeOwnEvents` scans only entries this node AUTHORED, so a challenge, a failed verification or a supersede
+   * reached the seller and nobody else. The buyer had already paid, had the knowledge loaded in their model, and was
+   * still serving its answers — with no signal anywhere. The terms promise that a challenge "stops the sale" and say
+   * nothing at all about the people who already bought.
+   */
+  private noticePurchasedEvents(entries: CatalogEntry[]): void {
+    const mine = this.store.listPurchases();
+    if (!mine.length) return;
+    const byId = new Map(entries.map((e) => [e.anchor.id, e]));
+    for (const p of mine) {
+      const e = byId.get(p.patch_id);
+      if (!e || sameAddr(e.anchor.author, this.address)) continue;      // our own knowledge is `noticeOwnEvents`' job
+      const fails = e.attestations.filter((a) => !a.passed);
+      if (!e.open_challenge && !e.superseded_by.length && !fails.length) continue;
+      const key = `buyer_notified:${e.anchor.id}`;
+      const seen = new Set<string>(JSON.parse(this.store.get(key) ?? '[]') as string[]);
+      const before = seen.size;
+      const loaded = this.isApplied(e.anchor.id);
+      const where = loaded ? ' — it is loaded in your model right now' : '';
+      const once = (mark: string, level: EventRow['level'], kind: string, message: string, data?: unknown) => {
+        if (seen.has(mark)) return;
+        seen.add(mark);
+        this.log(level, kind, message, e.anchor.id, data);
+      };
+      const c = e.open_challenge;
+      if (c) once(`challenge:${c.challenger}:${c.created_at}`, 'warn', 'challenge',
+        `${c.challenger.slice(0, 10)}… challenged ${e.anchor.id}, which you bought for ${p.amount}: "${c.reason}"${where}. It is off sale until verifiers re-run its benchmark.`,
+        { challenger: c.challenger, reason: c.reason, created_at: c.created_at, purchased_at: p.created_at, applied: loaded });
+      for (const a of fails) once(`fail:${a.verifier}:${a.created_at}`, 'warn', 'verify',
+        `${a.verifier_name ?? a.verifier.slice(0, 10)} verified ${e.anchor.id}, which you bought, and it FAILED (${a.verified_on}): ${JSON.stringify(a.score)}${where}`,
+        { verifier: a.verifier, score: a.score, applied: loaded });
+      for (const newer of e.superseded_by) once(`supersede:${newer}`, 'info', 'publish',
+        `${newer} supersedes ${e.anchor.id}, which you bought — the version you are serving is no longer the newest`, { superseded_by: newer, applied: loaded });
+      if (seen.size !== before) this.store.set(key, JSON.stringify([...seen]));
+    }
   }
 
   /**
@@ -1570,6 +1691,45 @@ export class Market {
   }
 
   /**
+   * Is the seller of this knowledge there at all, and who else holds the body? (item 276)
+   *
+   * A catalogue entry says "For sale" from the ledger alone; nothing on the buying path consulted the peer table,
+   * which knows perfectly well when the seller was last seen. A buyer whose seller was down got Node's own
+   * `fetch failed` — indistinguishable from a broken product, a wrong URL or their own network — and retried, while
+   * three peers held the very body and none of them may sell it (only the author's node settles: `409 not sold here`).
+   */
+  sellerLiveness(anchor: PatchAnchor): { name: string | null; endpoint: string | null; last_seen: number | null; failures: number; reachable: boolean | null; holders: { name: string; endpoint: string }[] } {
+    const rows = this.store.listPeers().filter((p) => p.address && p.address.toLowerCase() === anchor.author.toLowerCase())
+      .sort((a, b) => b.last_seen - a.last_seen);
+    const seller = rows[0] ?? null;
+    const holders = (this.p2p?.holders(anchor.patch_sha256) ?? [])
+      .filter((ep) => !rows.some((r) => r.endpoint === ep))
+      .map((ep) => ({ name: this.store.getPeer(ep)?.info?.name ?? ep, endpoint: ep }));
+    return {
+      name: seller?.info?.name ?? anchor.author_name ?? null,
+      endpoint: seller?.endpoint ?? null,
+      last_seen: seller?.last_seen || null,
+      failures: seller?.failures ?? 0,
+      reachable: seller ? seller.failures === 0 && seller.last_seen > 0 : null,
+      holders,
+    };
+  }
+
+  /**
+   * The sentence a buyer gets when the seller does not answer (item 276): who was not there, when it was last seen,
+   * that nothing was charged, and who else has the file — with the reason that does not help them today.
+   */
+  sellerUnreachableMessage(anchor: PatchAnchor, tried: string[]): string {
+    const live = this.sellerLiveness(anchor);
+    const who = live.name ?? `${anchor.author.slice(0, 10)}…`;
+    const when = live.last_seen ? `last seen ${new Date(live.last_seen).toISOString()}` : 'never reached from this node';
+    const held = live.holders.length
+      ? ` The body is also on ${live.holders.map((h) => h.name).join(', ')}, but only the author's node can sell it, so buying has to wait for ${who} to come back.`
+      : '';
+    return `${who} — the seller of ${anchor.id} — is not answering (${when}), so nothing was bought and nothing was charged.${held} Tried: ${tried.join('; ')}`;
+  }
+
+  /**
    * Buy `patchId` from its seller. `withRequired` buys the bases underneath it first, deepest first, one settlement
    * each (item 270); `maxTotal` refuses before any money moves when the family costs more than that.
    *
@@ -1666,7 +1826,8 @@ export class Market {
     const patchId = entry.anchor.id;
     const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen }));
     const candidates = this.gatewaysFor(entry.anchor, nodes);
-    if (!candidates.length) throw new Error(`no gateway known for ${patchId}: the record carries none and no peer answers for ${entry.anchor.author}`);
+    // item 276: "no gateway" and "the gateway did not answer" are the same thing to a buyer — the seller is not there.
+    if (!candidates.length) throw new Error(this.sellerUnreachableMessage(entry.anchor, ['no endpoint at all: the record carries none and no peer has introduced that address']));
     let manifest: PatchManifest;
     let txHash = '';
     let amount = entry.anchor.price;
@@ -1697,7 +1858,7 @@ export class Market {
         break;
       } catch (e) { tried.push(`${cand.url} (${(e as Error).message})`); }
     }
-    if (!r1) throw new Error(`the seller of ${patchId} could not be reached: ${tried.join('; ')} — the address on the record is ${(entry.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? 'unset'}, and ${entry.anchor.author.slice(0, 10)}… has no reachable peer entry`);
+    if (!r1) throw new Error(this.sellerUnreachableMessage(entry.anchor, tried));
 
     if (r1.status === 402) {
       const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));

@@ -30,6 +30,9 @@
       { "page": "how-to/reachable-node",      "title": "Run a node others can reach" },
       { "page": "how-to/run-a-verifier",      "title": "What verifying costs" },
       { "page": "how-to/price-knowledge",     "title": "Set a price and get paid" },
+      { "page": "how-to/build-on-knowledge",  "title": "Build on someone else's knowledge" },
+      { "page": "how-to/load-several",        "title": "Load several knowledges at once" },
+      { "page": "how-to/publish-every-day",   "title": "Publish every day" },
       { "page": "how-to/failed-verification", "title": "When it will not list" }
     ]
   },

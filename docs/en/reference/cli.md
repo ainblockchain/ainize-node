@@ -1468,7 +1468,7 @@ List records
 
 **Options**
 
-- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire"`) — only this kind of record
+- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire" | "dispute"`) — only this kind of record
 - **`--limit`** (`number`, default `50`) — how many records, newest last
 
 ### `ainize ledger verify`

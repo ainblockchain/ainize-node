@@ -71,6 +71,36 @@ const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) 
 const SESSION_COOKIE = 'ngram_session';
 
 /**
+ * Finding 59 — the free live-test budget was one bucket keyed on `ip:<addr>`, presented to the visitor as a personal
+ * allowance ("Free trial 12/20 left this hour"). Behind one office, campus or carrier NAT, twenty tries were
+ * everyone's twenty: on a publicly reachable node the counter can be at zero before a visitor has asked anything,
+ * and the page blames them for consumption they cannot see or control.
+ *
+ * There are two budgets now. The PERSONAL one is keyed on this browser (a long-lived cookie this route sets, or the
+ * teaching key when the request carries one), and it is the number the page shows. The NETWORK one is still the IP,
+ * with a much larger cap, and it is what actually protects one shared model from one address — when it is the one
+ * that ran out the visitor is told so, in those words, instead of being told they used tries they never had.
+ */
+const TRY_COOKIE = 'ngram_try';
+const TRY_COOKIE_MAX_AGE_MS = 400 * 86_400_000;
+const CHAT_TRIES_PER_HOUR = 20;
+/** How many personal budgets one address may spend in an hour before the address itself is the limit. */
+const CHAT_TRIES_PER_NETWORK_HOUR = CHAT_TRIES_PER_HOUR * 5;
+/**
+ * The per-browser id. Opaque, http-only, and never an identity — only a quota bucket.
+ *
+ * It is minted for NEXT time but returns null on the request that mints it: a caller that does not keep cookies (a
+ * script, curl, the CLI) would otherwise be handed a fresh personal budget on every request. Without a cookie the
+ * caller falls back to the address bucket, which is what they shared before this existed.
+ */
+function browserId(req: Request, res: Response): string | null {
+  const seen = req.cookies?.[TRY_COOKIE] as string | undefined;
+  if (typeof seen === 'string' && /^[0-9a-f]{32}$/.test(seen)) return seen;
+  if (!res.headersSent) res.cookie(TRY_COOKIE, randomBytes(16).toString('hex'), { httpOnly: true, sameSite: 'lax', maxAge: TRY_COOKIE_MAX_AGE_MS, path: '/' });
+  return null;
+}
+
+/**
  * The TCP peer, not `req.ip`: with `server.trustProxy` on, `req.ip` is whatever X-Forwarded-For says, so it can be
  * forged by the very caller we are gating. Claiming an unclaimed node is only ever allowed from this machine.
  */
@@ -848,7 +878,19 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/me/patches', requireOperator, wrap(async () => ({ items: (await market.catalogAll()).filter((e) => e.anchor.author === market.address) })));
   router.get('/api/me/purchases', requireOperator, wrap(async () => {
     const map = await market.entryMap();
-    return { items: market.store.listPurchases().map((p) => ({ ...p, entry: map.get(p.patch_id) ?? null, applied: market.isApplied(p.patch_id) })) };
+    return { items: market.store.listPurchases().map((p) => {
+      const e = map.get(p.patch_id) ?? null;
+      // item 346: what has happened TO this knowledge since the money moved. The buyer used to be the only party
+      // with no signal at all — the seller was told about a challenge, a FAIL and a supersede, and the person
+      // serving the answers was not.
+      return {
+        ...p, entry: e, applied: market.isApplied(p.patch_id),
+        challenged: e?.open_challenge ?? null,
+        failed_verifications: (e?.attestations ?? []).filter((a) => !a.passed).map((a) => ({ verifier: a.verifier, verifier_name: a.verifier_name ?? null, score: a.score, created_at: a.created_at })),
+        superseded_by: e?.superseded_by ?? [],
+        disputes: e ? market.disputesFor(e.anchor.id).length : 0,
+      };
+    }) };
   }));
   /**
    * The wallet. Its royalty lines used to be the SELLER's promise reported as money received (item 311): a settle
@@ -1020,6 +1062,36 @@ export function buildApi(deps: ApiDeps): Router {
     const challenge = await market.challenge(req.params.id as string, String(req.body?.reason ?? ''));
     return { ok: true, challenge, record: await market.challengeRecord(market.address) };
   }));
+  /**
+   * A settled buyer records that the knowledge did not work, and the seller answers on the same record (item 347).
+   *
+   * This is not a challenge: it stops no sale, spends nobody's GPU minutes and asks no verifier for anything. It is
+   * the record that a sale was contested — the one risk a buyer carries and could not get back, and which the
+   * network never learned about, so a bad seller's record stayed clean.
+   */
+  router.post('/api/patches/:id/dispute', requireOperator, wrap(async (req) => {
+    const b = z.object({ reason: z.string(), settle_hash: z.string().optional() }).parse(req.body ?? {});
+    const dispute = await market.dispute(req.params.id as string, b.reason, { role: 'claim', settleHash: b.settle_hash });
+    return { ok: true, dispute, disputes: market.disputesFor(req.params.id as string) };
+  }));
+  router.post('/api/patches/:id/dispute/answer', requireOperator, wrap(async (req) => {
+    const b = z.object({ reason: z.string(), settle_hash: z.string() }).parse(req.body ?? {});
+    const dispute = await market.dispute(req.params.id as string, b.reason, { role: 'answer', settleHash: b.settle_hash });
+    return { ok: true, dispute, disputes: market.disputesFor(req.params.id as string) };
+  }));
+  router.get('/api/patches/:id/disputes', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e) throw notFound();
+    const all = market.disputesFor(e.anchor.id);
+    return {
+      patch_id: e.anchor.id, seller: e.anchor.author,
+      items: all.filter((d) => d.role === 'claim').map((d) => ({
+        ...d, answer: all.find((x) => x.role === 'answer' && x.settle_hash === d.settle_hash) ?? null,
+      })),
+      seller_record: market.disputeRecordOf(e.anchor.author),
+    };
+  }));
+
   router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => {
     const b = z.object({ apply: z.boolean().optional(), bundle: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional(), again: z.boolean().optional() }).parse(req.body ?? {});
     // The bases underneath are bought first, deepest first, one settlement each (design §12.4, item 270). The design
@@ -1256,7 +1328,7 @@ export function buildApi(deps: ApiDeps): Router {
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.requestPatch(req.params.id as string, visitor);
   }));
-  router.post('/api/chat', wrap(async (req) => {
+  router.post('/api/chat', wrap(async (req, res) => {
     const history = z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24);
     /** The question both columns must answer: the last message of the array (compared verbatim across the three). */
     const tail = (m?: { role: string; content: string }[]) => (m ? JSON.stringify(m[m.length - 1]) : null);
@@ -1281,16 +1353,40 @@ export function buildApi(deps: ApiDeps): Router {
       .refine((b) => !b.messages_patched || tail(b.messages_patched) === tail(b.messages), { message: 'messages_patched must end with the same message as messages — both columns answer one question', path: ['messages_patched'] })
       .parse(req.body);
     const operator = isOperator(req);
+    const caller = teachAuth.verify(req);
+    /**
+     * The turn's identity stays keyed on the address: GET /api/chat/status, the cancel route and the "this answer is
+     * wrong" report all look a turn up by the same visitor id, and they see only the request, not the cookie.
+     */
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
+    /**
+     * Finding 59 — two buckets: this BROWSER (or its teaching key), which is the allowance the page reports, and
+     * this ADDRESS, which is the shared-model protection. Both are checked before anything is sent and both are
+     * spent afterwards, so neither can be escaped by clearing a cookie or by sharing an office router.
+     */
+    const browser = browserId(req, res);
+    const network = operator ? null : market.visitorId(`ip:${req.ip}`);
+    const mine = operator ? null : caller ? market.visitorId(`key:${caller.toLowerCase()}`) : browser ? market.visitorId(`try:${browser}`) : network;
+    /** When the personal bucket IS the address bucket, its refusal is about the address — say so in those words. */
+    const mineIsShared = mine === network;
     // check (without consuming) first; a failed/hung request must not burn a free try
     // the machine-readable code matters: without it the browser cannot tell this HOURLY budget from the DAILY lesson
     // limit, and told the visitor to "come back tomorrow" for a quota that refills within the hour. `quota_reset` says
     // WHEN the hour is up, so the page can count down instead of guessing.
-    if (!operator && market.chatQuota(visitor, 20, 3600_000, false) < 0) throw new HttpError(429, 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node', { quota_reset: market.chatQuotaResetsAt(visitor) });
+    if (mine && market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, false) < 0) {
+      throw new HttpError(429, mineIsShared
+        ? `quota_chat_network: this address has used all ${CHAT_TRIES_PER_HOUR} free live tests for this hour — everyone sharing it shares them`
+        : 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node',
+      { quota_reset: market.chatQuotaResetsAt(mine), quota_scope: mineIsShared ? 'network' : 'you', ...(mineIsShared ? { quota_limit: CHAT_TRIES_PER_HOUR } : {}) });
+    }
+    if (network && !mineIsShared && market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR, 3600_000, false) < 0) {
+      throw new HttpError(429, `quota_chat_network: this network has used all ${CHAT_TRIES_PER_NETWORK_HOUR} free live tests for this hour — everyone sharing this address shares them`, { quota_reset: market.chatQuotaResetsAt(network), quota_scope: 'network', quota_limit: CHAT_TRIES_PER_NETWORK_HOUR });
+    }
     // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
-    const out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: teachAuth.verify(req) } });
-    const remaining = operator ? Infinity : market.chatQuota(visitor);
-    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : 20 };
+    const out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
+    const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR) : Infinity;
+    if (network && !mineIsShared) market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR);
+    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR };
   }));
   /**
    * D3 — "is my request still queued?". Public, free (no quota), and answers about the caller's own request only:

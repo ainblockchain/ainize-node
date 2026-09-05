@@ -36,7 +36,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Codes
 
-58 codes are raised by name, in 117 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
+58 codes are raised by name, in 116 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
 
 | Code | HTTP | What it means | Raised in |
 |---|---|---|---|
@@ -128,7 +128,6 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `publish_disabled` | `403` | this node accepts lessons but does not publish them | `packages/node/src/teach.ts` |
 | `published_immutable` | `409` | published knowledge cannot be deleted | `packages/node/src/teach.ts` |
 | `quota_bytes` | `429` | you have uploaded as much as this node accepts from one teaching key today | `packages/node/src/teach-datasets.ts` |
-| `quota_chat` | `429` | free live-test quota exhausted for this hour — buy the patch or run your own node | `packages/node/src/api.ts` |
 | `quota_chat` | `429` | free live-test quota exhausted for this hour (this pre-flight needs \<units> unit(s)) — try again later | `packages/node/src/api.ts` |
 | `quota_chat_network` | `429` | this network has used all … free live tests for this hour — everyone sharing this address shares them | `packages/node/src/api.ts` |
 | `quota_dataset` | `429` | \<c.perKeyPerDay> new datasets per day for one teaching key | `packages/node/src/teach-datasets.ts` |
@@ -160,15 +159,17 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Messages without a code
 
-Not every error carries a code. 34 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
+Not every error carries a code. 36 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
-A further 25 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
+A further 26 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
 | HTTP | Message | Raised in |
 |---|---|---|
 | `null` | … (retrying for … more min before hash-only fallback) | `packages/node/src/verifier.ts` |
 | `null` | runtime unavailable (…) — waiting up to … min before hash-only fallback | `packages/node/src/verifier.ts` |
 | `400` | \<label> must be a non-negative number (e.g. "0", "0.1", "25") | `packages/core/src/catalog.ts` |
+| `400` | a dispute has to say what did not work — at least \<DISPUTE_MIN_REASON> characters (this is a permanent public record, and the seller answers it on the same record) | `packages/node/src/market.ts` |
+| `400` | answering a dispute needs the settle_hash of the sale it is about | `packages/node/src/market.ts` |
 | `400` | at most \<MAX_CHAT_PATCHES> knowledges can be loaded together | `packages/node/src/market.ts` |
 | `400` | at most \<MAX_CONTRIBUTORS> contributors per patch | `packages/core/src/catalog.ts` |
 | `400` | contributor must be an object | `packages/core/src/catalog.ts` |
