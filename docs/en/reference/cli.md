@@ -570,7 +570,7 @@ List patches in the catalog
 - **`--branch`** (`string`) — only knowledge on this track (see `ainize branch ls`)
 - **`--author`** (`string`) — only knowledge published by this node address
 - **`--q`** (`string`) — text search
-- **`--sort`** (`"latest" | "popular" | "price" | "rows"`, default `"latest"`) — newest first, most sold, cheapest, or biggest
+- **`--sort`** (`"latest" | "fresh" | "popular" | "price" | "rows"`, default `"latest"`) — newest published, freshest data (--as-of), most sold, cheapest, or biggest
 - **`--limit`** (`number`, default `100`) — how many rows
 - **`--mine`** (`boolean`, default `false`) — only my patches (needs login)
 - **`--drafts`** (`boolean`, default `false`) — include my drafts (needs login)
@@ -609,6 +609,7 @@ Register a .npz patch body as a draft — it stays a DRAFT until --announce (`ai
 - **`--description`** (`string`) — one or two sentences about what it knows
 - **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) out of every sale of this one
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
+- **`--as-of`** (`string`) — the day the DATA is true of (YYYY-MM-DD) — not the day it is published. Shown as "Data as of …" and sorted by `--sort fresh`
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
 - **`--billing`** (`"per_download"`) — how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)
@@ -1077,6 +1078,7 @@ One line to sell knowledge: register a .npz + benchmark and announce it at once 
 - **`--description`** (`string`) — one or two sentences about what it knows
 - **`--parents`** (`string`) — comma list of the knowledge ids this was built on — their creators are paid the lineage share (`ainize config get market.royaltyShare`) out of every sale of this one
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
+- **`--as-of`** (`string`) — the day the DATA is true of (YYYY-MM-DD) — not the day it is published. Shown as "Data as of …" and sorted by `--sort fresh`
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
 - **`--billing`** (`"per_download"`) — how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)
