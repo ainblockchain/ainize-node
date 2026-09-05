@@ -469,7 +469,9 @@ test('AZ-125 jsonl through the file picker: chip → node report → preview, an
     await expect(rows.nth(i).locator('td.q')).toHaveText(AZ_FACTS_ROWS[i].prompt);
     await expect(rows.nth(i).locator('td.a')).toHaveText(AZ_FACTS_ROWS[i].answer);
     await expect(rows.nth(i).locator('td.alt')).toHaveText(AZ_FACTS_ROWS[i].alt_prompt ?? '');
-    await expect(rows.nth(i)).toContainText('Will train');
+    // Finding 51 — the parser says what it knows ("Read OK"); only the live check may promise "Will train"
+    await expect(rows.nth(i)).toContainText('Read OK');
+    await expect(rows.nth(i)).not.toContainText('Will train');
     await expect(rows.nth(i)).toContainText('Not checked yet');
   }
 
@@ -885,7 +887,7 @@ test('AZ-132 Alpaca and ChatML: the two shapes people already have on disk are r
   // instruction + input becomes the QUESTION; the input is never mistaken for the answer
   await expect(alpacaRows.nth(1).locator('td.q')).toHaveText('Name the token AIN blockchain');
   await expect(alpacaRows.nth(1).locator('td.a')).toHaveText('AIN');
-  await expect(alpacaRows.nth(1)).toContainText('Will train — tidied up');
+  await expect(alpacaRows.nth(1)).toContainText('Read OK — tidied up');
   await expect(page.getByTestId('fixed-note')).toHaveText('1 question(s) were tidied up (extra spaces and line breaks removed).');
   const alpaca = (await dsJson(request, key, idAlpaca)).body.dataset;
   expect(alpaca.format).toBe('json');
@@ -1109,7 +1111,8 @@ test('AZ-136 Row caps: the "Choose which 200" lesson banner, and the over-2000 d
   await page.goto(`${NODE}/teach/upload`);
   const id250 = await uploadViaUi(page, FX['az-big250.jsonl'].path);
   const key = (await keyFromPage(page))!;
-  await expect(page.getByTestId('row-counts')).toHaveText('250 will train · 0 already known · 0 duplicates · 0 need a fix');
+  // Finding 46 — the pill may not promise 250 one line above the banner saying a lesson teaches 200
+  await expect(page.getByTestId('row-counts')).toHaveText('200 of 250 will train in this lesson (50 stay in your dataset for the next one) · 0 already known · 0 duplicates · 0 need a fix');
   await expect(page.getByTestId('over-cap-note')).toHaveCount(0);
   const banner = page.getByTestId('cap-banner');
   await expect(banner).toContainText('This node teaches up to 200 questions in one lesson. The first 200 are selected; the rest stay in your dataset for the next lesson.');
@@ -1120,26 +1123,32 @@ test('AZ-136 Row caps: the "Choose which 200" lesson banner, and the over-2000 d
   await expect(page.getByRole('button', { name: 'Next' })).toBeEnabled();
   await expect(page.getByTestId('dataset-row')).toHaveCount(50);
 
+  // Finding 52 — the picker opens on the default the node would have made (the first page's rows, up to the cap),
+  // so the counter starts full instead of at 0 beside a sentence claiming "the first 200 are selected"; and the
+  // banner shows the picker's state ALONE, never both selection stories at once.
   await page.getByTestId('cap-pick').click();
   const boxes = page.getByTestId('dataset-row').locator('input[type=checkbox]');
   await expect(boxes).toHaveCount(50);
-  await expect(page.getByTestId('cap-selected')).toHaveText('· 0 of 200 selected');
-  for (let i = 0; i < 3; i++) await boxes.nth(i).check();
-  await expect(page.getByTestId('cap-selected')).toHaveText('· 3 of 200 selected');
+  await expect(page.getByTestId('cap-selected')).toHaveText('50 of 200 selected · 200 stay in your dataset for the next lesson');
+  await expect(page.getByTestId('cap-banner')).not.toContainText('The first 200 are selected');
+  for (let i = 0; i < 3; i++) await boxes.nth(i).uncheck();
+  await expect(page.getByTestId('cap-selected')).toContainText('47 of 200 selected');
+  // one control per page instead of one click per question (finding 52)
+  await page.getByTestId('pick-all').check();
+  await expect(page.getByTestId('cap-selected')).toContainText('50 of 200 selected');
 
   // fill the selection to the cap across pages, then prove the 201st tick is ignored
-  for (let i = 3; i < 50; i++) await boxes.nth(i).check();
   for (let p = 1; p < 4; p++) {
     await page.getByRole('button', { name: 'Next' }).click();
     await expect(page.getByText(`${p * 50 + 1}–${p * 50 + 50} of 250`, { exact: true })).toBeVisible();
-    for (let i = 0; i < 50; i++) await page.getByTestId('dataset-row').locator('input[type=checkbox]').nth(i).check();
+    await page.getByTestId('pick-all').check();
   }
-  await expect(page.getByTestId('cap-selected')).toHaveText('· 200 of 200 selected');
+  await expect(page.getByTestId('cap-selected')).toContainText('200 of 200 selected');
   await page.getByRole('button', { name: 'Next' }).click();
   const extra = page.getByTestId('dataset-row').locator('input[type=checkbox]').first();
   await extra.click();
   await expect(extra, 'the 201st tick is ignored — the set stops at the cap').not.toBeChecked();
-  await expect(page.getByTestId('cap-selected')).toHaveText('· 200 of 200 selected');
+  await expect(page.getByTestId('cap-selected')).toContainText('200 of 200 selected');
 
   await page.getByTestId('to-settings').click();
   await page.waitForURL(new RegExp(`/teach/dataset/${id250}/settings$`));
@@ -1149,7 +1158,7 @@ test('AZ-136 Row caps: the "Choose which 200" lesson banner, and the over-2000 d
   // ---- 2005 questions: 2000 are loaded, the 5 that were not are reported, not hidden
   await page.goto(`${NODE}/teach/upload`);
   const id2005 = await uploadViaUi(page, FX['az-big2005.jsonl'].path);
-  await expect(page.getByTestId('row-counts')).toHaveText('2000 will train · 0 already known · 0 duplicates · 0 need a fix');
+  await expect(page.getByTestId('row-counts')).toHaveText('200 of 2000 will train in this lesson (1800 stay in your dataset for the next one) · 0 already known · 0 duplicates · 0 need a fix');
   await expect(page.getByTestId('over-cap-note')).toHaveText('That file has 2005 questions; this node accepts up to 2000 in one dataset. The first 2000 were loaded.');
   // both caps are true at once and neither replaces the other
   await expect(page.getByTestId('cap-banner')).toContainText('This node teaches up to 200 questions in one lesson.');
@@ -1244,14 +1253,15 @@ test('AZ-138 A file that is all duplicates: one question kept, every later copy 
   await expect(page.getByTestId('row-counts')).toHaveText('1 will train · 0 already known · 4 duplicates · 0 need a fix');
   const rows = page.getByTestId('dataset-row');
   await expect(rows).toHaveCount(5);
-  await expect(rows.nth(0)).toContainText('Will train');
+  await expect(rows.nth(0)).toContainText('Read OK');
   await expect(rows.nth(0)).toContainText('Not checked yet');
   await expect(rows.nth(0).getByTestId('row-remove')).toBeVisible();
   for (let i = 1; i < 5; i++) {
     await expect(rows.nth(i).locator('td.n')).toHaveText(String(i + 1));
     await expect(rows.nth(i)).toContainText('Same as line 1 — skipped');
     await expect(rows.nth(i).getByTestId('row-edit')).toBeVisible();
-    await expect(rows.nth(i).getByTestId('row-remove'), 'a skipped copy has no dataset index to remove').toHaveCount(0);
+    // finding 48 — a skipped copy has no dataset index, and is now dropped by its source line instead
+    await expect(rows.nth(i).getByTestId('row-remove')).toBeVisible();
   }
   // a dataset of one question is a legal dataset
   await expect(page.getByTestId('to-settings')).toBeEnabled();
@@ -1291,7 +1301,7 @@ test('AZ-138 A file that is all duplicates: one question kept, every later copy 
   for (let i = 0; i < 5; i++) {
     await expect(conflictRows.nth(i)).toContainText('Two answers for this question — pick one');
     await expect(conflictRows.nth(i)).toHaveAttribute('data-bad', '1');
-    await expect(conflictRows.nth(i).getByTestId('row-keep')).toHaveText('Keep this answer');
+    await expect(conflictRows.nth(i).getByTestId('row-keep')).toHaveText('Use this one');
   }
   expect((await dsRows(request, key2, idConflict, '?status=duplicate')).body.total, 'contradictions are never deduplicated away').toBe(0);
   expect((await dsRows(request, key2, idConflict, '?status=conflict')).body.total).toBe(5);
@@ -1315,9 +1325,9 @@ test('AZ-139 A messy real-world file: contradictions, over-length, a missing ans
   await expect(rows, 'the unreadable line is not in the table').toHaveCount(6);
   await expect(rows.nth(0)).toContainText('Two answers for this question — pick one');
   await expect(rows.nth(0)).toContainText('Lines 1 and 2 ask the same question but give different answers. The model can only learn one.');
-  await expect(rows.nth(0).getByTestId('row-keep')).toHaveText('Keep this answer');
+  await expect(rows.nth(0).getByTestId('row-keep')).toHaveText('Use this one');
   await expect(rows.nth(1)).toContainText('Lines 2 and 1 ask the same question but give different answers. The model can only learn one.');
-  await expect(rows.nth(1).getByTestId('row-keep')).toHaveText('Keep this answer');
+  await expect(rows.nth(1).getByTestId('row-keep')).toHaveText('Use this one');
   await expect(rows.nth(2)).toContainText('The answer is 205 characters; keep it under 200. Teach a long explanation as several short facts.');
   await expect(rows.nth(3)).toContainText('The question is 405 characters; keep it under 400.');
   await expect(rows.nth(4)).toContainText('No answer — type the right answer');
@@ -1325,7 +1335,7 @@ test('AZ-139 A messy real-world file: contradictions, over-length, a missing ans
   await expect(rows.nth(5).locator('td.n')).toHaveText('7');
   await expect(rows.nth(5).locator('td.q')).toHaveText('Spaced question here?');
   await expect(rows.nth(5).locator('td.a')).toHaveText('tidy me');
-  await expect(rows.nth(5)).toContainText('Will train — tidied up');
+  await expect(rows.nth(5)).toContainText('Read OK — tidied up');
 
   const dropped = page.getByTestId('dropped');
   await expect(dropped).toContainText('1 line(s) could not be read and were left out.');

@@ -450,7 +450,8 @@ test('AZ-205 The frozen chat dataset appears in My datasets and can be re-traine
     await card.getByTestId('ds-retrain').click();
     await expect(page).toHaveURL(new RegExp(`/teach/dataset/${dsId}/settings$`));
     await expect(page.getByTestId('settings-dataset')).toHaveText(`Dataset: ${dsName} · 2 questions · fingerprint ${ds.sha256.slice(0, 12)}`);
-    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (2 questions)');
+    // Finding 49 — no live check was run for these bytes, so the count is a ceiling and the button says so
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 2 questions)');
     await page.getByTestId('train-lesson').click();
     await page.waitForURL(/\/teach\/lesson\/[0-9a-f-]{36}/, { timeout: 60_000 });
     job2 = /\/teach\/lesson\/([0-9a-f-]{36})/.exec(page.url())![1];
@@ -1679,7 +1680,8 @@ test('AZ-222 The dataset-era limits are operator-settable only through the API, 
       expect((await patchAdminPolicy(request, opToken, { dataset_max_bytes: 1_000_000, dataset_max_rows: 4, rows_per_job: 2, declaration_rows: 2, dataset_ttl_days: 3 })).status).toBe(200);
       await page.goto(`${NODE}/teach/dataset/${dsId}/settings`);
       await expect(page.getByTestId('rows-cap')).toContainText('This node teaches up to 2 questions in one lesson, so 2 of your 4 are in this one.');
-      await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (2 questions)');
+      // Finding 49 — no live check was run for these bytes, so the count is a ceiling and the button says so
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 2 questions)');
       await page.getByTestId('train-lesson').click();
       await page.waitForURL(/\/teach\/lesson\/[0-9a-f-]{36}/, { timeout: 60_000 });
       jobId = /\/teach\/lesson\/([0-9a-f-]{36})/.exec(page.url())![1];

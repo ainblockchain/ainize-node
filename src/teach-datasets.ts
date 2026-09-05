@@ -360,7 +360,13 @@ export class TeachDatasets {
       const fresh = this.store.getTeachDataset(d.id)!;
       return { dataset: this.view(fresh), report: this.reportPage(fresh, { limit: 50 }), created: false };
     }
-    const previous = ((this.reportJson(d)?.rows as TeachDatasetRow[]) ?? []);
+    const all = ((this.reportJson(d)?.rows as TeachDatasetRow[]) ?? []);
+    // finding 48 — the refused rows this edit is throwing away, named by the source line the report tracks
+    const dropped = body.rows_op.op === 'drop_rejected' ? new Set(body.rows_op.lines) : null;
+    if (dropped && !all.some((r) => !isAcceptedRowStatus(r.status) && dropped.has(r.line))) {
+      throw new TeachError(404, 'row_not_found: none of those lines are refused rows of this dataset');
+    }
+    const previous = dropped ? all.filter((r) => isAcceptedRowStatus(r.status) || !dropped.has(r.line)) : all;
     const next = applyRowsOp(this.rowsOrThrow(d), body.rows_op);
     if (!next.length) throw new TeachError(400, 'dataset_empty: a dataset needs at least one question');
     const limits = this.cfg.dataset;
@@ -491,11 +497,23 @@ export class TeachDatasets {
 
 export type RowsOp =
   | { op: 'remove'; indexes: number[] }
+  /**
+   * Finding 48 — the rows that need fixing were the only rows that could not be removed. A refused row (a
+   * contradiction, a missing answer, a line the parser could not read) has no index in `rows.jsonl`: it exists only
+   * in the report, is carried forward through every later edit, and keeps being counted. "Remove" was therefore
+   * offered on every clean row and on none of the rows the screen tells you to act on — and the obvious answer to
+   * "lines 4 and 5 give different answers" is to delete the wrong one. This op drops such a row by the SOURCE LINE
+   * the report already tracks: the questions themselves do not change, the report stops carrying it, and the
+   * summary is recounted from what is left.
+   */
+  | { op: 'drop_rejected'; lines: number[] }
   | { op: 'append'; rows: CanonicalRow[] }
   | { op: 'replace'; index: number; row: CanonicalRow };
 
 export function applyRowsOp(rows: CanonicalRow[], op: RowsOp): CanonicalRow[] {
   if (op.op === 'remove') { const drop = new Set(op.indexes); return rows.filter((_, i) => !drop.has(i)); }
+  // a refused row is not in `rows.jsonl` at all — dropping it changes the report, never the questions
+  if (op.op === 'drop_rejected') return rows;
   // a new question is MINE, whatever the client sent: provenance is written by the node, never accepted from a form
   if (op.op === 'append') return [...rows, ...op.rows.map((r) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(r.note ? { note: r.note } : {}) }))];
   const out = [...rows];

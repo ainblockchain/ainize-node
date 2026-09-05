@@ -242,7 +242,7 @@ scenario('AZ-164 The side-effect check is locked on wherever publishing is possi
     await expect(box).toBeDisabled();
     await expect(page.getByTestId('settings-summary')).toContainText('· side-effect check on');
 
-    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (3 questions)');
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 3 questions)');
     jobId = await pressTrain(page);
     trackJob(jobId, key);
     const job = await getJob(request, key, jobId);
@@ -349,13 +349,18 @@ scenario('AZ-167 Lesson name, dataset fingerprint and the per-lesson question ca
     await page.waitForURL(/\/settings$/);
     await expect(page.getByTestId('settings-dataset')).toHaveText(`Dataset: az167-${TAG} · 250 questions · fingerprint ${ds.sha256.slice(0, 12)}`);
     await expect(page.getByTestId('rows-cap')).toHaveText('This node teaches up to 200 questions in one lesson, so 200 of your 250 are in this one. This node has not timed a real training run yet, so the limit is set conservatively.');
-    await expect(page.getByTestId('settings-summary')).toContainText('200 questions ·');
-    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (200 questions)');
+    // Finding 49 — nobody ran the live check for these bytes, so the count is a ceiling and says so: the worker
+    // drops what the model already answers, and the old unhedged promise was wrong on the path most people take.
+    await expect(page.getByTestId('settings-summary')).toContainText('up to 200 questions ·');
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 200 questions)');
+    await expect(page.getByTestId('unchecked-note')).toContainText('have not been checked in the live model yet');
     await page.getByTestId('lesson-name').fill(`AZ167 handbook ${TAG}`);
 
-    // pick five by hand, from the cap banner on step 2
+    // pick five by hand, from the cap banner on step 2 (finding 52: the picker opens on the default selection,
+    // so clearing the page first is what "choose my own five" now means)
     await page.goto(`${NODE}/teach/dataset/${dsId}`);
     await page.getByTestId('cap-pick').click();
+    await page.getByTestId('pick-all').uncheck();
     const boxes = page.getByTestId('dataset-row').locator('input[type=checkbox]');
     const wantLines = [1, 3, 5, 7, 9];
     for (const line of wantLines) await boxes.nth(line - 1).check();
@@ -366,8 +371,8 @@ scenario('AZ-167 Lesson name, dataset fingerprint and the per-lesson question ca
     await page.waitForURL(/\/settings$/);
     await expect(page.getByTestId('settings-dataset')).toHaveText(`Dataset: az167-${TAG} · 250 questions · fingerprint ${ds.sha256.slice(0, 12)}`);
     await expect(page.getByTestId('rows-cap')).toContainText('so 5 of your 250 are in this one.');
-    await expect(page.getByTestId('settings-summary')).toContainText('5 questions ·');
-    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (5 questions)');
+    await expect(page.getByTestId('settings-summary')).toContainText('up to 5 questions ·');
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 5 questions)');
     // the name lives on the settings screen, so it is typed where it is sent from
     await page.getByTestId('lesson-name').fill(`AZ167 handbook ${TAG}`);
 
@@ -404,7 +409,7 @@ scenario('AZ-168 Press Train: one POST, 202, and the progress screen owns the le
 
     await page.goto(`${NODE}/teach/dataset/${ds.id}/settings`);
     const button = page.getByTestId('train-lesson');
-    await expect(button).toHaveText('Train this lesson (3 questions)');
+    await expect(button).toHaveText('Train this lesson (up to 3 questions)');
     const waitPost = page.waitForResponse((r) => r.url().includes('/api/teach/jobs') && r.request().method() === 'POST');
     await button.click();
     await expect(button).toHaveText('Sending…');

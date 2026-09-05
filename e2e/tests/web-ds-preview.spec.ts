@@ -183,7 +183,7 @@ test('AZ-143 The whole file door on a 360 px phone: nothing scrolls sideways and
     const train = page.getByTestId('train-lesson');
     // NOTE the scenario's sticky-bar text says "Train this lesson (3 questions)"; its own 3-line fixture has one line
     // with an empty answer, so the DATASET holds 2 questions and the button is the honest count of those.
-    await expect(train).toHaveText('Train this lesson (2 questions)');
+    await expect(train).toHaveText('Train this lesson (up to 2 questions)');
     const tBox = (await train.boundingBox())!;
     expect(tBox.x).toBeGreaterThanOrEqual(0);
     expect(tBox.x + tBox.width).toBeLessThanOrEqual(361);
@@ -255,8 +255,8 @@ test('AZ-144 Preview table: ok vs tidied-up rows, the tidy-up receipt and the sa
 
     await expect(U.rows(page)).toHaveCount(4);
     for (const [i, line] of [1, 2, 3, 4].entries()) await expect(U.lineCell(U.rows(page).nth(i))).toHaveText(String(line));
-    for (const i of [0, 1, 2]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train — tidied up');
-    await expect(U.pill(U.rows(page).nth(3))).toHaveText('Will train');
+    for (const i of [0, 1, 2]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('Read OK — tidied up');
+    await expect(U.pill(U.rows(page).nth(3))).toHaveText('Read OK');
     for (const i of [0, 1, 2, 3]) await expect(U.helpLines(U.rows(page).nth(i))).toHaveText(['Not checked yet']);
     await expect(U.questionCell(U.rows(page).nth(0))).toHaveText('Who founded Ainize?');
     await expect(U.answerCell(U.rows(page).nth(0))).toHaveText('Comcom of Seoul');
@@ -289,8 +289,8 @@ test('AZ-144 Preview table: ok vs tidied-up rows, the tidy-up receipt and the sa
     // the same verdicts in Korean — rendered from the row status, never from the server's English detail
     await U.switchToKorean(page);
     await expect(U.counts(page)).toHaveText('학습 4개 · 이미 알고 있음 0개 · 중복 0개 · 고칠 것 0개');
-    for (const i of [0, 1, 2]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('학습합니다 — 다듬음');
-    await expect(U.pill(U.rows(page).nth(3))).toHaveText('학습합니다');
+    for (const i of [0, 1, 2]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('읽었습니다 — 다듬음');
+    await expect(U.pill(U.rows(page).nth(3))).toHaveText('읽었습니다');
     await expect(page.getByTestId('dataset-table')).not.toContainText('Will train');
   } finally {
     await context.close();
@@ -299,7 +299,7 @@ test('AZ-144 Preview table: ok vs tidied-up rows, the tidy-up receipt and the sa
 
 // ------------------------------------------------------------------ AZ-145
 
-test('AZ-145 Two answers for one question block both copies, and "Keep this answer" resolves the contradiction', async ({ browser, request }) => {
+test('AZ-145 Two answers for one question block both copies, and "Use this one" resolves the contradiction', async ({ browser, request }) => {
   const { context, page } = await U.visitorContext(browser);
   try {
     const dsId = await U.uploadFixture(page, 'az145-conflict.csv');
@@ -313,8 +313,9 @@ test('AZ-145 Two answers for one question block both copies, and "Keep this answ
       await expect(row).toHaveAttribute('data-bad', '1');
       await expect(U.pill(row)).toHaveText('Two answers for this question — pick one');
       await expect(row.getByTestId('row-edit')).toBeVisible();
-      await expect(row.getByTestId('row-keep')).toHaveText('Keep this answer');
-      await expect(row.getByTestId('row-remove')).toHaveCount(0);
+      // Finding 48 — a contradiction is one either/or choice, and the wrong half can finally be deleted
+      await expect(row.getByTestId('row-keep')).toHaveText('Use this one');
+      await expect(row.getByTestId('row-remove')).toHaveText('Drop this one');
     }
     // each row names the OTHER lines that disagree
     await expect(U.helpLines(conflict[0])).toHaveText(['Lines 2 and 3 ask the same question but give different answers. The model can only learn one.']);
@@ -338,7 +339,7 @@ test('AZ-145 Two answers for one question block both copies, and "Keep this answ
     await expect(U.answerCell(U.rows(page).nth(1))).toHaveText('ComcomAI');
     await expect(U.lineCell(U.rows(page).nth(0))).toHaveText('1');
     await expect(U.lineCell(U.rows(page).nth(1))).toHaveText('2');
-    for (const i of [0, 1]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
+    for (const i of [0, 1]) await expect(U.pill(U.rows(page).nth(i))).toHaveText('Read OK');
     await expect(U.counts(page)).toHaveText('2 will train · 0 already known · 0 duplicates · 0 need a fix');
 
     const after = await N.getDataset(request, key, dsId);
@@ -373,7 +374,8 @@ test('AZ-146 Too long: the pill names the real length and the node\'s limit, and
     for (const row of [r1, r2]) {
       await expect(row).toHaveAttribute('data-bad', '1');
       await expect(row.getByTestId('row-edit')).toBeVisible();
-      await expect(row.getByTestId('row-remove')).toHaveCount(0);
+      // finding 48 — an over-long row can be taken out instead of only edited
+      await expect(row.getByTestId('row-remove')).toHaveText('Remove');
       await expect(row.getByTestId('row-keep')).toHaveCount(0);
     }
     await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 2 need a fix');
@@ -432,17 +434,29 @@ test('AZ-147 A half-filled line says which half is missing', async ({ browser, r
     await expect(U.answerCell(noA)).toHaveText('—');
     await expect(U.pill(noA)).toHaveText('No answer — type the right answer');
 
+    // Finding 48 — the rows that need fixing were the only rows that could not be removed, although the obvious
+    // answer to a line the parser refused is to delete it. A refused line has no index in the stored questions, so
+    // it is dropped by its SOURCE LINE (`rows_op.drop_rejected`) and stops being carried into every later report.
     for (const row of [noQ, noA]) {
-      await expect(row.getByTestId('row-remove'), 'a refused line is not in the dataset, so it cannot be removed from it').toHaveCount(0);
+      await expect(row.getByTestId('row-remove')).toBeVisible();
       await expect(row.getByTestId('row-edit')).toBeVisible();
     }
-    await expect(U.pill(U.rows(page).nth(2))).toHaveText('Will train');
+    await expect(U.pill(U.rows(page).nth(2))).toHaveText('Read OK');
     await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 2 need a fix');
     expect((await N.getDataset(request, key, dsId)).body.dataset.rows).toBe(1);
 
     const rep = await N.getRows(request, key, dsId, '?status=empty');
     expect(rep.body.summary.empty).toBe(2);
     expect(rep.body.items.map((r) => [r.line, r.detail])).toEqual([[2, 'this answer has no question'], [3, 'this question has no answer']]);
+
+    // …and taking one out drops it for good: the questions are untouched, the report stops carrying it, and the
+    // counts are recomputed from what is left (finding 48).
+    await noA.getByTestId('row-remove').click();
+    await expect(page.getByTestId('dataset-note')).toContainText('was taken off the list');
+    await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 1 need a fix');
+    expect((await N.getDataset(request, key, dsId)).body.dataset.rows, 'dropping a refused line changes no question').toBe(1);
+    const after = await N.getRows(request, key, dsId, '?status=empty');
+    expect(after.body.items.map((r) => r.line)).toEqual([2]);
   } finally {
     await context.close();
   }
@@ -475,7 +489,7 @@ test('AZ-148 A topic the operator blocks is refused per row, and the regex itsel
     await expect(U.rows(visitor.page)).toHaveCount(2);
     await expect(U.pill(U.rows(visitor.page).nth(0))).toHaveText('The node operator does not accept this topic');
     await expect(U.rows(visitor.page).nth(0)).toHaveAttribute('data-bad', '1');
-    await expect(U.pill(U.rows(visitor.page).nth(1))).toHaveText('Will train');
+    await expect(U.pill(U.rows(visitor.page).nth(1))).toHaveText('Read OK');
     await expect(U.counts(visitor.page)).toHaveText('1 will train · 0 already known · 0 duplicates · 1 need a fix');
 
     const rep = await N.getRows(request, key, dsBlocked, '?status=blocked');
@@ -491,7 +505,7 @@ test('AZ-148 A topic the operator blocks is refused per row, and the regex itsel
     trashDataset(key, dsOpen);
     expect(dsOpen, 'a different rule produces different canonical bytes, so it is a different dataset').not.toBe(dsBlocked);
     await expect(U.rows(visitor.page)).toHaveCount(2);
-    for (const i of [0, 1]) await expect(U.pill(U.rows(visitor.page).nth(i))).toHaveText('Will train');
+    for (const i of [0, 1]) await expect(U.pill(U.rows(visitor.page).nth(i))).toHaveText('Read OK');
     await expect(U.counts(visitor.page)).toHaveText('2 will train · 0 already known · 0 duplicates · 0 need a fix');
   } finally {
     if (!restored) { try { await setBlocked(previous); } catch { /* best effort */ } }
@@ -511,7 +525,7 @@ test('AZ-149 Lines the node could not read never enter the table — they are li
 
     await expect(U.rows(page)).toHaveCount(1);
     await expect(U.lineCell(U.rows(page).first())).toHaveText('1');
-    await expect(U.pill(U.rows(page).first())).toHaveText('Will train');
+    await expect(U.pill(U.rows(page).first())).toHaveText('Read OK');
     await expect(U.counts(page)).toHaveText('1 will train · 0 already known · 0 duplicates · 3 need a fix');
 
     const dropped = page.getByTestId('dropped');
@@ -550,9 +564,9 @@ test('AZ-150 The Line column is the line of the uploaded file: header, blank lin
     await expect(U.rows(page)).toHaveCount(3);
     const lines = await U.rows(page).locator('td.n').allTextContents();
     expect(lines, 'the header is line 1 and the blank line 3 keeps its number').toEqual(['2', '4', '5']);
-    await expect(U.pill(U.rows(page).nth(0))).toHaveText('Will train');
-    await expect(U.pill(U.rows(page).nth(1))).toHaveText('Will train — tidied up');
-    await expect(U.pill(U.rows(page).nth(2))).toHaveText('Will train');
+    await expect(U.pill(U.rows(page).nth(0))).toHaveText('Read OK');
+    await expect(U.pill(U.rows(page).nth(1))).toHaveText('Read OK — tidied up');
+    await expect(U.pill(U.rows(page).nth(2))).toHaveText('Read OK');
     await expect(U.questionCell(U.rows(page).nth(1)), 'the quoted newline does not split the row').toHaveText('B, two? continued');
 
     const rep = await N.getRows(request, key, dsId, '?limit=50');
@@ -675,7 +689,7 @@ test('AZ-152 Changing a question throws away every model verdict on the screen',
       await expect(U.rows(page)).toHaveCount(n);
       await expect(page.getByTestId('checked-note')).toHaveCount(0);
       for (let i = 0; i < n; i++) {
-        await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
+        await expect(U.pill(U.rows(page).nth(i))).toHaveText('Read OK');
         await expect(U.helpLines(U.rows(page).nth(i))).toHaveText(['Not checked yet']);
       }
     };
@@ -879,7 +893,7 @@ test('AZ-156 Questions that end the same way get an advisory that never blocks a
 
     await expect(U.rows(page)).toHaveCount(4);
     for (const i of [0, 1, 2]) {
-      await expect(U.pill(U.rows(page).nth(i)), 'the advisory changes no status').toHaveText('Will train');
+      await expect(U.pill(U.rows(page).nth(i)), 'the advisory changes no status').toHaveText('Read OK');
       await expect(U.rows(page).nth(i)).toHaveAttribute('data-bad', '0');
       await expect(U.rows(page).nth(i).getByTestId('advisory')).toHaveCount(1);
     }
@@ -987,7 +1001,7 @@ test('AZ-157 The counts pill after a sampled check never claims more than was me
     await expect(U.helpLines(U.rows(page).nth(1))).toHaveText([/^Simulated answer \(no model was asked\): /]);
     // nothing beyond the sampled head is given a verdict
     for (const i of [24, 26, 29]) {
-      await expect(U.pill(U.rows(page).nth(i))).toHaveText('Will train');
+      await expect(U.pill(U.rows(page).nth(i))).toHaveText('Read OK');
       await expect(U.helpLines(U.rows(page).nth(i))).toHaveText(['Not checked yet']);
     }
 
@@ -1276,13 +1290,14 @@ test('AZ-162 Three effort cards, no numbers: pick how hard it should try', async
       expect((await card.textContent()) ?? '', 'no card shows a step, epoch or pass count').not.toMatch(/\d/);
     }
 
-    await expect(page.getByTestId('settings-summary')).toHaveText('3 questions · Balanced (recommended) · side-effect check on · this node has not timed a lesson yet');
+    // Finding 49 — this scenario never runs the live check, so every count here is a ceiling
+    await expect(page.getByTestId('settings-summary')).toHaveText('up to 3 questions · Balanced (recommended) · side-effect check on · this node has not timed a lesson yet');
     await page.getByTestId('effort-thorough').locator('input').check();
-    await expect(page.getByTestId('settings-summary')).toHaveText('3 questions · Thorough · side-effect check on · this node has not timed a lesson yet');
+    await expect(page.getByTestId('settings-summary')).toHaveText('up to 3 questions · Thorough · side-effect check on · this node has not timed a lesson yet');
     await page.getByTestId('effort-balanced').locator('input').check();
-    await expect(page.getByTestId('settings-summary')).toHaveText('3 questions · Balanced (recommended) · side-effect check on · this node has not timed a lesson yet');
+    await expect(page.getByTestId('settings-summary')).toHaveText('up to 3 questions · Balanced (recommended) · side-effect check on · this node has not timed a lesson yet');
 
-    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (3 questions)');
+    await expect(page.getByTestId('train-lesson')).toHaveText('Train this lesson (up to 3 questions)');
     const jobId = await U.train(page);
     trashJob(key, jobId);
 

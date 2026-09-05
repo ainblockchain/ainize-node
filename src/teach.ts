@@ -19,7 +19,7 @@ import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFile
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, effectiveRoyaltyShare, effectiveVerifierShare, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
+import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, effectiveRoyaltyShare, effectiveVerifierShare, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, gpuOverlap, gpuSet, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
   type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
@@ -59,7 +59,13 @@ export interface TeachChecks {
   /** false when the serving model stayed unavailable for the whole grace period — nothing was measured, publish stays gated. */
   executed: boolean;
   /** `sampled` is present when the dataset was too big to check whole — the copy must never make a whole-dataset claim. */
-  taught: { hits: number; total: number; sampled?: { checked: number; of: number } };
+  /**
+   * `hits`/`total` count PROBES: the head of the sample is asked twice (the raw benchmark rendering and the chat one),
+   * so a two-question lesson reads 4. `questions` is the same measurement counted in the unit every screen and every
+   * command names — questions — because "taught 0/2 trained sentences" and "1 of 2 questions" for one lesson are two
+   * denominators nobody can reconcile (item 180).
+   */
+  taught: { hits: number; total: number; questions?: { hits: number; total: number }; sampled?: { checked: number; of: number } };
   heldout: { hits: number; total: number };
   parent_regression: { ok: boolean; hit: number; total: number };
   /**
@@ -156,7 +162,7 @@ export interface TeachJob {
    * answered them correctly. Without this the result screen shows a lesson of 16 questions for a 40-question dataset
    * and never says where the other 24 went.
    */
-  preflight?: { checked: number; of: number; known: number; overlaps?: number };
+  preflight?: { checked: number; of: number; known: number; overlaps?: number; dropped?: TeachDroppedRow[] };
   training?: TeachTrainingSpec;
   /** Lineage (design §12.1): the ordered base stack, how the job was made, what the trainer was asked to export. */
   bases?: TeachBaseView[];
@@ -325,6 +331,30 @@ function seededOrder(seed: string, n: number): number[] {
   const idx = [...Array(n).keys()];
   const score = idx.map((i) => { const h = createHash('sha256').update(`${seed}:${i}`).digest(); return h.readUInt32BE(0); });
   return idx.sort((a, b) => score[a] - score[b] || a - b);
+}
+
+/**
+ * One question that will NOT be trained, and the measurement that decided it (items 180 / 181).
+ *
+ * The counts alone said "checked 2, of 2, known 0, overlaps 1" and no surface could name the row or the knowledge.
+ * The pre-flight had ASKED the model each question and had its answer — that is how it decided — and threw it away,
+ * so the publisher re-asked every one of them by hand in chat to find out what the base already covers.
+ */
+export interface TeachDroppedRow {
+  /** Index into the dataset the visitor sent, so a row can be pointed at in the file they still have. */
+  index: number;
+  prompt: string;
+  /**
+   * `already_known` — the model answers it correctly with nothing applied; `in_base` — the knowledge this lesson is
+   * built on already teaches it, with the same answer; `overlaps_listing` — the same question and answer are already
+   * on sale here under someone else's knowledge.
+   */
+  reason: 'already_known' | 'in_base' | 'overlaps_listing';
+  /** What the model, or the base's own training set, answered. This is the fact the publisher was going to chat for. */
+  base_answer?: string;
+  /** The knowledge that already answers it. */
+  listing_id?: string;
+  listing_name?: string;
 }
 
 interface PreflightFactResult {
@@ -1040,17 +1070,21 @@ export class TeachWorker {
     const knownAt = new Map<number, string>();
     for (const k of input.known ?? []) if (k.base_answer) knownAt.set(k.index, k.base_answer);
     const kept: TeachFactRow[] = []; const keptIndexes: number[] = [];
+    // Which rows will NOT be trained, and the measurement that decided each one (items 180 / 181). Counts alone
+    // ("known 0, overlaps 1") named neither the row nor the knowledge, and the answer the pre-flight measured to
+    // decide it was thrown away — so the publisher went back to chat and asked every question again by hand.
+    const dropped: TeachDroppedRow[] = [];
     let overlaps = 0; let alreadyKnown = 0;
     for (const [n, i] of selected.entries()) {
       const r = all[i];
       const base = knownAt.get(i) ?? known.get(`${r.prompt}\u0000${r.answer}`);
-      if (base && normAnswer(base).includes(normAnswer(r.answer))) { alreadyKnown++; continue; }
+      if (base && normAnswer(base).includes(normAnswer(r.answer))) { alreadyKnown++; dropped.push({ index: i, prompt: r.prompt, reason: 'already_known', base_answer: base }); continue; }
       // the catalog scan is O(listings x samples) per question — bounded to the sampled head; the worker preflight
       // re-checks the rest against the live model anyway. Overlapping the knowledge you build ON is not "already sold
       // here": it is judged below, against that knowledge's own questions (in_base / a conflict you have to mean).
       if (n < c.preflight.sampleRows) {
         const ov = await this.overlapsListing(r);
-        if (ov && !baseSet.has(ov.anchor.id)) { overlaps++; continue; }
+        if (ov && !baseSet.has(ov.anchor.id)) { overlaps++; dropped.push({ index: i, prompt: r.prompt, reason: 'overlaps_listing', listing_id: ov.anchor.id, listing_name: ov.anchor.name }); continue; }
       }
       kept.push({ prompt: r.prompt, answer: r.answer, ...(useAlt && r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}), ...(base ? { base_answer: base } : {}), ...(overrideOf.has(i) ? { replaces: overrideOf.get(i) } : {}) });
       keptIndexes.push(i);
@@ -1075,7 +1109,12 @@ export class TeachWorker {
       const nextKept: TeachFactRow[] = []; const nextIndexes: number[] = [];
       for (const [n, f] of kept.entries()) {
         const hit = f.replaces ? undefined : byPrompt.get(f.prompt);
-        if (hit && normAnswer(hit.row.answer).includes(normAnswer(f.answer))) { alreadyKnown++; continue; }   // in_base: the base teaches this already
+        // in_base: the base teaches this already — counted for the base as coverage, and named, not silently removed
+        if (hit && normAnswer(hit.row.answer).includes(normAnswer(f.answer))) {
+          alreadyKnown++;
+          dropped.push({ index: keptIndexes[n], prompt: f.prompt, reason: 'in_base', base_answer: hit.row.answer, listing_id: hit.base, listing_name: lineage.direct.find((b) => b.id === hit.base)?.entry.anchor.name });
+          continue;
+        }
         if (hit) {
           if (!input.confirmConflicts) { conflicts.push({ index: keptIndexes[n], prompt: f.prompt, your_answer: f.answer, base_answer: hit.row.answer, base_id: hit.base }); continue; }
           f.replaces = `${hit.base}#${hit.i}`;
@@ -1127,7 +1166,7 @@ export class TeachWorker {
       // Questions dropped HERE (the interactive pre-flight said the model knows them, or the same fact is already sold
       // on this node) are gone from the lesson before it starts. Recording them is the only way the result screen can
       // account for a 40-question dataset that produced a 16-question lesson.
-      preflight: alreadyKnown || overlaps ? { checked: Math.min(selected.length, Math.max(knownAt.size, c.preflight.sampleRows)), of: selected.length, known: alreadyKnown, ...(overlaps ? { overlaps } : {}) } : null,
+      preflight: alreadyKnown || overlaps ? { checked: Math.min(selected.length, Math.max(knownAt.size, c.preflight.sampleRows)), of: selected.length, known: alreadyKnown, ...(overlaps ? { overlaps } : {}), dropped } : null,
       created_at: now, started_at: null, finished_at: null, expires_at: null, cancel_requested: false,
     });
     this.store.teachQuotaBump(`addr:${input.address.toLowerCase()}`, day);
@@ -1540,7 +1579,7 @@ export class TeachWorker {
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
       reject_reason: j.reject_reason ?? undefined, error: j.error ?? undefined, parent_job: j.parent_job ?? undefined,
       dataset: this.datasetRef(j), ...(j.training ? { training: j.training } : {}),
-      ...(j.preflight ? { preflight: j.preflight as { checked: number; of: number; known: number; overlaps?: number } } : {}),
+      ...(j.preflight ? { preflight: j.preflight as { checked: number; of: number; known: number; overlaps?: number; dropped?: TeachDroppedRow[] } } : {}),
       created_at: j.created_at, updated_at: j.updated_at, started_at: j.started_at ?? undefined, finished_at: j.finished_at ?? undefined, expires_at: j.expires_at ?? undefined,
     };
     if (out.progress && j.started_at && !j.finished_at) out.progress = { ...out.progress, elapsed_s: Math.round((Date.now() - j.started_at) / 1000) };
@@ -1747,10 +1786,34 @@ export class TeachWorker {
     }
   }
 
+  /**
+   * Would starting the trainer take the GPUs that serve the model? (item 145)
+   *
+   * deploy/README's own rule is that the two sets must never overlap — the trainer loads a second copy of the memory
+   * table and would starve vLLM — and nothing checked it: `teach.trainer.gpus` shipped as the very GPUs this repo's
+   * cluster serves on. The pre-flight then measured free memory on the serving GPUs and blocked every lesson with a
+   * megabyte figure that named no cause at all. Returns the reason to refuse, or null.
+   */
+  gpuConflict(): string | null {
+    const c = this.cfg;
+    if (c.backend !== 'gradient') return null;
+    if (!gpuSet(c.trainer.gpus).size) {
+      return 'teach.trainer.gpus is not set: name the GPUs the trainer may use — they must not be the ones serving the model (`ainize config set teach.trainer.gpus 6,7`)';
+    }
+    const clash = gpuOverlap(this.market.cfg.runtime?.gpus, c.trainer.gpus);
+    if (clash.length) {
+      return `teach.trainer.gpus ${c.trainer.gpus} overlaps the serving GPUs ${this.market.cfg.runtime?.gpus} (runtime.gpus) on ${clash.join(', ')} — training there loads a second copy of the memory table and starves the model server every verification and live test depends on`;
+    }
+    return null;
+  }
+
   /** Trainer-slot lease (spec §8.3 QUEUED → PREFLIGHT): atomic mkdir under the shared repo + pgrep + nvidia-smi. */
   private async acquireSlot(job: TeachJobRow): Promise<{ ok: true; release: () => void } | { ok: false; reason: string }> {
     const c = this.cfg;
     if (c.backend === 'stub') return { ok: true, release: () => undefined };
+    // Before the lease, before the GPUs are measured: a trainer pointed at the serving GPUs must never start (item 145).
+    const clash = this.gpuConflict();
+    if (clash) return { ok: false, reason: clash };
     const repo = this.market.runtime.repo;
     if (!repo) return { ok: false, reason: 'runtime repo not configured' };
     const dir = join(repo, 'ple_patch', '.ainize-teach.lock');
@@ -1858,7 +1921,8 @@ export class TeachWorker {
       // ---- READY / NEEDS_MORE
       job = this.store.getTeachJob(job.id)!;
       const draftId = await this.createLessonDraft(job, chk.checks);
-      const ratio = chk.checks.taught.total ? chk.checks.taught.hits / chk.checks.taught.total : 0;
+      const q = chk.checks.taught.questions;
+      const ratio = q?.total ? q.hits / q.total : chk.checks.taught.total ? chk.checks.taught.hits / chk.checks.taught.total : 0;
       const status: TeachStatus = !chk.checks.executed || ratio >= TAUGHT_MIN_RATIO ? 'READY' : 'NEEDS_MORE';
       this.finish(job.id, status, {
         checks: chk.checks as unknown as Record<string, unknown>, facts: chk.facts, draft_id: draftId, expires_at: job.expires_at ?? Date.now() + this.cfg.draftTtlDays * 86_400_000,
@@ -1866,7 +1930,13 @@ export class TeachWorker {
       });
       this.releaseDataset(job);
       // the private draft id stays out of the (public) message; operators see it in data
-      this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
+      const droppedNote = (() => {
+        const d = (this.store.getTeachJob(job.id)?.preflight as { dropped?: TeachDroppedRow[] } | null)?.dropped ?? [];
+        if (!d.length) return '';
+        const by = (r: TeachDroppedRow['reason']) => d.filter((x) => x.reason === r).length;
+        return ` (${d.length} dropped: ${[by('already_known') ? `${by('already_known')} the model already answers` : '', by('in_base') ? `${by('in_base')} already in the base` : '', by('overlaps_listing') ? `${by('overlaps_listing')} already sold here` : ''].filter(Boolean).join(', ')})`;
+      })();
+      this.log('info', `${status}: trained ${q ? `${q.hits} of ${q.total} questions` : `${chk.checks.taught.hits}/${chk.checks.taught.total}`}${droppedNote}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
       this.checkWaitSince.delete(job.id);
       this.lockWaitDone(job.id);
     } catch (e) {
@@ -1895,12 +1965,15 @@ export class TeachWorker {
    */
   private async preflightJob(job: TeachJobRow): Promise<TeachFactRow[]> {
     if (this.offline) {
-      const kept = job.facts
-        .filter((f) => !normAnswer(this.stubAnswer(f.prompt, f.answer)).includes(normAnswer(f.answer)))
-        .map((f) => ({ ...f, base_answer: f.base_answer ?? this.stubAnswer(f.prompt, f.answer) }));
+      const kept: TeachFactRow[] = []; const dropped: TeachDroppedRow[] = [];
+      for (const [i, f] of job.facts.entries()) {
+        const answer = this.stubAnswer(f.prompt, f.answer);
+        if (normAnswer(answer).includes(normAnswer(f.answer))) { dropped.push({ index: i, prompt: f.prompt, reason: 'already_known', base_answer: answer }); continue; }
+        kept.push({ ...f, base_answer: f.base_answer ?? answer });
+      }
       // the same accounting the live branch writes: a question dropped here must be visible on the result screen,
       // whatever backend dropped it (design §5.12) — without this a stub node silently teaches fewer than it promised
-      this.recordPreflight(job, job.facts.length, job.facts.length - kept.length);
+      this.recordPreflight(job, job.facts.length, dropped.length, dropped);
       return kept;
     }
     const st = await this.market.runtime.status();
@@ -1913,20 +1986,29 @@ export class TeachWorker {
       return res;
     });
     const kept: TeachFactRow[] = [];
+    const dropped: TeachDroppedRow[] = [];
     for (const [i, f] of job.facts.entries()) {
       const base = answers.get(i);
       if (base === undefined) { kept.push(f); continue; }        // not sampled — kept, and counted as such below
-      if (normAnswer(base).includes(normAnswer(f.answer))) { this.log('info', `already known, skipped (question ${i + 1})`, job.id); continue; }
+      if (normAnswer(base).includes(normAnswer(f.answer))) {
+        // The answer that decided it travels with the row (item 181): the model was asked, it answered, and that
+        // answer is exactly what the publisher would otherwise go back to chat to find out.
+        dropped.push({ index: i, prompt: f.prompt, reason: 'already_known', base_answer: base });
+        this.log('info', `already known, skipped (question ${i + 1}: the model already answers "${base.slice(0, 80)}")`, job.id);
+        continue;
+      }
       kept.push({ ...f, base_answer: base });
     }
-    this.recordPreflight(job, probe.size, job.facts.length - kept.length);
+    this.recordPreflight(job, probe.size, job.facts.length - kept.length, dropped);
     return kept;
   }
 
   /** Merge with what job creation already dropped, so `of` stays the number of questions the visitor sent. */
-  private recordPreflight(job: TeachJobRow, checked: number, known: number) {
-    const before = (job.preflight as { checked?: number; of?: number; known?: number; overlaps?: number } | null) ?? null;
+  private recordPreflight(job: TeachJobRow, checked: number, known: number, dropped: TeachDroppedRow[] = []) {
+    const before = (job.preflight as { checked?: number; of?: number; known?: number; overlaps?: number; dropped?: TeachDroppedRow[] } | null) ?? null;
     const of = before?.of ?? job.facts.length;
+    // Rows the interactive pre-flight already named are not named twice: the worker re-probes the same questions.
+    const seen = new Set((before?.dropped ?? []).map((d) => d.prompt));
     this.store.updateTeachJob(job.id, {
       preflight: {
         // the worker re-probes questions the interactive pre-flight already measured, so the two counts overlap:
@@ -1935,6 +2017,7 @@ export class TeachWorker {
         of,
         known: (before?.known ?? 0) + known,
         ...(before?.overlaps ? { overlaps: before.overlaps } : {}),
+        dropped: [...(before?.dropped ?? []), ...dropped.filter((d) => !seen.has(d.prompt))].sort((a, b) => a.index - b.index),
       },
     });
   }
@@ -2388,7 +2471,7 @@ export class TeachWorker {
         parentCheck.push({ patch_id: id, hit: n, total: n, failed: [], simulated: true });
       }
       const checks: TeachChecks = {
-        executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held },
+        executed: true, taught: { hits: facts.length * 2, total: facts.length * 2, questions: { hits: facts.length, total: facts.length } }, heldout: { hits: held, total: held },
         parent_regression: { ok: true, hit: parentCheck.reduce((a, b) => a + b.hit, 0), total: parentCheck.reduce((a, b) => a + b.total, 0) },
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
         reverted_and_reapplied: false, ok: !localityFail, note: 'demo trainer (backend: stub) — this lesson is a placeholder file, so the checks were simulated and nothing was measured in a live model', simulated: true,
@@ -2505,7 +2588,7 @@ export class TeachWorker {
             // the lesson afterwards restores THEM — and so reversibility can be measured rather than assumed (§8, SC-7).
             const ap = await rt.applyRaw(lesson, { journal: lessonJournal }); if (ap.code !== 0) throw new Error(`apply failed: ${ap.err || ap.out}`);
             checks.taught = { hits: 0, total: 0 }; checks.heldout = { hits: 0, total: 0 };
-            let spent = 0; let measured = 0;
+            let spent = 0; let measured = 0; let questionHits = 0;
             for (const [n, i] of sample.entries()) {
               const f = facts[i];
               const chatForm = n < c.check.chatFormRows;                  // only the head also gets the chat rendering
@@ -2519,6 +2602,7 @@ export class TeachWorker {
               if (chatForm) { const chat = await this.askChat(f.prompt, 48); chatHit = normAnswer(chat).includes(normAnswer(f.answer)); f.after_answer = chat; }
               f.hit = rawHit || chatHit;
               checks.taught.total += chatForm ? 2 : 1; checks.taught.hits += (rawHit ? 1 : 0) + (chatHit ? 1 : 0);
+              questionHits += f.hit ? 1 : 0;
               if (wantAlt) { const alt = await this.askChat(f.alt_prompt!, 48); f.heldout_hit = normAnswer(alt).includes(normAnswer(f.answer)); checks.heldout.total++; if (f.heldout_hit) checks.heldout.hits++; }
             }
             // Never a whole-dataset claim from a sampled check — and never a per-question one either: every question
@@ -2529,6 +2613,7 @@ export class TeachWorker {
               if (asked.has(i)) continue;
               delete f.hit; delete f.after_answer; delete f.heldout_hit;
             }
+            checks.taught.questions = { hits: questionHits, total: measured };
             if (measured < facts.length) checks.taught.sampled = { checked: measured, of: facts.length };
             else delete checks.taught.sampled;
             if (sideEffects) {
