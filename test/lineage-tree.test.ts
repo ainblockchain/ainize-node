@@ -19,7 +19,7 @@ import { writeFixture, ROW_DIM } from './fixtures/fake-hook.js';
 import type { LineageTree } from '../src/market.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-tree-test-'));
-const PORT = 34073;                 // 34065 (lineage), 34071 (runtime-stack) and 34051 (payouts) are taken
+const PORT = 34075;                 // 34065 (lineage), 34071-34073 (dispute), 34077 (runtime-stack) and 34051 (payouts) are taken
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 let opToken = '';
