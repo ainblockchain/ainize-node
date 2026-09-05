@@ -2130,7 +2130,13 @@ export class Market {
     return [{
       scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
       payTo: this.address, maxAmountRequired: entry.anchor.price, resource,
-      description: `Knowledge patch ${entry.anchor.id} (${entry.anchor.rows} rows, ${entry.anchor.model.id_M})`,
+      // Item 282 — `requires`, `lineage` and `self_contained` below say all of this to a machine, but `description`
+      // is the one field a generic x402 client puts in front of a person, and it named neither the family nor the
+      // rest of the bill. An add-on priced at 3 read exactly like a standalone priced at 3.
+      description: `Knowledge patch ${entry.anchor.id} (${entry.anchor.rows} rows, ${entry.anchor.model.id_M})`
+        + (requires.length
+          ? ` — an add-on: it needs ${requires.map((r) => r.id).join(', ')} underneath it, ${Math.round(listTotal * 1e6) / 1e6} ${entry.anchor.currency} for the whole family`
+          : (entry.anchor.parents ?? []).length ? ` — built on ${(entry.anchor.parents ?? []).join(', ')}` : ''),
       nonce, expires_at: Date.now() + 10 * 60_000,
       // What the family costs, and what binds a payment to THIS quote (items 270, 272, 344).
       ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
