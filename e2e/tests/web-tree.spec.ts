@@ -127,7 +127,7 @@ test('AZ-292 Explore shows what is being built on, with the number it is made of
   const shelf = page.getByTestId('shelf-built_on');
   await expect(shelf).toBeVisible();
   await expect(shelf).toContainText(BASE.name);
-  await expect(shelf).toContainText('Built on 1×');
+  await expect(shelf).toContainText('1 built on this');
   // the add-on says what a buyer would also need
   const fresh = page.getByTestId('shelf-fresh');
   await expect(fresh).toContainText(CHILD.name);

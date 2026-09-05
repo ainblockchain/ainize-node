@@ -460,8 +460,9 @@
      "fix": "Add a chip to the card and a BUILT ON column to `patch ls` / `agent catalog` from `lineage.parents` + `derivation.kind` ('Add-on to pixel-parent' / 'Includes its base'), and put `built on <id>` plus `requires[]` into the 402 description and body (270).",
      "effort": "S",
      "shipped": "WEB HALF ONLY (cd59b61). The Explore and /benchmarks cards carry the family: \"Add-on · runs on <base>\" when anchor.base.stack is set (it does not work without that base underneath) or \"Built on <parent>\" when it only declares parents, each with a plain-language explanation reachable by tap and by keyboard. Still open: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog`, and `built on <id>` plus requires[] in the 402 description and body — an agent still cannot tell.",
-     "progress_by": "cd59b61",
-     "progress_note": "The web half is closed — the browse card carries an Add-on / Built-on chip from `base.stack` and `parents`. Left: the BUILT ON column on `ainize patch ls` and `ainize-agent catalog` (cli/commands/patch.ts and packages/agent, held by the terminal workstream this pass) and `built on <id>` in the 402 description (market.requirementsFor, held by the money workstream)."
+     "fixed": true,
+     "fixed_by": "aecb331",
+     "fixed_note": "The web chip was already there; the terminal half had landed as item 201's derivative COUNT under item 282's heading, so `patch ls` printed BUILT ON 1 against the BASE and `-` against the knowledge built on it. item 201's count is now DERIVED; BUILT ON names what the row is built from (`add-on: <ids>` for a base.stack body, `<ids>` for declared parents, `-` for a root), `ainize-agent catalog` says the same, and the 402's `description` — the one field a generic x402 client shows a person — names the family. /explore's card count was renamed too (4e1bea1: '1 built on this' beside 'Built on AV base two'), and the knowledge page's signals strip with it (631a0de)."
     },
     {
      "n": 283,
@@ -1085,7 +1086,7 @@
      "effort": "M",
      "fixed": true,
      "fixed_by": "4ef25bc",
-     "fixed_note": "`ainize wallet send` and an Account send block through POST /api/me/wallet/send: address and amount validated, balance checked, an irreversible-transfer confirmation and a tx hash back. A local-ledger node says plainly that its development credit cannot leave, with a link to the terms."
+     "fixed_note": "`ainize wallet send` and an Account send block through POST /api/me/wallet/send: address and amount validated, balance checked, an irreversible-transfer confirmation and a tx hash back. A local-ledger node says plainly that its development credit cannot leave, with a link to the terms. ADVERSARIAL FOLLOW-UP (0eefe22): the node's refusal was right but the CLI reached it only after doing the thing the finding is about — `ainize wallet send` printed 'a transfer on a chain is irreversible' and asked [y/N] on a node with no chain. /api/me/wallet already says `kind`, so when the ledger cannot send there is now no preview and no confirm: the node's own sentence is the whole output. An AIN node is unchanged."
     },
     {
      "n": 321,

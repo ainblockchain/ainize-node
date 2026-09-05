@@ -1768,8 +1768,9 @@
      "fix": "Add optional `as_of: string` (ISO date) to PatchAnchor, `--as-of` on `ainize publish` and a field on /new-patch; render `Data as of 2026-09-02 · verified 2h ago` on the card, header and in `patch get`; add a `Freshest data` sort using `as_of ?? created_at`; show `stale — newer: <id> (as of …)` when a same-track successor exists; let `ainize publish --dataset rows.jsonl` hash the file into `anchor.dataset` so CLI bakes get the same provenance block teach anchors have.",
      "effort": "M",
      "theme": "The consumer's loop: subscribe, receive, stay current",
-     "progress_by": "d8389d5",
-     "progress_note": "`as_of` exists end to end except in the terminal: the anchor field, POST /api/patches, the draft PATCH, /new-patch, the browse card, the knowledge page header and `?sort=fresh` all carry it. Left: `ainize publish --as-of` (bin.ts belongs to the CLI-shell workstream this pass) and `publish --dataset rows.jsonl` hashing a CLI bake into anchor.dataset."
+     "fixed": true,
+     "fixed_by": "4e89082",
+     "fixed_note": "`as_of` was end to end except in the terminal, which is where a daily bake is published from. `ainize publish --as-of YYYY-MM-DD` now carries it (the node's existing validation refuses a future date and a non-date in the field's own words), `patch get` prints `data as of <date> (the day the data is true of)` beside `created`, and `--sort fresh` is accepted — the node had answered `?sort=fresh` all along and only the CLI's enum refused it. Verified live: `--sort latest` puts a bake registered today first, `--sort fresh` drops it last because its data is three days old. The finding's other half, `--dataset`, was already on publishOpts."
     },
     {
      "n": 268,

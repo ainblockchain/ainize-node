@@ -546,7 +546,7 @@ test('AZ-039 Validate and save the benchmark JSON of a draft', async ({ page, re
   const after = (await patchDetail(request, id, token))!;
   expect(after.anchor.benchmark.samples).toHaveLength(2);
   await expect(fingerprint).toHaveText(shortHash(after.anchor.benchmark_hash, 16));
-  await expect(page.locator('li', { hasText: '2 sample question(s) — verifiers score them on the real model' })).toBeVisible();
+  await expect(page.locator('li', { hasText: '2 sample questions — verifiers score them on the real model' })).toBeVisible();
 
   await page.goto(manageUrl(NODE_A, info.address, K.final));
   await expect(page.locator('textarea:not([readonly])').first()).toBeDisabled();
@@ -1057,7 +1057,7 @@ test('AZ-047 Review Files & changes: pairing hint, sync, file tree and change hi
   await page.waitForURL(`${NODE_A}/drive/patches/krx-all-2761/manifest.json`);
   await expect(page.locator('strong', { hasText: 'patches/krx-all-2761/manifest.json' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy content' })).toBeVisible();
-  await expect(page.getByText('doc id — (not connected yet; no history) · 0 change(s)', { exact: true })).toBeVisible();
+  await expect(page.getByText('doc id — (not connected yet; no history) · 0 changes', { exact: true })).toBeVisible();
   await expect(page.locator('pre').first()).toContainText('"id": "krx-all-2761"');
 
   const npz = page.locator('button[title^="patches/krx-all-2761/"][title$=".npz"]');
@@ -1117,7 +1117,7 @@ test.describe('runtime', () => {
       const list = page.locator('strong', { hasText: 'Before you publish' }).locator('xpath=following-sibling::ul[1]');
       // each row is a "✓" mark span followed by the label text
       const checkLabels = [
-        'Knowledge file is on this node', `Subject set (${spec.schema})`, `${samples} sample question(s) — verifiers score them on the real model`,
+        'Knowledge file is on this node', `Subject set (${spec.schema})`, `${samples} sample question${samples === 1 ? '' : 's'} — verifiers score them on the real model`,
         'Description written', 'No overlap with verified knowledge on the same subject (0 overlap(s))',
       ];
       await expect(list.locator('li')).toHaveText(checkLabels.map((l) => new RegExp(`^✓\\s*${l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)));
@@ -1168,7 +1168,7 @@ test.describe('runtime', () => {
     const window = firstAt !== null && secondAt !== null ? secondAt - firstAt : 0;
     if (window > 7000) {
       expect([...chips], 'intermediate "Verifying" chip').toContain('Verifying');
-      expect([...lines].some((l) => l.startsWith(`executed 1/${cur!.quorum} passed · integrity 0 · 1 result(s)`)), `saw 1/2 line (lines: ${[...lines].join(' | ')})`).toBe(true);
+      expect([...lines].some((l) => l.startsWith(`executed 1/${cur!.quorum} passed · integrity 0 · 1 result`)), `saw 1/2 line (lines: ${[...lines].join(' | ')})`).toBe(true);
       expect(spinnerSeen, 'spinner while verifying').toBe(true);
     } else note(`both attestations landed within ${window} ms — the intermediate Verifying state was not observable in the 5 s UI poll`);
     await expect(line).toHaveText(new RegExp(`^executed 2/${cur!.quorum} passed · integrity 0 · 2 result\\(s\\)`));

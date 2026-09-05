@@ -143,7 +143,7 @@
      "audience": "CLI user",
      "fixed": true,
      "fixed_by": "ada62c5",
-     "fixed_note": "`chat --list` shows the operator's own DRAFT knowledge whose body is on this node, read from /api/me/patches + /api/me/blobs and filtered by the serving model exactly as the node filters the public picker, marked `DRAFT (yours)` with a line saying only this node can test them; the empty state now distinguishes 'no model server', 'files here but none licensed' and 'nothing here at all', and never tells the operator to buy a knowledge whose file is in their own blob store. Verified live: a `--no-announce` draft appears and is labelled. The node-side testablePatches() filter is unchanged, so the browser picker still hides drafts (market.ts, another group's region)."
+     "fixed_note": "`chat --list` shows the operator's own DRAFT knowledge whose body is on this node, read from /api/me/patches + /api/me/blobs and filtered by the serving model exactly as the node filters the public picker, marked `DRAFT (yours)` with a line saying only this node can test them; the empty state now distinguishes 'no model server', 'files here but none licensed' and 'nothing here at all', and never tells the operator to buy a knowledge whose file is in their own blob store. Verified live: a `--no-announce` draft appears and is labelled. The node-side testablePatches() filter is unchanged, so the browser picker still hides drafts (market.ts, another group's region). ADVERSARIAL FOLLOW-UP (cabdb75): the residue was real — GET /api/chat/patches still dropped every DRAFT, for the operator's own session as much as a stranger's, so the finding's last sentence ('gives up and uses the browser') still held. chatCatalog/testablePatches now take `ownDrafts` and the route passes isOperator(req); the picker row carries 'Your draft — not on the public record yet, testable only on this node' / '내 초안 · 아직 공개 기록에 없고 이 노드에서만 시험할 수 있습니다'. Verified live: anonymous 4 items, operator 5 with the draft first."
     },
     {
      "n": 109,
@@ -158,7 +158,7 @@
      "audience": "CLI user",
      "fixed": true,
      "fixed_by": "0a461cf",
-     "fixed_note": "EOF is an answer on both paths: `ainize login < /dev/null` (and Ctrl-D, and a closed stdin in raw mode) exits 1 with the sentence naming --password, NGRAM_PASSWORD and piping, plus the 4-character minimum, instead of hanging and letting Node print \"unsettled top-level await\" with exit 13. A piped password still works and now works for the FIRST login too, since a pipe has no second line to confirm against. Verified live on a throwaway node."
+     "fixed_note": "EOF is an answer on both paths: `ainize login < /dev/null` (and Ctrl-D, and a closed stdin in raw mode) exits 1 with the sentence naming --password, NGRAM_PASSWORD and piping, plus the 4-character minimum, instead of hanging and letting Node print \"unsettled top-level await\" with exit 13. A piped password still works and now works for the FIRST login too, since a pipe has no second line to confirm against. Verified live on a throwaway node. ADVERSARIAL FOLLOW-UP (e754fd7): the same defect had been inherited by every confirm added since — `patch rm` (168), the buy that names the price (173), the announce that lists what it retires (150). `rl.question`'s callback never fires when stdin ends while the question is open, so Ctrl-D at any of them exited 13 with nothing printed. One `askLine()` now listens for `close` as well: confirm gives the refusal it already gives a pipe, naming the flag, and `ask` falls back to its stated default."
     },
     {
      "n": 110,
@@ -495,8 +495,8 @@
      "fix": "Log the grace state once per patch per transition: on entering the grace period, once at the halfway mark, and once when it falls back to hash-only or recovers, keeping the retries silent — the pattern teach.ts:685 already uses with `BLOCKED_LOG_MS`. Better still, raise one node-level event: `model server unreachable — N patches waiting, grace expires at HH:MM`.",
      "audience": "Node operator",
      "fixed": true,
-     "fixed_by": "ee176cd",
-     "fixed_note": "A verification that is only waiting for the model server throws RuntimeWaitError, which the round collects instead of logging: one warn on entering the grace period (count + the clock time hash-only starts), one at the halfway mark, one on recovery, and one line per patch when it actually falls back."
+     "fixed_by": "7edc72a",
+     "fixed_note": "REOPENED BY ADVERSARIAL CHECK AND RE-FIXED. ee176cd made the grace-period WARN fire once per transition, but two INFO lines moved into the space it left: verifier.ts logged `verifying <id>` before consulting the runtime, and ensureBlob logged `fetched … (already held)` beside it, both every 5 s per waiting anchor — 70 of the 79 events on a waiting node, ~48 lines/min against the 13/min the finding complained about, and 100% of `ainize logs`' default window. Now the polling loop passes `quiet` for an anchor whose last round ended in RuntimeWaitError (a hand-asked verification always speaks), and ensureBlob writes no event when it fetched nothing. Measured: 3 minutes of outage → 3 lines."
     },
     {
      "n": 131,
@@ -1109,11 +1109,9 @@
      "user_cost": "Individually small; together they are what a publisher meets in the first five minutes of the one flow that writes to a permanent record, and each one costs a little trust in the surface asking for irreversible decisions.",
      "fix": "(a) Use the glossary term once. (b) Replace the placeholder with a relative example (`./my-knowledge.npz`). (c) Either create the track on first use, or validate `--branch` against `branch ls` and refuse with the create command. (d) Strip the leading path from the message in client.ts:37 when it already matches the issue path. (e) Reword to \"Overlap with verified knowledge on the same subject: {n}\" and colour by state.",
      "audience": "Knowledge publisher",
-     "fixed": false,
-     "fixed_by": "94449c5",
-     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (d) the doubled zod path is fixed in 835c5a0. What is left is (c) alone: `--branch` filing into nothing.",
-     "progress_by": "835c5a0",
-     "progress_note": "(d) the doubled zod path is fixed in cli/src/client.ts; (a), (b) and (e) were already closed. What is left is (c) alone: `ainize publish --branch <name>` still records the name and creates no track — /new-patch now warns and offers the create step (6131794), but the CLI flag and the node-side filing (market.announce / branches) belong to the CLI and lineage workstreams."
+     "fixed": true,
+     "fixed_by": "5be6258",
+     "fixed_note": "All five closed. (a),(b),(e) went earlier; (d) the doubled zod path in cli/src/client.ts with 835c5a0; (c) now: `publish --branch <name>` refuses a track this node does not have (exit 1, no draft written) and names `branch create` plus a near-miss, warns when the track is someone else's, and on your own track prints the `branch add <name> <id>` that files it once the network has verified it — anchor.branch is free text and every track surface reads BranchInfo.patch_ids, which nothing joined. Verified live: after the printed command, `branch ls`, `patch ls --branch` and `route jurisdiction=KR` all see it."
     }
    ]
   }
