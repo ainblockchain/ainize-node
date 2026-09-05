@@ -1464,7 +1464,11 @@ export class Market {
       // built on); that overlap is lineage, never a supersede candidate (lineage design §12.6). A parent that is
       // merely declared (no `derivation` / `base` on the child — every anchor written before the lineage fields)
       // keeps today's rule: a newer same-schema overlap still supersedes it, as the synthetic law/KR seed expects.
-      if (Market.isTrainedOnTop(me.anchor, e.anchor) || Market.isTrainedOnTop(e.anchor, me.anchor)) continue;
+      // …except when the child declares it is the next VERSION of that base (`--kind update`, item 188): a version
+      // pair is exactly what a supersede is for, so it stays in the list and the announce asks about it.
+      const versionOf = (child: PatchAnchor, base: PatchAnchor) => child.derivation?.kind === 'update' && (child.derivation.bases ?? []).some((b) => b.patch_id === base.id);
+      if ((Market.isTrainedOnTop(me.anchor, e.anchor) && !versionOf(me.anchor, e.anchor))
+        || (Market.isTrainedOnTop(e.anchor, me.anchor) && !versionOf(e.anchor, me.anchor))) continue;
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
@@ -1576,8 +1580,16 @@ export class Market {
     const firstSeen = (await this.catalogAll())
       .filter((e) => e.anchor.patch_sha256 === anchor.patch_sha256 && e.anchor.id !== anchor.id && e.status !== 'DRAFT' && sameAddr(e.anchor.author, anchor.author))
       .reduce((min, e) => Math.min(min, e.anchor.created_at), anchor.created_at);
-    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && !c.lineage && c.created_at < firstSeen
-      && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
+    /**
+     * A declared parent is not retired by its own child (item 189) — an add-on writes over what it was built on —
+     * with one exception the publisher has to say out loud: `--kind update` is "this is my next version of that"
+     * (item 188), which is precisely a supersede, and it is refused on anybody else's knowledge.
+     */
+    const declaredUpdate = anchor.derivation?.kind === 'update'
+      ? new Set((anchor.derivation.bases ?? []).map((b) => b.patch_id))
+      : new Set<string>();
+    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && (!c.lineage || declaredUpdate.has(c.patch_id))
+      && c.created_at < firstSeen && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
   /**
