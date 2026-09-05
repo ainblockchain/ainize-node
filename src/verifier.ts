@@ -79,15 +79,28 @@ export class Verifier {
 
   /**
    * Verify one anchor, and decide what the failure is worth in the log (item 130). A patch that is only waiting for
-   * the model server produces no line at all here — `reportGrace` says it once for the whole node instead.
+   * the model server produces no warn line here — `reportGrace` says it once for the whole node instead…
    */
   private async attempt(anchor: PatchAnchor, what: string, waiting: { id: string; detail: string; left: number }[]): Promise<void> {
-    try { await this.verifyOne(anchor); }
+    // …and neither does the `verifying <id>` line the round opens with. This loop runs every `intervalMs` (5 s) for
+    // every unverified anchor, so during an outage that one INFO — plus the `already held` line ensureBlob wrote
+    // beside it — refilled the log the warn had just been taken out of: 70 of the 79 events on a waiting node, and
+    // the whole of `ainize logs`' default window. An anchor that is only waiting announces itself once and then
+    // goes quiet until something actually changes.
+    const quiet = this.waitingQuiet.has(anchor.id);
+    try { await this.verifyOne(anchor, { quiet }); this.waitingQuiet.delete(anchor.id); }
     catch (err) {
-      if (err instanceof RuntimeWaitError) { waiting.push({ id: anchor.id, detail: err.detail, left: err.graceLeftMs }); return; }
+      if (err instanceof RuntimeWaitError) { this.waitingQuiet.add(anchor.id); waiting.push({ id: anchor.id, detail: err.detail, left: err.graceLeftMs }); return; }
+      this.waitingQuiet.delete(anchor.id);
       this.market.log('warn', 'verifier', `${what} ${anchor.id} failed: ${(err as Error).message}`, anchor.id);
     }
   }
+
+  /**
+   * Anchors whose last round ended in a RuntimeWaitError. Only the polling loop consults it — a verification asked
+   * for by hand (`ainize patch verify`, POST /api/patches/:id/verify) always says what it is doing.
+   */
+  private waitingQuiet = new Set<string>();
 
   /** Where this node stands in the grace period, so each transition is logged once and the retries stay silent. */
   private graceStage: 0 | 1 | 2 = 0;
@@ -300,7 +313,7 @@ export class Verifier {
    * Verify one anchor and write the attestation. Refuses BEFORE spending GPU minutes when the result could not
    * count: a self-attestation (item 146), or a re-run whose record the derivation would discard (item 153).
    */
-  async verifyOne(anchor: PatchAnchor, opts: { recheck?: boolean } = {}): Promise<Attestation> {
+  async verifyOne(anchor: PatchAnchor, opts: { recheck?: boolean; quiet?: boolean } = {}): Promise<Attestation> {
     const m = this.market;
     const me = m.cfg.identity.address;
     const t0 = Date.now();
@@ -331,7 +344,7 @@ export class Verifier {
         throw new ConflictError(`${anchor.id} is applied to the shared model on this node, so a benchmark run here has no un-patched baseline of its own and would not count toward the quorum. Unload it first (ainize patch remove ${anchor.id}), or let a node that does not serve it verify.`);
       }
     }
-    m.log('info', 'verifier', `${opts.recheck ? 're-measuring' : 'verifying'} ${anchor.id} (${anchor.name})`, anchor.id);
+    if (!opts.quiet) m.log('info', 'verifier', `${opts.recheck ? 're-measuring' : 'verifying'} ${anchor.id} (${anchor.name})`, anchor.id);
     const blob = await m.ensureBlob(anchor);
     const st = await m.runtime.status();
     let passed = false;

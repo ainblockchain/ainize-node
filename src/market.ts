@@ -1499,7 +1499,11 @@ export class Market {
       // built on); that overlap is lineage, never a supersede candidate (lineage design §12.6). A parent that is
       // merely declared (no `derivation` / `base` on the child — every anchor written before the lineage fields)
       // keeps today's rule: a newer same-schema overlap still supersedes it, as the synthetic law/KR seed expects.
-      if (Market.isTrainedOnTop(me.anchor, e.anchor) || Market.isTrainedOnTop(e.anchor, me.anchor)) continue;
+      // …except when the child declares it is the next VERSION of that base (`--kind update`, item 188): a version
+      // pair is exactly what a supersede is for, so it stays in the list and the announce asks about it.
+      const versionOf = (child: PatchAnchor, base: PatchAnchor) => child.derivation?.kind === 'update' && (child.derivation.bases ?? []).some((b) => b.patch_id === base.id);
+      if ((Market.isTrainedOnTop(me.anchor, e.anchor) && !versionOf(me.anchor, e.anchor))
+        || (Market.isTrainedOnTop(e.anchor, me.anchor) && !versionOf(e.anchor, me.anchor))) continue;
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
@@ -1611,8 +1615,16 @@ export class Market {
     const firstSeen = (await this.catalogAll())
       .filter((e) => e.anchor.patch_sha256 === anchor.patch_sha256 && e.anchor.id !== anchor.id && e.status !== 'DRAFT' && sameAddr(e.anchor.author, anchor.author))
       .reduce((min, e) => Math.min(min, e.anchor.created_at), anchor.created_at);
-    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && !c.lineage && c.created_at < firstSeen
-      && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
+    /**
+     * A declared parent is not retired by its own child (item 189) — an add-on writes over what it was built on —
+     * with one exception the publisher has to say out loud: `--kind update` is "this is my next version of that"
+     * (item 188), which is precisely a supersede, and it is refused on anybody else's knowledge.
+     */
+    const declaredUpdate = anchor.derivation?.kind === 'update'
+      ? new Set((anchor.derivation.bases ?? []).map((b) => b.patch_id))
+      : new Set<string>();
+    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && (!c.lineage || declaredUpdate.has(c.patch_id))
+      && c.created_at < firstSeen && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
   /**
@@ -1879,10 +1891,10 @@ export class Market {
     // it everywhere outside the verifier's own run. `putLicense` never downgrades a purchase into a verification copy.
     this.store.putLicense(anchor.id, anchor.patch_sha256, source, source === 'verification' ? 'fetched to verify it' : null);
     const have = this.blobs.get(anchor.patch_sha256);
-    if (have) {
-      this.log('info', 'blob', `fetched ${anchor.id} body from local blob store (already held, ${(have.size_bytes / 1e6).toFixed(1)} MB)`, anchor.id);
-      return have;
-    }
+    // Nothing was fetched, so there is nothing to report (item 130). The verifier calls this once per anchor per
+    // round; while the model server is down that is every 5 s, for ever, and the line said "fetched" about a file
+    // that never moved. A body that genuinely arrives over the wire is still logged, three lines below.
+    if (have) return have;
     const dest = this.blobs.pathFor(anchor.patch_sha256);
     const holders = this.p2p.holders(anchor.patch_sha256);
     const gw = (anchor as PatchAnchor & { gateway_url?: string }).gateway_url;
@@ -2262,7 +2274,7 @@ export class Market {
     // and raised its revenue — and on a free item they cost nothing at all. The only demand signal on the
     // marketplace could be manufactured by the one party with an interest in manufacturing it.
     const claimedBuyer = payload.scheme === 'local-credit' ? payload.from : undefined;
-    if (claimedBuyer && sameAddr(claimedBuyer, this.address)) return { error: `self_purchase: ${subject.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
+    if (claimedBuyer && sameAddr(claimedBuyer, this.address)) return { error: subject.selfBuy };
     const price = subject.price;
     let buyer = '';
     let txHash = '';
@@ -2332,7 +2344,7 @@ export class Market {
       // …and the person presenting it must be the person who paid: a public tx hash is not a bearer ticket.
       if (!payload.proof) return { error: `ain-transfer payload needs proof: sign sha256("x402-ain:<txHash>:<nonce>") with the paying key ${tr.from}` };
       if (!verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, tr.from)) return { error: `payment proof is not signed by the payer ${tr.from} — only the address that made the transfer can redeem it` };
-      if (sameAddr(tr.from, this.address)) return { error: `self_purchase: ${subject.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
+      if (sameAddr(tr.from, this.address)) return { error: subject.selfBuy };
       /*
        * Item 279 — a transfer below the price used to be answered with "transfer 0.1 below price 5" and nothing
        * else: the AIN stayed in the seller's wallet, no settlement existed, and the tx hash was still spendable by
