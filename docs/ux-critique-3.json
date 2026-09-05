@@ -172,7 +172,10 @@
      "user_cost": "The publisher who trained on node A and sells from their own node B either gives up or publishes a root without credit — precisely the outcome the royalty system exists to prevent. (Distinct from item 170: this is the same-ledger case, fixable by peering.)",
      "fix": "When a parent id is unknown, resolve it: query configured peers' `/api/patches/:id` (and the AIN ledger on `ain` nodes) and cache the anchor before validating; if still unknown, error with `parent {id} is not known to this node — add the node that sells it (\\`ainize peers add <url>\\`) or pass --parent-url`. Make `patch import` refuse instead of dropping the link unless `--drop-lineage` is passed.",
      "effort": "S",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "fixed": true,
+     "fixed_by": "d352f5b",
+     "fixed_note": "`createDraft` resolves an unknown parent instead of refusing it: it re-reads the ledger, then asks the peers this node already talks to for that id's records and ingests them (signature-checked like any other gossip). Only then is it an error — `unknown_parent`, naming which peers were asked, `ainize peers add <url>` as the remedy, and what publishing without the link would cost. `patch import` refuses to drop a lineage link instead of warning past it; `--drop-lineage` is the explicit way to import a root anyway."
     },
     {
      "n": 176,
@@ -308,7 +311,10 @@
      "user_cost": "A base creator has no way to say yes or no, and cannot spot a child that mislabels or mis-licenses their work (item 185) because they are never notified. Money and rights are attached to a declaration nobody checked.",
      "fix": "At publish with `--parents`, require the caller to hold the parent (purchased or authored) and apply the §6.4 licence rule (item 185). On ingest of an anchor whose `parents` include a local anchor, emit a `lineage` event (`{child} by {author} was published built on {parent}`) to the operator log, the parent's manage page and the notifications setting ('Everything — sales, verification results…'). Longer term, the design's `missing_dataset_parent` / `derivation` proof.",
      "effort": "M",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "bef7ed5",
+     "fixed_note": "`noticeLineageEvents` emits one `lineage` notice per child anchor naming a local one — who published it, at what price, whether that undercuts the base, and what share every sale of it pays — derived from the catalogue so it works on either ledger and by any route, written exactly once. No consent gate was added: the protocol has no way to refuse a declaration nobody needs your key to make, so the honest fix is that the base's creator hears about it immediately. Verified live: node-b published under node-a's base and node-a logged the warning."
     },
     {
      "n": 184,
@@ -391,7 +397,10 @@
      "user_cost": "The publisher who fixed three wrong answers in X cannot publish 'a correction to X' or 'X for 2026'; buyers see three unrelated 'Taught lesson' cards and cannot tell a version from a fork from a rival. The design's SC-8 outcome chooser and SC-9 tree are not present.",
      "fix": "Add an outcome selector to the sheet (`derivation.kind`: extend | contradict | track, with `update` only when the signer is the parent's teaching key) stored on the anchor; derive the child's `topic_path` and benchmark schema from the parent's instead of the model slug/random hex; cap Explore's topic chips (top 8 + 'more…') and group `taught/*` under the parent's topic; render each child chip with author, status, price and `+{m} questions`, and group children by kind; only write a supersede between two items when one is declared an `update` of the other (design PR L5).",
      "effort": "L",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "fixed": true,
+     "fixed_by": "77c6639",
+     "fixed_note": "`publish --kind extend|contradict|update|merge` records what a child IS to its bases, and the numbers under the claim are the node's: `measureDerivation` intersects the two address sets for added/changed rows, so a kind can only be declared on a base whose file is here, and `update` is refused on somebody else's knowledge. The family tree already renders edge kinds, so it reaches the page unchanged. Explore's subject filter collapses every `taught/<slug>-<hex>` into one chip (`?schema=taught/*`; a trailing `*` is a prefix on the catalogue filter) and caps the rest at 8 with \"+n more\". A child already inherits its parent's topic (item 189). NOT done, and deliberately: the child's benchmark SCHEMA is still not inherited — sharing a schema would let two sibling lessons supersede each other, which is what F15 avoids — and the publish sheet's outcome selector belongs to the teach-mode surface another workstream owns."
     },
     {
      "n": 189,
@@ -405,7 +414,10 @@
      "user_cost": "The child looks like a rival of its own base, lands outside the base's topic, is on course to retire the knowledge it credits, and the creator learns the money split only after the first sale.",
      "fix": "When `parents` is given: default `topic_path`/`branch` to the first parent's; in `conflicts()` skip pairs where one is the declared parent of the other (design §12.6, PR L0); never queue a supersede against a declared parent; record `parent_sha256` per parent; and have `publish` print `each sale of 3 CREDIT → 2.1 to you, 0.9 shared by the creators of krx-all-2761 (node-a)` before announcing (from `royaltySplit`).",
      "effort": "S",
-     "theme": "Licence, consent and the publish sheet"
+     "theme": "Licence, consent and the publish sheet",
+     "fixed": true,
+     "fixed_by": "2c7e664",
+     "fixed_note": "A child with no explicit --topic/--branch inherits its first parent's, so it lands as other knowledge on the base's subject. `conflicts()` marks a declared parent/child overlap `lineage`, `patch get` prints \"yes → its base, not a rival\" and `supersedable()` never queues one, so a child can no longer retire the knowledge it credits. GET /api/patches/:id carries `split` — what one sale pays and to whom, by name, from the same royaltyPlan that settles it — and `publish` prints it before the announce. Verified on a throwaway cluster: h-child inherited finance/hbase, the overlap reads as its base, and the ledger holds no supersede."
     },
     {
      "n": 190,
@@ -501,7 +513,10 @@
      "user_cost": "An author cannot see demand for their knowledge, cannot notice a child that mislabels or mis-licenses it, and cannot reconcile lineage income to the knowledge that earned it.",
      "fix": "On ingest of an anchor whose `parents` include a local anchor, emit the `lineage` event of item 183 and surface it in the operator log and the parent's manage page; add 'Built on {n}×' to the dashboard row and the public header; record `via: [ancestor ids]` on each royalty entry in `/api/me/wallet` (derivable from the anchor graph at settle time) and render 'earned from knowledge built on yours: {amount} ({n} sales)' per source knowledge in `wallet` and on the teacher page (design SC-18).",
      "effort": "M",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "bef7ed5",
+     "fixed_note": "The parent's node hears about a child the moment it arrives (`lineage`) and about the money when it sells (`royalty … earned 0.635 CREDIT from b-leaf2, sold by node-b — built on your h-root2`), with the ancestor of theirs that earned it resolved from the anchor graph. `derivativeEarnings()` answers \"what did I earn from derivatives of X\": GET /api/patches/:id carries `lineage.earned` and per-child `sales`/`earned`, rendered on the manage page and in `patch get`. Verified live end to end on a throwaway cluster."
     },
     {
      "n": 196,
@@ -566,7 +581,10 @@
      "user_cost": "The owner's second direction — 'what is doing well, what should I add on top' — has no data surface. A creator cannot learn that 32 people asked something krx got wrong, let alone what.",
      "fix": "Record a stable prompt key (sha256 of the normalised prompt) on every usage event and, with the SC-13 per-turn consent, the text; add a 'Live tests' section to the History tab (`849 tests · 32 misses on this node`) and a 'Missed questions' list with counts (text only when consented), each with 'Teach this on top'; expose it as `GET /api/patches/:id/signals` (design §12.5, PR L6).",
      "effort": "M",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "fa72de1",
+     "fixed_note": "Every usage event carries `question`: the keyed cluster of the prompt, the same key `bumpIssue` counts on — two people asking the same thing meet on it and nothing can turn it back into the text. The History tab prints this node's own live tests and misses over its 30-day window, scoped in words, and points at the open-questions list that may show wording somebody consented to share. Verified by test/chat.test.ts with the runtime faked in-process."
     },
     {
      "n": 200,
@@ -597,7 +615,10 @@
      "user_cost": "A creator choosing where to add value has one number, and it is the wrong one.",
      "fix": "Materialise `signals` per anchor (design §5.6: sales_30d, loads, built_on, misses) and expose them in `/api/catalog`; rename 'downloads' to 'sales' (it is settlements); add the two SC-17 sorts and a 'Being built on' shelf; add BUILT-ON and SALES-30D columns to `patch ls` and `agent catalog`.",
      "effort": "M",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "4df40ec",
+     "fixed_note": "`/api/catalog` carries `sales` — settlements someone else paid a real price for, all-time and over 30 days — and the card reads \"{n} sales ({r} in the last 30 days)\" instead of \"{n} downloads\"; `patch ls`'s SOLD column is real sales with the 30-day count beside it and gains a BUILT ON column. The two SC-17 sorts and the shelves already existed. `agent catalog`'s columns were left to the terminal-clients workstream that owns packages/agent."
     },
     {
      "n": 202,
@@ -824,7 +845,10 @@
      "user_cost": "A developer using tracks as the composition channel gets the oldest version's answers on 90 % of the rows the moment they subscribe to 'history', and after unsubscribing the 'latest' they still pin is partly the bare model until the watchdog happens to notice.",
      "fix": "In `subscribe`, before buying, run the overlap check between the track's bodies and `listApplied()`; refuse (`409 overlaps_loaded {pairs}`) unless `--replace` / `{replace:true}`, printing 'finance/KRX-history would override 241,992 rows of krx-all-2761 (loaded manually)'. Unsubscribe in reverse order inside one runtime lock and re-assert other applied patches afterwards. Show `reason` as a 'Loaded by' column on the dashboard and in `patch stack` (item 216); list the track's items with 1,2,3 badges on the card and in `branch ls`.",
      "effort": "M",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "fixed": true,
+     "fixed_by": "4457e5b",
+     "fixed_note": "Subscribing reports what the track would write over BEFORE anything is bought and refuses with 409 `overlaps_loaded` unless `--replace` / `{replace:true}`; a body already here is measured exactly, one the subscribe would buy is estimated from the anchors' published address sketches and says so, with no invented row count. Unsubscribe takes the whole track off in one runtime lock, in order, and re-asserts what is left. The reason a layer is loaded (by hand / by which track) is on the Dashboard stack line, and the track's items carry their load order in the subscribe sheet, `branch ls` and `branch quote`. Verified live for both the measured and the estimated refusal and for --replace; the runtime effect of the one-lock unsubscribe is deferred — no model is reachable today."
     },
     {
      "n": 215,
@@ -960,7 +984,10 @@
      "user_cost": "A visitor composing KRX-final + Pixelplus cannot tell whether ticking Pixelplus second breaks Samsung's code or whether ticking it first makes it pointless; they spend free tries probing or trust the bigger number.",
      "fix": "Extend `chatOverlaps()` to also intersect `benchmark.samples` by normalised prompt and report `{rows, questions_shared, questions_disagree}`; render one sentence per pair: 'Both answer {n} of the same questions ({d} differently) — with this order {winner}'s answers are used', keeping the entry count in the tooltip.",
      "effort": "M",
-     "theme": "Stacking in the live test"
+     "theme": "Stacking in the live test",
+     "fixed": true,
+     "fixed_by": "70b6a18",
+     "fixed_note": "`chatOverlaps` also intersects the benchmark samples on the parser's question key and reports `questions_shared` / `questions_disagree`; the picker prints \"They answer 4 of the same questions and disagree on 1 — in this order #2's answers are used\", or \"and agree on every one\". A pair that shares questions while touching different rows is reported too — it used to be invisible, and it is exactly the pair a visitor cannot probe without spending free tries. Verified live: h-rival vs h-child came back rows 0, questions_shared 2, questions_disagree 1."
     },
     {
      "n": 223,
@@ -1167,7 +1194,10 @@
      "user_cost": "An agent that routes by context can be sent to a node serving the wrong track, a stale version, a rejected bake, or nothing at all, and has no field to check before sending traffic; 'freshness=daily' is decoration.",
      "fix": "Return `{ branch, matched, unmatched, candidates, current_patch_id, nodes: [{…, applied: [ids], current: bool}], stale_nodes }`; require every query key to match unless `?partial=1`; include `applied` in PeerInfo/`selfInfo`; in the CLI print 'matched market=KRX; version not specified — 2 tracks match, showing finance/KRX-latest' and mark stale nodes.",
      "effort": "M",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "d8e61a3",
+     "fixed_note": "Every attribute must match or `/api/route` refuses and names the closest tracks and what they do not answer; `--partial` / `?partial=1` asks anyway. The answer carries matched / unmatched / candidates / ambiguous / current, ties resolve deterministically, and `PeerInfo.applied` (what a node has LOADED) makes every routed node either \"serving the whole track\" or \"missing <ids>\", with `stale_nodes` beside them. The CLI and /network render all of it. Verified live: after node-c subscribed without loading, `route market=OVL` printed `missing b-overlapper` and the warning."
     },
     {
      "n": 235,
@@ -1406,7 +1436,10 @@
      "user_cost": "The publisher cannot make 'today replaces yesterday' true on purpose, learns which items got retired only from `logs --kind publish` after verification, and cannot keep a dated snapshot listed.",
      "fix": "Add `publish --replaces <id>[,<id>]` (and a 'Replaces' picker on /new-patch) that stores `pending_supersede` for exactly those ids, plus `--no-auto-supersede`; at announce print `when verified, this retires: krx-codes-2026-09-01 (2,992 shared rows)` and include `pending_supersedes` in the JSON; document the rule in /docs.",
      "effort": "M",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "36a02d9",
+     "fixed_note": "`--supersede <id>` now DECLARES a replacement as well as confirming a detected one — the node checks the id is yours, still on sale, older than what you are publishing and not a base this one was built on — so \"today replaces yesterday\" is true on purpose even when the rows do not overlap. `--keep-others` retires nothing, whatever overlaps. The announce prints what will go, POST /api/patches/:id/announce answers with the same `retires` list, and the rule itself is written out in the daily-publishing guide in EN and KO. Verified live: a declared supersede with 0 shared rows retired the older version, and --keep-others left both LISTED."
     },
     {
      "n": 249,
@@ -1454,7 +1487,10 @@
      "user_cost": "The one log level the operator would alert on fills with the expected daily outcome, so the genuine warnings (node-c FAILED your knowledge) are buried.",
      "fix": "Downgrade to `info` (wording `your krx-codes-2026-09-03 replaces krx-codes-2026-09-01`) when `newer.author === this.address && sameBranch`; keep `warn` for supersedes by other authors.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "be1bb5c",
+     "fixed_note": "`noticeOwnEvents` checks who published the newer anchor: your own replacement on your own branch is `info` and reads like it (\"your h-root2-v2 replaces h-root2\"), a supersede by anyone else stays `warn` and now names them. Verified on a throwaway cluster with a same-author v2."
     },
     {
      "n": 252,
@@ -1502,7 +1538,10 @@
      "user_cost": "A morning script that waits for LISTED cannot tell 'nobody picked it up' from 'almost done'.",
      "fix": "Let verifiers write a lightweight `verify_started` event (or include `in_progress: n` from local verifier state on the author node) and show `verifying (2 of 2 verifiers running, ~4 min)` in `patch ls`, the card and the page.",
      "effort": "M",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "4df40ec",
+     "fixed_note": "`verificationProgress` reports what is still to happen before an item is LISTED: who has not attested, how many of those serve this knowledge's model, and how long verification has actually taken on this node before (the median of what happened, null on a node that has listed nothing). It is on GET /api/patches/:id and on every catalogue row, and `patch get` prints it in the minutes before the stall warning takes over. Deviation: no `verify_started` ledger record — that write belongs to verifier.ts, which another workstream owns, and everything the finding asks for is derivable on the author's node without it. Verified live on a freshly announced anchor."
     },
     {
      "n": 255,
@@ -1756,7 +1795,10 @@
      "user_cost": "The one page that is supposed to sell 'subscribe to a track' reads as a test log; a real daily track is one row among dozens of junk rows; and a JSON consumer sees a child the product hides everywhere else.",
      "fix": "Add `visibility?: 'public'|'test'` and `archived?: boolean` to BranchInfo (owner-only update via a new branch record); hide test/archived tracks from /network, `/api/branches` (unless `include_test`) and `route()`; make the e2e suite create tracks with visibility test. Apply `relativeVisible` to `children` in `/api/catalog` as well.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "ed020c7",
+     "fixed_note": "BranchInfo gained `visibility: 'public'|'test'` and `archived`, owner-only and carried through every update; `GET /api/branches`, `branch ls` and `route()` hide both by default (`?include_test=1` / `--all` still show them). `ainize branch create --test` and `branch archive|unarchive <name>` are the two doors — the record and the subscribers stay, the shelf changes. `/api/catalog` runs `children` through the same `relativeVisible` as the detail route, so a hidden test anchor is no longer leaked as a child. The node half of this landed inside fa2ab45, a concurrent workflow's commit that staged market.ts and api.ts while the change was in the tree. Verified live on all four points."
     }
    ]
   }

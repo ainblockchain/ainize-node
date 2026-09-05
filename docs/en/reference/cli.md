@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 29 top-level commands, 89 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 29 top-level commands, 91 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -611,13 +611,14 @@ Register a .npz patch body as a draft — it stays a DRAFT until --announce (`ai
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
-- **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`) — how buyers are charged (default: per_download)
+- **`--billing`** (`"per_download"`) — how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)
 - **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
 - **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap
 - **`--keep-others`** (`boolean`, default `false`) — with --announce: retire nothing — every overlapping listing of yours stays on sale
+- **`--kind`** (`"extend" | "contradict" | "update" | "merge"`) — what this is to --parents: extend (adds answers on top) · contradict (disagrees with some of theirs) · update (your own next version) · merge. Needs the base's file on this node, which is how the row counts are measured
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
 - **`--announce`** (`boolean`, default `false`) — announce to the network immediately — the permanent record, and the one step with no undo (default here: no. `ainize publish` announces by default)
@@ -1078,13 +1079,14 @@ One line to sell knowledge: register a .npz + benchmark and announce it at once 
 - **`--branch`** (`string`) — knowledge track to publish it on (see `ainize branch ls`)
 - **`--topic`** (`string`) — ain-js knowledge topic path (e.g. finance/krx); default: patches/\<model>
 - **`--license`** (`string`) — licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record
-- **`--billing`** (`"per_download" | "per_apply_hour" | "per_hit"`) — how buyers are charged (default: per_download)
+- **`--billing`** (`"per_download"`) — how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)
 - **`--contributor`** (`string[]`) — data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
 - **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap
 - **`--keep-others`** (`boolean`, default `false`) — with --announce: retire nothing — every overlapping listing of yours stays on sale
+- **`--kind`** (`"extend" | "contradict" | "update" | "merge"`) — what this is to --parents: extend (adds answers on top) · contradict (disagrees with some of theirs) · update (your own next version) · merge. Needs the base's file on this node, which is how the row counts are measured
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
 - **`--announce`** (`boolean`, default `true`) — announce immediately — the permanent record, and the one step with no undo (--no-announce keeps a draft, which is what `ainize patch publish` does by default)
@@ -1562,6 +1564,7 @@ Knowledge branches (parallel, possibly contradictory patch sets)
 - `ainize branch create` — Create a branch
 - `ainize branch archive` — Take a track of yours off /network, the router and `branch ls` (the record and its subscribers stay)
 - `ainize branch unarchive` — Put an archived track back on the lists
+- `ainize branch terms` — What following your track costs, per period (the curation fee)
 - `ainize branch add` — Add knowledge to a track you own (verified knowledge only)
 - `ainize branch quote` — What subscribing to this track would spend, item by item, before anything is spent
 - `ainize branch subscribe` — Subscribe this node: buy the track's current knowledge, load it, and keep it up to date
@@ -1636,6 +1639,33 @@ Put an archived track back on the lists
 **Arguments**
 
 - **`<name>`** (`string`, required)
+
+### `ainize branch terms`
+
+```bash
+ainize branch terms <name> [options]
+```
+
+What following your track costs, per period (the curation fee)
+
+**Arguments**
+
+- **`<name>`** (`string`, required) — a track you own
+
+**Options**
+
+- **`--price`** (`string`) — the fee per period in this node's currency ("0" = free to follow)
+- **`--period-days`** (`number`) — how many days one payment covers (default 30)
+- **`--clear`** (`boolean`, default `false`) — remove the fee — the track becomes free to follow again
+
+**Examples**
+
+```bash
+# 5 a month for curating it; the knowledge on it is still bought from its publishers
+ainize branch terms law/KR --price 5 --period-days 30
+# free to follow again
+ainize branch terms law/KR --clear
+```
 
 ### `ainize branch add`
 
@@ -1764,10 +1794,50 @@ ainize route market=KRX freshness=daily --partial
 ## `ainize wallet`
 
 ```bash
-ainize wallet
+ainize wallet <subcommand>
 ```
 
 Balance, sales, royalties and pending payouts of this node
+
+**Subcommands**
+
+- `ainize wallet show` — Balance, sales, royalties and pending payouts
+- `ainize wallet send` — Send AIN from this node's wallet to another address
+
+### `ainize wallet show`
+
+```bash
+ainize wallet show
+```
+
+Balance, sales, royalties and pending payouts
+
+This is the default subcommand: `ainize wallet` runs it without naming `show`.
+
+### `ainize wallet send`
+
+```bash
+ainize wallet send <address> <amount> [options]
+```
+
+Send AIN from this node's wallet to another address
+
+**Arguments**
+
+- **`<address>`** (`string`, required) — where the money goes (0x… AIN address)
+- **`<amount>`** (`number`, required) — how much, in AIN
+
+**Options**
+
+- **`--memo`** (`string`) — a note for this node's own log (it does not travel with the transfer)
+- **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation
+
+**Examples**
+
+```bash
+# move 25 AIN of earnings to your own wallet
+ainize wallet send 0xabc… 25
+```
 
 ## `ainize purchases`
 

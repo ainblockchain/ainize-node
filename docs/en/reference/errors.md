@@ -9,7 +9,7 @@ summary: The error envelope, and every machine-readable code a node can answer w
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-What an error body looks like, how a thrown error becomes an HTTP status, and the 58 codes a client can match on.
+What an error body looks like, how a thrown error becomes an HTTP status, and the 59 codes a client can match on.
 
 ## The error envelope
 
@@ -36,7 +36,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Codes
 
-58 codes are raised by name, in 116 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
+59 codes are raised by name, in 117 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
 
 | Code | HTTP | What it means | Raised in |
 |---|---|---|---|
@@ -143,6 +143,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `row_not_found` | `404` | none of those lines are refused rows of this dataset | `packages/node/src/teach-datasets.ts` |
 | `setup_local_only` | `403` | this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its NGRAM_HOME/setup-token as the x-setup-token header | `packages/node/src/api.ts` |
 | `subscription_incomplete` | `409` | \<failed.length> of … item(s) could not be acquired, so \<branch> was NOT subscribed to and this node is not advertised as serving it. …… | `packages/node/src/market.ts` |
+| `subscription_unpaid` | `402` | … | `packages/node/src/market.ts` |
 | `teaching_disabled` | `403` | this node does not accept lessons | `packages/node/src/teach.ts` |
 | `teaching_disabled` | `503` | the teach worker is not running on this node | `packages/node/src/api.ts` |
 | `tier_not_allowed` | `400` | … | `packages/node/src/teach.ts` |
@@ -159,9 +160,9 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Messages without a code
 
-Not every error carries a code. 39 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
+Not every error carries a code. 42 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
-A further 26 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
+A further 27 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
 | HTTP | Message | Raised in |
 |---|---|---|
@@ -191,9 +192,12 @@ A further 26 throw sites build their message at the time (a validator's own word
 | `402` | payment required: buy the patch via /x402/patch/:id (its author, a buyer holding a download token, and a verifier while it is being verified can fetch it) | `packages/node/src/api.ts` |
 | `403` | only the branch owner can add patches | `packages/node/src/market.ts` |
 | `403` | only the owner of \<name> (\<b.owner>) can archive it | `packages/node/src/market.ts` |
+| `403` | only the owner of \<name> (\<b.owner>) can set what it costs | `packages/node/src/market.ts` |
 | `403` | this payout is owed to a different address | `packages/node/src/payouts.ts` |
 | `404` | patch not found | `packages/node/src/api.ts` |
 | `404` | payout \<id> not found | `packages/node/src/payouts.ts` |
+| `409` | \<name> is curated by \<b.owner>, not by this node | `packages/node/src/api.ts` |
+| `409` | \<name> is free to follow: it has no curation fee | `packages/node/src/api.ts` |
 | `409` | not sold here; gateway is … | `packages/node/src/api.ts` |
 | `409` | operator password already set | `packages/node/src/api.ts` |
 | `409` | patch body not present on this node | `packages/node/src/api.ts` |

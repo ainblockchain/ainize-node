@@ -427,7 +427,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-15-node-d-chain.txt ('applied order on node-d: [grandchild, child, parent]' with reason `subscription:chain/pixel`); chain-buy-human-26-buyer-d-dashboard-en-1280.png ('In model: yes' ×3, no order).",
      "user_cost": "A buyer pays for three knowledges and can get the behaviour of the base alone; nothing on any screen hints at it, and a runtime restart can reshuffle it again. Because today's children contain their base's rows, 'parent last' really does overwrite the child's values.",
      "fix": "Order applies by lineage depth (ancestors first) in `subscribe`, in `buy({apply})` and in the watchdog (sort `listApplied()` by depth, or by `base.stack` when present); store `position` on the applied row; show 'Loaded in order: pixel-parent → pixel-child' on the Dashboard and in `ainize status`; refuse `removePatch` of a parent while a child is applied.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "5dfbcb9",
+     "fixed_note": "`resolveStack` orders by declared lineage as well as by `base.stack`: `orderByLineage` is a stable topological pass over the parents of the knowledges actually being loaded, so a family bought newest-first is loaded oldest-first. Nothing is fetched that was not asked for, two independent bases keep the caller's order, and a cycle leaves the order untouched. Every loader goes through it (`patch apply`, `use --bundle`, `branch subscribe`, the watchdog's re-assert). Covered by test/lineage-order.test.ts (5 cases, no model). The 'Loaded in order' line was already on the Dashboard and in `ainize status`, and `removePatch` already refuses to pull a base out from under a loaded add-on."
     },
     {
      "n": 282,
@@ -1023,7 +1026,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-01-publish-chain.txt (u-cheap at 0.5 under a 10-credit parent, LISTED) and -02 (its sale paid the grandparent 0.15); seller-royalties-anc-09-new-patch-form-en-1280.png.",
      "user_cost": "The parent's price is undercut by its own child and their per-sale take drops from 10 to 0.15, discovered only if they happen to open their own knowledge's lineage list. Nothing makes sharing a base safer than hoarding it.",
      "fix": "At draft and publish show the parents' prices and the computed net ('parent g-root sells at 10; at 0.5 you keep 0.35 and g-root's creator gets 0.15') and warn when the price is below the base's; let an anchor carry an optional `derivative_floor` verifiers enforce on children; emit a `derived` event on the parent author's node when a child naming their knowledge is ingested, and list children with their prices on the ancestor's manage page.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "2c7e664",
+     "fixed_note": "The publish path prints every parent's price and the computed split before the announce, and warns when the listing is cheaper than a base whose rows it carries (\"1 CREDIT is below h-root2's own price of 4 — its creator's take drops from 4 to a royalty slice\"). The notice half landed in bef7ed5: the ancestor's node logs a `lineage` warning naming the child, its author and its price the moment the anchor arrives, and the manage page lists children with price, author, sales and what they have paid. No `derivative_floor` was added — a floor a verifier enforces would need a network rule change, and the finding's own user cost is answered by telling both sides."
     },
     {
      "n": 319,
@@ -1036,7 +1042,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-03-who-sees-what.txt (node-c's events after four royalty-bearing settles: only p2p push lines); grep for `notifications` across packages/node/src and packages/web/src.",
      "user_cost": "The signal that should make a creator publish more — 'someone built on this and it paid' — never fires, and the setting that promises it is decorative.",
      "fix": "On ingest of a settle where `royalty[me] > 0` (case-insensitive) emit `info royalty 'earned 3 CREDIT from c-leaf (sold by node-a)'`; on ingest of an anchor naming my knowledge as a parent emit `info derived`; filter the feed by the notifications setting and badge My knowledge — or remove the setting until it does something.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "bef7ed5",
+     "fixed_note": "A settle whose royalty map names this node emits an `info royalty` event with the amount, the child, the seller and the ancestor it was earned through. The `notifications` setting is read at last: `all` = every derived notice, `sales` = money and anything that stops money (challenge, FAIL, supersede, byte copy), `none` = nothing — and a suppressed notice is never marked seen, so turning it back on delivers it. Verified live: with `sales`, a new child produced no notice; switching to `all` delivered it."
     },
     {
      "n": 320,
