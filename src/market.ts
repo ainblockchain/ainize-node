@@ -844,8 +844,7 @@ export class Market {
     await this.refuseDuplicateBody(blob.sha256, benchmark.schema, input.branch, !!input.force);
     await this.refuseUnservableModel(input.model?.id_M, !!input.force);
     const parents = (input.parents ?? []).filter(Boolean);
-    const map = await this.entryMap();
-    for (const p of parents) if (!map.has(p)) throw badInput(`unknown parent patch: ${p}`);
+    const map = await this.resolveParents(parents);
     const anchor: PatchAnchor = {
       id, name: input.name, description: input.description ?? '', author: this.address, author_name: this.cfg.name,
       model: { row_dim: blob.row_dim, ...input.model } as PatchAnchor['model'],
@@ -880,6 +879,60 @@ export class Market {
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
     return anchor;
+  }
+
+  /**
+   * Every parent of a draft, resolved — not merely looked up (item 175).
+   *
+   * `createDraft` used to answer `unknown parent patch: pixel-base` and stop, because the id was not yet in THIS
+   * node's entry map. A publisher who trained on someone else's knowledge and sells from their own node therefore
+   * had to guess that the seller must first be a peer; the alternative they took was publishing a root with no
+   * credit, which is exactly what the royalty system exists to prevent. So before refusing: re-read the ledger
+   * (another node may have written the anchor seconds ago), then ask the peers this node already talks to for the
+   * records of that id and ingest them — signature-checked by `ledger.ingest` like any other gossiped record. Only
+   * when that finds nothing is it an error, and the error names the remedy.
+   */
+  private async resolveParents(parents: string[]): Promise<Map<string, CatalogEntry>> {
+    let map = await this.entryMap();
+    let missing = parents.filter((p) => !map.has(p));
+    if (!missing.length) return map;
+    await this.refreshLedger().catch(() => undefined);
+    map = await this.entryMap();
+    missing = parents.filter((p) => !map.has(p));
+    if (!missing.length) return map;
+    const tried: string[] = [];
+    for (const id of [...missing]) {
+      for (const peer of this.store.listPeers()) {
+        if (!peer.endpoint) continue;
+        if (!tried.includes(peer.endpoint)) tried.push(peer.endpoint);
+        const got = await this.pullAnchorFrom(peer.endpoint, id);
+        if (!got) continue;
+        this.invalidate();
+        map = await this.entryMap();
+        if (map.has(id)) { this.log('info', 'patch', `parent ${id} was not on this node — fetched its record from ${peer.endpoint}`, id, { from: peer.endpoint }); break; }
+      }
+    }
+    missing = parents.filter((p) => !map.has(p));
+    if (!missing.length) return map;
+    const where = tried.length ? ` This node asked ${tried.join(', ')} and none of them has it.` : ' This node has no peers, so it has never seen anything published elsewhere.';
+    throw badInput(
+      `unknown_parent: ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not known to this node, so nothing here can record it as a base.${where} Add the node that sells it and try again: \`ainize peers add <its url>\` (the anchor arrives within a gossip round, ~10 s). Publishing without the link would list this as a new root, with no credit and no royalty to its creator.`,
+      { code: 'unknown_parent', missing, peers_tried: tried },
+    );
+  }
+
+  /** Ask one peer for the ledger records of `id` and ingest the anchor among them. True when something was accepted. */
+  private async pullAnchorFrom(endpoint: string, id: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${endpoint.replace(/\/+$/, '')}/api/patches/${encodeURIComponent(id)}/records`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return false;
+      const body = await res.json() as { records?: LedgerRecord[] };
+      let added = false;
+      for (const rec of body.records ?? []) {
+        try { if (await this.ledger.ingest(rec)) added = true; } catch { /* a record this ledger will not take is not an error of the publish */ }
+      }
+      return added;
+    } catch { return false; }
   }
 
   /**
@@ -1378,9 +1431,12 @@ export class Market {
    */
   async mayDownload(sha: string, address: string | null, token?: string): Promise<boolean> {
     if (token && this.store.checkToken(token, sha)) return true;
-    if (!address) return false;
     const cat = await this.catalogAll();
     const entries = cat.filter((e) => e.anchor.patch_sha256 === sha);
+    // A listing priced at 0 is free to fetch (item 277): the gate hands its manifest to anyone, so demanding a
+    // signature here would only mean the free path worked for nobody without a wallet.
+    if (entries.some((e) => e.sellable && Number(e.anchor.price || 0) === 0)) return true;
+    if (!address) return false;
     if (entries.some((e) => sameAddr(e.anchor.author, address))) return true;
     if (entries.some((e) => e.settlements.some((s) => sameAddr(s.buyer, address)))) return true;
     return (await this.verificationLease(sha, address, entries)).ok;
@@ -1739,15 +1795,39 @@ export class Market {
   /** The gated content: a manifest (text) whose sha256 is what ain-js verifies against the on-chain content_hash. */
   issueManifest(entry: CatalogEntry, buyer: string): PatchManifest {
     const token = randomBytes(24).toString('hex');
-    this.store.putToken(token, entry.anchor.patch_sha256, buyer, 24 * 3600_000);
+    this.store.putToken(token, entry.anchor.patch_sha256, buyer, 24 * 3600_000, entry.anchor.id);
+    return { ...this.manifestFacts(entry), issued_to: buyer, issued_at: Date.now(), download_token: token };
+  }
+
+  /** The facts half of a manifest — everything except who it was issued to and the token that lets them fetch it. */
+  private manifestFacts(entry: CatalogEntry): Omit<PatchManifest, 'issued_to' | 'issued_at' | 'download_token'> {
     const holders = this.p2p ? this.p2p.holders(entry.anchor.patch_sha256) : [];
     return {
       id: entry.anchor.id, patch_sha256: entry.anchor.patch_sha256, size_bytes: entry.anchor.size_bytes, rows: entry.anchor.rows,
       model: entry.anchor.model, benchmark_hash: entry.anchor.benchmark_hash,
       blob_urls: [`${this.publicUrl}/p2p/blob/${entry.anchor.patch_sha256}`, ...holders.map((h) => `${h}/p2p/blob/${entry.anchor.patch_sha256}`)],
-      issued_to: buyer, issued_at: Date.now(), download_token: token,
     };
   }
+
+  /**
+   * Hand over a knowledge priced at 0 (item 277).
+   *
+   * The gate answered 402 whatever the price: a free lesson needed a funded identity, a signed intent and a settle
+   * record naming the taker on every peer's ledger — the cheapest on-ramp in the product (take a free lesson, try
+   * it, build on it) was the one with a permanent public cost, and 74 of node-u's 136 lessons are priced 0. Free
+   * means free: no nonce, no signature, no settlement, no name, and no token — `mayDownload` admits the body of a
+   * free listing to anyone, so there is nothing to bind a bearer ticket to. It is counted here, on the seller's own
+   * node, as what it is: a download, not a sale.
+   */
+  freeManifest(entry: CatalogEntry): PatchManifest {
+    const total = this.store.bumpFreeDownload(entry.anchor.id);
+    this.log('info', 'trade', `handed over ${entry.anchor.id} free — price 0, so nothing was charged and no sale was recorded (${total} free download${total === 1 ? '' : 's'} so far)`, entry.anchor.id, { free_downloads: total });
+    this.invalidate();
+    return { ...this.manifestFacts(entry), issued_to: '', issued_at: Date.now(), download_token: '' };
+  }
+
+  /** Free hand-overs of this node's own knowledge (item 277) — the count that replaces the 0-value sale. */
+  freeDownloads(patchId?: string): { patch_id: string; count: number; last_at: number }[] { return this.store.freeDownloads(patchId); }
 
   /**
    * Why an announced knowledge is still not verified (item 154, second half).
