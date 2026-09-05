@@ -499,6 +499,10 @@ export function buildApi(deps: ApiDeps): Router {
     // SC-17 card lines: how often this knowledge was built on, and what a buyer has to load with it
     const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
+      // Item 269: `children` came straight off the derived entry, so `/api/catalog` listed a hidden test anchor —
+      // and a private draft — as a child of a public knowledge, while `/api/patches/:id` and every page hid it. The
+      // same rule that governs the detail route governs the list.
+      children: e.children.filter((c) => relativeVisible(req, e)(map.get(c))),
       built_on: built.get(e.anchor.id) ?? 0,
       requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
       matched: needle ? matchedSample(e, needle) : undefined,
@@ -829,8 +833,11 @@ export function buildApi(deps: ApiDeps): Router {
     return { nodes, edges, chain };
   }));
 
-  router.get('/api/branches', wrap(async () => {
-    const branches = await market.branches();
+  router.get('/api/branches', wrap(async (req) => {
+    // Item 269: fixtures and archived tracks are hidden by default. `?include_test=1` / `?include_archived=1` is how
+    // the owner's own screens (and the e2e suite) still see everything they wrote.
+    const q = z.object({ include_test: z.coerce.boolean().default(false), include_archived: z.coerce.boolean().default(false) }).parse(req.query);
+    const branches = await market.branches({ includeTest: q.include_test && isOperator(req), includeArchived: q.include_archived });
     const subs = await market.ledger.subscriptions();
     const nodes = await market.knownNodes();
     return { branches: await Promise.all(branches.map(async (b) => {
@@ -898,19 +905,22 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/me/patches', requireOperator, wrap(async () => ({ items: (await market.catalogAll()).filter((e) => e.anchor.author === market.address) })));
   router.get('/api/me/purchases', requireOperator, wrap(async () => {
     const map = await market.entryMap();
-    return { items: market.store.listPurchases().map((p) => {
+    return { items: await Promise.all(market.store.listPurchases().map(async (p) => {
       const e = map.get(p.patch_id) ?? null;
       // item 346: what has happened TO this knowledge since the money moved. The buyer used to be the only party
       // with no signal at all — the seller was told about a challenge, a FAIL and a supersede, and the person
       // serving the answers was not.
       return {
         ...p, entry: e, applied: market.isApplied(p.patch_id),
+        // Item 280: who this purchase paid, by name — the split has been on the settle record all along and the
+        // buyer's own screens showed a tx hash. Item 362: and whether a track bought it rather than the operator.
+        payees: e ? await market.namePayees(e, p.royalty ?? undefined, p.amount) ?? [] : [],
         challenged: e?.open_challenge ?? null,
         failed_verifications: (e?.attestations ?? []).filter((a) => !a.passed).map((a) => ({ verifier: a.verifier, verifier_name: a.verifier_name ?? null, score: a.score, created_at: a.created_at })),
         superseded_by: e?.superseded_by ?? [],
         disputes: e ? market.disputesFor(e.anchor.id).length : 0,
       };
-    }) };
+    })) };
   }));
   /**
    * The wallet. Its royalty lines used to be the SELLER's promise reported as money received (item 311): a settle
@@ -1223,8 +1233,17 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.post('/api/branches', requireOperator, wrap(async (req) => {
-    const b = z.object({ name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]) }).parse(req.body);
-    return { branch: await market.createBranch(b.name, b.description, b.context, b.patch_ids) };
+    const b = z.object({
+      name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]),
+      // item 269: a fixture track says so when it is created, and is on no public list from then on
+      visibility: z.enum(['public', 'test']).optional(), archived: z.boolean().optional(),
+    }).parse(req.body);
+    return { branch: await market.createBranch(b.name, b.description, b.context, b.patch_ids, { visibility: b.visibility, archived: b.archived }) };
+  }));
+  /** Item 269 — the owner is done with a track: it comes off /network, off the router and out of `branch ls`. */
+  router.post('/api/branches/:name/archive', requireOperator, wrap(async (req) => {
+    const { archived } = z.object({ archived: z.boolean().default(true) }).parse(req.body ?? {});
+    return { branch: await market.archiveBranch(decodeURIComponent(req.params.name as string), archived) };
   }));
   router.post('/api/branches/:name/patches', requireOperator, wrap(async (req) => {
     const { patch_id, force } = z.object({ patch_id: z.string().min(1), force: z.boolean().optional() }).parse(req.body ?? {});

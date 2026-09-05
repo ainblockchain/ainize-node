@@ -142,3 +142,37 @@ test('194 an entry reports what buyers paid AND what its author kept', async () 
   const setts = await A.ledger.settlements(PAID_ID);
   assert.equal(Object.values(setts[0].body.royalty).reduce((n, x) => n + Number(x), 0), 4, 'the split adds up to the price');
 });
+
+// ---------------------------------------------------------------- item 280: the receipt names who was paid
+test('280 the buyer is handed the split the seller recorded, by name and role', async () => {
+  // a base sold by A, an add-on sold by B on top of it: the child's sale pays A as well
+  const baseFile = synthPatch(join(tmp, 'synth'), 'money-base', 31, 300);
+  const childFile = synthPatch(join(tmp, 'synth'), 'money-child', 32, 200, baseFile);
+  const base = await A.market.createDraft({ id: 'money-base', name: 'Base', model: { id_M: 'M' }, benchmark: bench('money/base'), price: '4', file: baseFile, keepInPlace: true });
+  await A.market.announce('money-base');
+  await waitFor(() => B.market.catalog(true), (c) => !!c.find((e) => e.anchor.id === 'money-base'));
+  await B.market.createDraft({
+    id: 'money-child', name: 'Child', model: { id_M: 'M' }, benchmark: bench('money/child'), price: '10', file: childFile, keepInPlace: true, parents: ['money-base'],
+  });
+  await B.market.announce('money-child');
+  await waitFor(() => C.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'money-child')?.quorum_ok === true);
+
+  const res = await C.market.buy('money-child');
+  assert.ok(res.royalty && Object.keys(res.royalty).length > 1, 'the seller returns the whole split, not just a tx hash');
+  const payees = res.payees ?? [];
+  assert.ok(payees.length > 1, 'and the receipt names every one of them');
+  const seller = payees.find((p) => p.role === 'seller');
+  // A published the base AND verified the child, so one royalty line is both: the receipt says so rather than
+  // labelling a lineage share "verifier".
+  const ancestor = payees.find((p) => p.knowledge.includes('money-base'));
+  assert.ok(seller && Number(seller.amount) > 0, 'the seller is named as the seller');
+  assert.ok(ancestor && Number(ancestor.amount) > 0, "the base's author is named, with what they were paid");
+  assert.equal(ancestor!.role, 'ancestor and verifier');
+  assert.deepEqual(ancestor!.knowledge, ['money-base'], 'and WHICH knowledge they are being paid for');
+  assert.ok(payees.every((p) => p.promised), "every payee was in the buyer's own lineage preview");
+  assert.equal(Math.round(payees.reduce((n, p) => n + Number(p.amount), 0) * 1e6) / 1e6, 10, 'and the split adds up to what was paid');
+  // it survives on the purchase row, which is what the dashboard reads
+  assert.deepEqual(C.market.store.getPurchase('money-child')?.royalty, res.royalty);
+  assert.ok(res.steps.some((s) => s.step === 'paid' && s.detail.includes('ancestor')), 'the timeline says it too');
+  assert.equal(base.price, '4');
+});

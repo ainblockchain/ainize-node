@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import {
   AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, DISPUTE_MAX_REASON, DISPUTE_MIN_REASON, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
-  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, ainPaymentDigest, transferKeyFor, type X402Required,
+  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord,
@@ -278,6 +278,14 @@ export interface PurchaseResult {
   currency?: string;
   /** true when nothing was charged: the payment was already settled and the seller re-issued the manifest (item 273). */
   redeemed?: boolean;
+  /**
+   * Who this purchase actually paid, as the SELLER reported it in `x-payment-response` (item 280): address →
+   * amount, the same map that goes onto the settle record. `payees` is the same thing with names and roles
+   * resolved against this node's own catalogue, and `promised` marks a payee the buyer's own lineage preview
+   * expected — so "revenue is split automatically with the original creators" can be checked, not just believed.
+   */
+  royalty?: Record<string, string>;
+  payees?: { address: string; amount: string; name: string | null; role: string; knowledge: string[]; promised: boolean }[];
 }
 
 /**
@@ -2317,6 +2325,7 @@ export class Market {
     let amount = entry.anchor.price;
     let scheme = 'free';
     let redeemed = false;
+    let royalty: Record<string, string> | undefined;      // the split the seller reports (item 280)
 
     // A payment that already left this node and was never answered is finished first — never paid twice.
     const owed = this.store.listPending({ patch_id: patchId, status: ['paid'] })[0];
@@ -2327,7 +2336,7 @@ export class Market {
         manifest = done.manifest; txHash = done.txHash || owed.tx_hash || ''; amount = owed.amount; scheme = owed.scheme; redeemed = true;
         this.store.updatePending(owed.id, { status: 'settled', error: null });
         step('settled', `seller re-issued the manifest against the payment already made — nothing was charged again`);
-        return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step });
+        return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty: done.royalty });
       }
     }
 
@@ -2384,6 +2393,7 @@ export class Market {
       manifest = done.manifest;
       txHash = done.txHash || payload.txHash;
       amount = req.maxAmountRequired; scheme = req.scheme;
+      royalty = done.royalty;
       this.store.updatePending(pending.id, { status: 'settled', error: null });
       step('settled', `seller confirmed; manifest sha256 ${done.sha.slice(0, 14)}…`);
     } else if (r1.ok) {
@@ -2395,19 +2405,27 @@ export class Market {
     } else {
       throw new Error(`gateway error ${r1.status} from ${gw}: ${(await r1.text().catch(() => '')).slice(0, 200)}`);
     }
-    return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step });
+    return await this.finishPurchase(entry, manifest, { txHash, amount, scheme, redeemed, step, royalty });
   }
 
   /** Present an X-PAYMENT to a gateway and parse the manifest it answers with. */
-  private async presentPayment(gw: string, encoded: string): Promise<{ manifest: PatchManifest; txHash: string; sha: string }> {
+  private async presentPayment(gw: string, encoded: string): Promise<{ manifest: PatchManifest; txHash: string; sha: string; royalty?: Record<string, string> }> {
     const r = await fetch(gw, { headers: { [X402_HEADER_PAYMENT]: encoded, 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
     if (!r.ok) throw new Error(`payment rejected: ${r.status} ${(await r.text()).slice(0, 300)}`);
     const text = await r.text();
-    return { manifest: JSON.parse(text) as PatchManifest, txHash: r.headers.get('x-payment-tx-hash') ?? '', sha: sha256Hex(text) };
+    // The seller has been returning the whole split in this header since the beginning and the buyer threw it away,
+    // keeping only the tx hash (item 280): the one promise the product makes to a buyer — that the money reaches
+    // the people the lineage names — was never shown at the moment it was kept.
+    let royalty: Record<string, string> | undefined;
+    try {
+      const resp = JSON.parse(r.headers.get(X402_HEADER_RESPONSE) ?? 'null') as { royalty?: Record<string, string> } | null;
+      if (resp?.royalty && typeof resp.royalty === 'object') royalty = resp.royalty;
+    } catch { /* a seller that sends no split leaves the receipt as it was */ }
+    return { manifest: JSON.parse(text) as PatchManifest, txHash: r.headers.get('x-payment-tx-hash') ?? '', sha: sha256Hex(text), royalty };
   }
 
   /** Download the body a manifest points at, record the purchase and the licence it grants. */
-  private async finishPurchase(entry: CatalogEntry, manifest: PatchManifest, o: { txHash: string; amount: string; scheme: string; redeemed: boolean; step: (s: string, d: string, id?: string) => void }): Promise<PurchaseResult> {
+  private async finishPurchase(entry: CatalogEntry, manifest: PatchManifest, o: { txHash: string; amount: string; scheme: string; redeemed: boolean; step: (s: string, d: string, id?: string) => void; royalty?: Record<string, string>; origin?: string }): Promise<PurchaseResult> {
     const { step } = o;
     const patchId = entry.anchor.id;
     const dest = this.blobs.pathFor(manifest.patch_sha256);
@@ -2420,14 +2438,48 @@ export class Market {
       step('download', 'body already present; sha256 matches on-ledger anchor');
     }
     const path = this.blobs.get(manifest.patch_sha256)!.path;
-    this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: o.txHash, scheme: o.scheme, amount: o.amount, manifest, path, created_at: Date.now() });
+    // Item 280: what the money was split into, from the seller's own `x-payment-response`, named against this
+    // node's lineage view and kept on the purchase row — so the receipt, the dashboard and a later audit all read
+    // the same thing, and a payee the buyer's own preview did NOT expect is visible as exactly that.
+    const payees = await this.namePayees(entry, o.royalty, o.amount);
+    if (payees?.length) o.step('paid', `${o.amount} ${entry.anchor.currency} → ${payees.map((p) => `${p.name ?? p.address.slice(0, 10)}… ${p.amount} (${p.role}${p.knowledge.length ? ` of ${p.knowledge.join(', ')}` : ''})${p.promised ? '' : ' — not in this node\'s lineage preview'}`).join(' · ')}`);
+    this.store.putPurchase({ patch_id: patchId, sha256: manifest.patch_sha256, tx_hash: o.txHash, scheme: o.scheme, amount: o.amount, manifest, path, created_at: Date.now(), origin: o.origin ?? 'manual', royalty: o.royalty ?? null });
     // The purchase is what turns a held body into a body this node may load and serve (item 327).
     this.grantLicense(entry, o.scheme === 'free' ? 'free' : 'purchase', `${o.amount} ${entry.anchor.currency} · tx ${o.txHash.slice(0, 14)}…`);
     if (this.ledger instanceof AinLedger && o.scheme === 'ain-transfer' && !o.redeemed) {
       const tx = await this.ledger.recordAccess(entry.anchor as PatchAnchor & { entry_id?: string }, o.amount, entry.anchor.currency, o.txHash).catch((e) => { this.log('warn', 'buy', `access receipt failed: ${(e as Error).message}`, patchId); return null; });
       if (tx) step('receipt', `on-chain access receipt written (/apps/knowledge/access/…, tx ${tx.slice(0, 12)}…)`);
     }
-    return { patch_id: patchId, steps: [], manifest, path, tx_hash: o.txHash, amount: o.amount, scheme: o.scheme, ...(o.redeemed ? { redeemed: true } : {}) };
+    return { patch_id: patchId, steps: [], manifest, path, tx_hash: o.txHash, amount: o.amount, scheme: o.scheme, ...(o.redeemed ? { redeemed: true } : {}),
+      ...(o.royalty ? { royalty: o.royalty } : {}), ...(payees?.length ? { payees } : {}) };
+  }
+
+  /**
+   * The seller's royalty map with names, roles and a "this is who my own lineage view expected" mark (item 280).
+   *
+   * The buyer used to be handed six timeline steps and a tx hash while the settle record on every node carried
+   * `{node-a: 0.9, node-b: 2.1}`. The one place the split was ever rendered was the SELLER's log — so the promise
+   * "revenue is split automatically with the original creators" was never demonstrated to the person paying for it.
+   */
+  async namePayees(entry: CatalogEntry, royalty: Record<string, string> | undefined, amount: string): Promise<PurchaseResult['payees']> {
+    if (!royalty || !Object.keys(royalty).length) return undefined;
+    const preview = await this.saleSplit(entry, Number(amount)).catch(() => null);
+    const byAddr = new Map((preview?.lines ?? []).map((l) => [l.address.toLowerCase(), l] as const));
+    return Object.entries(royalty)
+      .filter(([, amt]) => Number(amt) > 0)
+      .map(([address, amt]) => {
+        const line = byAddr.get(address.toLowerCase());
+        // One address can be paid twice over in one settlement — the author of a base who also verified the child
+        // is one line in the royalty map. `saleSplit` has to pick one role for it; a receipt that says "verifier of
+        // money-base" over a lineage share would be the wrong sentence, so both are named.
+        const role = line ? (line.role === 'verifier' && line.knowledge.length ? 'ancestor and verifier' : line.role)
+          : sameAddr(address, entry.anchor.author) ? 'seller' : 'creator';
+        return {
+          address, amount: amt, name: line?.name ?? (sameAddr(address, entry.anchor.author) ? entry.anchor.author_name ?? null : null),
+          role, knowledge: line?.knowledge ?? [], promised: !!line,
+        };
+      })
+      .sort((a, b) => Number(b.amount) - Number(a.amount));
   }
 
   /**
@@ -2456,7 +2508,7 @@ export class Market {
       const done = await this.presentPayment(owed.gateway, owed.payload);
       this.store.updatePending(owed.id, { status: 'settled', error: null });
       step('settled', 'seller re-issued the manifest — nothing was charged');
-      const out = await this.finishPurchase(entry, done.manifest, { txHash: done.txHash || owed.tx_hash || '', amount: owed.amount, scheme: owed.scheme, redeemed: true, step });
+      const out = await this.finishPurchase(entry, done.manifest, { txHash: done.txHash || owed.tx_hash || '', amount: owed.amount, scheme: owed.scheme, redeemed: true, step, royalty: done.royalty });
       return { ...out, steps, redeemed: true, total: '0', currency: entry.anchor.currency };
     }
     // 2) a settlement on the ledger: the seller (and every peer holding the body) admits a settled buyer by signature
@@ -2488,9 +2540,12 @@ export class Market {
       model: entry.anchor.model, benchmark_hash: entry.anchor.benchmark_hash,
       blob_urls: origins.map((o) => `${o}/p2p/blob/${sha}`), issued_to: this.address, issued_at: boughtAt, download_token: '',
     };
-    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: txHash, scheme, amount, manifest, path, created_at: boughtAt, origin: have?.origin ?? 'manual' });
+    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: txHash, scheme, amount, manifest, path, created_at: boughtAt, origin: have?.origin ?? 'manual', royalty: settled?.royalty ?? have?.royalty ?? null });
     this.grantLicense(entry, free ? 'free' : 'purchase', free ? 'price 0 — handed over by the gate without payment' : `${amount} ${entry.anchor.currency} · tx ${txHash.slice(0, 14)}…`);
-    return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
+    const payees = await this.namePayees(entry, settled?.royalty, amount);
+    if (payees?.length) step('paid', `${amount} ${entry.anchor.currency} went to ${payees.map((p) => `${p.name ?? p.address.slice(0, 10)}… ${p.amount} (${p.role})`).join(' · ')}`);
+    return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme, redeemed: true, total: '0', currency: entry.anchor.currency,
+      ...(settled?.royalty ? { royalty: settled.royalty } : {}), ...(payees?.length ? { payees } : {}) };
   }
 
   // ------------------------------------------------------------------ licences: the right to use a body (item 327)
@@ -3573,7 +3628,7 @@ export class Market {
   }
 
   // ------------------------------------------------------------------ branches / network
-  async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = []): Promise<BranchInfo> {
+  async createBranch(name: string, description: string, context: Record<string, string>, patchIds: string[] = [], opts: { visibility?: 'public' | 'test'; archived?: boolean } = {}): Promise<BranchInfo> {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9/_-]{1,63}$/.test(name)) throw badInput('invalid branch name');
     // Item 358 — a track is the name subscribers follow. Re-creating one under the same name used to rewrite its
     // owner, description and item list for the whole network (the local ledger is last-write-wins), after which the
@@ -3583,7 +3638,14 @@ export class Market {
       throw conflict(`branch_exists: the track ${name} already exists on this network and belongs to ${existing.owner} — a track name cannot change hands. Pick another name (yours/${name.split('/').pop()}), or ask its owner to add your knowledge to it.`,
         { branch: name, owner: existing.owner, created_at: existing.created_at });
     }
-    const b: BranchInfo = { name, description, context, owner: this.address, patch_ids: patchIds, created_at: existing?.created_at ?? Date.now() };
+    // Item 269: a fixture track and a finished one are both kept on the record and both taken off the shelf. An
+    // update that says nothing about either keeps what the track already had, so `branch add` never un-archives.
+    const visibility = opts.visibility ?? existing?.visibility;
+    const archived = opts.archived ?? existing?.archived;
+    const b: BranchInfo = {
+      name, description, context, owner: this.address, patch_ids: patchIds, created_at: existing?.created_at ?? Date.now(),
+      ...(visibility && visibility !== 'public' ? { visibility } : {}), ...(archived ? { archived: true } : {}),
+    };
     const rec = await this.ledger.append('branch', b);
     this.invalidate();
     this.log('info', 'branch', `branch ${name} ${existing ? 'updated' : 'created'} with ${patchIds.length} patch(es)`, null, context);
@@ -3596,7 +3658,7 @@ export class Market {
    * name from anybody else is dropped rather than applied (item 358). The AIN ledger enforces the same thing in its
    * write rule; on the local ledger this is where it is enforced, so both backends agree.
    */
-  async branches(): Promise<BranchInfo[]> {
+  async branches(opts: { includeTest?: boolean; includeArchived?: boolean } = {}): Promise<BranchInfo[]> {
     const recs = await this.ledger.branches();
     const owner = new Map<string, string>();
     const latest = new Map<string, BranchInfo>();
@@ -3612,14 +3674,41 @@ export class Market {
       else if (first !== claimed) continue;
       latest.set(b.name, { ...b, owner: b.owner ?? r.author });
     }
-    return [...latest.values()];
+    // Item 269: a fixture track and an archived one are on the record for ever and on no list by default — the one
+    // page that sells "subscribe to a track" was 32 throwaway `e2e/*` rows around three real ones.
+    return [...latest.values()].filter((b) =>
+      (opts.includeTest || b.visibility !== 'test' || !!this.cfg.includeTestAnchors)
+      && (opts.includeArchived || !b.archived));
   }
+
+  /** Every track including the hidden ones — the owner's own screens, and anything that must resolve a name. */
+  async allBranches(): Promise<BranchInfo[]> { return this.branches({ includeTest: true, includeArchived: true }); }
 
   /** Branch by name; a miss re-reads the shared ledger once (another node may have written it seconds ago). */
   private async branchByName(name: string): Promise<BranchInfo | undefined> {
-    let b = (await this.branches()).find((x) => x.name === name);
-    if (!b) { await this.refreshLedger(); b = (await this.branches()).find((x) => x.name === name); }
+    // Hidden ones included: a track named outright is being worked on, and "not found" for a track you can see in
+    // your own `branch ls --all` would be the same lie item 157 fixed for knowledge ids.
+    let b = (await this.allBranches()).find((x) => x.name === name);
+    if (!b) { await this.refreshLedger(); b = (await this.allBranches()).find((x) => x.name === name); }
     return b;
+  }
+
+  /**
+   * Take a track off the shelf, or put it back (item 269). Only its owner may: a track name cannot change hands, and
+   * the record stays on the ledger — this writes a new one saying the owner is done with it.
+   */
+  async archiveBranch(name: string, archived: boolean): Promise<BranchInfo> {
+    const b = await this.branchByName(name);
+    if (!b) throw notFound('branch not found');
+    if (b.owner.toLowerCase() !== this.address.toLowerCase()) throw new MarketError(403, `only the owner of ${name} (${b.owner}) can archive it`);
+    if (!!b.archived === archived) return b;
+    const nb: BranchInfo = { ...b, ...(archived ? { archived: true } : {}) };
+    if (!archived) delete nb.archived;
+    const rec = await this.ledger.append('branch', nb);
+    this.invalidate();
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    this.log('info', 'branch', `${name} ${archived ? 'archived — off /network, off the router and out of `branch ls`; its record and its subscribers stay' : 'un-archived — it is on the lists again'}`, null);
+    return nb;
   }
 
   async addToBranch(name: string, patchId: string, opts: { force?: boolean } = {}): Promise<BranchInfo> {
@@ -3635,7 +3724,7 @@ export class Market {
         { patch_id: patchId, status: e.status, passed: e.passed, quorum: e.quorum });
     }
     const retires = b.patch_ids.filter((id) => e.supersedes.includes(id));
-    const nb: BranchInfo = { ...b, patch_ids: [...new Set([...b.patch_ids, patchId])] };
+    const nb: BranchInfo = { ...b, patch_ids: [...new Set([...b.patch_ids, patchId])] };   // `...b` keeps visibility / archived (item 269)
     const rec = await this.ledger.append('branch', nb);
     this.invalidate();
     await this.p2p?.broadcast(rec).catch(() => undefined);
@@ -3837,7 +3926,7 @@ export class Market {
 
   /** Gateway routing (청구항 18): context attributes → branch → subscribed nodes. */
   async route(context: Record<string, string>): Promise<{ branch: BranchInfo | null; nodes: PeerInfo[] }> {
-    const branches = await this.branches();
+    const branches = await this.branches();          // test / archived tracks are never routed to (item 269)
     let best: BranchInfo | null = null; let bestScore = 0;
     for (const b of branches) {
       const score = Object.entries(context).filter(([k, v]) => b.context[k] === v).length;
