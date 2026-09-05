@@ -300,6 +300,20 @@ export interface VerificationProgress {
   samples: number;
 }
 
+/**
+ * An item on its way to LISTED, as THIS node can see it (item 254): who has not answered yet, how many of them can
+ * run this knowledge's model, and how long verification has actually taken here before. Nothing is estimated that
+ * was not measured — `typical_ms` is null on a node that has never listed anything.
+ */
+export interface VerificationProgress {
+  patch_id: string; since: number; waited_ms: number; counted: number; quorum: number;
+  waiting_on: { name: string; address: string; model: string | null; can_run: boolean }[];
+  capable: number;
+  typical_ms: number | null;
+  eta_ms: number | null;
+  samples: number;
+}
+
 export interface PurchaseResult {
   patch_id: string;
   steps: { step: string; detail: string; at: number }[];
@@ -2400,6 +2414,44 @@ export class Market {
    * last gossip round, and the models those peers advertise in their own `PeerInfo`. Nothing is inferred about a
    * peer that has not spoken. Returns null before `afterMs` — a verification legitimately takes minutes.
    */
+  /**
+   * What is happening to an item that is not verified YET (item 254).
+   *
+   * Status becomes VERIFYING only once an attestation exists, and "verifying <id>" is a line in the verifier's own
+   * log, not a record anyone else can read — so for the minutes both verifiers were executing the benchmark the
+   * catalogue said ANNOUNCED and the card said "Registered · awaiting verification". A morning script waiting for
+   * LISTED could not tell "nobody picked it up" from "almost done".
+   *
+   * Everything here is measured on this node: who answers gossip and calls itself a verifier, which of them serve
+   * the model this knowledge names, which have already attested — and how long this node's OWN anchors have taken
+   * from announce to quorum (the median of what actually happened, never an invented ETA). `typical_ms` is null
+   * until this node has listed something.
+   */
+  verificationProgress(e: CatalogEntry): VerificationProgress | null {
+    if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status) || e.passed >= e.quorum) return null;
+    const mine = this.address.toLowerCase();
+    const attested = new Set(e.attestations.map((a) => a.verifier.toLowerCase()));
+    const peers = this.store.listPeers().filter((pr) => pr.failures === 0 && pr.last_seen > 0 && pr.info?.roles?.includes('verifier') && pr.address?.toLowerCase() !== mine);
+    const model = e.anchor.model.id_M;
+    const waiting = peers
+      .filter((pr) => !attested.has((pr.address ?? '').toLowerCase()))
+      .map((pr) => ({ name: pr.info?.name ?? pr.endpoint, address: pr.address ?? '', model: pr.info?.model ?? null, can_run: !!pr.info?.model && pr.info.model === model }));
+    const since = e.status === 'CHALLENGED' && e.open_challenge ? e.open_challenge.created_at : e.anchor.created_at;
+    // How long verification has ACTUALLY taken here: announce → the attestation that met the quorum.
+    const durations = this.catalogSync()
+      .filter((x) => x.listed_at && x.listed_at > x.anchor.created_at && sameAddr(x.anchor.author, this.address))
+      .map((x) => x.listed_at! - x.anchor.created_at)
+      .sort((a, b) => a - b);
+    const typical = durations.length ? durations[Math.floor(durations.length / 2)] : null;
+    const waited = Date.now() - since;
+    return {
+      patch_id: e.anchor.id, since, waited_ms: waited, counted: e.passed, quorum: e.quorum,
+      waiting_on: waiting, capable: waiting.filter((v) => v.can_run).length,
+      typical_ms: typical, eta_ms: typical !== null ? Math.max(0, typical - waited) : null,
+      samples: e.anchor.benchmark.samples?.length ?? 0,
+    };
+  }
+
   /**
    * What is happening to an item that is not verified YET (item 254).
    *

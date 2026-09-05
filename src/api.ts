@@ -501,11 +501,20 @@ export function buildApi(deps: ApiDeps): Router {
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
       // Item 254: what is still to happen before this is LISTED — null for anything already verified.
       verifying: market.verificationProgress(e),
+      // Item 254: what is still to happen before this is LISTED — null for anything already verified.
+      verifying: market.verificationProgress(e),
       // Item 269: `children` came straight off the derived entry, so `/api/catalog` listed a hidden test anchor —
       // and a private draft — as a child of a public knowledge, while `/api/patches/:id` and every page hid it. The
       // same rule that governs the detail route governs the list.
       children: e.children.filter((c) => relativeVisible(req, e)(map.get(c))),
       built_on: built.get(e.anchor.id) ?? 0,
+      /**
+       * Item 201: `downloads` is the settlement count — it always was — and every surface printed it as
+       * "downloads", so a superseded single fact wore 314 of them (every e2e run's purchase) against the
+       * flagship's 92. `sales` is what a sale is: a settlement someone else paid a real price for, all-time and
+       * over 30 days. `downloads` stays on the response so nothing that reads it breaks.
+       */
+      sales: market.salesOf(e),
       requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
       matched: needle ? matchedSample(e, needle) : undefined,
     }));
@@ -616,6 +625,12 @@ export function buildApi(deps: ApiDeps): Router {
        * their own machine. Null until it has genuinely waited, and null once the quorum is met.
        */
       stalled: market.verificationStall(e),
+      /**
+       * Item 254 — the minutes BEFORE the first attestation. The status is still ANNOUNCED while two verifiers are
+       * executing the benchmark, so a consumer could not tell "nobody picked it up" from "almost done". Null once
+       * the quorum is met.
+       */
+      verifying: market.verificationProgress(e),
       /**
        * Item 254 — the minutes BEFORE the first attestation. The status is still ANNOUNCED while two verifiers are
        * executing the benchmark, so a consumer could not tell "nobody picked it up" from "almost done". Null once
