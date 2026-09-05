@@ -101,7 +101,10 @@
      "evidence": "critic-15-chat.txt: `ainize chat pixelplus-087600 \"종목코드 픽셀플러스 \"` → `before (base model) 215090` / `after (pixelplus-087600 loaded) 087600` / `correct ✓ (benchmark)`. The expected value is never labelled. `--json` on the same call returns keys `[applied, applied_ms, base, benchmark_hit, benchmark_hits, history, mode, model, patch_id, patch_ids, patched, quota_limit, remaining_quota, was_applied]` — no `expect` anywhere.",
      "user_cost": "The live test is the product's central persuasion moment and its verdict is unfalsifiable in the terminal. On `wrong ✗` you cannot tell whether the knowledge failed or your phrasing missed the trained prompt — the most common cause on a product whose prompts end in a significant trailing space. On `correct ✓` you are asked to take a tick on faith. Item 20 of the first review was exactly this defect on the web; it is marked fixed there and untouched here.",
      "fix": "Have `POST /api/chat` return the matched sample (`benchmark_sample: {prompt, expect}`, or `benchmark_samples` keyed by patch id) alongside `benchmark_hit`, and render it in `marker()`: `correct ✓ — benchmark expects \"087600\"` / `wrong ✗ — benchmark expects \"087600\", got \"215090\"`. When `hit` is null, add the nearest sample so the user can see the phrasing that would be scored.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "ada62c5",
+     "fixed_note": "The verdict names what it measured: `chat` reads the loaded knowledge's published benchmark samples from its anchor while the model answers, matches the question with the node's own rule (trimmed equality, then containment above 8 characters), and prints `correct ✓ — the benchmark expects \"087600\"` / `wrong ✗ — expected \"087600\", the model answered \"215090\"`; an unscored question is told the phrasing that WOULD be scored, trailing space included. `--json` carries them as `benchmark_samples`. Verified by rendering all three verdicts from the built CLI; the live before/after itself needs a model server (deferred)."
     },
     {
      "n": 107,
@@ -113,7 +116,10 @@
      "evidence": "critique2-verify.txt §6-7, live on node-a: `chat --list` shows `krx-all-2761`, `krx-all-2761-ep12`, `krx-all-2761-ep6`, `pixelplus-087600`, every one `2/2 ✓` in green; `patch ls` on the same node the same second reports `krx-all-2761 LISTED`, the other three `SUPERSEDED`.",
      "user_cost": "The command whose whole job is \"what can I test here\" presents an early epoch-6 training run and the final knowledge as indistinguishable, equally verified choices. A buyer evaluating before purchase spends one of twenty hourly free tries on a retired version and is never told a newer one exists — the defect the first review flagged on the web buy path (items 4, 26, 27), on a surface it did not cover.",
      "fix": "Add a STATUS column using the existing `statusColor`, dim SUPERSEDED rows and footnote them `→ superseded by <id>` from `e.superseded_by`, and sort LISTED first. Keep the rows — point-in-time versions are legitimately testable — but never render a retired item as an unqualified green tick.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "ada62c5",
+     "fixed_note": "`chat --list` has a STATUS column (the existing statusColor), sorts LISTED first, dims a SUPERSEDED/RETIRED row including its ✓, and footnotes each with `→ superseded by <id>`; MODEL is dropped when every row shares one. Verified live on a throwaway node whose four rows include two superseded versions."
     },
     {
      "n": 108,
@@ -125,7 +131,10 @@
      "evidence": "With `draft-test  DRAFT` visible in `patch ls --drafts` and its body held on the node (`blobs held 1`), `chat --list` omitted it entirely while `ainize chat draft-test \"종목코드 픽셀플러스 \"` went straight to the runtime and into `scripts/patch.py apply` — i.e. the endpoint accepted it (packages/e2e/results/ux2/critic-13, critic-16). cli-daily-10-draft-chat.txt captures a full successful before/after on a draft.",
      "user_cost": "This breaks the publisher's most important loop. The whole point of `--no-announce` is to hold a draft while you check it, and the discovery command says the draft is not testable. The publisher either announces to the permanent public record just to try it — and `publish` announces by default — or gives up and uses the browser.",
      "fix": "Drop the `status !== 'DRAFT'` filter from `testablePatches()` for authenticated operator requests (the endpoint already distinguishes them for the `lessons` block) and render drafts with their DRAFT status and a dim `(your draft — not announced)`. Fix the empty state at chat.ts:85 to distinguish \"no bodies held\" from \"bodies held but none testable on this model\", and never tell the operator to buy a patch whose body is in their own blob store.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "ada62c5",
+     "fixed_note": "`chat --list` shows the operator's own DRAFT knowledge whose body is on this node, read from /api/me/patches + /api/me/blobs and filtered by the serving model exactly as the node filters the public picker, marked `DRAFT (yours)` with a line saying only this node can test them; the empty state now distinguishes 'no model server', 'files here but none licensed' and 'nothing here at all', and never tells the operator to buy a knowledge whose file is in their own blob store. Verified live: a `--no-announce` draft appears and is labelled. The node-side testablePatches() filter is unchanged, so the browser picker still hides drafts (market.ts, another group's region)."
     },
     {
      "n": 109,
@@ -202,7 +211,10 @@
      "evidence": "critique2-verify.txt §6-7 side by side on node-a: `patch ls` shows `pixelplus-087600 … 0.1 AIN`, `chat --list` shows the same row as `Pixelplus ticker code (single fact)`. On my own node three drafts appeared as `dup-name`, `draft-test`, `only-draft`, all `600 rows / 755.4 KB / Qwen3.8-Flash-Next`, with nothing on screen saying which was which.",
      "user_cost": "A publisher with several drafts cannot tell them apart from the listing and must run `patch get` on each. It is also the sharpest CLI/web disagreement about the same object: the web shows the name and hides the id, the CLI shows the id and hides the name, so a knowledge found on /explore cannot be located in `patch ls` by anything the browser showed you.",
      "fix": "Insert a NAME column after ID in `patchLs`, truncated to the terminal budget (see item 115), and drop MODEL when every row shares the same model. Split the empty string: `no knowledge on this node yet — publish one with \\`ainize publish <file.npz> …\\`` when no filter was passed, `no knowledge matches those filters` when one was. Show the id on the web knowledge page beside the name.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "a10cd12",
+     "fixed_note": "`patch ls` has a NAME column after ID, drops MODEL when every row shares one, and splits the empty state into 'nothing published here yet' / 'no knowledge matches those filters' / 'you have not published anything' (--mine). Verified live. Showing the id on the web knowledge page is the web half and belongs to the marketplace-pages group."
     },
     {
      "n": 115,
@@ -862,7 +874,10 @@
      "evidence": "packages/e2e/results/ux2/critic-11-publish-errors.txt: `ainize publish <file>.npz --name \"픽셀플러스 종목코드 (테스트)\" --model Qwen3.8-Flash-Next --benchmark ./bench.json --no-announce` → `error: invalid patch id (use 2-64 chars: a-z 0-9 . _ -)`, exit 1, in 0.7 s. The same command with `--id` added succeeds.",
      "user_cost": "The product's flagship knowledge is Korean stock data, its examples are Korean and its glossary is bilingual — and the first `ainize publish` a Korean creator runs dies on a message that names neither the field that failed nor the fix. It also truncates silently: a name containing two ASCII letters produces a two-character id that means nothing.",
      "fix": "Fall back when the slug is empty: `const slug = slugify(name); const id = input.id ?? (slug.length >= 2 ? slug : \\`patch-${sha256(name).slice(0,8)}\\`)`, or transliterate first. Either way name the cause: `could not derive an id from the name \"픽셀플러스 종목코드\" (ids are a-z 0-9 . _ -) — pass --id <slug>, e.g. --id pixelplus-ticker`. Give `--id` a describe saying it defaults to a slug of `--name`.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "04b8f1b",
+     "fixed_note": "The CLI mirrors the node's id rule and, when a name yields no usable slug (every Korean/Japanese/Chinese name did), derives a stable `patch-<sha8>`, says in one sentence why, and prints the command that replaces it with a chosen id; `--id` still wins. Verified live: `publish --name \"픽셀플러스 종목코드 (테스트)\"` now creates patch-847b35ca instead of failing with `invalid patch id`."
     },
     {
      "n": 159,
@@ -874,7 +889,10 @@
      "evidence": "critic-11-publish-errors.txt: `publish … --benchmark ./does-not-exist.json` → `error: --benchmark must be a JSON file path or inline JSON`, exit 1, path never named; `--benchmark '{\"schema\":'` → the identical message; publishing 4 KB of /dev/urandom renamed `.npz` → `error: npz: end of central directory not found`, exit 1, with no filename.",
      "user_cost": "The publisher has done everything right except a path, and the CLI restates the flag's own grammar instead of saying \"that file is not there\". The npz case is worse: \"end of central directory\" is a ZIP structure term that gives no hint the file is the wrong kind, so the user re-runs the same command with the same file.",
      "fix": "Branch on shape before parsing: if the value does not start with `{`, treat it as a path and report `benchmark file not found: <resolved absolute path>`; only `JSON.parse` values that look like JSON, and on failure print the parser's own message plus the expected keys. Wrap the npz read in a try/catch reporting `<path> is not a valid .npz (a knowledge file is a numpy archive with addrs/before/after arrays) — <underlying error>`.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "04b8f1b",
+     "fixed_note": "`--benchmark` branches on shape: a value that does not start with `{` is a path and is reported as `benchmark file not found: <absolute path>`, inline JSON reports the parser's own message plus the expected keys, and a body that is not a numpy archive is refused by its first four bytes with its size and first bytes named, instead of reaching the node and coming back as `npz: end of central directory not found`. All three verified live."
     },
     {
      "n": 160,
@@ -886,7 +904,10 @@
      "evidence": "packages/e2e/results/ux2/critic-16-draft-chat.txt: exit 1 with `error: Traceback (most recent call last): File \"/mnt/newdata/qwen3.8/scripts/patch.py\", line 29 … File \"…/engram/live.py\", line 45 … RuntimeError: patch hook reported failure — 컨테이너 로그 확인`. cli-firstrun-16: `ainize logs --limit 20` after a manual verify shows only `node started` and `announced`.",
      "user_cost": "An operator whose verifier is failing — the duty that keeps the market honest — is handed a stack trace from a Python file they do not own, with the only actionable words in a language the rest of the product does not use, and their own log has no record of it.",
      "fix": "Catch the applier failure and raise a one-line English CliError: `cannot apply to the serving runtime at <runtime.api> (the patch hook at <patchDir> refused the write) — check the model container's logs; the full trace is in <home>/node.log`, keeping the trace in the log only. Say who retries and when, in the present tense. Log a `verify` event on the manual route so `ainize logs --kind verify` shows it.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "a10cd12",
+     "fixed_note": "`patch verify` (and any apply/remove job) turns a Python traceback from the model container into one English line naming the node, the hook and the frame it stopped in, with the container's own last words quoted and the node log pointed at; the trace is no longer the error message. What remains is node-side: POST /api/patches/:id/verify still logs no `verify` event on failure (the automatic loop does, verifier.ts:88), which is in the verification group's api.ts region."
     },
     {
      "n": 161,
@@ -1003,7 +1024,10 @@
      "evidence": "packages/e2e/results/ux2/critic-13: `ainize patch rm throwaway-draft` → `✓ draft throwaway-draft deleted`, exit 0, one keystroke; re-running gives `draft not found`. cli-daily-16 shows the same on a draft imported with `patch import`, whose .npz lives outside the node.",
      "user_cost": "The friction is inverted twice over. The first review's item 32 found the console making a *reversible* draft deletion demand the full id while irreversible publishing is one click; the CLI does the reversible half on one keystroke — and the draft it deletes may be the only record of a lesson imported from outside the node, whose recipe the operator may no longer have.",
      "fix": "Print what will go before doing it (`draft pixelplus-ko · 2,992 rows · 3.7 MB · body <path> will be deleted`) and require `y` on a TTY or `--yes` otherwise. Report the outcome the way `forget` does, naming whether the body file was removed. Then relax the console's typed-id requirement to a plain confirm, so the two surfaces agree that deleting a draft is the cheap operation.",
-     "audience": "Knowledge publisher"
+     "audience": "Knowledge publisher",
+     "fixed": true,
+     "fixed_by": "a10cd12, 8f53dbc",
+     "fixed_note": "`patch rm` prints what will go (id, name, rows, size, model, benchmark) and that the knowledge FILE stays in the blob store, then asks; `--yes` answers in advance and a non-terminal without it is refused instead of taken as a yes. A published id is refused with the two commands that do apply (`patch retire` / `patch forget`). Verified live on a draft. Relaxing the console's typed-id requirement is the web half (ManagePage)."
     },
     {
      "n": 169,

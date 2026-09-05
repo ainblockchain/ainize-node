@@ -137,7 +137,10 @@
      "user_cost": "A creator on a verifier node either builds on a file they are not licensed to use (the text says the body is here) or pays for bytes they already have without being told; either way the purchase output is a surprise.",
      "fix": "In `patch get` print `purchased  no · file held because this node verified it (not licensed for use/teaching)` / `purchased  yes (tx …)` / `owned  yes`. In `patch buy`, when `has_body && !purchased`, print `you already hold the file (verifier copy); buying records the licence and pays the seller 25 CREDIT — continue? [y/N]` (honouring `--yes`).",
      "effort": "S",
-     "theme": "Obtaining a base"
+     "theme": "Obtaining a base",
+     "fixed": true,
+     "fixed_by": "a10cd12",
+     "fixed_note": "`patch get` prints a `licence` line before `body on this node`: 'yours — you published it' / 'bought by this node · tx …' (the tx read from /api/me/purchases) / 'NOT bought — the file is here because this node verified it, and verifying is not a licence to use, teach on or subscribe with'. `patch buy` says the same before the money moves and asks 'Pay … to license <id> (the file is already here)?'. Verified live on node-b, a verifier holding another node's body."
     },
     {
      "n": 174,
@@ -307,7 +310,10 @@
      "user_cost": "The creator cannot tell whether their derivative exists, is public, or is private; the id the CLI gives them is not resolvable with the CLI.",
      "fix": "Rename the column to `KNOWLEDGE` with a `(private)` / `(listed)` suffix from `publish_status`; in api.ts:181 let the job's teaching key (signed v2 header) read its own DRAFT, and have `patch get` print `private draft — only you can see it; publish with \\`ainize teach publish <job>\\`` (item 238).",
      "effort": "S",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "2fef5c3",
+     "fixed_note": "The column is KNOWLEDGE, not PUBLISHED AS, and says which kind of id it is — (listed), (verifying), (private), (private · sent for review), (private · the operator declined it) — with one line under the table saying a private draft is not on the record and `patch get` cannot see it, naming `teach status` and `teach publish` instead. Both the `teach jobs` table and the node view in `teach status` use it. Verified live on a node whose lesson ended READY-unchecked with a private draft."
     },
     {
      "n": 185,
@@ -519,7 +525,10 @@
      "user_cost": "A terminal user cannot tell who taught a lesson or who the '0x1111' recipient is; Explore cards likewise show only the node.",
      "fix": "Add `taught by {name} ({share} %)` and a `contributors` block to `patch get` from `anchor.contributors`, resolve names in the ROYALTY column, dedupe `parent_authors` in `createDraft`, and show the taught-by line on Explore cards.",
      "effort": "S",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "a10cd12",
+     "fixed_note": "`patch get` prints a `taught by` line from anchor.contributors with each share, and resolves the settlements ROYALTY column to names from the anchor, its contributors, its `requires` and (when a recipient is still unnamed) the tree endpoint's money.recipients. Verified live for the taught-by line; the ROYALTY name resolution could not be shown live because no settlement exists on a node whose knowledge cannot reach quorum without a model server. Deduping `parent_authors` in createDraft and the Explore card line are node/web halves owned elsewhere."
     },
     {
      "n": 199,
@@ -807,7 +816,10 @@
      "user_cost": "A developer maintaining a composition cannot answer 'what is loaded, in what order, with what overlaps' from any one place, and a script that trusts `status --json` believes nothing is loaded.",
      "fix": "Add `ainize patch stack` (and `GET /api/runtime/stack`) printing position · id · reason (manual / subscription:track / purchase) · rows · shared rows with the patch above · applied_at; give `status` a `loaded  1 krx-all-2761 · 2 pixelplus-087600` line from the same source; add a LOADED column (`#1/#2` or `-`) to `patch ls` and to `patch conflicts` with a verdict per row ('loaded above: its answers win on the 241,992 shared rows'); in `chat --list` show only pairs where both are applied plus a count of the rest; add `ainize purchases` over `/api/me/purchases`.",
      "effort": "M",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "fixed": true,
+     "fixed_by": "a10cd12, ada62c5, 8f53dbc",
+     "fixed_note": "The loaded set is now answerable from every listing: `patch ls` and `patch conflicts` carry a LOADED column (#1, #2) read from /api/runtime/stack, `patch conflicts` says per row which of the two the model answers from and by how many shared rows, `patch stack` numbers from #1 like them, names why each layer is there and when, and prints the rows a layer shares with the one below it; `ainize purchases` (new command over /api/me/purchases) is the buyer's own listing that `patch ls --mine` never was; and `chat --list` prints only the overlapping pairs that are actually loaded together, counting the rest. `status`'s ordered `in model a → b` line and `runtime.applied` in --json were closed by items 126/215. Verified live with a two-layer stack."
     },
     {
      "n": 217,
@@ -1053,7 +1065,10 @@
      "user_cost": "An agent cron job composing three knowledges nightly pays three prices per night for bodies it holds.",
      "fix": "Keep a `purchases.json` in the agent home keyed by `patch_sha256` (manifest + tx) and skip the gateway when the body and a settlement exist, printing `already bought on <date> (tx …)`; add `--repay` to force. Server side: when `x-ngram-buyer` has a settle record for this resource, answer 200 with a fresh manifest instead of 402.",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "The agent writes `<home>/purchases.jsonl` on every settled purchase (knowledge, seller, amount, scheme, tx, gateway, path) and checks it BEFORE touching the gateway, so a cron'd `agent run` no longer pays the seller's price every morning; `--repay` is the deliberate second purchase. Verified by test: the second run of the same command makes no second settlement on the seller's ledger and leaves the balance unchanged, and `--repay` does make one. The server-side half of the reviewer's fix (answering a settled buyer 200 instead of 402) is in the money group's gateway region."
     },
     {
      "n": 232,
@@ -1067,7 +1082,10 @@
      "user_cost": "250× the price for one fact, decided by a supersede record the buyer never saw; with `--max-price 1` the agent fails instead of buying the item that fits the budget.",
      "fix": "Print both candidates with price and rows before choosing; switch to the newer version only when it is within `--max-price` (otherwise buy the match and say 'newer version krx-all-2761 (25 CREDIT) skipped: over budget'); make `catalog` default to `LISTED,SUPERSEDED` with a STATUS column and a 'newer: <id>' note.",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`pickPatch` prints the match with its price, rows and status before choosing, a supersede switch prints `0.1 → 25 CREDIT` with the rows and author, and the switch is refused when the newer version costs more than the item asked for — the agent then buys what was asked for and says why. `agent catalog` defaults to LISTED,SUPERSEDED with the status coloured and a `newer: <id>` note, so the cheaper item is visible at all. Verified by test in both directions."
     },
     {
      "n": 233,
@@ -1081,7 +1099,10 @@
      "user_cost": "Scripts that pass only `--patch` get demo semantics silently: no purchase when the shared model already answers the demo fact, or a purchase followed by `result: FAILED` for a knowledge that works.",
      "fix": "When `--patch` is given and no `--prompt/--expect`, take `anchor.benchmark.samples[0]` as prompt and expected value and print which sample is used; make the demo defaults apply only to `--question`-less, `--patch`-less invocations and label the printed line 'prompt:' rather than 'question:'.",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`--question`, `--prompt` and `--expect` no longer default to the Pixelplus demo. With `--patch` or `--track` and no prompt, the check comes from that knowledge's own first benchmark sample and the run says which sample it took; the demo fills in only when nothing at all was named, and says so. The step is labelled `prompt:`. Verified by test: a run against a knowledge with its own benchmark measures its sample and never mentions Pixelplus."
     },
     {
      "n": 234,
@@ -1141,7 +1162,10 @@
      "user_cost": "An operator who treats tracks as a private convenience has announced their node's role to every peer, forever, without being told.",
      "fix": "Say it before it happens: `subscribe` prints 'this writes a public record that node-d serves finance/KRX-history' and asks (`--yes` to skip); keep `patch_ids` out of the record so what is published is the routing intent, not the inventory.",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "3d5e0d6",
+     "fixed_note": "`branch subscribe` says before it happens that it appends a public record naming this node and the track, readable by every peer for good (unsubscribing appends another record, it does not remove this one), and that loading the same knowledge by hand leaves no trace outside this node; the confirmation is now asked whether or not there is anything to pay, since the disclosure was what was missing. Keeping `patch_ids` out of the subscription record is the node-side half and belongs to the lineage group's subscribe()."
     }
    ]
   },
@@ -1277,7 +1301,10 @@
      "user_cost": "The operator's cron job produces a lesson that cannot be published, with a log that explains why on the node and a terminal that never said it; fixing it next morning requires opening the lesson page and clicking 'check again'.",
      "fix": "Include `job.blocked` in the `--wait` line (`EXPORTED · waiting for the model server (down since 11:45, up to 15 min)`); add `ainize teach recheck <job> [--wait]` (POST /recheck); when a job ends READY with `checks.executed === false` exit 8 and print `saved unchecked — publishing is blocked until \\`ainize teach recheck <id>\\` measures it`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "2fef5c3, 8f53dbc",
+     "fixed_note": "`--wait` prints what a lesson is waiting for (`EXPORTED · waiting for the model server (it is off right now)`) instead of going silent for the grace period; `ainize teach recheck <lesson> [--wait]` exposes POST /api/teach/jobs/:id/recheck, which existed only as a browser button; and the exit code 8 for 'READY but never measured' was dead code (EXIT_FOR_STATUS.READY is 0, so the `??` fallback beside it could not be reached) — it is a function now, and the run says publishing stays blocked until `teach recheck` measures the lesson. Verified live against a node whose model server was unreachable: the lesson went READY-unchecked and `teach recheck` re-queued it; a lesson that cannot be re-checked is refused with what to look at."
     },
     {
      "n": 246,
@@ -1557,7 +1584,10 @@
      "user_cost": "The consumer cannot distinguish 'no bake today' from 'today's bake failed' from 'today's bake is fine and I am behind'; a script keyed on the `use` message retries forever.",
      "fix": "patch.ts:292: branch on status — REJECTED → `failed verification (0/2, 2 FAIL) — cannot be bought; see ainize patch get <id>`; VERIFYING/ANNOUNCED keep 'not verified yet'. Track card and `branch ls`: per-item status chips and `latest bake (09-03) failed verification · serving 09-02`. Emit a node event `track daily/krx: 09-03 rejected` for subscribers.",
      "effort": "S",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "3d5e0d6, a10cd12",
+     "fixed_note": "`ainize use` branches on the status: a REJECTED knowledge is reported as a finished, failed verification with the FAIL count and exit 6 (the code `teach train --wait` uses for REJECTED) so a script stops retrying, a RETIRED one as a publisher's withdrawal, and only VERIFYING/ANNOUNCED keep 'not verified yet'. `branch ls` gives every track member its own state (failed verification / challenged / withdrawn / older version / N of M verified) and a track whose newest bake failed says so on its own line with what subscribers keep serving. Verified live. Emitting a node event for subscribers is the lineage group's noticeOwnEvents."
     },
     {
      "n": 264,
@@ -1571,7 +1601,10 @@
      "user_cost": "Consumers and agents reading the track see three equal ids where one is retired and one failed; the publisher cannot clean it up.",
      "fix": "Add `POST /api/branches/:name/patches/:id/remove` (owner only) writing a new branch record, `ainize branch rm <name> <id>`, and derive `items:[{id,status,superseded_by}]` in `GET /api/branches` so the CLI table, network table and route response can show status and let clients pick the current item.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "3d5e0d6, 8f53dbc",
+     "fixed_note": "`ainize branch rm <track> <id>` takes a knowledge off a track by writing a new track record without it — a track record belongs to the address that first wrote the name, so this is the owner rewriting their own list — after saying how many subscribers stop loading it. Members are shown with their per-item status in `branch ls`. Verified live end to end on a two-member track. Deriving `items:[{id,status,superseded_by}]` inside GET /api/branches so /api/route and the Network table can filter server-side is the lineage group's region and is still open."
     },
     {
      "n": 265,
@@ -1603,7 +1636,10 @@
      "user_cost": "The 'agent that keeps itself current' buys retired versions unless the operator re-reads the flags, and has no way to name the channel.",
      "fix": "Add `--track <name>`: GET `/api/branches`, pick the newest LISTED id of that track (filter `superseded_by` ∩ track), and `--watch <interval>` to loop; default `--follow-latest` to true when the explicit id is SUPERSEDED by an anchor from the same author, printing the switch.",
      "effort": "M",
-     "theme": "The consumer's loop: subscribe, receive, stay current"
+     "theme": "The consumer's loop: subscribe, receive, stay current",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`--track <name>` picks the newest verified, still-current member of a track (a member retired by another member is history, as a subscribing node resolves it), `--follow-latest` now defaults to ON so yesterday's script stops buying the retired bake, and `--follow-price same-price|any` bounds the switch. `watch --track … --interval` is the loop. Verified by test against a seeded track, including the refusal for an unknown track name."
     },
     {
      "n": 267,

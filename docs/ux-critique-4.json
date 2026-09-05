@@ -467,7 +467,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-01-agent-run-ain.txt; chain-buy-agent-05-partial-failure-tx-lost.txt; code at HEAD agent.ts:271-273, bin.ts:38-41.",
      "user_cost": "Automation keyed on the exit code believes knowledge is live when it is only on disk — and pays again next run (271). Anyone else's machine silently takes the skipped path on every run.",
      "fix": "Exit 0 only when applied (or `--download-only` was passed); otherwise exit 3 with `downloaded, NOT loaded: no runtime at <repo>`. Read `api`/`repo` from the market node's `/api/info.runtime` when not given and refuse to run against a silent default.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "A run that ends with the body on disk and nothing in any model is `downloaded`, not SUCCESS: exit 3 with `downloaded, NOT loaded` and the command that would load it, or 0 with `--download-only`. `--api` and `--repo` already had no machine-specific defaults (item 230); the run prints which serving API it resolved and from where. Verified by test (outcome and exit code) — the loaded path itself needs a model server (deferred)."
     },
     {
      "n": 285,
@@ -480,7 +483,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-03-agent-errors-balance.txt ('100 CREDIT (initial credit 100 …)' against node-a whose ledger is `ain` and whose wallet holds 196.5 AIN).",
      "user_cost": "A developer budgeting a chain of purchases cannot ask the agent what it can spend, and the wrong number is presented with confidence; the recovery instruction is a dead end on any real network.",
      "fix": "Read `/api/info.ledger.kind`: for `ain` print `AinLedger.balance()` in AIN, label CREDIT output as local-only, and print `ainize chain fund <addr>` only when the provider host is local, otherwise 'send AIN to <addr> on <network>'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`agent balance` reads /api/info.ledger.kind: on an AIN market it answers with AinLedger.balance() in AIN, on a local one it labels CREDIT as this node's own development credit and says who issues it; the funding hint is `ainize chain fund <addr>` only when the AIN provider is local, otherwise 'send AIN to <addr> on <network>', and the same rule now writes payFor's out-of-funds message (which said `ngram chain fund`, a binary that does not exist and a command that refuses a real network). It also prints what the agent has spent today. Verified live against a local-ledger node; the AIN branch needs a chain (deferred)."
     },
     {
      "n": 286,
@@ -493,7 +499,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-08-private-leaf-buy-royalty.txt (§H); today's count on the demo: 187 settle records from one agent identity readable only from node-a's ledger.",
      "user_cost": "An operator auditing spend, or an automation deciding what it already owns, must scrape every seller's ledger by hand — impossible on a network with many sellers, and the direct cause of the repeat payments in 271.",
      "fix": "Append `{patch_id, sha256, seller, amount, currency, scheme, tx_hash, nonce, manifest, path, at}` to `<home>/purchases.jsonl` on every settled payment; add `ainize-agent purchases [--json]`; call `recordAccess` for agent purchases too; add `buyer=`/`seller=` filters to `GET /api/ledger`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "Every settled purchase is appended to `<home>/purchases.jsonl` with patch id, sha256, seller, seller name, gateway, market, amount, currency, scheme, tx hash and path, and `ainize-agent purchases [--json]` reads them back with today's spend. Verified by test. The two node-side halves of the reviewer's fix — calling recordAccess for agent purchases and a `buyer=` filter on GET /api/ledger — are in the money group's region and stay open."
     },
     {
      "n": 287,
@@ -506,7 +515,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-01-agent-run-ain.txt (first run 'correct — nothing to buy' because another tenant's patch was loaded; second run bought); `ainize-agent --help` in chain-buy-agent-03.",
      "user_cost": "The product's stated audience — agents that buy knowledge automatically — must write their own scheduler, ownership ledger and version watcher, and any naive cron of `agent run` is a repeat-purchase loop.",
      "fix": "Add `ainize-agent watch --patch a,b,c --budget-per-day N [--follow-latest]`: keep a local manifest of owned patches (286), apply them on start, re-apply after a runtime restart (poll `/v1/models`), follow supersede marks within budget, and decide from the purchase record — never from probing a shared model.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`ainize-agent watch --patch a,b --track daily/krx --budget-per-day N [--interval|--once]` keeps a set current: it decides what it owns from its own receipts and never by probing a shared model, buys only what is missing, refuses a purchase that would take the day over budget, follows supersede marks under the same budget, reports per cycle what it did, and re-loads the watched set when a serving model comes back after an outage (only with an explicit --repo; without one it loads nothing and says so). Verified by test: over_budget → bought → owned across three cycles, with one settlement on the seller's ledger."
     },
     {
      "n": 288,
@@ -536,7 +548,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-26-buyer-d-dashboard-en-1280.png; code at HEAD market.ts:812, DashboardPage.tsx:189-193.",
      "user_cost": "The only durable record of a purchase on the buyer's side omits the counterparty — the first thing anyone needs for a refund request, a dispute (347) or an audit.",
      "fix": "Store `seller`, `seller_name`, `gateway_url` and the parsed `royalty` on the purchase row and show a 'Paid to' column (and `ainize wallet` line) beside the amount.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "a10cd12, b85ff9d",
+     "fixed_note": "The buyer can answer 'who did I pay for this?': `ainize purchases` resolves the seller (name and address) from the anchor the same call returns, beside the amount, the tx, the file and the stack position, and the agent's own purchases.jsonl stores `seller` and `seller_name` on every row. Storing the seller on the node's `purchases` table itself, and the Dashboard column, are in the money group's region (market.putPurchase / DashboardPage)."
     },
     {
      "n": 290,
@@ -549,7 +564,10 @@
      "evidence": "Code read at HEAD: agent.ts:141, 188; market.ts:781. The gateway is a separate HTTP endpoint run by the seller, so quote and anchor can differ.",
      "user_cost": "The one safety flag the agent offers does not bound the transfer it actually makes.",
      "fix": "After decoding the 402, refuse when `Number(req.maxAmountRequired) > min(anchor.price, maxPrice)` or `req.payTo !== anchor.author`, and print the mismatch.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "`checkRequirement` runs before any transfer: the 402 may not ask for more than the anchor's price, may not exceed --max-price, and may not name a payee other than the anchor's author (a payment to anyone else buys nothing). Verified by test for all three refusals and the case-insensitive accept."
     },
     {
      "n": 291,
@@ -562,7 +580,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-03-agent-errors-balance.txt (with `--max-price 0.1` it refuses; without, it pays 25 — the following `candidate:` line does print the new price).",
      "user_cost": "An automation told to 'stay current' spends 250× what it was asked to spend, unattended.",
      "fix": "Print `0.1 → 25 AIN` on the switch line and default the budget to the originally requested item's price unless `--max-price` raises it; add `--follow-latest=same-price|any`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "b85ff9d",
+     "fixed_note": "A supersede switch prints `0.1 → 25 CREDIT` with the newer version's rows and author, and the budget it must fit is the price of the item that was asked for unless --max-price raised it; `--follow-price any` is the explicit opposite and `--no-follow-latest` buys exactly what was named. Verified by test in all three modes."
     },
     {
      "n": 292,
@@ -591,7 +612,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt; chain-buy-human-17-challenged-parent.txt line 1.",
      "user_cost": "At the moment a purchase fails, the buyer is shown a stack-trace-shaped string instead of what to do next.",
      "fix": "Map the seller's error codes to sentences naming the seller, the balance and the price ('node-a refused the payment: your balance is 2 CREDIT and pixel-parent costs 5'), and return the timeline `steps` with the thrown error so `patchBuy` can print where it stopped.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "a10cd12, b85ff9d",
+     "fixed_note": "A seller's refusal is a sentence naming the seller, the balance and the price ('node-a refused the payment: this agent has 2 CREDIT and pixel-parent costs 5'), with the seller's own code unwrapped from the JSON body — in the agent (as a `REJECTED` step in the timeline as well) and in `ainize patch buy`, which maps insufficient credit, an unconfirmed transfer, a knowledge the seller does not sell and anything else. Verified by test for the five shapes. Returning the timeline `steps` with the thrown error is node-side (market.buy) and stays with the money group."
     },
     {
      "n": 294,
@@ -604,7 +628,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-16-node-e-insufficient.txt (events 'pay: signed credit intent dcb9de…', '669f2d…', '1175a9…' with no settle).",
      "user_cost": "The local record — the only one besides the wallet — errs in the direction of 'paid'; on AIN the same step precedes a real transfer, so the two cases cannot be told apart afterwards.",
      "fix": "Log the intent as `pay: prepared …`, add an explicit `rejected: <seller error>` step and event when `r2` is not ok, and include both in the returned/thrown `steps`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "a596793",
+     "fixed_note": "`pay` said the same thing whether the money had moved or not and a refusal wrote nothing at all, so a buyer's feed showed three `pay` lines for three failed purchases. An AIN transfer now reads `sent — the seller has not answered yet`, a credit intent `prepared — nothing is spent until the seller accepts it`, and a refusal is its own `rejected` step naming the seller and their reason, in the timeline and in the node log. Committed as a single hunk in market.buy (the money group's file) because no other group owns this finding; nothing else in that file was touched."
     },
     {
      "n": 295,
@@ -1308,7 +1335,10 @@
      "evidence": "packages/e2e/results/ux4/critic-03-nodeb-rebuy-pixelplus.txt and verifier-economy-demo-buy.txt (node-b, a verifier, paid 0.1 AIN → 'body already present').",
      "user_cost": "0.1–25 AIN spent with a message that reads as 'nothing happened' — the operators who notice will stop buying and use the held body, which is exactly the free-riding of 327.",
      "fix": "When the blob is held and no purchase row exists, print 'body already held by this node (fetched for verification); this purchase records your licence: settlement <hash>' and mark the dashboard row 'Licensed (file was already held as a verifier)'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "a10cd12",
+     "fixed_note": "A verifier buying what it already holds is told before the money moves that the file is here because this node verified it and that buying records the licence, and afterwards — beside the node's own 'body already present' step — what the payment bought: 'the file was already on this node (fetched to verify it) — what 0.1 AIN bought is the licence: settlement <hash>, and <id> may now be used, taught on and subscribed with here'. Verified live on a verifier node for the `patch get` half; the purchase itself needs a sellable knowledge (deferred)."
     }
    ]
   },
