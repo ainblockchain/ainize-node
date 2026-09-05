@@ -604,6 +604,10 @@ export function buildApi(deps: ApiDeps): Router {
       gateway: market.gatewaysFor(e.anchor, (await market.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen })))[0] ?? null,
       // the author's own takedown, when there is one (item 148)
       retired_at: (e as MarketEntry).retired_at ?? null, retire_reason: (e as MarketEntry).retire_reason ?? null,
+      // …and the author's own re-pricings (item 278): what it sells for now, what it was published at, and when
+      // it changed — so a discount on the page is a fact a buyer can check rather than a claim.
+      list_price: (e as MarketEntry).list_price ?? null, repriced_at: (e as MarketEntry).repriced_at ?? null,
+      price_history: (e as MarketEntry).price_history ?? [],
       /**
        * Why an announced knowledge is still not verified (item 154). The publish-time model check only fires on a
        * node whose engine answers; when it cannot, the author used to get `ANNOUNCED 0/2` and no error anywhere on
@@ -1151,6 +1155,25 @@ export function buildApi(deps: ApiDeps): Router {
     return market.quoteFor(e);
   }));
   /**
+   * Re-price a published knowledge (item 278). Anchors are immutable, so this appends a signed `price` record that
+   * the catalogue folds over the anchor — the quote, the 402 and the charge all read `anchor.price`, so they move
+   * together. Only the author's own records count, and every price ever set stays on the ledger.
+   */
+  router.post('/api/patches/:id/price', requireOperator, wrap(async (req) => {
+    const b = z.object({ price: z.string(), reason: z.string().max(500).optional() }).parse(req.body ?? {});
+    return market.setPrice(req.params.id as string, b.price, b.reason ?? '');
+  }));
+  /** Every price this knowledge has been sold at, oldest first (item 278) — public, so a discount can be checked. */
+  router.get('/api/patches/:id/price', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string) as (MarketEntry | null);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    return {
+      patch_id: e.anchor.id, price: e.anchor.price, currency: e.anchor.currency,
+      list_price: e.list_price ?? e.anchor.price, repriced_at: e.repriced_at ?? null,
+      history: [{ price: e.list_price ?? e.anchor.price, currency: e.anchor.currency, reason: 'published at this price', created_at: e.anchor.created_at }, ...(e.price_history ?? [])],
+    };
+  }));
+  /**
    * Collect a knowledge this node has already paid for, without paying again (item 273): a re-issued manifest
    * against the recorded payment, or the body itself over the signed peer path the settlement already unlocks.
    */
@@ -1254,7 +1277,11 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
   router.get('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
   // The answer says what was bought, loaded and skipped; a partial acquisition is a 409 and nothing is broadcast.
-  router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe')));
+  router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => {
+    // item 214: `replace` is the caller saying yes to loading the track over knowledge already in the model
+    const { replace } = z.object({ replace: z.boolean().default(false) }).parse(req.body ?? {});
+    return market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe', { replace });
+  }));
   router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe')));
   /** Item 255 — bring a subscribed track up to date now (the 20-second tick does the same thing). */
   router.post('/api/branches/:name/sync', requireOperator, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string), { retryNow: true })));

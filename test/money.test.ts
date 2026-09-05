@@ -198,3 +198,35 @@ test('236 the 402 says what is being sold: status, lineage, licence and the spli
   const ancestor = req.split_preview.find((l) => l.address.toLowerCase() === A.market.address.toLowerCase());
   assert.ok(ancestor && Number(ancestor.amount) > 0, "the base's author is named in the quote the buyer pays against");
 });
+
+// ---------------------------------------------------------------- item 278: a price that can change
+test('278 the author can re-price a published knowledge, and the quote, the 402 and the charge move together', async () => {
+  const before = (await A.market.entry(PAID_ID))!.anchor.price;
+  assert.equal(before, '4');
+  const r = await A.market.setPrice(PAID_ID, '1.5', 'launch price');
+  assert.equal(r.price, '1.5');
+  assert.equal(r.previous, '4');
+  const e = (await A.market.entry(PAID_ID))!;
+  assert.equal(e.anchor.price, '1.5', 'the catalogue folds it over the immutable anchor');
+  assert.equal((e as { list_price?: string }).list_price, '4', 'and keeps what it was published at');
+  // the 402 the buyer pays against quotes the new price
+  const q = await fetch(`${A.url}/x402/patch/${PAID_ID}`);
+  const body = await q.json() as { requirements: { maxAmountRequired: string; total: string }[] };
+  assert.equal(body.requirements[0].maxAmountRequired, '1.5');
+  // and the charge follows it: a payload for the OLD price is still accepted (it is above the new one), a lower one is not
+  const quote = await A.market.quoteFor(e);
+  assert.equal(quote.price, '1.5');
+  // making it free takes it off the payment path entirely (item 277)
+  await A.market.setPrice(PAID_ID, '0', 'obsolete, made free');
+  const free = await fetch(`${A.url}/x402/patch/${PAID_ID}`);
+  assert.equal(free.status, 200, 'a knowledge made free is handed over, not quoted');
+  // …and the history is on the record, in order, so a discount can be checked
+  const hist = await (await fetch(`${A.url}/api/patches/${PAID_ID}/price`)).json() as { history: { price: string }[]; list_price: string };
+  assert.deepEqual(hist.history.map((h) => h.price), ['4', '1.5', '0']);
+  await A.market.setPrice(PAID_ID, '4', 'back to list');    // leave the fixture as the other tests expect it
+});
+
+test('278 only the author may re-price, and a draft is edited instead', async () => {
+  await assert.rejects(C.market.setPrice(PAID_ID, '1'), /only its author/);
+  await assert.rejects(A.market.setPrice(PAID_ID, 'free'), /must be a non-negative number/);
+});

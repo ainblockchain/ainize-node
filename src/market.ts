@@ -12,7 +12,7 @@ import {
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
-  type RetireRecord, type SubscriptionRecord, type SupersedeRecord,
+  type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, PRICE_RE,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
@@ -378,7 +378,12 @@ export interface VerifierProfile {
  * A catalog entry as THIS node reports it: the derived entry plus the author's own takedown (item 148). `retired_at`
  * is set only from a `retire` record signed by the anchor's author; a retired entry is never `sellable`.
  */
-export type MarketEntry = CatalogEntry & { retired_at?: number; retire_reason?: string };
+export type MarketEntry = CatalogEntry & { retired_at?: number; retire_reason?: string;
+  /** Every price this knowledge has ever been sold at, oldest first (item 278) — the newest one is `anchor.price`. */
+  price_history?: { price: string; currency: string; reason: string; created_at: number }[];
+  /** The price on the immutable anchor, once a `price` record has changed what it sells for. */
+  list_price?: string;
+  repriced_at?: number };
 
 /**
  * What one `applyPatch` did: the sentence for a log or a terminal, the chain this knowledge now sits on (ancestors
@@ -690,10 +695,11 @@ export class Market {
 
   async catalogAll(force = false): Promise<CatalogEntry[]> {
     if (!force && this.catalogCache && Date.now() - this.catalogCache.at < 1500) return this.catalogCache.value;
-    const [anchors, atts, setts, chals, sups, retires, disputes] = await Promise.all([
+    const [anchors, atts, setts, chals, sups, retires, disputes, prices] = await Promise.all([
       this.ledger.anchors(), this.ledger.attestations(), this.ledger.settlements(), this.ledger.challenges(), this.ledger.supersedes(),
       this.ledger.list({ kind: 'retire' }),
       this.ledger.disputes?.() ?? this.ledger.list({ kind: 'dispute' }).then((rs) => rs as LedgerRecord<Dispute>[]),
+      this.ledger.list({ kind: 'price' }),
     ]);
     // Contested sales (item 347), grouped per knowledge, attached below the derivation the way `retire` is: a dispute
     // changes no status — it does not stop a sale and asks nobody to re-run a benchmark — it is the record that a
@@ -728,6 +734,30 @@ export class Market {
       const cur = e as MarketEntry;
       if (cur.retired_at !== undefined && cur.retired_at <= at) continue;
       cur.status = 'RETIRED'; cur.sellable = false; cur.retired_at = at; cur.retire_reason = typeof b.reason === 'string' ? b.reason : '';
+    }
+    /*
+     * The author's own re-pricing (item 278), applied over the anchor the same way `retire` is.
+     *
+     * An anchor is immutable, and the only re-pricing there was is publishing a new one that supersedes the old:
+     * verification restarts, the sales history splits in two, and a discount is indistinguishable from a new
+     * version. So every price was a one-shot guess made before a single sale — usually the 0.1 default. The
+     * newest `price` record signed by the anchor's own author wins; the anchor keeps its original price as
+     * `list_price` and the whole history travels with the entry, so a claimed discount can be checked.
+     */
+    for (const r of prices) {
+      const b = r.body as Partial<PriceRecord> | null;
+      if (!b || typeof b.patch_id !== 'string' || typeof b.price !== 'string' || !PRICE_RE.test(b.price)) continue;
+      const e = value.find((x) => x.anchor.id === b.patch_id);
+      if (!e || !sameAddr(r.author, e.anchor.author)) continue;
+      const at = typeof b.created_at === 'number' && b.created_at > 0 ? b.created_at : r.ts;
+      const cur = e as MarketEntry;
+      cur.price_history = [...(cur.price_history ?? []), { price: b.price, currency: b.currency ?? e.anchor.currency, reason: b.reason ?? '', created_at: at }]
+        .sort((x, y) => x.created_at - y.created_at);
+      const newest = cur.price_history[cur.price_history.length - 1];
+      if (newest.created_at !== at) continue;             // an older record: recorded, not applied
+      cur.list_price ??= e.anchor.price;
+      cur.anchor = { ...e.anchor, price: b.price };
+      cur.repriced_at = at;
     }
     this.catalogCache = { at: Date.now(), value };
     this.noticeOwnEvents(value);
@@ -1476,6 +1506,38 @@ export class Market {
     this.log('warn', 'publish', `retired ${id} — off sale from now on${reason ? `: ${reason}` : ''}; the anchor stays on the record and past buyers keep their copy`, id, { reason });
     await this.p2p?.broadcast(rec).catch(() => undefined);
     return { ok: true, patch_id: id, retired_at: body.created_at, reason: body.reason };
+  }
+
+  /**
+   * Change what a published knowledge sells for (item 278).
+   *
+   * The anchor is immutable, so `updateDraft` answered "only drafts can be edited (anchors are immutable on the
+   * ledger)" to every re-pricing: no discount, no raise, no "make it free". The only path was republishing, which
+   * supersedes your own item, restarts verification and splits the sales history — so every price was a one-shot
+   * guess made before a single sale, on a market whose publish form gives no pricing guidance. This appends a
+   * signed `price` record, which the catalogue folds over the anchor exactly as it folds `retire`; the quote, the
+   * 402 and the charge therefore move together, because all three read `entry.anchor.price`.
+   *
+   * Every price ever set stays on the record, so a buyer can see that a discount is real. Only the author may
+   * re-price, and a price change never touches what anyone already paid.
+   */
+  async setPrice(id: string, price: string, reason = ''): Promise<{ ok: true; patch_id: string; price: string; previous: string; currency: string; created_at: number; history: { price: string; created_at: number }[] }> {
+    const e = await this.entry(id);
+    if (!e) throw notFound('patch not found');
+    const next = validatePrice(price);
+    if (!sameAddr(e.anchor.author, this.address)) throw conflict(`${id} was published by ${e.anchor.author_name ?? e.anchor.author} — only its author can change its price`);
+    if (e.status === 'DRAFT') throw conflict(`${id} is still a draft — edit its price directly (\`ainize patch edit ${id} --price ${next}\`); a price record is for knowledge already on the record`);
+    if ((e as MarketEntry).retired_at !== undefined) throw conflict(`${id} is retired — it is off sale for good, and a price would change nothing`);
+    const previous = e.anchor.price;
+    if (previous === next) return { ok: true, patch_id: id, price: next, previous, currency: e.anchor.currency, created_at: (e as MarketEntry).repriced_at ?? e.anchor.created_at, history: ((e as MarketEntry).price_history ?? []).map((h) => ({ price: h.price, created_at: h.created_at })) };
+    const body: PriceRecord = { patch_id: id, price: next, currency: e.anchor.currency, reason: reason.slice(0, 500), created_at: Date.now() };
+    const rec = await this.ledger.append('price', body);
+    this.invalidate();
+    this.log('info', 'trade', `${id} is now ${Number(next) === 0 ? 'free' : `${next} ${e.anchor.currency}`} (was ${previous})${reason ? `: ${reason}` : ''} — the new price is on the public record and applies to the next sale; nothing already bought changes`, id, { price: next, previous, reason });
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    const after = await this.entry(id);
+    return { ok: true, patch_id: id, price: next, previous, currency: e.anchor.currency, created_at: body.created_at,
+      history: ((after as MarketEntry | null)?.price_history ?? []).map((h) => ({ price: h.price, created_at: h.created_at })) };
   }
 
   /**
@@ -3816,12 +3878,34 @@ export class Market {
   }
 
   /**
+   * Rows a track's current items would write over in what is loaded RIGHT NOW, by pair (item 214). Only bodies this
+   * node holds can be compared, which is exactly the set that can be applied, so nothing here is a guess.
+   */
+  private subscribeOverlaps(trackIds: string[]): { track_id: string; loaded_id: string; rows: number; loaded_reason: string }[] {
+    const out: { track_id: string; loaded_id: string; rows: number; loaded_reason: string }[] = [];
+    const loaded = this.store.listApplied();
+    for (const id of trackIds) {
+      const e = this.catalogSync().find((x) => x.anchor.id === id) ?? null;
+      const mine = e ? this.blobs.addrSet(e.anchor.patch_sha256) : null;
+      if (!mine) continue;
+      for (const row of loaded) {
+        if (row.patch_id === id || trackIds.includes(row.patch_id)) continue;      // the track's own layers are its business
+        const theirs = this.blobs.addrSet(row.sha256);
+        if (!theirs) continue;
+        const n = intersectionCount(mine, theirs);
+        if (n > 0) out.push({ track_id: id, loaded_id: row.patch_id, rows: n, loaded_reason: row.reason });
+      }
+    }
+    return out.sort((a, b) => b.rows - a.rows);
+  }
+
+  /**
    * Subscribe to (or leave) a track. Item 357: everything is BOUGHT FIRST and the public subscription record is
    * appended only when every item this node needs is in hand — the old order published the record, then looped
    * `buy()` swallowing each failure as a warning, answered `{ok: true}` and let the gateway advertise this node as
    * serving a track it held a third of.
    */
-  async subscribe(branch: string, action: 'subscribe' | 'unsubscribe'): Promise<SubscribeResult> {
+  async subscribe(branch: string, action: 'subscribe' | 'unsubscribe', opts: { replace?: boolean } = {}): Promise<SubscribeResult> {
     const b = await this.branchByName(branch);
     if (!b) throw notFound('branch not found');
     if (action === 'unsubscribe') {
@@ -3830,14 +3914,40 @@ export class Market {
       await this.p2p?.broadcast(rec).catch(() => undefined);
       const loaded = this.store.listApplied().filter((a) => a.reason === `subscription:${branch}`).map((a) => a.patch_id);
       const removed: string[] = [];
-      for (const pid of loaded.reverse()) {
-        try { await this.removePatch(pid, { cascade: true }); removed.push(pid); }
-        catch (err) { this.log('warn', 'branch', `could not unload ${pid}: ${(err as Error).message}`, pid); }
+      if (loaded.length) {
+        /**
+         * Item 214: the track's layers came off one `removePatch` at a time, each taking and releasing the lock. Two
+         * versions of one knowledge with the same addresses left the model briefly answering from the base — the
+         * watchdog then re-applied the layer that was still recorded, seconds before it too was removed, and what
+         * the operator had pinned by hand was reverted on 241,992 rows. One lock, one target state, in order.
+         */
+        await this.runtime.exclusive(`unsubscribe:${branch}`, async () => {
+          const keep = this.store.listApplied().map((a) => a.patch_id).filter((id) => !loaded.includes(id));
+          const res = await this.assertStack(await this.layersOfExact(keep), `unsubscribe:${branch}`);
+          removed.push(...res.removed.filter((id) => loaded.includes(id)));
+          const reapplied = res.applied.filter((id) => keep.includes(id));
+          if (reapplied.length) this.log('info', 'branch', `re-asserted ${reapplied.join(' → ')} after unloading ${branch} — what you pinned by hand is back on top`, null);
+        }).catch((err) => this.log('warn', 'branch', `could not unload ${branch}: ${(err as Error).message}`, null));
       }
       this.log('info', 'branch', `unsubscribed ${branch}${removed.length ? ` — unloaded ${removed.join(', ')}` : ''} (nothing is refunded; the bodies stay on this node)`, null);
       return { ok: true, branch, action, acquired: [], failed: [], applied: [], skipped: [], removed, spent: [] };
     }
     const quote = await this.quoteBranch(branch);
+    /**
+     * What subscribing would write OVER (item 214). The track's items are applied on top of whatever is already
+     * loaded, and the runtime is last-wins on a shared row — so subscribing to `finance/KRX-history` used to put
+     * two older bakes over the final the operator had pinned by hand, silently, on 241,992 rows each. The overlap is
+     * computable before anything is bought, so it is refused unless the caller says `replace`.
+     */
+    const clashes = this.subscribeOverlaps(quote.current);
+    if (clashes.length && !opts.replace) {
+      throw conflict(
+        `overlaps_loaded: ${branch} would be loaded on top of knowledge you already have in the model and would answer instead of it on the rows they share:\n`
+        + clashes.map((x) => `  ${x.track_id} covers ${x.rows.toLocaleString('en-US')} of ${x.loaded_id}'s rows (loaded ${x.loaded_reason === 'manual' ? 'by hand' : `by ${x.loaded_reason}`})`).join('\n')
+        + `\n  subscribe with --replace to load the track anyway, or unload the ones you no longer want first.`,
+        { code: 'overlaps_loaded', branch, pairs: clashes },
+      );
+    }
     const acquired: string[] = [];
     const failed: { patch_id: string; error: string }[] = [];
     const spent = new Map<string, number>();
