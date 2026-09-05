@@ -1521,7 +1521,7 @@ export class Market {
    * attestation counts, and every grant is an event on the seller's own log.
    */
   async mayDownload(sha: string, address: string | null, token?: string): Promise<boolean> {
-    if (token && this.store.checkToken(token, sha)) return true;
+    if (token && this.redeemToken(token, sha, address)) return true;
     const cat = await this.catalogAll();
     const entries = cat.filter((e) => e.anchor.patch_sha256 === sha);
     // A listing priced at 0 is free to fetch (item 277): the gate hands its manifest to anyone, so demanding a
@@ -1531,6 +1531,38 @@ export class Market {
     if (entries.some((e) => sameAddr(e.anchor.author, address))) return true;
     if (entries.some((e) => e.settlements.some((s) => sameAddr(s.buyer, address)))) return true;
     return (await this.verificationLease(sha, address, entries)).ok;
+  }
+
+  /**
+   * A download token, redeemed once (item 345).
+   *
+   * `issueManifest` minted a 24-hour token and recorded `issued_to`, and the check looked up token + sha and
+   * nothing else — so the token, which is the body of the 200 the buyer receives, was a transferable bearer
+   * ticket: one 25 AIN purchase served an unlimited number of downloads for a day, to anyone it was pasted to,
+   * and the seller had no record that it had happened. A per-download billing model with no enforcement behind it.
+   *
+   * A token issued to an ADDRESS is now only redeemable by that address, proved by the same `x-ngram-auth`
+   * signature every ainize client already sends — a settled buyer never needed the token anyway, so nothing that
+   * paid loses access. The two browser-facing kinds (`contrib:` for a teacher fetching their own lesson,
+   * `derive:` for a declared derivation) stay bearer, because a browser cannot sign — but they are counted and
+   * capped like everything else, and every redemption is an event on the seller's own log.
+   */
+  static readonly TOKEN_MAX_REDEMPTIONS = 20;
+  private redeemToken(token: string, sha: string, address: string | null): boolean {
+    const row = this.store.getToken(token, sha);
+    if (!row) return false;
+    const bearer = !row.issued_to || !row.issued_to.startsWith('0x');
+    if (!bearer && !(address && sameAddr(row.issued_to, address))) {
+      this.log('warn', 'trade', `refused a download token for ${row.patch_id ?? sha.slice(0, 12)} presented by ${address ? `${address.slice(0, 10)}…` : 'an unsigned requester'}: it was issued to ${row.issued_to.slice(0, 10)}… — a token is not transferable, and its buyer can fetch this body with their own signature`, row.patch_id, { sha256: sha, issued_to: row.issued_to, presented_by: address });
+      return false;
+    }
+    if (row.redemptions >= Market.TOKEN_MAX_REDEMPTIONS) {
+      this.log('warn', 'trade', `download token for ${row.patch_id ?? sha.slice(0, 12)} has been redeemed ${row.redemptions} times (cap ${Market.TOKEN_MAX_REDEMPTIONS}) — refusing; a new purchase or a signed fetch issues a fresh one`, row.patch_id, { sha256: sha, redemptions: row.redemptions });
+      return false;
+    }
+    const n = this.store.useToken(token, sha);
+    this.log('info', 'trade', `${row.patch_id ?? sha.slice(0, 12)} body served on the token issued to ${row.issued_to.slice(0, 12)}… (redemption ${n}/${Market.TOKEN_MAX_REDEMPTIONS})`, row.patch_id, { sha256: sha, issued_to: row.issued_to, redemptions: n });
+    return true;
   }
 
   /** One fetch of a body per verifier per anchor, for as long as that anchor is waiting on that verifier (item 326). */

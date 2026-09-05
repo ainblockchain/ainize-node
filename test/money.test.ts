@@ -92,3 +92,27 @@ test('277 buying a free knowledge writes no settlement, names no buyer and is co
   assert.equal(Number(again.total ?? again.amount), 0);
   assert.equal((await A.ledger.settlements(FREE_ID)).length, 0);
 });
+
+// ---------------------------------------------------------------- item 345: the token is not a bearer ticket
+test('345 a download token only works for the address it was issued to, and its redemptions are counted', async () => {
+  const res = await C.market.buy(PAID_ID);
+  const token = res.manifest.download_token;
+  assert.ok(token, 'the buyer is handed a token');
+  assert.equal(res.manifest.issued_to.toLowerCase(), C.market.address.toLowerCase());
+
+  // the buyer's own signed fetch: allowed, and counted
+  const mine = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ngram-auth': authHeader(C.cfg.identity, `blob:${paidSha}`) } });
+  assert.equal(mine.status, 200);
+
+  // the same token pasted to someone else — signed by them, or by nobody at all
+  const thief = createIdentity();
+  const stolen = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ngram-auth': authHeader(thief, `blob:${paidSha}`) } });
+  assert.equal(stolen.status, 402, 'a token is not transferable');
+  const anon = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`);
+  assert.equal(anon.status, 402, 'and holding it without a signature buys nothing');
+
+  // the seller has a record of what that one sale served
+  const row = A.market.store.getToken(token, paidSha);
+  assert.ok(row && row.redemptions >= 1, 'redemptions are counted');
+  assert.equal(row!.patch_id, PAID_ID);
+});
