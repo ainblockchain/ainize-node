@@ -220,7 +220,10 @@
    "n": 314,
    "title": "Nothing links a settlement to the payout that honoured it: the creator's share is an unreferenced transfer from the seller's wallet, after the fact",
    "flow": "C",
-   "severity": "major"
+   "severity": "major",
+   "fixed": true,
+   "fixed_by": "17ff558",
+   "fixed_note": "Every royalty transfer is written under payoutKeyFor(settle_hash, to) and followed by a signed `payout` record on the shared ledger, so any node can join a settlement to the money; the wallet marks a royalty backed by a record as evidence 'record' rather than the seller's own report."
   },
   {
    "n": 299,
@@ -375,7 +378,10 @@
      "evidence": "packages/e2e/results/ux4/critique4-01-free-is-not-free.txt (402 with `maxAmountRequired \"0\"`; `✓ bought ux4-free for 0 (local-credit)` with a signed intent; `ledger ls --kind settle` → 'ux4-free · 0 CREDIT · buyer 0x8186…B3E2'; the seller's wallet lists a 0 CREDIT sale).",
      "user_cost": "The cheapest on-ramp into the sharing economy — take a free lesson, try it, build on it — costs a wallet, a signature and a permanent public record of who took it. A visitor cannot do it at all (buying is operator-only), and 'free' items pad every sold/revenue/popular figure with 0-value sales.",
      "fix": "In the gateway, when `Number(price) === 0` return the manifest to any signed requester (or any requester, recording `scheme:'free'`) with no nonce and no settlement, and count it as a download rather than a sale; keep the buyer's address out of the record unless they paid. Make the Buy tab and `patch ls` say 'Free — no payment needed' instead of 'Buy · 0 node credit'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "f7baf7b",
+     "fixed_note": "A price of 0 is handed over by the gateway with no nonce, no signature, no settlement and no buyer named; mayDownload admits a free listing's body to anyone, collect and licenseOf follow, and the hand-over is counted on the seller's node as a download and shown in the wallet."
     },
     {
      "n": 278,
@@ -388,7 +394,10 @@
      "evidence": "packages/e2e/results/ux4/critique4-03-price-is-immutable.txt (`PATCH /api/patches/ux4-paid {\"price\":\"4\"}` as the logged-in operator → `only drafts can be edited (anchors are immutable on the ledger)`; the same for the free item; `patch --help` has no price verb).",
      "user_cost": "Every price is a one-shot guess made before a single sale, on a market whose own publish form gives no pricing guidance (item 162). Sellers cannot respond to demand, to a cheaper copy of their file (363), or to a superseding version.",
      "fix": "Add a `price` record kind (`{patch_id, price, currency, at, sig}`) that only the anchor's author may write, have `deriveCatalog` fold the newest one into the entry, and read it in `requirementsFor`/`settlePayment` so the quote and the charge move together; expose `ainize patch price <id> <price>` and a price field on the Manage page, and show a price history on the knowledge page so a buyer can see a discount is real.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "786592a",
+     "fixed_note": "A `price` ledger record signed by the anchor's author, folded over the anchor like `retire`, so the quote, the 402 and the charge move together; every price stays on the record as price_history, with `ainize patch price` and a price block on Manage."
     },
     {
      "n": 279,
@@ -401,7 +410,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-agent-02-replay-theft-wrongamount.txt (section E4: `transfer 0.1 below price 5`, money not returned, no settlement written).",
      "user_cost": "A rounding or typing mistake donates the transfer to the seller with no receipt, no credit and no instruction; the rule is learned by losing money.",
      "fix": "Either accept several transfers under one `transfer_key` and settle when their sum reaches the price, or answer `{error, received, missing, transfer_key, refund_policy}` and record a `credit` row the buyer can top up; document the behaviour in /docs. In the agent and `market.buy`, compare `req.maxAmountRequired` with `anchor.price` before transferring.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "db72e27",
+     "fixed_note": "A short AIN transfer is held against (knowledge, payer) in partial_payments and answered with what arrived, what is missing and which key to send it under; the next transfer that reaches the price settles and spends every held part. market.buy also refuses a quote above the listed price before transferring."
     },
     {
      "n": 280,
@@ -414,7 +426,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-06-cli-buy-child.txt (receipt vs settle record); seller-royalties-anc-02-buy-chain-x402.txt (headers carry node-c 3 + 1.5, node-b 1.5, seller 14); critic-03-nodeb-rebuy-pixelplus.txt (six steps, no payees). Earlier reviews cover the quote side (item 236) and the ledger row (item 197), not the buyer's receipt.",
      "user_cost": "The product's central promise to the buyer — 'Revenue is split automatically with the original creators' — is never demonstrated at the moment it happens, so there is no reason to believe the next sentence, and no way to check that the lineage shown on the page was honoured.",
      "fix": "Parse `x-payment-response` in `market.buy`, store `royalty` on the purchase row, return it in `PurchaseResult`, and print `3 CREDIT → node-b 2.1 (seller) · node-a 0.9 (creator of pixel-parent)` in the CLI receipt, the web timeline (PatchPage.tsx:542-559) and an expandable column of the Purchased table. Compute the same table from `royaltySplit` in the 402 body and the Buy tab so it is visible before paying, and put the licence there too.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "fa2ab45",
+     "fixed_note": "market.buy parses the seller's x-payment-response, names every payee against its own saleSplit preview (marking any payee the preview did not expect), keeps the map on the purchase row and returns it; the CLI receipt, the timeline step and the dashboard's Paid cell all render it."
     },
     {
      "n": 281,
@@ -955,7 +970,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-16b-nodec-payout-rows.txt (rows 1–29 start at 09-01 00:00:43) against 34 royalty-bearing settles — the five from 08-31 have no row at all.",
      "user_cost": "15 AIN owed to the demo's ancestor is unrecoverable by any button in the product; an honest seller cannot pay a debt the product forgot.",
      "fix": "At start and on a timer, walk this node's own `ain-transfer` settle records and call `enqueue` for each (idempotent), then `processPending`; add `ainize payouts reconcile` and log 'N rows recovered from the record'. Since settles are the shared source of truth, a missing row then becomes impossible rather than merely unlikely.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "17ff558",
+     "fixed_note": "market.reconcilePayouts walks this node's own ain-transfer settlements and re-enqueues idempotently at boot, on the 20-second watchdog and by hand (`ainize payouts reconcile` / POST /api/me/payouts/reconcile), reporting how many rows were recovered."
     },
     {
      "n": 314,
@@ -968,7 +986,10 @@
      "evidence": "seller-royalties-anc-16-demo-ain-reconciliation.txt (34 reported / 29 seller-claimed / 8 in chain state, unreconcilable by anyone); code at HEAD payouts.ts:93, ain-ledger.ts:253-257.",
      "user_cost": "The landing page's promise — 'payments and creator revenue share settle on the AI Network automatically' — is true for the purchase and unverifiable for the share. A creator has no evidence to dispute a seller, and an honest seller has no evidence to show.",
      "fix": "Use the settle hash as the transfer key (`/transfer/<seller>/<to>/<settleHash>`; ain-js accepts an explicit key — `transferKeyFor` already exists in packages/core/src/x402.ts:51 and is unused) and append a `payout {settle_hash, to, amount, tx_hash}` record so any node can join settle ↔ payout; show 'confirmed on chain' vs 'seller-reported' in the wallet (311). Longer term let the 402 carry several `payTo` lines so the buyer pays each recipient directly.",
-     "effort": "L"
+     "effort": "L",
+     "fixed": true,
+     "fixed_by": "17ff558",
+     "fixed_note": "Every royalty transfer is written under payoutKeyFor(settle_hash, to) and followed by a signed `payout` record on the shared ledger, so any node can join a settlement to the money; the wallet marks a royalty backed by a record as evidence 'record' rather than the seller's own report."
     },
     {
      "n": 315,
@@ -997,7 +1018,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-14-teacher-page-as-ancestor-ledger-en-1280.png ('Owed 16.4 · Paid 16.4 · 6 sales' including the viewer's own g-root sale) against the wallet's 19.65 and the ledger's 26.15 — three totals for one person.",
      "user_cost": "Three surfaces give one creator three answers, and the one closest to right cannot be reached from the wallet.",
      "fix": "Reuse `teacherProfile.earnings` in `/api/me/wallet` for the node address and any payout address, summing every key that folds to it and excluding rows where the viewer is the seller; render it as the wallet's 'Creator revenue share' table with the per-seller state; link 'see every sale' from the wallet and keep /teacher/ as the public page.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "3d8e92e",
+     "fixed_note": "The wallet sums EVERY spelling of this address in each royalty map instead of the first, links 'see every sale' to /teacher/<address>, and each row's title says whether 'paid' rests on a public payout record or the seller's own word."
     },
     {
      "n": 317,
@@ -1058,7 +1082,10 @@
      "evidence": "packages/cli/src/bin.ts:397-404 (the whole money surface); chain.ts:103-112; AccountPage.tsx:133-135 (balance, no action).",
      "user_cost": "'You get paid per sale' ends at a number on one screen: a creator cannot move earnings to their own wallet, pay a collaborator, or take anything off the node — which also makes the play-money problem (299) indistinguishable from the real one.",
      "fix": "Add `ainize wallet send <address> <amount>` (AIN ledgers) with a confirm and a tx hash, and an Account action beside the balance; on local ledgers say plainly that the balance cannot leave this node and link the terms.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "4ef25bc",
+     "fixed_note": "`ainize wallet send` and an Account send block through POST /api/me/wallet/send: address and amount validated, balance checked, an irreversible-transfer confirmation and a tx hash back. A local-ledger node says plainly that its development credit cannot leave, with a link to the terms."
     },
     {
      "n": 321,
@@ -1071,7 +1098,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-15-cli-interrupted-payout-render.txt (the rendered row against the full 93-character message); branch.ts:71-77; payouts.ts:32, :152-162.",
      "user_cost": "The operator either retries blind — risking the double payment the code was written to prevent — or never notices, and the creator on the other node stays unpaid.",
      "fix": "Never slice `last_error`: print it on its own indented line and, for `PAYOUT_INTERRUPTED`, append the concrete command ('check /transfer/<seller>/<to> on the chain, then `ainize payouts retry N`'). Add 'payouts needing attention: N' to `ainize status` and a banner on My knowledge when `summary.failed > 0`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "17ff558",
+     "fixed_note": "payoutTable never slices last_error: every error is printed under the table in full with the command that answers it (for PAYOUT_INTERRUPTED, the chain path to check first), and `ainize status` gained a 'payouts owed' line."
     },
     {
      "n": 322,
@@ -1084,7 +1114,10 @@
      "evidence": "packages/e2e/results/ux4/seller-royalties-anc-02-buy-chain-x402.txt (m-merge and c-leaf royalty maps identical); seller-royalties-anc-01-publish-chain.txt; catalog.ts:266-296; docs/lineage-teach-design.md §11.",
      "user_cost": "A creator deciding whether to build on one base or combine two, or whether declaring a data provider is affordable, makes a permanent revenue decision with no number in front of them.",
      "fix": "Add `GET /api/patches/:id/split` (and `ainize publish --preview`) returning `royaltySplit` for the draft's parents, contributors and price as `[{address, name, role, amount}]`, render it as 'Who gets what per sale' on the form and before the CLI confirm, and state the rule in one sentence in the helper and /docs.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "82cf686",
+     "fixed_note": "saleSplit carries the rule in one sentence computed from the shares it used, GET /api/patches/:id/split?price= answers the whole split for any price (drafts included), the publish preview and the /new-patch helper state it, and both concepts docs gained the consequence in English and Korean."
     },
     {
      "n": 323,
@@ -1463,7 +1496,10 @@
      "evidence": "critique4-01/critic-04 helper run (mint.mjs): a party holding only the token fetched the 72,750-byte body with no signature and no address (HTTP 200), while the same URL without the token returned 402.",
      "user_cost": "A single 25 AIN purchase can serve an unlimited number of downloads for a day, and the seller has no record that it happened — the per-download billing model has no enforcement behind it.",
      "fix": "Bind the token to the buyer (`issued_to`) and require it alongside a signed `x-ngram-auth` from that address, or drop the token entirely (settled buyers can already fetch with a signed header); count redemptions per token and log them as a seller event.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "bc1a348",
+     "fixed_note": "A token issued to an address is redeemable only by that address (proved by the x-ngram-auth every client already sends); browser-facing contributor tokens stay bearer but every kind is counted, capped at 20 redemptions and logged as a seller event."
     },
     {
      "n": 346,
@@ -1556,7 +1592,10 @@
      "evidence": "packages/e2e/results/ux4/critique4-01-free-is-not-free.txt (`ledger ls --kind settle` shows the buyer's address for a 0-credit item); PatchPage.tsx:494-506.",
      "user_cost": "A buyer learns only afterwards that their purchases are a public, permanent list — including free ones, where the record buys them nothing.",
      "fix": "Add one line to the Buy tab and the CLI confirm: 'The sale is recorded publicly: this knowledge, the price and your node address.' Stop writing a settlement for price-0 downloads (277).",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "f7baf7b",
+     "fixed_note": "The CLI confirm and the Buy tab say, before the answer, that the sale is published with the knowledge, the price and the buyer's node address — and that a free knowledge is handed over with no payment and no record at all."
     },
     {
      "n": 352,
@@ -1617,7 +1656,10 @@
      "evidence": "Code at HEAD; on the demo the receipts do write ('on-chain access receipt written'), so this is a silent-failure path rather than an observed loss.",
      "user_cost": "A buyer relying on the receipt as proof of purchase may have none and is never told.",
      "fix": "Show the failure as a warning step ('access receipt could not be written — retry'), retry it in the background, and stop describing it as guaranteed until it is.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "3d8e92e",
+     "fixed_note": "The access receipt is a timeline step either way — including 'this anchor has no knowledge-graph entry, so the settlement is the proof' — and a failed write is retried in the background five times before the node gives up out loud."
     },
     {
      "n": 356,
@@ -1690,7 +1732,10 @@
      "evidence": "types.ts:185-193; market.ts:615-618, :975-984; catalog.ts:236-306. Confirmed against the daily-bake behaviour recorded in items 255-257.",
      "user_cost": "The one recurring-revenue shape the product describes has no price object, so the most loyal customer is the most expensive one and nobody is paid to keep a channel good.",
      "fix": "Give a branch optional terms (`price_per_period`, `included_items`, `curator_share`) signed by its owner; charge a subscription once per period instead of per item; carry `branch` on the settlement and add the curator to `royaltySplit`; show the run-rate ('about 12 CREDIT a month at one bake a day') on the track card before subscribing.",
-     "effort": "L"
+     "effort": "L",
+     "fixed": true,
+     "fixed_by": "db7e950",
+     "fixed_note": "A track declares terms {price, currency, period_days} signed by its owner; GET /x402/branch/:name settles the curation fee once per period into a settle record whose royalty is entirely the curator's, `subscribe` pays the period before buying, and a measured 30-day run rate is shown on `branch quote`, before the subscribe confirmation and on the track card."
     },
     {
      "n": 360,
@@ -1704,9 +1749,9 @@
      "user_cost": "A seller picks a revenue model the product does not implement, and a buyer is told they are paying by the hour when they paid once — the two models that would make serving other people's knowledge profitable exist only as words.",
      "fix": "Either implement metering (a `usage` record per applied hour or per answered request, settled in batches against the buyer's balance) or remove both options from the form and the labels until it exists.",
      "effort": "M",
-     "fixed": false,
-     "fixed_by": "94449c5",
-     "fixed_note": "PARTIAL — the /new-patch billing select is gone and the sale is described as one payment per download. The identical select on the draft-edit form (ManagePage.tsx:360-365) and detail.ts’s f.billingLabel for anchors already carrying those models are other groups’ files and still offer/print them."
+     "fixed": true,
+     "fixed_by": "a2323db",
+     "fixed_note": "BILLING_IMPLEMENTED names the one model that is charged; the node refuses per_apply_hour/per_hit on create and update, the CLI offers one choice, the Manage select carries only per_download, and an anchor that already declares another is labelled 'marked per use by the seller, but nothing meters it — you pay once, on download'. (Reverted by a concurrent commit and restored in db7e950.)"
     },
     {
      "n": 361,
@@ -1735,7 +1780,10 @@
      "evidence": "packages/e2e/results/ux4/subscriptions-10 (dashboard text); DashboardPage.tsx:208; market.ts:812.",
      "user_cost": "The operator cannot tell what a track spent from what they chose to buy, and the money column reads like a bug.",
      "fix": "Store `origin: 'manual' | 'subscription:<track>'` on the purchase row, group the table by it with a per-track subtotal, and print the unit once.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "3d8e92e",
+     "fixed_note": "Purchases carry an origin, subscribe/syncSubscription pass subscription:<track>, and the Dashboard prints the unit once (the scheme only when it says something the amount does not), the track that bought it, and who the money went to."
     }
    ]
   },
@@ -1786,7 +1834,10 @@
      "evidence": "packages/e2e/results/ux4/incentives-network-ns-11 (three self-buys → SOLD 5 on every peer, revenue up, ranking up); catalog.ts:141; api.ts:168. Free items make it costless (277).",
      "user_cost": "The only demand signal on the marketplace can be manufactured for nothing, and a buyer comparing two knowledges is reading it.",
      "fix": "Refuse a settlement whose buyer is the seller (400 `self_purchase`), exclude self-settlements from `downloads`, `revenue` and the popular sort when historic ones exist, and count distinct buyers rather than settlements in the ranking.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "0b4901e",
+     "fixed_note": "settlePayment refuses a buyer that is the seller (self_purchase) on both schemes and market.buy refuses before any money moves; deriveCatalog excludes self-settlements from downloads, revenue and buyers, which is what the popular sort reads."
     },
     {
      "n": 366,
@@ -1799,7 +1850,10 @@
      "evidence": "config.ts:210; payouts.ts:66-93; production-verification-plan.md:264; ain-ledger.ts:233.",
      "user_cost": "The default price makes every sale a loss on the network the product is heading to, and a family of three ancestors multiplies the loss by the number of payout transfers.",
      "fix": "Compute a price floor from the provider's `min_gas_price` and the number of payees, warn on the publish form and in `ainize publish` when the price is below it, and batch a settlement's payouts into one transaction (or net them against the seller's next purchase) so one sale costs one write.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "17ff558",
+     "fixed_note": "Payouts for one sale go out in ONE transaction where the wallet supports it (AinLedger.transferMany), all or nothing; and 82cf686 added a MEASURED price floor from gas_cost_total on this node's own writes, warned at publish, with no number invented on a chain that has charged nothing."
     },
     {
      "n": 367,
@@ -1844,7 +1898,10 @@
      "evidence": "market.ts:670-680; config.ts:212; packages/web/src/i18n/pages/detail.ts (`detail.buy.pays_from_credit`).",
      "user_cost": "'Insufficient credit' can mean 'you spent it' or 'this seller grants less than the last one', and nothing on the surface distinguishes them.",
      "fix": "Make the grant a record (364) so it is the same on every node, name the granting node in the balance line, and print in the refusal which grant and which spends produced the figure.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "3d8e92e",
+     "fixed_note": "creditStatement shows the arithmetic — granted by <node>, minus spends here, plus royalties earned — in the refusal and at /api/credit/:address, and says that another seller may grant a different amount."
     }
    ]
   }

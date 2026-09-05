@@ -499,7 +499,10 @@
      "user_cost": "A derivative publisher reads a revenue number that is up to three times what they were paid, and a base creator's own knowledge shows no revenue from the children that paid her.",
      "fix": "Compute `revenue_net` per anchor from the royalty maps (`Σ royalty[author]`) alongside gross, and render `sold 1 · 10 CREDIT gross · 3.5 to you` in `patch get`, the page and the dashboard; on the base creator's dashboard add 'earned from knowledge built on this' (item 195).",
      "effort": "S",
-     "theme": "Money along the tree"
+     "theme": "Money along the tree",
+     "fixed": true,
+     "fixed_by": "0b4901e",
+     "fixed_note": "deriveCatalog computes revenue_net (the author's own line in each settlement's royalty map), revenue_shared and buyers; `patch get` prints '4 CREDIT gross · 3.8 to <author>, 0.2 shared', the dashboard prints the same under the sales cell and the knowledge page's Revenue stat says what went upstream."
     },
     {
      "n": 195,
@@ -1229,7 +1232,10 @@
      "user_cost": "A script assembling a set from ids seen last week silently buys and stacks retired versions; an agent cannot decide on lineage, licence or who is paid before paying, and the buyer never sees the split it just funded.",
      "fix": "Add `status`, `superseded_by`, `license`, `lineage: {parents, standalone}` and `split_preview` to the 402 JSON body and the manifest; render the note with `warn()` and require `--allow-superseded` (or `[y/N]`) before paying; print the royalty map from `x-payment-response` as a last receipt line (`paid: bob 3.5 · Dana 3.5 · alice 3 (lineage)`).",
      "effort": "S",
-     "theme": "Agents, the API and routing"
+     "theme": "Agents, the API and routing",
+     "fixed": true,
+     "fixed_by": "b4cb949",
+     "fixed_note": "The 402 carries status, superseded_by, license, lineage{parents,standalone} and split_preview (computed by the same royaltyPlan that settles the sale); `use`/`patch buy` render a superseded version as a warning that must be answered with --allow-superseded, and the quote prints the split and the licence before the confirmation."
     },
     {
      "n": 237,
