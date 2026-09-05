@@ -838,7 +838,10 @@
      "user_cost": "Dashboards and scripts are green during exactly the windows when the model is answering without the knowledge.",
      "fix": "Expose the watchdog's last measurement per applied patch in `/api/runtime` (`measured_at`, `present: true|false`) and render it: `in model ✓ (checked 12 s ago)` / `rows overwritten — re-applying`; print the same per patch in `ainize status`.",
      "effort": "S",
-     "theme": "The runtime stack: apply, remove, watchdog"
+     "theme": "The runtime stack: apply, remove, watchdog",
+     "fixed": true,
+     "fixed_by": "9b76b2e",
+     "fixed_note": "The watchdog's `patch.py status` measurement is recorded (kv runtime.checked) and returned on /api/info, /api/runtime and per stack layer (checked_at/present, null below the measured top); `ainize status` prints `in model  a → b · on the table (b checked 12 s ago)` or `b is NOT on the table — its rows were overwritten`. The watchdog's own write needs a live model server, so that half is deferred; the API shape and the rendering were verified against a throwaway node."
     },
     {
      "n": 216,

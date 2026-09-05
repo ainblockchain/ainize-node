@@ -478,7 +478,10 @@
      "evidence": "critique2-verify.txt §11, measured today: `~/.ngram-cluster/node-a/data/uploads` holds 31 files, 115 MB — twenty-three times the size of its actual blob store (5.0 MB). packages/e2e/results/ux2/operator-network-upload-leak.txt: two *rejected* uploads of a 20 MB file (`Too small: expected string to have >=2 characters`, then `npz: end of central directory not found`) left both bodies on disk, 39 MB.",
      "user_cost": "The console's publish form is where a 350 MB knowledge file is uploaded and where an operator retries after a validation error. Each retry silently consumes another full copy in a directory nothing in the product ever mentions — not `status`, not `/api/info`, not `config show`, not the /docs reference.",
      "fix": "Unlink `req.file?.path` in a `finally` around the handler (after `createDraft` has copied it, and on every throw), for both the patch route and the dataset route. Sweep `<dataDir>/uploads` and `<dataDir>/teach/incoming` for files older than an hour at start-up.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "0c6dc25",
+     "fixed_note": "POST /api/patches drops its multer temp file in a `finally` (success and every rejection), and the node sweeps <dataDir>/uploads and <dataDir>/teach/incoming at start-up and hourly for files untouched for an hour, saying what it took."
     },
     {
      "n": 130,
@@ -490,7 +493,10 @@
      "evidence": "packages/e2e/results/ux2/operator-network-grace-flood.txt: `x12 over 0.9 min (13.1/min)` for each distinct minute-variant of `verify o69-grace-… failed: runtime unavailable (serving API unreachable) — waiting up to 12 min before hash-only fallback`. Counted in the demo nodes' SQLite: node-b 2,646 events / 682 warn / 671 of them this one loop = 25.4 % of every stored event; node-c 2,804 / 830 / 819 = 29.2 %. `ainize logs`' default `--limit` is 100 (bin.ts:121) and `/api/events` defaults to 200.",
      "user_cost": "During the exact incident an operator needs to read the log, the log *is* the incident: the default window is entirely consumed by one repeating line, hiding the payout failure or peer error they are actually looking for — and the rows stay forever.",
      "fix": "Log the grace state once per patch per transition: on entering the grace period, once at the halfway mark, and once when it falls back to hash-only or recovers, keeping the retries silent — the pattern teach.ts:685 already uses with `BLOCKED_LOG_MS`. Better still, raise one node-level event: `model server unreachable — N patches waiting, grace expires at HH:MM`.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "ee176cd",
+     "fixed_note": "A verification that is only waiting for the model server throws RuntimeWaitError, which the round collects instead of logging: one warn on entering the grace period (count + the clock time hash-only starts), one at the halfway mark, one on recovery, and one line per patch when it actually falls back."
     },
     {
      "n": 131,
@@ -502,7 +508,10 @@
      "evidence": "packages/e2e/results/ux2/critic-22-crash-logs.txt: after `kill -9`, `ainize status` and `ainize logs` both exit 2 with `error: cannot reach node at http://localhost:3581 (fetch failed). Is it running?`; `ainize stop` → `no background node running for this NGRAM_HOME`, exit 0, silently deleting the stale pid file. After restarting, the whole `logs --kind node` history is three identical `node started (local ledger, roles seller/verifier/serving)` lines.",
      "user_cost": "The post-mortem is impossible from inside the product: the operator is left grepping a raw SQLite file or a node.log whose only content is a startup banner. And because no stop is ever recorded, nobody can tell whether a node was restarted deliberately last Tuesday or crashed — the first question in any incident.",
      "fix": "Make `logs` fall back to `<home>/data/node.sqlite` read-only when the HTTP call fails, with a one-line note `node is not running — reading <path>`. Log `node stopping (clean shutdown)` at the top of `RunningNode.stop()`, and at start-up detect that the previous run's last event was not a stop and log `warn node: previous run ended without a clean shutdown (possible crash)`. Move the `press Ctrl+C to stop` line out of the detached child's stdout.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "b881655",
+     "fixed_note": "`logs` falls back to reading <dataDir>/node.sqlite when nothing answers, saying so; stop() logs `node stopping (clean shutdown)` and stamps node.stopped_at, and a start whose previous run never recorded one warns that it was killed or crashed. The `press Ctrl+C to stop` line is now printed only to a TTY (f202ef1), so it no longer ends every detached run's log."
     },
     {
      "n": 132,
@@ -564,7 +573,10 @@
      "evidence": "critique2-verify.txt §10: `/api/info`'s runtime keys are exactly `[api, applied, available, hook, model, repo]`. packages/e2e/results/ux2/operator-network-sharedlock.txt: `/api/chat/patches` on :3404 returned `\"lock\": {\"owner\":\"pid:1859000\",\"label\":\"runtime\",\"since\":…,\"alive\":true,\"mine\":false}` while `ainize --home ~/.ngram-cluster/node-c status` printed `runtime  available · Qwen3.8-Flash-Next · hook ok`.",
      "user_cost": "The most common cause of \"why is nothing happening\" on a multi-node host is invisible on every operator surface. An operator watching a verification that never completes cannot learn that another node holds the lock, who holds it, or for how long, unless they read a visitor-facing chat endpoint by hand.",
      "fix": "Add `queue: { running, waiting, lock }` to `/api/info` — one call to the same `queueState()` — and render it in `ainize status` as `runtime  available · held by pid:1859000 (runtime) for 4m · 2 waiting`. Add the same line to the /network Model server card behind the operator session.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "9b76b2e",
+     "fixed_note": "/api/info and /api/runtime carry `queue` (running, waiting, cross-process lock holder) from the same queueState() the chat endpoints use, and `ainize status` renders `available · … · held by pid:1859000 (runtime) for 4m · 2 waiting`."
     },
     {
      "n": 136,
@@ -576,7 +588,10 @@
      "evidence": "Live on the demo cluster: node-a's config.json `peers` is `[\"http://localhost:3404\"]`, while `ainize nodes` on the same node lists three peers — 3403, 3404 and 3410, the last being another reviewer's node this operator never configured. During this review node-a ended up gossiping with two unrelated private clusters on this host because a shared peer advertised them (operator-network-gossip-autoadd.txt).",
      "user_cost": "An operator cannot answer \"who is my node talking to?\" from the config, cannot control it, and is shown other people's endpoints under a heading that says they configured them. On a public network this is an unbounded, operator-invisible connection list that any peer can inject into.",
      "fix": "Log an `info`/`p2p` event for every peer learned by exchange (`learned peer http://… from node-c`), mark learned peers in the `peers` table, and add a SOURCE column (`configured` | `learned`) to `peers ls` — renaming the CLI heading to `peers`. Cap the learned set with LRU eviction by `last_seen` and add `p2p.acceptExchange` and `p2p.maxPeers` config keys.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "acfbc48",
+     "fixed_note": "The peers table records `source` (configured | learned) and `learned_from`, every endpoint learned by exchange is logged once by name, `p2p.maxPeers` caps the table by evicting the least recently seen LEARNED row, `p2p.acceptExchange` turns discovery off, and the CLI heading is `peers` with a SOURCE column. (Committed inside acfbc48: a concurrent workstream committed the shared index while these files were staged.)"
     },
     {
      "n": 137,
@@ -588,7 +603,10 @@
      "evidence": "packages/e2e/results/ux2/critic-19-clobber-peers.txt: `peers ls` showed `http://localhost:3581  critic-n6`; `peers rm http://localhost:3581` → `✓ peer removed: http://localhost:3581`; 12 s later `peers ls` listed it again with a fresh LAST SEEN. During cleanup of this review I had to loop the DELETE across all three demo nodes six times before they stopped re-teaching each other about my throwaway nodes.",
      "user_cost": "There is no way to detach a node from a peer. An operator cutting off a misbehaving, spamming or dead peer runs the documented command, is told it worked, and is reconnected four seconds later by any third node that still lists it. The table only grows, so a long-lived node ends up dialling every endpoint that ever existed on the network, forever.",
      "fix": "Persist removals: keep a `peers_blocked` set that `upsertPeer` consults so a removed endpoint stays removed until `peers add` re-admits it, and say so (`✓ peer removed and blocked from re-discovery`). Add eviction: drop a peer row after N consecutive failures or T days unseen, and log it.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "acfbc48",
+     "fixed_note": "`peers rm` records the endpoint in `peers_blocked`, which upsertPeer consults, so a removal survives gossip until `peers add` re-admits it (and says so); learned peers are also evicted after p2p.evictAfterFailures rounds or p2p.staleDays unseen. Verified live: removed peer stayed gone across gossip rounds, re-admission lifted the block."
     },
     {
      "n": 138,
@@ -600,7 +618,10 @@
      "evidence": "packages/e2e/results/ux2/operator-network-deadpeer.txt: after `peers add http://localhost:9999`, 40 s later `peers ls` shows `(unreached) … FAILURES 10` while `logs --kind p2p` shows only routine sync lines and `logs --limit 200 | grep -c 9999` = 0. `peers rm http://localhost:9999` twice and `peers rm http://not-a-peer-i-ever-had:1234` all print `✓ peer removed`, exit 0.",
      "user_cost": "A peer that is down, moved or added with a typo produces exactly zero signal in the log an operator watches, forever, while the node keeps dialling it every gossip interval. And when the operator tries to clean up, a mistyped removal is confirmed as done, so they believe they fixed something they did not touch.",
      "fix": "Store `last_error` and `last_attempt` on the peer row and log one `warn` on the transition to unreachable (and an `info` on recovery), not per round. Show a state column in `peers ls`: `ok` / `unreachable since 12m — connect ECONNREFUSED`. Make `peers rm` return whether a row was deleted and print `no such peer: <url> (\\`ainize peers ls\\`)` with exit 1 when it was not.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "acfbc48",
+     "fixed_note": "The peer row keeps `last_error` / `last_attempt` (with the cause dug out of Node's `fetch failed`: ECONNREFUSED …), the transition to unreachable is one warn and recovery one info, `peers ls` / `nodes` show a STATE column instead of a raw counter, and a removal that matched nothing exits 1 with `no such peer` and changes nothing."
     },
     {
      "n": 139,
@@ -612,7 +633,10 @@
      "evidence": "packages/e2e/results/ux2/critic-24-dup-identity.txt: `init --private-key <n6's key>` accepted with no check and no warning, printing the identical address `0xc9F3C742…AA98`. Both nodes peered to a third; sampling that third node's `/api/nodes` every 6 s for the shared address returned `critic-n6 -> http://localhost:3581`, then `critic-n6-clone -> http://localhost:3582` for the rest of the run. Neither node's `logs --kind p2p` mentioned it.",
      "user_cost": "Cloning a VM, restoring a backup onto a new host without decommissioning the old one, or running a staging copy of a production home — three ordinary day-2 actions — silently produce two nodes with one identity. Buyers and verifiers fetching a blob from that seller are routed to whichever endpoint the registry currently holds, so downloads and verifications fail intermittently for reasons no log explains, and both nodes sign attestations and settlements as the same party.",
      "fix": "On `init --private-key`, and on every `p2p/hello` where a peer presents an address already held at a different endpoint, log `warn p2p: address 0x… is claimed by two endpoints (<a>, <b>)` and surface a `DUPLICATE` flag on that row in `ainize nodes` and `/network`. Include a per-start instance id in `PeerInfo` so a collision can be distinguished from a legitimate endpoint change.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "f202ef1",
+     "fixed_note": "The gossip round warns once per pair when one address answers at two endpoints, PeerInfo.instance (a per-start id) separates a node that MOVED from two nodes on one identity, and /api/nodes carries duplicate_endpoints which `ainize nodes` renders as a DUPLICATE flag plus what to do. Verified live with a cloned key on a throwaway cluster."
     },
     {
      "n": 140,
@@ -624,7 +648,10 @@
      "evidence": "Measured today on node-a: `GET /api/nodes` returns 122 node records (name histogram: node-a ×47, node-d ×44, A ×12, B ×12, node-b ×1, node-c ×1) across 57 distinct endpoints; rows whose endpoint is currently listening: 3. `ainize nodes` prints 132 lines with `node-a (self)` at line 119 and the four-line peers table below it; sorted-by-last_seen check: false. Playwright at 1280 px: /network is 9,076 px tall with 122 and 30 tbody rows (operator-network-page-full.png).",
      "user_cost": "The operator's answer to \"who is on my network?\" is a wall in which the three nodes that exist are invisible, discriminated only by an eighth-column timestamp, with 47 rows sharing the name of the node they are standing on. The same defect the first review found on /dashboard (item 31) is on the two surfaces that answer the network question, and on /network it is 120 dead rows deep.",
      "fix": "Sort `knownNodes()` by `last_seen` descending, dedupe by `(name, endpoint)` keeping the newest, and stop returning records older than a configurable window unless `?all=1`. In the CLI, default to nodes seen within the last hour with self first, print `… and 118 nodes not seen for over an hour (--all to list them)`, add `--limit`/`--all` and a relative-age SEEN column, and print the peers table first. On /network, split online / last-seen sections with a live-stale-dead badge and page at 25 rows.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "f202ef1",
+     "fixed_note": "knownNodes() keeps the newest record per (address, endpoint), collapses same-box rows under a new key, and returns self first then by last_seen; /api/nodes defaults to the last 24 h (peers always current) with nodes_total/nodes_hidden and ?all=1; `ainize nodes` prints the peers table first, then the last hour with a relative SEEN column, says how many it hid, and takes --all/--limit."
     },
     {
      "n": 141,
@@ -653,7 +680,10 @@
      "evidence": "packages/e2e/results/ux2/operator-network-chain-join.txt and my own re-run: with `ledger.ain.providerUrl = http://localhost:9099`, `ainize chain status` → `reachable  no` beside `container  ngram-ain: running`; `ainize chain setup` → `error: connect ECONNREFUSED 127.0.0.1:9099`, exit 1, naming no config key. `/api/info`'s top-level keys contain no balance (critique2-verify.txt §10).",
      "user_cost": "The operator gets two confident-but-wrong signals in a row while onboarding, on the one path they must walk to join the real network, and is never pointed at the balance that funds every announce, attest and settle. (An earlier draft of this finding claimed an unfunded node fails silently at boot; I tested that against the dev chain and it did not reproduce — `registerSelf()` succeeded and the node listed a patch, so the residue is the reporting gap only.)",
      "fix": "In `chainStatus`, report the container only when the provider host is local and the port matches; otherwise print `container  n/a (remote provider)`. Wrap the setup error: `cannot reach the AIN provider http://localhost:9099 (from ledger.ain.providerUrl) — start it with \\`ainize chain up\\` or fix the URL with \\`ainize config set ledger.ain.providerUrl …\\``. Make `init --ledger ain` print the chain next-steps, and add a `balance` line to `ainize status` and to `/api/info` for the signed-in operator.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "ef661bd",
+     "fixed_note": "`chain status` reports the container only when the provider IS this machine's `chain up` chain (otherwise n/a) and adds a hint naming ledger.ain.providerUrl; `chain setup` wraps an unreachable provider with that key and `chain up`; `init --ledger ain` prints the chain/funding next steps; /api/info carries `balance` for an operator session and `ainize status` renders it."
     },
     {
      "n": 143,
@@ -665,7 +695,10 @@
      "evidence": "packages/e2e/results/ux2/critic-09-seed-health.txt: `ainize seed` after `start -d` → ``error: a node is running at http://localhost:3580; seeding writes to its data directory — stop it first (`ngram stop`) or seed from the web console``, exit 1. `grep -rln seed packages/web/src` returns AccountPage.tsx and TeachingTab.tsx, both unrelated comments about form state seeded from the config. `scripts/cluster.mjs:104-111` seeds *before* start, so the shipped script contradicts the shipped doc.",
      "user_cost": "The first command an operator copies out of the deployment documentation fails, and the failure message sends them to a button that does not exist. This is minute one of running a node.",
      "fix": "Fix the doc to `ainize init … && ainize seed && ainize start -d`, matching what cluster.mjs does. Drop the phantom \"or seed from the web console\" from the error, use `PROG` instead of the hardcoded `ngram`, and offer the real escape: `stop the node first, or re-run with --node <other url>`.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "fb8653b",
+     "fixed_note": "deploy/README's quickstart is now `init … && seed && start -d && login` (the order cluster.mjs always used), and `seed`'s refusal names this home's data directory and the one escape that works — the phantom web-console seed and the wrong binary name are gone. The guard now asks whether THIS home's node is running rather than whatever --node points at."
     },
     {
      "n": 144,
@@ -677,7 +710,10 @@
      "evidence": "On this host my throwaway node, created with `--runtime-api http://localhost:8002` exactly as instructed, was pointed at `/mnt/newdata/qwen3.8/ple_patch` — the production instance's mailbox that scripts/cluster.mjs:31-33 goes out of its way to avoid (operator-day2-04-login-config.txt). `/api/info` returns `runtime: {available, api, model, hook, repo, applied}` with no mailbox field (critique2-verify.txt §10). The mailbox *can* be set — `NGRAM_RUNTIME_PATCH_DIR` (config.ts:233) and `ainize config set runtime.patchDir` both work, and that is how packages/e2e/helpers/ainize.ts:261 points test nodes at `ple_patch_e2e` — but `grep -rn NGRAM_RUNTIME_PATCH_DIR README.md docs deploy` returns nothing.",
      "user_cost": "A node can benchmark against instance A and write its patches into instance B's mailbox, taking B's lock and mutating B's memory table, while `ainize status` reports `runtime available · Qwen3.8-Flash-Next · hook ok`. Nothing on any surface names the mailbox, so the operator cannot even check.",
      "fix": "Add `--runtime-patch-dir` to `ainize init` and `ainize start`, and make `--runtime-api` without it print a warning naming the mailbox that will be used. Include `patch_dir` and the current lock holder in `/api/info.runtime` and in `ainize status` (`runtime available · Qwen3.8-Flash-Next · mailbox /mnt/newdata/qwen3.8/ple_patch_e2e`). Document `NGRAM_RUNTIME_PATCH_DIR` in deploy/README.md. Delete `hookApi` from `defaultConfig` and types.ts, or wire it up.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "9b76b2e",
+     "fixed_note": "/api/info.runtime and /api/runtime carry `patch_dir` and `patch_dir_source`, `ainize status` prints a `mailbox` line that says when the path was merely derived from runtime.repo, and deploy/README documents runtime.patchDir / NGRAM_RUNTIME_PATCH_DIR and runtime.gpus (b818e5d). `--runtime-patch-dir` was NOT added to `ainize init` (bin.ts belongs to another workstream this wave); NGRAM_RUNTIME_PATCH_DIR and `config set runtime.patchDir` are the documented routes."
     },
     {
      "n": 145,
@@ -689,7 +725,10 @@
      "evidence": "Live: node-a's config has `runtime.api http://localhost:8002`, `teach.enabled true`, `teach.trainer.gpus 4,5,6`; nvidia-smi shows GPUs 4 and 5 at ~38.7 GB / 41 GB used and GPU 6 at 0 MiB. The deploy table still documents the serving port as `:8000` while every shipped config uses `:8002`. Today's `teach.backend` is `stub`, so nothing is starved yet — the damage lands exactly when an operator follows the README's own invitation.",
      "user_cost": "An operator following the deploy guide and the cluster script's TODO turns on gradient training and either starves the serving model that every verification and live test depends on, or sits with lessons stuck at `blocked: \"slot\"` and a message about free megabytes that never names the real cause.",
      "fix": "At start-up resolve the serving instance's GPUs (from the runtime repo's serve config or a new `runtime.gpus` key) and refuse to start the gradient trainer when `teach.trainer.gpus` intersects them, logging `error: teach.trainer.gpus 4,5,6 overlaps the serving GPUs 4,5 — training would starve the model server`. Change the default to a value that cannot collide, or leave it unset and require the operator to set it before `backend: 'gradient'`. Update the deploy table to `:8002`.",
-     "audience": "Node operator"
+     "audience": "Node operator",
+     "fixed": true,
+     "fixed_by": "b818e5d",
+     "fixed_note": "teach.trainer.gpus ships UNSET, a new runtime.gpus names the serving instance's GPUs, and a gradient backend whose GPUs are unset or intersect the serving set refuses — at start-up as an error event and per job as the blocked reason, naming the GPUs that clash (guard in teach.ts landed in 4547316). deploy/README's table is rewritten around what is actually shipped (:8002 on GPUs 4,5) and cluster.mjs sets runtime.gpus."
     }
    ]
   },

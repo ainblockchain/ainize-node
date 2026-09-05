@@ -359,7 +359,10 @@
      "evidence": "packages/e2e/results/ux4/chain-buy-human-28-parent-node-unreachable.txt (A down: `patch ls` LISTED, Buy tab 'Buy · 9 node credit', alert 'fetch failed', CLI exit 1); chain-buy-agent-16-author-offline.txt (`agent failed: fetch failed`, node-a and node-b both hold the body); incentives-network-ns-15 (30 s timeout text).",
      "user_cost": "The buyer cannot tell a dead seller from a broken product or a wrong URL, retries, and — inside a family — may already have paid another node for the child. A network of peers that all hold the file can sell none of it.",
      "fix": "Probe the gateway origin (`GET <origin>/p2p/info`, 3 s) and the peer's `last_seen` before rendering Buy and before `step('quorum')`; render 'Seller node-a is unreachable (last seen 12:07) — nothing was charged. Held by node-b, node-c, but only the author can sell it.' Map `fetch failed`/`ECONNREFUSED`/timeout in `patchBuy` and the agent to that sentence, and put an 'offline' chip on Explore cards whose seller failed the last N gossip rounds. Longer term: let a holder settle on the author's behalf against an author-signed price quote.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "de7c88e",
+     "fixed_note": "market.sellerLiveness() answers from the peer table who the seller is, when it was last seen and which peers hold the body, and both \"no gateway\" and \"the gateway did not answer\" now end in one sentence: `A — the seller of law-kr-2026 — is not answering (last seen …), so nothing was bought and nothing was charged. The body is also on C, but only the author's node can sell it…`. Verified end to end on a throwaway 3-node cluster with the seller's listener taken down. The Explore-card \"offline\" chip is web-side (another workstream's files) and is not part of this."
     },
     {
      "n": 277,
@@ -1380,7 +1383,10 @@
      "evidence": "ain-ledger.ts:315, :366; docker-compose.ain.yml:21-22; production-verification-plan.md:264-267. Prospective: no gas is charged today.",
      "user_cost": "The moment the product moves to a signature-verifying, gas-charging chain, the unpaid role becomes a net-paying role, and the node will keep writing until it is broke.",
      "fix": "Decide it with `verifierShare` (325): record `gas_paid` on the attestation, floor the verifier's line at its gas, stop `round()` with a warn below `verifier.minBalance`, and correct the plan's gas-payer line.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "b7476d1",
+     "fixed_note": "verifier.minBalance (default 1, ignored on the local ledger, which has no gas) stops the round below the floor with one warn naming the balance, the floor and how to fund it, and one info on recovery; the balance is read at most once a minute and an unanswering chain is not read as an empty account. docs/production-verification-plan.md now says the verifier pays gas on its own attestation. No gas is charged today, so the guard could not be exercised end to end."
     },
     {
      "n": 342,
