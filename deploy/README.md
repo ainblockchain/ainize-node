@@ -15,7 +15,7 @@ ainize chain setup                                          # registers /apps/kn
 ## Multi-node marketplace demo (local ledger, one machine)
 
 ```
-ainize init --name alice --port 3402 --password "<operator password>" && ainize start -d && ainize login && ainize seed   # real knowledge only; add --synthetic only for test fixtures
+ainize init --name alice --port 3402 --password "<operator password>" && ainize seed && ainize start -d && ainize login   # seed writes the data directory, so it runs BEFORE the node opens it (--synthetic only for test fixtures)
 NGRAM_HOME=~/.ngram-b ainize init --name bob   --port 3403 --peer http://localhost:3402 --roles verifier          --password "<…>" && NGRAM_HOME=~/.ngram-b ainize start -d
 NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving  --password "<…>" && NGRAM_HOME=~/.ngram-c ainize start -d
 ainize patch ls          # bob & carol attest → quorum 2 → LISTED
