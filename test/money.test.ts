@@ -348,3 +348,22 @@ test('322 the split preview states the rule that decides it, at any price, for a
   // on a local ledger nothing has ever been charged for gas, so the cost line says nothing rather than a made-up number
   assert.equal(at10.cost, null);
 });
+
+// ---------------------------------------------------------------- item 360: a model nobody meters
+test('360 a billing model nothing meters cannot be published, and what it charges is named', async () => {
+  const { billingImplemented, BILLING_IMPLEMENTED } = await import('@ngram/core');
+  assert.deepEqual([...BILLING_IMPLEMENTED], ['per_download'], 'one model is charged, and it is the one a sale settles');
+  assert.equal(billingImplemented('per_hit'), false);
+  assert.equal(billingImplemented('per_apply_hour'), false);
+  const token = await (async () => {
+    const r = await fetch(`${A.url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: A.cfg.operator?.password ?? '' }) });
+    return r.ok ? ((await r.json()) as { token: string }).token : '';
+  })();
+  if (token) {
+    const r = await fetch(`${A.url}/api/patches/${PAID_ID}`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ billing: 'per_hit' }) });
+    assert.equal(r.status, 400);
+    assert.match(JSON.stringify(await r.json()), /not metered by any node/);
+  }
+  // an anchor that already carries one keeps it: the record is immutable and nothing is rewritten under it
+  assert.equal((await A.market.entry(PAID_ID))!.anchor.billing, 'per_download');
+});
