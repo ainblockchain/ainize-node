@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import {
   AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, DISPUTE_MAX_REASON, DISPUTE_MIN_REASON, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
-  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, transferKeyFor, type X402Required,
+  X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, sketchJaccard, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, PRICE_RE,
@@ -261,6 +261,11 @@ export interface SaleSplit {
   cheaper_than: { id: string; price: string; currency: string }[];
   /** Parent ids no anchor here names an author for — their slice is held, not paid (from `royaltyPlan`). */
   unresolved: Record<string, string>;
+}
+
+/** What a track would write over in what is already loaded (item 214). `rows` is measured; a body this node does not hold yet is an estimate from the published address sketches, and says so. */
+export interface TrackOverlap {
+  track_id: string; loaded_id: string; rows: number | null; estimated: boolean; jaccard?: number; loaded_reason: string;
 }
 
 export interface PurchaseResult {
@@ -3881,22 +3886,34 @@ export class Market {
    * Rows a track's current items would write over in what is loaded RIGHT NOW, by pair (item 214). Only bodies this
    * node holds can be compared, which is exactly the set that can be applied, so nothing here is a guess.
    */
-  private subscribeOverlaps(trackIds: string[]): { track_id: string; loaded_id: string; rows: number; loaded_reason: string }[] {
-    const out: { track_id: string; loaded_id: string; rows: number; loaded_reason: string }[] = [];
+  private async subscribeOverlaps(trackIds: string[]): Promise<TrackOverlap[]> {
+    const out: TrackOverlap[] = [];
+    const map = await this.entryMap();
     const loaded = this.store.listApplied();
     for (const id of trackIds) {
-      const e = this.catalogSync().find((x) => x.anchor.id === id) ?? null;
-      const mine = e ? this.blobs.addrSet(e.anchor.patch_sha256) : null;
-      if (!mine) continue;
+      const e = map.get(id);
+      if (!e) continue;
+      const mine = this.blobs.addrSet(e.anchor.patch_sha256);
       for (const row of loaded) {
         if (row.patch_id === id || trackIds.includes(row.patch_id)) continue;      // the track's own layers are its business
+        const other = map.get(row.patch_id);
         const theirs = this.blobs.addrSet(row.sha256);
-        if (!theirs) continue;
-        const n = intersectionCount(mine, theirs);
-        if (n > 0) out.push({ track_id: id, loaded_id: row.patch_id, rows: n, loaded_reason: row.reason });
+        if (mine && theirs) {
+          const n = intersectionCount(mine, theirs);
+          if (n > 0) out.push({ track_id: id, loaded_id: row.patch_id, rows: n, estimated: false, loaded_reason: row.reason });
+          continue;
+        }
+        // The track's body is not here yet — it is bought BY this subscribe, and the whole point is to warn first.
+        // Every anchor publishes a 64-value bottom-k sketch of its address set, so the overlap is estimable without
+        // the file. It is reported as an estimate, with no invented row count: `rows` stays null until a body is here.
+        const a = e.anchor.addr_sketch ?? [];
+        const b = other?.anchor.addr_sketch ?? [];
+        if (!a.length || !b.length) continue;
+        const j = sketchJaccard(a, b);
+        if (j > 0) out.push({ track_id: id, loaded_id: row.patch_id, rows: null, estimated: true, jaccard: Math.round(j * 100) / 100, loaded_reason: row.reason });
       }
     }
-    return out.sort((a, b) => b.rows - a.rows);
+    return out.sort((a, b) => (b.rows ?? 0) - (a.rows ?? 0) || (b.jaccard ?? 0) - (a.jaccard ?? 0));
   }
 
   /**
@@ -3939,12 +3956,14 @@ export class Market {
      * two older bakes over the final the operator had pinned by hand, silently, on 241,992 rows each. The overlap is
      * computable before anything is bought, so it is refused unless the caller says `replace`.
      */
-    const clashes = this.subscribeOverlaps(quote.current);
+    const clashes = await this.subscribeOverlaps(quote.current);
     if (clashes.length && !opts.replace) {
       throw conflict(
-        `overlaps_loaded: ${branch} would be loaded on top of knowledge you already have in the model and would answer instead of it on the rows they share:\n`
-        + clashes.map((x) => `  ${x.track_id} covers ${x.rows.toLocaleString('en-US')} of ${x.loaded_id}'s rows (loaded ${x.loaded_reason === 'manual' ? 'by hand' : `by ${x.loaded_reason}`})`).join('\n')
-        + `\n  subscribe with --replace to load the track anyway, or unload the ones you no longer want first.`,
+        `overlaps_loaded: ${branch} would be loaded on top of knowledge you already have in the model, and would answer instead of it on the rows they share:\n`
+        + clashes.map((x) => `  ${x.track_id} writes over ${x.rows !== null ? `${x.rows.toLocaleString('en-US')} of ` : 'part of '}${x.loaded_id}'s rows`
+          + `${x.estimated ? ` (estimated from the published address sketches — about ${Math.round((x.jaccard ?? 0) * 100)} % alike; the exact count is known once the body is here)` : ''}`
+          + ` — ${x.loaded_id} is loaded ${x.loaded_reason === 'manual' ? 'by hand' : `by ${x.loaded_reason.replace(/^subscription:/, 'the track ')}`}`).join('\n')
+        + `\n  subscribe with --replace to load the track anyway, or unload what you no longer want first.`,
         { code: 'overlaps_loaded', branch, pairs: clashes },
       );
     }
