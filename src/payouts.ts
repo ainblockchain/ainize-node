@@ -146,6 +146,32 @@ export class Payouts {
     return this.running;
   }
 
+  /** How often the person owed the money may ask for one more attempt (item 306). */
+  static readonly NUDGE_COOLDOWN_MS = 10 * 60_000;
+  private nudged = new Map<number, number>();
+
+  /**
+   * The payee asks the node to try again (item 306).
+   *
+   * After 20 failed attempts, or a restart mid-transfer, a row is `failed` and the teacher's page says "transfer
+   * failed — still owed by 0x…". The only retry was operator-only, no visitor-callable nudge existed, and nothing
+   * badged the operator beyond one warn line in an event feed — so real money owed to a visitor depended on an
+   * operator happening to scroll past it. This is the same serialised attempt the operator's retry uses, callable by
+   * the address that is owed, at most once every NUDGE_COOLDOWN_MS, and it writes an event naming them.
+   */
+  async nudge(id: number, byAddress: string): Promise<{ payout: PayoutRow; retried: boolean; retry_after_ms?: number }> {
+    const row = this.store.getPayout(id);
+    if (!row) throw new PayoutError(404, `payout ${id} not found`);
+    if (row.address.toLowerCase() !== byAddress.toLowerCase()) throw new PayoutError(403, 'this payout is owed to a different address');
+    if (row.status === 'paid') throw new PayoutError(409, `this payout was already sent (${row.tx_hash})`);
+    const last = this.nudged.get(id) ?? 0;
+    const since = Date.now() - last;
+    if (last && since < Payouts.NUDGE_COOLDOWN_MS) return { payout: row, retried: false, retry_after_ms: Payouts.NUDGE_COOLDOWN_MS - since };
+    this.nudged.set(id, Date.now());
+    this.log('warn', 'payout', `${row.address.slice(0, 10)}… asked this node to retry the ${row.amount} ${row.currency} it is owed for ${row.patch_id} (payout #${id}, ${row.attempts} attempt(s) so far${row.last_error ? `, last error: ${row.last_error.slice(0, 160)}` : ''})`, row.patch_id, { payout_id: id, address: row.address, attempts: row.attempts, nudged_by: byAddress });
+    return { payout: await this.retry(id), retried: true };
+  }
+
   /** Operator retry: one immediate attempt through the serialised runner, allowed even after the automatic attempts are exhausted. */
   async retry(id: number): Promise<PayoutRow> {
     const row = this.store.getPayout(id);

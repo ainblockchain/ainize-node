@@ -357,6 +357,20 @@ export interface TeachDroppedRow {
   listing_name?: string;
 }
 
+/** One lesson on the public data-provider page, with what the verifiers actually said about it (item 304). */
+export interface TeacherLesson {
+  id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string;
+  created_at?: number; attestations?: number; quorum?: number;
+  /** Every verification of this lesson: who, what they measured, and the questions they got wrong. */
+  results: {
+    verifier: string; verifier_name: string | null; passed: boolean; verified_on: string;
+    score: Record<string, string | number>; created_at: number;
+    failures: { prompt: string; expect: string; got: string }[];
+  }[];
+  /** The teacher's own job this was published from, so "train it again" is an action and not a fresh upload. */
+  job_id: string | null;
+}
+
 interface PreflightFactResult {
   index: number;
   /** `in_base` / `base_conflict` only appear when a base was chosen (design §12.1, SC-6). */
@@ -3221,28 +3235,47 @@ export class TeachWorker {
      * be sold, because self-attestation does not count towards quorum. `created_at`, `passed` and `quorum` are what
      * turn that line into a fact the teacher can act on, and the page pairs them with `verification` below.
      */
-    const lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string; created_at?: number; attestations?: number; quorum?: number }[] =
-      mine.map((e) => ({ id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue,
-        created_at: e.anchor.created_at, attestations: e.passed, quorum: e.quorum }));
+    /*
+     * Item 304: a lesson the network rejected reached its teacher as two words — "Failed verification" — with no
+     * score, no failing question and nothing to do about it. The scores existed one click away on the PUBLIC page,
+     * on a knowledge page the teacher had just been told carries their name for ever; the question the model got
+     * wrong existed too, signed, in the attestation itself (item 155). Both travel here now, so the teacher reads
+     * what happened instead of guessing which question to fix and spending another day's quota on the guess.
+     */
+    const lessons: TeacherLesson[] = mine.map((e) => ({
+      id: e.anchor.id, name: e.anchor.name, status: e.status, verified: e.quorum_ok, downloads: e.downloads, revenue: e.revenue,
+      created_at: e.anchor.created_at, attestations: e.passed, quorum: e.quorum,
+      results: e.attestations.map((a) => ({
+        verifier: a.verifier, verifier_name: a.verifier_name ?? null, passed: a.passed, verified_on: a.verified_on,
+        score: a.score, created_at: a.created_at,
+        failures: (a.failures ?? []).map((f) => ({ prompt: f.prompt, expect: f.expect, got: f.got })),
+      })),
+      // The lesson this anchor came from, so "train it again" is one action rather than a fresh upload. Only the
+      // teacher's own jobs are looked up, and only the job id travels — never the private draft id.
+      job_id: this.store.listTeachJobs({ contributor: address, limit: 500 }).find((j) => j.patch_id === e.anchor.id)?.id ?? null,
+    }));
     // pending lessons are referenced by JOB id: the private draft id must not appear on a public page
-    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0', created_at: j.created_at });
+    for (const j of this.store.listTeachJobs({ contributor: address, status: ['PENDING_REVIEW'] })) lessons.push({ id: j.id, name: j.name ?? '', status: 'PENDING_REVIEW', verified: false, downloads: 0, revenue: '0', created_at: j.created_at, results: [], job_id: j.id });
     // Earnings: OWED comes from settle records (any node can read them), PAID from this node's payouts rows (§7.6).
     // A settle from another seller node shows as `pending` with `paid_by: null` — the settle record is the evidence.
     const setts = await this.market.ledger.settlements();
     const payouts = this.store.listPayouts({ address, limit: 5000 });
     const maxAttempts = this.market.payouts.maxAttempts;
-    const items: { patch_id: string; seller: string; settle_hash: string; amount: string; currency: string; scheme: string; status: 'paid' | 'pending' | 'failed'; tx_hash?: string; attempts?: number; created_at: number; paid_at?: number }[] = [];
+    const items: { patch_id: string; seller: string; settle_hash: string; amount: string; currency: string; scheme: string; status: 'paid' | 'pending' | 'failed'; tx_hash?: string; attempts?: number; created_at: number; paid_at?: number;
+      /** Item 306: the row this line is about, the last thing that went wrong, and whether the payee may ask for another attempt. */
+      payout_id?: number; last_error?: string; max_attempts?: number }[] = [];
     let owed = 0, paid = 0, failed = 0;
     for (const s of setts) {
       const amt = Object.entries(s.body.royalty).find(([a]) => a.toLowerCase() === addr)?.[1];
       if (!amt || !(Number(amt) > 0)) continue;
       owed += Number(amt);
       let status: 'paid' | 'pending' | 'failed' = 'pending'; let tx: string | undefined; let attempts: number | undefined; let paidAt: number | undefined;
+      let payoutId: number | undefined; let lastError: string | undefined;
       if (s.body.scheme === 'local-credit') status = 'paid';   // play money: credited by the settle record itself
       else {
         const p = payouts.find((x) => x.settle_hash === s.hash);
         if (p) {
-          attempts = p.attempts; tx = p.tx_hash ?? undefined;
+          attempts = p.attempts; tx = p.tx_hash ?? undefined; payoutId = p.id; lastError = p.last_error ?? undefined;
           // Still retrying automatically → the contributor sees "pending"; only exhausted attempts read "failed".
           status = p.status === 'paid' ? 'paid' : p.status === 'failed' && p.attempts >= maxAttempts ? 'failed' : 'pending';
           if (status === 'paid') paidAt = p.updated_at;
@@ -3251,7 +3284,8 @@ export class TeachWorker {
       if (status === 'paid') paid += Number(amt);
       if (status === 'failed') failed += Number(amt);
       items.push({ patch_id: s.body.patch_id, seller: s.body.seller, settle_hash: s.hash, amount: String(amt), currency: s.body.currency, scheme: s.body.scheme, status,
-        ...(tx ? { tx_hash: tx } : {}), ...(attempts !== undefined ? { attempts } : {}), created_at: s.body.created_at, ...(paidAt ? { paid_at: paidAt } : {}) });
+        ...(tx ? { tx_hash: tx } : {}), ...(attempts !== undefined ? { attempts } : {}), created_at: s.body.created_at, ...(paidAt ? { paid_at: paidAt } : {}),
+        ...(payoutId !== undefined ? { payout_id: payoutId, max_attempts: maxAttempts } : {}), ...(lastError ? { last_error: lastError } : {}) });
     }
     const name = contributor && !contributor.hidden ? contributor.name ?? undefined : undefined;
     const r6 = (n: number) => Math.round(n * 1e6) / 1e6;

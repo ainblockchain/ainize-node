@@ -942,6 +942,10 @@ export function buildApi(deps: ApiDeps): Router {
       verification: royalties.filter((r) => r.kind === 'verification'),
       verification_total: sum(royalties.filter((r) => r.kind === 'verification')),
       verifier_share: effectiveVerifierShare(undefined, market.cfg.market.verifierShare),
+      // Item 277: what this node gave away. A knowledge priced 0 writes no settlement, so these are downloads that
+      // appear in no sales figure anywhere — without this line the seller of 74 free lessons sees "0 sales" and
+      // concludes nobody wanted them.
+      free_downloads: market.freeDownloads(),
       payouts: { ...summary, items: market.store.listPayouts({ status: ['pending', 'failed'], limit: 50 }) } };
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
@@ -1803,6 +1807,21 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.get('/api/teacher/:address', wrap(async (req) => needTeach().teacherProfile(addressParam(req.params.address as string))));
   /**
+   * The person who is owed the money asks this node to try the transfer again (item 306).
+   *
+   * A payout that has exhausted its 20 automatic attempts, or was interrupted by a restart, leaves the teacher's page
+   * saying "transfer failed — still owed by 0x…" with nothing to do about it: the retry was operator-only, no
+   * visitor-callable route existed, and the operator's only prompt was one warn line in an event feed. Signed with
+   * the teaching key that is owed the money, at most once every ten minutes, and it writes an event naming them.
+   */
+  router.post('/api/teach/payouts/:id/nudge', wrap(async (req) => {
+    const address = requireTeacher(req);
+    visitorGate(req, address);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw bad('payout id must be a positive integer');
+    return market.payouts.nudge(id, address);
+  }));
+  /**
    * A verifier's record (item 337). The verification tab printed a name and a short address with no link, and
    * nothing anywhere aggregated what a verifier had actually done — so "node-b · Passed" weighed exactly as much as
    * a key created five minutes ago, and careful work could not be told from a rubber stamp.
@@ -1921,6 +1940,21 @@ export function buildApi(deps: ApiDeps): Router {
     if (!e.sellable) throw new HttpError(423, challengedMessage(e));
     const resource = `/x402/patch/${id}`;
     const header = req.header(X402_HEADER_PAYMENT);
+    /*
+     * Item 277 — free is free. This gate answered 402 whatever the price, so taking a knowledge priced at 0 cost a
+     * funded identity, a signed intent and a settle record naming the taker on every peer's ledger: the cheapest
+     * way into the sharing economy was the one with the most permanent public cost, and it padded every sold /
+     * revenue / popular figure with 0-value sales. A price of 0 now hands over the manifest to whoever asks, with
+     * no nonce, no signature, no settlement and no name — counted on this node as a download.
+     */
+    if (Number(e.anchor.price || 0) === 0) {
+      const manifest = market.freeManifest(e);
+      const text = JSON.stringify(manifest);
+      res.status(200).set(X402_HEADER_CURRENCY, e.anchor.currency)
+        .set('x-payment-response', JSON.stringify({ settled: false, free: true, price: e.anchor.price, reason: 'price 0 — nothing was charged and no sale was recorded' }))
+        .set('x-content-sha256', sha256Hex(text)).type('application/json').send(text);
+      return;
+    }
     if (!header) {
       // The 402 carries the whole quote: the price, what the family costs, and the bases the buyer must own for
       // this knowledge to do anything (item 270). `requires` is empty on a knowledge that stands alone.
