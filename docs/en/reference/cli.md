@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 29 top-level commands, 85 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 29 top-level commands, 89 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -58,7 +58,7 @@ These are accepted by every command.
 | [`ainize chat`](#ainize-chat) | Live-test a knowledge patch: the model's answer before vs after the patch is loaded (correct-answer check) |
 | [`ainize ledger`](#ainize-ledger) | Inspect the ledger |
 | [`ainize branch`](#ainize-branch) | Knowledge branches (parallel, possibly contradictory patch sets) |
-| [`ainize route`](#ainize-route) | Gateway routing: which branch/nodes serve a request context |
+| [`ainize route`](#ainize-route) | Gateway routing: which track and which nodes serve a request context |
 | [`ainize wallet`](#ainize-wallet) | Balance, sales, royalties and pending payouts of this node |
 | [`ainize purchases`](#ainize-purchases) | Knowledge this node bought: what, from whom, for how much, and whether it is loaded |
 | [`ainize payouts`](#ainize-payouts) | Royalty transfers this node owes creators and data providers (AIN ledger) |
@@ -323,7 +323,7 @@ Show node events
 
 - **`--follow`, `-f`** (`boolean`, default `false`) — keep printing events as they happen (Ctrl-C to stop)
 - **`--patch`** (`string`) — only events of a patch
-- **`--kind`** (`"blob" | "branch" | "buy" | "challenge" | "config" | "drive" | "node" | "p2p" | "patch" | "payout" | "publish" | "runtime" | "seed" | "settings" | "teach" | "trade" | "usage" | "verifier" | "verify"`) — only this kind of event
+- **`--kind`** (`"blob" | "branch" | "buy" | "challenge" | "config" | "drive" | "lineage" | "node" | "p2p" | "patch" | "payout" | "publish" | "royalty" | "runtime" | "seed" | "settings" | "teach" | "trade" | "usage" | "verifier" | "verify"`) — only this kind of event
 - **`--level`** (`"debug" | "info" | "warn" | "error"`) — this level and worse (warn shows warn + error)
 - **`--limit`** (`number`, default `100`) — how many past events to print, newest last
 
@@ -539,6 +539,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch verify` — Run this node's verifier on a patch and publish an attestation
 - `ainize patch challenge` — Dispute a verification: takes the knowledge off sale until a verifier re-runs it
 - `ainize patch buy` — Buy listed knowledge via HTTP 402 (x402) and download the body — several ids buy them in the order given
+- `ainize patch price` — Change what a published knowledge sells for (0 makes it free)
 - `ainize patch download` — Collect a knowledge this node already paid for — no second payment
 - `ainize patch apply` — Load held knowledge into the serving model (no restart) — several ids load in the order given, the last winning on any entry they share
 - `ainize patch remove` — Unload knowledge from the serving model, putting back whatever was underneath
@@ -615,7 +616,8 @@ Register a .npz patch body as a draft — it stays a DRAFT until --announce (`ai
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
-- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this publish may retire (required when it would retire any)
+- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap
+- **`--keep-others`** (`boolean`, default `false`) — with --announce: retire nothing — every overlapping listing of yours stays on sale
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
 - **`--announce`** (`boolean`, default `false`) — announce to the network immediately — the permanent record, and the one step with no undo (default here: no. `ainize publish` announces by default)
@@ -650,6 +652,7 @@ Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce,
 - **`--price`** (`string`) — price if you later publish it (default: this node's market.defaultPrice)
 - **`--license`** (`string`) — licence for the draft: an SPDX id or free text
 - **`--description`** (`string`) — one or two sentences about what it knows
+- **`--drop-lineage`** (`boolean`, default `false`) — import as a ROOT even though the lesson names a base this node does not have — no credit and no royalty to the base creator
 
 **Examples**
 
@@ -672,13 +675,18 @@ DRAFT → ANNOUNCED (anchor on the ledger)
 
 **Options**
 
-- **`--supersede`** (`string[]`) — the listing(s) of yours this announce may retire — it refuses until every one of them is named
+- **`--supersede`** (`string[]`) — the listing(s) of yours this version replaces — it refuses until every one the overlap rule found is named, and names one it did not
+- **`--keep-others`** (`boolean`, default `false`) — retire nothing: every overlapping listing of yours stays on sale (a dated snapshot published on purpose)
 
 **Examples**
 
 ```bash
 # v2 goes off sale the moment v3 is verified
 ainize patch announce krx-codes-v3 --supersede krx-codes-v2
+# today replaces yesterday even though their rows do not overlap
+ainize patch announce krx-codes-2026-09-04 --supersede krx-codes-2026-09-03
+# a dated snapshot that retires nothing
+ainize patch announce krx-snapshot-2026-09-01 --keep-others
 ```
 
 ### `ainize patch retire`
@@ -706,7 +714,7 @@ ainize patch retire krx-codes-2026-08 --reason "the source feed changed; use krx
 ### `ainize patch verify`
 
 ```bash
-ainize patch verify <id>
+ainize patch verify <id> [options]
 ```
 
 Run this node's verifier on a patch and publish an attestation
@@ -714,6 +722,17 @@ Run this node's verifier on a patch and publish an attestation
 **Arguments**
 
 - **`<id>`** (`string`, required)
+
+**Options**
+
+- **`--recheck`** (`boolean`) — measure it again and record the result WITHOUT taking it off sale — a failing recheck withdraws this node's earlier PASS, a passing one confirms it
+
+**Examples**
+
+```bash
+# you doubt a result you signed: re-measure it and put that on the record, instead of challenging the seller
+ainize patch verify krx-codes-2026-08 --recheck
+```
 
 ### `ainize patch challenge`
 
@@ -751,6 +770,7 @@ Buy listed knowledge via HTTP 402 (x402) and download the body — several ids b
 - **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too, deepest first (one payment each). Without it you are asked
 - **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
+- **`--allow-superseded`** (`boolean`, default `false`) — buy a version that has been superseded by a newer one on the same subject (otherwise you are asked)
 
 **Examples**
 
@@ -763,6 +783,33 @@ ainize patch buy krx-all-2761 pixelplus-087600
 ainize patch buy krx-all-2761 --bundle
 # unattended, with a budget for the whole family
 ainize patch buy krx-all-2761 --yes --max-price 30
+```
+
+### `ainize patch price`
+
+```bash
+ainize patch price <id> <price> [options]
+```
+
+Change what a published knowledge sells for (0 makes it free)
+
+**Arguments**
+
+- **`<id>`** (`string`, required) — the knowledge to re-price (you must be its author)
+- **`<price>`** (`string`, required) — the new price in this node's currency, e.g. 2.5 — "0" makes it free
+
+**Options**
+
+- **`--reason`** (`string`) — why, in your words — shown to buyers on the price history
+- **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation
+
+**Examples**
+
+```bash
+# a discount, on the public record
+ainize patch price krx-all-2761 1.5 --reason "launch price"
+# make an obsolete knowledge free
+ainize patch price krx-all-2761 0
 ```
 
 ### `ainize patch download`
@@ -1036,7 +1083,8 @@ One line to sell knowledge: register a .npz + benchmark and announce it at once 
 - **`--dataset`** (`string`) — the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access
 - **`--dataset-access`** (`"public" | "derivative" | "private"`) — who may read those questions: anyone / people building on this knowledge (default) / nobody
 - **`--dataset-license`** (`string`) — licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary
-- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this publish may retire (required when it would retire any)
+- **`--supersede`** (`string[]`) — with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap
+- **`--keep-others`** (`boolean`, default `false`) — with --announce: retire nothing — every overlapping listing of yours stays on sale
 - **`--force`** (`boolean`, default `false`) — publish bytes this node already published on this subject, or for a model it cannot test (never another author's bytes)
 - **`--test`** (`boolean`, default `false`) — hidden test listing (not shown in public catalogs)
 - **`--announce`** (`boolean`, default `true`) — announce immediately — the permanent record, and the one step with no undo (--no-announce keeps a draft, which is what `ainize patch publish` does by default)
@@ -1396,6 +1444,7 @@ One line to use knowledge: check it is verified → quote the price → pay → 
 - **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked
 - **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
+- **`--allow-superseded`** (`boolean`, default `false`) — use a version that has been superseded by a newer one on the same subject (otherwise you are asked)
 
 **Examples**
 
@@ -1468,7 +1517,7 @@ List records
 
 **Options**
 
-- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire" | "dispute"`) — only this kind of record
+- **`--kind`** (`"anchor" | "attest" | "settle" | "challenge" | "branch" | "node" | "supersede" | "subscribe" | "retire" | "dispute" | "price" | "payout"`) — only this kind of record
 - **`--limit`** (`number`, default `50`) — how many records, newest last
 
 ### `ainize ledger verify`
@@ -1511,6 +1560,8 @@ Knowledge branches (parallel, possibly contradictory patch sets)
 
 - `ainize branch ls` — List branches
 - `ainize branch create` — Create a branch
+- `ainize branch archive` — Take a track of yours off /network, the router and `branch ls` (the record and its subscribers stay)
+- `ainize branch unarchive` — Put an archived track back on the lists
 - `ainize branch add` — Add knowledge to a track you own (verified knowledge only)
 - `ainize branch quote` — What subscribing to this track would spend, item by item, before anything is spent
 - `ainize branch subscribe` — Subscribe this node: buy the track's current knowledge, load it, and keep it up to date
@@ -1521,10 +1572,14 @@ Knowledge branches (parallel, possibly contradictory patch sets)
 ### `ainize branch ls`
 
 ```bash
-ainize branch ls
+ainize branch ls [options]
 ```
 
 List branches
+
+**Options**
+
+- **`--all`** (`boolean`, default `false`) — include test and archived tracks (hidden from every public list)
 
 ### `ainize branch create`
 
@@ -1543,12 +1598,44 @@ Create a branch
 - **`--description`** (`string`) — what this track is for, in one line
 - **`--context`** (`string[]`) — k=v routing attributes (e.g. jurisdiction=KR)
 - **`--patch`** (`string[]`) — patch id(s) in the branch
+- **`--test`** (`boolean`, default `false`) — a fixture track: on the record, but off /network, off the router and out of `branch ls`
 
 **Examples**
 
 ```bash
 ainize branch create law/KR --context jurisdiction=KR --patch law-kr-2025
 ```
+
+### `ainize branch archive`
+
+```bash
+ainize branch archive <name>
+```
+
+Take a track of yours off /network, the router and `branch ls` (the record and its subscribers stay)
+
+**Arguments**
+
+- **`<name>`** (`string`, required)
+
+**Examples**
+
+```bash
+# a fixture track written by a test run comes off the shelf
+ainize branch archive e2e/KR-1788174110
+```
+
+### `ainize branch unarchive`
+
+```bash
+ainize branch unarchive <name>
+```
+
+Put an archived track back on the lists
+
+**Arguments**
+
+- **`<name>`** (`string`, required)
 
 ### `ainize branch add`
 
@@ -1594,6 +1681,7 @@ Subscribe this node: buy the track's current knowledge, load it, and keep it up 
 **Options**
 
 - **`--yes`** (`boolean`, default `false`) — answer the spend confirmation in advance
+- **`--replace`** (`boolean`, default `false`) — load the track even though it writes over knowledge already in the model (it answers instead of it on the shared rows)
 
 **Examples**
 
@@ -1652,19 +1740,25 @@ ainize branch rm daily/krx krx-daily-2026-09-03
 ## `ainize route`
 
 ```bash
-ainize route <context…>
+ainize route <context…> [options]
 ```
 
-Gateway routing: which branch/nodes serve a request context
+Gateway routing: which track and which nodes serve a request context
 
 **Arguments**
 
 - **`<context…>`** (`string[]`, required) — k=v pairs
 
+**Options**
+
+- **`--partial`** (`boolean`, default `false`) — accept the closest track even though it does not match every attribute
+
 **Examples**
 
 ```bash
 ainize route jurisdiction=KR
+# route to the closest track when nothing matches both
+ainize route market=KRX freshness=daily --partial
 ```
 
 ## `ainize wallet`
@@ -1702,6 +1796,7 @@ Royalty transfers this node owes creators and data providers (AIN ledger)
 
 - `ainize payouts ls` — List payouts
 - `ainize payouts retry` — Retry one failed / pending payout now
+- `ainize payouts reconcile` — Rebuild the payouts this node owes from its own settlements, then pay what is due
 
 ### `ainize payouts ls`
 
@@ -1736,6 +1831,21 @@ Retry one failed / pending payout now
 **Arguments**
 
 - **`<id>`** (`number`, required) — the payout row id (`ainize payouts ls`)
+
+### `ainize payouts reconcile`
+
+```bash
+ainize payouts reconcile
+```
+
+Rebuild the payouts this node owes from its own settlements, then pay what is due
+
+**Examples**
+
+```bash
+# after a restore, a crash, or an upgrade
+ainize payouts reconcile
+```
 
 ## `ainize drive`
 

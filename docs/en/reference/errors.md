@@ -159,7 +159,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Messages without a code
 
-Not every error carries a code. 36 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
+Not every error carries a code. 39 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
 A further 26 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
@@ -190,12 +190,15 @@ A further 26 throw sites build their message at the time (a validator's own word
 | `401` | wrong password | `packages/node/src/api.ts` |
 | `402` | payment required: buy the patch via /x402/patch/:id (its author, a buyer holding a download token, and a verifier while it is being verified can fetch it) | `packages/node/src/api.ts` |
 | `403` | only the branch owner can add patches | `packages/node/src/market.ts` |
+| `403` | only the owner of \<name> (\<b.owner>) can archive it | `packages/node/src/market.ts` |
+| `403` | this payout is owed to a different address | `packages/node/src/payouts.ts` |
 | `404` | patch not found | `packages/node/src/api.ts` |
 | `404` | payout \<id> not found | `packages/node/src/payouts.ts` |
 | `409` | not sold here; gateway is … | `packages/node/src/api.ts` |
 | `409` | operator password already set | `packages/node/src/api.ts` |
 | `409` | patch body not present on this node | `packages/node/src/api.ts` |
 | `409` | payout \<id> is already paid (\<row.tx_hash>) | `packages/node/src/payouts.ts` |
+| `409` | this payout was already sent (\<row.tx_hash>) | `packages/node/src/payouts.ts` |
 | `423` | patch not listed yet (verification \<e.passed>/\<e.quorum>) | `packages/node/src/api.ts` |
 | `499` | live test cancelled while it was still queued — the model was never called, so no free try was used | `packages/node/src/market.ts` |
 | `503` | model unavailable, try again in a few minutes | `packages/node/src/runtime.ts` |

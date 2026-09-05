@@ -1107,9 +1107,16 @@ export function buildApi(deps: ApiDeps): Router {
    * fewer verifiers than the quorum nothing announced here can ever be LISTED, and the CLI says so instead of
    * promising that "verifiers will now attest".
    */
+  /**
+   * DRAFT → ANNOUNCED. `replaces` (item 248) is the publisher DECLARING which of their own listings this version
+   * retires — the daily case, where today's facts touch different rows from yesterday's and nothing overlaps —
+   * and `auto_supersede: false` keeps every overlapping listing of theirs on sale (a dated snapshot kept on purpose).
+   */
   router.post('/api/patches/:id/announce', requireOperator, wrap(async (req) => {
-    const record = await market.announce(req.params.id as string);
-    return { record, verifiers: await market.verifierReach(), visibility: record.body.visibility ?? 'public' };
+    const body = z.object({ replaces: z.array(z.string()).optional(), auto_supersede: z.boolean().optional() }).parse(req.body ?? {});
+    const id = req.params.id as string;
+    const record = await market.announce(id, { replaces: body.replaces, autoSupersede: body.auto_supersede });
+    return { record, retires: market.pendingSupersedes(id), verifiers: await market.verifierReach(), visibility: record.body.visibility ?? 'public' };
   }));
   /**
    * The exit (item 148): an author-signed `retire` record takes their own knowledge off sale for good. The anchor

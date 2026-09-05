@@ -56,6 +56,25 @@ The refusal lists what would go, with each one's status, sales and shared entrie
 ledger until you re-run it with the names. Buyers of the old version keep their copy and are shown "Newer version
 available"; there is no undo, which is why it asks.
 
+**The rule it applies.** A publish retires one of your listings when three things are true of it: the same
+benchmark schema, the same track, and at least one shared memory entry. That last condition is why a day whose
+facts touch different rows — new listings, delistings, a fresh subject — retires nothing at all on its own, and
+both days stay on sale. Two flags decide it instead of the rows:
+
+```bash
+# today replaces yesterday even though their rows do not overlap
+ainize patch announce krx-2026-09-05 --supersede krx-2026-09-04
+
+# a dated snapshot, published on purpose: nothing of yours is retired
+ainize patch announce krx-snapshot-2026-09-01 --keep-others
+```
+
+`--supersede` names what this version replaces, whether or not the overlap rule found it; the node checks each id
+is yours, still on sale, older than what you are publishing, and not a base this one was built on. `--keep-others`
+retires nothing. Either way the announce prints what will go the moment verifiers pass it, and `--json` carries the
+same list as `pending_supersedes`. A knowledge published by **another** node is never retired by yours — an overlap
+across authors coexists.
+
 If you would rather do it explicitly at any time:
 
 ```bash

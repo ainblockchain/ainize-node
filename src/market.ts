@@ -1388,7 +1388,7 @@ export class Market {
    * published it and that their signed claim verifies. Without it a teach draft is refused here (item 243): the
    * operator door used to walk a failed lesson — visitor's data, no consent, price 0 — straight onto the ledger.
    */
-  async announce(id: string, opts: { fromTeach?: boolean } = {}): Promise<LedgerRecord<PatchAnchor>> {
+  async announce(id: string, opts: { fromTeach?: boolean; replaces?: string[]; autoSupersede?: boolean } = {}): Promise<LedgerRecord<PatchAnchor>> {
     const draftEntry = await this.entry(id);
     if (draftEntry && this.drive) this.drive.pullDraftEdits(draftEntry);
     const d = this.store.getDraft(id);
@@ -1405,13 +1405,59 @@ export class Market {
     await this.validateLineageForAnnounce(d.anchor);
     const conflicts = await this.conflicts(id);
     const anchor: PatchAnchor & { gateway_url: string } = { ...d.anchor, gateway_url: `${this.publicUrl}/x402/patch/${id}`, created_at: Date.now() };
+    /**
+     * Which listings this publish will retire when it is verified (item 248).
+     *
+     * Superseding used to be inferred from row overlap alone: a bake whose facts touch DIFFERENT rows left
+     * yesterday's listed and both selling, and a bake that happened to overlap retired whatever it touched — so a
+     * daily publisher could neither make "today replaces yesterday" true on purpose nor keep a dated snapshot
+     * listed. `replaces` is the declaration (checked here: your own knowledge, still tradeable, older than this),
+     * and `autoSupersede: false` keeps every overlap of yours listed.
+     */
+    const auto = opts.autoSupersede === false ? [] : await this.supersedable(anchor, conflicts);
+    const declared = await this.declaredSupersedes(anchor, opts.replaces ?? [], conflicts, auto);
+    const retires = [...auto, ...declared];
     const rec = await this.ledger.append('anchor', anchor);
     this.store.deleteDraft(id);
-    this.store.set(`pending_supersede:${id}`, JSON.stringify(await this.supersedable(anchor, conflicts)));
+    this.store.set(`pending_supersede:${id}`, JSON.stringify(retires));
     this.invalidate();
-    this.log('info', 'publish', `announced ${id} (conflicts: ${conflicts.length})`, id, { conflicts });
+    this.log('info', 'publish', `announced ${id} (conflicts: ${conflicts.length})`
+      + (retires.length ? ` — when verified, this retires: ${retires.map((r) => `${r.patch_id} (${r.overlap_rows ? `${r.overlap_rows.toLocaleString('en-US')} shared rows` : 'declared, no shared rows'})`).join(', ')}`
+        : opts.autoSupersede === false ? ' — nothing is retired (--keep-others)' : ''),
+      id, { conflicts, retires });
     await this.p2p?.broadcast(rec).catch(() => undefined);
     return rec;
+  }
+
+  /** What this announce will retire once verifiers pass it — read back by the API and the CLI (item 248). */
+  pendingSupersedes(id: string): ConflictInfo[] {
+    try { return JSON.parse(this.store.get(`pending_supersede:${id}`) ?? '[]') as ConflictInfo[]; } catch { return []; }
+  }
+
+  /**
+   * The ids a publisher NAMED as the versions this one replaces (item 248) — checked against the same rules the
+   * automatic list obeys, minus the row overlap, which is exactly the case the flag exists for. A publisher may
+   * only retire their own knowledge, and only something older than what they are publishing.
+   */
+  private async declaredSupersedes(anchor: PatchAnchor, replaces: string[], conflicts: ConflictInfo[], already: ConflictInfo[]): Promise<ConflictInfo[]> {
+    const out: ConflictInfo[] = [];
+    for (const id of [...new Set(replaces.filter(Boolean))]) {
+      if (already.some((c) => c.patch_id === id) || out.some((c) => c.patch_id === id)) continue;
+      if (id === anchor.id) throw badInput(`--replaces ${id}: a knowledge cannot replace itself`);
+      const e = await this.entry(id);
+      if (!e) throw notFound(`--replaces ${id}: no knowledge with that id on this node`);
+      if (!sameAddr(e.anchor.author, this.address)) throw conflict(`--replaces ${id}: it was published by ${e.anchor.author_name ?? e.anchor.author} — only its own author can retire it. Overlapping knowledge from another node coexists with yours.`, { patch_id: id, author: e.anchor.author });
+      if (anchor.parents.includes(id)) throw conflict(`--replaces ${id}: it is a declared base of ${anchor.id}, and an add-on does not retire what it was built on — its buyers need it underneath.`, { patch_id: id });
+      if (!['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status)) throw conflict(`--replaces ${id}: it is ${e.status}, so there is nothing on sale to retire.`, { patch_id: id, status: e.status });
+      if (e.anchor.created_at >= anchor.created_at) throw conflict(`--replaces ${id}: it was published after ${anchor.id} — a newer version cannot be replaced by an older one.`, { patch_id: id });
+      const known = conflicts.find((c) => c.patch_id === id);
+      out.push(known ?? {
+        patch_id: id, overlap_rows: 0, same_schema: e.anchor.benchmark.schema === anchor.benchmark.schema, status: e.status, branch: e.anchor.branch,
+        cross_branch: !!(e.anchor.branch && anchor.branch && e.anchor.branch !== anchor.branch),
+        author: e.anchor.author, author_name: e.anchor.author_name ?? null, same_author: true, created_at: e.anchor.created_at, sales: e.settlements.length, lineage: null,
+      });
+    }
+    return out;
   }
 
   /**
