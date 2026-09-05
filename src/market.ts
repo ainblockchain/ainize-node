@@ -1815,6 +1815,14 @@ export class Market {
     };
   }
 
+  /**
+   * The 402: price, family, and what is actually being sold (items 270, 272, 344, 236).
+   *
+   * It used to carry scheme/network/asset/payTo/maxAmountRequired/resource/description/nonce/expires_at and
+   * nothing else, so a client that is not an ainize node — which is the whole point of x402 — could not tell a
+   * current version from one retired last month, could not read the licence it was buying, and learned the
+   * royalty split only from a header AFTER the money moved. All four now travel with the quote.
+   */
   async requirementsFor(entry: CatalogEntry, resource: string): Promise<X402Requirement[]> {
     const nonce = newNonce();
     const scheme = this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit';
@@ -1826,6 +1834,8 @@ export class Market {
     // made a 5-CREDIT delta with a 4-CREDIT base quote `total: 5, self_contained: false` to every x402 client that
     // is not an ainize node (item 270). A buyer's own node still subtracts its holdings at /api/patches/:id/quote.
     const listTotal = Number(entry.anchor.price) + requires.filter((r) => r.known).reduce((a, r) => a + Number(r.price || 0), 0);
+    // The split this sale will make, computed by the function that will make it — never a promise written by hand.
+    const split = await this.saleSplit(entry, Number(entry.anchor.price), map);
     return [{
       scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
       payTo: this.address, maxAmountRequired: entry.anchor.price, resource,
@@ -1835,6 +1845,15 @@ export class Market {
       ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
       requires,
       total: String(Math.round(listTotal * 1e6) / 1e6), self_contained: requires.length === 0, single_use: true,
+      // What is being sold (item 236) — decidable before paying, by a client that has only this document.
+      status: entry.status,
+      superseded_by: entry.superseded_by,
+      license: entry.anchor.license ?? null,
+      lineage: {
+        parents: (entry.anchor.parents ?? []).map((id, i) => ({ id, author: map.get(id)?.anchor.author ?? entry.anchor.parent_authors?.[i] ?? null, name: map.get(id)?.anchor.name ?? null })),
+        standalone: !(entry.anchor.parents ?? []).length && !(entry.anchor.base?.stack ?? []).length,
+      },
+      split_preview: split.lines.map((l) => ({ address: l.address, name: l.name, role: l.role, amount: l.amount })),
     }];
   }
 

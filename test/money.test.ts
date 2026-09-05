@@ -176,3 +176,25 @@ test('280 the buyer is handed the split the seller recorded, by name and role', 
   assert.ok(res.steps.some((s) => s.step === 'paid' && s.detail.includes('ancestor')), 'the timeline says it too');
   assert.equal(base.price, '4');
 });
+
+// ---------------------------------------------------------------- item 236: what the quote says before the money
+test('236 the 402 says what is being sold: status, lineage, licence and the split it will make', async () => {
+  const r = await fetch(`${B.url}/x402/patch/money-child`);
+  assert.equal(r.status, 402);
+  const body = await r.json() as { requirements: Record<string, unknown>[] };
+  const req = body.requirements[0] as {
+    status: string; superseded_by: string[]; license: string | null;
+    lineage: { parents: { id: string; author: string | null }[]; standalone: boolean };
+    split_preview: { address: string; name: string | null; role: string; amount: string }[];
+    maxAmountRequired: string;
+  };
+  assert.equal(req.status, 'LISTED');
+  assert.deepEqual(req.superseded_by, []);
+  assert.equal(req.lineage.standalone, false, 'it is built on something and the quote says so');
+  assert.deepEqual(req.lineage.parents.map((p) => p.id), ['money-base']);
+  assert.equal(req.lineage.parents[0].author, A.market.address, 'and who published that base');
+  assert.ok(req.split_preview.length > 1, 'the split is on the quote, not only in a header after the money moved');
+  assert.equal(Math.round(req.split_preview.reduce((n, l) => n + Number(l.amount), 0) * 1e6) / 1e6, Number(req.maxAmountRequired));
+  const ancestor = req.split_preview.find((l) => l.address.toLowerCase() === A.market.address.toLowerCase());
+  assert.ok(ancestor && Number(ancestor.amount) > 0, "the base's author is named in the quote the buyer pays against");
+});
