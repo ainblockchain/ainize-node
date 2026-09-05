@@ -263,6 +263,24 @@ export interface SaleSplit {
   unresolved: Record<string, string>;
 }
 
+/**
+ * What `/api/route` answers (item 234): which track was chosen, which of the caller's keys it matched, what else
+ * matched, and — for every node the record says subscribes — what that node is actually serving right now.
+ */
+export interface RouteResult {
+  branch: BranchInfo | null;
+  matched: string[];
+  unmatched: string[];
+  candidates: { name: string; context: Record<string, string>; matched: string[]; unmatched: string[] }[];
+  /** More than one track matched equally well; `branch` is the deterministic pick and `candidates` shows the rest. */
+  ambiguous: boolean;
+  /** The ids a subscriber of the chosen track loads today. */
+  current: string[];
+  nodes: (Omit<PeerInfo, 'applied'> & { applied: string[] | null; missing: string[]; current: boolean | null })[];
+  /** Subscribed nodes that are NOT serving every current item of the track. */
+  stale_nodes: { address: string; name: string; endpoint: string; missing: string[] }[];
+}
+
 /** What a track would write over in what is already loaded (item 214). `rows` is measured; a body this node does not hold yet is an estimate from the published address sketches, and says so. */
 export interface TrackOverlap {
   track_id: string; loaded_id: string; rows: number | null; estimated: boolean; jaccard?: number; loaded_reason: string;
@@ -4116,19 +4134,49 @@ export class Market {
   }
 
   /** Gateway routing (청구항 18): context attributes → branch → subscribed nodes. */
-  async route(context: Record<string, string>): Promise<{ branch: BranchInfo | null; nodes: PeerInfo[] }> {
+  async route(context: Record<string, string>, opts: { partial?: boolean } = {}): Promise<RouteResult> {
     const branches = await this.branches();          // test / archived tracks are never routed to (item 269)
-    let best: BranchInfo | null = null; let bestScore = 0;
-    for (const b of branches) {
-      const score = Object.entries(context).filter(([k, v]) => b.context[k] === v).length;
-      if (score > bestScore) { best = b; bestScore = score; }
-    }
-    if (!best) return { branch: null, nodes: [] };
+    const keys = Object.entries(context);
+    const scored = branches.map((b) => {
+      const matched = keys.filter(([k, v]) => b.context[k] === v).map(([k]) => k);
+      return { branch: b, matched, unmatched: keys.filter(([k]) => !matched.includes(k)).map(([k]) => k) };
+    }).filter((x) => x.matched.length > 0)
+      // most keys matched first; then the track that asks for the fewest extra attributes (the most specific answer
+      // to exactly this context); then by name, so two equal candidates always resolve the same way on every node.
+      .sort((a, b) => b.matched.length - a.matched.length
+        || Object.keys(a.branch.context).length - Object.keys(b.branch.context).length
+        || a.branch.name.localeCompare(b.branch.name));
+    const candidates = scored.map((x) => ({ name: x.branch.name, context: x.branch.context, matched: x.matched, unmatched: x.unmatched }));
+    // Item 234: `market=KRX foo=bar` used to answer finance/KRX-latest with one key unmatched and no sign of it, and
+    // `market=KRX` alone picked whichever of two matching tracks came first. A partial match is now a refusal by
+    // default — the caller asked for something this track does not promise — and `partial` is how you ask anyway.
+    const full = scored.filter((x) => x.unmatched.length === 0);
+    const pick = (opts.partial ? scored : full)[0] ?? null;
+    if (!pick) return { branch: null, matched: [], unmatched: keys.map(([k]) => k), candidates, ambiguous: false, current: [], nodes: [], stale_nodes: [] };
+    const best = pick.branch;
     const subs = await this.ledger.subscriptions();
     const active = new Map<string, boolean>();
-    for (const r of subs) if (r.body.branch === best.name) active.set(r.body.node, r.body.action === 'subscribe');
-    const nodes = await this.knownNodes();
-    return { branch: best, nodes: nodes.filter((n) => active.get(n.address)) };
+    for (const r of subs) if (r.body.branch === best.name) active.set(r.body.node.toLowerCase(), r.body.action === 'subscribe');
+    const current = await this.currentTrackIds(best);
+    const nodes = (await this.knownNodes()).filter((n) => active.get(n.address?.toLowerCase() ?? ''));
+    /**
+     * A subscribe record says a node ONCE subscribed; it says nothing about what that node has in its model right
+     * now, and apply failures inside `subscribe` were logged as warnings while the record stood. So an agent routing
+     * by context was sent to a node serving the superseded day-1 bake — or nothing at all — with no field to check.
+     * `applied` is what each node reports it is serving (item 234), and a node missing any current item is named.
+     */
+    const rows = nodes.map((n) => {
+      const applied = n.applied ?? null;
+      const missing = applied ? current.filter((id) => !applied.includes(id)) : current;
+      return { ...n, applied, missing, current: applied ? missing.length === 0 : null };
+    });
+    return {
+      branch: best, matched: pick.matched, unmatched: pick.unmatched, candidates,
+      ambiguous: (opts.partial ? scored : full).length > 1,
+      current,
+      nodes: rows,
+      stale_nodes: rows.filter((n) => n.current === false).map((n) => ({ address: n.address, name: n.name, endpoint: n.endpoint, missing: n.missing })),
+    };
   }
 
   async selfInfo(): Promise<PeerInfo> {
@@ -4136,6 +4184,9 @@ export class Market {
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
+      // What this node is SERVING, in order (item 234). `branches` said what it once subscribed to; a router needs
+      // to know which version — if any — is actually on the model before it sends traffic here.
+      applied: this.store.listApplied().map((a) => a.patch_id),
       blobs: this.blobs.list().map((b) => b.sha256), datasets: this.datasets.list().map((b) => b.sha256).slice(0, 40),
       version: VERSION, build: buildStamp(), config_version: this.cfg.version, instance: Market.INSTANCE, last_seen: Date.now(),
       // What this node offers a person who publishes through it, so the terms can be compared across nodes (item 307).
