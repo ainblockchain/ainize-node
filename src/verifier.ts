@@ -93,6 +93,42 @@ export class Verifier {
   private graceStage: 0 | 1 | 2 = 0;
 
   /**
+   * Can this node still afford to attest? (item 341)
+   *
+   * An attestation is written under the VERIFIER's own transaction (the chain rule is `auth.addr === $verifier`), so
+   * wherever gas is charged it is the verifier who pays it — the plan's "seller pays gas on anchor/attest/settle"
+   * cannot hold for a record the seller does not sign. Today it costs nothing only because the dev chain runs with
+   * ENABLE_GAS_FEE_WORKAROUND; the moment that stops, the unpaid role becomes a net-paying one and `verifier.auto`
+   * keeps writing until the account is empty, taking announce, settle and payout down with it. One RPC a minute,
+   * and one log line per transition.
+   */
+  private balanceCache: { at: number; value: number | null } = { at: 0, value: null };
+  private lowBalance = false;
+  private async belowMinBalance(min: number): Promise<{ balance: number; min: number } | null> {
+    if (!(min > 0)) return null;
+    const ledger = this.market.ledger as { kind: string; balance?: () => Promise<number> };
+    // The local ledger has no gas: nothing to run out of, and `creditBalance` is play money for buying, not for writes.
+    if (ledger.kind !== 'ain' || typeof ledger.balance !== 'function') return null;
+    if (Date.now() - this.balanceCache.at > 60_000) {
+      this.balanceCache = { at: Date.now(), value: await ledger.balance().catch(() => null) };
+    }
+    const bal = this.balanceCache.value;
+    if (bal === null) return null;   // the chain did not answer: that is the ledger's problem to report, not a stop
+    if (bal >= min) {
+      if (this.lowBalance) {
+        this.lowBalance = false;
+        this.market.log('info', 'verifier', `balance is ${bal} AIN again (above verifier.minBalance ${min}) — attesting resumed`, null, { balance: bal, min });
+      }
+      return null;
+    }
+    if (!this.lowBalance) {
+      this.lowBalance = true;
+      this.market.log('warn', 'verifier', `not attesting: this node holds ${bal} AIN, below verifier.minBalance ${min}. Every attestation is a transaction this node signs and pays gas for, so verifying would spend the balance that also pays for announcing, settling and paying royalties. Fund it (\`ainize chain fund ${this.market.cfg.identity.address} <amount>\` on a local chain) or lower verifier.minBalance.`, null, { balance: bal, min });
+    }
+    return { balance: bal, min };
+  }
+
+  /**
    * One line per transition instead of thirteen a minute (item 130): entering the grace period, its halfway mark,
    * and recovery. What an operator needs during the incident is the node's state — how many items are waiting and
    * when attestations start falling back to hash-only — not the same sentence per patch per 5-second round.
@@ -132,6 +168,9 @@ export class Verifier {
     try {
       const cfg = this.market.cfg;
       const v = verifierConfig(cfg);
+      // item 341: attestations are written under this node's own key and cost it gas on a chain that charges any.
+      // Stop before the balance that pays for everything else is gone, rather than after.
+      if (await this.belowMinBalance(v.minBalance ?? 0)) return;
       const me = cfg.identity.address;
       const catalog = await this.market.catalogAll();   // test-visibility anchors are in here; `verifier.includeTest` decides
       const st = await this.market.runtime.status();
