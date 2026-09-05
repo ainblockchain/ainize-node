@@ -856,7 +856,14 @@ export function buildApi(deps: ApiDeps): Router {
       };
     })), mine: await market.mySubscriptions() };
   }));
-  router.get('/api/route', wrap(async (req) => market.route(req.query as Record<string, string>)));
+  /**
+   * Item 234 — routing used to match on ANY key and take the first tie. `?partial=1` is how a caller asks for a
+   * best-effort match; without it a track that does not answer every key the caller named is not an answer.
+   */
+  router.get('/api/route', wrap(async (req) => {
+    const { partial, ...context } = req.query as Record<string, string>;
+    return market.route(context, { partial: partial === '1' || partial === 'true' });
+  }));
   /**
    * How long a node record stays on the default answer (item 140). Node records are permanent, so `/api/nodes`
    * used to return every one ever written — 122 rows for a network of three, 120 of them dead, on the CLI and on
@@ -944,17 +951,25 @@ export function buildApi(deps: ApiDeps): Router {
     const mineIn = (r: Record<string, string> | undefined) => Object.entries(r ?? {}).find(([a]) => a.toLowerCase() === me);
     const rows = setts.filter((s) => !sameAddr(s.body.seller, market.address) && mineIn(s.body.royalty));
     const reports = await market.payoutReports(rows.map((s) => ({ hash: s.hash, seller: s.body.seller })));
+    // Item 314: a `payout` record on the shared ledger is the seller's own signed statement that the transfer
+    // happened, with the tx hash and the key it was written under — evidence, where `payoutReports` is the seller
+    // being asked over HTTP and answering for itself.
+    const onRecord = new Map((await market.payoutRecords().catch(() => [])).filter((p) => sameAddr(p.to, market.address)).map((p) => [`${p.settle_hash}:${p.to.toLowerCase()}`, p] as const));
     const royalties = rows.map((s) => {
       const [, amount] = mineIn(s.body.royalty)!;
       const e = map.get(s.body.patch_id);
       const kind = e?.verifiers.some((v) => v.toLowerCase() === me) ? 'verification' as const : 'lineage' as const;
       const rep = reports.get(s.hash);
-      const state = s.body.scheme === 'local-credit' ? 'credited' as const : (rep?.status ?? 'unconfirmed' as const);
+      const rec = onRecord.get(`${s.hash}:${me}`);
+      const state = s.body.scheme === 'local-credit' ? 'credited' as const : rec ? 'paid' as const : (rep?.status ?? 'unconfirmed' as const);
       return {
         patch_id: s.body.patch_id, amount, created_at: s.body.created_at,       // the shape every older client reads
         kind, state, settle_hash: s.hash, seller: s.body.seller, seller_name: e?.anchor.author_name ?? null,
         buyer: s.body.buyer, currency: s.body.currency, scheme: s.body.scheme,
-        tx_hash: rep?.tx_hash ?? null, reported_at: rep?.at ?? null, last_error: rep?.last_error ?? null,
+        tx_hash: rec?.tx_hash ?? rep?.tx_hash ?? null, reported_at: rep?.at ?? null, last_error: rep?.last_error ?? null,
+        // Where the "paid" comes from: a signed record on the ledger, or the seller answering for itself (item 314).
+        evidence: (rec ? 'record' : rep?.status === 'paid' ? 'seller_reported' : null) as 'record' | 'seller_reported' | null,
+        transfer_key: rec?.transfer_key ?? null,
         days: Math.floor((Date.now() - s.body.created_at) / 86_400_000),
       };
     });
@@ -986,6 +1001,12 @@ export function buildApi(deps: ApiDeps): Router {
     if (!Number.isInteger(id) || id <= 0) throw bad('payout id must be a positive integer');
     return { payout: await market.payouts.retry(id) };
   }));
+  /**
+   * Rebuild what this node owes from its own settlements and pay what is due (item 313). A settle written before
+   * the payouts table existed, a wiped data dir or a crash between the append and the enqueue used to leave a
+   * public debt with no row — unpayable by any button in the product.
+   */
+  router.post('/api/me/payouts/reconcile', requireOperator, wrap(async () => market.reconcilePayouts()));
 
   router.post('/api/patches', requireOperator, upload.single('file'), wrap(async (req) => {
     // item 129: multer has already written the whole body into <dataDir>/uploads. `createDraft` copies it into the

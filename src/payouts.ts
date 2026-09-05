@@ -20,11 +20,24 @@
  * Local-credit settles never come here: the play-money balance is derived from the settle record itself
  * (`Market.creditBalance()`), so the contributor is credited the instant the record is appended.
  */
-import type { Settlement } from '@ngram/core';
+import { payoutKeyFor, type Settlement } from '@ngram/core';
 import type { EventRow, PayoutRow, Store } from './store.js';
 
-/** What the payout loop needs from the chain wallet (`AinLedger.transfer` satisfies it; tests pass a fake). */
-export interface PayoutWallet { transfer(to: string, value: number): Promise<{ tx_hash: string }> }
+/**
+ * What the payout loop needs from the chain wallet (`AinLedger` satisfies it; tests pass a fake).
+ *
+ * `key` (item 314) is the deterministic `/transfer/$seller/$to/$key` slot derived from the settle hash, so the
+ * transfer can be found and joined to the sale it honoured. `transferMany` (item 366) pays every creator of one
+ * sale in ONE transaction: three ancestors used to mean three writes and three lots of gas around a price the
+ * product's own estimate says barely covers one.
+ */
+export interface PayoutWallet {
+  transfer(to: string, value: number, key?: string): Promise<{ tx_hash: string }>;
+  transferMany?(items: { to: string; value: number; key: string }[]): Promise<{ tx_hash: string }>;
+}
+
+/** Called after a transfer lands, to put the payout on the shared record (item 314). Failure never unpays a row. */
+export type PayoutRecorder = (row: PayoutRow, txHash: string, transferKey: string) => Promise<void>;
 
 export const PAYOUT_RETRY_MS = 60_000;
 export const PAYOUT_MAX_ATTEMPTS = 20;
@@ -45,6 +58,9 @@ export class Payouts {
   private inFlight = new Set<number>();
   readonly retryMs: number;
   readonly maxAttempts: number;
+
+  /** Appends the `payout` record once the money has moved (item 314); set by the Market that owns the ledger. */
+  public record: PayoutRecorder | null = null;
 
   constructor(
     private readonly store: Store,
@@ -90,28 +106,82 @@ export class Payouts {
    * paid, already paying, or gone is returned untouched and NO transfer is made. Ends `paid` (tx_hash) or `failed` (last_error).
    */
   private async attempt(id: number): Promise<PayoutRow | null> {
-    const before = this.store.getPayout(id);
-    if (!before) return null;
-    if (before.status === 'paid' || before.status === 'paying' || this.inFlight.has(id)) return before;
-    if (!this.store.claimPayout(id)) return this.store.getPayout(id);
-    this.inFlight.add(id);
-    const row = this.store.getPayout(id)!;          // attempts already incremented by the claim
-    const attempts = row.attempts;
+    const rows = await this.attemptGroup([id]);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * One transfer attempt for every row in `ids` — all of them from the SAME settlement, paid in one transaction
+   * when the wallet can (item 366) and one at a time when it cannot.
+   *
+   * Every row is claimed atomically first (pending|failed → paying); a row that is paid, already paying or gone is
+   * dropped from the batch and NO transfer is made for it, so the double-payment guard is unchanged by batching.
+   * The transfer carries the key derived from the settle hash, and a `payout` record follows it onto the shared
+   * ledger, so the ancestor can join promise to money without asking the seller (item 314).
+   */
+  private async attemptGroup(ids: number[]): Promise<PayoutRow[]> {
+    const claimed: PayoutRow[] = [];
+    const out: PayoutRow[] = [];
+    for (const id of ids) {
+      const before = this.store.getPayout(id);
+      if (!before) continue;
+      if (before.status === 'paid' || before.status === 'paying' || this.inFlight.has(id)) { out.push(before); continue; }
+      if (!this.store.claimPayout(id)) { const r = this.store.getPayout(id); if (r) out.push(r); continue; }
+      this.inFlight.add(id);
+      claimed.push(this.store.getPayout(id)!);      // attempts already incremented by the claim
+    }
+    if (!claimed.length) return out;
     try {
-      if (!this.wallet) return this.store.updatePayout(id, { status: 'failed', last_error: 'no chain wallet on this node' });
-      try {
-        const r = await this.wallet.transfer(row.address, Number(row.amount));
-        const next = this.store.updatePayout(id, { status: 'paid', tx_hash: r.tx_hash, last_error: null });
-        this.log('info', 'payout', `paid ${row.amount} ${row.currency} royalty to ${row.address.slice(0, 10)}… (${r.tx_hash.slice(0, 12)}, attempt ${attempts})`, row.patch_id, { payout_id: id, tx_hash: r.tx_hash, attempts });
-        return next;
-      } catch (e) {
-        const msg = ((e as Error).message ?? String(e)).slice(0, 500);
-        const next = this.store.updatePayout(id, { status: 'failed', last_error: msg });
-        const final = attempts >= this.maxAttempts;
-        this.log('warn', 'payout', `royalty transfer to ${row.address.slice(0, 10)}… failed (attempt ${attempts}/${this.maxAttempts}${final ? ', giving up — retry from the Payouts tab' : ''}): ${msg}`, row.patch_id, { payout_id: id, attempts, error: msg });
-        return next;
+      if (!this.wallet) {
+        for (const row of claimed) out.push(this.store.updatePayout(row.id, { status: 'failed', last_error: 'no chain wallet on this node' }));
+        return out;
       }
-    } finally { this.inFlight.delete(id); }
+      const items = claimed.map((row) => ({ to: row.address, value: Number(row.amount), key: payoutKeyFor(row.settle_hash, row.address) }));
+      const batched = claimed.length > 1 && typeof this.wallet.transferMany === 'function';
+      const paid = async (i: number, txHash: string) => {
+        const row = claimed[i];
+        const next = this.store.updatePayout(row.id, { status: 'paid', tx_hash: txHash, last_error: null, transfer_key: items[i].key });
+        this.log('info', 'payout', `paid ${row.amount} ${row.currency} royalty to ${row.address.slice(0, 10)}… (tx ${txHash.slice(0, 12)}, key ${items[i].key}, attempt ${row.attempts}${batched ? `, one transaction for all ${claimed.length} creators of this sale` : ''})`, row.patch_id, { payout_id: row.id, tx_hash: txHash, transfer_key: items[i].key, attempts: row.attempts, batched });
+        out.push(await this.putOnRecord(next, txHash, items[i].key));
+      };
+      const failed = (i: number, e: unknown) => {
+        const row = claimed[i];
+        const msg = ((e as Error).message ?? String(e)).slice(0, 500);
+        const next = this.store.updatePayout(row.id, { status: 'failed', last_error: msg });
+        const final = row.attempts >= this.maxAttempts;
+        this.log('warn', 'payout', `royalty transfer to ${row.address.slice(0, 10)}… failed (attempt ${row.attempts}/${this.maxAttempts}${final ? ', giving up — retry from the Payouts tab' : ''}): ${msg}`, row.patch_id, { payout_id: row.id, attempts: row.attempts, error: msg });
+        out.push(next);
+      };
+      if (batched) {
+        // All or nothing: one transaction, so either every creator of this sale is paid or none is.
+        try {
+          const r = await this.wallet.transferMany!(items);
+          for (let i = 0; i < claimed.length; i++) await paid(i, r.tx_hash);
+        } catch (e) { for (let i = 0; i < claimed.length; i++) failed(i, e); }
+      } else {
+        // A wallet with no batch support (and every single-row pass) transfers one at a time, as before.
+        for (let i = 0; i < claimed.length; i++) {
+          try { const r = await this.wallet.transfer(items[i].to, items[i].value, items[i].key); await paid(i, r.tx_hash); }
+          catch (e) { failed(i, e); }
+        }
+      }
+      return out;
+    } finally { for (const row of claimed) this.inFlight.delete(row.id); }
+  }
+
+  /**
+   * Put a paid transfer on the shared ledger (item 314). The money has already moved, so a failure here is logged
+   * and left for the next pass to retry — it never re-opens a paid row, which would risk paying twice.
+   */
+  private async putOnRecord(row: PayoutRow, txHash: string, key: string): Promise<PayoutRow> {
+    if (!this.record || row.recorded) return row;
+    try {
+      await this.record(row, txHash, key);
+      return this.store.updatePayout(row.id, { recorded: true });
+    } catch (e) {
+      this.log('warn', 'payout', `paid ${row.amount} ${row.currency} to ${row.address.slice(0, 10)}… but could not write the public payout record for it: ${(e as Error).message} — the transfer stands (tx ${txHash.slice(0, 12)}, key ${key}); the record is retried`, row.patch_id, { payout_id: row.id, tx_hash: txHash });
+      return row;
+    }
   }
 
   /** Rows the timer should (re)try now: never attempted, or failed < max attempts and older than the retry interval. In-flight (`paying`) rows are never due. */
@@ -132,12 +202,20 @@ export class Payouts {
           this.again = false;
           const forced = [...this.forced]; this.forced.clear();
           const ids = [...new Set([...forced, ...this.due().map((r) => r.id)])];
+          // Item 366: the creators of ONE sale are paid in one transaction, so a family of three costs one write
+          // instead of three. Rows are grouped by settle hash and the order within the pass is unchanged.
+          const groups = new Map<string, number[]>();
           for (const id of ids) {
+            const row = this.store.getPayout(id);
+            if (!row) continue;
+            groups.set(row.settle_hash, [...(groups.get(row.settle_hash) ?? []), id]);
+          }
+          for (const group of groups.values()) {
             if (this.store.isClosed) return out;
-            const r = await this.attempt(id);
-            if (!r) continue;
-            out.attempted++;
-            if (r.status === 'paid') out.paid++; else if (r.status === 'failed') out.failed++;
+            for (const r of await this.attemptGroup(group)) {
+              out.attempted++;
+              if (r.status === 'paid') out.paid++; else if (r.status === 'failed') out.failed++;
+            }
           }
         } while (this.again || this.forced.size);
       } finally { this.running = null; }

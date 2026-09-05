@@ -244,6 +244,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (cfg.verifier?.auto !== false) verifier?.start();   // verifier.auto=false: manual verification only
   teach?.start();
   market.payouts.start();   // 60-s royalty payout retry timer (spec §9.3)
+  // Item 313: the payout rows are rebuilt from the settlements this node itself wrote, at boot and on the watchdog
+  // tick. A crash between `ledger.append` and `enqueue`, or a wiped data dir, used to leave a public debt that no
+  // row anywhere knew about — and therefore no retry, no "failed" and no button that could pay it.
+  setTimeout(() => { market.reconcilePayouts().catch((e) => market.log('warn', 'payout', `payout reconcile failed: ${(e as Error).message}`)); }, 5_000).unref?.();
   // The same 20-second tick brings subscribed tracks up to date (item 255): "subscribe" was a one-time snapshot and
   // nothing ever reacted to a later `branch` or `supersede` record, so a subscriber served yesterday's retired bake
   // indefinitely while every screen said it was current.
@@ -251,6 +255,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     market.watchdog().catch(() => undefined);
     market.reconcileSupersedes().catch(() => undefined);
     market.reconcileSubscriptions().catch(() => undefined);
+    market.reconcilePayouts().catch(() => undefined);
   }, 20_000);
   watchdog.unref?.();
   // events retention (lineage design §5.6): the demand counters are materialised in `patch_signals_daily` at write

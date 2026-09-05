@@ -128,7 +128,11 @@ export interface TeachDatasetRecord {
 export interface ContributorRow { address: string; name: string | null; payout_address: string | null; first_seen: number; last_seen: number; jobs: number; published: number; hidden: boolean; note: string | null }
 export interface BanRow { id: number; kind: 'address' | 'ip'; value: string; reason: string | null; ts: number }
 /** `paying` = a transfer is in flight right now (claimed atomically by the payout runner); a row found `paying` at boot was interrupted mid-transfer. */
-export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
+export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number;
+  /** The key the transfer was written under, `/transfer/$seller/$to/$key` (item 314) — what joins it to the sale. */
+  transfer_key?: string | null;
+  /** true once the `payout` record naming this transfer is on the shared ledger, so an ancestor can find it. */
+  recorded?: boolean }
 
 /**
  * One open question about a knowledge — what the "what to add on top of this" panel lists (lineage design §5.6, §10, SC-12).
@@ -301,6 +305,8 @@ export class Store {
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
     // lineage §5.4: `applied` becomes an ordered stack with a journal per patch (the values the apply overwrote).
     add('applied', { position: 'INTEGER', journal_path: 'TEXT', stack_sha256: 'TEXT' });
+    // Item 314: a royalty transfer used to be an anonymous push with nothing tying it to the sale it honoured.
+    add('payouts', { transfer_key: 'TEXT', recorded: 'INTEGER NOT NULL DEFAULT 0' });
     // Item 362: a purchase a subscription made on its own read exactly like one the operator chose to make.
     // Item 280: what the money was split into, as the seller reported it in `x-payment-response`.
     add('purchases', { origin: "TEXT NOT NULL DEFAULT 'manual'", royalty: 'TEXT' });
@@ -803,6 +809,7 @@ export class Store {
   private rowToPayout(r: Record<string, unknown>): PayoutRow {
     return { id: r.id as number, patch_id: r.patch_id as string, settle_hash: r.settle_hash as string, address: r.address as string, amount: r.amount as string, currency: r.currency as string,
       status: r.status as PayoutRow['status'], tx_hash: (r.tx_hash as string) ?? null, attempts: Number(r.attempts ?? 0), last_error: (r.last_error as string) ?? null,
+      transfer_key: (r.transfer_key as string) ?? null, recorded: !!r.recorded,
       created_at: r.created_at as number, updated_at: r.updated_at as number };
   }
   /** Written BEFORE the transfer is attempted, status `pending`, attempts 0. */
@@ -829,12 +836,12 @@ export class Store {
     const r = this.db.prepare("UPDATE payouts SET status = 'paying', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status IN ('pending', 'failed')").run(Date.now(), id);
     return Number(r.changes) === 1;
   }
-  updatePayout(id: number, patch: Partial<Pick<PayoutRow, 'status' | 'tx_hash' | 'attempts' | 'last_error'>>): PayoutRow {
+  updatePayout(id: number, patch: Partial<Pick<PayoutRow, 'status' | 'tx_hash' | 'attempts' | 'last_error' | 'transfer_key' | 'recorded'>>): PayoutRow {
     const cur = this.getPayout(id);
     if (!cur) throw new Error(`payout ${id} not found`);
     const next = { ...cur, ...patch, updated_at: Date.now() };
-    this.db.prepare('UPDATE payouts SET status = ?, tx_hash = ?, attempts = ?, last_error = ?, updated_at = ? WHERE id = ?')
-      .run(next.status, next.tx_hash, next.attempts, next.last_error, next.updated_at, id);
+    this.db.prepare('UPDATE payouts SET status = ?, tx_hash = ?, attempts = ?, last_error = ?, transfer_key = ?, recorded = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.tx_hash, next.attempts, next.last_error, next.transfer_key ?? null, next.recorded ? 1 : 0, next.updated_at, id);
     return next;
   }
   /** Payout attempts; `status` filters, `address` matches case-insensitively, newest first. */

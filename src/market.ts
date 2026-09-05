@@ -498,6 +498,16 @@ export class Market {
     readonly runtime: Runtime,
   ) {
     this.payouts = new Payouts(store, (l, k, m, pid, d) => this.log(l, k, m, pid ?? null, d ?? null), ledger instanceof AinLedger ? ledger : null, { selfAddress: cfg.identity.address });
+    // Item 314: a royalty transfer that has landed goes on the shared record, so an ancestor can join the seller's
+    // promise to the money without asking the seller — and an honest seller has evidence to show.
+    this.payouts.record = async (row, txHash, key) => {
+      const body: PayoutRecord = {
+        settle_hash: row.settle_hash, patch_id: row.patch_id, to: row.address, amount: row.amount,
+        currency: row.currency, tx_hash: txHash, transfer_key: key, created_at: Date.now(),
+      };
+      const rec = await this.ledger.append('payout', body);
+      await this.p2p?.broadcast(rec).catch(() => undefined);
+    };
     this.datasets = new DatasetBlobStore(store, cfg.dataDir);
     // Item 126: `runtime.status().applied` was a hard-coded [] — `/api/info` and `ainize status` could not show what
     // was in the model. It reads the node's own stack rows now, live (never from the 30-second status cache).
@@ -2114,6 +2124,39 @@ export class Market {
       this.payouts.processPending().catch(() => undefined);
     }
     return { settlement };
+  }
+
+  /**
+   * Rebuild the payout rows this node owes from the RECORD (item 313).
+   *
+   * `enqueue` was called in exactly one place — inline with the sale — and there was no reconcile pass anywhere.
+   * A settle written before the payouts table existed, a wiped data dir, or a crash between `ledger.append` and
+   * `enqueue` left a public debt with no row at all: no retry, no "failed", nothing, and no button in the product
+   * could pay it. Since the settlements are the shared source of truth, walking them makes a missing row
+   * impossible rather than merely unlikely. `enqueue` is idempotent per (settle hash, address), so this is safe to
+   * run at boot, on a timer and by hand.
+   */
+  async reconcilePayouts(): Promise<{ settlements: number; rows: number; recovered: number; run: { attempted: number; paid: number; failed: number } | null }> {
+    const setts = await this.ledger.settlements();
+    const mine = setts.filter((s) => sameAddr(s.body.seller, this.address) && s.body.scheme === 'ain-transfer');
+    let rows = 0; let recovered = 0;
+    for (const s of mine) {
+      const before = new Set(this.store.listPayouts({ limit: 5000 }).filter((r) => r.settle_hash === s.hash).map((r) => r.id));
+      const made = this.payouts.enqueue(s.body, s.hash);
+      rows += made.length;
+      recovered += made.filter((r) => !before.has(r.id)).length;
+    }
+    if (recovered) this.log('warn', 'payout', `${recovered} royalty payout row(s) recovered from the record: settlements this node wrote that owed money and had no row to pay it from`, null, { settlements: mine.length, recovered });
+    const run = recovered || this.payouts.due().length ? await this.payouts.processPending() : null;
+    return { settlements: mine.length, rows, recovered, run };
+  }
+
+  /** The `payout` records this node can see for one settlement (item 314) — the public half of "was I paid?". */
+  async payoutRecords(settleHash?: string): Promise<PayoutRecord[]> {
+    const recs = await this.ledger.list({ kind: 'payout' }).catch(() => []);
+    return recs
+      .map((r) => r.body as PayoutRecord)
+      .filter((b) => b && typeof b.settle_hash === 'string' && typeof b.tx_hash === 'string' && (!settleHash || b.settle_hash === settleHash));
   }
 
   /**

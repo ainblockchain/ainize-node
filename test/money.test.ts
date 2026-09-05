@@ -230,3 +230,47 @@ test('278 only the author may re-price, and a draft is edited instead', async ()
   await assert.rejects(C.market.setPrice(PAID_ID, '1'), /only its author/);
   await assert.rejects(A.market.setPrice(PAID_ID, 'free'), /must be a non-negative number/);
 });
+
+// ------------------------------------------------- items 313 / 314 / 366: the payouts a settlement actually made
+test('313/314/366 payout rows are rebuilt from the record, keyed to the sale, and paid in one transaction', async () => {
+  const { Payouts } = await import('../src/payouts.js');
+  const { Store } = await import('../src/store.js');
+  const { payoutKeyFor } = await import('@ngram/core');
+  const SELLER = '0x1111111111111111111111111111111111111111';
+  const settlement = {
+    patch_id: 'p1', seller: SELLER, buyer: '0x4444444444444444444444444444444444444444', amount: '10', currency: 'AIN',
+    scheme: 'ain-transfer', tx_hash: '0xbuyer', billing: 'per_download' as const, created_at: Date.now(),
+    royalty: { [SELLER]: '5', '0x2222222222222222222222222222222222222222': '3', '0x3333333333333333333333333333333333333333': '2' },
+  };
+  const store = new Store(':memory:');
+  const calls: { batch: number; keys: string[] }[] = [];
+  const wallet = {
+    async transfer(to: string, value: number, key?: string) { calls.push({ batch: 1, keys: [key ?? ''] }); return { tx_hash: `0xsingle${to.slice(2, 6)}${value}` }; },
+    async transferMany(items: { to: string; value: number; key: string }[]) { calls.push({ batch: items.length, keys: items.map((i) => i.key) }); return { tx_hash: '0xbatched' }; },
+  };
+  const recorded: { settle: string; to: string; key: string; tx: string }[] = [];
+  const p = new Payouts(store, () => undefined, wallet, { selfAddress: SELLER, retryMs: 50, maxAttempts: 3 });
+  p.record = async (row, txHash, key) => { recorded.push({ settle: row.settle_hash, to: row.address, key, tx: txHash }); };
+
+  p.enqueue(settlement, 'settle-1');
+  const run = await p.processPending();
+  assert.equal(run.paid, 2, 'both creators are paid');
+  // item 366: ONE transaction for the whole sale, not one per creator
+  assert.deepEqual(calls.map((x) => x.batch), [2], 'two creators of one sale cost one write');
+  // item 314: each transfer carries the key derived from the settle hash, and the record joins the two
+  const rows = store.listPayouts({ limit: 10 });
+  assert.deepEqual(rows.map((r) => r.transfer_key).sort(), rows.map((r) => payoutKeyFor('settle-1', r.address)).sort());
+  assert.equal(recorded.length, 2);
+  assert.ok(recorded.every((r) => r.settle === 'settle-1' && r.tx === '0xbatched'));
+  assert.ok(rows.every((r) => r.recorded), 'and the row knows its payout is on the public record');
+
+  // item 313: the rows can be rebuilt from the settlement alone, and rebuilding pays nothing twice
+  store.listPayouts({ limit: 10 }).forEach(() => undefined);
+  const again = p.enqueue(settlement, 'settle-1');
+  assert.equal(store.listPayouts({ limit: 10 }).length, 2, 'idempotent per (settle, address)');
+  assert.deepEqual(again.map((r) => r.status), ['paid', 'paid']);
+  const run2 = await p.processPending();
+  assert.equal(run2.paid, 0, 'nothing is paid a second time');
+  assert.deepEqual(calls.map((x) => x.batch), [2]);
+  store.close();
+});
