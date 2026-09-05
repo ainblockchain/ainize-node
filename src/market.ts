@@ -3646,7 +3646,10 @@ export class Market {
         hits[t.id] = hit;
         // `visitor` is the HMAC id (never an address); `sample_index` is what the "own questions it got wrong" panel keys on (§10)
         this.log('info', 'usage', `live test ${t.id}${ids.length > 1 ? ` [+${ids.length - 1}]` : ''} (${opts.mode}) by ${opts.visitor.slice(0, 24)}: ${patched ? 'patched hit=' + hit : 'base only'}`, t.id,
-          { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1, sample_index: sample?.index ?? null });
+          // `question` is the keyed cluster of the prompt (item 199): two people asking the same thing meet on it,
+          // and nothing can turn it back into the text. Without it a miss on a question the knowledge does NOT
+          // publish — the 32 on node-a — was a row with a timestamp and no way to tell which question it was.
+          { visitor: opts.visitor, mode: opts.mode, hit, base_ms: base?.latency_ms, patched_ms: patched?.latency_ms, applied_ms: appliedMs[i], patch_ids: ids, position: i + 1, sample_index: sample?.index ?? null, question: this.questionCluster(lastUser) });
         // materialised at write time: the counters survive the 90-day event retention
         if (patched) this.store.bumpSignals(t.id, { tests: 1, hits: hit === true ? 1 : 0, misses: hit === false ? 1 : 0, unscored: hit === null ? 1 : 0 }, { visitor: opts.visitor });
         // SC-12 *own*: a question this knowledge PUBLISHES and just got wrong on this node. The prompt is already on
@@ -3659,7 +3662,7 @@ export class Market {
       // to the visitor who asked it — so a feedback call needs no prompt in its body (nobody can attribute text to a
       // knowledge they never asked) and nothing is written to the database unless they press *Share*.
       const turnId = this.rememberTurn(opts.visitor, lastUser, targets.filter((t) => !t.base).map((t) => t.id), hits);
-      if (baseOnly) this.log('info', 'usage', `live test (base model, nothing loaded) by ${opts.visitor.slice(0, 24)}`, undefined, { visitor: opts.visitor, mode });
+      if (baseOnly) this.log('info', 'usage', `live test (base model, nothing loaded) by ${opts.visitor.slice(0, 24)}`, undefined, { visitor: opts.visitor, mode, question: this.questionCluster(lastUser) });
       return {
         turn_id: turnId,
         patch_id: ids[0] ?? '', patch_ids: ids, mode, base, patched,

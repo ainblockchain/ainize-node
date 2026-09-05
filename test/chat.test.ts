@@ -192,6 +192,16 @@ test('HTTP: patch_id OR patch_ids (exactly one); /api/chat/patches carries appli
   assert.equal(vis, N.market.visitorId('ip:127.0.0.1'), 'stable per node');
   assert.notEqual(vis, N.market.visitorId('ip:127.0.0.2'));
   assert.equal((last.data as { sample_index: number | null }).sample_index, null, 'no benchmark sample matched → recorded as null, not omitted');
+  /*
+   * Item 199 — a miss on a question the knowledge does not PUBLISH used to be a row with a timestamp and no way to
+   * tell which question it was, so "what did it get wrong for people" had no data behind it. Every usage event
+   * carries the keyed cluster of the prompt: two people asking the same thing meet on it, and it cannot be turned
+   * back into the text (the same key `bumpIssue` counts on, and the same one a dataset row folds to).
+   */
+  const q = (last.data as { question?: string }).question;
+  assert.match(q ?? '', /^[0-9a-f]{16}$/, `usage event carries a question cluster key, got ${q}`);
+  assert.equal(q, N.market.questionCluster('한국법 개정?'), 'the key is the prompt\'s, not the visitor\'s');
+  assert.notEqual(q, N.market.questionCluster('something else entirely'));
   const feed = await (await fetch(`${url}/api/events?kind=usage&limit=5`)).json() as { events: { message: string; data: Record<string, unknown> | null }[] };
   assert.ok(feed.events.length >= 1);
   for (const e of feed.events) {

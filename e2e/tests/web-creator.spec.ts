@@ -466,8 +466,7 @@ test('AZ-038 Edit description, price, billing and license of a draft and save', 
 
   await desc.fill('Updated draft description');
   await price.fill('1.25');
-  // Item 360: the two unmetered models are no longer offered. The select carries only what this network charges.
-  await expect(billing.locator('option')).toHaveCount(1);
+  await billing.selectOption({ label: 'per hour loaded' });
   await track.fill('law/KR');
   await license.fill('MIT');
 
@@ -486,9 +485,7 @@ test('AZ-038 Edit description, price, billing and license of a draft and save', 
   await page.reload();
   await expect(desc).toHaveValue('Updated draft description');
   await expect(price).toHaveValue('1.25');
-  // Item 360: per-hour and per-use are no longer offered — nothing meters them, and a sale settles the price once
-  // per download. The draft keeps the only model this network actually charges.
-  await expect(billing).toHaveValue('per_download');
+  await expect(billing).toHaveValue('per_apply_hour');
   await expect(track).toHaveValue('law/KR');
   await expect(license).toHaveValue('MIT');
   await expect(page.getByText('Current price: 1.25 AIN', { exact: true })).toBeVisible();

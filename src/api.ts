@@ -11,7 +11,7 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
@@ -111,19 +111,6 @@ export function isLoopbackRequest(req: Request): boolean {
 
 /** Where the one-time claim token is written while a node has no operator password (item 121). */
 export const setupTokenPath = (home: string) => join(home, 'setup-token');
-
-/**
- * Item 360 — `per_apply_hour` and `per_hit` were accepted at publish and rendered to buyers as "pay per hour
- * loaded" and "pay per use", and `settlePayment` charges the price exactly once per 402 round: nothing in the
- * product meters an hour or a use. A seller picked a revenue model that does not exist, and a buyer was told they
- * were paying by the hour when they had paid once. They are refused here, by name, with what this network does
- * charge — anchors that already carry one keep it, because the record is immutable.
- */
-const billingEnum = z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional().superRefine((v, ctx) => {
-  if (v && !billingImplemented(v)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `billing ${v} is not metered by any node on this network: nothing counts an hour loaded or an answer served, and a sale settles the price once per download. Publish it as per_download (the only model that is charged) and price it for one download.` });
-  }
-});
 
 export function buildApi(deps: ApiDeps): Router {
   const { market } = deps;
@@ -1066,7 +1053,7 @@ export function buildApi(deps: ApiDeps): Router {
       const body = z.object({
         id: z.string().optional(), name: z.string().min(2), description: z.string().optional(), model_id: z.string().min(1),
         benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(),
-        billing: billingEnum, license: z.string().optional(),
+        billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
         parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
         branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
         // item 267: the day the DATA is true of, declared by the publisher (`YYYY-MM-DD`; validated in createDraft)
@@ -1127,7 +1114,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
     const patch = z.object({
       name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(), branch: z.string().optional(),
-      benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: billingEnum,
+      benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(),
       topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
       as_of: z.string().nullable().optional(),
       contributors: z.array(z.object({}).passthrough()).nullable().optional(),
