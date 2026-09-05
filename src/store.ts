@@ -9,7 +9,13 @@ import { dirname } from 'node:path';
 import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDatasetStatus, TeachDatasetSummary, TeachTrainingSpec } from '@ngram/core';
 
 export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; }
-export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string; manifest: PatchManifest | null; path: string | null; created_at: number; }
+/** A live download token (item 345): who it was handed to, and how many times it has been redeemed. */
+export interface TokenRow { token: string; sha256: string; issued_to: string; expires_at: number; redemptions: number; last_used: number | null; patch_id: string | null }
+export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string; manifest: PatchManifest | null; path: string | null; created_at: number;
+  /** Why this node paid (item 362): a deliberate purchase, or an item a track subscription bought on its own. */
+  origin?: string;
+  /** address → amount, from the seller's `x-payment-response`: who this purchase actually paid (item 280). */
+  royalty?: Record<string, string> | null; }
 /** Severity order (low → high): a `level` filter means "this level and worse". */
 export const EVENT_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 /**
@@ -291,8 +297,19 @@ export class Store {
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
     // lineage §5.4: `applied` becomes an ordered stack with a journal per patch (the values the apply overwrote).
     add('applied', { position: 'INTEGER', journal_path: 'TEXT', stack_sha256: 'TEXT' });
+    // Item 362: a purchase a subscription made on its own read exactly like one the operator chose to make.
+    // Item 280: what the money was split into, as the seller reported it in `x-payment-response`.
+    add('purchases', { origin: "TEXT NOT NULL DEFAULT 'manual'", royalty: 'TEXT' });
     // Items 136/138: where a peer came from, who advertised it, and what the last round actually said when it failed.
     add('peers', { source: "TEXT NOT NULL DEFAULT 'configured'", learned_from: 'TEXT', last_error: 'TEXT', last_attempt: 'REAL NOT NULL DEFAULT 0' });
+    // Item 277: a knowledge priced at 0 is handed over without a payment, so it writes no settle record — and a
+    // settle record is what `downloads` counts. This is where a free hand-over is counted instead: on the seller's
+    // own node, by day, with nobody's address in it (the point of the free path is that taking it names no one).
+    this.db.exec(`CREATE TABLE IF NOT EXISTS free_downloads (patch_id TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+      first_at REAL NOT NULL, last_at REAL NOT NULL, PRIMARY KEY (patch_id, day))`);
+    // Item 345: a download token used to be a bearer ticket — one purchase, unlimited redistribution for 24 hours,
+    // recorded nowhere. Redemptions are counted per token so the seller can see (and cap) what one sale served.
+    add('tokens', { redemptions: 'INTEGER NOT NULL DEFAULT 0', last_used: 'REAL', patch_id: 'TEXT' });
   }
 
   private closed = false;
@@ -347,9 +364,11 @@ export class Store {
 
   // purchases
   putPurchase(p: PurchaseRow) {
-    this.db.prepare(`INSERT INTO purchases (patch_id, sha256, tx_hash, scheme, amount, manifest, path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(patch_id) DO UPDATE SET tx_hash = excluded.tx_hash, manifest = excluded.manifest, path = excluded.path, created_at = excluded.created_at`)
-      .run(p.patch_id, p.sha256, p.tx_hash, p.scheme, p.amount, p.manifest ? JSON.stringify(p.manifest) : null, p.path, p.created_at);
+    this.db.prepare(`INSERT INTO purchases (patch_id, sha256, tx_hash, scheme, amount, manifest, path, created_at, origin, royalty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(patch_id) DO UPDATE SET tx_hash = excluded.tx_hash, manifest = excluded.manifest, path = excluded.path, created_at = excluded.created_at,
+        origin = excluded.origin, royalty = COALESCE(excluded.royalty, purchases.royalty)`)
+      .run(p.patch_id, p.sha256, p.tx_hash, p.scheme, p.amount, p.manifest ? JSON.stringify(p.manifest) : null, p.path, p.created_at,
+        p.origin ?? 'manual', p.royalty ? JSON.stringify(p.royalty) : null);
   }
   getPurchase(id: string): PurchaseRow | null {
     const r = this.db.prepare('SELECT * FROM purchases WHERE patch_id = ?').get(id) as Record<string, unknown> | undefined;
@@ -360,7 +379,8 @@ export class Store {
   }
   private rowToPurchase(r: Record<string, unknown>): PurchaseRow {
     return { patch_id: r.patch_id as string, sha256: r.sha256 as string, tx_hash: r.tx_hash as string, scheme: r.scheme as string, amount: r.amount as string,
-      manifest: r.manifest ? JSON.parse(r.manifest as string) : null, path: (r.path as string) ?? null, created_at: r.created_at as number };
+      manifest: r.manifest ? JSON.parse(r.manifest as string) : null, path: (r.path as string) ?? null, created_at: r.created_at as number,
+      origin: (r.origin as string) ?? 'manual', royalty: r.royalty ? JSON.parse(r.royalty as string) : null };
   }
 
   // licenses — the right to USE a body, kept apart from holding the file (item 327)
@@ -548,10 +568,39 @@ export class Store {
   markPayment(txHash: string, patchId: string) { this.db.prepare('INSERT OR IGNORE INTO payments_seen (tx_hash, patch_id, ts) VALUES (?, ?, ?)').run(txHash, patchId, Date.now()); }
 
   // download tokens
-  putToken(token: string, sha: string, issuedTo: string, ttlMs: number) { this.db.prepare('INSERT OR REPLACE INTO tokens (token, sha256, issued_to, expires_at) VALUES (?, ?, ?, ?)').run(token, sha, issuedTo, Date.now() + ttlMs); }
+  putToken(token: string, sha: string, issuedTo: string, ttlMs: number, patchId: string | null = null) {
+    this.db.prepare('INSERT OR REPLACE INTO tokens (token, sha256, issued_to, expires_at, redemptions, last_used, patch_id) VALUES (?, ?, ?, ?, 0, NULL, ?)')
+      .run(token, sha, issuedTo, Date.now() + ttlMs, patchId);
+  }
   checkToken(token: string, sha: string): boolean {
     const r = this.db.prepare('SELECT expires_at FROM tokens WHERE token = ? AND sha256 = ?').get(token, sha) as { expires_at: number } | undefined;
     return !!r && r.expires_at > Date.now();
+  }
+  /** The live token row — `issued_to` is who the manifest was handed to, and what item 345 checks the fetcher against. */
+  getToken(token: string, sha: string): TokenRow | null {
+    const r = this.db.prepare('SELECT * FROM tokens WHERE token = ? AND sha256 = ?').get(token, sha) as Record<string, unknown> | undefined;
+    if (!r || Number(r.expires_at) <= Date.now()) return null;
+    return { token: r.token as string, sha256: r.sha256 as string, issued_to: r.issued_to as string, expires_at: r.expires_at as number,
+      redemptions: Number(r.redemptions ?? 0), last_used: (r.last_used as number) ?? null, patch_id: (r.patch_id as string) ?? null };
+  }
+  /** Count one redemption of a token and return the new count (item 345). */
+  useToken(token: string, sha: string): number {
+    this.db.prepare('UPDATE tokens SET redemptions = redemptions + 1, last_used = ? WHERE token = ? AND sha256 = ?').run(Date.now(), token, sha);
+    return this.getToken(token, sha)?.redemptions ?? 0;
+  }
+
+  // free hand-overs (item 277): a knowledge priced 0 writes no settlement, so this is the only count of it
+  bumpFreeDownload(patchId: string, day = new Date().toISOString().slice(0, 10)): number {
+    const now = Date.now();
+    this.db.prepare(`INSERT INTO free_downloads (patch_id, day, count, first_at, last_at) VALUES (?, ?, 1, ?, ?)
+      ON CONFLICT(patch_id, day) DO UPDATE SET count = count + 1, last_at = excluded.last_at`).run(patchId, day, now, now);
+    return Number((this.db.prepare('SELECT SUM(count) AS n FROM free_downloads WHERE patch_id = ?').get(patchId) as { n: number } | undefined)?.n ?? 0);
+  }
+  freeDownloads(patchId?: string): { patch_id: string; count: number; last_at: number }[] {
+    const sql = 'SELECT patch_id, SUM(count) AS count, MAX(last_at) AS last_at FROM free_downloads'
+      + (patchId ? ' WHERE patch_id = ?' : '') + ' GROUP BY patch_id ORDER BY count DESC';
+    const rows = (patchId ? this.db.prepare(sql).all(patchId) : this.db.prepare(sql).all()) as Record<string, unknown>[];
+    return rows.map((r) => ({ patch_id: r.patch_id as string, count: Number(r.count ?? 0), last_at: Number(r.last_at ?? 0) }));
   }
 
   // ------------------------------------------------------------ teach mode (spec §7.5)
