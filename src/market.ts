@@ -717,9 +717,28 @@ export class Market {
     return anchor;
   }
 
+  /**
+   * Item 157 — `draft not found` was the whole answer for five different situations: a REJECTED anchor, a LISTED
+   * one, an ANNOUNCED one, a draft somebody else's node holds, and an id that never existed. A publisher looking at
+   * `krx-ticker-codes ANNOUNCED` one line above in `patch ls` was told it does not exist, which sends people
+   * hunting for a sync bug instead of reading the status. `forgetBody` has said the right thing for a draft since
+   * item 156; this is the same courtesy in the other direction. The id is only "not found" when it really is.
+   */
+  private noDraft(id: string, verb: 'delete' | 'announce'): Error {
+    const e = this.catalogSync().find((x) => x.anchor.id === id);
+    if (!e) return notFound(`no knowledge with the id "${id}" on this node — \`ainize patch ls --drafts\` lists what is here`);
+    if (e.status === 'REJECTED') {
+      return conflict(`${id} was REJECTED by verifiers, and its record is public — it cannot be deleted or re-announced. Publish a corrected version under a NEW id with \`ainize publish <file>.npz --id <new-id> --parents ${id}\`, which keeps the lineage and the credit.`, { code: 'not_a_draft', patch_id: id, status: e.status });
+    }
+    return conflict(verb === 'delete'
+      ? `${id} is ${e.status} — announced knowledge cannot be deleted, because its record is public and buyers may hold the file. Take it off sale with \`ainize patch retire ${id}\`, drop this node's copy with \`ainize patch forget ${id}\`, or publish a replacement with \`ainize publish <file>.npz --parents ${id}\`.`
+      : `${id} is already ${e.status} — it is on the public record, so there is nothing left to announce. Publish a new version with \`ainize publish <file>.npz --parents ${id}\` to replace it.`,
+      { code: 'not_a_draft', patch_id: id, status: e.status });
+  }
+
   deleteDraft(id: string) {
     const d = this.store.getDraft(id);
-    if (!d) throw notFound('draft not found');
+    if (!d) throw this.noDraft(id, 'delete');
     this.store.deleteDraft(id);
     this.invalidate();
     this.log('info', 'patch', `draft deleted: ${id}`, id);
@@ -765,7 +784,7 @@ export class Market {
     const draftEntry = await this.entry(id);
     if (draftEntry && this.drive) this.drive.pullDraftEdits(draftEntry);
     const d = this.store.getDraft(id);
-    if (!d) throw notFound('draft not found');
+    if (!d) throw this.noDraft(id, 'announce');
     const blob = this.blobs.get(d.anchor.patch_sha256);
     if (!blob) throw conflict('patch body missing from blob store');
     if (!d.anchor.benchmark.schema) throw badInput('benchmark.schema is required');
