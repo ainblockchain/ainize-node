@@ -11,7 +11,7 @@ import {
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, sketchJaccard, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
-  type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
+  type DerivationKind, type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, PRICE_RE,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
@@ -90,6 +90,14 @@ export interface CreateDraftInput {
   billing?: PatchAnchor['billing'];
   license?: string;
   parents?: string[];
+  /**
+   * What this knowledge IS to its parents (item 188): `extend` adds answers on top, `contradict` disagrees with
+   * some of theirs, `update` is a new version of your own knowledge. The row counts behind it are measured here
+   * from the two bodies, never taken from the caller — so a child can only declare a kind on a base whose file
+   * this node holds. Absent = a declared parent with no claim about what changed, which is what every
+   * `publish --parents` wrote before.
+   */
+  kind?: DerivationKind;
   branch?: string;
   topic_path?: string;
   /** The day the data is true of (item 267) — `YYYY-MM-DD`, validated here, never guessed from the file. */
@@ -1126,6 +1134,7 @@ export class Market {
     if (input.origin) anchor.origin = input.origin;
     if (input.dataset) anchor.dataset = input.dataset;
     if (input.derivation) anchor.derivation = input.derivation;
+    else if (input.kind) anchor.derivation = this.measureDerivation(input.kind, parents, map, blob.sha256);
     if (input.base) anchor.base = input.base;
     // the lineage invariant (design §5.1) for anchors THIS node writes: every base / dataset parent is a parent
     const problems = lineageProblems(anchor);
@@ -1278,6 +1287,50 @@ export class Market {
       }
       return added;
     } catch { return false; }
+  }
+
+  /**
+   * What a child DID to its bases, measured (item 188).
+   *
+   * A derivative could only ever be published as a new root-style listing with a declared parent and no claim at
+   * all about the relationship: no version, no correction, no fork, so the family tree drew every child with the
+   * same dashed "declared" edge and a buyer could not tell a correction from an unrelated sibling. The kind is the
+   * publisher's declaration; the numbers under it are this node's measurement of the two address sets, because a
+   * publisher typing their own `changed_rows` is a claim nobody can check.
+   */
+  private measureDerivation(kind: DerivationKind, parents: string[], map: Map<string, CatalogEntry>, sha: string): PatchAnchor['derivation'] {
+    const mine = this.blobs.addrSet(sha);
+    if (!mine) throw conflict(`cannot measure what this ${kind}s: the file just imported has no address set on this node`, { code: 'derivation_unmeasurable' });
+    if (!parents.length) throw badInput(`--kind ${kind} says what this knowledge is to its base, so it needs one: pass --parents <id>`);
+    // `update` is "this is my next version of that": only the base's own author may say it, or a buyer could list a
+    // knowledge that presents itself as the newer version of somebody else's.
+    if (kind === 'update') {
+      const notMine = parents.filter((id) => !sameAddr(map.get(id)!.anchor.author, this.address));
+      if (notMine.length) {
+        throw conflict(
+          `--kind update says this is your next version of ${notMine.join(', ')}, which ${notMine.length > 1 ? 'were' : 'was'} published by somebody else. Build on it instead (--kind extend), or say what you disagree with (--kind contradict).`,
+          { code: 'not_your_version', patch_ids: notMine },
+        );
+      }
+    }
+    const bases: { patch_id: string; patch_sha256: string; rows: number }[] = [];
+    const covered = new Set<bigint>();
+    for (const id of parents) {
+      const e = map.get(id)!;
+      const set = this.blobs.addrSet(e.anchor.patch_sha256);
+      if (!set) {
+        throw conflict(
+          `cannot measure what this ${kind}s about ${id}: its file is not on this node, and the row counts on the record are measured here, never typed. Get the body first (\`ainize patch buy ${id}\`), or publish without --kind — the parent is still credited and still paid.`,
+          { code: 'base_not_held', patch_id: id },
+        );
+      }
+      for (const a of set) covered.add(a);
+      bases.push({ patch_id: id, patch_sha256: e.anchor.patch_sha256, rows: e.anchor.rows });
+    }
+    let changed = 0;
+    for (const a of mine) if (covered.has(a)) changed++;
+    // A knowledge file writes rows; it cannot delete a base's row, so `removed_rows` is 0 on this path and says so.
+    return { kind, bases, added_rows: mine.length - changed, changed_rows: changed, removed_rows: 0 };
   }
 
   /**

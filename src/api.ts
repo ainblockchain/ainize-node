@@ -12,7 +12,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import {
   AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
-  DATASET_ACCESS_LEVELS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
+  DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -438,7 +438,12 @@ export function buildApi(deps: ApiDeps): Router {
     const facets = items;
     if (q.status) items = items.filter((e) => q.status!.split(',').includes(e.status));
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
-    if (q.schema) items = items.filter((e) => e.anchor.benchmark.schema === q.schema);
+    // Item 188 — a trailing `*` is a prefix: every taught lesson gets its own `taught/<slug>-<hex>` subject by
+    // design, so "all taught lessons" is one filter instead of 136 chips. An exact schema still matches exactly.
+    if (q.schema) {
+      const pre = q.schema.endsWith('*') ? q.schema.slice(0, -1) : null;
+      items = pre ? items.filter((e) => e.anchor.benchmark.schema.startsWith(pre)) : items.filter((e) => e.anchor.benchmark.schema === q.schema);
+    }
     if (q.author) items = items.filter((e) => e.anchor.author === q.author);
     if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === c)); }
     if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
@@ -1056,6 +1061,9 @@ export function buildApi(deps: ApiDeps): Router {
         billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
         parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
         branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
+        // Item 188 — what this knowledge IS to its bases. The row counts behind the claim are measured by the node
+        // from the two bodies; the caller only names the kind.
+        kind: z.enum(DERIVATION_KINDS as unknown as [string, ...string[]]).optional(),
         // item 267: the day the DATA is true of, declared by the publisher (`YYYY-MM-DD`; validated in createDraft)
         as_of: z.string().optional(),
         visibility: z.enum(['public', 'test']).optional(),
@@ -1107,6 +1115,7 @@ export function buildApi(deps: ApiDeps): Router {
         price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path, as_of: body.as_of,
         file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, force: body.force, ...(dataset ? { dataset } : {}),
         ...(base ? { base } : {}), ...(body.derivation ? { derivation: body.derivation as never } : {}),
+        ...(body.kind ? { kind: body.kind as never } : {}),
       });
       return { anchor };
     } finally { dropTemp(req); }
