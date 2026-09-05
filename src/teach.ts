@@ -19,7 +19,7 @@ import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFile
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
+import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, effectiveRoyaltyShare, effectiveVerifierShare, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
   type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
@@ -136,6 +136,13 @@ export interface TeachJob {
   eta_s?: number | null;
   /** Why a QUEUED / EXPORTED job is not moving: 'slot' (trainer busy), 'lock' (model server busy), 'runtime' (model server down), 'container'. */
   blocked?: string | null;
+  /**
+   * While the shared model is what a lesson is waiting for (item 244): who is holding it, how long this lesson has
+   * been behind it, and how much of the grace is left before the lesson is saved unchecked. `blocked: 'lock'` on its
+   * own was a word with no facts behind it — `teach status` printed "CHECKING None None" while a job sat for eight
+   * minutes bouncing QUEUED↔PREFLIGHT with no reason anywhere.
+   */
+  blocked_by?: { holder: string; label: string; since: number; waited_s: number; grace_left_s: number } | null;
   progress?: TeachProgress;
   checks?: TeachChecks;
   result?: { sha256: string; rows: number; size_bytes: number };
@@ -180,12 +187,19 @@ export interface TeachPolicyView {
     rows_per_job: number; rows_per_job_source: 'default' | 'measured' | 'operator';
     rows_per_key_per_day: number; rows_per_ip_per_day: number; datasets_per_key_per_day: number; dataset_ttl_days: number;
     formats: string[]; declaration_rows: number;
+    /** finding 47 — how many questions one "check what the model knows" covers, and how many go in one call */
+    preflight_rows: number; preflight_per_call: number;
   };
   /** Every field is null until ≥ 3 lessons were measured with `backend: 'gradient'`; a stub node reports `simulated`. */
   timing: { p50_s: number | null; p90_s: number | null; samples: number; backend: 'gradient' | 'stub'; simulated: boolean; load_s_p50: number | null; s_per_row_p50: number | null; s_per_row_p90: number | null };
   effort: { id: TeachEffort; max_steps: number; eval_every: number }[];
   samples: { kind: string; name: string; rows: number }[];
-  shares: { contributor: number; lineage: number };
+  /**
+   * The terms this node offers a teacher (item 307). `contributor` is the share of a sale it pays you, `node` what it
+   * keeps, `lineage` what every sale owes the knowledge it was built on, `verifier` what the verifiers are paid.
+   * `/api/nodes` carries the same three per node, so a teacher choosing where to teach can compare them.
+   */
+  shares: { contributor: number; node: number; lineage: number; verifier: number };
   model: { id_M: string | null };
   applied: string[];
   draft_ttl_days: number;
@@ -215,6 +229,8 @@ export const PROMPT_MAX = 400;
 export const ANSWER_MAX = 200;
 const TAUGHT_MIN_RATIO = 0.75;
 const DEFAULT_RUNTIME_GRACE_MS = 15 * 60_000;
+/** Bounded grace for a BUSY shared model (item 244) — `teach.check.lockGraceMs` overrides it. */
+const DEFAULT_LOCK_GRACE_MS = 30 * 60_000;
 const SLOT_STALE_MS = 45 * 60_000;
 const DEFAULT_RETRY_MS = 15_000;
 const BLOCKED_LOG_MS = 5 * 60_000;
@@ -334,6 +350,9 @@ export class TeachWorker {
   private policyCache: { at: number; value: TeachPolicyView } | null = null;
   private policyHits = new Map<string, { count: number; window: number }>();
   private checkWaitSince = new Map<string, number>();
+  /** When each job first found the shared model BUSY (item 244) — the bounded grace is measured from here. */
+  private lockWaitSince = new Map<string, number>();
+  private lastLockLog = new Map<string, number>();
   /** Jobs whose lesson may still be on the shared table (crash mid-CHECKING); restored at start or as soon as the model server answers. */
   private pendingRestore = new Set<string>();
   private lastReconcile = 0;
@@ -356,6 +375,28 @@ export class TeachWorker {
 
   get store(): Store { return this.market.store; }
   private get graceMs(): number { return this.hooks.runtimeGraceMs ?? DEFAULT_RUNTIME_GRACE_MS; }
+  /** How long a lesson waits for a BUSY shared model before it is saved unchecked (item 244; `teach.check.lockGraceMs`). */
+  private get lockGraceMs(): number { return this.cfg.check.lockGraceMs ?? DEFAULT_LOCK_GRACE_MS; }
+  /**
+   * A lesson found the shared model busy. Returns how much of the bounded grace is left — 0 means "stop waiting".
+   *
+   * A model OUTAGE has always had a 15-minute grace; a busy runtime was retried for ever, with `blocked: 'lock'` as
+   * the only trace and nothing anywhere naming the holder. Both are now bounded, and both say who is in front.
+   */
+  private lockWait(job: TeachJobRow, phase: string): number {
+    const since = this.lockWaitSince.get(job.id) ?? Date.now();
+    this.lockWaitSince.set(job.id, since);
+    const left = Math.max(0, this.lockGraceMs - (Date.now() - since));
+    const holder = this.market.runtime.queueState();
+    const who = holder.running?.label ?? holder.lock?.label ?? 'another process on this machine';
+    if (Date.now() - (this.lastLockLog.get(job.id) ?? 0) > BLOCKED_LOG_MS) {
+      this.lastLockLog.set(job.id, Date.now());
+      this.log('info', `${phase} is waiting for the shared model (held by ${who}) — ${Math.round((Date.now() - since) / 60000)} min so far, ${left ? `${Math.round(left / 60000)} min before this lesson is saved unchecked` : 'the wait is over'}`, job.id, { holder: who, waited_ms: Date.now() - since, grace_left_ms: left });
+    }
+    return left;
+  }
+  /** Forget a lesson's lock-wait bookkeeping once it is no longer waiting. */
+  private lockWaitDone(id: string) { this.lockWaitSince.delete(id); this.lastLockLog.delete(id); }
   private get retryMs(): number { return this.hooks.retryMs ?? DEFAULT_RETRY_MS; }
   /** Effective policy (config.json `teach` + operator overrides in kv). */
   get cfg() { return this.market.teach(); }
@@ -499,6 +540,7 @@ export class TeachWorker {
         rows_per_key_per_day: c.dataset.rowsPerKeyPerDay, rows_per_ip_per_day: c.dataset.rowsPerIpPerDay,
         datasets_per_key_per_day: c.dataset.perKeyPerDay, dataset_ttl_days: c.dataset.ttlDays,
         formats: ['jsonl', 'json', 'csv', 'tsv', 'txt'], declaration_rows: c.dataset.declarationRows,
+        preflight_rows: c.preflight.sampleRows, preflight_per_call: c.preflight.perCall,
       },
       timing: {
         p50_s: enough ? p50 : null, p90_s: enough ? percentileOf(stats, 0.9) : null, samples: stats.length,
@@ -507,8 +549,12 @@ export class TeachWorker {
       },
       effort: (['quick', 'balanced', 'thorough'] as TeachEffort[]).map((id) => ({ id, max_steps: c.effort[id].maxSteps, eval_every: c.effort[id].evalEvery })),
       samples: this.datasets.samples().map((x) => ({ kind: x.kind, name: x.name, rows: x.rows })),
-      shares: { contributor: c.contributorShare, lineage: this.market.cfg.market.royaltyShare },
-      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.offline, lineage: !!c.lineage,
+      shares: {
+        contributor: c.contributorShare, node: Math.round((1 - c.contributorShare) * 1e6) / 1e6,
+        lineage: effectiveRoyaltyShare(undefined, this.market.cfg.market.royaltyShare),
+        verifier: effectiveVerifierShare(undefined, this.market.cfg.market.verifierShare),
+      },
+      model: { id_M: st.model }, applied: this.market.pinnedPatchIds(), draft_ttl_days: c.draftTtlDays, simulated_checks: this.simulatedChecks, lineage: !!c.lineage,
       verification: this.verificationReach(),
       ledger: { kind: this.market.cfg.ledger.kind, currency: this.market.cfg.market.currency },
     };
@@ -557,23 +603,52 @@ export class TeachWorker {
     if (address && this.store.isBanned('address', address)) throw new TeachError(403, 'banned: this node is not accepting lessons from this key');
     if (ip && this.store.isBanned('ip', ip)) throw new TeachError(403, 'banned: this node is not accepting lessons from this address');
   }
-  /** Stub backend that must never touch the serving model (CI / e2e nodes, spec §12 `backend: 'stub'`). */
+  /** Stub backend that must never touch the serving model at all (CI / e2e nodes, spec §12 `backend: 'stub'`). */
   private get offline(): boolean { return this.cfg.backend === 'stub' && !!this.cfg.stubOffline; }
+  /**
+   * The side-effect check is simulated because there is nothing to measure (item 247).
+   *
+   * A stub trainer writes a PLACEHOLDER body — deterministic rows that were never trained — and the node used to run
+   * the full live check on it anyway whenever a model server happened to be reachable: ~4.5 minutes of the shared
+   * model, held in front of every visitor and verifier, to arrive at `NEEDS_MORE · taught 0/18` and a page that says
+   * "Demo run finished — nothing was trained". The measurement was never going to mean anything; only the lock was
+   * real. `stubOffline` decided this before, which is a different question (may this node call the model at all).
+   */
+  private get simulatedChecks(): boolean { return this.cfg.backend === 'stub' && !this.cfg.checkStubLessons; }
   /** Offline stub "model": a prompt that already contains the answer is known; everything else is unknown. Deterministic, so e2e can script both preflight outcomes. */
   private stubAnswer(prompt: string, answer: string): string {
     return normAnswer(prompt).includes(normAnswer(answer)) ? answer : `(stub model) I do not know: ${prompt.slice(0, 80)}`;
   }
-  quota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number } {
+  /**
+   * Is this key rationed at all (item 246)? The daily lesson limit exists to stop a stranger filling the GPU; it also
+   * locked the OPERATOR out of their own node after one failed bake and one retry. The node's own identity and every
+   * key in `teach.trustedKeys` are exempt.
+   */
+  trustedKey(address: string): boolean {
+    const a = address.toLowerCase();
+    if (a === this.market.cfg.identity.address.toLowerCase()) return true;
+    return (this.cfg.trustedKeys ?? []).some((k) => String(k).toLowerCase() === a);
+  }
+  /** When the daily counters roll over — the fact the 429 never carried, so nobody could tell when to try again. */
+  static resetsAt(now = Date.now()): number { return Date.parse(`${dayKey(now + 86_400_000)}T00:00:00Z`); }
+  quota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number; resets_at: number; exempt?: true } {
     const c = this.cfg; const day = dayKey(now);
+    const resets_at = TeachWorker.resetsAt(now);
+    if (this.trustedKey(address)) return { key_remaining: c.jobsPerKeyPerDay, ip_remaining: c.jobsPerIpPerDay, resets_at, exempt: true };
     return {
       key_remaining: Math.max(0, c.jobsPerKeyPerDay - this.store.teachQuotaCount(`addr:${address.toLowerCase()}`, day)),
       ip_remaining: ip ? Math.max(0, c.jobsPerIpPerDay - this.store.teachQuotaCount(`ip:${ip}`, day)) : c.jobsPerIpPerDay,
+      resets_at,
     };
   }
+  /** `2026-09-03 00:00 UTC` — the wording every quota refusal ends with. */
+  static resetLabel(at: number): string { return `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`; }
   /** What a lesson costs: the v1 job caps plus the v2 question caps (a big dataset must exhaust rows before jobs). */
-  jobQuota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number; rows_remaining: number; rows_ip_remaining: number } {
+  jobQuota(address: string, ip: string | undefined, now = Date.now()): { key_remaining: number; ip_remaining: number; rows_remaining: number; rows_ip_remaining: number; resets_at: number; exempt?: true } {
+    const q = this.quota(address, ip, now);
+    if (q.exempt) return { ...q, rows_remaining: this.cfg.dataset.rowsPerKeyPerDay, rows_ip_remaining: this.cfg.dataset.rowsPerIpPerDay };
     const dq = this.datasets.quota(address, ip, now);
-    return { ...this.quota(address, ip, now), rows_remaining: dq.rows_remaining, rows_ip_remaining: dq.rows_ip_remaining };
+    return { ...q, rows_remaining: dq.rows_remaining, rows_ip_remaining: dq.rows_ip_remaining };
   }
 
   // ------------------------------------------------------------ fact validation / overlap
@@ -610,13 +685,21 @@ export class TeachWorker {
 
   /**
    * Resolve `{dataset_id, offset?, limit?}` to the questions a preflight call should probe: at most `preflight.perCall`
-   * per call, and never more than `preflight.sampleRows` of a dataset per job (the visitor is told what was sampled).
+   * per call, from anywhere in the dataset (the caller is told what was sampled).
+   *
+   * Finding 47 — `take` used to be capped by `sampleRows - start`, which made the LAST 24 rows of a dataset the only
+   * ones that could ever be probed: an offset of 24 or more resolved to an empty slice and the route answered "send
+   * either facts or a dataset_id with questions in it". The screen whose headline promise is "see which of your
+   * questions the model already knows" therefore covered the first 24 of a 40-row file, said so only afterwards, and
+   * offered no way to check the rest — clicking again re-checked the same head. The budget that actually protects
+   * the model is the hourly unit quota the route charges per call, which is unchanged; `sampleRows` stays what it
+   * always meant, the sample size a caller asks for in one go.
    */
   preflightSlice(dataset: TeachDatasetRecord, offset = 0, limit?: number): { facts: { prompt: string; answer: string; alt_prompt?: string }[]; sampled: { checked: number; of: number }; offset: number } {
     const rows = this.datasets.rows(dataset);
     const c = this.cfg.preflight;
     const start = Math.max(0, Math.min(offset, Math.max(0, rows.length - 1)));
-    const take = Math.min(limit ?? c.perCall, c.perCall, Math.max(0, c.sampleRows - start));
+    const take = Math.min(limit ?? c.perCall, c.perCall);
     const slice = rows.slice(start, start + take);
     return { facts: slice.map((r) => ({ prompt: r.prompt, answer: r.answer, ...(r.alt_prompt ? { alt_prompt: r.alt_prompt } : {}) })), sampled: { checked: Math.min(rows.length, start + slice.length), of: rows.length }, offset: start };
   }
@@ -1008,8 +1091,8 @@ export class TeachWorker {
       training.selected_indexes = keptIndexes;
     }
     const q = this.jobQuota(input.address, input.ip);
-    if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
-    if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
+    if (q.key_remaining <= 0) throw new TeachError(429, `quota_key: daily lesson limit (${c.jobsPerKeyPerDay}) reached for this key \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { key_remaining: 0, limit: c.jobsPerKeyPerDay, resets_at: q.resets_at });
+    if (q.ip_remaining <= 0) throw new TeachError(429, `quota_ip: daily lesson limit (${c.jobsPerIpPerDay}) reached for this address \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { ip_remaining: 0, limit: c.jobsPerIpPerDay, resets_at: q.resets_at });
     if (kept.length > q.rows_remaining) throw new TeachError(429, `quota_rows: you have ${q.rows_remaining} of ${c.dataset.rowsPerKeyPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, rows_ip_remaining: q.rows_ip_remaining, limit: c.dataset.rowsPerKeyPerDay, asked: kept.length });
     if (kept.length > q.rows_ip_remaining) throw new TeachError(429, `quota_rows: this address has ${q.rows_ip_remaining} of ${c.dataset.rowsPerIpPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, rows_ip_remaining: q.rows_ip_remaining, limit: c.dataset.rowsPerIpPerDay, asked: kept.length });
     const now = Date.now(); const day = dayKey(now);
@@ -1296,8 +1379,8 @@ export class TeachWorker {
     // because their daily TRAINING quota is spent would be a quota on arithmetic.
     const charge = tier === 'union' ? 0 : facts.length;
     const q = this.jobQuota(input.address, input.ip);
-    if (q.key_remaining <= 0) throw new TeachError(429, 'quota_key: daily lesson limit reached for this key', { key_remaining: 0 });
-    if (q.ip_remaining <= 0) throw new TeachError(429, 'quota_ip: daily lesson limit reached for this address', { ip_remaining: 0 });
+    if (q.key_remaining <= 0) throw new TeachError(429, `quota_key: daily lesson limit (${c.jobsPerKeyPerDay}) reached for this key \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { key_remaining: 0, limit: c.jobsPerKeyPerDay, resets_at: q.resets_at });
+    if (q.ip_remaining <= 0) throw new TeachError(429, `quota_ip: daily lesson limit (${c.jobsPerIpPerDay}) reached for this address \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { ip_remaining: 0, limit: c.jobsPerIpPerDay, resets_at: q.resets_at });
     if (charge > q.rows_remaining) throw new TeachError(429, `quota_rows: you have ${q.rows_remaining} of ${c.dataset.rowsPerKeyPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, limit: c.dataset.rowsPerKeyPerDay, asked: charge });
 
     const now = Date.now(); const day = dayKey(now);
@@ -1453,7 +1536,7 @@ export class TeachWorker {
       ...(j.mode ? { mode: j.mode } : {}), ...(j.export_mode ? { export: j.export_mode } : {}), ...(j.merge ? { merge: j.merge } : {}),
       ...(j.bases?.length ? { inherited_rows: this.knownRowsOf(j), changed_rows: j.facts.filter((f) => f.replaces).length } : {}),
       ...(j.derivation ? { derivation: j.derivation } : {}), ...(j.dataset_pub ? { dataset_pub: j.dataset_pub } : {}),
-      blocked: j.blocked, progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
+      blocked: j.blocked, blocked_by: this.blockedBy(j), progress: (j.progress as unknown as TeachProgress) ?? undefined, checks: (j.checks as unknown as TeachChecks) ?? undefined, result: j.result ?? undefined,
       draft_id: j.draft_id ?? undefined, patch_id: j.patch_id ?? undefined, publish_status: (j.publish_status as TeachJob['publish_status']) ?? 'none',
       reject_reason: j.reject_reason ?? undefined, error: j.error ?? undefined, parent_job: j.parent_job ?? undefined,
       dataset: this.datasetRef(j), ...(j.training ? { training: j.training } : {}),
@@ -1476,6 +1559,23 @@ export class TeachWorker {
       out.eta_s = j.blocked === 'slot' || one === null ? null : Math.round((ahead + 1) * one);
     }
     return out;
+  }
+
+  /**
+   * What a lesson blocked on the shared model is actually behind (item 244). `blocked: 'lock'` was a word with no
+   * facts: `teach status` printed "CHECKING None None" for eight minutes while the job bounced QUEUED↔PREFLIGHT.
+   */
+  private blockedBy(j: TeachJobRow): TeachJob['blocked_by'] {
+    if (j.blocked !== 'lock') return null;
+    const q = this.market.runtime.queueState();
+    const since = this.lockWaitSince.get(j.id) ?? j.updated_at;
+    const running = q.running ?? (q.lock ? { label: q.lock.label, since: q.lock.since } : null);
+    return {
+      holder: q.lock?.owner ?? (q.running ? 'this node' : 'another process on this machine'),
+      label: running?.label ?? 'the shared model', since: running?.since ?? since,
+      waited_s: Math.round((Date.now() - since) / 1000),
+      grace_left_s: Math.max(0, Math.round((this.lockGraceMs - (Date.now() - since)) / 1000)),
+    };
   }
 
   /** How many of the base's questions travel with this lesson as the keep-set (`known.jsonl`, design §7.1). */
@@ -1710,8 +1810,15 @@ export class TeachWorker {
         let facts: TeachFactRow[];
         try { facts = await this.preflightJob(job); } catch (e) {
           if ((e as Error).message === STOPPING) { requeue(); return; }
-          if (/shared runtime busy/.test((e as Error).message) || TeachWorker.isRuntimeOutage(e)) { this.store.updateTeachJob(job.id, { status: 'QUEUED', blocked: 'lock' }); this.log('info', `model server busy during preflight (${(e as Error).message}) → requeued`, job.id); return; }
-          throw e;
+          if (/shared runtime busy/.test((e as Error).message) || TeachWorker.isRuntimeOutage(e)) {
+            // Bounded (item 244). While there is grace left the lesson goes back to QUEUED with the holder named;
+            // once it is spent the pre-flight is skipped rather than retried for ever — the interactive result the
+            // visitor already saw stands, and the lesson trains.
+            if (this.lockWait(job, 'the pre-flight') > 0) { this.store.updateTeachJob(job.id, { status: 'QUEUED', blocked: 'lock' }); return; }
+            this.log('warn', `the shared model stayed busy for ${Math.round(this.lockGraceMs / 60000)} min — training without a fresh pre-flight (the questions you were shown stand)`, job.id);
+            this.lockWaitDone(job.id);
+            facts = job.facts;
+          } else throw e;
         }
         if (this.cancelled(job.id)) return;
         if (!facts.length) { this.finish(job.id, 'FAILED', { error: 'already_known: the model already answers all of this correctly' }); return; }
@@ -1761,6 +1868,7 @@ export class TeachWorker {
       // the private draft id stays out of the (public) message; operators see it in data
       this.log('info', `${status}: taught ${chk.checks.taught.hits}/${chk.checks.taught.total}, locality ${chk.checks.locality.same}/${chk.checks.locality.total}, parents ${chk.checks.parent_regression.hit}/${chk.checks.parent_regression.total}`, job.id, { checks: chk.checks, draft_id: draftId });
       this.checkWaitSince.delete(job.id);
+      this.lockWaitDone(job.id);
     } catch (e) {
       if ((e as Error).message === STOPPING) { requeue(); return; }
       this.finish(job.id, 'FAILED', { error: (e as Error).message.slice(0, 500) });
@@ -2263,8 +2371,9 @@ export class TeachWorker {
     const facts = job.facts.map((f) => ({ ...f }));
     const training = job.training as TeachTrainingSpec | null;
     const sideEffects = training?.check_side_effects !== false;
-    if (this.offline) {
-      // simulated checks: the lesson is never applied, nothing is measured (stub backend on a node without a model server)
+    if (this.simulatedChecks) {
+      // The lesson is never applied and nothing is measured: on a stub backend the body is a placeholder, so the
+      // only thing a live run could produce is five minutes of held model lock (item 247).
       this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
       await new Promise((r) => setTimeout(r, this.hooks.stubDelayMs ?? 400));
       const localityFail = facts.some((f) => /LOCALITY_FAIL/.test(`${f.prompt} ${f.answer}`));
@@ -2282,7 +2391,7 @@ export class TeachWorker {
         executed: true, taught: { hits: facts.length * 2, total: facts.length * 2 }, heldout: { hits: held, total: held },
         parent_regression: { ok: true, hit: parentCheck.reduce((a, b) => a + b.hit, 0), total: parentCheck.reduce((a, b) => a + b.total, 0) },
         locality: { ok: !localityFail, same: localityFail ? Math.max(0, c.locality.minSame - 1) : c.locality.prompts.length, total: c.locality.prompts.length },
-        reverted_and_reapplied: false, ok: !localityFail, note: 'stub backend (offline) — checks were simulated, not measured in a live model', simulated: true,
+        reverted_and_reapplied: false, ok: !localityFail, note: 'demo trainer (backend: stub) — this lesson is a placeholder file, so the checks were simulated and nothing was measured in a live model', simulated: true,
         ...(parentCheck.length ? { parent_check: parentCheck } : {}), reversibility_ok: null,
         ...(job.merge ? { merge_check: mergeCheck(facts).map((x) => ({ ...x, ok: true })) } : {}),
       };
@@ -2505,7 +2614,14 @@ export class TeachWorker {
       return { checks: out, facts };
     } catch (e) {
       if ((e as Error).message === STOPPING) throw e;
-      if (/shared runtime busy/.test((e as Error).message)) { this.log('info', 'model server busy → check postponed', job.id); return { retry: 'lock' }; }
+      if (/shared runtime busy/.test((e as Error).message)) {
+        // Bounded like an outage (item 244): a check postponed for ever had no deadline, no holder and no way for a
+        // 3 a.m. script to tell "waiting" from "stuck" — it gave up on its own 60-minute timeout instead.
+        if (this.lockWait(job, 'the side-effect check') > 0) return { retry: 'lock' };
+        this.log('warn', `the shared model stayed busy for ${Math.round(this.lockGraceMs / 60000)} min — the lesson is saved unchecked (publish stays gated until \`recheck\` measures it)`, job.id);
+        this.lockWaitDone(job.id);
+        return notExecuted(`the shared model server was busy for ${Math.round(this.lockGraceMs / 60000)} min — the side-effect check was not executed`);
+      }
       if (TeachWorker.isRuntimeOutage(e)) {
         // vLLM stalls roughly hourly and restarts in ~5 min: keep the lesson, retry the whole check later (15-min grace, then unchecked READY)
         const since = this.checkWaitSince.get(job.id) ?? Date.now();

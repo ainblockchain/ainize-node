@@ -215,7 +215,7 @@ before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'payouts-node', port: PORT, peers: [], roles: ['seller', 'verifier'], ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
-  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'stub' };
+  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'stub', checkStubLessons: true };
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { intervalMs: 60 } });
   const setup = await api('POST', '/api/auth/setup', { password: 'payouts-pass' });
   opToken = String(setup.json.token);

@@ -114,7 +114,7 @@ before(async () => {
   cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
   cfg.teach = {
-    ...cfg.teach!, enabled: true, backend: 'stub', publish: 'review', jobsPerKeyPerDay: 100, jobsPerIpPerDay: 200,
+    ...cfg.teach!, enabled: true, backend: 'stub', checkStubLessons: true, publish: 'review', jobsPerKeyPerDay: 100, jobsPerIpPerDay: 200,
     // the stub floor is 200 questions; the point of this suite is the pipeline, not the GPU budget
     dataset: { ...cfg.teach!.dataset, perKeyPerDay: 500, keptPerKey: 500, rowsPerKeyPerDay: 1000, rowsPerIpPerDay: 5000, createsPerIpPerMin: 500 },
   };

@@ -234,7 +234,8 @@ test('policy: public, reports trainer/queue/limits/timing; visitor routes need a
   assert.deepEqual(p.json.effort, [{ id: 'quick', max_steps: 8, eval_every: 2 }, { id: 'balanced', max_steps: 20, eval_every: 2 }, { id: 'thorough', max_steps: 40, eval_every: 4 }]);
   assert.deepEqual((p.json.queue as Record<string, unknown>).queued_rows, 0);
   assert.equal((p.json.samples as { kind: string }[]).length, 3);
-  assert.deepEqual(p.json.shares, { contributor: 0.7, lineage: 0.3 });
+  // item 307: the terms a teacher is offered, complete enough to compare with another node's (`/api/nodes.shares`)
+  assert.deepEqual(p.json.shares, { contributor: 0.7, node: 0.3, lineage: 0.3, verifier: 0.05 });
   assert.equal((await api('POST', '/api/teach/jobs', { facts: FACTS })).status, 401);
   assert.match((await api('POST', '/api/teach/jobs', { facts: FACTS })).json.error!, /^invalid_signature/);
   assert.equal((await api('PATCH', '/api/me/teach/policy', { enabled: false }, op())).status, 200);
@@ -255,7 +256,9 @@ test('preflight: already-known facts are skipped, static problems are invalid, c
   assert.deepEqual(facts.map((f) => f.status), ['will_train', 'already_known', 'invalid']);
   assert.equal(facts[0].base_answer, 'I do not know.'); assert.equal(facts[1].base_answer, 'KNOWN');
   assert.equal(r.json.trainable, 1);
-  assert.deepEqual(r.json.quota, { key_remaining: 50, ip_remaining: 100 });
+  // item 246: every quota answer carries the moment it rolls over, so "0 left" is never a dead end
+  assert.deepEqual(r.json.quota, { key_remaining: 50, ip_remaining: 100, resets_at: (r.json.quota as { resets_at: number }).resets_at });
+  assert.ok((r.json.quota as { resets_at: number }).resets_at > Date.now(), 'resets_at is in the future');
   assert.equal(table.size, 0, 'table restored');
   // live-test units a preflight costs: one per 3 model calls (facts + context blobs), charged to the IP and the key
   assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1] }), 1); assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1, 2, 3] }), 1);
@@ -271,7 +274,7 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   const r = await createJob(FACTS, {}, teacher, { 'x-forwarded-for': '203.0.113.77' });
   assert.equal(r.status, 202, r.text);
   assert.equal(r.json.job!.status, 'QUEUED'); assert.equal(r.json.job!.position, 0); assert.equal(r.json.job!.eta_s, null);
-  assert.deepEqual(r.json.quota, { key_remaining: 49, ip_remaining: 99, rows_remaining: 299, rows_ip_remaining: 499 });
+  assert.deepEqual(r.json.quota, { key_remaining: 49, ip_remaining: 99, rows_remaining: 299, rows_ip_remaining: 499, resets_at: (r.json.quota as { resets_at: number }).resets_at });
   job1 = await waitFor(r.json.job!.id, ['READY']);
   const sp = spawns[spawns.length - 1];
   assert.deepEqual(sp.args.slice(0, 4), ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True']);
@@ -635,6 +638,9 @@ test('quotas and bans: quota_key / quota_ip → 429, banned key → 403, ban rem
   await api('PATCH', '/api/me/teach/policy', { jobs_per_key_per_day: 1 }, op());
   const q = await createJob([{ prompt: 'Q2 Quota', answer: 'Quota' }]);
   assert.equal(q.status, 429); assert.match(q.json.error!, /^quota_key/);
+  // item 246: the refusal names the limit and when it lifts — "reached" with no reset time was the whole message
+  assert.match(q.json.error!, /daily lesson limit \(1\) reached for this key — resets \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+  assert.ok(Number((q.json as { resets_at?: number }).resets_at) > Date.now(), 'resets_at travels on the error body');
   await api('PATCH', '/api/me/teach/policy', { jobs_per_key_per_day: 50, jobs_per_ip_per_day: 1 }, op());
   const fresh = createIdentity();
   const q2 = await createJob([{ prompt: 'Q2 Quota', answer: 'Quota' }], {}, fresh);

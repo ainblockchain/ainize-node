@@ -155,7 +155,7 @@ before(async () => {
   cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
   cfg.teach = {
-    ...cfg.teach!, enabled: true, backend: 'stub', publish: 'auto', lineage: true, jobsPerKeyPerDay: 100, jobsPerIpPerDay: 400,
+    ...cfg.teach!, enabled: true, backend: 'stub', checkStubLessons: true, publish: 'auto', lineage: true, jobsPerKeyPerDay: 100, jobsPerIpPerDay: 400,
     dataset: { ...cfg.teach!.dataset, perKeyPerDay: 500, keptPerKey: 500, rowsPerKeyPerDay: 4000, rowsPerIpPerDay: 9000, createsPerIpPerMin: 500 },
   };
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { intervalMs: 40, stubDelayMs: 2, runtimeGraceMs: 200, retryMs: 60 } });
