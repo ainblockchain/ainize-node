@@ -903,7 +903,9 @@ export class Market {
     // it is not a supersede any more, but the author still has to hear about it — with the copy's id, its author
     // and its price, which is the whole of what they need to answer it.
     const bySha = new Map<string, CatalogEntry[]>();
+    const byId = new Map<string, CatalogEntry>();
     for (const e of entries) {
+      byId.set(e.anchor.id, e);
       if (e.status === 'DRAFT') continue;
       bySha.set(e.anchor.patch_sha256, [...(bySha.get(e.anchor.patch_sha256) ?? []), e]);
     }
@@ -926,8 +928,19 @@ export class Market {
       for (const cp of copies) once(`copy:${cp.anchor.id}`, 'warn', 'publish',
         `${cp.anchor.author_name ?? cp.anchor.author.slice(0, 10)}… published ${cp.anchor.id} — the same knowledge file as your ${e.anchor.id}, byte for byte (sha ${e.anchor.patch_sha256.slice(0, 12)}…), at ${cp.anchor.price} ${cp.anchor.currency}. It cannot retire your listing, and you are not paid for it.`,
         { copy_id: cp.anchor.id, copy_author: cp.anchor.author, price: cp.anchor.price, sha256: e.anchor.patch_sha256 });
-      for (const newer of e.superseded_by) once(`supersede:${newer}`, 'warn', 'publish',
-        `${newer} supersedes your knowledge ${e.anchor.id} — buyers now see "Newer version available" on it`, { superseded_by: newer });
+      for (const newer of e.superseded_by) {
+        // Item 251: every morning's bake raised a WARN telling the publisher that their own new version had retired
+        // their own old one — five of them in ten minutes on a daily track, burying the one warning that matters
+        // (somebody ELSE retired your listing, or a verifier failed it). Your own replacement on your own branch is
+        // the expected outcome of publishing, so it is `info` and reads like it; anyone else's stays a warning.
+        const n = byId.get(newer);
+        const own = !!n && sameAddr(n.anchor.author, this.address) && (n.anchor.branch ?? '') === (e.anchor.branch ?? '');
+        once(`supersede:${newer}`, own ? 'info' : 'warn', 'publish',
+          own
+            ? `your ${newer} replaces ${e.anchor.id} — buyers of the older one now see "Newer version available"`
+            : `${newer}${n ? ` by ${n.anchor.author_name ?? n.anchor.author.slice(0, 10)}…` : ''} supersedes your knowledge ${e.anchor.id} — buyers now see "Newer version available" on it`,
+          { superseded_by: newer, same_author: own });
+      }
       for (const a of e.attestations) {
         if (a.passed) continue;
         once(`fail:${a.verifier}:${a.created_at}`, 'warn', 'verify',
