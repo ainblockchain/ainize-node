@@ -33,6 +33,12 @@ export interface TrainerRecipe {
   created_at?: number;
   /** Which trainer wrote this — the same string the npz `meta` member carries (`version` above is the recipe schema). */
   trainer_version?: string;
+  /**
+   * Rows the run actually wrote through, as distinct from `rows` — which for a squash also counts the parent rows it
+   * carried along untouched. Nothing on the node reads it; `scripts/lineage-verify.py` needs it, because without it a
+   * squash that carried its parent's rows and one that overwrote them are the same address list.
+   */
+  touched_rows?: number;
   /** §7.5: what a run cost, so §7.8 can be re-measured from artefacts instead of from a stopwatch. */
   timing?: { load_s?: number; step_s_mean?: number | null; eval_s_mean?: number | null; steps?: number; evals?: number };
   /** Lineage (design §7.5): the stack the trainer loaded before step 1, what it exported and the pre-state hash. */

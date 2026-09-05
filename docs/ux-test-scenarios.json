@@ -10595,20 +10595,20 @@
   "title": "On GPUs 4-6: a child trained on top of a base really starts from the base's values, and removing it leaves the base standing",
   "goal": "§1 goal 3 / §7.4: the one claim that cannot be made without weights. Everything else about the on-top contract is arithmetic and file layout and is asserted offline (scripts/lineage-test.py, `--dry-run`, the stub backend); this is the run that proves a GRADIENT lesson's `before` is its parent's `after` in bf16 bits on every overlapping address, that the squash carries every untouched parent row, and that `patch.py remove` puts the parent back untouched.",
   "preconditions": [
-   "The `flashtrain` container on GPUs 4-6, free (no other training, no vLLM holding them).",
+   "The `flashtrain` container's three GPUs actually free. They are host GPUs 4,5,6 (the container is pinned to them and the trainer's default `--devices cuda:0,cuda:1,cuda:2` therefore IS those three) — and at the time of writing `flashnext-e2e` holds 4 and 5 at ~39.7 GB each, so the run would OOM. `scripts/lineage-gpu-window.sh preflight` refuses until they are free and says which card is held.",
    "A prepared job at `/mnt/newdata/qwen3.8/.teach/l3-gpu/job.json` with `parents`, `known_file`, `max_known`, `replaces`, `export: 'delta'`, `mask: {mode:'none'}`, `probe_with_parents: true` and `max_steps: 2`.",
-   "For the reversibility half only: a throwaway vLLM with `ENGRAM_HOOK=1` on the same GPUs — so it runs AFTER the trainer releases them, never beside it."
+   "For the reversibility half only: a throwaway vLLM with `ENGRAM_HOOK=1` on the same GPUs — so it runs AFTER the trainer releases them, never beside it. It also needs its own `ENGRAM_PATCH_DIR`: the default `/mnt/newdata/qwen3.8/ple_patch` is whatever vLLM is serving, and writing there mutates a live model."
   ],
   "steps": [
-   "docker exec -i -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True flashtrain python3 /work/train/teach.py --job /work/.teach/l3-gpu/job.json",
-   "python3 scripts/lineage-verify.py --child <job>/lesson.npz --recipe <job>/recipe.json --parent pixelplus-1=<job>/parents/0-<sha>.npz --model-dir /model",
-   "Repeat with `\"export\": \"squash\"` in job.json and `--export squash`.",
-   "Then, on a throwaway vLLM: patch.py apply the parent, apply the child with --verify-before, check, remove the child, check the parent."
+   "scripts/lineage-gpu-window.sh preflight   # read-only: are the cards free, does the base still hash, does --dry-run build",
+   "scripts/lineage-gpu-window.sh trainer     # four runs (delta, squash, mask, probe_with_parents=false) each verified offline as it finishes",
+   "# release the GPUs, start the throwaway vLLM with ENGRAM_HOOK=1 and its own ENGRAM_PATCH_DIR, then:",
+   "ENGRAM_PATCH_DIR=<throwaway> scripts/lineage-gpu-window.sh serve"
   ],
   "expected": [
    "`{\"event\":\"version\",…}` is the first stdout line and `{\"event\":\"parents\",\"loaded\":1,…}` comes before the baseline probe.",
-   "lineage-verify.py passes every check: `before == parent.after` in bf16 bits on every shared address, `before ==` the disk base where nothing was under it, the `meta` member parses, and `pre_state_sha256` recomputes from the file and matches recipe.json.",
-   "The squash run's rows are touched ∪ every parent address, and an untouched parent row keeps the parent's value.",
+   "lineage-verify.py passes every check on real weights, including the one the CPU harness cannot stand in for: `before ==` the DISK BASE (read from the checkpoint shards with `--model-dir`) where nothing was under it.",
+   "The squash run's rows are touched ∪ every parent address, and no more parent rows moved than `recipe.touched_rows` says the run touched.",
    "`patch.py apply <child> --verify-before` does not exit 4 and reports `prev_equals_before: true`; after `remove`, `check <parent>` reports `differ_after 0` — the parent is still standing.",
    "recipe.json's `timing` gives `step_s_mean` and `eval_s_mean` for a parents-loaded job, so §7.8's cost figures can be re-measured from artefacts."
   ],
@@ -10616,10 +10616,91 @@
   "area": "teach-lineage",
   "automation": "manual",
   "evidence": [
-   "qwen3.8/train/teach.py (load_parents, export_rows, meta_member, pre_state_sha256)",
+   "scripts/lineage-gpu-window.sh",
    "scripts/lineage-verify.py",
-   "scripts/lineage-test.py (the offline half, already run)",
+   "scripts/lineage-cpu-run.py (the same properties on a CPU stand-in, already passing)",
+   "qwen3.8/train/teach.py (load_parents, export_rows, meta_member, pre_state_sha256)",
    "docs/lineage-teach-design.md §7.2, §7.4, §7.6, §18 L3"
+  ]
+ },
+ {
+  "id": "AZ-326",
+  "persona": "Node operator / developer",
+  "title": "Every gradient job dies at its first probe — the L3 trainer's real-run path had never been executed",
+  "goal": "The adversarial pass on the L3 commit. `main()` assigned `probe = None` inside the `--dry-run` branch, and `probe` is also the module-level generation helper the real run calls at the baseline and at every eval. One assignment in a branch that exits made the name a LOCAL of the whole function, so every gradient job — with a base or without one — failed after paying the ~67 s model load with `UnboundLocalError: cannot access local variable 'probe'`. Nothing caught it: `--dry-run` returns before that line, the unit tests call the module-level functions directly, and the node's stub backend never runs teach.py at all. The lesson is the scenario: a contract verified only on the paths it does not run on is not verified.",
+  "preconditions": [
+   "`train/teach.py` at the first L3 commit (a copy of the defect can be reproduced by renaming `probe_ids` back to `probe` in the `--dry-run` branch).",
+   "No GPU: both checks below are a compile-time property of the file and a CPU run of the training path."
+  ],
+  "steps": [
+   "python3 scripts/lineage-test.py   # test_main_never_shadows_a_module_level_helper",
+   "docker exec -i -e TEACH_PY=/work/train/teach.py flashtrain python3 /tmp/l3/lineage-cpu-run.py"
+  ],
+  "expected": [
+   "The static guard names the offending scope and symbol: `/main shadows the module-level \\u0060probe\\u0060`.",
+   "The CPU harness reports `[A delta] the run exited 0` as FAIL with `{\"event\":\"error\",\"message\":\"UnboundLocalError: cannot access local variable 'probe' where it is not associated with a value\"}` on stdout.",
+   "After the fix both pass, and a parentless run's lesson.npz is byte-identical to the pre-L3 trainer's (addrs, before and after all equal, no `meta` member)."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "scripts/lineage-test.py (test_main_never_shadows_a_module_level_helper)",
+   "scripts/lineage-cpu-run.py",
+   "qwen3.8/train/teach.py (main(): the dry-run branch now binds `probe_ids`)"
+  ]
+ },
+ {
+  "id": "AZ-327",
+  "persona": "Node operator / developer",
+  "title": "The on-top contract holds on the trainer's REAL training path, with no GPU and no weights",
+  "goal": "§7.2–§7.5 without a window. `teach.py` is driven through its own CLI against a stand-in model that produces logits from the PLE rows a sentence reads, so the row table, the ADDRESSES (engram.core's own arithmetic over the real tokenizer), LazyAdam, `write_rows`, `export()` and every artefact are real and only the numbers in the rows are invented. This is what makes the GPU window short: what is left for it is the part that is only true of real weights.",
+  "preconditions": [
+   "The `flashtrain` container (tokenizer and `engram.core` on disk). No GPU is used: the run is forced onto the CPU with `--devices cpu` and no weights are loaded."
+  ],
+  "steps": [
+   "docker cp scripts/lineage-cpu-run.py flashtrain:/tmp/l3/",
+   "docker exec -i -e TEACH_PY=/work/train/teach.py flashtrain python3 /tmp/l3/lineage-cpu-run.py --json"
+  ],
+  "expected": [
+   "A delta: `child.before == parent.after` in bf16 bits on every shared address, the disk base under every fresh one, the `meta` member and `pre_state_sha256` round-tripping, and `recipe.parents[].loaded` — what the node's `trainer_no_parents` gate reads.",
+   "Applying the parent, then the child read-first, then removing the child restores every row the parent left.",
+   "A squash carries every parent address with the disk base as `before` and untouched parent rows at the parent's own value; `meta.base_stack` is empty.",
+   "`mask.mode:'only'`: nothing outside the resolved allowed set is exported, and `recipe.mask.frozen_rows` is non-zero.",
+   "probe_with_parents, as a controlled pair: the parent's own pair survives the contrast probe when the stack goes in first and is rejected when it does not (design F2).",
+   "A job with no base writes no `meta` member and claims no lineage — the run the study in flight depends on is unchanged."
+  ],
+  "priority": "P0",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "scripts/lineage-cpu-run.py (51 assertions across five job shapes)",
+   "scripts/lineage-verify.py",
+   "docs/lineage-teach-design.md §7.2, §7.3, §7.4, §7.5"
+  ]
+ },
+ {
+  "id": "AZ-328",
+  "persona": "Buyer / verifier",
+  "title": "The npz numpy writes is the npz TypeScript reads — `meta` included",
+  "goal": "§5.4. The trainer writes the lesson with numpy's `savez`; every npz the TypeScript tests had ever read was written by this repo's own `writeNpz`. Those are two different ZIP writers, and `meta` is new in L3 and had never been read from a numpy file at all. A divergence here would not fail loudly: `patch import` recomputes `pre_state_sha256` from the published bytes, so a file that parses differently becomes a different lesson.",
+  "preconditions": [
+   "python3 with numpy on the machine running the test (the assertion is skipped, not failed, where it is absent)."
+  ],
+  "steps": [
+   "npm test -w packages/core"
+  ],
+  "expected": [
+   "`inspectNpz` lists addrs/before/after/meta; the `meta` member's header is `|u1` with a 1-D shape and its body parses as the trainer's JSON.",
+   "`preStateSha256` over the numpy-written addrs+before equals what the Python side computes over the same file — the one value two languages have to agree on."
+  ],
+  "priority": "P1",
+  "area": "teach-lineage",
+  "automation": "automated",
+  "evidence": [
+   "packages/core/test/lineage.test.ts",
+   "packages/core/src/npz.ts (readNpzMember, inspectNpz)",
+   "scripts/lineage-verify.py (pre_state_sha256)"
   ]
  }
 ]
