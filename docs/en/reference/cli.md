@@ -43,7 +43,7 @@ These are accepted by every command.
 | [`ainize status`](#ainize-status) | Show node / ledger / runtime status |
 | [`ainize logs`](#ainize-logs) | Show node events |
 | [`ainize seed`](#ainize-seed) | Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic branches) |
-| [`ainize nodes`](#ainize-nodes) | List known nodes and configured peers |
+| [`ainize nodes`](#ainize-nodes) | List the peers this node talks to and the nodes it knows of |
 | [`ainize blobs`](#ainize-blobs) | Knowledge files this node holds on disk, and what they cost |
 | [`ainize gc`](#ainize-gc) | Delete knowledge files this node neither published nor bought (verification copies) |
 | [`ainize login`](#ainize-login) | Log in as the node operator (sets the password on first use) |
@@ -54,7 +54,7 @@ These are accepted by every command.
 | [`ainize publish`](#ainize-publish) | One line to sell knowledge: register a .npz + benchmark and announce it at once — the network verifies, you get paid per sale (`ainize patch publish` is the same operation, stopping at a draft) |
 | [`ainize teach`](#ainize-teach) | Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (\<node>/chat?teach=1) |
 | [`ainize dataset`](#ainize-dataset) | Training sets: the questions a published knowledge was taught from (lineage design §13) |
-| [`ainize use`](#ainize-use) | One line to use knowledge: check it is verified → quote the price → pay → download → load into your model |
+| [`ainize use`](#ainize-use) | One line to use knowledge: check it is verified → quote the price → pay → download → load into your model. Several ids are used in the order given |
 | [`ainize chat`](#ainize-chat) | Live-test a knowledge patch: the model's answer before vs after the patch is loaded (correct-answer check) |
 | [`ainize ledger`](#ainize-ledger) | Inspect the ledger |
 | [`ainize branch`](#ainize-branch) | Knowledge branches (parallel, possibly contradictory patch sets) |
@@ -352,10 +352,24 @@ Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic bra
 ## `ainize nodes`
 
 ```bash
-ainize nodes
+ainize nodes [options]
 ```
 
-List known nodes and configured peers
+List the peers this node talks to and the nodes it knows of
+
+**Options**
+
+- **`--all`** (`boolean`, default `false`) — include node records not seen for over an hour (they are permanent, so there are many)
+- **`--limit`** (`number`) — show at most this many node records
+
+**Examples**
+
+```bash
+# peers first, then the nodes seen in the last hour
+ainize nodes
+# every node record this node has ever read
+ainize nodes --all
+```
 
 ## `ainize blobs`
 
@@ -523,10 +537,10 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch retire` — Take your published knowledge off sale for good (the record stays; buyers keep their copy)
 - `ainize patch verify` — Run this node's verifier on a patch and publish an attestation
 - `ainize patch challenge` — Dispute a verification: takes the knowledge off sale until a verifier re-runs it
-- `ainize patch buy` — Buy a listed patch via HTTP 402 (x402) and download its body
+- `ainize patch buy` — Buy listed knowledge via HTTP 402 (x402) and download the body — several ids buy them in the order given
 - `ainize patch download` — Collect a knowledge this node already paid for — no second payment
-- `ainize patch apply` — Apply a held patch to the serving runtime (no restart)
-- `ainize patch remove` — Unload it, putting back whatever was underneath
+- `ainize patch apply` — Load held knowledge into the serving model (no restart) — several ids load in the order given, the last winning on any entry they share
+- `ainize patch remove` — Unload knowledge from the serving model, putting back whatever was underneath
 - `ainize patch stack` — What is loaded in the serving model, bottom first
 - `ainize patch fork` — Copy this knowledge's questions into your own training set, and continue from there
 - `ainize patch merge` — Combine two knowledges into one: what overlaps, what they answer differently, and how to build it
@@ -719,20 +733,20 @@ Dispute a verification: takes the knowledge off sale until a verifier re-runs it
 ### `ainize patch buy`
 
 ```bash
-ainize patch buy <id> [options]
+ainize patch buy <ids…> [options]
 ```
 
-Buy a listed patch via HTTP 402 (x402) and download its body
+Buy listed knowledge via HTTP 402 (x402) and download the body — several ids buy them in the order given
 
 **Arguments**
 
-- **`<id>`** (`string`, required)
+- **`<ids…>`** (`string[]`, required) — knowledge id(s) — `a b` or `a,b`, bought in the order given
 
 **Options**
 
 - **`--apply`** (`boolean`, default `false`) — apply to the serving runtime after download
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
-- **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
+- **`--max-price`** (`number`) — refuse if the total for one knowledge (it + the bases it needs) is above this
 - **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too, deepest first (one payment each). Without it you are asked
 - **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
@@ -742,6 +756,8 @@ Buy a listed patch via HTTP 402 (x402) and download its body
 ```bash
 # quote the price, ask, then pay
 ainize patch buy krx-all-2761
+# two knowledges, one quote and one confirmation each
+ainize patch buy krx-all-2761 pixelplus-087600
 # the add-on and the knowledge it needs underneath, in one go
 ainize patch buy krx-all-2761 --bundle
 # unattended, with a budget for the whole family
@@ -770,30 +786,37 @@ ainize patch download krx-all-2761
 ### `ainize patch apply`
 
 ```bash
-ainize patch apply <id> [options]
+ainize patch apply <ids…> [options]
 ```
 
-Apply a held patch to the serving runtime (no restart)
+Load held knowledge into the serving model (no restart) — several ids load in the order given, the last winning on any entry they share
 
 **Arguments**
 
-- **`<id>`** (`string`, required)
+- **`<ids…>`** (`string[]`, required) — knowledge id(s) — `a b` or `a,b`, loaded in the order given
 
 **Options**
 
 - **`--with-base`** (`boolean`, default `false`) — also load everything this knowledge was trained on top of, underneath it
 
+**Examples**
+
+```bash
+# the set, in that order
+ainize patch apply krx-all-2761 pixelplus-087600
+```
+
 ### `ainize patch remove`
 
 ```bash
-ainize patch remove <id> [options]
+ainize patch remove <ids…> [options]
 ```
 
-Unload it, putting back whatever was underneath
+Unload knowledge from the serving model, putting back whatever was underneath
 
 **Arguments**
 
-- **`<id>`** (`string`, required)
+- **`<ids…>`** (`string[]`, required) — knowledge id(s) — `a b` or `a,b`
 
 **Options**
 
@@ -1320,20 +1343,20 @@ ainize dataset get krx-all-2761 -o questions.jsonl
 ## `ainize use`
 
 ```bash
-ainize use <id> [options]
+ainize use <ids…> [options]
 ```
 
-One line to use knowledge: check it is verified → quote the price → pay → download → load into your model
+One line to use knowledge: check it is verified → quote the price → pay → download → load into your model. Several ids are used in the order given
 
 **Arguments**
 
-- **`<id>`** (`string`, required) — knowledge id (see `ainize patch ls`)
+- **`<ids…>`** (`string[]`, required) — knowledge id(s) — `a b` or `a,b`, in load order (see `ainize patch ls`)
 
 **Options**
 
 - **`--apply`** (`boolean`, default `true`) — load into the serving model after download (--no-apply to only download)
 - **`--yes`, `-y`** (`boolean`, default `false`) — skip the confirmation (answer yes in advance)
-- **`--max-price`** (`number`) — refuse if the total (this knowledge + the bases it needs) is above this
+- **`--max-price`** (`number`) — refuse if the total for one knowledge (it + the bases it needs) is above this
 - **`--bundle`** (`boolean`, default `false`) — buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked
 - **`--with-base`** (`boolean`, default `false`) — the older name of --bundle
 - **`--again`** (`boolean`, default `false`) — pay again for something this node already bought (per-hit / per-apply-hour billing)
@@ -1343,6 +1366,8 @@ One line to use knowledge: check it is verified → quote the price → pay → 
 ```bash
 # quote, ask, pay, download, load
 ainize use krx-all-2761
+# two knowledges, loaded in that order
+ainize use krx-all-2761 pixelplus-087600
 # unattended, with a budget
 ainize use krx-all-2761 --yes --max-price 30
 ```
