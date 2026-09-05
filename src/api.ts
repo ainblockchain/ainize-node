@@ -501,8 +501,6 @@ export function buildApi(deps: ApiDeps): Router {
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
       // Item 254: what is still to happen before this is LISTED — null for anything already verified.
       verifying: market.verificationProgress(e),
-      // Item 254: what is still to happen before this is LISTED — null for anything already verified.
-      verifying: market.verificationProgress(e),
       // Item 269: `children` came straight off the derived entry, so `/api/catalog` listed a hidden test anchor —
       // and a private draft — as a child of a public knowledge, while `/api/patches/:id` and every page hid it. The
       // same rule that governs the detail route governs the list.
@@ -625,12 +623,6 @@ export function buildApi(deps: ApiDeps): Router {
        * their own machine. Null until it has genuinely waited, and null once the quorum is met.
        */
       stalled: market.verificationStall(e),
-      /**
-       * Item 254 — the minutes BEFORE the first attestation. The status is still ANNOUNCED while two verifiers are
-       * executing the benchmark, so a consumer could not tell "nobody picked it up" from "almost done". Null once
-       * the quorum is met.
-       */
-      verifying: market.verificationProgress(e),
       /**
        * Item 254 — the minutes BEFORE the first attestation. The status is still ANNOUNCED while two verifiers are
        * executing the benchmark, so a consumer could not tell "nobody picked it up" from "almost done". Null once
@@ -1235,6 +1227,18 @@ export function buildApi(deps: ApiDeps): Router {
   router.post('/api/patches/:id/price', requireOperator, wrap(async (req) => {
     const b = z.object({ price: z.string(), reason: z.string().max(500).optional() }).parse(req.body ?? {});
     return market.setPrice(req.params.id as string, b.price, b.reason ?? '');
+  }));
+  /**
+   * Who gets what per sale, at any price (item 322). Public for a published knowledge, operator-only for a draft:
+   * the point is to see the split BEFORE the price goes on the permanent record. `?price=` prices a figure the
+   * caller is considering — every branch of `royaltyPlan` is proportional to the amount, so the preview and the
+   * settlement can never disagree.
+   */
+  router.get('/api/patches/:id/split', wrap(async (req) => {
+    const e = await market.entry(req.params.id as string);
+    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    const q = z.object({ price: z.coerce.number().min(0).optional() }).parse(req.query);
+    return market.saleSplit(e, q.price);
   }));
   /** Every price this knowledge has been sold at, oldest first (item 278) — public, so a discount can be checked. */
   router.get('/api/patches/:id/price', wrap(async (req) => {

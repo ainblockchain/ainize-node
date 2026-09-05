@@ -252,6 +252,12 @@ export interface SaleSplit {
   patch_id: string;
   amount: string;
   currency: string;
+  /** The rule that decides the split, in one sentence (item 322) — it used to live only in a source comment. */
+  rule?: string;
+  /** How many people this sale pays. */
+  payees?: number;
+  /** What one sale costs to settle here, from measured gas (item 366); null when this chain has charged nothing. */
+  cost?: { writes: number; gas_avg: number; floor: string; measured_writes: number } | null;
   /** The lineage share this anchor promises, and the verification share, as they will be applied. */
   share: number;
   verifier_share: number;
@@ -284,20 +290,6 @@ export interface RouteResult {
 /** What a track would write over in what is already loaded (item 214). `rows` is measured; a body this node does not hold yet is an estimate from the published address sketches, and says so. */
 export interface TrackOverlap {
   track_id: string; loaded_id: string; rows: number | null; estimated: boolean; jaccard?: number; loaded_reason: string;
-}
-
-/**
- * An item on its way to LISTED, as THIS node can see it (item 254): who has not answered yet, how many of them can
- * run this knowledge's model, and how long verification has actually taken here before. Nothing is estimated that
- * was not measured — `typical_ms` is null on a node that has never listed anything.
- */
-export interface VerificationProgress {
-  patch_id: string; since: number; waited_ms: number; counted: number; quorum: number;
-  waiting_on: { name: string; address: string; model: string | null; can_run: boolean }[];
-  capable: number;
-  typical_ms: number | null;
-  eta_ms: number | null;
-  samples: number;
 }
 
 /**
@@ -1201,7 +1193,37 @@ export class Market {
       // base's is the base at a discount — the ancestor's per-sale take falls from their own price to a royalty slice.
       cheaper_than: parents.filter((p) => p.price !== null && Number(p.price) > price).map((p) => ({ id: p.id, price: p.price!, currency: p.currency })),
       unresolved: plan.unresolved,
+      /*
+       * Item 322 — the rule that decides all of this lived in a source comment. The lineage pool is split equally
+       * between unique ancestor AUTHORS at any depth, so naming two knowledges by one author costs exactly what
+       * naming one costs, and naming a second author halves what the first receives; each author's slice is then
+       * divided among their own anchors, and their data providers carve from that slice. A creator choosing
+       * between one base and two, or deciding whether declaring a data provider is affordable, was making a
+       * permanent revenue decision with no number and no rule in front of them.
+       */
+      rule: `${Math.round(plan.share * 100)}% of every sale is shared with the knowledge this one is built on. That pool is divided equally between the distinct CREATORS in the lineage, at any depth — naming two knowledges by the same creator costs the same as naming one, and naming a second creator halves the first one's share. Each creator's slice is then split among their own knowledges, and their data providers take their share out of it. The rest is yours, less ${Math.round(plan.verifier_share * 100)}% to the verifiers that keep it on sale.`,
+      payees: lines.length,
+      // Item 366: what this sale costs to settle on this chain, measured — never an estimate. One settlement plus
+      // (when anyone else is owed) one batched transfer, at the average gas this node's own writes have cost.
+      cost: this.saleCost(lines.length),
     };
+  }
+
+  /**
+   * What one sale costs this node in gas, from what its own writes have actually cost (item 366).
+   *
+   * `defaultPrice` is 0.1 and every royalty line used to be its own transfer; the product's own estimate is
+   * ~0.19 AIN of gas around a 0.1 AIN purchase at `min_gas_price 500`, so the default price made every sale a loss
+   * on the network the product is heading to, multiplied by the number of payees. Payouts are batched now (one
+   * settle + one transfer), and this reports the floor from MEASURED gas — null on a chain that has charged this
+   * node nothing yet, where a made-up number would be worse than none.
+   */
+  saleCost(payees: number): { writes: number; gas_avg: number; floor: string; measured_writes: number } | null {
+    const stats = this.ledger instanceof AinLedger ? this.ledger.gasStats() : null;
+    if (!stats || stats.avg <= 0) return null;
+    const writes = 1 + (payees > 1 ? 1 : 0);              // the settlement, plus one batched payout transfer
+    const floor = Math.round(writes * stats.avg * 1e6) / 1e6;
+    return { writes, gas_avg: stats.avg, floor: String(floor), measured_writes: stats.writes };
   }
 
   /**
@@ -2414,44 +2436,6 @@ export class Market {
    * last gossip round, and the models those peers advertise in their own `PeerInfo`. Nothing is inferred about a
    * peer that has not spoken. Returns null before `afterMs` — a verification legitimately takes minutes.
    */
-  /**
-   * What is happening to an item that is not verified YET (item 254).
-   *
-   * Status becomes VERIFYING only once an attestation exists, and "verifying <id>" is a line in the verifier's own
-   * log, not a record anyone else can read — so for the minutes both verifiers were executing the benchmark the
-   * catalogue said ANNOUNCED and the card said "Registered · awaiting verification". A morning script waiting for
-   * LISTED could not tell "nobody picked it up" from "almost done".
-   *
-   * Everything here is measured on this node: who answers gossip and calls itself a verifier, which of them serve
-   * the model this knowledge names, which have already attested — and how long this node's OWN anchors have taken
-   * from announce to quorum (the median of what actually happened, never an invented ETA). `typical_ms` is null
-   * until this node has listed something.
-   */
-  verificationProgress(e: CatalogEntry): VerificationProgress | null {
-    if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status) || e.passed >= e.quorum) return null;
-    const mine = this.address.toLowerCase();
-    const attested = new Set(e.attestations.map((a) => a.verifier.toLowerCase()));
-    const peers = this.store.listPeers().filter((pr) => pr.failures === 0 && pr.last_seen > 0 && pr.info?.roles?.includes('verifier') && pr.address?.toLowerCase() !== mine);
-    const model = e.anchor.model.id_M;
-    const waiting = peers
-      .filter((pr) => !attested.has((pr.address ?? '').toLowerCase()))
-      .map((pr) => ({ name: pr.info?.name ?? pr.endpoint, address: pr.address ?? '', model: pr.info?.model ?? null, can_run: !!pr.info?.model && pr.info.model === model }));
-    const since = e.status === 'CHALLENGED' && e.open_challenge ? e.open_challenge.created_at : e.anchor.created_at;
-    // How long verification has ACTUALLY taken here: announce → the attestation that met the quorum.
-    const durations = this.catalogSync()
-      .filter((x) => x.listed_at && x.listed_at > x.anchor.created_at && sameAddr(x.anchor.author, this.address))
-      .map((x) => x.listed_at! - x.anchor.created_at)
-      .sort((a, b) => a - b);
-    const typical = durations.length ? durations[Math.floor(durations.length / 2)] : null;
-    const waited = Date.now() - since;
-    return {
-      patch_id: e.anchor.id, since, waited_ms: waited, counted: e.passed, quorum: e.quorum,
-      waiting_on: waiting, capable: waiting.filter((v) => v.can_run).length,
-      typical_ms: typical, eta_ms: typical !== null ? Math.max(0, typical - waited) : null,
-      samples: e.anchor.benchmark.samples?.length ?? 0,
-    };
-  }
-
   /**
    * What is happening to an item that is not verified YET (item 254).
    *

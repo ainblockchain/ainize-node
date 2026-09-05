@@ -56,6 +56,33 @@ of a remainder that shrinks as each one is paid. `teach.contributorShare` (0.7 b
 pipeline writes into a contributor entry when a taught lesson is published, and `--contributor addr:name:share` is the
 same field filled in by hand. The seller keeps whatever is left when every carve is done.
 
+## What naming one more parent actually costs
+
+The pool is divided **per author, not per parent**, which has two consequences worth deciding with rather than
+discovering afterwards:
+
+- **Naming two knowledges by the same creator costs exactly what naming one costs.** The pool is split by author,
+  so a merge of two of Dana's lessons pays Dana the same slice a child of one of them pays her. Combining is free.
+- **Naming a second creator halves what the first one gets.** Two authors in the lineage means two equal slices out
+  of the same 30 %, whatever either of them contributed.
+- **A grandparent can out-earn the direct parent.** Each author's slice is divided among that author's own ancestor
+  anchors and then carved for that anchor's data providers — so a parent who declared a data provider keeps less of
+  their own slice than a grandparent who declared none.
+
+You do not have to work this out by hand. `ainize publish` prints the split before the draft is announced, the
+publish form shows it as you type, and `GET /api/patches/{id}/split?price=…` answers it for any price you are
+considering — all three computed by the same `royaltyPlan` that settles the sale.
+
+## A price has a floor, and it is gas
+
+Every sale writes to the chain: one settle record, and — when anyone else is owed a share — one transfer that pays
+every creator of that sale together. On a network that charges gas, those writes cost money, and a price below
+their cost makes each sale a loss. The default price of `0.1` was chosen for a dev chain that charges nothing.
+
+The node does not guess at this. It measures what its own writes actually cost (`gas_cost_total`, returned on every
+write) and warns at publish time when the price is below the measured floor, naming the number of writes and the
+average. On a chain that has charged this node nothing, it says nothing at all.
+
 ## 30% and 70% are percentages of different things
 
 That is the sentence this page exists to get right, and an arithmetic example is the only way to say it clearly. The

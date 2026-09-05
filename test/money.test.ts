@@ -329,3 +329,22 @@ test('320 a local-ledger node explains that its balance cannot leave, instead of
   await assert.rejects(A.market.walletSend(A.market.address, 1), /own address/);
   await assert.rejects(A.market.walletSend('0x1111111111111111111111111111111111111111', 0), /positive/);
 });
+
+// ---------------------------------------------------------------- item 322: the rule, and what a sale costs
+test('322 the split preview states the rule that decides it, at any price, for a draft too', async () => {
+  const e = (await B.market.entry('money-child'))!;
+  const at10 = await B.market.saleSplit(e);
+  assert.ok(at10.rule && /divided equally between the distinct CREATORS/i.test(at10.rule), 'the rule is on the answer, not only in a source comment');
+  assert.ok((at10.payees ?? 0) > 1);
+  // every branch of royaltyPlan is proportional, so a preview at another price is the same split scaled
+  const at100 = await B.market.saleSplit(e, 100);
+  const ratio = at100.lines.map((l) => Number(l.amount) / Number(at10.lines.find((x) => x.address === l.address)!.amount));
+  assert.ok(ratio.every((r) => Math.abs(r - 10) < 1e-6), 'the preview at 100 is the settlement at 10, ten times over');
+  // …and the rule's promise: naming two knowledges by ONE author costs what naming one costs
+  const oneAuthor = await B.market.saleSplit({ ...e, anchor: { ...e.anchor, parents: ['money-base'] } }, 10);
+  const twoOfOne = await B.market.saleSplit({ ...e, anchor: { ...e.anchor, parents: ['money-base', 'money-free'] } }, 10);
+  const paidTo = (s: typeof oneAuthor) => Number(s.lines.find((l) => l.address.toLowerCase() === A.market.address.toLowerCase())?.amount ?? 0);
+  assert.equal(paidTo(twoOfOne), paidTo(oneAuthor), 'both bases are A\'s, so naming both costs exactly what naming one costs');
+  // on a local ledger nothing has ever been charged for gas, so the cost line says nothing rather than a made-up number
+  assert.equal(at10.cost, null);
+});
