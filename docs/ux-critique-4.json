@@ -782,7 +782,10 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-27-lesson3-page-en-1280.png; teach-triggered-29-manage-lesson3-en-1280.png (overlap 'pixel-parent-c · 2,992 memory entries'); critique4-02-resold-copy-supersedes-the-original.txt (both verifiers PASS a byte-identical body with 'integrity=sha256 ok').",
      "user_cost": "A buyer pays 10 for what is functionally the 8-credit base plus one fact; the base's creator is paid 30 % of a sale that resold their whole file.",
      "fix": "Have the verifier record `rows_shared_with_parents` (address-set intersection with each parent body it holds) in the attestation and populate `derivation.added_rows`; render '2,992 of 2,992 rows are identical to pixel-parent-c' on the page and in `patch get`; refuse to list a child ≥95 % identical to a parent unless it declares `derivation.kind: 'update'`.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "3208ba2",
+     "fixed_note": "The verifier measures how many of a body's rows are byte-identical to each parent it holds, records it as `rows_shared_with_parents` on the attestation, fails a body whose rows are ALL its parent's, and the knowledge page prints 'N of M rows in this file are identical to X'."
     },
     {
      "n": 304,
@@ -795,7 +798,10 @@
      "evidence": "packages/e2e/results/ux4/teach-triggered-08-teacher-rejected-en-1280.png ('Failed verification · 0 · 0 CREDIT'); operator view for the same anchor: `node-b FAIL free_generation=1/2 · node-c FAIL free_generation=1/2 pre_apply=0/2`; teach.ts:1784.",
      "user_cost": "The teacher's name is attached to a public failure they cannot read or fix, and the only route to a sale is to guess which question failed and start over — spending another day's quota.",
      "fix": "Put `attestations: [{verifier, passed, score}]` on the teacher's lesson rows and the lesson view, name the failing sample when the verifier can identify it, add a 'Train again with more effort' action that pre-selects that question, and say in one line that the failed record stays public while a new version is listed separately (publisher-side twins: items 155/157).",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "0d14d2e",
+     "fixed_note": "Teacher lesson rows carry every verification result — verifier, score, and the questions the model got wrong with what it answered — plus the lesson id to train again, and one line saying the failed record stays public while a retrain publishes separately."
     },
     {
      "n": 305,
@@ -825,7 +831,10 @@
      "evidence": "Code at HEAD: payouts.ts:100-118, :152-162; api.ts:355; teach.ts:270, :1800-1806; the AIN payout path exercised in teach-triggered-38-demo-nodec-ain-payouts.json.",
      "user_cost": "Real money owed to a visitor depends on an operator noticing a warning in an event feed; the visitor's only evidence is a sentence on a page nobody else looks at.",
      "fix": "Add `POST /api/teach/payouts/:settle_hash/nudge`, signed with the teaching key, that re-queues the row once and writes a `payout` event naming the teacher; badge the operator's Teaching tab ('1 data-provider payout failed · 4.9 AIN'); show the last error and attempt count with an 'Ask the node to retry' button.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "0d14d2e",
+     "fixed_note": "POST /api/teach/payouts/:id/nudge, signed with the teaching key the money is owed to, re-queues the transfer once per ten minutes and writes an event naming the payee; the teacher's row shows the last error, the attempt count and the button."
     },
     {
      "n": 307,
@@ -838,7 +847,10 @@
      "evidence": "config.ts:71; packages/web/src/i18n/pages/teach.ts:156; NetworkPage.tsx:106-128; `/api/info` exposes `royalty_share` but no page renders it comparatively.",
      "user_cost": "The person contributing the data has no lever and no market: the only variable they control is whether to publish at all.",
      "fix": "Expose `shares` and `royalty_share` per node in `/api/nodes` and the Network table, add a 'Terms' line to the teach policy card ('this node keeps 30 % of your sales; the network's creator share is 30 %'), and let the operator offer a per-lesson share the teacher signs alongside the payout address.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "f5c670a",
+     "fixed_note": "`/api/nodes` and every node record carry `shares` (teach / royalty / verifier) so a teacher can compare terms across nodes, and `policy.shares` states what this node keeps as well as what it pays."
     },
     {
      "n": 308,
@@ -1191,7 +1203,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (node-b challenged 11:54:51; node-c alone re-ran at 11:56:06; the item was LISTED 2/2 with node-b's 11:53:42 row still counted, while node-b's own re-run finished only at 11:56:24).",
      "user_cost": "A seller cannot tell whether a cleared challenge was investigated or merely raced past, and a buyer sees 'Verified 2/2' where one of the two is an attestation its own author has publicly disputed.",
      "fix": "While a challenge is open, count only attestations newer than it, and never count the challenger's pre-challenge record; mark the challenge `answered` only when quorum is reached that way; show on the verification tab which attestations answered it.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "db43f4d",
+     "fixed_note": "While a challenge is open only attestations written after it count; a challenge is dismissed when the quorum is re-established that way and upheld the moment one of those re-runs fails. `stale_attestations` says how many were set aside and the verification tab marks them 'not counted'."
     },
     {
      "n": 331,
@@ -1204,7 +1219,10 @@
      "evidence": "Code path at HEAD (not exercised on the shared chain, where publishing is forbidden): ain-ledger.ts:155-157, :230, :315, :366 against catalog.ts:51-61.",
      "user_cost": "The only asset a verifier accumulates — a signed history it can be held to — is silently rewritable by itself: a PASS that was challenged and re-passed leaves no evidence the challenge was ever answered, and a FAIL→PASS flip leaves no trace.",
      "fix": "Key attestations by `${patch_id}/${verifier}/${created_at}`, read all children in the loader, and add `data === null` to the write rule so a written slot is immutable; render superseded records greyed on the verification tab as 'superseded by the same verifier on <date>'.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "ca06d5b",
+     "fixed_note": "Attestations are written to a write-once child per measurement (`…/$patch_id/$verifier/$created_at`) under a rule that adds `data === null`; the loader reads both that and the legacy single-value shape."
     },
     {
      "n": 332,
@@ -1217,7 +1235,10 @@
      "evidence": "Demo chain recounted today: 213 anchors, 209 `test` and 4 `public`; node-b holds 209 attestations; packages/e2e/results/ux4/verifier-economy-nodeb-demo-worktime.txt ('attested-never-sold 190', 184 completed benchmarks, 54.9 min of model lock, max 181 s).",
      "user_cost": "92 % of the verifier's unpaid work is spent on items that were never for sale — every e2e run of every other agent costs each verifier a download and a benchmark, and a real network would see the same from any spammer.",
      "fix": "Add `verifier.includeTest: false` (skip `visibility:test` unless set), `verifier.minPrice` and `verifier.maxPerHour` with a per-round budget, and log one line per round: 'skipped N (test), N (budget)'.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "980e2a9",
+     "fixed_note": "`verifier.includeTest` (default false), `minPrice`, `maxPerHour` and `maxModelMinutesPerHour` bound the round, and it logs one line per round naming what it skipped. The demo cluster and the suites that publish test anchors opt back in."
     },
     {
      "n": 333,
@@ -1230,7 +1251,10 @@
      "evidence": "Measured from node-b's events: avg 17.9 s, max 181 s of exclusive lock per item (verifier-economy-nodeb-demo-worktime.txt); all three demo nodes share http://localhost:8002.",
      "user_cost": "On a node that both serves and verifies — the default — a visitor's live test, the flow that converts, waits behind unpaid work for a stranger.",
      "fix": "Give verification the lower priority: defer an item when `runtime.queueState().waiting > 0`; add `verifier.maxModelMinutesPerHour` (default 10) and an optional window; show the budget on the verification card (335) so the operator can see why an item waits.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "4712e5a",
+     "fixed_note": "The shared-model lock is a priority queue: serving first, this node's own bake next, verification last, ties in arrival order. A round stands aside while anything more urgent is running or queued, and `verifier_work` on /api/info shows the budget and why it is paused."
     },
     {
      "n": 334,
@@ -1276,7 +1300,10 @@
      "evidence": "node-b on the demo: 932 MB under data/blobs after 203 verifications, none purchased (verifier-economy-nodeb-demo-worktime.txt); grep for retain/prune/purge in packages/node/src returns nothing. (Item 128 reports that disk use is not shown; the absence of any retention policy, and the seller's blindness, are new.)",
      "user_cost": "A verifier's disk grows without bound with files it may not use once 327 lands, and a seller can never tell replication from an unpaid copy.",
      "fix": "After a counted attestation, drop the body unless the node authored or bought it (`verifier.retainBodies`, default false); report bytes held and released in `ainize status` and on the verification card; show sellers 'held by N nodes (verify-only)' from `p2p.holders` on Manage.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "980e2a9",
+     "fixed_note": "A verified body is dropped once its attestation is written unless this node authored, bought or serves it; `verifier.retainBodies` keeps the old behaviour and `/api/info.verifier_work` reports files and bytes released."
     },
     {
      "n": 337,
@@ -1289,7 +1316,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-demo-network-en-1280.png (seven throwaway node-d identities on one endpoint, all 'verifier', indistinguishable from a node with 200 attestations).",
      "user_cost": "A buyer weighs 'node-b · Passed' exactly as heavily as a key created five minutes ago, and a verifier that does careful work cannot be told from one that has never failed anything — so there is no reason to be careful.",
      "fix": "Add `/verifier/:address` and `GET /api/verifiers/:address` computed from the ledger (attested / passed / failed / hash-only / executors / challenges raised and upheld / attestations later challenged); link the verification tab's verifier cell to it; add Attested and Failed columns to the Network table and `ainize nodes`, and collapse duplicate endpoints into one row.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "3208ba2",
+     "fixed_note": "GET /api/verifiers/:address and /verifier/:address compute a verifier's record from signed attest and challenge records — signed, passed, failed, hash-only, counting today, rechecks, later challenged, disagreements, challenges raised and their outcomes, distinct engines and measured work — and the verification tab links to it."
     },
     {
      "n": 338,
@@ -1302,7 +1332,10 @@
      "evidence": "Demo chain recounted today: 501 attestations, FAIL 0, challenges 0; docs/production-verification-plan.md:21 says the same; `/api/info` has no verification statistics (api.ts:142).",
      "user_cost": "A buyer reads 'any node can challenge a wrong one' and infers oversight that has never happened once; trust is borrowed from a mechanism with zero observed activity.",
      "fix": "Render the base rate next to the claim from a new `/api/info.verification_stats`: 'On this network: 501 verifications, 0 failed, 0 challenges (0 upheld)' — computed once per catalogue derivation. Keep the sentence; attach the number.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "3208ba2",
+     "fixed_note": "/api/info.verification_stats counts attestations, failures, challenges and upheld challenges across the record, and the knowledge page prints the base rate under the 'any node can challenge it' sentence — saying so in words when it is 0 and 0."
     },
     {
      "n": 339,
@@ -1315,7 +1348,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-verify-again.txt (the exact refusal text).",
      "user_cost": "A verifier with a doubt can stay silent or attack; most operators will stay silent, which is the opposite of what the trust story needs.",
      "fix": "Add `ainize patch verify <id> --recheck`: run the benchmark and write an attestation flagged `recheck`; let `effectiveAttestation` prefer a newer FAIL recheck from the same verifier (so a PASS can be withdrawn without a challenge) and leave a PASS recheck as a visible confirmation. Name that option first in the refusal.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "8bb2225",
+     "fixed_note": "`ainize patch verify <id> --recheck` (and POST .../verify {\"recheck\": true}) records a fresh measurement without stopping the sale; a failing recheck withdraws the verifier's earlier PASS in deriveCatalog, and the refusal names the option first."
     },
     {
      "n": 340,
@@ -1328,7 +1364,10 @@
      "evidence": "types.ts:140-152; runtime.ts:374-424; a demo attestation body: `{free_generation: '4/4', pre_apply: '0/4'}`.",
      "user_cost": "Any incentive built on top (325) has to be flat per attestation, which rewards the cheapest possible run; buyers cannot see that one '4/4' cost 3 s and another '40/40' cost three minutes.",
      "fix": "Add `duration_ms`, `samples_run`, `samples_available` and `executor` (329) to the attestation body, include them in the signed message, and render 'samples_run/available · duration' on the verification tab and in `patch get`.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "980e2a9",
+     "fixed_note": "`duration_ms`, `samples_run` and `samples_available` are on the signed attestation body; the verification tab, the verifier page and `patch verify` all print questions-run-of-available and seconds."
     },
     {
      "n": 341,
@@ -1422,7 +1461,10 @@
      "evidence": "packages/e2e/results/ux4/verifier-economy-challenge.txt (node-c bought at 11:54:25, node-b challenged at 11:54:51, node-c's `ainize logs` shows only its own verifier lines).",
      "user_cost": "The buyer keeps serving answers a verifier has publicly disputed, with money already spent and no signal anywhere; the terms promise a challenge 'stops the sale' and say nothing about the people who already bought.",
      "fix": "Extend the scan to entries in `store.listPurchases()`, emitting `warn/challenge` '<who> challenged knowledge you bought (<id>): <reason> — it is loaded in your model'; add `challenged` to `/api/me/purchases` and a red chip in the Purchased table.",
-     "effort": "S"
+     "effort": "S",
+     "fixed": true,
+     "fixed_by": "de7c88e",
+     "fixed_note": "The notable-event scan now also reads this node's purchases, so a challenge, a failed verification and a supersede reach the buyer once each, saying what they paid and whether it is loaded; /api/me/purchases rows carry `challenged`, `failed_verifications` and `superseded_by`."
     },
     {
      "n": 347,
@@ -1435,7 +1477,10 @@
      "evidence": "critic-01-recover-blob-signed.txt (delivery is recoverable); public.ts:183; grep for dispute/refund in packages/node/src/api.ts (none); `ainize patch challenge` is a `patch` verb with no buyer entry point in the web.",
      "user_cost": "The buyer bears all counterparty risk on the one thing they cannot get back — quality — and the network never learns that a sale was contested, so a bad seller's record stays clean.",
      "fix": "Add a signed `dispute {patch_id, settle_hash, reason}` record any settled buyer may write, shown on the knowledge page and counted per seller on the Network page; offer it from the Purchased table ('This did not work — raise a dispute') and let a dispute (unlike a challenge) not stop sales but require the seller's answer on the record.",
-     "effort": "M"
+     "effort": "M",
+     "fixed": true,
+     "fixed_by": "de7c88e",
+     "fixed_note": "A signed `dispute` record any settled buyer may write, answered by the seller on the same permanent record; it stops no sale and spends no GPU. GET /api/patches/:id/disputes, `disputeRecordOf` per seller, and a count on every purchase row."
     },
     {
      "n": 348,

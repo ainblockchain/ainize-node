@@ -240,7 +240,10 @@
      "user_cost": "A buyer reads 'Verified' on a child as 'verified as an addition to its base'; it is verified as nothing of the kind. Any file can be sold as a derivative of any knowledge with a full-marks tick.",
      "fix": "Implement design §7.7: `verifyStack` applies the declared bases then the child and scores `per_source` — the child's own samples, and a sample of each parent's — writing `{source, hit, total}` into the attestation; the page's Verification tab shows 'its own 4/4 · still answers pixel-base 8/8'. Until then, label the tick on any anchor with `parents.length > 0` as 'Verified alone (not as an add-on)'.",
      "effort": "M",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "3208ba2",
+     "fixed_note": "The verification tab labels a derivative whose run carried no `per_source` as measured on its own questions only, not as an addition to its base; the per-source scoring itself was already recorded and logged by verifier.ts."
     },
     {
      "n": 180,
@@ -254,7 +257,10 @@
      "user_cost": "A correction to the base's own question — the design's 'Correct it' path — is silently removed from the lesson; the publisher ships fewer facts than they think, cannot find which vanished without diffing files, and cannot tell which rows will survive before spending a GPU slot.",
      "fix": "Record dropped rows with `{index, reason: 'overlaps_listing' | 'already_known', listing_id}` on the job; print a per-row pre-flight table in `teach train` (line · question · will train / already answered by {base} / overlaps {listing} — dropped) mirroring the web PreflightList, and the same in `teach status`; count questions consistently (`trained 1 of 2 questions (1 dropped: overlaps krx-all-2761)`). Per design A1, a row that overlaps the declared base becomes `in_base` (counted, not dropped) or `base_conflict` (kept with confirmation, flagged 'changes {base}'s answer').",
      "effort": "M",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "c0a844f",
+     "fixed_note": "Every dropped row is recorded with its index, prompt, reason (already_known / in_base / overlaps_listing), the answer that decided it and the knowledge that already teaches it; `teach status` prints them as a per-row table and the headline count is questions, in one unit, with the probe count on its own line."
     },
     {
      "n": 181,
@@ -268,7 +274,10 @@
      "user_cost": "'Seeing what the base covers' is the first step of a derivative; the product knows the answers and throws them away, so the publisher re-asks each question by hand in chat, and scripts cannot detect the failure from the exit code.",
      "fix": "Keep `base_answer` on dropped rows (`preflight.dropped[]` on the job) and print them in the BEFORE column with status 'already correct — skipped'; make `--wait` exit non-zero on FAILED/NEEDS_MORE (item 239's exit-code table); when the worker re-queues because the runtime lock is held, log and print `waiting for the shared model (held by {label}) …` instead of flipping status.",
      "effort": "S",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "c0a844f",
+     "fixed_note": "The pre-flight's measured answer travels on each dropped row and is printed in the ANSWER ALREADY THERE column; a busy shared model is now a named wait with a deadline instead of a silent QUEUED↔PREFLIGHT bounce (item 244), and the non-zero exit on FAILED/NEEDS_MORE was already in place from item 239."
     },
     {
      "n": 182,
@@ -282,7 +291,10 @@
      "user_cost": "Before signing the lineage the publisher cannot confirm it, and a simulated node presents 'checks passed' without disclosing that the base-regression check never ran.",
      "fix": "Add the SC-7 lineage block to both result surfaces: `Built on {name} · adds {m} questions · changes {k}` linking the base, and render `parent_regression` explicitly — `{name} still answers {hit}/{total} of its own questions` or, when total is 0 because checks were simulated/skipped, `Not checked against {name} on this node` in the warning tone. In the CLI always print the `parents` line when context exists (`not measured` when total is 0).",
      "effort": "S",
-     "theme": "Declaring the base and what gets recorded"
+     "theme": "Declaring the base and what gets recorded",
+     "fixed": true,
+     "fixed_by": "b8aed28",
+     "fixed_note": "The Built-on block prints a warning line for every base with no measured parent_check — 'Not checked against X on this node', or that the node simulates its checks — and `teach status` prints the parents line whenever a lesson has a base instead of only when total > 0."
     },
     {
      "n": 183,
@@ -1323,7 +1335,10 @@
      "user_cost": "At 3 a.m. the daily job can sit indefinitely behind verification of its own yesterday's version or a subscriber re-apply, with a terminal that says nothing and a status that says nothing; the script fails on its own timeout with `still CHECKING after 60 min`, not on any node decision.",
      "fix": "Give lock waits the same bounded grace as outages (`teach.check.lockGraceMs`, default 30 min), after which the lesson is saved READY-unchecked with `checks.note = 'model busy for 30 min'`. Surface `blocked: 'lock'` with the holder (`runtime.lockHolder`) in the job view during CHECKING/PREFLIGHT, print it in the `--wait` stream (`CHECKING · waiting for the shared model (held by node-c: verify) 4 min`), and add `--timeout <min>` with exit code 7.",
      "effort": "M",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "f5c670a",
+     "fixed_note": "A busy shared model is bounded by `teach.check.lockGraceMs` (30 min) for both the pre-flight and the check, after which the lesson trains on the questions already shown / is saved unchecked; `blocked_by` names the holder, the wait and the grace left, and `teach status` prints it."
     },
     {
      "n": 245,
@@ -1354,7 +1369,10 @@
      "user_cost": "A daily job that retries after a NEEDS_MORE or a model-busy failure locks itself out until an undisclosed reset moment.",
      "fix": "Exempt the node operator's teaching key (or a `teach.trustedKeys` list) from per-key/IP quotas on its own node; return `{code:'quota_key', resets_at}` (403) and print `daily lesson limit (3) reached — resets 2026-09-03 00:00 UTC`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "f5c670a",
+     "fixed_note": "The node's own identity and `teach.trustedKeys` are not rationed, and every quota answer and refusal carries `resets_at` — 'daily lesson limit (3) reached for this key — resets 2026-09-06 00:00 UTC'. Verified live on a throwaway node."
     },
     {
      "n": 247,
@@ -1368,7 +1386,10 @@
      "user_cost": "The daily-bake loop cannot be exercised end to end on any node the product runs; a publisher who scripts it burns model time every morning to produce a placeholder, and the CLI accepted the job with a green `trainer ready`.",
      "fix": "On `backend === 'stub'` make `teach train` refuse by default (`this node cannot train — its trainer is a demo stub; pass --demo to run the placeholder pipeline`) and skip the live CHECKING (mark `simulated`), so the stub never holds the model lock.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "f5c670a",
+     "fixed_note": "A stub trainer's placeholder body is never measured on the live model: the checks are simulated and `policy.simulated_checks` (which the web already renders) is true on every stub node. `teach.checkStubLessons` keeps the live path for a test rig with a fake model server."
     },
     {
      "n": 248,
