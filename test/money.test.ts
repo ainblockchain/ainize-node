@@ -290,3 +290,34 @@ test('369 a credit refusal names the grant, the spends and the node that issued 
   })).toString('base64'));
   assert.match(out.error ?? '', /unknown or expired nonce/, 'the nonce is checked before the balance');
 });
+
+// ---------------------------------------------------------------- item 279: money that arrives short
+test('279 a part-payment is held against the knowledge and the payer, and spent when it is topped up', async () => {
+  const { Store } = await import('../src/store.js');
+  const store = new Store(':memory:');
+  const payer = '0xAbCdEf0000000000000000000000000000000001';
+  store.putPartialPayment({ tx_hash: '0xa', patch_id: 'p', payer, amount: '0.1', currency: 'AIN', nonce: 'n1', resource: '/x402/patch/p' });
+  store.putPartialPayment({ tx_hash: '0xb', patch_id: 'p', payer: payer.toLowerCase(), amount: '0.4', currency: 'AIN', nonce: 'n2', resource: '/x402/patch/p' });
+  // the same person in either spelling is one payer (item 309's lesson, applied here)
+  const held = store.partialPayments('p', payer.toUpperCase());
+  assert.deepEqual(held.map((h) => h.amount), ['0.1', '0.4']);
+  assert.equal(held.reduce((n, h) => n + Number(h.amount), 0), 0.5);
+  // …and nothing is held for a different knowledge
+  assert.equal(store.partialPayments('other', payer).length, 0);
+  // the settlement that finally covers the price spends them, once
+  store.consumePartials(held.map((h) => h.tx_hash), '0xsettle');
+  assert.equal(store.partialPayments('p', payer).length, 0);
+  assert.equal(store.heldPartials().length, 0);
+  store.consumePartials(['0xa'], '0xother');
+  assert.equal(store.partialPayments('p', payer).length, 0, 'a spent part-payment cannot be spent again');
+  store.close();
+});
+
+test('279 a seller quoting more than its own listing is refused before any money moves', async () => {
+  const e = (await C.market.entry(PAID_ID))!;
+  assert.equal(e.anchor.price, '4');
+  // The gate is asked for a quote at the listed price, so a normal purchase is unaffected…
+  const r = await fetch(`${A.url}/x402/patch/${PAID_ID}`);
+  const body = await r.json() as { requirements: { maxAmountRequired: string }[] };
+  assert.equal(body.requirements[0].maxAmountRequired, '4');
+});

@@ -9,6 +9,9 @@ import { dirname } from 'node:path';
 import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDatasetStatus, TeachDatasetSummary, TeachTrainingSpec } from '@ngram/core';
 
 export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; }
+/** AIN that arrived for a knowledge and did not cover its price — held for the payer, never kept (item 279). */
+export interface PartialPaymentRow { tx_hash: string; patch_id: string; payer: string; amount: string; currency: string; nonce: string | null; resource: string | null; transfer_key: string | null; consumed_by: string | null; created_at: number }
+
 /** A live download token (item 345): who it was handed to, and how many times it has been redeemed. */
 export interface TokenRow { token: string; sha256: string; issued_to: string; expires_at: number; redemptions: number; last_used: number | null; patch_id: string | null }
 export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string; manifest: PatchManifest | null; path: string | null; created_at: number;
@@ -305,6 +308,15 @@ export class Store {
     add('teach_stats', { backend: 'TEXT', rows_trained: 'INTEGER', sentences: 'INTEGER' });
     // lineage §5.4: `applied` becomes an ordered stack with a journal per patch (the values the apply overwrote).
     add('applied', { position: 'INTEGER', journal_path: 'TEXT', stack_sha256: 'TEXT' });
+    /*
+     * Item 279 — an AIN transfer below the price was rejected with a sentence and nothing else: the money stayed
+     * in the seller's wallet, no settlement existed, and the tx hash was still spendable by anyone who read it off
+     * the chain. A rounding or typing mistake donated the transfer to the seller with no receipt and no
+     * instruction. A short transfer is now HELD here, against (knowledge, payer), until the payer tops it up.
+     */
+    this.db.exec(`CREATE TABLE IF NOT EXISTS partial_payments (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, payer TEXT NOT NULL,
+      amount TEXT NOT NULL, currency TEXT NOT NULL, nonce TEXT, resource TEXT, transfer_key TEXT, consumed_by TEXT, created_at REAL NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_partial_payments_payer ON partial_payments(patch_id, payer);`);
     // Item 314: a royalty transfer used to be an anonymous push with nothing tying it to the sale it honoured.
     add('payouts', { transfer_key: 'TEXT', recorded: 'INTEGER NOT NULL DEFAULT 0' });
     // Item 362: a purchase a subscription made on its own read exactly like one the operator chose to make.
@@ -576,6 +588,32 @@ export class Store {
   }
   paymentSeen(txHash: string): boolean { return !!this.db.prepare('SELECT 1 FROM payments_seen WHERE tx_hash = ?').get(txHash); }
   markPayment(txHash: string, patchId: string) { this.db.prepare('INSERT OR IGNORE INTO payments_seen (tx_hash, patch_id, ts) VALUES (?, ?, ?)').run(txHash, patchId, Date.now()); }
+
+  // held part-payments (item 279): AIN that arrived for a knowledge but did not cover its price
+  putPartialPayment(p: { tx_hash: string; patch_id: string; payer: string; amount: string; currency: string; nonce?: string | null; resource?: string | null; transfer_key?: string | null }): void {
+    this.db.prepare(`INSERT OR IGNORE INTO partial_payments (tx_hash, patch_id, payer, amount, currency, nonce, resource, transfer_key, consumed_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+      .run(p.tx_hash, p.patch_id, p.payer.toLowerCase(), p.amount, p.currency, p.nonce ?? null, p.resource ?? null, p.transfer_key ?? null, Date.now());
+  }
+  /** What this payer has already transferred for this knowledge and not yet spent. */
+  partialPayments(patchId: string, payer: string): PartialPaymentRow[] {
+    return (this.db.prepare('SELECT * FROM partial_payments WHERE patch_id = ? AND payer = ? AND consumed_by IS NULL ORDER BY created_at').all(patchId, payer.toLowerCase()) as Record<string, unknown>[])
+      .map((r) => ({ tx_hash: r.tx_hash as string, patch_id: r.patch_id as string, payer: r.payer as string, amount: r.amount as string, currency: r.currency as string,
+        nonce: (r.nonce as string) ?? null, resource: (r.resource as string) ?? null, transfer_key: (r.transfer_key as string) ?? null,
+        consumed_by: (r.consumed_by as string) ?? null, created_at: r.created_at as number }));
+  }
+  /** Mark held part-payments as spent by the settlement that finally covered the price. */
+  consumePartials(txHashes: string[], settleTx: string): void {
+    const stmt = this.db.prepare('UPDATE partial_payments SET consumed_by = ? WHERE tx_hash = ? AND consumed_by IS NULL');
+    for (const h of txHashes) stmt.run(settleTx, h);
+  }
+  /** Everything this node is holding for somebody, newest first — what the operator owes an explanation for. */
+  heldPartials(limit = 200): PartialPaymentRow[] {
+    return (this.db.prepare('SELECT * FROM partial_payments WHERE consumed_by IS NULL ORDER BY created_at DESC LIMIT ?').all(limit) as Record<string, unknown>[])
+      .map((r) => ({ tx_hash: r.tx_hash as string, patch_id: r.patch_id as string, payer: r.payer as string, amount: r.amount as string, currency: r.currency as string,
+        nonce: (r.nonce as string) ?? null, resource: (r.resource as string) ?? null, transfer_key: (r.transfer_key as string) ?? null,
+        consumed_by: null, created_at: r.created_at as number }));
+  }
 
   // download tokens
   putToken(token: string, sha: string, issuedTo: string, ttlMs: number, patchId: string | null = null) {

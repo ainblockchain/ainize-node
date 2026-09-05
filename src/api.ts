@@ -999,6 +999,9 @@ export function buildApi(deps: ApiDeps): Router {
       // appear in no sales figure anywhere — without this line the seller of 74 free lessons sees "0 sales" and
       // concludes nobody wanted them.
       free_downloads: market.freeDownloads(),
+      // Item 279: AIN that arrived for a knowledge and did not cover its price. It is NOT this node's money — it is
+      // held for the address that sent it, and the operator is the only one who can hand it back.
+      held_for_buyers: market.store.heldPartials(50),
       payouts: { ...summary, items: market.store.listPayouts({ status: ['pending', 'failed'], limit: 50 }) } };
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.

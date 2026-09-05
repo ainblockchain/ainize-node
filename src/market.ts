@@ -2111,7 +2111,6 @@ export class Market {
       for (let i = 0; !tr && i < 5; i++) { await new Promise((r) => setTimeout(r, 1200)); tr = await this.ledger.verifyTransfer(payload.txHash); }
       if (!tr) return { error: 'transfer not found / not executed' };
       if (tr.to !== this.address) return { error: `transfer recipient ${tr.to} is not the seller` };
-      if (tr.value < price) return { error: `transfer ${tr.value} below price ${price}` };
       // The transfer must answer THIS node's quote: its key carries the nonce we issued (item 344).
       if (!payload.nonce) return { error: `ain-transfer payload needs the nonce from the 402 — GET ${resource} for a quote and transfer with key ${transferKeyFor(resource, '<nonce>')}` };
       const wantKey = transferKeyFor(resource, payload.nonce);
@@ -2123,8 +2122,33 @@ export class Market {
       // …and the person presenting it must be the person who paid: a public tx hash is not a bearer ticket.
       if (!payload.proof) return { error: `ain-transfer payload needs proof: sign sha256("x402-ain:<txHash>:<nonce>") with the paying key ${tr.from}` };
       if (!verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, tr.from)) return { error: `payment proof is not signed by the payer ${tr.from} — only the address that made the transfer can redeem it` };
-      if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
       if (sameAddr(tr.from, this.address)) return { error: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
+      /*
+       * Item 279 — a transfer below the price used to be answered with "transfer 0.1 below price 5" and nothing
+       * else: the AIN stayed in the seller's wallet, no settlement existed, and the tx hash was still spendable by
+       * whoever read it off the chain. A rounding or typing mistake donated the money to the seller, with no
+       * receipt, no credit and no instruction — the rule was learned by losing money.
+       *
+       * Everything above has already proved this is a real transfer, to this seller, against THIS quote, from the
+       * address presenting it. So it is money that belongs to this purchase: what it does not yet cover is held
+       * against (knowledge, payer) and the answer says exactly how much is missing and how to send it. When the
+       * held part-payments plus this one reach the price, the sale settles and all of them are spent at once.
+       */
+      const held = this.store.partialPayments(entry.anchor.id, tr.from).filter((h) => h.tx_hash !== payload.txHash);
+      const heldTotal = held.reduce((n, h) => n + Number(h.amount), 0);
+      const available = Math.round((heldTotal + tr.value) * 1e6) / 1e6;
+      if (available + 1e-9 < price) {
+        this.store.putPartialPayment({ tx_hash: payload.txHash, patch_id: entry.anchor.id, payer: tr.from, amount: String(tr.value), currency: entry.anchor.currency, nonce: payload.nonce, resource, transfer_key: tr.key });
+        const missing = Math.round((price - available) * 1e6) / 1e6;
+        this.log('warn', 'trade', `held ${tr.value} ${entry.anchor.currency} from ${tr.from.slice(0, 10)}… for ${entry.anchor.id}: ${missing} short of the ${price} price. The money is NOT this node's — it is credited to that address for this knowledge until they send the rest`, entry.anchor.id, { payer: tr.from, received: tr.value, held: heldTotal, missing, tx: payload.txHash });
+        return { error: `payment_incomplete: received ${tr.value} ${entry.anchor.currency}${heldTotal ? ` (plus ${heldTotal} already held for you)` : ''} against a price of ${price} — ${missing} short. Nothing was sold and nothing was kept: the ${available} is held on this node against ${entry.anchor.id} for ${tr.from}. Send the remaining ${missing} to ${this.address} with the key ${transferKeyFor(resource, payload.nonce)} and present it the same way; this node settles the whole amount at once. A held credit is not refunded automatically — ask this node's operator if you want it back.` };
+      }
+      const spend = held.map((h) => h.tx_hash);
+      if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
+      if (spend.length) {
+        this.store.consumePartials(spend, payload.txHash);
+        this.log('info', 'trade', `applied ${heldTotal} ${entry.anchor.currency} held from ${tr.from.slice(0, 10)}… (${spend.length} earlier transfer(s)) to this purchase of ${entry.anchor.id}`, entry.anchor.id, { held: heldTotal, spent_tx: spend });
+      }
       buyer = tr.from; txHash = payload.txHash;
     } else {
       return { error: `unsupported scheme ${String(scheme)}` };
@@ -2530,6 +2554,19 @@ export class Market {
       const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));
       const req = reqs.find((q) => q.scheme === (this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit')) ?? reqs[0];
       if (!req) throw new Error('402 without payment requirements');
+      /*
+       * Item 279, the buyer's side: the agent transferred `Number(req.maxAmountRequired)` without ever comparing it
+       * with the price the buyer decided on. A seller quoting more than its own public listing was paid it, and a
+       * transfer that then failed to cover something was money gone. The listing is what the buyer agreed to.
+       */
+      const listed = Number(entry.anchor.price || 0);
+      if (Number(req.maxAmountRequired) > listed + 1e-9) {
+        this.store.updatePending(this.store.putPending({
+          patch_id: patchId, gateway: gw, resource: req.resource, scheme: req.scheme, pay_to: req.payTo,
+          amount: req.maxAmountRequired, currency: req.asset, nonce: req.nonce, tx_hash: null, payload: null, status: 'quoted', error: null,
+        }).id, { status: 'abandoned', error: `quote ${req.maxAmountRequired} above the listed price ${entry.anchor.price}` });
+        throw new Error(`${patchId} is listed at ${entry.anchor.price} ${entry.anchor.currency} and its seller now asks ${req.maxAmountRequired} ${req.asset} — nothing was transferred. Re-read the listing (\`ainize patch get ${patchId}\`): if the price really has changed, buy again and this node will pay the new one.`);
+      }
       step('402', `Payment Required: ${req.maxAmountRequired} ${req.asset} → ${req.payTo.slice(0, 10)}… (${req.scheme})`);
       const pending = this.store.putPending({
         patch_id: patchId, gateway: gw, resource: req.resource, scheme: req.scheme, pay_to: req.payTo,
