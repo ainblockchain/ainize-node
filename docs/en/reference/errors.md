@@ -9,7 +9,7 @@ summary: The error envelope, and every machine-readable code a node can answer w
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/node/src`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-What an error body looks like, how a thrown error becomes an HTTP status, and the 55 codes a client can match on.
+What an error body looks like, how a thrown error becomes an HTTP status, and the 58 codes a client can match on.
 
 ## The error envelope
 
@@ -36,7 +36,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Codes
 
-55 codes are raised by name, in 114 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
+58 codes are raised by name, in 117 distinct messages: a code that can come back with more than one status, or with more than one sentence, has a row for each. An ellipsis or a `<name>` in a sentence is a value filled in at the time — the code before the colon is the part to match on.
 
 | Code | HTTP | What it means | Raised in |
 |---|---|---|---|
@@ -130,22 +130,25 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `quota_bytes` | `429` | you have uploaded as much as this node accepts from one teaching key today | `packages/node/src/teach-datasets.ts` |
 | `quota_chat` | `429` | free live-test quota exhausted for this hour — buy the patch or run your own node | `packages/node/src/api.ts` |
 | `quota_chat` | `429` | free live-test quota exhausted for this hour (this pre-flight needs \<units> unit(s)) — try again later | `packages/node/src/api.ts` |
+| `quota_chat_network` | `429` | this network has used all … free live tests for this hour — everyone sharing this address shares them | `packages/node/src/api.ts` |
 | `quota_dataset` | `429` | \<c.perKeyPerDay> new datasets per day for one teaching key | `packages/node/src/teach-datasets.ts` |
 | `quota_dataset` | `429` | this node keeps \<c.keptPerKey> datasets for one teaching key — delete one first | `packages/node/src/teach-datasets.ts` |
-| `quota_ip` | `429` | daily lesson limit reached for this address | `packages/node/src/teach.ts` |
-| `quota_key` | `429` | daily lesson limit reached for this key | `packages/node/src/teach.ts` |
+| `quota_ip` | `429` | daily lesson limit (\<c.jobsPerIpPerDay>) reached for this address — resets … | `packages/node/src/teach.ts` |
+| `quota_key` | `429` | daily lesson limit (\<c.jobsPerKeyPerDay>) reached for this key — resets … | `packages/node/src/teach.ts` |
 | `quota_key` | `429` | you already have \<mineActive> lesson(s) in progress on this node — wait for them to finish | `packages/node/src/teach.ts` |
 | `quota_requests` | `429` | too many requests from here this hour | `packages/node/src/api.ts` |
 | `quota_rows` | `429` | this address has \<q.rows_ip_remaining> of … questions left to teach on this node today | `packages/node/src/teach.ts` |
 | `quota_rows` | `429` | you have \<q.rows_remaining> of … questions left to teach on this node today | `packages/node/src/teach.ts` |
 | `rate_limited` | `429` | too many datasets from this address in the last minute | `packages/node/src/teach-datasets.ts` |
 | `rate_limited` | `429` | too many policy calls from this address | `packages/node/src/teach.ts` |
+| `row_not_found` | `404` | none of those lines are refused rows of this dataset | `packages/node/src/teach-datasets.ts` |
 | `setup_local_only` | `403` | this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its NGRAM_HOME/setup-token as the x-setup-token header | `packages/node/src/api.ts` |
 | `subscription_incomplete` | `409` | \<failed.length> of … item(s) could not be acquired, so \<branch> was NOT subscribed to and this node is not advertised as serving it. …… | `packages/node/src/market.ts` |
 | `teaching_disabled` | `403` | this node does not accept lessons | `packages/node/src/teach.ts` |
 | `teaching_disabled` | `503` | the teach worker is not running on this node | `packages/node/src/api.ts` |
 | `tier_not_allowed` | `400` | … | `packages/node/src/teach.ts` |
 | `tier_not_allowed` | `400` | … % of the \<rows.shared> rows these two both write hold different values — combining them has to be a full rebuild from the combined questions | `packages/node/src/teach.ts` |
+| `too_many_attempts` | `429` | \<rec.n> wrong passwords from this address — wait \<wait>s before trying again. If you have forgotten it, run `ainize password --reset` on the machine this node runs on. | `packages/node/src/api.ts` |
 | `too_many_bases` | `400` | one base to build on (two only for a merge) | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | … | `packages/node/src/teach.ts` |
 | `trainer_paused` | `503` | \<rowsWaiting> questions are already waiting on this node — try again later | `packages/node/src/teach.ts` |
@@ -157,12 +160,14 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 
 ## Messages without a code
 
-Not every error carries a code. 32 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
+Not every error carries a code. 34 raise a plain sentence and are told apart by their status — these are written for a person reading them, so match on the status, never on the words.
 
-A further 23 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
+A further 25 throw sites build their message at the time (a validator's own wording, a peer's answer); they answer with the statuses above.
 
 | HTTP | Message | Raised in |
 |---|---|---|
+| `null` | … (retrying for … more min before hash-only fallback) | `packages/node/src/verifier.ts` |
+| `null` | runtime unavailable (…) — waiting up to … min before hash-only fallback | `packages/node/src/verifier.ts` |
 | `400` | \<label> must be a non-negative number (e.g. "0", "0.1", "25") | `packages/core/src/catalog.ts` |
 | `400` | at most \<MAX_CHAT_PATCHES> knowledges can be loaded together | `packages/node/src/market.ts` |
 | `400` | at most \<MAX_CONTRIBUTORS> contributors per patch | `packages/core/src/catalog.ts` |

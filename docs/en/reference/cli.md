@@ -9,7 +9,7 @@ summary: Every `ainize` command, argument and option, generated from the CLI's o
 > **This page is generated — do not edit it by hand.** It is written by `scripts/docs-gen.mjs` from `packages/cli/src/bin.ts`.
 > Regenerate with `npm run docs:gen`; `npm run docs:check` fails when this page and the source disagree.
 
-Every command the `ainize` CLI accepts — 28 top-level commands, 82 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
+Every command the `ainize` CLI accepts — 29 top-level commands, 85 of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as `ngram`; the two names run the same program.
 
 ## How to read this page
 
@@ -60,6 +60,7 @@ These are accepted by every command.
 | [`ainize branch`](#ainize-branch) | Knowledge branches (parallel, possibly contradictory patch sets) |
 | [`ainize route`](#ainize-route) | Gateway routing: which branch/nodes serve a request context |
 | [`ainize wallet`](#ainize-wallet) | Balance, sales, royalties and pending payouts of this node |
+| [`ainize purchases`](#ainize-purchases) | Knowledge this node bought: what, from whom, for how much, and whether it is loaded |
 | [`ainize payouts`](#ainize-payouts) | Royalty transfers this node owes creators and data providers (AIN ledger) |
 | [`ainize drive`](#ainize-drive) | aindrive: files & change history of this node |
 | [`ainize chain`](#ainize-chain) | Local AIN blockchain (docker) for the ain ledger |
@@ -549,7 +550,7 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch signals` — How a knowledge is doing: network facts, and this node's last 30 days
 - `ainize patch conflicts` — Address-set overlaps with other patches
 - `ainize patch records` — Ledger records about a patch
-- `ainize patch rm` — Delete a draft
+- `ainize patch rm` — Delete a draft (says what goes, and asks first)
 - `ainize patch forget` — Delete this node's copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that
 
 ### `ainize patch ls`
@@ -977,14 +978,18 @@ Ledger records about a patch
 ### `ainize patch rm`
 
 ```bash
-ainize patch rm <id>
+ainize patch rm <id> [options]
 ```
 
-Delete a draft
+Delete a draft (says what goes, and asks first)
 
 **Arguments**
 
-- **`<id>`** (`string`, required)
+- **`<id>`** (`string`, required) — draft id (`ainize patch ls --drafts`)
+
+**Options**
+
+- **`--yes`, `-y`** (`boolean`, default `false`) — answer the confirmation in advance (a script has no terminal to be asked in)
 
 ### `ainize patch forget`
 
@@ -1058,6 +1063,7 @@ Teach mode: turn your own questions and answers into knowledge. Two doors, one p
 - `ainize teach dataset` — The questions a lesson is trained from: upload a file, list, inspect, download, delete
 - `ainize teach train` — Teach a lesson from a dataset id or a dataset file
 - `ainize teach jobs` — My lessons on this node and the dataset each came from
+- `ainize teach recheck` — Measure a lesson that was saved unchecked (the model server was unavailable)
 - `ainize teach publish` — Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)
 
 ### `ainize teach status`
@@ -1264,6 +1270,31 @@ My lessons on this node and the dataset each came from
 - **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--dataset`** (`string`) — only lessons trained from this dataset
+
+### `ainize teach recheck`
+
+```bash
+ainize teach recheck <job-id> [options]
+```
+
+Measure a lesson that was saved unchecked (the model server was unavailable)
+
+**Arguments**
+
+- **`<job-id>`** (`string`, required) — lesson id (`ainize teach jobs`)
+
+**Options**
+
+- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
+- **`--wait`** (`boolean`, default `false`) — follow it until it is measured (same exit codes as `teach train --wait`)
+
+**Examples**
+
+```bash
+# the morning after a night when the model server was off
+ainize teach recheck 3a417bb4-… --wait
+```
 
 ### `ainize teach publish`
 
@@ -1485,6 +1516,7 @@ Knowledge branches (parallel, possibly contradictory patch sets)
 - `ainize branch subscribe` — Subscribe this node: buy the track's current knowledge, load it, and keep it up to date
 - `ainize branch sync` — Bring a subscribed track up to date now (buy and load what it added, unload what it retired)
 - `ainize branch unsubscribe` — Unsubscribe (unload the track's knowledge; nothing is refunded)
+- `ainize branch rm` — Take a knowledge off a track you own (subscribers stop buying and loading it)
 
 ### `ainize branch ls`
 
@@ -1593,6 +1625,30 @@ Unsubscribe (unload the track's knowledge; nothing is refunded)
 
 - **`<name>`** (`string`, required)
 
+### `ainize branch rm`
+
+```bash
+ainize branch rm <name> <patchId> [options]
+```
+
+Take a knowledge off a track you own (subscribers stop buying and loading it)
+
+**Arguments**
+
+- **`<name>`** (`string`, required) — track name
+- **`<patchId>`** (`string`, required) — the knowledge to remove from it
+
+**Options**
+
+- **`--yes`** (`boolean`, default `false`) — answer the confirmation in advance
+
+**Examples**
+
+```bash
+# a bake that failed verification comes off the track
+ainize branch rm daily/krx krx-daily-2026-09-03
+```
+
 ## `ainize route`
 
 ```bash
@@ -1618,6 +1674,21 @@ ainize wallet
 ```
 
 Balance, sales, royalties and pending payouts of this node
+
+## `ainize purchases`
+
+```bash
+ainize purchases
+```
+
+Knowledge this node bought: what, from whom, for how much, and whether it is loaded
+
+**Examples**
+
+```bash
+# every purchase with its seller, tx and file
+ainize purchases
+```
 
 ## `ainize payouts`
 

@@ -978,7 +978,7 @@ Touched questions are revalidated against the whole dataset, so a new duplicate 
 |---|---|---|
 | `name` | `string` | (at most 80 characters) |
 | `retention` | `"keep"` \| `"delete_after_training"` |   |
-| `rows_op` | `object` | `object` | `object` |   |
+| `rows_op` | `object` | `object` | `object` | `object` |   |
 
 **Responses**
 
@@ -2098,6 +2098,8 @@ Knowledge tracks (branches)
 
 Find the branch and serving nodes for a context (e.g. jurisdiction=KR)
 
+Every query parameter is one `key=value` attribute of the request. The track whose `context` matches the most of them wins (no match at all → `{branch: null, nodes: []}`), and `nodes` is the nodes CURRENTLY subscribed to that track according to the public subscribe/unsubscribe records — the ones that have bought and loaded its knowledge, so a request routed there is answered by a model that has it. Nothing is loaded or bought by this call; it only answers where to send the request. CLI: `ainize route jurisdiction=KR`.
+
 **Auth** — none
 
 **Parameters**
@@ -2555,6 +2557,8 @@ Loads the ordered stack under one runtime lock: the bases first, then this knowl
 
 Unload from the model (journal replay)
 
+Identical to `POST /api/patches/{id}/remove`. Replays the journal written when this knowledge was loaded, so the rows underneath come back exactly as they were; without a journal (a knowledge published before they existed) the model’s own rows are written back instead. Refused 409 `has_dependents` when something is loaded on top of it, unless `cascade` is set.
+
 **Auth** — operator
 
 **Parameters**
@@ -2580,6 +2584,8 @@ Unload from the model (journal replay)
 
 Unload from the model (same as DELETE …/apply)
 
+The same operation as `DELETE /api/patches/{id}/apply`, for clients that cannot send a body with DELETE. Body: `{cascade?, async?}` — `cascade` also unloads everything sitting on top of it, and `async: true` answers 202 with a job instead of holding the connection open behind the shared model lock (`GET /api/runtime/jobs/{id}`). What comes back underneath is the journal written when this knowledge was loaded; see "Loading several knowledges" above.
+
 **Auth** — operator
 
 **Parameters**
@@ -2588,11 +2594,19 @@ Unload from the model (same as DELETE …/apply)
 |---|---|---|---|
 | `id` | `path` | `string` | yes |
 
+**Request body** — `application/json`, optional
+
+| Field | Type | Description |
+|---|---|---|
+| `cascade` | `boolean` | also unload everything loaded on top of it |
+| `async` | `boolean` | answer 202 with a job instead of waiting for the model lock |
+
 **Responses**
 
 | Code | Description | Body |
 |---|---|---|
 | `200` | result + the ordered stack | `object` |
+| `409` | has_dependents { ids } — something is loaded on top of it |   |
 
 ### `GET /api/patches/{id}/check`
 
