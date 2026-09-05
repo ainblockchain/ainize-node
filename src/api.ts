@@ -11,7 +11,7 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, VERSION, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ngram/core';
@@ -111,6 +111,19 @@ export function isLoopbackRequest(req: Request): boolean {
 
 /** Where the one-time claim token is written while a node has no operator password (item 121). */
 export const setupTokenPath = (home: string) => join(home, 'setup-token');
+
+/**
+ * Item 360 — `per_apply_hour` and `per_hit` were accepted at publish and rendered to buyers as "pay per hour
+ * loaded" and "pay per use", and `settlePayment` charges the price exactly once per 402 round: nothing in the
+ * product meters an hour or a use. A seller picked a revenue model that does not exist, and a buyer was told they
+ * were paying by the hour when they had paid once. They are refused here, by name, with what this network does
+ * charge — anchors that already carry one keep it, because the record is immutable.
+ */
+const billingEnum = z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional().superRefine((v, ctx) => {
+  if (v && !billingImplemented(v)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `billing ${v} is not metered by any node on this network: nothing counts an hour loaded or an answer served, and a sale settles the price once per download. Publish it as per_download (the only model that is charged) and price it for one download.` });
+  }
+});
 
 export function buildApi(deps: ApiDeps): Router {
   const { market } = deps;
@@ -1058,7 +1071,7 @@ export function buildApi(deps: ApiDeps): Router {
       const body = z.object({
         id: z.string().optional(), name: z.string().min(2), description: z.string().optional(), model_id: z.string().min(1),
         benchmark: z.string().transform((s) => JSON.parse(s)).or(z.object({}).passthrough()), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(),
-        billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
+        billing: billingEnum, license: z.string().optional(),
         parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
         branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
         // Item 188 — what this knowledge IS to its bases. The row counts behind the claim are measured by the node
@@ -1123,7 +1136,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
     const patch = z.object({
       name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(), branch: z.string().optional(),
-      benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(),
+      benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: billingEnum,
       topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
       as_of: z.string().nullable().optional(),
       contributors: z.array(z.object({}).passthrough()).nullable().optional(),
@@ -1352,6 +1365,23 @@ export function buildApi(deps: ApiDeps): Router {
     }).parse(req.body);
     return { branch: await market.createBranch(b.name, b.description, b.context, b.patch_ids, { visibility: b.visibility, archived: b.archived }) };
   }));
+  /**
+   * What following this track costs, per period (item 359). There was no subscription in the product at all: prices
+   * are per anchor, so the most loyal subscriber to a daily track was the most expensive customer, and a curator
+   * who assembles other people's knowledge was paid nothing for the assembling. The fee is the curator's; the
+   * knowledge on the track is still bought from whoever published it.
+   */
+  router.post('/api/branches/:name/terms', requireOperator, wrap(async (req) => {
+    const b = z.object({
+      price: z.string().regex(PRICE_RE, 'price must be a non-negative number').nullable().optional(),
+      currency: z.string().optional(), period_days: z.coerce.number().int().min(1).max(365).optional(),
+    }).parse(req.body ?? {});
+    const name = decodeURIComponent(req.params.name as string);
+    const terms = b.price === null || b.price === undefined ? null : { price: b.price, currency: b.currency ?? market.cfg.market.currency, period_days: b.period_days ?? 30 };
+    return { branch: await market.setBranchTerms(name, terms) };
+  }));
+  /** What one period costs, whether this node's is paid, and what the track's own last 30 days actually cost. */
+  router.get('/api/branches/:name/subscription', wrap(async (req) => market.subscriptionQuote(decodeURIComponent(req.params.name as string))));
   /** Item 269 — the owner is done with a track: it comes off /network, off the router and out of `branch ls`. */
   router.post('/api/branches/:name/archive', requireOperator, wrap(async (req) => {
     const { archived } = z.object({ archived: z.boolean().default(true) }).parse(req.body ?? {});
@@ -2123,6 +2153,35 @@ export function buildApi(deps: ApiDeps): Router {
       .set('x-payment-response', JSON.stringify({ settled: true, tx: settlement.tx_hash, royalty: settlement.royalty, ...(out.replayed ? { replayed: true, settled_at: settlement.created_at } : {}) }))
       .set('x-content-sha256', sha256Hex(text))
       .type('application/json').send(text);
+  }));
+
+  /**
+   * The curation fee for one period of a track this node owns (item 359) — the same 402 loop as a knowledge, with
+   * a track as its subject. There is no body and no manifest: what a period buys is the curating, and the record
+   * of it is the settlement.
+   */
+  router.get('/x402/branch/:name', wrap(async (req, res) => {
+    const name = decodeURIComponent(req.params.name as string);
+    const b = (await market.allBranches()).find((x) => x.name === name);
+    if (!b) throw notFound('track not found');
+    if (!sameAddr(b.owner, market.address)) throw new HttpError(409, `${name} is curated by ${b.owner}, not by this node`);
+    if (!b.terms || Number(b.terms.price) <= 0) throw new HttpError(409, `${name} is free to follow: it has no curation fee`);
+    const resource = `/x402/branch/${encodeURIComponent(name)}`;
+    const header = req.header(X402_HEADER_PAYMENT);
+    if (!header) {
+      const reqs = await market.requirementsForBranch(b, resource);
+      res.status(402).set(X402_HEADER_REQUIRED, market.encodeRequirements(reqs)).set('www-authenticate', 'x402').json({ x402Version: 1, error: 'payment required', requirements: reqs, accepts: reqs });
+      return;
+    }
+    const out = await market.settleBranchPayment(b, resource, header);
+    if (!out.settlement) throw new HttpError(402, out.error ?? 'payment failed');
+    const body = JSON.stringify({
+      branch: b.name, owner: b.owner, period_days: b.terms.period_days, paid_at: out.settlement.created_at,
+      paid_until: out.settlement.created_at + b.terms.period_days * 86_400_000, patch_ids: b.patch_ids,
+    });
+    res.status(200).set(X402_HEADER_TX, out.settlement.tx_hash).set(X402_HEADER_CURRENCY, out.settlement.currency)
+      .set('x-payment-response', JSON.stringify({ settled: true, tx: out.settlement.tx_hash, royalty: out.settlement.royalty, ...(out.replayed ? { replayed: true } : {}) }))
+      .set('x-content-sha256', sha256Hex(body)).type('application/json').send(body);
   }));
 
   // ------------------------------------------------------------ p2p protocol

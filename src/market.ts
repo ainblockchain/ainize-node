@@ -12,7 +12,7 @@ import {
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, sketchJaccard, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type DerivationKind, type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
-  type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, PRICE_RE,
+  type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
 } from '@ngram/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
@@ -198,6 +198,22 @@ export interface TrackItem {
   superseded_by: string[];
 }
 /** What `POST /api/branches/:name/quote` answers: the whole spend, item by item, before anything is spent. */
+/**
+ * What following a track costs and what it has cost (item 359): the curator's terms, whether this node's period is
+ * paid, and a run rate measured from the track's own last 30 days — never a projection.
+ */
+export interface SubscriptionQuote {
+  branch: string;
+  owner: string;
+  terms: SubscriptionTerms | null;
+  paid_until: number | null;
+  paid_at: number | null;
+  periods_paid: number;
+  due: boolean;
+  currency: string;
+  run_rate: { days: number; knowledge_added: number; knowledge_spend: string; per_period: string | null; per_30_days: string };
+}
+
 export interface TrackQuote {
   branch: string; owner: string; description: string; subscribed: boolean;
   items: TrackItem[];
@@ -208,6 +224,8 @@ export interface TrackQuote {
   total: { currency: string; amount: string }[];
   currency: string; balance: number | null;
   runtime_available: boolean; runtime_error: string | null;
+  /** What following it costs per period and what its own last 30 days cost (item 359); null on a free track. */
+  subscription?: SubscriptionQuote | null;
 }
 /** What a subscribe / unsubscribe / sync actually did. */
 export interface SubscribeResult {
@@ -523,6 +541,23 @@ export function matchBenchmarkSample(samples: { prompt: string; expect: string }
   if (exact >= 0) return at(exact);
   if (u.length < BENCH_MATCH_MIN) return undefined;
   return at(samples.findIndex((x) => u.includes(x.prompt.trim()) || x.prompt.trim().includes(u)));
+}
+
+/**
+ * What a payment is FOR, in the terms `verifyPayment` needs (item 359): a knowledge's anchor, or a track's
+ * curation fee. `patch_id` is what events are filed under (null for a track, which is not a knowledge);
+ * `settlements` is the seller's own record of what this subject has already been paid, which is how a payment
+ * presented twice is answered from the first sale instead of charged again.
+ */
+interface PaymentSubject {
+  id: string;
+  patch_id: string | null;
+  seller: string;
+  price: number;
+  currency: string;
+  settlements: Settlement[];
+  notSold: string;
+  selfBuy: string;
 }
 
 export class Market {
@@ -1464,11 +1499,7 @@ export class Market {
       // built on); that overlap is lineage, never a supersede candidate (lineage design §12.6). A parent that is
       // merely declared (no `derivation` / `base` on the child — every anchor written before the lineage fields)
       // keeps today's rule: a newer same-schema overlap still supersedes it, as the synthetic law/KR seed expects.
-      // …except when the child declares it is the next VERSION of that base (`--kind update`, item 188): a version
-      // pair is exactly what a supersede is for, so it stays in the list and the announce asks about it.
-      const versionOf = (child: PatchAnchor, base: PatchAnchor) => child.derivation?.kind === 'update' && (child.derivation.bases ?? []).some((b) => b.patch_id === base.id);
-      if ((Market.isTrainedOnTop(me.anchor, e.anchor) && !versionOf(me.anchor, e.anchor))
-        || (Market.isTrainedOnTop(e.anchor, me.anchor) && !versionOf(e.anchor, me.anchor))) continue;
+      if (Market.isTrainedOnTop(me.anchor, e.anchor) || Market.isTrainedOnTop(e.anchor, me.anchor)) continue;
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
@@ -1580,16 +1611,8 @@ export class Market {
     const firstSeen = (await this.catalogAll())
       .filter((e) => e.anchor.patch_sha256 === anchor.patch_sha256 && e.anchor.id !== anchor.id && e.status !== 'DRAFT' && sameAddr(e.anchor.author, anchor.author))
       .reduce((min, e) => Math.min(min, e.anchor.created_at), anchor.created_at);
-    /**
-     * A declared parent is not retired by its own child (item 189) — an add-on writes over what it was built on —
-     * with one exception the publisher has to say out loud: `--kind update` is "this is my next version of that"
-     * (item 188), which is precisely a supersede, and it is refused on anybody else's knowledge.
-     */
-    const declaredUpdate = anchor.derivation?.kind === 'update'
-      ? new Set((anchor.derivation.bases ?? []).map((b) => b.patch_id))
-      : new Set<string>();
-    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && (!c.lineage || declaredUpdate.has(c.patch_id))
-      && c.created_at < firstSeen && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
+    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && !c.lineage && c.created_at < firstSeen
+      && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
   /**
@@ -2213,8 +2236,8 @@ export class Market {
    * The recorded sale of this patch to this payment, if there is one. A settlement is the seller's own receipt, so
    * a payment presented twice can be answered from it instead of being refused (items 272, 273).
    */
-  private settledBy(entry: CatalogEntry, txHash: string): Settlement | null {
-    return entry.settlements.find((x) => x.tx_hash === txHash) ?? null;
+  private settledBy(settlements: Settlement[], txHash: string): Settlement | null {
+    return settlements.find((x) => x.tx_hash === txHash) ?? null;
   }
 
   /**
@@ -2230,17 +2253,17 @@ export class Market {
    *    this node put in the 402, the nonce must be this node's, and the payer must sign for it. Without that, the
    *    tx hash is public and whoever presents it first collects the file.
    */
-  async settlePayment(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
+  private async verifyPayment(subject: PaymentSubject, resource: string, header: string | undefined): Promise<{ buyer: string; txHash: string; scheme: string; replayed?: Settlement; error?: undefined } | { error: string }> {
     const payload = decodePayload(header);
     if (!payload) return { error: 'missing or malformed X-PAYMENT' };
-    if (entry.anchor.author !== this.address) return { error: 'this node does not sell that patch' };
+    if (!sameAddr(subject.seller, this.address)) return { error: subject.notSold };
     // Item 365: the seller checked that IT was the anchor's author and never that the buyer was not. Three
     // self-purchases read SOLD 5 on every peer, lifted the item up the "Most popular" row the landing page shows
     // and raised its revenue — and on a free item they cost nothing at all. The only demand signal on the
     // marketplace could be manufactured by the one party with an interest in manufacturing it.
     const claimedBuyer = payload.scheme === 'local-credit' ? payload.from : undefined;
-    if (claimedBuyer && sameAddr(claimedBuyer, this.address)) return { error: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
-    const price = Number(entry.anchor.price);
+    if (claimedBuyer && sameAddr(claimedBuyer, this.address)) return { error: `self_purchase: ${subject.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
+    const price = subject.price;
     let buyer = '';
     let txHash = '';
     let scheme = payload.scheme;
@@ -2250,10 +2273,10 @@ export class Market {
       // Idempotent redemption FIRST: this exact intent may already be paid for, and the payer asking again is
       // asking for the manifest they lost, not for a second sale.
       if (this.store.paymentSeen(h)) {
-        const prev = this.settledBy(entry, h);
+        const prev = this.settledBy(subject.settlements, h);
         if (prev && prev.buyer.toLowerCase() === payload.from.toLowerCase() && verifyMessage(h, payload.proof, payload.from)) {
-          this.log('info', 'trade', `re-issued ${entry.anchor.id} to ${payload.from.slice(0, 10)}… against the payment already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, entry.anchor.id, { tx: h });
-          return { settlement: prev, replayed: true };
+          this.log('info', 'trade', `re-issued ${subject.id} to ${payload.from.slice(0, 10)}… against the payment already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, subject.patch_id, { tx: h });
+          return { buyer: prev.buyer, txHash: h, scheme: 'local-credit', replayed: prev };
         }
         return { error: 'payment already used' };
       }
@@ -2285,11 +2308,11 @@ export class Market {
       if (!(this.ledger instanceof AinLedger)) return { error: 'this node does not accept AIN payments' };
       if (!payload.txHash) return { error: 'ain-transfer payload needs txHash' };
       if (this.store.paymentSeen(payload.txHash)) {
-        const prev = this.settledBy(entry, payload.txHash);
+        const prev = this.settledBy(subject.settlements, payload.txHash);
         const proofOk = !!payload.proof && !!payload.nonce && !!prev && verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, prev.buyer);
         if (prev && proofOk) {
-          this.log('info', 'trade', `re-issued ${entry.anchor.id} to ${prev.buyer.slice(0, 10)}… against the transfer already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, entry.anchor.id, { tx: payload.txHash });
-          return { settlement: prev, replayed: true };
+          this.log('info', 'trade', `re-issued ${subject.id} to ${prev.buyer.slice(0, 10)}… against the transfer already settled at ${new Date(prev.created_at).toISOString()} — no second charge`, subject.patch_id, { tx: payload.txHash });
+          return { buyer: prev.buyer, txHash: payload.txHash, scheme: 'ain-transfer', replayed: prev };
         }
         return { error: 'payment already used' };
       }
@@ -2309,7 +2332,7 @@ export class Market {
       // …and the person presenting it must be the person who paid: a public tx hash is not a bearer ticket.
       if (!payload.proof) return { error: `ain-transfer payload needs proof: sign sha256("x402-ain:<txHash>:<nonce>") with the paying key ${tr.from}` };
       if (!verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, tr.from)) return { error: `payment proof is not signed by the payer ${tr.from} — only the address that made the transfer can redeem it` };
-      if (sameAddr(tr.from, this.address)) return { error: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
+      if (sameAddr(tr.from, this.address)) return { error: `self_purchase: ${subject.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
       /*
        * Item 279 — a transfer below the price used to be answered with "transfer 0.1 below price 5" and nothing
        * else: the AIN stayed in the seller's wallet, no settlement existed, and the tx hash was still spendable by
@@ -2321,25 +2344,46 @@ export class Market {
        * against (knowledge, payer) and the answer says exactly how much is missing and how to send it. When the
        * held part-payments plus this one reach the price, the sale settles and all of them are spent at once.
        */
-      const held = this.store.partialPayments(entry.anchor.id, tr.from).filter((h) => h.tx_hash !== payload.txHash);
+      const held = this.store.partialPayments(subject.id, tr.from).filter((h) => h.tx_hash !== payload.txHash);
       const heldTotal = held.reduce((n, h) => n + Number(h.amount), 0);
       const available = Math.round((heldTotal + tr.value) * 1e6) / 1e6;
       if (available + 1e-9 < price) {
-        this.store.putPartialPayment({ tx_hash: payload.txHash, patch_id: entry.anchor.id, payer: tr.from, amount: String(tr.value), currency: entry.anchor.currency, nonce: payload.nonce, resource, transfer_key: tr.key });
+        this.store.putPartialPayment({ tx_hash: payload.txHash, patch_id: subject.id, payer: tr.from, amount: String(tr.value), currency: subject.currency, nonce: payload.nonce, resource, transfer_key: tr.key });
         const missing = Math.round((price - available) * 1e6) / 1e6;
-        this.log('warn', 'trade', `held ${tr.value} ${entry.anchor.currency} from ${tr.from.slice(0, 10)}… for ${entry.anchor.id}: ${missing} short of the ${price} price. The money is NOT this node's — it is credited to that address for this knowledge until they send the rest`, entry.anchor.id, { payer: tr.from, received: tr.value, held: heldTotal, missing, tx: payload.txHash });
-        return { error: `payment_incomplete: received ${tr.value} ${entry.anchor.currency}${heldTotal ? ` (plus ${heldTotal} already held for you)` : ''} against a price of ${price} — ${missing} short. Nothing was sold and nothing was kept: the ${available} is held on this node against ${entry.anchor.id} for ${tr.from}. Send the remaining ${missing} to ${this.address} with the key ${transferKeyFor(resource, payload.nonce)} and present it the same way; this node settles the whole amount at once. A held credit is not refunded automatically — ask this node's operator if you want it back.` };
+        this.log('warn', 'trade', `held ${tr.value} ${subject.currency} from ${tr.from.slice(0, 10)}… for ${subject.id}: ${missing} short of the ${price} price. The money is NOT this node's — it is credited to that address for this knowledge until they send the rest`, subject.patch_id, { payer: tr.from, received: tr.value, held: heldTotal, missing, tx: payload.txHash });
+        return { error: `payment_incomplete: received ${tr.value} ${subject.currency}${heldTotal ? ` (plus ${heldTotal} already held for you)` : ''} against a price of ${price} — ${missing} short. Nothing was sold and nothing was kept: the ${available} is held on this node against ${subject.id} for ${tr.from}. Send the remaining ${missing} to ${this.address} with the key ${transferKeyFor(resource, payload.nonce)} and present it the same way; this node settles the whole amount at once. A held credit is not refunded automatically — ask this node's operator if you want it back.` };
       }
       const spend = held.map((h) => h.tx_hash);
       if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
       if (spend.length) {
         this.store.consumePartials(spend, payload.txHash);
-        this.log('info', 'trade', `applied ${heldTotal} ${entry.anchor.currency} held from ${tr.from.slice(0, 10)}… (${spend.length} earlier transfer(s)) to this purchase of ${entry.anchor.id}`, entry.anchor.id, { held: heldTotal, spent_tx: spend });
+        this.log('info', 'trade', `applied ${heldTotal} ${subject.currency} held from ${tr.from.slice(0, 10)}… (${spend.length} earlier transfer(s)) to this purchase of ${subject.id}`, subject.patch_id, { held: heldTotal, spent_tx: spend });
       }
       buyer = tr.from; txHash = payload.txHash;
     } else {
       return { error: `unsupported scheme ${String(scheme)}` };
     }
+    return { buyer, txHash, scheme };
+  }
+
+  /**
+   * Verify an X-PAYMENT payload for `entry`; on success record a settlement and return it.
+   *
+   * The verification itself lives in `verifyPayment`, which knows nothing about anchors — the same rules (idempotent
+   * redemption, nonce spent last, a transfer bound to its quote and signed by its payer, a short transfer held
+   * rather than kept) protect the sale of a knowledge and the curation fee of a track (item 359).
+   */
+  async settlePayment(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
+    const price = Number(entry.anchor.price);
+    const out = await this.verifyPayment({
+      id: entry.anchor.id, patch_id: entry.anchor.id, seller: entry.anchor.author, price, currency: entry.anchor.currency,
+      settlements: entry.settlements, notSold: 'this node does not sell that patch',
+      selfBuy: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one`,
+    }, resource, header);
+    if ('error' in out && out.error) return { error: out.error };
+    const ok = out as { buyer: string; txHash: string; scheme: string; replayed?: Settlement };
+    if (ok.replayed) return { settlement: ok.replayed, replayed: true };
+    const { buyer, txHash, scheme } = ok;
     const map = await this.entryMap();
     // The split is computed from the ANCHOR's promise (`royalty_share`, `verifier_share`), never from this node's
     // config: the seller must not be able to decide at settle time what the people it was built on are paid (191).
@@ -4228,6 +4272,159 @@ export class Market {
   }
 
   /**
+   * What a track costs to follow, per period, and what following it has actually cost (item 359).
+   *
+   * There was no subscription in the product: prices are per anchor and immutable, so a loyal subscriber to a
+   * daily track paid the full price of every bake for ever, and a curator who assembles other people's knowledge
+   * received nothing at all — `addToBranch` accepts any existing entry and there is no curator line in
+   * `royaltySplit`. The one recurring-revenue shape the product describes had no price object anywhere.
+   *
+   * `terms` is the CURATION fee, set by the owner and paid to them once per period. The knowledge on the track is
+   * still bought from whoever published it, because it is theirs — so the run rate below is both: what curation
+   * costs per period, and what the track's own recent history says its bakes cost. Both are measured (the
+   * additions of the last 30 days, at their prices), never projected.
+   */
+  async subscriptionQuote(name: string): Promise<SubscriptionQuote> {
+    const b = await this.branchByName(name);
+    if (!b) throw notFound('branch not found');
+    const terms = b.terms ?? null;
+    const setts = await this.ledger.settlements();
+    const subject = `track:${b.name}`;
+    const mine = setts
+      .filter((r) => r.body.patch_id === subject && sameAddr(r.body.buyer, this.address) && sameAddr(r.body.seller, b.owner))
+      .map((r) => r.body).sort((x, y) => y.created_at - x.created_at);
+    const last = mine[0] ?? null;
+    const periodMs = Math.max(1, terms?.period_days ?? 30) * 86_400_000;
+    const paidUntil = last ? last.created_at + periodMs : null;
+    // What this track has actually asked its subscribers to buy lately: the anchors added in the last 30 days,
+    // at the price they are listed at. A track that has published nothing has no run rate, and says so.
+    const map = await this.entryMap();
+    const since = Date.now() - 30 * 86_400_000;
+    const recent = b.patch_ids.map((id) => map.get(id)).filter((e): e is CatalogEntry => !!e && e.anchor.created_at >= since);
+    const knowledgeSpend = recent.reduce((n, e) => n + Number(e.anchor.price || 0), 0);
+    const perPeriodKnowledge = terms ? knowledgeSpend * (terms.period_days / 30) : knowledgeSpend;
+    const fee = Number(terms?.price ?? 0);
+    return {
+      branch: b.name, owner: b.owner, terms,
+      paid_until: paidUntil, paid_at: last?.created_at ?? null, periods_paid: mine.length,
+      due: !!terms && Number(terms.price) > 0 && (paidUntil === null || paidUntil <= Date.now()),
+      currency: terms?.currency ?? this.cfg.market.currency,
+      run_rate: {
+        days: 30, knowledge_added: recent.length, knowledge_spend: String(Math.round(knowledgeSpend * 1e6) / 1e6),
+        per_period: terms ? String(Math.round((fee + perPeriodKnowledge) * 1e6) / 1e6) : null,
+        per_30_days: String(Math.round((knowledgeSpend + (terms ? fee * (30 / Math.max(1, terms.period_days)) : 0)) * 1e6) / 1e6),
+      },
+    };
+  }
+
+  /** Set (or clear) what following this track costs — the owner only, on the public record (item 359). */
+  async setBranchTerms(name: string, terms: SubscriptionTerms | null): Promise<BranchInfo> {
+    const b = await this.branchByName(name);
+    if (!b) throw notFound('branch not found');
+    if (!sameAddr(b.owner, this.address)) throw new MarketError(403, `only the owner of ${name} (${b.owner}) can set what it costs`);
+    const nb: BranchInfo = { ...b };
+    if (terms) {
+      const price = validatePrice(terms.price, 'terms.price');
+      const days = Math.floor(Number(terms.period_days));
+      if (!(days >= 1 && days <= 365)) throw badInput('terms.period_days must be a whole number of days between 1 and 365');
+      nb.terms = { price, currency: terms.currency || this.cfg.market.currency, period_days: days };
+    } else delete nb.terms;
+    const rec = await this.ledger.append('branch', nb);
+    this.invalidate();
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    this.log('info', 'branch', nb.terms
+      ? `${name} now costs ${Number(nb.terms.price) === 0 ? 'nothing' : `${nb.terms.price} ${nb.terms.currency}`} per ${nb.terms.period_days} day(s) to follow — the curation fee is paid to this node; the knowledge on the track is still bought from whoever published it`
+      : `${name} is free to follow again — no curation fee`, null, { terms: nb.terms ?? null });
+    return nb;
+  }
+
+  /**
+   * The curation fee for one period of a track this node owns (item 359) — the seller side of `/x402/branch/:name`.
+   * A track is not a knowledge, so there is no body and no manifest: what the payment buys is the right to be a
+   * subscriber for a period, and the record of it is the settlement itself.
+   */
+  async requirementsForBranch(b: BranchInfo, resource: string): Promise<X402Requirement[]> {
+    const terms = b.terms;
+    if (!terms) throw conflict(`${b.name} has no subscription terms — following it costs nothing`);
+    const nonce = newNonce();
+    const scheme = this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit';
+    this.store.putNonce(nonce, resource, terms.price, this.address, 10 * 60_000);
+    return [{
+      scheme, network: this.ledger.kind === 'ain' ? 'ain:local' : 'local', asset: this.ledger.kind === 'ain' ? 'AIN' : 'CREDIT',
+      payTo: this.address, maxAmountRequired: terms.price, resource,
+      description: `Curation of the track ${b.name} for ${terms.period_days} day(s) — ${b.patch_ids.length} knowledge on it today. The knowledge itself is bought from its own publishers.`,
+      nonce, expires_at: Date.now() + 10 * 60_000,
+      ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
+      total: terms.price, self_contained: true, single_use: true, status: 'LISTED',
+    }];
+  }
+
+  /** Settle one period of curation for a track this node owns (item 359). */
+  async settleBranchPayment(b: BranchInfo, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
+    const terms = b.terms;
+    if (!terms) return { error: `${b.name} has no subscription terms — following it costs nothing` };
+    const subject = `track:${b.name}`;
+    const setts = (await this.ledger.settlements()).filter((r) => r.body.patch_id === subject).map((r) => r.body);
+    const out = await this.verifyPayment({
+      id: subject, patch_id: null, seller: b.owner, price: Number(terms.price), currency: terms.currency,
+      settlements: setts, notSold: `this node does not curate ${b.name}`,
+      selfBuy: `self_purchase: ${b.name} is curated by this node — following your own track is not a subscription`,
+    }, resource, header);
+    if ('error' in out && out.error) return { error: out.error };
+    const ok = out as { buyer: string; txHash: string; scheme: string; replayed?: Settlement };
+    if (ok.replayed) return { settlement: ok.replayed, replayed: true };
+    // The whole fee is the curator's: it pays for the curating, not for anybody's knowledge.
+    const settlement: Settlement = {
+      patch_id: subject, seller: this.address, buyer: ok.buyer, amount: terms.price, currency: terms.currency,
+      scheme: ok.scheme, tx_hash: ok.txHash, royalty: { [this.address]: terms.price }, billing: 'per_download', created_at: Date.now(),
+    };
+    this.store.markPayment(ok.txHash, subject);
+    const rec = await this.ledger.append('settle', settlement);
+    this.invalidate();
+    this.log('info', 'trade', `${ok.buyer.slice(0, 10)}… paid ${terms.price} ${terms.currency} to follow ${b.name} for ${terms.period_days} day(s)`, null, { branch: b.name, buyer: ok.buyer, tx: ok.txHash });
+    await this.p2p?.broadcast(rec).catch(() => undefined);
+    return { settlement };
+  }
+
+  /**
+   * Pay the curation fee for one period of somebody else's track (item 359) — the buyer side. Returns what was
+   * paid, or `{ due: false }` when the current period is already covered: a subscription is charged once per
+   * period, not once per bake.
+   */
+  async paySubscription(name: string): Promise<{ paid: boolean; amount: string; currency: string; tx_hash: string | null; paid_until: number | null; reason?: string }> {
+    const q = await this.subscriptionQuote(name);
+    if (!q.terms || Number(q.terms.price) <= 0) return { paid: false, amount: '0', currency: q.currency, tx_hash: null, paid_until: null, reason: 'this track is free to follow' };
+    if (sameAddr(q.owner, this.address)) return { paid: false, amount: '0', currency: q.currency, tx_hash: null, paid_until: null, reason: 'this node curates it' };
+    if (!q.due) return { paid: false, amount: '0', currency: q.currency, tx_hash: null, paid_until: q.paid_until, reason: `already paid until ${new Date(q.paid_until!).toISOString()}` };
+    const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => n.body);
+    const ep = nodes.find((n) => sameAddr(n.address, q.owner))?.endpoint
+      ?? this.store.listPeers().find((pr) => sameAddr(pr.address ?? '', q.owner))?.endpoint;
+    if (!ep) throw conflict(`${name} costs ${q.terms.price} ${q.terms.currency} per ${q.terms.period_days} day(s) and this node cannot reach its curator (${q.owner}) to pay: no peer here knows that address. Add their node with \`ainize peers add <url>\` and try again.`);
+    const url = `${ep.replace(/\/+$/, '')}/x402/branch/${encodeURIComponent(name)}`;
+    const r1 = await fetch(url, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
+    if (r1.status !== 402) throw conflict(`${q.owner} did not quote for ${name}: ${r1.status} ${(await r1.text().catch(() => '')).slice(0, 200)}`);
+    const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));
+    const req = reqs.find((x) => x.scheme === (this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit')) ?? reqs[0];
+    if (!req) throw conflict('402 without payment requirements');
+    let payload: X402Payload;
+    if (req.scheme === 'ain-transfer') {
+      if (!(this.ledger instanceof AinLedger)) throw conflict('the curator wants AIN but this node runs the local ledger');
+      const key = req.transfer_key ?? transferKeyFor(req.resource, req.nonce);
+      const t = await this.ledger.transfer(req.payTo, Number(req.maxAmountRequired), key);
+      payload = { scheme: 'ain-transfer', network: req.network, txHash: t.tx_hash, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, transfer_key: key, proof: signMessage(ainPaymentDigest(t.tx_hash, req.nonce), this.cfg.identity.privateKey) };
+    } else {
+      const h = Market.intentHash({ resource: req.resource, amount: req.maxAmountRequired, nonce: req.nonce, payTo: req.payTo, from: this.address });
+      payload = { scheme: 'local-credit', network: 'local', txHash: h, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, proof: signMessage(h, this.cfg.identity.privateKey) };
+    }
+    const r2 = await fetch(url, { headers: { [X402_HEADER_PAYMENT]: encodePayload(payload), 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
+    if (!r2.ok) throw conflict(`the curator refused the payment for ${name}: ${r2.status} ${(await r2.text().catch(() => '')).slice(0, 300)}`);
+    await this.refreshLedger().catch(() => undefined);
+    const after = await this.subscriptionQuote(name).catch(() => null);
+    this.log('info', 'branch', `paid ${req.maxAmountRequired} ${req.asset} to follow ${name} for ${q.terms.period_days} day(s) — the curation fee; the knowledge on it is still bought from its own publishers`, null, { branch: name, amount: req.maxAmountRequired });
+    return { paid: true, amount: req.maxAmountRequired, currency: req.asset, tx_hash: payload.txHash ?? null, paid_until: after?.paid_until ?? null };
+  }
+
+  /**
    * Take a track off the shelf, or put it back (item 269). Only its owner may: a track name cannot change hands, and
    * the record stays on the ledger — this writes a new one saying the owner is done with it.
    */
@@ -4293,6 +4490,9 @@ export class Market {
       total: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: String(Math.round(amount * 1e6) / 1e6) })),
       currency: this.cfg.market.currency, balance,
       runtime_available: st.available, runtime_error: st.error ?? null,
+      // Item 359: what following it costs per period, and what its own last 30 days actually cost — before the
+      // decision, not after the thirtieth full-price sale.
+      subscription: await this.subscriptionQuote(name).catch(() => null),
     };
   }
 
@@ -4418,6 +4618,13 @@ export class Market {
     const acquired: string[] = [];
     const failed: { patch_id: string; error: string }[] = [];
     const spent = new Map<string, number>();
+    /*
+     * Item 359 — the curation fee, once per period, before anything is bought. A track with no terms is free to
+     * follow, exactly as every track was; a track that charges is paid for the curating, and the knowledge on it
+     * is still bought from whoever published it.
+     */
+    const fee = await this.paySubscription(branch).catch((e) => { throw new MarketError(402, `subscription_unpaid: ${(e as Error).message}`); });
+    if (fee.paid) spent.set(fee.currency, (spent.get(fee.currency) ?? 0) + Number(fee.amount));
     for (const item of quote.items.filter((i) => i.plan === 'buy')) {
       try {
         // Item 362: a purchase a track made on this node's behalf is marked as such, so the operator can tell it

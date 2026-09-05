@@ -348,3 +348,75 @@ test('322 the split preview states the rule that decides it, at any price, for a
   // on a local ledger nothing has ever been charged for gas, so the cost line says nothing rather than a made-up number
   assert.equal(at10.cost, null);
 });
+
+// ---------------------------------------------------------------- item 360: a model nobody meters
+test('360 a billing model nothing meters cannot be published, and what it charges is named', async () => {
+  const { billingImplemented, BILLING_IMPLEMENTED } = await import('@ngram/core');
+  assert.deepEqual([...BILLING_IMPLEMENTED], ['per_download'], 'one model is charged, and it is the one a sale settles');
+  assert.equal(billingImplemented('per_hit'), false);
+  assert.equal(billingImplemented('per_apply_hour'), false);
+  const token = await (async () => {
+    const r = await fetch(`${A.url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: A.cfg.operator?.password ?? '' }) });
+    return r.ok ? ((await r.json()) as { token: string }).token : '';
+  })();
+  if (token) {
+    const r = await fetch(`${A.url}/api/patches/${PAID_ID}`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ billing: 'per_hit' }) });
+    assert.equal(r.status, 400);
+    assert.match(JSON.stringify(await r.json()), /not metered by any node/);
+  }
+  // an anchor that already carries one keeps it: the record is immutable and nothing is rewritten under it
+  assert.equal((await A.market.entry(PAID_ID))!.anchor.billing, 'per_download');
+});
+
+// ---------------------------------------------------------------- item 359: a track that can be subscribed to
+test('359 a track has terms, the curation fee is charged once per period, and the run rate is measured', async () => {
+  const name = 'money/daily';
+  await A.market.createBranch(name, 'A daily track', { topic: 'money' }, [PAID_ID]);
+  // before terms: free to follow, exactly as every track was
+  const free = await A.market.subscriptionQuote(name);
+  assert.equal(free.terms, null);
+  assert.equal(free.due, false);
+
+  await A.market.setBranchTerms(name, { price: '5', currency: 'CREDIT', period_days: 30 });
+  await assert.rejects(C.market.setBranchTerms(name, { price: '1', currency: 'CREDIT', period_days: 30 }), /only the owner/);
+  await waitFor(() => C.market.allBranches(), (bs) => !!bs.find((b) => b.name === name)?.terms);
+
+  const q = await C.market.subscriptionQuote(name);
+  assert.deepEqual(q.terms, { price: '5', currency: 'CREDIT', period_days: 30 });
+  assert.equal(q.due, true, 'nothing has been paid yet');
+  assert.equal(q.paid_until, null);
+  // the run rate is measured from the track's own last 30 days, not projected
+  assert.equal(q.run_rate.knowledge_added, 1);
+  assert.equal(q.run_rate.knowledge_spend, '4');
+  assert.equal(q.run_rate.per_30_days, '9', '4 of knowledge added in 30 days plus the 5 fee');
+
+  // the curator's 402, to anyone
+  const r = await fetch(`${A.url}/x402/branch/${encodeURIComponent(name)}`);
+  assert.equal(r.status, 402);
+  const body = await r.json() as { requirements: { maxAmountRequired: string; description: string }[] };
+  assert.equal(body.requirements[0].maxAmountRequired, '5');
+  assert.match(body.requirements[0].description, /bought from its own publishers/);
+
+  // one period, paid once
+  const paid = await C.market.paySubscription(name);
+  assert.equal(paid.paid, true);
+  assert.equal(paid.amount, '5');
+  const after = await C.market.subscriptionQuote(name);
+  assert.equal(after.due, false, 'the period is covered');
+  assert.ok((after.paid_until ?? 0) > Date.now());
+  assert.equal(after.periods_paid, 1);
+  const again = await C.market.paySubscription(name);
+  assert.equal(again.paid, false, 'a subscription is charged once per period, not once per bake');
+  assert.match(again.reason ?? '', /already paid until/);
+
+  // the curator was paid, and the record says what the money was for
+  const setts = (await A.ledger.settlements()).filter((x) => x.body.patch_id === `track:${name}`);
+  assert.equal(setts.length, 1);
+  assert.equal(setts[0].body.seller, A.market.address);
+  assert.equal(setts[0].body.buyer, C.market.address);
+  assert.deepEqual(setts[0].body.royalty, { [A.market.address]: '5' });
+  // …and the curator cannot pay themselves for their own track
+  const self = await A.market.paySubscription(name);
+  assert.equal(self.paid, false);
+  assert.match(self.reason ?? '', /curates it/);
+});
