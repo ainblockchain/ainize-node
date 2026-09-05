@@ -225,6 +225,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (cfg.version !== VERSION) {
     market.log('info', 'config', `config.json was written by version ${cfg.version}; this node is running ${VERSION}`);
   }
+  // Item 145: the trainer must not be pointed at the GPUs that serve the model — deploy/README's own rule, which
+  // nothing checked. Said at start-up, where an operator who has just switched teach.backend to 'gradient' will see
+  // it, as well as on every lesson that then refuses to start.
+  const gpuClash = teach?.gpuConflict();
+  if (gpuClash && market.teach().enabled) {
+    market.log('error', 'teach', `gradient training cannot start: ${gpuClash}. Lessons will stay queued until this is fixed (\`ainize config set teach.trainer.gpus …\`, \`ainize config set runtime.gpus …\`, or teach.backend "stub").`);
+  }
   // A config written before 2026-09 still carries `verifier.stake`. Nothing was ever escrowed or slashed for it, so
   // the node ignores it and says so once — an operator must not go on believing money is at risk (item 127).
   if (cfg.verifier?.stake !== undefined) {

@@ -33,6 +33,9 @@ const portBase = Number(process.env.NGRAM_PORT_BASE ?? 3402);
 //                     PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e ./serve.sh
 const runtimeApi = process.env.NGRAM_RUNTIME_API ?? 'http://localhost:8002';
 const runtimePatchDir = process.env.NGRAM_RUNTIME_PATCH_DIR ?? '/mnt/newdata/qwen3.8/ple_patch_e2e';
+// Which GPUs that instance holds (item 145). The node cannot discover it — the model is behind an HTTP URL — and it
+// is what keeps the teach trainer from being pointed at the GPUs every verification and live test depends on.
+const runtimeGpus = process.env.NGRAM_RUNTIME_GPUS ?? (runtimeApi === 'http://localhost:8002' ? '4,5' : '');
 const seedA = process.env.NGRAM_SEED !== '0';
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
@@ -45,7 +48,9 @@ const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 //                Flip to 'gradient' once `nvidia-smi` shows GPUs 4–6 idle; the serving GPUs (vLLM) must stay disjoint.
 // Override per run: NGRAM_TEACH_BACKEND=gradient node scripts/cluster.mjs
 // ============================================================================================================
-const TEACH_BACKEND = process.env.NGRAM_TEACH_BACKEND ?? 'stub';   // TODO(gpu): 'gradient' when GPUs 4–6 are free
+//   Before flipping: teach.trainer.gpus must be SET and disjoint from the serving GPUs (runtimeGpus above) — the
+//   node refuses a gradient job whose GPUs clash rather than starving vLLM (item 145).
+const TEACH_BACKEND = process.env.NGRAM_TEACH_BACKEND ?? 'stub';   // 'gradient' once teach.trainer.gpus names free, non-serving GPUs
 const teachDemo = { enabled: true, publish: 'auto', backend: TEACH_BACKEND };
 
 const defs = [
@@ -61,6 +66,7 @@ function ensureConfig(d) {
   if (!cfg) {
     cfg = core.defaultConfig({ home, name: d.name, port: d.port, roles: d.roles, peers: d.peers, ledger, runtimeApi, runtimePatchDir });
     if (!d.runtime) cfg.runtime = { ...cfg.runtime, repo: undefined };
+    if (runtimeGpus) cfg.runtime = { ...cfg.runtime, gpus: runtimeGpus };
     cfg.publicUrl = `http://localhost:${d.port}`;
     // Core keeps `server.trustProxy` false by default (a spoofed X-Forwarded-For must not fool req.ip on a real
     // deployment). The DEMO cluster runs locally behind no proxy and the e2e suite isolates visitor quotas by
@@ -77,8 +83,8 @@ function ensureConfig(d) {
   } else {
     // An existing home keeps its identity and data but always follows the serving instance this cluster is
     // pointed at — otherwise a node would apply patches into another instance's mailbox and lock.
-    if (cfg.runtime?.repo && (cfg.runtime.api !== runtimeApi || cfg.runtime.patchDir !== runtimePatchDir)) {
-      cfg.runtime = { ...cfg.runtime, api: runtimeApi, patchDir: runtimePatchDir };
+    if (cfg.runtime?.repo && (cfg.runtime.api !== runtimeApi || cfg.runtime.patchDir !== runtimePatchDir || (runtimeGpus && cfg.runtime.gpus !== runtimeGpus))) {
+      cfg.runtime = { ...cfg.runtime, api: runtimeApi, patchDir: runtimePatchDir, ...(runtimeGpus ? { gpus: runtimeGpus } : {}) };
       core.saveConfig(cfg, home);
       console.log(`[cluster] ${d.name}: runtime → ${runtimeApi}  (mailbox ${runtimePatchDir})`);
     }

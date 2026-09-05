@@ -37,6 +37,8 @@ const hdr = (id = teacher) => { identities.set(id.address, id); return { [SIGN_A
 const signedHeader = (id: Identity, node: string, method: string, path: string, body?: unknown) => teachAuthHeaderFor(id, { node, method, path, body: body === undefined ? null : JSON.stringify(body) });
 let opToken = '';
 
+// The trainer's GPUs are named explicitly (item 145): `teach.trainer.gpus` ships UNSET, and a gradient backend that
+// does not know which GPUs it may use refuses to start a job rather than risk the ones serving the model.
 // ---------------------------------------------------------------- fake trainer process
 type Scenario = 'ok' | 'error' | 'hang' | 'chunked';
 let scenario: Scenario = 'ok';
@@ -167,7 +169,7 @@ before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: join(tmp, 'N'), name: 'N', port: PORT, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
   cfg.runtime = { repo, api: 'http://127.0.0.1:1', python: 'python3' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
-  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'gradient', publish: 'review', jobsPerKeyPerDay: 50, jobsPerIpPerDay: 100, trainer: { ...cfg.teach!.trainer, timeoutMs: 1500 } };
+  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'gradient', publish: 'review', jobsPerKeyPerDay: 50, jobsPerIpPerDay: 100, trainer: { ...cfg.teach!.trainer, gpus: '6,7', timeoutMs: 1500 } };
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { spawn: fakeSpawn, exec: fakeExec, intervalMs: 60, stubDelayMs: 5, runtimeGraceMs: 300, retryMs: 100 } });
   await seedDemo(N.market, { real: false, synthetic: true });
   installFakeRuntime();
@@ -286,7 +288,7 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   assert.ok(!existsSync(join(repo, 'ple_patch', '.ainize-teach.lock')), 'slot lease released');
   assert.equal(job1.progress!.step, 2); assert.equal(job1.progress!.load_s, 0.5);
   assert.deepEqual(job1.result!.rows, 1); assert.ok(job1.result!.sha256.length === 64);
-  assert.equal(job1.checks!.executed, true); assert.deepEqual(job1.checks!.taught, { hits: 2, total: 2 }); assert.deepEqual(job1.checks!.heldout, { hits: 1, total: 1 });
+  assert.equal(job1.checks!.executed, true); assert.deepEqual(job1.checks!.taught, { hits: 2, total: 2, questions: { hits: 1, total: 1 } });   // item 180: probes AND the same measurement counted in questions assert.deepEqual(job1.checks!.heldout, { hits: 1, total: 1 });
   assert.deepEqual(job1.checks!.locality, { ok: true, same: 12, total: 12 }); assert.equal(job1.checks!.parent_regression.ok, true); assert.equal(job1.checks!.ok, true); assert.equal(job1.checks!.reverted_and_reapplied, false);
   assert.equal(job1.facts[0].after_answer, 'Patchville'); assert.equal(job1.facts[0].hit, true); assert.equal(job1.facts[0].heldout_hit, true);
   assert.match(job1.draft_id!, /^taught-what-is-the-capital-of-a-[0-9a-f]{6}$/);
@@ -577,7 +579,7 @@ test('gates: locality regression → READY but publish gated (checks_failed), sa
   stick = false;
   const r2 = await createJob([{ prompt: 'Q2 Weak', answer: 'Weak' }]);
   const j2 = await waitFor(r2.json.job!.id, ['NEEDS_MORE']);
-  assert.deepEqual(j2.checks!.taught, { hits: 0, total: 2 }); assert.ok(j2.draft_id, 'draft still created');
+  assert.deepEqual(j2.checks!.taught, { hits: 0, total: 2, questions: { hits: 0, total: 1 } }); assert.ok(j2.draft_id, 'draft still created');
   const nr = await api('GET', `/api/teach/jobs/${j2.id}/publish-challenge`, undefined, hdr());
   assert.equal(nr.status, 409); assert.match(nr.json.error!, /^job_not_ready/);
   const retry = await api('POST', `/api/teach/jobs/${j2.id}/retry`, { facts: [{ prompt: 'Q2 Weak', answer: 'Weak', alt_prompt: 'Q2 Weak again' }] }, hdr());
@@ -587,7 +589,7 @@ test('gates: locality regression → READY but publish gated (checks_failed), sa
   revertOnce = true;
   const r3 = await createJob([{ prompt: 'Q2 Revert', answer: 'Revert' }]);
   const j3 = await waitFor(r3.json.job!.id, ['READY']);
-  assert.equal(j3.checks!.reverted_and_reapplied, true); assert.deepEqual(j3.checks!.taught, { hits: 2, total: 2 });
+  assert.equal(j3.checks!.reverted_and_reapplied, true); assert.deepEqual(j3.checks!.taught, { hits: 2, total: 2, questions: { hits: 1, total: 1 } });
   assert.equal(table.size, 0);
 });
 
@@ -723,7 +725,7 @@ async function startSecond(): Promise<RunningNode> {
   const cfg: NodeConfig = defaultConfig({ home: home2, name: 'N2', port: PORT2, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
   cfg.runtime = { repo: repo2, api: 'http://127.0.0.1:1', python: 'python3' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url2; cfg.gossipIntervalMs = 60_000;
-  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'gradient', publish: 'review', jobsPerKeyPerDay: 50, jobsPerIpPerDay: 100, trainer: { ...cfg.teach!.trainer, timeoutMs: 60_000 } };
+  cfg.teach = { ...cfg.teach!, enabled: true, backend: 'gradient', publish: 'review', jobsPerKeyPerDay: 50, jobsPerIpPerDay: 100, trainer: { ...cfg.teach!.trainer, gpus: '6,7', timeoutMs: 60_000 } };
   return startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { spawn: fakeSpawn, exec: fakeExec, intervalMs: 60, stubDelayMs: 5, runtimeGraceMs: 300, retryMs: 100 } });
 }
 

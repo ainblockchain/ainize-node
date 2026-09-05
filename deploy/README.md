@@ -97,14 +97,38 @@ docker ps --format '{{.Names}}' | grep -x flashtrain   # the trainer container m
 `SUDO_PW` in the qwen3.8 `.env` only covers that repo's own scripts — the node does not read it. Without docker access the worker
 marks every gradient job `FAILED` (`trainer container unreachable`); use `teach.backend: "stub"` on such hosts (below).
 
+### 1a. Which serving instance a node talks to — and which mailbox it writes into
+
+Two independent settings, and a node that gets them from different instances will benchmark against one model and
+mutate another one's memory table (item 144):
+
+| key | env | what it decides |
+| --- | --- | --- |
+| `runtime.api` | `NGRAM_RUNTIME_API` | which model server this node asks for completions (`ainize init --runtime-api`) |
+| `runtime.repo` | `NGRAM_RUNTIME_REPO` | where `scripts/patch.py` and the PLE hook live (`--runtime-repo`) |
+| `runtime.patchDir` | `NGRAM_RUNTIME_PATCH_DIR` | the hook mailbox this node's apply/remove requests are written into, and where the cross-process runtime lock lives. **Defaults to `<runtime.repo>/ple_patch`** — one directory per serving instance, so point it at the mailbox of the instance `runtime.api` addresses |
+| `runtime.gpus` | — | the GPUs that instance occupies, e.g. `"4,5"`; checked against `teach.trainer.gpus` |
+
+```
+ainize config set runtime.patchDir /mnt/newdata/qwen3.8/ple_patch_e2e     # the demo/e2e instance on :8002
+ainize status        # runtime … · mailbox /mnt/newdata/qwen3.8/ple_patch_e2e
+```
+
+`ainize status` names the mailbox and says when it was merely derived from `runtime.repo`; `/api/info.runtime`
+carries `patch_dir`, `patch_dir_source` and the current lock holder.
+
 ### 2. GPU allocation — trainer GPUs must be disjoint from the serving GPUs
 
 | what | where (this host) | config |
 | --- | --- | --- |
-| serving model (vLLM + PLE hook, `:8000`) | GPUs 0–3, TP=4 (shared by every node on the host; cross-process lock `ple_patch/.ainize-runtime.lock`) | `runtime.api`, `runtime.repo` |
-| teach trainer (`train/teach.py` in `flashtrain`) | GPUs 4–6 | `teach.trainer.gpus: "4,5,6"` (passed to the container as `CUDA_VISIBLE_DEVICES`) |
+| serving model (vLLM + PLE hook) | whatever GPUs the instance `runtime.api` addresses was started on — the demo cluster and the e2e suite use `flashnext-e2e` on GPUs 4,5 at `:8002` with the mailbox `ple_patch_e2e`; a second instance on 0–3 at `:8000` is the other shipped shape | `runtime.api`, `runtime.repo`, `runtime.patchDir`, **`runtime.gpus`** |
+| teach trainer (`train/teach.py` in `flashtrain`) | the GPUs the `flashtrain` container was created with — the node does not choose them, it only checks them | `teach.trainer.gpus` (**unset by default; gradient training refuses until you set it**) |
 
 - Never let the two sets overlap: the trainer loads a second copy of the model's memory table and would starve vLLM.
+  The node now enforces that rule instead of documenting it — set `runtime.gpus` to the serving instance's GPUs and
+  `teach.trainer.gpus` to the trainer's, and a `gradient` backend whose sets intersect refuses to start a lesson and
+  says which GPUs clash (at start-up, and on every job). `teach.trainer.gpus` is what the pre-flight free-memory check
+  watches; it is NOT passed to the container, whose devices are fixed when `flashtrain` is created.
 - Only **one** training run at a time per host: the worker takes an atomic lease (`<runtime.repo>/ple_patch/.ainize-teach.lock`,
   stale after 45 min or when the holder pid is gone), then checks `docker exec … pgrep -f train/` and `nvidia-smi` free memory on
   the configured GPUs. If anyone else's job holds the GPUs (e.g. an operator's own `train_rev.py`), lessons stay `QUEUED` with
@@ -123,12 +147,14 @@ restart on **My knowledge → Teaching**):
 ```json
 "teach": { "enabled": true, "publish": "auto", "backend": "stub",
            "factsPerJob": 8, "jobsPerKeyPerDay": 3, "jobsPerIpPerDay": 5, "queueMax": 10, "contributorShare": 0.7, "draftTtlDays": 7,
-           "trainer": { "container": "flashtrain", "script": "train/teach.py", "gpus": "4,5,6", "maxSteps": 20, "timeoutMs": 1800000 } }
+           "trainer": { "container": "flashtrain", "script": "train/teach.py", "gpus": "6,7", "maxSteps": 20, "timeoutMs": 1800000 } }
 ```
 
 `publish`: `review` (operator approves each lesson) · `auto` (a lesson whose checks passed is announced as soon as the visitor signs
 the claim — the demo cluster setting, `scripts/cluster.mjs`) · `never` (visitors can only try / keep / download). The demo cluster
-script ships with `backend: "stub"` and a clearly marked `TEACH_BACKEND` switch — flip it to `gradient` once GPUs 4–6 are free.
+script ships with `backend: "stub"` and a clearly marked `TEACH_BACKEND` switch. Before flipping it to `gradient`, set
+`teach.trainer.gpus` to GPUs that are free AND disjoint from `runtime.gpus` (the demo cluster serves on 4,5) — otherwise the
+node refuses the job and says which GPUs clash rather than starving the model server.
 
 From the terminal: `ainize teach status <node-url>` (policy, trainer, queue), `ainize teach status <lesson-url> --key-file <backup.json>`
 (one lesson), `ainize patch import lesson.npz --recipe recipe.json` (run a downloaded lesson on your own node as a private draft).
