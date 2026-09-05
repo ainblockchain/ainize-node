@@ -116,3 +116,29 @@ test('345 a download token only works for the address it was issued to, and its 
   assert.ok(row && row.redemptions >= 1, 'redemptions are counted');
   assert.equal(row!.patch_id, PAID_ID);
 });
+
+// ---------------------------------------------------------------- items 365 / 194: whose sale, and whose money
+test('365 a seller cannot buy its own knowledge, and a self-settlement counts for nothing', async () => {
+  // the buyer's own side refuses before any money moves
+  await assert.rejects(A.market.buy(PAID_ID), /published by this node/);
+  // …and so does the gate, to a payload that claims the seller's own address
+  const e = (await A.market.entry(PAID_ID))!;
+  const out = await A.market.settlePayment(e, `/x402/patch/${PAID_ID}`, Buffer.from(JSON.stringify({
+    scheme: 'local-credit', network: 'local', txHash: 'x', from: A.market.address, to: A.market.address, amount: '4', nonce: 'n', proof: 'p',
+  })).toString('base64'));
+  assert.match(out.error ?? '', /self_purchase/);
+});
+
+test('194 an entry reports what buyers paid AND what its author kept', async () => {
+  const e = (await A.market.catalog(true)).find((x) => x.anchor.id === PAID_ID)!;
+  assert.equal(e.downloads, 1, 'C bought it once');
+  assert.equal(e.buyers, 1);
+  assert.equal(e.revenue, '4', 'gross: what the buyer paid');
+  // The anchor has no lineage, but it does have a verifier, and the verification fee comes out of the seller's
+  // side — 5 % of 4. So "revenue 4" was never 4 in the author's pocket, which is exactly the finding.
+  assert.equal(e.revenue_net, '3.8', 'net: the author\'s own line in the royalty map');
+  assert.equal(e.revenue_shared, '0.2', 'and what those sales owed somebody else');
+  assert.equal(e.self_purchases, 0);
+  const setts = await A.ledger.settlements(PAID_ID);
+  assert.equal(Object.values(setts[0].body.royalty).reduce((n, x) => n + Number(x), 0), 4, 'the split adds up to the price');
+});

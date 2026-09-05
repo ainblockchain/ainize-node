@@ -1767,6 +1767,12 @@ export class Market {
     const payload = decodePayload(header);
     if (!payload) return { error: 'missing or malformed X-PAYMENT' };
     if (entry.anchor.author !== this.address) return { error: 'this node does not sell that patch' };
+    // Item 365: the seller checked that IT was the anchor's author and never that the buyer was not. Three
+    // self-purchases read SOLD 5 on every peer, lifted the item up the "Most popular" row the landing page shows
+    // and raised its revenue — and on a free item they cost nothing at all. The only demand signal on the
+    // marketplace could be manufactured by the one party with an interest in manufacturing it.
+    const claimedBuyer = payload.scheme === 'local-credit' ? payload.from : undefined;
+    if (claimedBuyer && sameAddr(claimedBuyer, this.address)) return { error: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
     const price = Number(entry.anchor.price);
     let buyer = '';
     let txHash = '';
@@ -1832,6 +1838,7 @@ export class Market {
       if (!payload.proof) return { error: `ain-transfer payload needs proof: sign sha256("x402-ain:<txHash>:<nonce>") with the paying key ${tr.from}` };
       if (!verifyMessage(ainPaymentDigest(payload.txHash, payload.nonce), payload.proof, tr.from)) return { error: `payment proof is not signed by the payer ${tr.from} — only the address that made the transfer can redeem it` };
       if (!this.store.takeNonce(payload.nonce)) return { error: `nonce ${payload.nonce} was consumed by an earlier attempt — GET ${resource} again for a new quote` };
+      if (sameAddr(tr.from, this.address)) return { error: `self_purchase: ${entry.anchor.id} is published by this node — buying your own knowledge is not a sale and is not recorded as one` };
       buyer = tr.from; txHash = payload.txHash;
     } else {
       return { error: `unsupported scheme ${String(scheme)}` };
@@ -2079,6 +2086,8 @@ export class Market {
     const steps: PurchaseResult['steps'] = [];
     const step = (s: string, d: string, id = patchId) => { steps.push({ step: s, detail: d, at: Date.now() }); this.log('info', 'buy', `${s}: ${d}`, id); };
     const entry = await this.buyable(patchId);
+    // Item 365, on the buyer's own side: nothing was stopping a seller running the loop against itself.
+    if (sameAddr(entry.anchor.author, this.address)) throw conflict(`${patchId} is published by this node — buying your own knowledge is not a sale, and a settlement naming this node as both seller and buyer would inflate its own sales, revenue and ranking`);
     const paid = this.paidFor(entry);
     if (paid && !opts.again) {
       const out = await this.collect(patchId);
