@@ -724,6 +724,7 @@ export class Market {
     this.catalogCache = { at: Date.now(), value };
     this.noticeOwnEvents(value);
     this.noticePurchasedEvents(value);
+    this.noticeLineageEvents(value);
     return value;
   }
 
@@ -736,6 +737,7 @@ export class Market {
    * nothing at all about the people who already bought.
    */
   private noticePurchasedEvents(entries: CatalogEntry[]): void {
+    if (!this.notifies('money')) return;                  // item 319: "None" means none, and nothing is marked seen
     const mine = this.store.listPurchases();
     if (!mine.length) return;
     const byId = new Map(entries.map((e) => [e.anchor.id, e]));
@@ -768,12 +770,135 @@ export class Market {
   }
 
   /**
+   * Which of the derived notices this operator asked for (item 319). `notifications` lived in the settings schema,
+   * the getter, the setter and the Account form, and NOTHING read it: "Sales only" and "None" changed nothing at all.
+   *
+   *  - `all`   — everything below;
+   *  - `sales` — money, and anything that STOPS money: a sale, a royalty, a challenge, a FAIL, a supersede or a
+   *              byte-for-byte copy of your knowledge. Those are what "my knowledge sells" is made of, so they are
+   *              never silenced by a preference about notifications;
+   *  - `none`  — no derived notices. The underlying records are still on the ledger and on every page; this is the
+   *              feed, not the facts.
+   */
+  private notifies(kind: 'money' | 'sale_stopper' | 'lineage' | 'track'): boolean {
+    const level = this.settings().notifications;
+    if (level === 'all') return true;
+    if (level === 'none') return false;
+    return kind === 'money' || kind === 'sale_stopper';
+  }
+
+  /**
+   * The two things that happen AROUND an author's knowledge and used to reach them as "received 1 record(s) via
+   * push" — or as nothing at all (items 183, 195, 318, 319).
+   *
+   *  - somebody published a knowledge that names one of ours as its base. There is no consent step anywhere in the
+   *    protocol (anyone may declare any public anchor as a parent), so the least the base's creator is owed is to be
+   *    TOLD: who, at what price, and whether that price undercuts their own.
+   *  - a settlement somewhere on the network paid us a lineage share. `noticeOwnEvents` skips every entry this node
+   *    did not author, so the one signal that should make a creator publish more — "someone built on this and it
+   *    paid" — never fired.
+   *
+   * Derived from the catalogue like the other two passes, so it works on both ledgers and on records that arrived
+   * by any route; each notice is written exactly once, keyed in the store.
+   */
+  private noticeLineageEvents(entries: CatalogEntry[]): void {
+    const mine = new Map(entries.filter((e) => sameAddr(e.anchor.author, this.address) && e.status !== 'DRAFT').map((e) => [e.anchor.id, e]));
+    if (!mine.size) return;
+    const byId = new Map(entries.map((e) => [e.anchor.id, e]));
+    const key = 'lineage_notified';
+    const seen = new Set<string>(JSON.parse(this.store.get(key) ?? '[]') as string[]);
+    const before = seen.size;
+    const once = (mark: string, level: EventRow['level'], kind: string, message: string, patchId: string | null, data?: unknown) => {
+      if (seen.has(mark)) return;
+      seen.add(mark);
+      this.log(level, kind, message, patchId, data);
+    };
+    for (const e of entries) {
+      if (e.status === 'DRAFT' || sameAddr(e.anchor.author, this.address)) continue;
+      // 1) a child of ours, published by somebody else (items 183, 318)
+      for (const pid of e.anchor.parents ?? []) {
+        const parent = mine.get(pid);
+        if (!parent) continue;
+        const cheaper = Number(e.anchor.price || 0) < Number(parent.anchor.price || 0);
+        if (this.notifies('lineage')) {
+          once(`derived:${e.anchor.id}:${pid}`, cheaper ? 'warn' : 'info', 'lineage',
+            `${e.anchor.name || e.anchor.id} by ${e.anchor.author_name ?? e.anchor.author.slice(0, 10)}… was published built on your ${pid}, at ${e.anchor.price} ${e.anchor.currency}`
+            + `${cheaper ? ` — below your own ${parent.anchor.price} ${parent.anchor.currency}, and it carries your rows` : ''}`
+            + `. Every sale of it pays you a share of ${Math.round(effectiveRoyaltyShare(e.anchor, this.cfg.market.royaltyShare ?? 0) * 100)} %; nobody asked your permission, and nobody can take the credit off the record.`,
+            pid, { child: e.anchor.id, child_author: e.anchor.author, child_price: e.anchor.price, currency: e.anchor.currency, parent: pid, cheaper_than_parent: cheaper });
+        }
+      }
+      // 2) money one of those sales paid us (item 319)
+      if (!this.notifies('money')) continue;
+      for (const st of e.settlements) {
+        const paid = Object.entries(st.royalty ?? {}).find(([addr]) => sameAddr(addr, this.address))?.[1];
+        if (!paid || Number(paid) <= 0) continue;
+        const via = this.ancestorsOfMine(e, byId);
+        once(`royalty:${st.tx_hash}`, 'info', 'royalty',
+          `earned ${paid} ${st.currency} from ${e.anchor.id}, sold by ${e.anchor.author_name ?? e.anchor.author.slice(0, 10)}…`
+          + `${via.length ? ` — it was built on your ${via.join(', ')}` : ''}`,
+          via[0] ?? e.anchor.id, { amount: paid, currency: st.currency, child: e.anchor.id, seller: e.anchor.author, via, tx_hash: st.tx_hash });
+      }
+    }
+    if (seen.size !== before) this.store.set(key, JSON.stringify([...seen].slice(-4000)));
+  }
+
+  /** The knowledges of ours a sale of `e` pays for: the nearest ancestors of `e` this node authored (cycle-safe). */
+  private ancestorsOfMine(e: CatalogEntry, byId: Map<string, CatalogEntry>): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>([e.anchor.id]);
+    const queue = [...(e.anchor.parents ?? [])];
+    for (let i = 0; i < queue.length && seen.size < 512; i++) {
+      const id = queue[i];
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const p = byId.get(id);
+      if (!p) continue;
+      if (sameAddr(p.anchor.author, this.address)) { if (!out.includes(id)) out.push(id); continue; }   // stop at ours: it is what earned
+      queue.push(...(p.anchor.parents ?? []));
+    }
+    return out;
+  }
+
+  /**
+   * What derivatives of one of our knowledges have actually paid us (items 195, 318): every settlement of a
+   * descendant whose royalty map names this node, attributed to the knowledge of ours that earned it.
+   *
+   * The wallet listed `pixel-deriv-b 3 · pixel-deriv-c 1.5` with nothing linking any of it to the knowledge those
+   * children were built on, so "what did I earn from derivatives of X" had no answer on any surface.
+   */
+  async derivativeEarnings(id: string, map?: Map<string, CatalogEntry>): Promise<{ patch_id: string; currency: string; amount: string; sales: number; children: { id: string; name: string; author: string; author_name: string | null; status: string; price: string; currency: string; sales: number; amount: string }[] }> {
+    const all = map ?? await this.entryMap();
+    const me = all.get(id);
+    const currency = me?.anchor.currency ?? this.cfg.market.currency;
+    const children: { id: string; name: string; author: string; author_name: string | null; status: string; price: string; currency: string; sales: number; amount: string }[] = [];
+    let total = 0; let sales = 0;
+    for (const e of all.values()) {
+      if (e.status === 'DRAFT' || e.anchor.id === id) continue;
+      if (!this.ancestorsOfMine(e, all).includes(id)) continue;
+      let amount = 0; let n = 0;
+      for (const st of e.settlements) {
+        const paid = Object.entries(st.royalty ?? {}).find(([addr]) => sameAddr(addr, this.address))?.[1];
+        if (!paid || Number(paid) <= 0) continue;
+        amount += Number(paid); n++;
+      }
+      total += amount; sales += n;
+      children.push({
+        id: e.anchor.id, name: e.anchor.name, author: e.anchor.author, author_name: e.anchor.author_name ?? null, status: e.status,
+        price: e.anchor.price, currency: e.anchor.currency, sales: n, amount: String(Math.round(amount * 1e6) / 1e6),
+      });
+    }
+    return { patch_id: id, currency, amount: String(Math.round(total * 1e6) / 1e6), sales, children: children.sort((a, b) => Number(b.amount) - Number(a.amount)) };
+  }
+
+  /**
    * The three things that happen TO an author's knowledge — a challenge, a supersede, a failed verification — used to
    * arrive as an anonymous "received 1 record(s) via push" and change the listing silently (item 156). Whatever path
    * the record took (p2p push, gossip pull, a chain read), the author's node logs each of them exactly once, with who,
    * why and what it means. Derived here rather than at ingest so it works on both ledgers.
    */
   private noticeOwnEvents(entries: CatalogEntry[]): void {
+    if (!this.notifies('sale_stopper')) return;           // item 319: only "None" silences these — they stop sales
     // A byte-identical republish of one of our knowledges by another node (item 363) is the fourth notable thing:
     // it is not a supersede any more, but the author still has to hear about it — with the copy's id, its author
     // and its price, which is the whole of what they need to answer it.

@@ -557,8 +557,16 @@ export function buildApi(deps: ApiDeps): Router {
     if (e.status === 'DRAFT' && !isOperator(req)) throw notFound('patch not found');
     const map = await market.entryMap();
     const visible = relativeVisible(req, e);
-    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })),
-      children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status })) };
+    /**
+     * Items 195, 318: a child used to be a name and a status chip. What the ancestor actually needs to see is what
+     * it is SOLD FOR — a child priced under its base is the base at a discount — and what it has paid them.
+     */
+    const earnings = e.anchor.author === market.address ? await market.derivativeEarnings(e.anchor.id, map) : null;
+    const earnedFrom = new Map((earnings?.children ?? []).map((c) => [c.id, c]));
+    const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status, price: x.anchor.price, currency: x.anchor.currency, author_name: x.anchor.author_name ?? null })),
+      children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status, price: x.anchor.price, currency: x.anchor.currency, author_name: x.anchor.author_name ?? null,
+        sales: earnedFrom.get(x.anchor.id)?.sales ?? null, earned: earnedFrom.get(x.anchor.id)?.amount ?? null })),
+      ...(earnings ? { earned: { amount: earnings.amount, currency: earnings.currency, sales: earnings.sales } } : {}) };
     const conflicts = (await market.conflicts(e.anchor.id).catch(() => [])).filter((c) => visible(map.get(c.patch_id)));
     const branches = (await market.branches()).filter((b) => b.patch_ids.includes(e.anchor.id)).map((b) => ({ name: b.name, context: b.context }));
     /**

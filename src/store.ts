@@ -23,7 +23,11 @@ export const EVENT_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
  * refused with the list instead of printing an empty screen that looks like an idle node (items 116/132).
  */
 export const EVENT_KINDS = [
-  'blob', 'branch', 'buy', 'challenge', 'config', 'drive', 'node', 'p2p', 'patch', 'payout', 'publish',
+  'blob', 'branch', 'buy', 'challenge', 'config', 'drive',
+  // `lineage` = somebody published a knowledge built on one of ours; `royalty` = a sale of theirs paid us for it
+  // (items 183, 195, 318, 319). Both are derived from the catalogue, so `ainize logs --kind lineage` works on
+  // whichever route the record took.
+  'lineage', 'node', 'p2p', 'patch', 'payout', 'publish', 'royalty',
   'runtime', 'seed', 'settings', 'teach', 'trade', 'usage', 'verifier', 'verify',
 ] as const;
 
