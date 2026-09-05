@@ -499,6 +499,8 @@ export function buildApi(deps: ApiDeps): Router {
     // SC-17 card lines: how often this knowledge was built on, and what a buyer has to load with it
     const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
+      // Item 254: what is still to happen before this is LISTED — null for anything already verified.
+      verifying: market.verificationProgress(e),
       // Item 269: `children` came straight off the derived entry, so `/api/catalog` listed a hidden test anchor —
       // and a private draft — as a child of a public knowledge, while `/api/patches/:id` and every page hid it. The
       // same rule that governs the detail route governs the list.
@@ -614,6 +616,12 @@ export function buildApi(deps: ApiDeps): Router {
        * their own machine. Null until it has genuinely waited, and null once the quorum is met.
        */
       stalled: market.verificationStall(e),
+      /**
+       * Item 254 — the minutes BEFORE the first attestation. The status is still ANNOUNCED while two verifiers are
+       * executing the benchmark, so a consumer could not tell "nobody picked it up" from "almost done". Null once
+       * the quorum is met.
+       */
+      verifying: market.verificationProgress(e),
     };
   }));
 
@@ -1003,6 +1011,15 @@ export function buildApi(deps: ApiDeps): Router {
       // held for the address that sent it, and the operator is the only one who can hand it back.
       held_for_buyers: market.store.heldPartials(50),
       payouts: { ...summary, items: market.store.listPayouts({ status: ['pending', 'failed'], limit: 50 }) } };
+  }));
+  /**
+   * Send AIN out of this node's wallet (item 320). The money verbs were all read-only or inward: a creator who had
+   * earned could spend it only by buying knowledge through the same node. A local-ledger node answers 409 with the
+   * reason — its balance is development credit and there is nothing to send.
+   */
+  router.post('/api/me/wallet/send', requireOperator, wrap(async (req) => {
+    const b = z.object({ to: z.string(), amount: z.coerce.number(), memo: z.string().max(200).optional() }).parse(req.body ?? {});
+    return market.walletSend(b.to, b.amount, { memo: b.memo });
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
   router.get('/api/me/payouts', requireOperator, wrap(async (req) => {

@@ -286,6 +286,20 @@ export interface TrackOverlap {
   track_id: string; loaded_id: string; rows: number | null; estimated: boolean; jaccard?: number; loaded_reason: string;
 }
 
+/**
+ * An item on its way to LISTED, as THIS node can see it (item 254): who has not answered yet, how many of them can
+ * run this knowledge's model, and how long verification has actually taken here before. Nothing is estimated that
+ * was not measured — `typical_ms` is null on a node that has never listed anything.
+ */
+export interface VerificationProgress {
+  patch_id: string; since: number; waited_ms: number; counted: number; quorum: number;
+  waiting_on: { name: string; address: string; model: string | null; can_run: boolean }[];
+  capable: number;
+  typical_ms: number | null;
+  eta_ms: number | null;
+  samples: number;
+}
+
 export interface PurchaseResult {
   patch_id: string;
   steps: { step: string; detail: string; at: number }[];
@@ -2017,6 +2031,31 @@ export class Market {
     return { grant, granted: true };
   }
 
+  /**
+   * Send AIN out of this node's wallet (item 320).
+   *
+   * The money verbs were `wallet` (read-only), `payouts ls/retry` (outgoing royalties only) and `chain fund`,
+   * which refuses unless the provider is local — so a node that had EARNED could spend it only by buying other
+   * knowledge through the same node, and "you get paid per sale" ended at a number on one screen. A creator could
+   * not move earnings to their own wallet or pay a collaborator.
+   *
+   * On a local ledger there is nothing to send: the balance is this node's own play money, derived from its own
+   * settle records, and saying so plainly is the honest answer rather than a transfer that pretends.
+   */
+  async walletSend(to: string, amount: number, opts: { memo?: string } = {}): Promise<{ ok: true; to: string; amount: number; tx_hash: string; balance: number | null; currency: string }> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw badInput(`${to} is not an AIN address (0x + 40 hex)`);
+    if (!(Number.isFinite(amount) && amount > 0)) throw badInput('amount must be a positive number');
+    if (sameAddr(to, this.address)) throw badInput('that is this node\'s own address — nothing would move');
+    if (!(this.ledger instanceof AinLedger)) {
+      throw conflict(`this node settles in ${this.cfg.market.currency} on its own local ledger: the balance is development credit issued by this node and derived from its own records, so there is nothing to send anywhere. It buys knowledge here and is worthless everywhere else — see /terms. Point ledger.kind at an AIN chain to earn money that can move.`);
+    }
+    const before = await this.ledger.balance().catch(() => null);
+    if (before !== null && before < amount) throw conflict(`this node holds ${before} AIN and cannot send ${amount}`);
+    const r = await this.ledger.transfer(to, amount);
+    this.log('warn', 'trade', `sent ${amount} AIN to ${to} (tx ${r.tx_hash.slice(0, 14)}…)${opts.memo ? `: ${opts.memo}` : ''} — this is the node's own wallet, and the transfer is irreversible`, null, { to, amount, tx_hash: r.tx_hash });
+    return { ok: true, to, amount, tx_hash: r.tx_hash, balance: await this.ledger.balance().catch(() => null), currency: 'AIN' };
+  }
+
   /** What this node has issued and to whom (item 364) — every local-credit balance is derived from these rows. */
   creditIssuance(): { cap: number; addresses: number; amount: number; per_address: string; currency: string; issues: boolean } {
     const totals = this.store.grantTotals();
@@ -2157,6 +2196,7 @@ export class Market {
       for (let i = 0; !tr && i < 5; i++) { await new Promise((r) => setTimeout(r, 1200)); tr = await this.ledger.verifyTransfer(payload.txHash); }
       if (!tr) return { error: 'transfer not found / not executed' };
       if (tr.to !== this.address) return { error: `transfer recipient ${tr.to} is not the seller` };
+      if (tr.value < price) return { error: `transfer ${tr.value} below price ${price}` };
       // The transfer must answer THIS node's quote: its key carries the nonce we issued (item 344).
       if (!payload.nonce) return { error: `ain-transfer payload needs the nonce from the 402 — GET ${resource} for a quote and transfer with key ${transferKeyFor(resource, '<nonce>')}` };
       const wantKey = transferKeyFor(resource, payload.nonce);
@@ -2360,6 +2400,44 @@ export class Market {
    * last gossip round, and the models those peers advertise in their own `PeerInfo`. Nothing is inferred about a
    * peer that has not spoken. Returns null before `afterMs` — a verification legitimately takes minutes.
    */
+  /**
+   * What is happening to an item that is not verified YET (item 254).
+   *
+   * Status becomes VERIFYING only once an attestation exists, and "verifying <id>" is a line in the verifier's own
+   * log, not a record anyone else can read — so for the minutes both verifiers were executing the benchmark the
+   * catalogue said ANNOUNCED and the card said "Registered · awaiting verification". A morning script waiting for
+   * LISTED could not tell "nobody picked it up" from "almost done".
+   *
+   * Everything here is measured on this node: who answers gossip and calls itself a verifier, which of them serve
+   * the model this knowledge names, which have already attested — and how long this node's OWN anchors have taken
+   * from announce to quorum (the median of what actually happened, never an invented ETA). `typical_ms` is null
+   * until this node has listed something.
+   */
+  verificationProgress(e: CatalogEntry): VerificationProgress | null {
+    if (!['ANNOUNCED', 'VERIFYING', 'CHALLENGED'].includes(e.status) || e.passed >= e.quorum) return null;
+    const mine = this.address.toLowerCase();
+    const attested = new Set(e.attestations.map((a) => a.verifier.toLowerCase()));
+    const peers = this.store.listPeers().filter((pr) => pr.failures === 0 && pr.last_seen > 0 && pr.info?.roles?.includes('verifier') && pr.address?.toLowerCase() !== mine);
+    const model = e.anchor.model.id_M;
+    const waiting = peers
+      .filter((pr) => !attested.has((pr.address ?? '').toLowerCase()))
+      .map((pr) => ({ name: pr.info?.name ?? pr.endpoint, address: pr.address ?? '', model: pr.info?.model ?? null, can_run: !!pr.info?.model && pr.info.model === model }));
+    const since = e.status === 'CHALLENGED' && e.open_challenge ? e.open_challenge.created_at : e.anchor.created_at;
+    // How long verification has ACTUALLY taken here: announce → the attestation that met the quorum.
+    const durations = this.catalogSync()
+      .filter((x) => x.listed_at && x.listed_at > x.anchor.created_at && sameAddr(x.anchor.author, this.address))
+      .map((x) => x.listed_at! - x.anchor.created_at)
+      .sort((a, b) => a - b);
+    const typical = durations.length ? durations[Math.floor(durations.length / 2)] : null;
+    const waited = Date.now() - since;
+    return {
+      patch_id: e.anchor.id, since, waited_ms: waited, counted: e.passed, quorum: e.quorum,
+      waiting_on: waiting, capable: waiting.filter((v) => v.can_run).length,
+      typical_ms: typical, eta_ms: typical !== null ? Math.max(0, typical - waited) : null,
+      samples: e.anchor.benchmark.samples?.length ?? 0,
+    };
+  }
+
   verificationStall(e: CatalogEntry, afterMs = 5 * 60_000): VerificationStall | null {
     if (!['ANNOUNCED', 'VERIFYING'].includes(e.status)) return null;
     if (e.passed >= e.quorum) return null;

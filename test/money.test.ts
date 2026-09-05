@@ -321,3 +321,11 @@ test('279 a seller quoting more than its own listing is refused before any money
   const body = await r.json() as { requirements: { maxAmountRequired: string }[] };
   assert.equal(body.requirements[0].maxAmountRequired, '4');
 });
+
+// ---------------------------------------------------------------- item 320: money that can leave the node
+test('320 a local-ledger node explains that its balance cannot leave, instead of pretending to send it', async () => {
+  await assert.rejects(A.market.walletSend('0x1111111111111111111111111111111111111111', 1), /development credit|local ledger/);
+  await assert.rejects(A.market.walletSend('not-an-address', 1), /not an AIN address/);
+  await assert.rejects(A.market.walletSend(A.market.address, 1), /own address/);
+  await assert.rejects(A.market.walletSend('0x1111111111111111111111111111111111111111', 0), /positive/);
+});
