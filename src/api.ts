@@ -1480,7 +1480,9 @@ export function buildApi(deps: ApiDeps): Router {
   // ------------------------------------------------------------ ChatMode (live test)
   router.get('/api/chat/patches', wrap(async (req) => {
     // hidden contributor names are redacted here too (public response), like /api/catalog and /api/patches/:id
-    const rows = await market.chatCatalog();
+    // Item 108 — the operator's own unannounced drafts are testable on this node and POST /api/chat loads them, so
+    // the picker that calls itself the list of what can be tested here lists them too. Anonymous callers see none.
+    const rows = await market.chatCatalog({ ownDrafts: isOperator(req) });
     const items = rows.filter((r) => r.testable).map((r) => redactContributors(r.entry));
     // Item 297 — knowledge this node's model could run but cannot load: it used to be absent from the picker
     // entirely (no row, no price, no seller), so the chained purchase the product is built on had no first step.

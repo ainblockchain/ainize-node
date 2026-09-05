@@ -3809,11 +3809,15 @@ export class Market {
    * same words a typo gets. A verifier, meanwhile, holds every body it ever scored, which is possession and not a
    * licence. Both facts belong on the same row.
    */
-  async chatCatalog(): Promise<PickerRow[]> {
+  async chatCatalog(opts: { ownDrafts?: boolean } = {}): Promise<PickerRow[]> {
     const st = await this.runtime.status();
     const out: PickerRow[] = [];
     for (const e of await this.catalog()) {
-      if (e.status === 'DRAFT') continue;
+      // Item 108 — a DRAFT is exactly what `--no-announce` is for, and POST /api/chat has always loaded one; only
+      // the picker pretended it could not. It stays out of every anonymous answer (a draft is private, and the
+      // visitor could do nothing with it), and appears for this node's own operator, whose test-before-you-announce
+      // loop is the whole point of holding it back.
+      if (e.status === 'DRAFT' && !(opts.ownDrafts && sameAddr(e.anchor.author, this.address))) continue;
       // A body trained for another model can never run here — that is not "buy it", it is "wrong model".
       if (st.model && !e.anchor.model.id_M.startsWith(st.model)) continue;
       const held = this.blobs.has(e.anchor.patch_sha256);
@@ -3830,8 +3834,8 @@ export class Market {
   }
 
   /** Patches this node may actually load right now (held AND licensed) — what ChatMode can test. */
-  async testablePatches(): Promise<CatalogEntry[]> {
-    return (await this.chatCatalog()).filter((r) => r.testable).map((r) => r.entry);
+  async testablePatches(opts: { ownDrafts?: boolean } = {}): Promise<CatalogEntry[]> {
+    return (await this.chatCatalog(opts)).filter((r) => r.testable).map((r) => r.entry);
   }
 
   /** How many different visitors have asked this node's operator to get a knowledge (item 297). */
