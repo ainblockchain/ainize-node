@@ -3182,6 +3182,10 @@ export class Market {
         royalty: effectiveRoyaltyShare(undefined, this.cfg.market.royaltyShare),
         verifier: effectiveVerifierShare(undefined, this.cfg.market.verifierShare),
       },
+      // …and the rest of the terms, for the same reason (item 368): a peer table can only compare what is published.
+      quorum: this.cfg.verifier?.quorum ?? 2,
+      default_price: this.cfg.market.defaultPrice,
+      accepts_contributions: this.acceptsContributions(),
     };
   }
 
