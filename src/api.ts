@@ -279,7 +279,21 @@ export function buildApi(deps: ApiDeps): Router {
     checked: market.runtimeCheck(),
   });
 
-  router.get('/api/info', wrap(async () => ({
+  /**
+   * The node's own balance (item 142). It pays for every announce, attest and settle it signs, and no operator surface
+   * but `ainize wallet` ever mentioned it — `ainize status` and every monitor built on /api/info were silent about the
+   * one number whose exhaustion stops the node working. Cached: the console polls this route every few seconds and
+   * each read is an RPC to the chain.
+   */
+  let balanceCache: { at: number; value: number | null } | null = null;
+  const nodeBalance = async (): Promise<number | null> => {
+    if (balanceCache && Date.now() - balanceCache.at < 30_000) return balanceCache.value;
+    const value = await market.chainStatus().then((st) => (typeof st.balance === 'number' ? st.balance : null)).catch(() => null);
+    balanceCache = { at: Date.now(), value };
+    return value;
+  };
+
+  router.get('/api/info', wrap(async (req) => ({
     node: await (async () => { await market.catalog(); const self = await market.selfInfo(); return { ...self, blobs: await market.publicBlobs(self.blobs) }; })(), ledger: await market.ledger.info(), runtime: await runtimeInfo(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     // `peers` stays the plain count every existing client reads; `peer_status` is the fact nobody had (item 170):
@@ -297,6 +311,8 @@ export function buildApi(deps: ApiDeps): Router {
     verification_stats: verificationStats(),
     // What this node itself spends verifying for others, and what it gives back (items 332 / 333 / 336).
     verifier_work: deps.verifier?.work() ?? null,
+    // item 142: what this node has to spend, for the operator only — a visitor has no business reading the wallet.
+    ...(isOperator(req) ? { balance: await nodeBalance() } : {}),
   })));
 
   /**

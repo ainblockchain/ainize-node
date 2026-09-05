@@ -1028,7 +1028,12 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout).toMatch(new RegExp(`^port\\s+${PORT_D}$`, 'm'));
     expect(r.stdout).toMatch(/^ledger\s+ain$/m);
     expect(r.stdout).toMatch(/^roles\s+verifier$/m);
-    expect(r.stdout.trim().endsWith('next: `ainize start`   (then `ainize login`, `ainize seed`)')).toBe(true);
+    // item 142: a node on the AIN ledger cannot announce, attest or settle until a chain answers, its app is
+    // registered and its identity holds AIN — `next: ainize start` was the only thing ever said about any of that.
+    expect(r.stdout).toMatch(/^next, on the AIN ledger:$/m);
+    expect(r.stdout).toMatch(/^ {2}ainize chain up {8}the local 1-node chain in docker/m);
+    expect(r.stdout).toMatch(/^ {2}ainize chain setup {5}registers \/apps\/knowledge/m);
+    expect(r.stdout.trim().endsWith('this node pays for every announce, attest and settle from its own AIN balance — check it')).toBe(true);
     const cfgText = readFileSync(cfgPath, 'utf8');
     const addr = nodeAddress(HOME_D);
 
