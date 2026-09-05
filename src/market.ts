@@ -3076,7 +3076,43 @@ export class Market {
       out.push({ id, entry, requested });
     };
     for (const id of ids) await walk(id, true, []);
-    return out;
+    return Market.orderByLineage(out);
+  }
+
+  /**
+   * Ancestors first among the knowledges actually being loaded (item 281).
+   *
+   * `base.stack` is walked above, and it is authoritative — but only a knowledge published WITH the lineage fields
+   * has one. Every `publish --parents` child, and every anchor written before those fields existed, declares its
+   * family in `parents[]` alone, and today's children carry their base's rows: loading the base last really does
+   * overwrite the child's answers on every shared row. The buyer of a family got whichever order they happened to
+   * buy in ("applied order on node-d: [grandchild, child, parent]") and no screen hinted at it.
+   *
+   * A stable topological pass over the declared parents of the ids being loaded — nothing is fetched that was not
+   * asked for, and a cycle (a peer anchor may claim any parent) leaves the order exactly as it was.
+   */
+  static orderByLineage<T extends { id: string; entry: CatalogEntry }>(list: T[]): T[] {
+    if (list.length < 2) return list;
+    const index = new Map(list.map((x, i) => [x.id, i]));
+    const parentsOf = (x: T) => (x.entry.anchor.parents ?? []).filter((p) => index.has(p) && p !== x.id);
+    if (!list.some((x) => parentsOf(x).length)) return list;
+    const out: T[] = [];
+    const done = new Set<string>();
+    const visiting = new Set<string>();
+    let cycle = false;
+    const place = (x: T) => {
+      if (done.has(x.id) || cycle) return;
+      if (visiting.has(x.id)) { cycle = true; return; }
+      visiting.add(x.id);
+      // parents in their original relative order, so two independent bases keep the order the caller asked for
+      for (const p of parentsOf(x).sort((a, b) => index.get(a)! - index.get(b)!)) place(list[index.get(p)!]);
+      visiting.delete(x.id);
+      if (done.has(x.id)) return;
+      done.add(x.id);
+      out.push(x);
+    };
+    for (const x of list) place(x);
+    return cycle || out.length !== list.length ? list : out;
   }
 
   /** The layers `ids` turn into: bodies resolved, duplicates by body dropped (the same bytes twice is a no-op). */
