@@ -92,6 +92,8 @@ export interface CreateDraftInput {
   parents?: string[];
   branch?: string;
   topic_path?: string;
+  /** The day the data is true of (item 267) — `YYYY-MM-DD`, validated here, never guessed from the file. */
+  as_of?: string;
   recipe?: PatchAnchor['recipe'];
   file: string;              // local path to .npz (copied into blob store unless `keepInPlace`)
   keepInPlace?: boolean;
@@ -296,6 +298,53 @@ const notFound = (msg: string) => new NotFoundError(msg);
 const conflict = (msg: string, details?: Record<string, unknown>) => new ConflictError(msg, details);
 
 /**
+ * A verifier's record, computed from the ledger (item 337). Nothing here is self-reported: every number comes from
+ * signed `attest` and `challenge` records this node can read.
+ */
+export interface VerifierProfile {
+  address: string;
+  name: string | null;
+  endpoint: string | null;
+  roles: string[];
+  last_seen: number | null;
+  /** Attestations this verifier has signed, and what they said. */
+  attested: number;
+  passed: number;
+  failed: number;
+  /** Integrity-only checks: the file hash and the row count, no benchmark executed. */
+  hash_only: number;
+  /** Deliberate re-measurements (item 339). */
+  rechecks: number;
+  /** Attestations that count toward a quorum today. */
+  counted: number;
+  /** Runs made on a table that already carried the knowledge — recorded, never counted (item 329). */
+  no_baseline: number;
+  knowledges: number;
+  /** Distinct model-server fingerprints behind those runs: one means every attestation came off one engine. */
+  executors: string[];
+  /** The work, where the attestations record it (item 340). `measured_runs` is how many of them do. */
+  samples_run: number;
+  model_seconds: number;
+  measured_runs: number;
+  challenges_raised: number;
+  challenges_upheld: number;
+  challenges_dismissed: number;
+  challenges_open: number;
+  /** Attestations of theirs that somebody challenged afterwards — what a PASS has ever risked. */
+  attestations_later_challenged: number;
+  /** Attestations where another verifier reached the opposite verdict on the same knowledge. */
+  disagreed_with_peers: number;
+  first_at: number | null;
+  last_at: number | null;
+  items: {
+    patch_id: string; name: string; status: string; passed: boolean; verified_on: string;
+    score: Record<string, string | number>; created_at: number; recheck: boolean;
+    samples_run: number | null; samples_available: number | null; duration_ms: number | null;
+    challenged_after: boolean;
+  }[];
+}
+
+/**
  * A catalog entry as THIS node reports it: the derived entry plus the author's own takedown (item 148). `retired_at`
  * is set only from a `retire` record signed by the anchor's author; a retired entry is never `sellable`.
  */
@@ -466,6 +515,73 @@ export class Market {
   // ------------------------------------------------------------------ catalog
   /** Last computed public catalog (cache; call catalog() first in the same request). */
   catalogSync(): CatalogEntry[] { return (this.catalogCache?.value ?? []).filter((e) => e.anchor.visibility !== 'test' || this.cfg.includeTestAnchors); }
+
+  /**
+   * What one verifier has actually done, from the record (item 337).
+   *
+   * The verification tab printed a name and a short address with no link, the Network table listed roles and a
+   * last-seen, and nothing anywhere aggregated a verifier's attestations, its FAILs, the challenges it raised, or
+   * the attestations of its own that were later challenged. So a buyer weighed "node-b · Passed" exactly as heavily
+   * as a key created five minutes ago, and a verifier that does careful work could not be told from one that has
+   * never failed anything — which is the same as saying there is no reason to be careful.
+   */
+  async verifierProfile(address: string): Promise<VerifierProfile> {
+    const cat = await this.catalogAll();
+    const nodes = await this.knownNodes().catch(() => [] as PeerInfo[]);
+    const node = nodes.find((n) => sameAddr(n.address, address)) ?? null;
+    const out: VerifierProfile = {
+      address, name: node?.name ?? null, endpoint: node?.endpoint ?? null, roles: node?.roles ?? [], last_seen: node?.last_seen ?? null,
+      attested: 0, passed: 0, failed: 0, hash_only: 0, rechecks: 0, counted: 0, no_baseline: 0, knowledges: 0,
+      executors: [], samples_run: 0, model_seconds: 0, measured_runs: 0,
+      challenges_raised: 0, challenges_upheld: 0, challenges_dismissed: 0, challenges_open: 0,
+      attestations_later_challenged: 0, disagreed_with_peers: 0,
+      first_at: null, last_at: null, items: [],
+    };
+    const seenPatch = new Set<string>();
+    const executors = new Set<string>();
+    for (const e of cat) {
+      if (e.status === 'DRAFT') continue;
+      for (const ch of e.challenges) {
+        if (!sameAddr(ch.challenger, address)) continue;
+        out.challenges_raised++;
+        const log = e.challenge_log.find((c) => c.challenge.created_at === ch.created_at);
+        if (log?.state === 'upheld') out.challenges_upheld++;
+        else if (log?.state === 'dismissed') out.challenges_dismissed++;
+        else out.challenges_open++;
+      }
+      const mine = e.attestations.filter((a) => sameAddr(a.verifier, address));
+      if (!mine.length) continue;
+      seenPatch.add(e.anchor.id);
+      for (const a of mine) {
+        out.attested++;
+        if (a.passed) out.passed++; else out.failed++;
+        if (a.verified_on === 'hash-only') out.hash_only++;
+        if (a.recheck) out.rechecks++;
+        if (a.baseline === false) out.no_baseline++;
+        if (a.executor?.instance) executors.add(a.executor.instance);
+        if (typeof a.samples_run === 'number') { out.samples_run += a.samples_run; out.measured_runs++; }
+        if (typeof a.duration_ms === 'number') out.model_seconds += Math.round(a.duration_ms / 1000);
+        out.first_at = out.first_at === null ? a.created_at : Math.min(out.first_at, a.created_at);
+        out.last_at = out.last_at === null ? a.created_at : Math.max(out.last_at, a.created_at);
+        if (e.verifiers.some((v) => sameAddr(v, address))) out.counted++;
+        // An attestation of theirs that somebody challenged afterwards: the number that separates a careful record
+        // from a fast one, and the only thing a PASS has ever risked.
+        if (e.challenges.some((c) => c.created_at > a.created_at && !sameAddr(c.challenger, address))) out.attestations_later_challenged++;
+        // …and where this verifier's verdict differs from another verifier's on the same knowledge.
+        if (e.attestations.some((b) => !sameAddr(b.verifier, address) && b.passed !== a.passed)) out.disagreed_with_peers++;
+        out.items.push({
+          patch_id: e.anchor.id, name: e.anchor.name, status: e.status, passed: a.passed, verified_on: a.verified_on,
+          score: a.score, created_at: a.created_at, recheck: !!a.recheck,
+          samples_run: a.samples_run ?? null, samples_available: a.samples_available ?? null, duration_ms: a.duration_ms ?? null,
+          challenged_after: e.challenges.some((c) => c.created_at > a.created_at),
+        });
+      }
+    }
+    out.knowledges = seenPatch.size;
+    out.executors = [...executors];
+    out.items.sort((a, b) => b.created_at - a.created_at);
+    return out;
+  }
 
   /** Contested sales per knowledge, rebuilt with every catalogue derivation (item 347). */
   private disputeIndex = new Map<string, Dispute[]>();
@@ -722,6 +838,7 @@ export class Market {
     if (!SLUG.test(id)) throw badInput('invalid patch id (use 2-64 chars: a-z 0-9 . _ -)');
     if (await this.entry(id)) throw conflict(`patch id already exists: ${id}`);
     const price = input.price === undefined ? this.cfg.market.defaultPrice : validatePrice(input.price);
+    const asOf = Market.validateAsOf(input.as_of);
     const { blob, sketch } = await this.blobs.importFile(input.file, { copy: !input.keepInPlace });
     const benchmark: BenchmarkSpec = { ...input.benchmark, format: input.benchmark.format ?? ['template'] };
     await this.refuseDuplicateBody(blob.sha256, benchmark.schema, input.branch, !!input.force);
@@ -738,6 +855,8 @@ export class Market {
       license: input.license, parents, parent_authors: parents.map((p) => map.get(p)!.anchor.author),
       branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
+      // item 267: the day the DATA is true of, when the publisher declares one — never inferred from the file
+      ...(asOf ? { as_of: asOf } : {}),
       // What this knowledge promises the people it was built on and the people who verify it, written into the
       // immutable record (items 191, 325). Before this the split was read from the SELLING node's config at settle
       // time, so a derivative's seller could set `market.royaltyShare` to 0 and keep the base creator's share while
@@ -813,7 +932,21 @@ export class Market {
     return out;
   }
 
-  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe' | 'dataset' | 'derivation' | 'base' | 'parents'>>): PatchAnchor {
+  /**
+   * `as_of` is a DAY, not a timestamp (item 267): `YYYY-MM-DD`, a real date, and never in the future — a data date
+   * that has not happened yet is a typo, and it would sort a stale bake to the top of "freshest data".
+   */
+  static validateAsOf(value: string | undefined | null): string | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const v = String(value).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) throw badInput(`as_of must be a date in YYYY-MM-DD form (got "${v}") — it is the day the data is true of, not a time`);
+    const d = new Date(`${v}T00:00:00Z`);
+    if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) throw badInput(`as_of is not a real date: ${v}`);
+    if (d.getTime() > Date.now() + 36 * 3600_000) throw badInput(`as_of ${v} is in the future — it is the day the data is true of`);
+    return v;
+  }
+
+  updateDraft(id: string, patch: Partial<Pick<PatchAnchor, 'name' | 'description' | 'price' | 'branch' | 'benchmark' | 'license' | 'billing' | 'topic_path' | 'contributors' | 'origin' | 'visibility' | 'recipe' | 'dataset' | 'derivation' | 'base' | 'parents' | 'as_of'>>): PatchAnchor {
     const d = this.store.getDraft(id);
     if (!d) throw conflict('only drafts can be edited (anchors are immutable on the ledger)');
     const anchor = { ...d.anchor, ...patch };
@@ -830,6 +963,7 @@ export class Market {
       if (contributors.length) anchor.contributors = contributors; else delete anchor.contributors;
     }
     if (patch.price !== undefined) anchor.price = validatePrice(patch.price);
+    if ('as_of' in patch) { const v = Market.validateAsOf(patch.as_of); if (v) anchor.as_of = v; else delete anchor.as_of; }
     if ('origin' in patch && patch.origin !== undefined && patch.origin !== 'operator' && patch.origin !== 'teach') throw new ValidationError('origin must be "operator" or "teach"');
     if ('visibility' in patch && patch.visibility !== undefined && patch.visibility !== 'public' && patch.visibility !== 'test') throw new ValidationError('visibility must be "public" or "test"');
     if (patch.benchmark) anchor.benchmark_hash = hashCanonical({ schema: anchor.benchmark.schema, queries: anchor.benchmark.queries, format: anchor.benchmark.format, collateral_bound_nat: anchor.benchmark.collateral_bound_nat, samples: anchor.benchmark.samples ?? [] });

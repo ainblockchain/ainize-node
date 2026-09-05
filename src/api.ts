@@ -423,7 +423,7 @@ export function buildApi(deps: ApiDeps): Router {
 
   router.get('/api/catalog', wrap(async (req) => {
     const q = z.object({
-      sort: z.enum(['latest', 'popular', 'price', 'rows', 'built_on', 'trending']).default('latest'),
+      sort: z.enum(['latest', 'popular', 'price', 'rows', 'built_on', 'trending', 'fresh']).default('latest'),
       status: z.string().optional(), model: z.string().optional(), schema: z.string().optional(), branch: z.string().optional(),
       author: z.string().optional(), contributor: z.string().optional(), origin: z.enum(['operator', 'teach']).optional(), q: z.string().optional(),
       limit: z.coerce.number().min(1).max(200).default(50), offset: z.coerce.number().min(0).default(0),
@@ -474,6 +474,8 @@ export function buildApi(deps: ApiDeps): Router {
     // "Most popular" ranks by status FIRST: downloads accumulate forever, so a retired single-fact patch with 187
     // downloads used to head the marketplace over the flagship it was replaced by. Tradeable before retired.
     const statusRank = (s: string) => (s === 'LISTED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
+    /** The day this knowledge's DATA is true of: what the publisher declared, else when the file was registered. */
+    const dataDay = (a: PatchAnchor): number => (a.as_of ? Date.parse(`${a.as_of}T00:00:00Z`) || a.created_at : a.created_at);
     // "Most built on" and "Doing well this week" (design §10) — the first is a network fact (children on the ledger
     // plus this node's derive intents), the second a node-local weekly score; both are computed once per entry here,
     // never per comparison, so the sort cannot cost O(n log n) database reads.
@@ -487,6 +489,10 @@ export function buildApi(deps: ApiDeps): Router {
       rows: (a: typeof items[0], b: typeof items[0]) => b.anchor.rows - a.anchor.rows,
       built_on: (a: typeof items[0], b: typeof items[0]) => (built.get(b.anchor.id) ?? 0) - (built.get(a.anchor.id) ?? 0) || b.anchor.created_at - a.anchor.created_at,
       trending: (a: typeof items[0], b: typeof items[0]) => (weekly.get(b.anchor.id) ?? 0) - (weekly.get(a.anchor.id) ?? 0) || b.anchor.created_at - a.anchor.created_at,
+      // item 267: "Newest" is when the FILE was registered; this one is when the DATA is true of, which is the
+      // question a daily consumer actually asks. An anchor that declares no day falls back to its registration,
+      // so a catalogue where nobody declares one sorts exactly as `latest` does instead of collapsing.
+      fresh: (a: typeof items[0], b: typeof items[0]) => dataDay(b.anchor) - dataDay(a.anchor) || b.anchor.created_at - a.anchor.created_at,
     };
     items = [...items].sort(sorters[q.sort]);
     const total = items.length;
@@ -960,6 +966,8 @@ export function buildApi(deps: ApiDeps): Router {
         billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(), license: z.string().optional(),
         parents: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : [])),
         branch: z.string().optional(), topic_path: z.string().optional(), path: z.string().optional(),
+        // item 267: the day the DATA is true of, declared by the publisher (`YYYY-MM-DD`; validated in createDraft)
+        as_of: z.string().optional(),
         visibility: z.enum(['public', 'test']).optional(),
         contributors: z.string().transform((s) => JSON.parse(s)).or(z.array(z.object({}).passthrough())).optional(),
         // lineage (design §12.4): an operator may publish the training set beside the body — a local jsonl/csv path,
@@ -1006,7 +1014,7 @@ export function buildApi(deps: ApiDeps): Router {
       }
       const anchor = await market.createDraft({
         id: body.id, name: body.name, description: body.description, model: { id_M: body.model_id }, benchmark: body.benchmark as never,
-        price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path,
+        price: body.price, billing: body.billing, license: body.license, parents: body.parents, branch: body.branch, topic_path: body.topic_path, as_of: body.as_of,
         file, keepInPlace: !req.file, visibility: body.visibility, contributors: body.contributors as never, force: body.force, ...(dataset ? { dataset } : {}),
         ...(base ? { base } : {}), ...(body.derivation ? { derivation: body.derivation as never } : {}),
       });
@@ -1018,6 +1026,7 @@ export function buildApi(deps: ApiDeps): Router {
       name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(), branch: z.string().optional(),
       benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: z.enum(['per_download', 'per_apply_hour', 'per_hit']).optional(),
       topic_path: z.string().optional(), visibility: z.enum(['public', 'test']).optional(), origin: z.enum(['operator', 'teach']).optional(),
+      as_of: z.string().nullable().optional(),
       contributors: z.array(z.object({}).passthrough()).nullable().optional(),
     }).parse(req.body ?? {});
     // only the keys the caller sent reach updateDraft: `'contributors' in patch` with an undefined value would wipe the list on
@@ -1793,6 +1802,12 @@ export function buildApi(deps: ApiDeps): Router {
     res.status(200).type('text/markdown; charset=utf-8').set('content-disposition', 'attachment; filename="RUN-LOCALLY.md"').send(await t.runLocallyMd(j, token!));
   }));
   router.get('/api/teacher/:address', wrap(async (req) => needTeach().teacherProfile(addressParam(req.params.address as string))));
+  /**
+   * A verifier's record (item 337). The verification tab printed a name and a short address with no link, and
+   * nothing anywhere aggregated what a verifier had actually done — so "node-b · Passed" weighed exactly as much as
+   * a key created five minutes ago, and careful work could not be told from a rubber stamp.
+   */
+  router.get('/api/verifiers/:address', wrap(async (req) => market.verifierProfile(addressParam(req.params.address as string))));
 
   // ------------------------------------------------------------ teach mode — operator (spec §6.4)
   const policyView = async (t: TeachWorker) => ({ policy: market.teachSettings(), effective: market.teach(), trainer: await t.trainerState(true) });
