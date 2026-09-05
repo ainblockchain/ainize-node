@@ -1132,6 +1132,8 @@ This is the default subcommand: `ainize teach dataset <file>` runs it without na
 - **`--effort`** (`"quick" | "balanced" | "thorough"`) — with --train: how hard to train
 - **`--check`** (`boolean`) — with --train: --no-check skips the side-effect check (publishing then stays blocked)
 - **`--rows`** (`number`) — with --train: train only the first N questions
+- **`--wait`** (`boolean`, default `false`) — with --train: follow the lesson until it is ready and exit with its outcome (0 ready · 4 did not stick · 5 failed · 6 declined · 7 timed out · 8 never measured) — the same wait as `teach train --wait`
+- **`--timeout`** (`number`) — with --wait: give up after this many minutes and exit 7 (default 60)
 
 **Examples**
 
@@ -1142,6 +1144,8 @@ ainize teach dataset ./questions.csv
 ainize teach dataset ./qa.jsonl --train --effort thorough
 # unusual column names
 ainize teach dataset ./data.csv --columns '{"prompt":"질문","answer":"답"}'
+# a nightly bake that only publishes when the lesson stuck
+ainize teach dataset ./today.csv --train --wait && ainize teach publish <id> …
 ```
 
 #### `ainize teach dataset ls`
@@ -1232,6 +1236,7 @@ Teach a lesson from a dataset id or a dataset file
 - **`--inherit`** (`boolean`) — --no-inherit checks against the base without keeping its questions as known answers
 - **`--yes-change`** (`boolean`, default `false`) — my answers are meant to replace the base's where they differ
 - **`--wait`** (`boolean`, default `false`) — follow it until it is ready (prints each stage). Exit code says what happened: 0 ready · 4 did not stick (NEEDS_MORE) · 5 failed/cancelled/expired · 6 declined by the operator · 7 still running when the wait ran out · 8 ready but never measured on the live model
+- **`--timeout`** (`number`) — with --wait: give up after this many minutes and exit 7 (default 60)
 
 **Examples**
 
