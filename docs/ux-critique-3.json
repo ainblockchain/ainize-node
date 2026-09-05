@@ -587,7 +587,10 @@
      "user_cost": "Every dead end in items 170-177 is hit blind; even a developer reading the docs cannot assemble the flow, and a publisher cannot learn the rules of the product's central flow before signing an irreversible record.",
      "fix": "Add three docs sections (EN/KO) and link them from the Origins tab, the Buy tab and the track card: 'Build on existing knowledge' (obtain → `teach train q.csv --on <id>` → `teach publish`, the royalty rule with a worked 10-credit number, licence rules, the LISTED requirement, the ledger prerequisite of item 170); 'Load several knowledges' (item 221); 'Publish every day' (item 238's loop with exit codes). Expand the `--patch`/`--parents` help lines to name the 30 % pool.",
      "effort": "S",
-     "theme": "Seeing what to build on"
+     "theme": "Seeing what to build on",
+     "fixed": true,
+     "fixed_by": "de7c88e",
+     "fixed_note": "Three how-to pages in EN and KO, listed in both navigations: \"Build on someone else's knowledge\" (the ledger and licence prerequisites, obtain → `teach train --on` → `teach publish`, and the royalty arithmetic on a worked 10-credit sale read out of royaltyPlan), \"Load several knowledges at once\" (order, last-writer-wins, journals, needs_base, --bundle, what a subscription unloads) and \"Publish every day\" (the loop as one script with the exit code of every step and the --supersede refusal). The CLI reference gained the build-on chain and points at them. Deviation: the finding says the browser file door cannot build on anything — it can (`/teach/upload?on=<id>`), so the page says that instead; the deep links from the Origins/Buy tabs belong to another group's files. (Staged here but swept into de7c88e by a concurrent commit.)"
     },
     {
      "n": 203,
@@ -870,7 +873,10 @@
      "user_cost": "The product's stated purpose — combine several knowledges — has to be done as N separate commands, each paying and applying with no stated order, and the developer discovers each of the three error strings by trial.",
      "fix": "Make the id positional variadic (`<ids..>`) on use/buy/apply/remove and `--patch` a list on the agent, reuse `parsePatchIds`, process in the given order, and end with one line `loaded in order: krx-all-2761 → pixelplus-087600 (2,170 shared rows: pixelplus wins)`. When a comma-joined string is not found, say `no knowledge \"a,b\" — to load several: ainize use a b`.",
      "effort": "S",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "fixed": true,
+     "fixed_by": "7965360",
+     "fixed_note": "`use`, `patch buy`, `patch apply` and `patch remove` take `<ids..>`: `a b` and `a,b` are the same set, processed in the order typed, and a multi-id run ends with \"loaded in order: a → b (the last one wins on any memory entry they share)\". `ainize use a,b` and `ainize patch apply a b` reach the node instead of answering \"patch not found\" / \"Unknown argument\". The agent's own `--patch a,b` is in packages/agent, which another workstream was editing at the same time, and is not part of this commit."
     },
     {
      "n": 220,
@@ -884,7 +890,10 @@
      "user_cost": "The script cannot record what was loaded (rows, body path, fresh purchase or already held, the apply result) and has to scrape `/api/runtime` afterwards — which does not say which step did what.",
      "fix": "Emit the API result object in JSON mode: apply/remove → `{ patch_id, result, applied: <stack> }`; `use` on a held item → `{ patch_id, already: true, applied: true|false, path }`; make `ok()` never the only output of a mutating command.",
      "effort": "S",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "fixed": true,
+     "fixed_by": "7965360",
+     "fixed_note": "apply/remove emit {patch_id, kind, result, applied:<the ordered stack>}; `use` on something already held emits {patch_id, already, owned, purchased, applied}; a multi-id run writes ONE document {ids, items[]} rather than one per step, while a terminal still gets every step's lines. The `applied` stack needs a serving runtime to exercise end to end and the shared inference server is down, so that half is written and unit-checked but not verified live."
     },
     {
      "n": 221,
@@ -898,7 +907,10 @@
      "user_cost": "Everything about composing — what order means, what happens on overlap, that subscribe applies on top of manual pins, that remove reverts to disk base — has to be learned by experiment on a metered GPU (this review's captures are that experiment).",
      "fix": "Add one 'Loading several knowledges' paragraph to the OpenAPI intro (openapi.ts:137-144) and to /docs: order = order of apply, last writer wins on shared rows, remove restores what was below (once item 208 is fixed) or the bare model (today — say so), subscribe applies after whatever is loaded, overlaps are visible at `GET /api/patches/{id}.conflicts`. Fill the five empty descriptions; rename remove's help to 'Unload from the model'.",
      "effort": "S",
-     "theme": "Seeing and naming the set"
+     "theme": "Seeing and naming the set",
+     "fixed": true,
+     "fixed_by": "de7c88e",
+     "fixed_note": "The OpenAPI intro gained a \"Loading several knowledges\" section — order is the order of the calls, the last writer wins on shared entries, unloading replays the journal (and what happens when there is none), has_dependents, needs_base/with_base, and a subscription loading on top — and POST /remove, DELETE /apply and GET /api/route gained the descriptions they never had (remove also documents its {cascade, async} body and its 409). `patch remove`'s help no longer calls itself \"Restore original rows\", and the /docs half is the new \"Load several knowledges at once\" page. (Staged here but swept into de7c88e by a concurrent commit.)"
     },
     {
      "n": 222,
@@ -1408,7 +1420,10 @@
      "user_cost": "The first cron attempt fails with a yargs error and the publisher has to discover the sibling command.",
      "fix": "Add `--wait` (and `--timeout`) to the `teach dataset` builder and route through the same `waitForJob`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "f68f015",
+     "fixed_note": "`teach dataset <file> --train --wait` runs the same wait as `teach train --wait` — the same stage lines and the same exit codes — and prints the finished lesson instead of \"queued\"; both commands also take `--timeout <minutes>`, and the timeout message reports seconds under 90 s and says the lesson goes on without the command. Verified live: `--train --wait --timeout 0.2` streams QUEUED → EXPORTED and exits 7 at the deadline."
     },
     {
      "n": 253,
@@ -1422,7 +1437,10 @@
      "user_cost": "The morning script must poll `patch get --json` by id to learn whether the announce landed and what it will retire; the one field it needs for the public timeline is only in the human text.",
      "fix": "Emit `{ anchor:{id,name,patch_sha256,rows,price,branch}, record_hash, status:'ANNOUNCED', pending_supersedes:[{id,overlap_rows}], verifiers_known:n }` and drop `addr_sketch`.",
      "effort": "S",
-     "theme": "The publisher's loop: script, train, verify, publish, supersede"
+     "theme": "The publisher's loop: script, train, verify, publish, supersede",
+     "fixed": true,
+     "fixed_by": "7965360",
+     "fixed_note": "`--json publish` now carries record_hash, status, pending_supersedes[] (each with status, sales and shared rows), verifiers_known and quorum, and drops the 64-integer addr_sketch; `patch announce` writes the same document instead of only prose, and `--quiet` prints the new id. Verified live against a throwaway node."
     },
     {
      "n": 254,

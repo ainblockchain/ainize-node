@@ -65,7 +65,10 @@
      "evidence": "critique2-verify.txt §2: `ainize publish` → `error: Not enough non-option arguments: got 0, need at least 1`, exit 1; `ainize use` → identical; `ainize statsu` → `error: Unknown argument: statsu`; `ainize pubish ./x.npz` → `error: Unknown arguments: pubish, ./x.npz`; `ainize --hepl` → `error: Specify a command. Try \\`ainize --help\\`.` — an unknown *option* reported as a missing command. Group commands are uneven: `ainize config` says `Subcommand is required (show|set).` but `ainize patch`, `ledger`, `branch`, `drive` and `chain` print the bare `Subcommand is required.` (bin.ts:187, 326, 340, 360, 371).",
      "user_cost": "`ainize publish` — the exact string on the landing page's developer card and the first line of the README — tells a first-time user \"got 0, need at least 1\" without saying that the one thing is a path to a .npz, that three more flags are required, or that `--help` carries a worked example.",
      "fix": "Add `.recommendCommands()` to the root parser. In `fail`, rewrite the two yargs shapes before printing: on `/Not enough non-option arguments/` print the command's own usage line and first `.example()`; on `/Unknown argument: (\\w+)/` print `unknown command \"$1\"` plus the nearest registered command by edit distance. Give the five bare `Subcommand is required.` strings the same `(a|b|c)` list the other four already have.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "2a214cb",
+     "fixed_note": "`.recommendCommands()` plus a `fail` handler that reads back the failing command's own help: a missing argument answers with what is missing (in the command's words), its usage line and its first worked example; a typo answers `unknown command \"statsu\" — did you mean `ainize status`?`; an unknown option is named as an option instead of a missing command; and the five bare `Subcommand is required.` messages list their subcommands. Verified live: `ainize publish`, `ainize use`, `ainize statsu`, `ainize pubish ./x.npz`, `ainize --hepl`, `ainize patch`, `ainize patch lss`, `ainize publish ./x.npz --name a`."
     },
     {
      "n": 104,
@@ -77,7 +80,10 @@
      "evidence": "critique2-verify.txt §4: `ainize --json patch get nope-does-not-exist` → stdout empty, stderr `error: patch not found`, exit 1; `ainize --json logout` → zero bytes, exit 0. cli-daily-17: `ainize publish … --quiet` → no output, exit 0, and the draft was created. Read commands (`patch ls`, `status`, `wallet`, `keys show`, `nodes`, `logs`, `config show`) all emit correct JSON, so the gap is only on the error and mutation paths. The exit codes that make the difference legible (2 unreachable, 3 not logged in) are documented in no help text and absent from the /docs CLI reference.",
      "user_cost": "A CI job that runs `ainize publish --json` must string-match `error:` on stderr to detect failure and cannot read the reason; a job that runs `--quiet` must re-list the catalogue and guess which entry is new. The two flags that exist for automation both fail at it.",
      "fix": "In `run()`'s catch, when `ctx.json` write `{\"error\":{\"message\":…,\"code\":<exitCode>,\"command\":\"patch get\",\"details\":…}}` to stderr instead of prose. Swap the order of the two guards in `emit()` and make `ok()`/`info()` emit `{\"ok\":true,\"message\":…}` under `--json`. Make `--quiet` on a mutating command print the affected id on one line, the way git/npm/kubectl do. Add an `Exit codes:` block to the root `--help` epilogue and to CLI_REFERENCE (packages/node/src/openapi.ts).",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "2a214cb",
+     "fixed_note": "Under `--json` a failure is a document on stderr — {\"error\":{message,code,command,details}} carrying the node's own error body out of CliError.details — `--json` now wins over `--quiet`, `--quiet` prints the id of whatever was created or changed, a command whose only output was ok() (logout, stop, config set) writes one {\"ok\":true,\"message\"} document, and the exit codes are in the root --help epilogue. Verified live against a throwaway node: `--json patch get nope` → the document with code 2/1, `--json logout` → a document instead of zero bytes, `--quiet patch publish` → the draft id."
     },
     {
      "n": 105,
@@ -89,7 +95,10 @@
      "evidence": "Timestamping every line of a real `ainize chat` against node-a shows all six lines arriving inside a 7 ms window at the end (packages/e2e/results/ux2/critic-15-chat.txt). While one chat was blocked, `chat --list` on the same node rendered `runtime busy: runtime by pid:1938917 since 4:47:54 AM` — the exact line `chat` never prints. cli-daily-12-queue.txt: two concurrent chats, 2.5 s vs 4.0 s, serialised with no output during the wait.",
      "user_cost": "The live test runs on one shared GPU behind a lock. When someone else holds it, the terminal is indistinguishable from a hang for up to fifteen minutes, so users Ctrl-C and retry — which costs another of the twenty free live tests per hour and puts them back at the end of the queue. On `buy` it means re-entering a payment flow.",
      "fix": "Add a shared `withProgress(ctx, label, fn)` in packages/cli/src/output.ts: on a TTY write `⠋ waiting for the model … 12s` to stderr once a second (stdout stays pipe-clean, `--json`/`--quiet` unaffected); on a non-TTY one `…` line per 30 s. Before the chat POST, GET `/api/chat/patches` and print the `runtime busy: … · N ahead` line `--list` already produces. For `verify` and `buy`, stream the step events the node already logs.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "17b466c",
+     "fixed_note": "Any request the CLI is prepared to wait a minute or more for now prints an elapsed clock on stderr once a second and, while it is queued behind the shared model, the node's own queue: `⠏ waiting for the live test · 9s · model busy: verification of krx-all-2761 (55s), 2 ahead`, polled from the free GET /api/chat/status. It sits in the HTTP client, so chat, verify, buy, challenge, collect and subscribe all got it; stdout stays pipe-clean, a non-terminal gets one line every 30 s, and --json/--quiet get nothing. Verified against a stand-in slow node."
     },
     {
      "n": 106,
@@ -146,7 +155,10 @@
      "evidence": "packages/e2e/results/ux2/critic-03-login-json.txt: `ainize --home <fresh> login < /dev/null` → `Operator password for node-a: ` then `Warning: Detected unsettled top-level await at file:///…/packages/cli/dist/bin.js:313` / `await cli.parseAsync();`, exit 13. `NGRAM_PASSWORD=… ainize login` succeeds.",
      "user_cost": "Every scripted, CI, cron, Ansible or `ssh host 'ainize login'` invocation fails with a message about the CLI's own source file and an exit code no documentation explains. The one command that must run before any operator action is the one that cannot be automated without reading the source.",
      "fix": "Replace the non-TTY branch with an immediate `throw new CliError('no password given and stdin is not a terminal — pass --password or set NGRAM_PASSWORD')`, and handle readline `close` as EOF on the interactive path too. Name the 4-character minimum and `NGRAM_PASSWORD` in `ainize login --help`.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "0a461cf",
+     "fixed_note": "EOF is an answer on both paths: `ainize login < /dev/null` (and Ctrl-D, and a closed stdin in raw mode) exits 1 with the sentence naming --password, NGRAM_PASSWORD and piping, plus the 4-character minimum, instead of hanging and letting Node print \"unsettled top-level await\" with exit 13. A piped password still works and now works for the FIRST login too, since a pipe has no second line to confirm against. Verified live on a throwaway node."
     },
     {
      "n": 110,
@@ -175,7 +187,10 @@
      "evidence": "critique2-verify.txt §5, live: `ainize publish --help` prints `      --id                                                    [string]`, and the same for `--description`, `--branch`, `--topic`, `--license`. `--license`, which sets the legal terms of a sale, is literally `--license   [string]`.",
      "user_cost": "On `ainize publish` — where every one of these choices is written permanently onto a public ledger record — the user is asked to decide `--id`, `--branch`, `--topic` and `--license` with zero information about what they mean, what shape they take or what happens when they are omitted.",
      "fix": "Fill all ten in, stating shape and default: `--id` 'catalog id (default: a slug of --name)'; `--license` 'SPDX id or free text written onto the public record (default: none — buyers are shown the node's standard terms)'; `--topic` 'ain-js knowledge topic path, e.g. finance/krx'; `--branch` 'knowledge track name (see `ainize branch ls`)'; `--roles` 'comma list of seller,verifier,serving,gateway (default: the config value)'. Add the default to `--price`. Add a lint rule requiring `describe` on every `.option()` in bin.ts.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "24ad50d",
+     "fixed_note": "Sixteen options gained a describe stating shape and default, including every choice `publish` writes permanently onto the record: --id (a slug of --name, permanent), --price (this node's market.defaultPrice; editable while it is a draft, fixed at announce), --license (SPDX or free text; nothing recorded without it), --branch, --topic, --parents (their creators are paid the lineage share), --roles, --port, --public-url, --follow, --limit and the rest. docs/en/reference/cli.md regenerated from them."
     },
     {
      "n": 112,
@@ -187,7 +202,10 @@
      "evidence": "Verified live: `ainize publish … --no-announce` leaves a DRAFT, plain `ainize publish` writes a ledger anchor in the same breath, and `ainize patch publish` with identical arguments leaves a DRAFT. The two builders are otherwise near-identical duplicates (bin.ts:154-165 vs 190-200), differing also in `--billing`/`--test` and in which flags carry a describe.",
      "user_cost": "Someone who reads `ainize publish --help`, then reaches for the grouped form out of habit, gets a silent draft instead of a listing — or the reverse: a permanent public anchor they expected to be a draft. Announcing is the one step in the flow that cannot be undone.",
      "fix": "Give the two commands one shared builder and one `--announce` default (false is the safer one; keep `publish`'s current behaviour behind an explicit `--announce` in the printed example). Add one line to each description naming the other and the difference. Print what actually happened on both paths: `draft created (not announced — run \\`ainize patch announce <id>\\` when you are ready)`.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "acfbc48",
+     "fixed_note": "`publish` and `patch publish` now share one option list and one handler; each declares --announce with its own default and names the other command in the describe and in the command description, so the difference is stated where the choice is made. Defaults are unchanged (the one-liner announces, the grouped form drafts) — a deliberate deviation from the reviewer's \"default both to false\", which would break the product's headline one-liner and every doc that shows it."
     },
     {
      "n": 113,
@@ -199,7 +217,10 @@
      "evidence": "critique2-verify.txt §3, live: `ainize use --help` → `Positionals:\\n  id  knowledge id (see \\`$0 patch ls\\`)`. `ainize init --help` → `ainize init --ledger ain --ain-provider   AIN blockchain ledger (see \\`$0 chain up\\`)`.",
      "user_cost": "The one-liner the whole product is sold on documents its only argument as \"see `$0 patch ls`\". A user who copies it gets `$0: command not found`; a user who does not is left guessing. The `init` instance is the line an operator reads when setting up payments.",
      "fix": "Use the `PROG` constant in both strings. Grep bin.ts for `$0` outside `.usage()` and example command strings — those two are the only offenders today.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "24ad50d",
+     "fixed_note": "The nine describes and two example descriptions that printed a literal `$0` — including `ainize use --help`'s only argument and the `init` line an operator reads while setting up payments — interpolate PROG, which is also what makes them right when the binary is invoked as `ngram`. docs-gen learned the same substitution so `npm run docs:check` still fails on a declaration it cannot read."
     },
     {
      "n": 114,
@@ -226,7 +247,10 @@
      "evidence": "Measured with an east-asian-width-aware script against node-a: `patch ls` 129 display columns, `nodes` 125, `chat --list` table rows 170, its footer hint 133, and the `overlapping memory entries: …` line 293 — that last one is prose, not a table, and is the widest thing on the screen. Rendering the same commands under `COLUMNS=60` produced byte-identical output (packages/e2e/results/ux2/critic-10, cli-daily-08-pty80.txt).",
      "user_cost": "80 columns is still the default of a split pane, an SSH session and a CI log viewer. At 80 the header, the rule and every row wrap at a different point, so the column structure — the entire reason a table was used — is destroyed, and the rightmost columns (PRICE, ATTEST, SOLD, BENCHMARK: the ones a buyer reads) land in the wrapped remainder.",
      "fix": "Pass a budget into `table()`: `const budget = Math.max(60, process.stdout.columns || 100)`. Compute natural widths as now; when the total exceeds the budget, shrink the flexible columns (ID, NAME, BENCHMARK, TRY) with a `…` using the existing `width()` so CJK truncation stays correct, and drop optional columns in a declared priority order. Wrap or truncate the overlaps line in chat.ts:76 to the same budget. Add `--wide`, and skip the whole mechanism when stdout is not a TTY so piped output stays full-width.",
-     "audience": "CLI user"
+     "audience": "CLI user",
+     "fixed": true,
+     "fixed_by": "4841195",
+     "fixed_note": "table() takes a terminal budget: text columns shrink (widest first, cut with the existing CJK-aware width so a Korean cell is cut on a character boundary), columns are dropped from the right only when shrinking is not enough and the table says which, numbers are never shrunk, and the whole mechanism is skipped when stdout is not a terminal (`--wide` turns it off on one). The prose around the tables — chat --list's runtime, pinned, dirty and overlaps lines, the superseded notes, the footer hint and a table's empty-state sentence — is wrapped to the same budget. Verified in a pty: `patch ls` and `chat --list` at COLUMNS=80 have a longest line of 79 (chat --list was 146), and piped output is still full-width."
     },
     {
      "n": 116,
