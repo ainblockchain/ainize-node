@@ -231,6 +231,12 @@ export interface PickerRow {
 
 export interface ConflictInfo {
   patch_id: string; overlap_rows: number; same_schema: boolean; status: string; branch?: string; cross_branch: boolean;
+  /**
+   * The declared family relation between the two, when there is one (item 189): `parent` = the overlapping knowledge
+   * is a declared base of the one asked about, `child` = the other way round. A family overlap is never a conflict
+   * and never a supersede candidate — an add-on writes over what it was built on, which is the point of it.
+   */
+  lineage?: 'parent' | 'child' | null;
   /** Address of the node that published the overlapping knowledge. */
   author: string;
   author_name?: string | null;
@@ -239,6 +245,22 @@ export interface ConflictInfo {
   created_at: number;
   /** Settled sales of the overlapping knowledge — what retiring it would end. */
   sales: number;
+}
+
+/** What one sale of a knowledge pays and to whom (items 189, 318) — the preview `royaltyPlan` will settle. */
+export interface SaleSplit {
+  patch_id: string;
+  amount: string;
+  currency: string;
+  /** The lineage share this anchor promises, and the verification share, as they will be applied. */
+  share: number;
+  verifier_share: number;
+  lines: { address: string; amount: string; name: string | null; role: 'seller' | 'ancestor' | 'contributor' | 'verifier'; knowledge: string[] }[];
+  parents: { id: string; name: string; price: string | null; currency: string; author: string | null; author_name: string | null; status: string | null }[];
+  /** Declared bases that cost MORE than this knowledge does (item 318). */
+  cheaper_than: { id: string; price: string; currency: string }[];
+  /** Parent ids no anchor here names an author for — their slice is held, not paid (from `royaltyPlan`). */
+  unresolved: Record<string, string>;
 }
 
 export interface PurchaseResult {
@@ -845,6 +867,7 @@ export class Market {
     await this.refuseUnservableModel(input.model?.id_M, !!input.force);
     const parents = (input.parents ?? []).filter(Boolean);
     const map = await this.resolveParents(parents);
+    const parent0 = parents.length ? map.get(parents[0])!.anchor : null;
     const anchor: PatchAnchor = {
       id, name: input.name, description: input.description ?? '', author: this.address, author_name: this.cfg.name,
       model: { row_dim: blob.row_dim, ...input.model } as PatchAnchor['model'],
@@ -852,7 +875,10 @@ export class Market {
       benchmark, benchmark_hash: hashCanonical({ schema: benchmark.schema, queries: benchmark.queries, format: benchmark.format, collateral_bound_nat: benchmark.collateral_bound_nat, samples: benchmark.samples ?? [] }),
       price, currency: this.cfg.market.currency, billing: input.billing ?? 'per_download',
       license: input.license, parents, parent_authors: parents.map((p) => map.get(p)!.anchor.author),
-      branch: input.branch, topic_path: input.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      // A child belongs where its base is (item 189). Publishing with `--parents krx-all-2761` used to file the
+      // knowledge under `patches/<model slug>` and no branch, so it never appeared as "other knowledge on this
+      // subject" from the page of the very knowledge it was built on. An explicit --topic / --branch still wins.
+      branch: input.branch ?? parent0?.branch, topic_path: input.topic_path ?? parent0?.topic_path ?? `patches/${(input.model?.id_M ?? 'model').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       recipe: input.recipe, created_at: Date.now(), addr_sketch: sketch, visibility: input.visibility ?? 'public',
       // item 267: the day the DATA is true of, when the publisher declares one — never inferred from the file
       ...(asOf ? { as_of: asOf } : {}),
@@ -879,6 +905,66 @@ export class Market {
     this.invalidate();
     this.log('info', 'patch', `draft created: ${id} (${blob.rows} rows, ${(blob.size_bytes / 1e6).toFixed(1)} MB)`, id);
     return anchor;
+  }
+
+  /**
+   * What ONE sale of this knowledge pays, to whom, by name (items 189, 318) — computed by the same function that
+   * will settle it (`royaltyPlan`), so the preview and the receipt can never disagree.
+   *
+   * A publisher who typed `--parents krx-all-2761 --price 3` was told `✓ draft created` and nothing else: the split
+   * was first visible on the first settlement, and the parent's own price was on no screen at all — so a 0.5-credit
+   * child of a 10-credit base looked like a normal listing rather than the thing that undercuts its own ancestor.
+   */
+  async saleSplit(entry: CatalogEntry, amount?: number, map?: Map<string, CatalogEntry>): Promise<SaleSplit> {
+    const all = new Map(map ?? await this.entryMap());
+    all.set(entry.anchor.id, entry);                       // a DRAFT the catalogue snapshot does not carry yet
+    const price = amount ?? Number(entry.anchor.price || 0);
+    const plan = royaltyPlan(entry, all, price, this.cfg.market.royaltyShare ?? 0, { verifierShare: this.cfg.market.verifierShare, verifiers: entry.verifiers });
+    const seller = entry.anchor.author;
+    // Which knowledge each ancestor address is being paid FOR — walked exactly as royaltyPlan walks it.
+    const forAddress = new Map<string, string[]>();
+    const seen = new Set<string>([entry.anchor.id]);
+    const walk = (ids: string[], depth: number) => {
+      if (depth > TREE_MAX_DEPTH) return;
+      for (const id of ids) {
+        const e = all.get(id);
+        if (!e || seen.has(id)) continue;
+        seen.add(id);
+        const k = e.anchor.author.toLowerCase();
+        forAddress.set(k, [...(forAddress.get(k) ?? []), e.anchor.id]);
+        for (const c of e.anchor.contributors ?? []) forAddress.set(c.address.toLowerCase(), [...(forAddress.get(c.address.toLowerCase()) ?? []), e.anchor.id]);
+        walk(e.anchor.parents ?? [], depth + 1);
+      }
+    };
+    walk(entry.anchor.parents ?? [], 0);
+    const nameOf = (address: string): string | null => {
+      if (sameAddr(address, seller)) return entry.anchor.author_name ?? this.cfg.name;
+      const first = forAddress.get(address.toLowerCase())?.[0];
+      const anc = first ? all.get(first) : undefined;
+      return anc?.anchor.author_name ?? (entry.anchor.contributors ?? []).find((c) => sameAddr(c.address, address))?.name ?? null;
+    };
+    const lines = Object.entries(plan.royalty).map(([address, amt]) => ({
+      address, amount: amt, name: nameOf(address),
+      role: (sameAddr(address, seller) ? 'seller'
+        : plan.verification[address] !== undefined ? 'verifier'
+        : forAddress.has(address.toLowerCase()) ? 'ancestor' : 'contributor') as SaleSplit['lines'][number]['role'],
+      knowledge: forAddress.get(address.toLowerCase()) ?? [],
+    })).sort((a, b) => Number(b.amount) - Number(a.amount));
+    const parents = (entry.anchor.parents ?? []).map((id, i) => {
+      const e = all.get(id);
+      return {
+        id, name: e?.anchor.name ?? id, price: e?.anchor.price ?? null, currency: e?.anchor.currency ?? entry.anchor.currency,
+        author: e?.anchor.author ?? entry.anchor.parent_authors?.[i] ?? null, author_name: e?.anchor.author_name ?? null, status: e?.status ?? null,
+      };
+    });
+    return {
+      patch_id: entry.anchor.id, amount: String(price), currency: entry.anchor.currency,
+      share: plan.share, verifier_share: plan.verifier_share, lines, parents,
+      // Item 318: the bases this listing is cheaper than. A child carries its parent's rows, so a price below the
+      // base's is the base at a discount — the ancestor's per-sale take falls from their own price to a royalty slice.
+      cheaper_than: parents.filter((p) => p.price !== null && Number(p.price) > price).map((p) => ({ id: p.id, price: p.price!, currency: p.currency })),
+      unresolved: plan.unresolved,
+    };
   }
 
   /**
@@ -1070,8 +1156,13 @@ export class Market {
       const set = this.blobs.addrSet(e.anchor.patch_sha256);
       if (!set) continue;
       const n = intersectionCount(mine, set);
+      // A DECLARED parent (no `derivation`/`base` on the child — every anchor written before those fields, and every
+      // `publish --parents`) overlaps its base for the same reason a trained add-on does. It used to be listed as
+      // `yes → conflicting knowledge` one block below the same id under "parents", and queued as a supersede of the
+      // very knowledge it credits (item 189). It is reported as what it is now, and never retires anything.
+      const lineage = me.anchor.parents.includes(e.anchor.id) ? 'parent' as const : e.anchor.parents.includes(me.anchor.id) ? 'child' as const : null;
       if (n > 0) out.push({
-        patch_id: e.anchor.id, overlap_rows: n, same_schema: e.anchor.benchmark.schema === me.anchor.benchmark.schema, status: e.status, branch: e.anchor.branch,
+        patch_id: e.anchor.id, overlap_rows: n, same_schema: e.anchor.benchmark.schema === me.anchor.benchmark.schema, status: e.status, branch: e.anchor.branch, lineage,
         // contradictory knowledge kept on different branches coexists (청구항 17) — never a supersede candidate
         cross_branch: !!(e.anchor.branch && me.anchor.branch && e.anchor.branch !== me.anchor.branch),
         author: e.anchor.author, author_name: e.anchor.author_name ?? null, same_author: sameAddr(e.anchor.author, me.anchor.author),
@@ -1127,7 +1218,7 @@ export class Market {
     const firstSeen = (await this.catalogAll())
       .filter((e) => e.anchor.patch_sha256 === anchor.patch_sha256 && e.anchor.id !== anchor.id && e.status !== 'DRAFT' && sameAddr(e.anchor.author, anchor.author))
       .reduce((min, e) => Math.min(min, e.anchor.created_at), anchor.created_at);
-    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && c.created_at < firstSeen
+    return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && !c.lineage && c.created_at < firstSeen
       && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
@@ -2117,8 +2208,11 @@ export class Market {
       this.store.updatePending(pending.id, { status: 'settled', error: null });
       step('settled', `seller confirmed; manifest sha256 ${done.sha.slice(0, 14)}…`);
     } else if (r1.ok) {
+      // The seller handed it over without a 402 at all: it is priced 0 (item 277). Nothing was charged, nothing was
+      // signed, and no settle record names this node as a buyer — so say that, instead of "no payment required".
       manifest = (await r1.json()) as PatchManifest;
-      step('free', 'no payment required');
+      amount = '0'; scheme = 'free';
+      step('free', `${patchId} is priced 0 — the seller handed over the file with no payment, no signature and no public record of who took it`);
     } else {
       throw new Error(`gateway error ${r1.status} from ${gw}: ${(await r1.text().catch(() => '')).slice(0, 200)}`);
     }
@@ -2188,8 +2282,16 @@ export class Market {
     }
     // 2) a settlement on the ledger: the seller (and every peer holding the body) admits a settled buyer by signature
     const settled = entry.settlements.filter((x) => x.buyer.toLowerCase() === this.address.toLowerCase()).sort((a, b) => b.created_at - a.created_at)[0];
-    if (!settled) throw conflict(`this node has not paid for ${patchId} — nothing to collect (buy it with \`ainize patch buy ${patchId}\`)`);
-    step('settlement', `paid ${settled.amount} ${settled.currency} on ${new Date(settled.created_at).toISOString()} (tx ${settled.tx_hash.slice(0, 14)}…) — collecting the body on that receipt, no new payment`);
+    // …or nothing was ever paid because nothing was ever charged (item 277). A free knowledge has no settlement to
+    // collect on and never will have: the body comes back on the same free rule the gate applies.
+    const free = !settled && Number(entry.anchor.price || 0) === 0 && entry.sellable;
+    if (!settled && !free) throw conflict(`this node has not paid for ${patchId} — nothing to collect (buy it with \`ainize patch buy ${patchId}\`)`);
+    if (settled) step('settlement', `paid ${settled.amount} ${settled.currency} on ${new Date(settled.created_at).toISOString()} (tx ${settled.tx_hash.slice(0, 14)}…) — collecting the body on that receipt, no new payment`);
+    else step('free', `${patchId} is priced 0 — fetching the body again costs nothing and is recorded as a download, not a sale`);
+    const amount = settled?.amount ?? '0';
+    const scheme = settled?.scheme ?? 'free';
+    const txHash = settled?.tx_hash ?? '';
+    const boughtAt = settled?.created_at ?? Date.now();
     const sha = entry.anchor.patch_sha256;
     const nodes = (await this.ledger.nodes().catch(() => [])).map((n) => ({ address: n.body.address, endpoint: n.body.endpoint, last_seen: n.body.last_seen }));
     const origins = [...new Set([...this.gatewaysFor(entry.anchor, nodes).map((g) => { try { return new URL(g.url).origin; } catch { return ''; } }).filter(Boolean), ...this.p2p.holders(sha)])];
@@ -2205,11 +2307,11 @@ export class Market {
     const manifest: PatchManifest = have?.manifest ?? {
       id: patchId, patch_sha256: sha, size_bytes: entry.anchor.size_bytes, rows: entry.anchor.rows,
       model: entry.anchor.model, benchmark_hash: entry.anchor.benchmark_hash,
-      blob_urls: origins.map((o) => `${o}/p2p/blob/${sha}`), issued_to: this.address, issued_at: settled.created_at, download_token: '',
+      blob_urls: origins.map((o) => `${o}/p2p/blob/${sha}`), issued_to: this.address, issued_at: boughtAt, download_token: '',
     };
-    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: settled.tx_hash, scheme: settled.scheme, amount: settled.amount, manifest, path, created_at: settled.created_at });
-    this.grantLicense(entry, 'purchase', `${settled.amount} ${settled.currency} · tx ${settled.tx_hash.slice(0, 14)}…`);
-    return { patch_id: patchId, steps, manifest, path, tx_hash: settled.tx_hash, amount: settled.amount, scheme: settled.scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
+    this.store.putPurchase({ patch_id: patchId, sha256: sha, tx_hash: txHash, scheme, amount, manifest, path, created_at: boughtAt, origin: have?.origin ?? 'manual' });
+    this.grantLicense(entry, free ? 'free' : 'purchase', free ? 'price 0 — handed over by the gate without payment' : `${amount} ${entry.anchor.currency} · tx ${txHash.slice(0, 14)}…`);
+    return { patch_id: patchId, steps, manifest, path, tx_hash: txHash, amount, scheme, redeemed: true, total: '0', currency: entry.anchor.currency };
   }
 
   // ------------------------------------------------------------------ licences: the right to use a body (item 327)
@@ -2233,9 +2335,12 @@ export class Market {
     if (entry.anchor.author.toLowerCase() === me) return grant('author', 'published by this node');
     const settled = entry.settlements.find((s) => s.buyer?.toLowerCase() === me);
     if (settled) return grant('purchase', `settlement ${settled.tx_hash.slice(0, 14)}…`);
+    // Before the purchase row, because a free knowledge is never PURCHASED (item 277): the gate hands it over with
+    // no payment and writes no settlement, and the row this node keeps for it is a download record. `putLicense`
+    // never downgrades, so something bought while it had a price keeps saying so if its price later drops to 0.
+    if (Number(entry.anchor.price || 0) <= 0) return grant('free', 'price 0 — the x402 gate hands it over without payment');
     const bought = this.store.getPurchase(id);
     if (bought) return grant('purchase', `tx ${bought.tx_hash.slice(0, 14)}…`);
-    if (Number(entry.anchor.price || 0) <= 0) return grant('free', 'price 0 — the x402 gate hands it over without payment');
     return this.store.getLicense(id);
   }
 

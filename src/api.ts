@@ -575,6 +575,12 @@ export function buildApi(deps: ApiDeps): Router {
     }));
     return {
       ...redactContributors(e), lineage, conflicts, branches, requires, quote,
+      /**
+       * What one sale at this price pays, to whom, by name (items 189, 318) — from the same `royaltyPlan` that
+       * settles it. `publish --parents` used to say nothing about the split until the first settlement, and the
+       * parents' own prices were on no screen, so undercutting your own base was invisible on both sides.
+       */
+      split: await market.saleSplit(e, undefined, map),
       dataset_held: !!e.anchor.dataset?.sha256 && market.datasets.has(e.anchor.dataset.sha256),
       owned: e.anchor.author === market.address, purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
       applied: market.isApplied(e.anchor.id), gateway_url: (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
@@ -1951,7 +1957,7 @@ export function buildApi(deps: ApiDeps): Router {
       const manifest = market.freeManifest(e);
       const text = JSON.stringify(manifest);
       res.status(200).set(X402_HEADER_CURRENCY, e.anchor.currency)
-        .set('x-payment-response', JSON.stringify({ settled: false, free: true, price: e.anchor.price, reason: 'price 0 — nothing was charged and no sale was recorded' }))
+        .set('x-payment-response', JSON.stringify({ settled: false, free: true, price: e.anchor.price, reason: 'price 0: nothing was charged and no sale was recorded' }))
         .set('x-content-sha256', sha256Hex(text)).type('application/json').send(text);
       return;
     }
