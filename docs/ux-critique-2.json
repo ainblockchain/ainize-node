@@ -1072,7 +1072,7 @@
      "audience": "Knowledge publisher",
      "fixed": false,
      "fixed_by": "94449c5",
-     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (c) `--branch` filing into nothing and (d) the doubled word from packages/cli/src/client.ts:37 are CLI work and untouched.",
+     "fixed_note": "PARTIAL — (a) the duplicated \"facts covered (Facts covered)\" label and (b) the developer’s absolute path placeholder are fixed in 94449c5; (e) was already split into two strings by e7f77a6 and its residual \"(0 overlap(s))\" was dropped in 7f4551e. (d) the doubled zod path is fixed in 835c5a0. What is left is (c) alone: `--branch` filing into nothing.",
      "progress_by": "835c5a0",
      "progress_note": "(d) the doubled zod path is fixed in cli/src/client.ts; (a), (b) and (e) were already closed. What is left is (c) alone: `ainize publish --branch <name>` still records the name and creates no track — /new-patch now warns and offers the create step (6131794), but the CLI flag and the node-side filing (market.announce / branches) belong to the CLI and lineage workstreams."
     }
