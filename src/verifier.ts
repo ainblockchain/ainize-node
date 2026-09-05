@@ -12,7 +12,7 @@ import { ConflictError, type Market } from './market.js';
 import { RUNTIME_PRIORITY } from './runtime.js';
 
 /** What one round did and what it stood aside from (item 332) — the line an operator reads to see why an item waits. */
-export interface VerifierRoundReport { verified: number; skipped: { test: number; price: number; budget: number; busy: number; window: number } }
+export interface VerifierRoundReport { /** Items this round STARTED — an attestation is not guaranteed (the model may be down). */ verified: number; skipped: { test: number; price: number; budget: number; busy: number; window: number } }
 
 /** What this node has spent verifying other people's knowledge, and what it gave back (items 332 / 333 / 336). */
 export interface VerifierWork {
@@ -276,7 +276,8 @@ export class Verifier {
     if (!parts.length) return;
     if (!r.verified && Date.now() - this.lastRoundLog < Verifier.ROUND_LOG_MS) return;
     this.lastRoundLog = Date.now();
-    this.market.log('info', 'verifier', `round: verified ${r.verified}, skipped ${parts.join(', ')}`, null, { report: r, work: this.work() });
+    // `attempted`, not `verified`: an item that is waiting for the model server has been started and not attested.
+    this.market.log('info', 'verifier', `round: attempted ${r.verified}, skipped ${parts.join(', ')}`, null, { report: r, work: this.work() });
   }
 
   /** What this node has spent verifying and what it gave back — `/api/info.verification_stats` reads this. */
