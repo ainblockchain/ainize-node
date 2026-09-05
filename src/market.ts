@@ -136,6 +136,12 @@ export interface StackLayer {
   journal: boolean; journal_path: string | null;
   stack_sha256: string | null;
   body_present: boolean;
+  /**
+   * When the watchdog last MEASURED this layer against the live table, and what it found (item 215). Only the top of
+   * the stack is measured — that is what the watchdog probes — so the layers below carry null rather than a guess.
+   */
+  checked_at: number | null;
+  present: boolean | null;
 }
 
 /** Operator-editable teach policy overrides (kv `settings.teach`); anything unset falls back to config.json / defaults. */
@@ -1867,6 +1873,7 @@ export class Market {
    */
   async stack(): Promise<StackLayer[]> {
     const out: StackLayer[] = [];
+    const checked = this.runtimeCheck();
     for (const [i, a] of this.store.listApplied().entries()) {
       const entry = await this.entry(a.patch_id).catch(() => null);
       const blob = this.blobs.get(a.sha256);
@@ -1877,6 +1884,8 @@ export class Market {
         base_stack: (entry?.anchor.base?.stack ?? []).map((b) => b.patch_id),
         journal: !!a.journal_path && existsSync(a.journal_path), journal_path: a.journal_path,
         stack_sha256: a.stack_sha256, body_present: !!blob,
+        checked_at: checked && checked.patch_id === a.patch_id && checked.sha256 === a.sha256 ? checked.at : null,
+        present: checked && checked.patch_id === a.patch_id && checked.sha256 === a.sha256 ? checked.present : null,
       });
     }
     return out;
@@ -2161,6 +2170,8 @@ export class Market {
     // When the lock is held by someone else there is nothing to fix yet — the next tick is 20 s away.
     await this.runtime.exclusiveTry('watchdog', async () => {
       const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
+      // Whatever it says, WRITE IT DOWN (item 215): this is the only measurement of the live table anything makes.
+      if (status) this.noteRuntimeCheck(top.patch_id, top.sha256, status.applied, 'watchdog');
       if (!status || status.applied) return;
       // Item 258: this line used to say "(restart?)" — a diagnosis nothing had checked. Every node on this machine
       // shares one serving model, so the usual cause is another node's verification or live test writing these very
@@ -2169,9 +2180,28 @@ export class Market {
       const ago = last ? `${Math.round((Date.now() - last.at) / 1000)} s ago` : 'never';
       this.log('warn', 'runtime', `${top.patch_id} is no longer on the shared model — its rows were overwritten (this node's last runtime operation: ${last ? `${last.label}, ${ago}` : 'none since start'}; the serving model is shared with every node on this machine, and a restart writes the base back too) → re-applying the whole stack of ${cur.length} in order`, top.patch_id, { last_operation: last, stack: cur.map((a) => a.patch_id) });
       await this.assertStack(target, 'watchdog', { rebuild: true });
+      this.noteRuntimeCheck(top.patch_id, top.sha256, true, 'watchdog:re-applied');
     }, { waitMs: 5_000 }).catch((e) => {
       if (!/shared runtime busy/.test((e as Error).message)) this.log('error', 'runtime', `re-applying the stack failed: ${(e as Error).message}`);
     });
+  }
+
+  /**
+   * The watchdog's last PHYSICAL measurement of the shared table (item 215).
+   *
+   * `isApplied` is a store lookup and `/api/runtime.applied` is that lookup rendered, so every surface said a
+   * knowledge was in the model whenever the row existed — including through a rollback and through every
+   * verification restore, exactly the windows when the model answers WITHOUT it. `patch.py status` is the only
+   * thing that knows, the watchdog runs it every 20 s on the top of the stack, and until now it told nobody.
+   */
+  static readonly CHECK_KEY = 'runtime.checked';
+  runtimeCheck(): { patch_id: string; sha256: string; at: number; present: boolean; source: string } | null {
+    const raw = this.store.get(Market.CHECK_KEY);
+    if (!raw) return null;
+    try { return JSON.parse(raw) as { patch_id: string; sha256: string; at: number; present: boolean; source: string }; } catch { return null; }
+  }
+  private noteRuntimeCheck(patch_id: string, sha256: string, present: boolean, source: string) {
+    this.store.set(Market.CHECK_KEY, JSON.stringify({ patch_id, sha256, at: Date.now(), present, source }));
   }
 
   /** kv key holding the stack an interrupted verification / live test has to put back (item 126). */

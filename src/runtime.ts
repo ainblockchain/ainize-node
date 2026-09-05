@@ -208,6 +208,13 @@ export class Runtime {
 
   /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
   patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
+  /**
+   * Where that mailbox came from (item 144). `runtime.api` says which model to TALK to and `runtime.patchDir` says
+   * which mailbox to WRITE into; they are independent, and when the second is unset it is derived from a repo path
+   * that `init` adopts on its own. A node could therefore benchmark against one instance and mutate another
+   * instance's memory table — taking its lock — while `status` said `runtime available · hook ok`.
+   */
+  patchDirSource(): 'config' | 'repo' | 'none' { return this.cfg.patchDir ? 'config' : this.repo ? 'repo' : 'none'; }
   private lockDir(): string | null { const d = this.patchDir(); return d ? join(d, '.ainize-runtime.lock') : null; }
 
   /**

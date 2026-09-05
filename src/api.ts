@@ -261,8 +261,26 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/docs', wrap(async () => ({ openapi: buildOpenApi(market.publicUrl, VERSION), cli: CLI_REFERENCE, node: market.publicUrl })));
 
   // ------------------------------------------------------------ public info & catalog
+  /**
+   * What the shared model is doing, and where this node writes into it (items 135, 144, 215).
+   *
+   * `queueState()` — the holder of the cross-process lock, and how many callers are behind it — existed but was
+   * wired only into the two visitor chat endpoints, so `ainize status`, the /network card and every monitor built on
+   * /api/info said `runtime available` while another process on the same host held the model for twenty minutes.
+   * `patch_dir` is the mailbox this node's applies go into, which nothing named anywhere: `runtime.api` and
+   * `runtime.patchDir` are independent, and the second is derived from a repo path `init` adopts on its own.
+   * `checked` is the watchdog's last physical measurement of the table (`patch.py status`), the only thing that
+   * knows whether the rows are really there.
+   */
+  const runtimeInfo = async () => ({
+    ...(await market.runtime.status()),
+    patch_dir: market.runtime.patchDir(), patch_dir_source: market.runtime.patchDirSource(),
+    queue: market.runtime.queueState(),
+    checked: market.runtimeCheck(),
+  });
+
   router.get('/api/info', wrap(async () => ({
-    node: await (async () => { await market.catalog(); const self = await market.selfInfo(); return { ...self, blobs: await market.publicBlobs(self.blobs) }; })(), ledger: await market.ledger.info(), runtime: await market.runtime.status(),
+    node: await (async () => { await market.catalog(); const self = await market.selfInfo(); return { ...self, blobs: await market.publicBlobs(self.blobs) }; })(), ledger: await market.ledger.info(), runtime: await runtimeInfo(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     // `peers` stays the plain count every existing client reads; `peer_status` is the fact nobody had (item 170):
     // which peers actually ANSWERED, how many of those verify, and which publish on a ledger this node cannot read.
@@ -1125,7 +1143,13 @@ export function buildApi(deps: ApiDeps): Router {
   // journal that would undo it is still there (design §5.4, §8).
   router.get('/api/runtime', wrap(async () => {
     const stack = await market.stack();
-    return { ...(await market.runtime.status(true)), applied: stack.map((l) => l.patch_id), stack, journal_dir: market.runtime.journalDir() };
+    return {
+      ...(await market.runtime.status(true)), applied: stack.map((l) => l.patch_id), stack, journal_dir: market.runtime.journalDir(),
+      patch_dir: market.runtime.patchDir(), patch_dir_source: market.runtime.patchDirSource(),
+      queue: market.runtime.queueState(),
+      // item 215: `applied` is a store lookup. This is the last time anything actually looked at the table.
+      checked: market.runtimeCheck(),
+    };
   }));
   router.get('/api/runtime/stack', wrap(async () => ({ stack: await market.stack(), journal_dir: market.runtime.journalDir() })));
   /** Item 212 — where a queued apply/remove is, and what the shared model is doing while it waits. */
