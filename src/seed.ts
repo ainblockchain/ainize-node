@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalLedger, type BenchmarkSpec, type SupersedeRecord } from '@ngram/core';
+import { LocalLedger, type BenchmarkSpec, type SupersedeRecord } from '@ainize/core';
 import type { Market } from './market.js';
 
 export interface SeedOptions { repo?: string; synthetic?: boolean; real?: boolean; prototype?: boolean; announce?: boolean; versions?: boolean; }
@@ -76,7 +76,7 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
     const id = (input.id ?? input.name).toLowerCase();
     if (existing.has(id)) { report.skipped.push(id); return id; }
     // `force`: the demo seed deliberately registers knowledge this node cannot test — the synthetic patches name a
-    // model that exists nowhere (`demo-ngram-1b`), and the real Qwen files are seeded whatever the node is serving.
+    // model that exists nowhere (`demo-ainize-1b`), and the real Qwen files are seeded whatever the node is serving.
     // The publish-time refusals (item 154's model check, item 240's duplicate body) are for a publisher's own hands.
     const a = await market.createDraft({ ...input, force: true });
     if (announce) await market.announce(a.id);
@@ -159,7 +159,7 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
   // Tests only: synthetic patches (random rows) to exercise lineage/branch logic without a runtime.
   if (opts.synthetic === true) {
     const dir = join(market.cfg.dataDir, 'demo');
-    const demoModel = { id_M: 'demo-ngram-1b', row_dim: 160 };
+    const demoModel = { id_M: 'demo-ainize-1b', row_dim: 160 };
     const base = synthPatch(dir, 'law-base', 1, 2000);
     const kr = synthPatch(dir, 'law-kr', 2, 1200, base);
     const us = synthPatch(dir, 'law-us', 3, 1200, base);
@@ -190,16 +190,16 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
   return report;
 }
 
-// CLI entry: `npm run seed` (uses NGRAM_HOME)
+// CLI entry: `npm run seed` (uses AINIZE_HOME)
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const { DEFAULT_HOME, applyEnv, defaultConfig, loadConfig, saveConfig } = await import('@ngram/core');
+  const { DEFAULT_HOME, applyEnv, defaultConfig, loadConfig, saveConfig } = await import('@ainize/core');
   const { startNode } = await import('./server.js');
-  const home = process.env.NGRAM_HOME ?? DEFAULT_HOME;
+  const home = process.env.AINIZE_HOME ?? DEFAULT_HOME;
   let cfg = loadConfig(home);
   if (!cfg) { cfg = defaultConfig({ home }); saveConfig(cfg, home); }
   cfg = applyEnv(cfg);
   const node = await startNode(cfg, { home, listen: false, quiet: true });
-  const rep = await seedDemo(node.market, { synthetic: process.env.NGRAM_SEED_SYNTHETIC === '1' });
+  const rep = await seedDemo(node.market, { synthetic: process.env.AINIZE_SEED_SYNTHETIC === '1' });
   console.log(JSON.stringify(rep, null, 2));
   await node.stop();
 }

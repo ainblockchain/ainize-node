@@ -1065,7 +1065,7 @@ test.describe('live model', () => {
   test.beforeAll(async ({ request }) => {
     litterMark = litter.length;
     // 1) the node, with SIMULATED checks first, so one lesson can be trained and published in seconds …
-    live = await startPrivateNode(TAG, { NGRAM_TEACH_STUB_OFFLINE: '1' });
+    live = await startPrivateNode(TAG, { AINIZE_TEACH_STUB_OFFLINE: '1' });
     useNode(live.url);
     const token = await operatorToken(request);
     await patchPolicy(request, token, { ...RELAXED_QUOTA, publish: 'auto', enabled: true });
@@ -1085,7 +1085,7 @@ test.describe('live model', () => {
     expect(out.body.status).toBe('ANNOUNCED');
 
     // 2) …then the same node again with the checks MEASURED in the dedicated model server
-    await live.start({ NGRAM_TEACH_STUB_OFFLINE: '0' });
+    await live.start({ AINIZE_TEACH_STUB_OFFLINE: '0' });
     expect(await runtimeReady(), `the dedicated e2e model server (${LIVE_API}) must answer with the patch hook on`).toBe(true);
     const rt = await api<{ api: string; hook: boolean; model: string | null }>(request, '/api/runtime', { node: NODE });
     expect(rt.body.api, 'GPUs 4+5 only — never :8000 / :8001').toBe(LIVE_API);
@@ -1105,7 +1105,7 @@ test.describe('live model', () => {
     onQuotaRefused(async () => { await patchPolicy(request, await operatorToken(request), { ...RELAXED_QUOTA, publish: 'auto' }); });
     const rt = await api<{ api: string | null; available: boolean }>(request, '/api/runtime', { node: NODE });
     if (rt.body.api === LIVE_API && rt.body.available) return;
-    await live!.start({ NGRAM_TEACH_STUB_OFFLINE: '0' });
+    await live!.start({ AINIZE_TEACH_STUB_OFFLINE: '0' });
     expect(await runtimeReady()).toBe(true);
   });
 
@@ -1323,7 +1323,7 @@ test.describe('live model', () => {
     await expect(go).toBeEnabled();
     await go.click();
     const req = await chatP;
-    expect(req.headers()['x-ngram-auth'], 'the teaching key signs a request-bound v2 header').toMatch(new RegExp(`^${key.address}:\\d+:0x[0-9a-f]+:v2$`, 'i'));
+    expect(req.headers()['x-ainize-auth'], 'the teaching key signs a request-bound v2 header').toMatch(new RegExp(`^${key.address}:\\d+:0x[0-9a-f]+:v2$`, 'i'));
     const answer = await answerP;
     expect(answer.status()).toBe(200);
     // the node echoes the selection it acted on (the browser's body is a stream — `signedFetch` rebuilds the Request —
@@ -1466,7 +1466,7 @@ test.describe('live model', () => {
     expect(quotaText).not.toMatch(/come back tomorrow/i);
 
     // ---- outage: the model server is off (a restart also clears the in-memory quota)
-    await live!.start({ NGRAM_TEACH_STUB_OFFLINE: '0', NGRAM_RUNTIME_API: DEAD_API });
+    await live!.start({ AINIZE_TEACH_STUB_OFFLINE: '0', AINIZE_RUNTIME_API: DEAD_API });
     const errors: string[] = [];
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
     await page.goto(`${NODE}/teach/lesson/${job.id}`);

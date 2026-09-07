@@ -16,8 +16,8 @@ ainize chain setup                                          # registers /apps/kn
 
 ```
 ainize init --name alice --port 3402 --password "<operator password>" && ainize seed && ainize start -d && ainize login   # seed writes the data directory, so it runs BEFORE the node opens it (--synthetic only for test fixtures)
-NGRAM_HOME=~/.ngram-b ainize init --name bob   --port 3403 --peer http://localhost:3402 --roles verifier          --password "<…>" && NGRAM_HOME=~/.ngram-b ainize start -d
-NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving  --password "<…>" && NGRAM_HOME=~/.ngram-c ainize start -d
+AINIZE_HOME=~/.ainize-b ainize init --name bob   --port 3403 --peer http://localhost:3402 --roles verifier          --password "<…>" && AINIZE_HOME=~/.ainize-b ainize start -d
+AINIZE_HOME=~/.ainize-c ainize init --name carol --port 3404 --peer http://localhost:3402 --roles verifier,serving  --password "<…>" && AINIZE_HOME=~/.ainize-c ainize start -d
 ainize patch ls          # bob & carol attest → quorum 2 → LISTED
 ```
 
@@ -32,13 +32,13 @@ lessons under the node's identity. There is no way to take it back.
 Three things now stand between a fresh node and a stranger:
 
 - **`host` defaults to `127.0.0.1`.** Going public is a decision: `ainize init --host 0.0.0.0` (or `--public`),
-  `ainize config set host 0.0.0.0`, or `NGRAM_HOST=0.0.0.0` (what a container needs, since a process bound to
+  `ainize config set host 0.0.0.0`, or `AINIZE_HOST=0.0.0.0` (what a container needs, since a process bound to
   loopback inside a container is unreachable through a published port). The banner prints the address it bound.
-- **`ainize init --password …`** (or `NGRAM_PASSWORD`, or the prompt an interactive terminal gets) claims the node in
+- **`ainize init --password …`** (or `AINIZE_PASSWORD`, or the prompt an interactive terminal gets) claims the node in
   config.json before it ever listens. `--no-password` leaves it unclaimed on purpose.
 - **Claiming is loopback-only.** From another machine, `POST /api/auth/setup` is refused unless the request carries the
-  one-time token the node writes to `NGRAM_HOME/setup-token` (readable only by the user the node runs as):
-  `ainize login --node http://host:3402 --setup-token "$(ssh host cat ~/.ngram/setup-token)"`. The token is deleted by
+  one-time token the node writes to `AINIZE_HOME/setup-token` (readable only by the user the node runs as):
+  `ainize login --node http://host:3402 --setup-token "$(ssh host cat ~/.ainize/setup-token)"`. The token is deleted by
   the claim. An unauthenticated `GET /api/auth/me` no longer advertises `needsSetup` to callers that could not claim it.
 
 Forgotten the password? `ainize stop && ainize password --reset` writes a new hash into config.json — being able to
@@ -104,9 +104,9 @@ mutate another one's memory table (item 144):
 
 | key | env | what it decides |
 | --- | --- | --- |
-| `runtime.api` | `NGRAM_RUNTIME_API` | which model server this node asks for completions (`ainize init --runtime-api`) |
-| `runtime.repo` | `NGRAM_RUNTIME_REPO` | where `scripts/patch.py` and the PLE hook live (`--runtime-repo`) |
-| `runtime.patchDir` | `NGRAM_RUNTIME_PATCH_DIR` | the hook mailbox this node's apply/remove requests are written into, and where the cross-process runtime lock lives. **Defaults to `<runtime.repo>/ple_patch`** — one directory per serving instance, so point it at the mailbox of the instance `runtime.api` addresses |
+| `runtime.api` | `AINIZE_RUNTIME_API` | which model server this node asks for completions (`ainize init --runtime-api`) |
+| `runtime.repo` | `AINIZE_RUNTIME_REPO` | where `scripts/patch.py` and the PLE hook live (`--runtime-repo`) |
+| `runtime.patchDir` | `AINIZE_RUNTIME_PATCH_DIR` | the hook mailbox this node's apply/remove requests are written into, and where the cross-process runtime lock lives. **Defaults to `<runtime.repo>/ple_patch`** — one directory per serving instance, so point it at the mailbox of the instance `runtime.api` addresses |
 | `runtime.gpus` | — | the GPUs that instance occupies, e.g. `"4,5"`; checked against `teach.trainer.gpus` |
 
 ```
@@ -136,7 +136,7 @@ carries `patch_dir`, `patch_dir_source` and the current lock holder.
   lease serialises them.
 - A lesson takes roughly 3–8 minutes end to end on 3× 40 GB GPUs (load ≈ 60–90 s, ≤ 20 steps, export, then the side-effect check on
   the live model under the runtime lock). The UI shows the measured p50/p90 of this node (`GET /api/teach/policy`).
-- **No trainer GPUs available?** Set `teach.backend: "stub"` (or `NGRAM_TEACH_BACKEND=stub`): the worker writes a small valid
+- **No trainer GPUs available?** Set `teach.backend: "stub"` (or `AINIZE_TEACH_BACKEND=stub`): the worker writes a small valid
   knowledge file instead of training and still runs the real preflight / side-effect check on the serving model, so the visitor flow
   can be shown end to end. `teach.stubOffline: true` additionally simulates the model checks for CI hosts without a model server —
   never set it on a demo node.
@@ -170,7 +170,7 @@ the proxy — set the knob to what is actually in front of the node and nothing 
 "server": { "trustProxy": 1 }            // one proxy hop (most setups); or "loopback", or "10.0.0.0/8, 172.16.0.1"
 ```
 
-or `NGRAM_TRUST_PROXY=1` in the environment (`0`/`false` = off). Never set `true` on a node that is reachable directly:
+or `AINIZE_TRUST_PROXY=1` in the environment (`0`/`false` = off). Never set `true` on a node that is reachable directly:
 that trusts whatever the client puts in the header.
 
 ### 4. Health checks — `/healthz` and `/readyz`
@@ -202,10 +202,10 @@ instead of reporting success forever.
 
 ### 5. Backing up your node — the identity is the only thing you cannot rebuild
 
-`<NGRAM_HOME>/config.json` holds the node's private key in plain hex, and that key **is** the node: it owns every
+`<AINIZE_HOME>/config.json` holds the node's private key in plain hex, and that key **is** the node: it owns every
 knowledge item this node published, its AIN balance, its payout address and the address peers know it by. Everything
 else in a node (the catalog, the bodies, the ledger cache) can be re-fetched or re-seeded; the key cannot. A wiped
-disk, a rebuilt container, an `rm -rf ~/.ngram` or one `ainize init --force --new-identity` ends it, and published
+disk, a rebuilt container, an `rm -rf ~/.ainize` or one `ainize init --force --new-identity` ends it, and published
 knowledge can then never be superseded, retired or challenged by its author again.
 
 ```bash
@@ -217,5 +217,5 @@ ainize keys import ~/node-key.json --passphrase "…"    # the way back, on a ne
 - `keys import` and `keys rotate` copy `config.json` aside as `config.json.bak-<timestamp>` and ask you to type the
   current address before replacing the identity. So does `init --force --new-identity`; plain `init --force` keeps the
   identity and the operator password and only rewrites the rest of the file.
-- Back up `<NGRAM_HOME>/data/` too if the node is a seller: it holds the `.npz` bodies buyers download. They can be
+- Back up `<AINIZE_HOME>/data/` too if the node is a seller: it holds the `.npz` bodies buyers download. They can be
   re-registered from the original files, but only if you still have them.

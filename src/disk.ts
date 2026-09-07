@@ -21,7 +21,7 @@ export interface DiskReport {
   uploads: number;
   /** node.sqlite + its WAL/SHM sidecars, and the local ledger file when there is one. */
   db: number;
-  /** NGRAM_HOME/node.log, when the node knows its home. */
+  /** AINIZE_HOME/node.log, when the node knows its home. */
   log: number;
   /** blobs + datasets + uploads + db + log. */
   total: number;

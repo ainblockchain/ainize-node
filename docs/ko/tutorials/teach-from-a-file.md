@@ -171,7 +171,7 @@ latin1) 무엇으로 읽었는지 찍습니다. 짧은 CP949 파일은 유효한
 > 다음 명령이 키를 만들기 전에, `<home>/teaching-key.json`을 안전한 곳에 복사해 두세요.
 
 이미 키가 있다면 — 브라우저가 내려받아 준 백업이든, 다른 컴퓨터에 있던 것이든 —
-`--key-file ainize-teaching-key-….json`이나 `--key <64자리 16진수>`, 또는 환경 변수 `NGRAM_TEACH_KEY`로 넘깁니다.
+`--key-file ainize-teaching-key-….json`이나 `--key <64자리 16진수>`, 또는 환경 변수 `AINIZE_TEACH_KEY`로 넘깁니다.
 `teach` 명령은 전부 이 셋을 받습니다.
 
 ## 5. 올리고, 노드가 학습하지 않을 줄을 읽기

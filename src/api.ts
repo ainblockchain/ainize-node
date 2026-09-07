@@ -14,7 +14,7 @@ import {
   AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
-} from '@ngram/core';
+} from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
@@ -53,7 +53,7 @@ import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
 
 export interface ApiDeps {
   market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void;
-  /** NGRAM_HOME — where the one-time setup token lives while this node has no operator password (item 121). */
+  /** AINIZE_HOME — where the one-time setup token lives while this node has no operator password (item 121). */
   home?: string;
 }
 
@@ -68,7 +68,7 @@ const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) 
   Promise.resolve(fn(req, res)).then((out) => { if (out !== undefined && !res.headersSent) res.json(out); }).catch(next);
 };
 
-const SESSION_COOKIE = 'ngram_session';
+const SESSION_COOKIE = 'ainize_session';
 
 /**
  * Finding 59 — the free live-test budget was one bucket keyed on `ip:<addr>`, presented to the visitor as a personal
@@ -200,7 +200,7 @@ export function buildApi(deps: ApiDeps): Router {
    * A node with no operator password is claimed by the first caller that asks (item 121): the session `setup` hands
    * back can announce, buy, spend the wallet and change the payout address, and the real operator is locked out for
    * good. Claiming is therefore restricted to someone who can prove they are on the node's own machine — a loopback
-   * connection, or the one-time token `startNode` writes to NGRAM_HOME/setup-token, which is readable only by the
+   * connection, or the one-time token `startNode` writes to AINIZE_HOME/setup-token, which is readable only by the
    * user the node runs as. The token is consumed by the successful claim.
    */
   const setupToken = (): string | null => {
@@ -225,7 +225,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (!mayClaim(req)) {
       market.log('warn', 'auth', `refused a remote attempt to claim this unclaimed node from ${req.socket?.remoteAddress ?? 'an unknown address'}`);
       // the path is deliberately NOT named: a remote caller has no business learning where this node's home is
-      throw new HttpError(403, 'setup_local_only: this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its NGRAM_HOME/setup-token as the x-setup-token header');
+      throw new HttpError(403, 'setup_local_only: this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
     }
     const { password } = z.object({ password: z.string().min(4) }).parse(req.body);
     market.cfg.operatorPasswordHash = hashPassword(password);
@@ -268,7 +268,7 @@ export function buildApi(deps: ApiDeps): Router {
     const { password } = z.object({ password: z.string() }).parse(req.body);
     loginGuard(req);
     // Without this the remote console showed a login box that could never work, because `needsSetup` is hidden above.
-    if (!market.cfg.operatorPasswordHash) throw new HttpError(409, `not_claimed: this node has no operator password yet — set one on the machine it runs on (\`ainize login\`), or POST /api/auth/setup with the one-time token in NGRAM_HOME/setup-token`);
+    if (!market.cfg.operatorPasswordHash) throw new HttpError(409, `not_claimed: this node has no operator password yet — set one on the machine it runs on (\`ainize login\`), or POST /api/auth/setup with the one-time token in AINIZE_HOME/setup-token`);
     if (!verifyPassword(password, market.cfg.operatorPasswordHash)) {
       const n = loginFailed(req);
       throw new HttpError(401, n > LOGIN_FREE_TRIES
@@ -1576,7 +1576,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (network && !mineIsShared && market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR, 3600_000, false) < 0) {
       throw new HttpError(429, `quota_chat_network: this network has used all ${CHAT_TRIES_PER_NETWORK_HOUR} free live tests for this hour — everyone sharing this address shares them`, { quota_reset: market.chatQuotaResetsAt(network), quota_scope: 'network', quota_limit: CHAT_TRIES_PER_NETWORK_HOUR });
     }
-    // private drafts (taught lessons) are testable only by their owner (signed x-ngram-auth) or the operator
+    // private drafts (taught lessons) are testable only by their owner (signed x-ainize-auth) or the operator
     const out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
     const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR) : Infinity;
     if (network && !mineIsShared) market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR);
@@ -1650,7 +1650,7 @@ export function buildApi(deps: ApiDeps): Router {
     return { settings };
   }));
 
-  // ------------------------------------------------------------ teach mode — visitors (spec §6.2; signed x-ngram-auth, see teach-auth.ts)
+  // ------------------------------------------------------------ teach mode — visitors (spec §6.2; signed x-ainize-auth, see teach-auth.ts)
   const needTeach = (): TeachWorker => { if (!deps.teach) throw new HttpError(503, 'teaching_disabled: the teach worker is not running on this node'); return deps.teach; };
   // verified once per request (the replay cache makes a second verification of the same header fail by design)
   const teacherOf = (req: Request): string | null => {
@@ -1660,7 +1660,7 @@ export function buildApi(deps: ApiDeps): Router {
   };
   const requireTeacher = (req: Request): string => {
     const a = teacherOf(req);
-    if (!a) throw new HttpError(401, 'invalid_signature: x-ngram-auth header missing, expired, replayed or invalid (`<address>:<ts>:<sig>:v2` over "teach:<node>:<METHOD>:<path>:<ts>[:<sha256 body>]", or the legacy `teach:<ts>` form)');
+    if (!a) throw new HttpError(401, 'invalid_signature: x-ainize-auth header missing, expired, replayed or invalid (`<address>:<ts>:<sig>:v2` over "teach:<node>:<METHOD>:<path>:<ts>[:<sha256 body>]", or the legacy `teach:<ts>` form)');
     return a;
   };
   /** Every visitor teach route: worker present, policy enabled, key/IP not banned. */
@@ -1671,7 +1671,7 @@ export function buildApi(deps: ApiDeps): Router {
     const t = needTeach(); const j = jobOr404(t, id); const address = teacherOf(req); const operator = isOperator(req);
     if (t.isOwner(j, address)) { t.assertEnabled(); t.assertNotBanned(address, req.ip); return { t, j, address, operator: false }; }
     if (opts.operator !== false && operator) return { t, j, address, operator: true };
-    if (!address) throw new HttpError(401, 'invalid_signature: x-ngram-auth header missing, expired or invalid');
+    if (!address) throw new HttpError(401, 'invalid_signature: x-ainize-auth header missing, expired or invalid');
     throw new HttpError(403, 'not_owner: this lesson belongs to a different teaching key');
   };
   const factSchema = z.object({ prompt: z.string().min(1).max(PROMPT_MAX), answer: z.string().min(1).max(ANSWER_MAX), alt_prompt: z.string().max(PROMPT_MAX).optional(), base_answer: z.string().max(4000).optional() });
@@ -1696,7 +1696,7 @@ export function buildApi(deps: ApiDeps): Router {
       const t = needTeach();
       // a multipart body cannot be covered by the v2 body hash, so the client signs the sha256 header instead (§D14)
       const r = req as Request & { _teacher?: string | null };
-      if (r._teacher === undefined) r._teacher = isMultipart(req) ? teachAuth.verify(req, 'teach', req.header('x-ngram-dataset-sha256') ?? null) : teachAuth.verify(req);
+      if (r._teacher === undefined) r._teacher = isMultipart(req) ? teachAuth.verify(req, 'teach', req.header('x-ainize-dataset-sha256') ?? null) : teachAuth.verify(req);
       const address = requireTeacher(req);
       t.assertEnabled();
       t.assertNotBanned(address, req.ip);
@@ -1739,7 +1739,7 @@ export function buildApi(deps: ApiDeps): Router {
     try {
       if (req.file) {
         const meta = parseOptSchema.extend({ name: z.string().max(80).optional(), retention: z.enum(['keep', 'delete_after_training']).optional() }).parse(req.body ?? {});
-        const declared = req.header('x-ngram-dataset-sha256');
+        const declared = req.header('x-ainize-dataset-sha256');
         const bytes = readFileSync(req.file.path);
         const out = t.datasets.create({
           owner: address, ip: req.ip, source: 'upload', bytes, filename: req.file.originalname,
@@ -1894,7 +1894,7 @@ export function buildApi(deps: ApiDeps): Router {
     // base (design §12.1), announced with a Deprecation header — off, it keeps meaning declared parents
     if (buildsOn && !baseIds.length && market.teach().lineage && contextIds.length) {
       baseIds = [contextIds[0]]; buildsOn = false;
-      res.set('deprecation', 'true').set('x-ngram-deprecated', 'builds_on_context: send base_ids (the knowledge you build on) and context_ids (loaded for comparison) instead');
+      res.set('deprecation', 'true').set('x-ainize-deprecated', 'builds_on_context: send base_ids (the knowledge you build on) and context_ids (loaded for comparison) instead');
     }
     if (body.mode === 'extend' && !baseIds.length) throw bad('invalid: mode extend needs base_ids');
     // Design §9 / §12.1: two bases IS a merge, and it has its own body (`resolutions`, `tier`) and its own path — the
@@ -2199,7 +2199,7 @@ export function buildApi(deps: ApiDeps): Router {
     const info = req.body as { endpoint?: string; address?: string };
     const endpoint = (info?.endpoint ?? '').replace(/\/+$/, '');
     if (!endpoint || !info?.address || sameAddr(info.address, market.address)) return market.selfInfo();
-    const signer = verifyAuthHeader(req.header('x-ngram-auth'), `hello:${endpoint}`);
+    const signer = verifyAuthHeader(req.header('x-ainize-auth'), `hello:${endpoint}`);
     if (signer && sameAddr(signer, info.address)) {
       market.store.upsertPeer(endpoint, { address: info.address, info: info as never, last_seen: Date.now(), failures: 0, last_error: null });
     } else {
@@ -2247,7 +2247,7 @@ export function buildApi(deps: ApiDeps): Router {
     const sha = req.params.sha as string;
     const blob = market.blobs.get(sha);
     if (!blob) throw notFound('blob not held by this node');
-    const requester = verifyAuthHeader(req.header('x-ngram-auth'), `blob:${sha}`);
+    const requester = verifyAuthHeader(req.header('x-ainize-auth'), `blob:${sha}`);
     const token = typeof req.query.token === 'string' ? req.query.token : undefined;
     if (!(await market.mayDownload(sha, requester, token))) throw new HttpError(402, 'payment required: buy the patch via /x402/patch/:id (its author, a buyer holding a download token, and a verifier while it is being verified can fetch it)');
     const size = statSync(blob.path).size;
@@ -2263,10 +2263,10 @@ export function buildApi(deps: ApiDeps): Router {
   // published training sets between nodes (lineage design §6.6): same gate as /p2p/blob, plus the access level
   const datasetGateP2p = async (req: Request, sha: string) => {
     if (!market.datasets.has(sha)) throw notFound('dataset not held by this node');
-    const requester = verifyAuthHeader(req.header('x-ngram-auth'), `dataset:${sha}`);
-    const token = req.header('x-ngram-derive') ?? (typeof req.query.token === 'string' ? req.query.token : undefined);
+    const requester = verifyAuthHeader(req.header('x-ainize-auth'), `dataset:${sha}`);
+    const token = req.header('x-ainize-derive') ?? (typeof req.query.token === 'string' ? req.query.token : undefined);
     const ok = await market.mayReadDataset(sha, requester, token);
-    if (!ok.ok) throw new HttpError(ok.reason === 'dataset_unknown' ? 404 : 403, ok.reason === 'dataset_private' ? 'dataset_private: the creator kept this training set private' : ok.reason === 'dataset_derivative_only' ? 'dataset_derivative_only: post a derive intent to the knowledge (POST /api/patches/:id/derive-intent) and send its token in x-ngram-derive' : 'dataset_unknown: no listed knowledge names this training set');
+    if (!ok.ok) throw new HttpError(ok.reason === 'dataset_unknown' ? 404 : 403, ok.reason === 'dataset_private' ? 'dataset_private: the creator kept this training set private' : ok.reason === 'dataset_derivative_only' ? 'dataset_derivative_only: post a derive intent to the knowledge (POST /api/patches/:id/derive-intent) and send its token in x-ainize-derive' : 'dataset_unknown: no listed knowledge names this training set');
   };
   router.get('/p2p/datasets', wrap(async () => ({ datasets: market.datasets.list().map((b) => ({ sha256: b.sha256, rows: b.rows, size_bytes: b.size_bytes, access: b.access, license: b.license })) })));
   router.get('/p2p/dataset/:sha', wrap(async (req, res) => {

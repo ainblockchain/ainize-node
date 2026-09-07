@@ -14,12 +14,12 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bf16Bits, defaultConfig, preStateSha256, readNpzMember, sha256Hex, type BenchmarkSpec, type NodeConfig } from '@ngram/core';
+import { bf16Bits, defaultConfig, preStateSha256, readNpzMember, sha256Hex, type BenchmarkSpec, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { FakeHook, baseValue, writeFixture, ROW_DIM } from './fixtures/fake-hook.js';
 
 /** The reference implementation this node drives; without it there is no patch.py to test. */
-const REF_REPO = process.env.NGRAM_RUNTIME_REPO ?? '/mnt/newdata/qwen3.8';
+const REF_REPO = process.env.AINIZE_RUNTIME_REPO ?? '/mnt/newdata/qwen3.8';
 const HAVE_REF = existsSync(join(REF_REPO, 'scripts', 'patch.py')) && existsSync(join(REF_REPO, 'engram', 'live.py'));
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-stack-test-'));
@@ -70,7 +70,7 @@ before(async () => {
     // is scored on the candidate alone and not on whatever this node happens to serve.
     if (req.url !== '/v1/models') onGenerate?.();
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(req.url === '/v1/models' ? { data: [{ id: 'demo-ngram-1b' }] } : { choices: [{ text: 'a', message: { content: 'a' } }] }));
+    res.end(JSON.stringify(req.url === '/v1/models' ? { data: [{ id: 'demo-ainize-1b' }] } : { choices: [{ text: 'a', message: { content: 'a' } }] }));
   });
   await new Promise<void>((r) => model.listen(0, '127.0.0.1', () => r()));
   const api = `http://127.0.0.1:${(model.address() as { port: number }).port}`;
@@ -87,15 +87,15 @@ before(async () => {
     const a = readNpzMember(path, 'addrs'), b = readNpzMember(path, 'before');
     return preStateSha256(new BigInt64Array(a.body.buffer, a.body.byteOffset, a.body.length / 8), new Float32Array(b.body.buffer, b.body.byteOffset, b.body.length / 4), ROW_DIM);
   };
-  const parent = await N.market.createDraft({ id: 'stack-parent', name: 'Base knowledge', model: { id_M: 'demo-ngram-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.parent, keepInPlace: true });
+  const parent = await N.market.createDraft({ id: 'stack-parent', name: 'Base knowledge', model: { id_M: 'demo-ainize-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.parent, keepInPlace: true });
   await N.market.createDraft({
-    id: 'stack-child', name: 'Add-on built on the base', model: { id_M: 'demo-ngram-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.child, keepInPlace: true,
+    id: 'stack-child', name: 'Add-on built on the base', model: { id_M: 'demo-ainize-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.child, keepInPlace: true,
     parents: ['stack-parent'],
     base: { stack: [{ patch_id: 'stack-parent', patch_sha256: parent.patch_sha256 }], export: 'delta', pre_state_sha256: preState(files.child) },
     derivation: { kind: 'extend', bases: [{ patch_id: 'stack-parent', patch_sha256: parent.patch_sha256, rows: 100 }], added_rows: 50, changed_rows: 50, removed_rows: 0 },
   });
-  await N.market.createDraft({ id: 'legacy-one', name: 'Legacy one', model: { id_M: 'demo-ngram-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.legacy1, keepInPlace: true });
-  await N.market.createDraft({ id: 'legacy-two', name: 'Legacy two', model: { id_M: 'demo-ngram-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.legacy2, keepInPlace: true });
+  await N.market.createDraft({ id: 'legacy-one', name: 'Legacy one', model: { id_M: 'demo-ainize-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.legacy1, keepInPlace: true });
+  await N.market.createDraft({ id: 'legacy-two', name: 'Legacy two', model: { id_M: 'demo-ainize-1b', row_dim: ROW_DIM }, benchmark: bench, file: files.legacy2, keepInPlace: true });
 });
 
 after(async () => {
@@ -110,7 +110,7 @@ async function unloadAll() {
   for (const l of (await N.market.stack()).reverse()) await N.market.removePatch(l.patch_id, { cascade: true }).catch(() => undefined);
 }
 
-const skip = HAVE_REF ? false : `no reference runtime repo at ${REF_REPO} (set NGRAM_RUNTIME_REPO)`;
+const skip = HAVE_REF ? false : `no reference runtime repo at ${REF_REPO} (set AINIZE_RUNTIME_REPO)`;
 
 test('AZ-253 an add-on is only written when its base is underneath, row for row (check → needs_base → base_mismatch)', { skip }, async () => {
   await unloadAll();

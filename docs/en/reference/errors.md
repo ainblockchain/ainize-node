@@ -102,8 +102,8 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `invalid` | `400` | two knowledges are needed to combine | `packages/node/src/teach.ts` |
 | `invalid_signature` | `401` | download token missing, wrong or expired — make a new link from Your knowledge | `packages/node/src/api.ts` |
 | `invalid_signature` | `401` | the claim signature does not verify for this teaching key | `packages/node/src/teach.ts` |
-| `invalid_signature` | `401` | x-ngram-auth header missing, expired or invalid | `packages/node/src/api.ts` |
-| `invalid_signature` | `401` | x-ngram-auth header missing, expired, replayed or invalid (`<address>:<ts>:<sig>:v2` over "teach:\<node>:\<METHOD>:\<path>:\<ts>[:\<sha256 body>]", or the legacy `teach:<ts>` form) | `packages/node/src/api.ts` |
+| `invalid_signature` | `401` | x-ainize-auth header missing, expired or invalid | `packages/node/src/api.ts` |
+| `invalid_signature` | `401` | x-ainize-auth header missing, expired, replayed or invalid (`<address>:<ts>:<sig>:v2` over "teach:\<node>:\<METHOD>:\<path>:\<ts>[:\<sha256 body>]", or the legacy `teach:<ts>` form) | `packages/node/src/api.ts` |
 | `job_not_ready` | `409` | draft is missing | `packages/node/src/teach.ts` |
 | `job_not_ready` | `409` | knowledge file is missing | `packages/node/src/teach.ts` |
 | `job_not_ready` | `409` | knowledge file is not registered on this node | `packages/node/src/teach.ts` |
@@ -120,7 +120,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `lineage_disabled` | `403` | copying another knowledge's questions is not enabled on this node yet (config teach.lineage) | `packages/node/src/teach.ts` |
 | `merge_not_available` | `400` | combining two knowledges is not available on this node yet — build on one of them | `packages/node/src/teach.ts` |
 | `merge_unresolved` | `409` | \<unresolved.length> question(s) are answered differently by \<A.id> and \<B.id> — choose an answer for each one before building | `packages/node/src/teach.ts` |
-| `not_claimed` | `409` | this node has no operator password yet — set one on the machine it runs on (`ainize login`), or POST /api/auth/setup with the one-time token in NGRAM_HOME/setup-token | `packages/node/src/api.ts` |
+| `not_claimed` | `409` | this node has no operator password yet — set one on the machine it runs on (`ainize login`), or POST /api/auth/setup with the one-time token in AINIZE_HOME/setup-token | `packages/node/src/api.ts` |
 | `not_owner` | `403` | this lesson belongs to a different teaching key | `packages/node/src/api.ts` |
 | `nothing_to_add` | `400` | combining these two would leave no questions at all | `packages/node/src/teach.ts` |
 | `nothing_to_add` | `400` | combining these two would teach nothing new | `packages/node/src/teach.ts` |
@@ -141,7 +141,7 @@ Anything else is a fault in the node and comes back as `500` with the raw messag
 | `rate_limited` | `429` | too many datasets from this address in the last minute | `packages/node/src/teach-datasets.ts` |
 | `rate_limited` | `429` | too many policy calls from this address | `packages/node/src/teach.ts` |
 | `row_not_found` | `404` | none of those lines are refused rows of this dataset | `packages/node/src/teach-datasets.ts` |
-| `setup_local_only` | `403` | this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its NGRAM_HOME/setup-token as the x-setup-token header | `packages/node/src/api.ts` |
+| `setup_local_only` | `403` | this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header | `packages/node/src/api.ts` |
 | `subscription_incomplete` | `409` | \<failed.length> of … item(s) could not be acquired, so \<branch> was NOT subscribed to and this node is not advertised as serving it. …… | `packages/node/src/market.ts` |
 | `subscription_unpaid` | `402` | … | `packages/node/src/market.ts` |
 | `teaching_disabled` | `403` | this node does not accept lessons | `packages/node/src/teach.ts` |

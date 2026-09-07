@@ -13,7 +13,7 @@
  *  - Contradictions block, duplicates drop the later copy, over-length blocks, and `shared_ending` only warns (§8.5).
  */
 import { createHash } from 'node:crypto';
-import type { TeachDatasetFormat, TeachDatasetLang, TeachDatasetRow, TeachDatasetSummary, TeachPiiKind, TeachRowStatus } from '@ngram/core';
+import type { TeachDatasetFormat, TeachDatasetLang, TeachDatasetRow, TeachDatasetSummary, TeachPiiKind, TeachRowStatus } from '@ainize/core';
 
 // ------------------------------------------------------------------ shape
 

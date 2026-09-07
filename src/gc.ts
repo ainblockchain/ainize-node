@@ -9,7 +9,7 @@
  * body any holder can serve again, so deleting it costs a re-fetch and nothing else.
  */
 import { existsSync, statSync } from 'node:fs';
-import type { CatalogEntry } from '@ngram/core';
+import type { CatalogEntry } from '@ainize/core';
 import type { Market } from './market.js';
 
 export interface GcCandidate {

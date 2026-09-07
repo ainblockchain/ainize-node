@@ -33,13 +33,13 @@ Read from the tree or measured on the live cluster on 2026-09-02…04. Nothing h
 | M7 | `GET /x402/patch/:id` **with no `X-PAYMENT` header** answers `402` + `x-payment-required` + `{x402Version:1, requirements:[{scheme,network,asset,payTo,maxAmountRequired,resource,description,nonce,expires_at}], accepts}`. That *is* the seller's binding quote. Its only side effect is reserving a nonce with a 10-minute TTL. | `packages/node/src/api.ts:928-946`; `packages/node/src/market.ts:655-667` |
 | M8 | The gateway has **no returning-buyer branch**: it answers 402 to any request without `X-PAYMENT`, regardless of an existing settlement, and `Market.buy()` never consults `store.getPurchase()`. Buying twice pays twice. | `packages/node/src/api.ts:928-940`; `packages/node/src/market.ts:757-823` |
 | M9 | `Market.buy()` writes `store.putPurchase(...)` **after** the blob download. A download failure loses the manifest while the seller's settle record and the single-use nonce are already spent — the money is unrecoverable by retry. | `packages/node/src/market.ts:801-811,694-699,728` |
-| M10 | Recovery *is* possible without paying again: `mayDownload(sha, address)` grants the blob to any address that appears as `buyer` in a settlement for that sha (and to verifiers), so `GET /p2p/blob/:sha` with a signed `x-ngram-auth` over `blob:<sha>` works forever, while the manifest's own `download_token` expires after 24 h. `GET /api/me/purchases` (operator) returns the stored manifest, tx hash, amount, scheme and local path. | `packages/node/src/market.ts:641-652,744-756`; `packages/node/src/api.ts:338` |
+| M10 | Recovery *is* possible without paying again: `mayDownload(sha, address)` grants the blob to any address that appears as `buyer` in a settlement for that sha (and to verifiers), so `GET /p2p/blob/:sha` with a signed `x-ainize-auth` over `blob:<sha>` works forever, while the manifest's own `download_token` expires after 24 h. `GET /api/me/purchases` (operator) returns the stored manifest, tx hash, amount, scheme and local path. | `packages/node/src/market.ts:641-652,744-756`; `packages/node/src/api.ts:338` |
 | M11 | Lineage base selection has **already landed** in the API: `POST /api/teach/jobs` accepts `base_ids` (≤ 2), `context_ids` (≤ 3), `mode: scratch\|extend\|fork\|merge`, `inherit`, `export: delta\|squash`, `force`; legacy `builds_on_context:true` is rewritten to `base_ids[0]` with a `Deprecation` header; `mode:'extend'` without `base_ids` is a 400; `mode:'merge'` is `merge_not_available`. `POST /api/teach/preflight` takes `base`-aware `patch_ids` plus `facts` XOR `{dataset_id, offset, limit}`. | `packages/node/src/api.ts:699-764` |
 | M12 | `GET /api/patches/:id` already returns `requires: [{id,name,held,price}]` derived from `anchor.base.stack` — the base stack a delta child needs — plus `lineage{parents,children}` one level, `purchased`, `has_body`, `owned`, `applied`, `dataset_held`. The 402 body does **not** carry `requires[]`; that is design §12.4, not shipped. | `packages/node/src/api.ts:191-208`; `docs/lineage-teach-design.md` §12.4 |
 | M13 | The L1 dataset surface exists (`GET /api/patches/:id/dataset`, `/dataset/rows`, `/dataset/manifest`, `POST /api/patches/:id/derive-intent`, `/p2p/dataset*`) with access levels `public \| derivative \| private` enforced per request, but **none of it appears in `GET /api/openapi.json`** (89 paths, hand-written). Tools must not be generated from the OpenAPI document. | `packages/node/src/api.ts:210-265,1007-1026`; `packages/node/src/openapi.ts` |
 | M14 | `GET /api/patches/:id/tree`, `/signals`, `/issues` and `?bundle=1` are PR **L6/L8 and do not exist**. What exists today for a family view is one-level `lineage`, `requires[]`, `supersedes/superseded_by`, `GET /api/ledger/graph` (`edges[].type: 'extends'\|'supersedes'`) and `GET /api/patches/:id/conflicts`. | `packages/node/src/api.ts:191-208,297-309,424-432`; `docs/lineage-teach-design.md` §12.5, §18 |
 | M15 | Teach ETA is deliberately `null` until ≥ 3 GRADIENT-backend samples exist (three 3-second stub jobs must never become an estimate), and a teach job burns one of `jobsPerKeyPerDay` (3 on node-u) at **submit** time, before PREFLIGHT — a failed job is not refunded. `ACTIVE_JOBS_PER_KEY = 2`. | `packages/node/src/teach.ts:946-959,773-777,809-810,171-178` |
-| M16 | Three secrets, three mechanisms: operator bearer from `POST /api/auth/login {password}` (30-day session, also a cookie); the visitor teaching key signing `x-ngram-auth: <address>:<ts>:<sig>:v2` **request-bound and single-use** (a replayed header fails by design); the node identity private key in `config.json`, which signs AIN transfers and credit intents. `POST /api/patches/:id/buy`, `/apply`, `/remove`, `/announce` and `/api/me/*` are operator-gated. | `packages/node/src/api.ts:53-131,338,417-419`; `packages/node/src/teach-auth.ts`; `packages/core/src/types.ts:416` |
+| M16 | Three secrets, three mechanisms: operator bearer from `POST /api/auth/login {password}` (30-day session, also a cookie); the visitor teaching key signing `x-ainize-auth: <address>:<ts>:<sig>:v2` **request-bound and single-use** (a replayed header fails by design); the node identity private key in `config.json`, which signs AIN transfers and credit intents. `POST /api/patches/:id/buy`, `/apply`, `/remove`, `/announce` and `/api/me/*` are operator-gated. | `packages/node/src/api.ts:53-131,338,417-419`; `packages/node/src/teach-auth.ts`; `packages/core/src/types.ts:416` |
 | M17 | Live cluster on this machine: node-a `:3402` (`ledger: 'ain'`, quorum 2, `royalty_share` 0.3, `contributor_share` 0.7), node-b `:3403`, node-c `:3404`, node-u `:3422` (`teachable-u`, `ledger: 'local'`, `publish: 'auto'`). All four share ONE serving model at `http://localhost:8002`. | `curl :3402/api/info`, `curl :3422/api/info`, `curl :3422/api/teach/policy` |
 | M18 | `docs/ux-critique-4.json` **does not exist**. The payment defects are recorded in `docs/ux-critique.json`, `-2`, `-3` and `ux-critique-owner.json`; critique 3 explicitly *downgraded* "a chain purchase buys only the child" (`merged[22]`) because today's children are stand-alone builds — the defect today is ambiguity and repeated payment, not a broken chain. | `ls docs/ux-critique-4*` (no match); `docs/ux-critique-3.json` |
 | M19 | `graph/README.md` (commit `d85365c`) already reserves the split: `graph/` holds the Subgraph/Substreams pipelines, the benchmark harness and "the MCP client side that calls The Graph's Subgraph MCP and hands its rows to `packages/mcp`", and mandates **live data only**. | `graph/README.md` |
@@ -65,7 +65,7 @@ Read from the tree or measured on the live cluster on 2026-09-02…04. Nothing h
 4. **Nothing blocks.** Every tool that touches the shared model returns a job handle in milliseconds and is polled.
    Every status answer says who holds the model, for how long, and how many are waiting.
 5. **Secrets never cross the wire.** No tool takes or returns a password, a bearer token, a private key or an
-   `x-ngram-auth` header. The server reads them from its own env and exposes *capabilities* instead.
+   `x-ainize-auth` header. The server reads them from its own env and exposes *capabilities* instead.
 6. **Reusable, not a demo.** One package (`packages/mcp`) that any node operator can point at their own node, with a
    `SKILL.md` an agent can follow, three copy-pasteable client configs, and a mechanical `EVAL.md`.
 7. **The client direction produces auditable data.** A dataset built from another MCP server carries provenance — which
@@ -148,7 +148,7 @@ export interface RowProvenance {
 
 ```
 packages/mcp/                      # NEW workspace, its own package.json (no shared-file edits except §14 PR M9)
-  package.json                     # "@ngram/mcp", type: module, bin: { "ainize-mcp": "dist/bin.js" }
+  package.json                     # "@ainize/mcp", type: module, bin: { "ainize-mcp": "dist/bin.js" }
   tsconfig.json                    # extends ../../tsconfig.base.json (NodeNext ESM, strict, verbatimModuleSyntax)
   README.md                        # what it is, how to configure it, "What this server will never do without you"
   SKILL.md                         # the agent-facing skill (§12)
@@ -167,7 +167,7 @@ packages/mcp/                      # NEW workspace, its own package.json (no sha
     resources.ts  prompts.ts  errors.ts  scrub.ts  rows.ts
   test/                            # node --test --import tsx test/*.test.ts
 graph/
-  mcp-client/                      # direction B (see §11), depends on @ngram/mcp for TeachRow/RowProvenance only
+  mcp-client/                      # direction B (see §11), depends on @ainize/mcp for TeachRow/RowProvenance only
 ```
 
 ### 3.2 Transports
@@ -840,7 +840,7 @@ the settlement and the nonce are spent. The MCP layer's answer, in order:
    address as `buyer` (`GET /api/ledger?kind=settle`).
    - purchase row present → `complete`.
    - settlement present, no body → `settled_no_body`, and the body is re-fetched from `GET /p2p/blob/:sha` with an
-     `x-ngram-auth` header signed over `blob:<sha>` by the node identity — which `mayDownload()` honours for any settled
+     `x-ainize-auth` header signed over `blob:<sha>` by the node identity — which `mayDownload()` honours for any settled
      buyer, forever (M10). Result: `recovered`. **No second payment.**
    - neither → `never_paid`, and buying again is safe.
 4. The tool result says which of the four it was, in a sentence, with the tx hash.
@@ -955,7 +955,7 @@ so and the default is **not** to use the operator session for live tests.
 | `AINIZE_NODE_URL` | the node this server speaks for | everything | yes (it is public) |
 | `AINIZE_OPERATOR_PASSWORD` | operator password | exchanged **once** at startup via `POST /api/auth/login` for an in-memory bearer | **never** |
 | `AINIZE_TOKEN` | a pre-existing session token (alternative to the password) | `Authorization: Bearer` | **never** |
-| `AINIZE_TEACH_KEY` | 64-hex secp256k1 visitor teaching key | signs `x-ngram-auth` per request | **never** |
+| `AINIZE_TEACH_KEY` | 64-hex secp256k1 visitor teaching key | signs `x-ainize-auth` per request | **never** |
 | `AINIZE_MCP_SESSION_BUDGET` / `_MAX_PER_PURCHASE` / `_MAX_TEACH_JOBS` | caps | §6.2 | yes (as numbers) |
 | `AINIZE_MCP_ALLOW_APPLY` / `_ALLOW_PUBLISH` / `_ALLOW_AIN_PUBLISH` | capability opt-ins | tool registration | yes (as booleans) |
 | `AINIZE_MCP_STATE_DIR` | journal + job spill | idempotency | no |
@@ -974,7 +974,7 @@ never by reading the key.
    passed through. The purchase manifest contains a `download_token`, so `my_library` returns `body_present: true`
    instead of the manifest.
 3. **An outbound scrubber runs on every tool result and every error string** (`src/scrub.ts`), redacting
-   `/0x[0-9a-fA-F]{64}/`, `Bearer\s+\S+`, `x-ngram-auth: \S+`, any value of a key named `privateKey`, `token`,
+   `/0x[0-9a-fA-F]{64}/`, `Bearer\s+\S+`, `x-ainize-auth: \S+`, any value of a key named `privateKey`, `token`,
    `download_token`, `claim_sig`, `sig`, and the configured password and teaching key by literal match. An upstream
    401/409 body or a stack trace can therefore never leak one by accident.
 4. **Config is documented as config, not as a CLI flag.** `claude mcp add -e AINIZE_OPERATOR_PASSWORD=…` writes the
@@ -983,10 +983,10 @@ never by reading the key.
 
 ### 8.3 Signatures are single-use
 
-`x-ngram-auth` v2 is request-bound **and** single-use — the replay cache refuses a second verification of the same
+`x-ainize-auth` v2 is request-bound **and** single-use — the replay cache refuses a second verification of the same
 header, by design. Any retry, redirect-follow or middleware that replays a request fails with `invalid_signature` in a
 way that looks exactly like a wrong key. `src/auth.ts` therefore signs **per attempt**, never caches a header, and
-never follows redirects. Multipart uploads sign the value of `x-ngram-dataset-sha256` instead of the body hash, because
+never follows redirects. Multipart uploads sign the value of `x-ainize-dataset-sha256` instead of the body hash, because
 the body cannot be captured — `create_training_set` uses the JSON door, not multipart, to avoid the whole class.
 
 ### 8.4 Refusals that are structural, not advisory
@@ -1109,7 +1109,7 @@ Two compatibility notes, both handled by `--chatgpt-compat`:
 |---|---|---|---|
 | **node-u** | `http://localhost:3422` | `local` | teaching, publishing, everything — **the default in every example** |
 | node-a / b / c | `:3402` `:3403` `:3404` | **`ain` (shared chain)** | reading and live tests only; publishing is refused |
-| a private cluster | `NGRAM_CLUSTER_HOME=<tmpdir> NGRAM_PORT_BASE=3512 NGRAM_LEDGER=local NGRAM_SEED=0 scripts/cluster-restart.sh` | `local` | end-to-end money tests |
+| a private cluster | `AINIZE_CLUSTER_HOME=<tmpdir> AINIZE_PORT_BASE=3512 AINIZE_LEDGER=local AINIZE_SEED=0 scripts/cluster-restart.sh` | `local` | end-to-end money tests |
 
 A live test on any of them touches the **one shared model server** at `http://localhost:8002`, so a test run from an
 MCP client is visible to every other node on the machine. The README says this in the first section.
@@ -1300,7 +1300,7 @@ actually registered by `server.ts`) wired into `npm test -w packages/mcp`. Insta
 | Test | Asserts |
 |---|---|
 | `money.test.ts` | `buy` without `quote_id` → `quote_required`; expired quote → `quote_expired`; `confirm_total` off by one character → `quote_mismatch`; total over cap → `budget_exceeded` with the four numbers; second `buy` with the same key → `idempotency_replay` and **no upstream call** |
-| `scrub.test.ts` | a 64-hex key, a bearer token, an `x-ngram-auth` header and the configured password planted in a nested error body are all redacted, in results *and* in errors |
+| `scrub.test.ts` | a 64-hex key, a bearer token, an `x-ainize-auth` header and the configured password planted in a nested error body are all redacted, in results *and* in errors |
 | `jobs.test.ts` | the starter returns in < 50 ms while the upstream promise is still pending; `job_cancel` on a queued job reports `charged: false`; a finished job is evicted after the TTL |
 | `lock.test.ts` | `held_s` is computed from the node's `now`, not `Date.now()`; a client clock 3 h off changes nothing; `stale: true` changes the sentence |
 | `eta.test.ts` | `eta_s: null` renders as "no measured estimate yet" and never as 0 |
@@ -1310,7 +1310,7 @@ actually registered by `server.ts`) wired into `npm test -w packages/mcp`. Insta
 ### 13.2 Contract (`packages/mcp/test/endpoints.test.ts`)
 
 Every endpoint the tool set declares is pinged against a **private local-ledger cluster**
-(`NGRAM_CLUSTER_HOME=<tmpdir> NGRAM_PORT_BASE=3512 NGRAM_LEDGER=local NGRAM_SEED=0 scripts/cluster-restart.sh`) and the
+(`AINIZE_CLUSTER_HOME=<tmpdir> AINIZE_PORT_BASE=3512 AINIZE_LEDGER=local AINIZE_SEED=0 scripts/cluster-restart.sh`) and the
 test fails loudly when one disappears or changes shape. This is the guard against the OpenAPI document drifting (M13)
 and against the lineage job moving a route.
 
@@ -1363,7 +1363,7 @@ immediately before editing it.**
 
 | PR | Scope | Files | Verify |
 |---|---|---|---|
-| **M0** Scaffolding | New workspace: `package.json` (`@ngram/mcp`, type module, bin `ainize-mcp`, deps `@modelcontextprotocol/sdk ^1.30.0`, `zod ^4.5.4`, `@ngram/core` 0.1.0), `tsconfig.json` extending the base, empty `src/bin.ts` that starts an `McpServer` on stdio and answers `initialize`, `src/config.ts` (env → Config + capability booleans + startup refusals), `src/client.ts` (the one place `fetch` is called), `src/scrub.ts` | `packages/mcp/{package.json,tsconfig.json,src/{bin,server,config,client,scrub}.ts,test/scrub.test.ts}` | `npx tsc -p packages/mcp/tsconfig.json --noEmit`; `claude mcp add` connects and lists 0 tools |
+| **M0** Scaffolding | New workspace: `package.json` (`@ainize/mcp`, type module, bin `ainize-mcp`, deps `@modelcontextprotocol/sdk ^1.30.0`, `zod ^4.5.4`, `@ainize/core` 0.1.0), `tsconfig.json` extending the base, empty `src/bin.ts` that starts an `McpServer` on stdio and answers `initialize`, `src/config.ts` (env → Config + capability booleans + startup refusals), `src/client.ts` (the one place `fetch` is called), `src/scrub.ts` | `packages/mcp/{package.json,tsconfig.json,src/{bin,server,config,client,scrub}.ts,test/scrub.test.ts}` | `npx tsc -p packages/mcp/tsconfig.json --noEmit`; `claude mcp add` connects and lists 0 tools |
 | **M1** READ tier | `search_knowledge`, `get_knowledge`, `family_tree`, `get_training_set`, `node_status`, `teacher_profile`, `my_library`; the result envelope; flattening; per-node caches | `src/tools/read.ts`, `src/tiers.ts`, `src/errors.ts`, `test/{read,schema}.test.ts` | integration §13.3 steps 1 against node-u |
 | **M2** Resources + prompts | `ainize://instructions`, `node/info`, `openapi`, `budget`, `knowledge/{id}`; the four prompts | `src/{resources,prompts}.ts` | a client shows 5 resources and 4 prompts |
 | **M3** Async core + `live_test` | `src/jobs.ts`; `live_test`, `job_status` (with `wait_ms`), `job_cancel`, `job_list`; the `model_lock` sentence; quota block; progress notifications | `src/tools/live.ts`, `src/jobs.ts`, `test/{jobs,lock,live}.test.ts` | §13.3 steps 2–3; §13.5 eval 1 and 8 |
@@ -1408,7 +1408,7 @@ Both touch `market.ts`, which the lineage job is editing. Coordinate first; comm
 | One publish call writes an unrecallable record — node-u is `publish: 'auto'` (M17) | Off by default; `permanent_ledger_refused` on an `ain` node; `confirm_phrase` containing the job id; both consent booleans required with no default. |
 | The publish sheet's "70 %" is wrong (49 % with a lineage pool) | `split_preview` is computed from `royaltySplit`, never copied from the sheet. |
 | A key or token leaks through an error body, a log line or a SKILL example | No credential is a tool parameter or a return value; `src/scrub.ts` runs on every result and error; the README uses `${VAR}` indirection in every copy-paste block. |
-| `x-ngram-auth` is single-use; a retry looks like a wrong key (M16) | Sign per attempt, never cache a header, never follow redirects, use the JSON dataset door rather than multipart. |
+| `x-ainize-auth` is single-use; a retry looks like a wrong key (M16) | Sign per attempt, never cache a header, never follow redirects, use the JSON dataset door rather than multipart. |
 | The lineage job is editing `packages/{core,node,web,cli,e2e}` concurrently | `packages/mcp` is a new workspace; the only shared edit is three script lines in the root `package.json`, deliberately last (PR M9); the contract test (§13.2) fails loudly if a route moves. |
 | Tools generated from `GET /api/openapi.json` would silently lack the dataset surface and expose operator routes (M13) | Tool definitions are hand-written against `packages/node/src/api.ts`; the OpenAPI document is exposed as a *resource* with a header saying it is incomplete. |
 | Deep `CatalogEntry` objects exhaust the client's context | Search and detail return flattened rows with a stable vocabulary; the raw anchor is behind an explicit `include`. |

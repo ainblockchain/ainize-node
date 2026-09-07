@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { ts, parseFile, literal, Unresolved, walk } from './ts.mjs';
 import { code, cell, table, fence } from './md.mjs';
 
-const HOME = '<NGRAM_HOME>';
+const HOME = '<AINIZE_HOME>';
 /** A fixed key so the generated page is byte-identical on every machine; it is never printed. */
 const FIXED_KEY = `0x${'11'.repeat(32)}`;
 
@@ -112,15 +112,15 @@ export function envOverrides(file) {
   return rows;
 }
 
-/** `DEFAULT_HOME = process.env.NGRAM_HOME ?? join(homedir(), '.ngram')` — asserted, then written as a row. */
+/** `DEFAULT_HOME = process.env.AINIZE_HOME ?? join(homedir(), '.ainize')` — asserted, then written as a row. */
 function homeVar(file) {
   const src = parseFile(file);
   let text = null;
   walk(src, (n) => { if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === 'DEFAULT_HOME') text = n.initializer.getText(); });
-  if (!text || !/process\.env\.NGRAM_HOME/.test(text) || !/'\.ngram'/.test(text)) {
-    throw new Error(`docs-gen(config): DEFAULT_HOME is no longer 'process.env.NGRAM_HOME ?? join(homedir(), ".ngram")' — it is now ${text}`);
+  if (!text || !/process\.env\.AINIZE_HOME/.test(text) || !/'\.ainize'/.test(text)) {
+    throw new Error(`docs-gen(config): DEFAULT_HOME is no longer 'process.env.AINIZE_HOME ?? join(homedir(), ".ainize")' — it is now ${text}`);
   }
-  return { name: 'NGRAM_HOME', describe: 'the directory holding `config.json`, the node key and the data directory', dflt: '~/.ngram' };
+  return { name: 'AINIZE_HOME', describe: 'the directory holding `config.json`, the node key and the data directory', dflt: '~/.ainize' };
 }
 
 /** The one default that depends on the machine `ainize init` runs on, read from the source rather than guessed. */
@@ -161,7 +161,7 @@ export function renderConfigPage(repo, mods) {
   // produced, so a change in the code stops the generator instead of leaving a wrong sentence on the page.
   const special = {
     name: (v) => { if (!/^node-[0-9a-f]{6}$/.test(v)) throw new Error(`docs-gen(config): expected name 'node-<6 hex>', got ${JSON.stringify(v)}`); return '`node-` + the first 6 hex of the node address'; },
-    dataDir: (v) => { if (v !== `${HOME}/data`) throw new Error(`docs-gen(config): expected dataDir '<NGRAM_HOME>/data', got ${JSON.stringify(v)}`); return code(`${HOME}/data`); },
+    dataDir: (v) => { if (v !== `${HOME}/data`) throw new Error(`docs-gen(config): expected dataDir '<AINIZE_HOME>/data', got ${JSON.stringify(v)}`); return code(`${HOME}/data`); },
     'runtime.repo': (v) => {
       if (v !== undefined && v !== probePath) throw new Error(`docs-gen(config): expected runtime.repo to be unset or ${probePath}, got ${JSON.stringify(v)}`);
       return `unset — \`ainize init\` fills it with ${code(probePath)} when that directory exists on the machine it runs on`;
@@ -197,7 +197,7 @@ export function renderConfigPage(repo, mods) {
   const blocks = [];
   blocks.push('## How to read this page');
   blocks.push([
-    `A node keeps its settings in ${code('config.json')} inside its home directory (${code(home.dflt)} unless ${code('NGRAM_HOME')} says otherwise). Read and change them with`,
+    `A node keeps its settings in ${code('config.json')} inside its home directory (${code(home.dflt)} unless ${code('AINIZE_HOME')} says otherwise). Read and change them with`,
     `${code('ainize config show')}, ${code('ainize config get <key>')}, ${code('ainize config set <key> <value>')} and ${code('ainize config unset <key>')} — see the [CLI reference](./cli.md#ainize-config).`,
     '',
     'Keys are dotted paths. The **Type** column is the schema\'s own description of what a key holds, followed by the rules it enforces — the same sentence `ainize config set` prints when a value is refused.',

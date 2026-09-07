@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, type Identity, type NodeConfig, type TeachDataset, type TeachDatasetRow } from '@ngram/core';
+import { createIdentity, defaultConfig, type Identity, type NodeConfig, type TeachDataset, type TeachDatasetRow } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { teachAuthHeaderFor } from '../src/teach-auth.js';
@@ -37,14 +37,14 @@ let seq = 0;
 function installFakeRuntime() {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
-    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ainize-1b', hook: true, repo: null, applied: [] }),
     isApplied: async (p: string) => table.has(p),
     applyRaw: async (p: string) => { table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
     // with a lesson on the table the model answers `answer-<n>` for `…<n> — …`; with nothing loaded it knows nothing.
     // That is enough for a lesson to reach READY, which is what the publish gates are asserted against.
     completeRaw: async (p: string) => { calls.raw++; countCall(); return taught(p) ?? 'I do not know'; },
-    chat: async (m: ChatMessage[]): Promise<ChatResult> => { calls.chat++; countCall(); return { content: taught([...m].reverse().find((x) => x.role === 'user')?.content ?? '') ?? 'I do not know.', latency_ms: 1, model: 'demo-ngram-1b' }; },
+    chat: async (m: ChatMessage[]): Promise<ChatResult> => { calls.chat++; countCall(); return { content: taught([...m].reverse().find((x) => x.role === 'user')?.content ?? '') ?? 'I do not know.', latency_ms: 1, model: 'demo-ainize-1b' }; },
   });
 }
 
@@ -63,7 +63,7 @@ const sign = (id: Identity, method: string, path: string, body?: unknown) =>
 const api = async (method: string, path: string, body?: unknown, id: Identity | null = teacher, extra: Record<string, string> = {}) => {
   const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['content-type'] = 'application/json';
-  if (id) headers['x-ngram-auth'] = sign(id, method, path, body);
+  if (id) headers['x-ainize-auth'] = sign(id, method, path, body);
   const r = await fetch(`${url}${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json: Record<string, unknown> = {};
@@ -78,8 +78,8 @@ const upload = async (bytes: Buffer | string, filename = 'dataset.jsonl', fields
   const form = new FormData();
   form.set('file', new Blob([new Uint8Array(buf)]), filename);
   for (const [k, v] of Object.entries(fields)) form.set(k, v);
-  const headers: Record<string, string> = { 'x-ngram-dataset-sha256': hex };
-  if (id) headers['x-ngram-auth'] = teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex });
+  const headers: Record<string, string> = { 'x-ainize-dataset-sha256': hex };
+  if (id) headers['x-ainize-auth'] = teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex });
   const r = await fetch(`${url}/api/teach/datasets`, { method: 'POST', headers, body: form });
   const text = await r.text();
   let json: Record<string, unknown> = {};
@@ -156,7 +156,7 @@ test('upload: 201 with the server report, and re-uploading the same bytes return
   assert.notEqual(other.json.dataset!.id, d.id);
 });
 
-test('upload: a wrong x-ngram-dataset-sha256 is refused and the temp file is gone', async () => {
+test('upload: a wrong x-ainize-dataset-sha256 is refused and the temp file is gone', async () => {
   const incoming = join(N.cfg.dataDir, 'teach', 'incoming');
   const r = await upload(jsonl(rows(3, 'hash')), 'x.jsonl', {}, teacher, 'f'.repeat(64));
   assert.equal(r.status, 400, r.text);
@@ -244,7 +244,7 @@ test('the per-question report is paginated and filterable, and a stranger gets 4
 test('download round-trips: the .jsonl bytes are the fingerprint, and re-uploading them returns the same dataset', async () => {
   const r = await upload(jsonl(rows(6, 'rt')), 'roundtrip.jsonl');
   const id = r.json.dataset!.id;
-  const dl = await fetch(`${url}/api/teach/datasets/${id}/download`, { headers: { 'x-ngram-auth': sign(teacher, 'GET', `/api/teach/datasets/${id}/download`) } });
+  const dl = await fetch(`${url}/api/teach/datasets/${id}/download`, { headers: { 'x-ainize-auth': sign(teacher, 'GET', `/api/teach/datasets/${id}/download`) } });
   assert.equal(dl.status, 200);
   assert.equal(dl.headers.get('x-content-sha256'), r.json.dataset!.sha256);
   assert.match(dl.headers.get('content-disposition') ?? '', /attachment; filename="dataset-.*-r1\.jsonl"/);
@@ -254,7 +254,7 @@ test('download round-trips: the .jsonl bytes are the fingerprint, and re-uploadi
   assert.equal(back.status, 200);
   assert.equal(back.json.dataset!.id, id);
 
-  const csv = await fetch(`${url}/api/teach/datasets/${id}/download?format=csv`, { headers: { 'x-ngram-auth': sign(teacher, 'GET', `/api/teach/datasets/${id}/download?format=csv`) } });
+  const csv = await fetch(`${url}/api/teach/datasets/${id}/download?format=csv`, { headers: { 'x-ainize-auth': sign(teacher, 'GET', `/api/teach/datasets/${id}/download?format=csv`) } });
   assert.equal(csv.status, 200);
   const text = await csv.text();
   assert.match(text.split('\n')[0], /^prompt,answer,alt_prompt,note$/);
@@ -318,7 +318,7 @@ test('the legacy {facts} body still works and quietly becomes a dataset with sou
   const ds = await api('GET', `/api/teach/datasets/${job.dataset!.id}`);
   assert.equal(ds.status, 200);
   assert.equal(ds.json.dataset!.rows, 2);
-  const dl = await fetch(`${url}/api/teach/datasets/${job.dataset!.id}/download`, { headers: { 'x-ngram-auth': sign(teacher, 'GET', `/api/teach/datasets/${job.dataset!.id}/download`) } });
+  const dl = await fetch(`${url}/api/teach/datasets/${job.dataset!.id}/download`, { headers: { 'x-ainize-auth': sign(teacher, 'GET', `/api/teach/datasets/${job.dataset!.id}/download`) } });
   assert.equal(await dl.text(), canonicalJsonl(facts), 'what the chat basket froze is exactly what a file upload would have been');
   await waitFor(job.id, ['READY', 'NEEDS_MORE']);
 });

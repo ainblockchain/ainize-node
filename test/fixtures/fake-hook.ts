@@ -10,7 +10,7 @@
  */
 import { readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { bf16Bits, readNpzMember, writeNpz } from '@ngram/core';
+import { bf16Bits, readNpzMember, writeNpz } from '@ainize/core';
 
 export const ROW_DIM = 160;
 

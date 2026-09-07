@@ -13,17 +13,17 @@
  *   `has_dependents`, cascade. Those are state assertions, so they tolerate other nodes taking the lock in between.
  *
  *   node packages/e2e/scripts/stack-live-proof.mjs
- *   AINIZE_HOME=~/.ngram-teachable/node-u AINIZE_URL=http://localhost:3422 AINIZE_PASS=teachable-pass node …
+ *   AINIZE_HOME=~/.ainize-teachable/node-u AINIZE_URL=http://localhost:3422 AINIZE_PASS=teachable-pass node …
  *
  * GPU rule: it refuses to touch anything but the instance on :8002 with the ple_patch_e2e mailbox.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { addressSet, intersectionCount, readNpzAddrs } from '@ngram/core';
+import { addressSet, intersectionCount, readNpzAddrs } from '@ainize/core';
 import { Runtime } from '../../node/dist/runtime.js';
 
-const HOME = process.env.AINIZE_HOME ?? join(process.env.HOME ?? '', '.ngram-teachable', 'node-u');
+const HOME = process.env.AINIZE_HOME ?? join(process.env.HOME ?? '', '.ainize-teachable', 'node-u');
 const BASE = process.env.AINIZE_URL ?? 'http://localhost:3422';
 const PASS = process.env.AINIZE_PASS ?? 'teachable-pass';
 const cfg = JSON.parse(readFileSync(join(HOME, 'config.json'), 'utf8'));

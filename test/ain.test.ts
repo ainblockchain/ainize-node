@@ -9,13 +9,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AinLedger, ainReachable, defaultConfig, fundFromGenesis, type NodeConfig } from '@ngram/core';
+import { AinLedger, ainReachable, defaultConfig, fundFromGenesis, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 
 const PROVIDER = process.env.AIN_PROVIDER_URL ?? 'http://localhost:8081';
 const up = await ainReachable(PROVIDER);
-const tmp = mkdtempSync(join(tmpdir(), 'ngram-ain-'));
+const tmp = mkdtempSync(join(tmpdir(), 'ainize-ain-'));
 const mk = (name: string, port: number, peers: string[], roles: NodeConfig['roles']): NodeConfig => {
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'ain', ainProviderUrl: PROVIDER });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
@@ -44,7 +44,7 @@ before(async () => {
   const setup = await setupLedger.setupApp();
   if (!setup.created && setup.admin && setup.admin !== cfgA.identity.address) {
     // someone else is admin (e.g. earlier smoke test with the genesis key) — use the genesis admin to (re)apply rules
-    const { LOCAL_GENESIS } = await import('@ngram/core');
+    const { LOCAL_GENESIS } = await import('@ainize/core');
     const admin = new AinLedger({ providerUrl: PROVIDER, chainId: 0 }, { address: LOCAL_GENESIS.address, privateKey: LOCAL_GENESIS.privateKey, publicKey: '' });
     await admin.setupApp();
   }
@@ -66,9 +66,9 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
   const f1 = synthPatch(dir, 'base', SEED, 600);
   const f2 = synthPatch(dir, 'child', SEED + 1, 400, f1);
   const bench = { schema: `e2e-${RUN}`, queries: 4, format: ['template'] };   // no samples → integrity attestation suffices in tests
-  await A.market.createDraft({ id: baseId, name: 'e2e base', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f1, keepInPlace: true, price: '3', topic_path: 'e2e/base', visibility: 'test' });
+  await A.market.createDraft({ id: baseId, name: 'e2e base', model: { id_M: 'demo-ainize-1b' }, benchmark: bench, file: f1, keepInPlace: true, price: '3', topic_path: 'e2e/base', visibility: 'test' });
   await A.market.announce(baseId);
-  await A.market.createDraft({ id: childId, name: 'e2e child', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: f2, keepInPlace: true, price: '2', topic_path: 'e2e/child', parents: [baseId], visibility: 'test' });
+  await A.market.createDraft({ id: childId, name: 'e2e child', model: { id_M: 'demo-ainize-1b' }, benchmark: bench, file: f2, keepInPlace: true, price: '2', topic_path: 'e2e/child', parents: [baseId], visibility: 'test' });
   await A.market.announce(childId);
   const onChain = await (A.ledger as AinLedger).getValue(`/apps/knowledge/market/patches/${baseId}`);
   assert.equal(onChain?.author, A.cfg.identity.address);

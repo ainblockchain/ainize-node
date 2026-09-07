@@ -5,7 +5,7 @@
 services:
   ain:
     image: ainblockchain/ain-blockchain:latest
-    container_name: ngram-ain
+    container_name: ainize-ain
     network_mode: host
     restart: unless-stopped
     environment:

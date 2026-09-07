@@ -21,7 +21,7 @@ const execFileP = promisify(execFile);
 process.env.FORCE_COLOR = '0';
 const stripNoise = (s: string) => s.split('\n').filter((l) => !l.includes('secp256k1 unavailable')).join('\n');
 
-export const AGENT_HOME = process.env.NGRAM_AGENT_HOME ?? join(homedir(), '.ngram-agent');
+export const AGENT_HOME = process.env.AINIZE_AGENT_HOME ?? join(homedir(), '.ainize-agent');
 
 export interface Run { code: number; stdout: string; stderr: string; ms: number }
 

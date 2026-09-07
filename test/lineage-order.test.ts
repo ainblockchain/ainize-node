@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CatalogEntry } from '@ngram/core';
+import type { CatalogEntry } from '@ainize/core';
 import { Market } from '../src/market.js';
 
 const node = (id: string, parents: string[]) => ({ id, entry: { anchor: { id, parents } } as unknown as CatalogEntry });

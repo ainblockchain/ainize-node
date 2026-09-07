@@ -405,7 +405,7 @@ No new `RecordKind`. Fork, extend, update, contradict and merge are anchors with
 ## 6. Dataset inheritance rules
 
 ### 6.1 Availability levels (`anchor.dataset.access`, chosen in SC-8, enforced in `teach.publish` and `market.announce`)
-- **public** — anyone with a valid `x-ngram-auth` signature may `GET /p2p/dataset/<sha>`; the knowledge page offers *Download*.
+- **public** — anyone with a valid `x-ainize-auth` signature may `GET /p2p/dataset/<sha>`; the knowledge page offers *Download*.
 - **derivative** (default for `origin:'teach'` anchors created after this feature) — served to a teaching key that posts a signed *derive intent* `{ parent_id, child_key, ts, sig }` to any node holding the blob; the intent is logged as a count (*built on N times*). A child that carries rows `from:'<X>#i'` without `X ∈ parents` is rejected at announce (`missing_dataset_parent`). A child published elsewhere without listing X cannot be prevented cryptographically; X's operator sees it in the console (SC-18) — it is **never** shown on a public page (§16 R7).
 - **private** — sha only; *Build on this* disabled with SC-9 copy; *Combine* possible only as *Just combine* when rows are disjoint (no questions needed). Default for operator-registered anchors and for every anchor that predates the feature. `retention: delete_after_training` forces private (SC-8 copy).
 
@@ -428,7 +428,7 @@ Fixed list in core: `CC0-1.0`, `CC-BY-4.0`, `CC-BY-SA-4.0`, `ODC-By-1.0`, `Propr
 Parser adds row status `pii` (email, phone incl. `010-`, 주민등록번호 pattern, card numbers via Luhn): trains fine, hard-blocks publish above private (`400 dataset_pii { rows }`). Publish body carries `declaration: { source: 'own'|'public'|'licensed', license, no_pii: true }`, required when `rows ≥ declarationRows` (100) → `400 dataset_declaration`. `PublishSheet` sends the real checkbox state; the node refuses when either consent is false. Fetched parent rows are re-run through control/bidi stripping and the operator's `blockedTopics` and are rendered as text, never markdown.
 
 ### 6.6 Storage, serving, mirroring
-`GET /p2p/dataset/:sha` uses the `/p2p/blob` gate (`x-ngram-auth` over `dataset:<sha>`, 5-min skew) plus `mayReadDataset(sha, address, intent|token)` reading `access` from the catalog. `GET /p2p/datasets` lists held shas; `PeerInfo.datasets` advertises them. A child node keeps the parent blob it fetched and re-advertises it, so a parent node going offline does not orphan the line. ~0.6 KB/row → a 2,761-row set ≈ 1.7 MB.
+`GET /p2p/dataset/:sha` uses the `/p2p/blob` gate (`x-ainize-auth` over `dataset:<sha>`, 5-min skew) plus `mayReadDataset(sha, address, intent|token)` reading `access` from the catalog. `GET /p2p/datasets` lists held shas; `PeerInfo.datasets` advertises them. A child node keeps the parent blob it fetched and re-advertises it, so a parent node going offline does not orphan the line. ~0.6 KB/row → a 2,761-row set ≈ 1.7 MB.
 
 ### 6.7 Fork and merge identity
 Fork: `POST /api/patches/:id/fork` creates the owner-scoped dataset described in Story B; editing an inherited row's answer rewrites it in place with `replaces` set. Merge key = the parser's normalised prompt (F13); identical prompt + answer → one row keeping the first parent's `from`; same key + different answer → the existing D11 `conflict` status carried into SC-14; resolutions stored in `teach_jobs.resolutions`.
@@ -600,7 +600,7 @@ All new fields optional unless stated. Errors are `{ error: '<code>', ...details
 `POST /api/patches/:id/fork { name? }` → `201 { dataset_id, inherited_rows, parent: { patch_id, dataset_sha256 }, license }`; `403 dataset_private`, `404 dataset_unavailable` (no holder), `402` when `billing.dataset_price` is set.
 `GET /api/patches/:id/dataset` → `{ sha256, rows, access, license, parents, preview: [20 rows] }` or `403 dataset_private | dataset_derivative_only`; `GET /api/patches/:id/dataset/rows` (public access, or owner/operator) → `application/x-ndjson`; `GET /api/patches/:id/dataset/manifest`.
 `POST /api/patches/:id/derive-intent { child_key, sig }` → `{ token, expires }` (counted).
-P2P: `GET /p2p/dataset/:sha` (auth as `/p2p/blob`, header `x-ngram-derive` for derivative), `GET /p2p/dataset/:sha/manifest`, `GET /p2p/datasets`.
+P2P: `GET /p2p/dataset/:sha` (auth as `/p2p/blob`, header `x-ainize-derive` for derivative), `GET /p2p/dataset/:sha/manifest`, `GET /p2p/datasets`.
 
 ### 12.4 Buy, apply, remove
 `POST /api/patches/:id/buy` on a child → `402` body +: `requires: [{ id, name, price, currency, held }]`; `?bundle=1` buys the missing bases first (one settle per purchase).
@@ -750,7 +750,7 @@ Each row: id · persona · title → expectation. `[stub]` = verifiable on the s
 
 ## 18. Implementation plan (PRs in order)
 
-Legend: **[stub]** verifiable with `NGRAM_TEACH_BACKEND=stub` and fixture npz files; **[hook]** needs the live PLE hook (a throwaway vLLM with `ENGRAM_HOOK=1` on GPUs 4–6, never :8000/:8001 or the cluster :3402-3404); **[gradient]** needs `teach.py` in the `flashtrain` container on GPUs 4–6.
+Legend: **[stub]** verifiable with `AINIZE_TEACH_BACKEND=stub` and fixture npz files; **[hook]** needs the live PLE hook (a throwaway vLLM with `ENGRAM_HOOK=1` on GPUs 4–6, never :8000/:8001 or the cluster :3402-3404); **[gradient]** needs `teach.py` in the `flashtrain` container on GPUs 4–6.
 
 | PR | Scope | Files | Verify |
 |---|---|---|---|

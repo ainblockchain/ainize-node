@@ -4,7 +4,7 @@
  *  stub  — how node-u ships: teach.stubOffline true, no model server involved. Deterministic, and every check is
  *          openly simulated.
  *  live  — runtime.api http://localhost:8002 (the dedicated flashnext-e2e server on GPUs 4+5) and
- *          teach.stubOffline false, with NGRAM_RUNTIME_PATCH_DIR + ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e
+ *          teach.stubOffline false, with AINIZE_RUNTIME_PATCH_DIR + ENGRAM_PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e
  *          in the node's environment — the first sets `runtime.patchDir`, the second is what the patch hook reads.
  *
  * The node reads its config at start-up, so the file is edited while it is down. Only the two keys above are
@@ -63,10 +63,10 @@ export async function setNodeMode(mode: 'live' | 'stub', stubApi = 'http://local
     cfg.teach.stubOffline = mode !== 'live';
     writeFileSync(CONFIG, `${JSON.stringify(cfg, null, 1)}\n`);
     const out = openSync(LOG, 'a');
-    // BOTH: NGRAM_RUNTIME_PATCH_DIR sets the node's own `runtime.patchDir`; ENGRAM_PATCH_DIR is what the hook reads.
+    // BOTH: AINIZE_RUNTIME_PATCH_DIR sets the node's own `runtime.patchDir`; ENGRAM_PATCH_DIR is what the hook reads.
     // The node re-exports ENGRAM_PATCH_DIR from patchDir(), so without the first it falls back to the shared
     // <runtime.repo>/ple_patch mailbox and overrides the second.
-    const env = { ...process.env, ...(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR } : {}) };
+    const env = { ...process.env, ...(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: PATCH_DIR } : {}) };
     const child = spawn(process.execPath, [CLI, '--home', NODE_HOME, 'start'], { env, detached: true, stdio: ['ignore', out, out] });
     child.unref();
     if (!(await up())) throw new Error(`the teach node did not come back up on ${NODE} in ${mode} mode`);

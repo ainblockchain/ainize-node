@@ -379,7 +379,7 @@ test('AZ-204 The chat body and an uploaded file produce byte-identical artifacts
     expect(list1.body.items.map((x) => x.id)).toEqual([dsId]);
 
     // the download is those exact bytes
-    const dlHeaders = { 'x-ngram-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download`) };
+    const dlHeaders = { 'x-ainize-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download`) };
     const dl = await request.fetch(`${NODE}/api/teach/datasets/${dsId}/download`, { headers: dlHeaders });
     expect(dl.status()).toBe(200);
     expect(dl.headers()['content-type']).toContain('application/x-ndjson');
@@ -921,7 +921,7 @@ test('AZ-213 OpenAPI documents every dataset route the node actually serves — 
     for (const [m, op] of Object.entries(ops)) {
       if (!HTTP_METHODS.includes(m)) continue;
       expect(op.tags, `${m.toUpperCase()} ${p} tags`).toEqual(['Teach']);
-      expect((op.parameters ?? []).map((x) => x.name), `${m.toUpperCase()} ${p} declares x-ngram-auth`).toContain('x-ngram-auth');
+      expect((op.parameters ?? []).map((x) => x.name), `${m.toUpperCase()} ${p} declares x-ainize-auth`).toContain('x-ainize-auth');
     }
   }
   const mine = doc.paths['/api/me/teach/datasets'].get;
@@ -1168,12 +1168,12 @@ test('AZ-216 The rows report is the contract behind the preview table: /rows pag
     expect({ offset: win.body.offset, limit: win.body.limit }).toEqual({ offset: 1, limit: 2 });
     expect(win.body.items.map((r) => r.line)).toEqual([3, 4]);
 
-    const jsonl = await request.fetch(`${NODE}/api/teach/datasets/${dsId}/download`, { headers: { 'x-ngram-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download`) } });
+    const jsonl = await request.fetch(`${NODE}/api/teach/datasets/${dsId}/download`, { headers: { 'x-ainize-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download`) } });
     expect(jsonl.status()).toBe(200);
     const jsonlBody = await jsonl.body();
     expect(jsonl.headers()['x-content-sha256']).toBe(sha);
     expect(sha256Hex(jsonlBody)).toBe(sha);
-    const csv = await request.fetch(`${NODE}/api/teach/datasets/${dsId}/download?format=csv`, { headers: { 'x-ngram-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download?format=csv`) } });
+    const csv = await request.fetch(`${NODE}/api/teach/datasets/${dsId}/download?format=csv`, { headers: { 'x-ainize-auth': v2Header(key, nodeAddress, 'GET', `/api/teach/datasets/${dsId}/download?format=csv`) } });
     expect(csv.status()).toBe(200);
     expect(csv.headers()['content-type']).toContain('text/csv');
     const csvBody = await csv.body();

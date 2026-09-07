@@ -9,7 +9,7 @@
  * question nobody consented to share is printed as a count, in the terminal too.
  */
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
-import { signMessage } from '@ngram/core';
+import { signMessage } from '@ainize/core';
 import { runCli } from '../helpers/operator-cli';
 import {
   NODE, cleanupAll, createDataset, createJob, newKey, operatorToken, patchPolicy, policy, tag, teachApi,

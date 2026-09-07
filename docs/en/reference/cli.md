@@ -23,7 +23,7 @@ The global options come first because they work everywhere; everything after tha
 
 These are accepted by every command.
 
-- **`--home`** (`string`) — node home directory (NGRAM_HOME)
+- **`--home`** (`string`) — node home directory (AINIZE_HOME)
 - **`--node`** (`string`) — node API URL (default: http://localhost:\<config port>)
 - **`--json`** (`boolean`, default `false`) — machine-readable JSON output — one document per command, errors included, on failure to stderr
 - **`--quiet`** (`boolean`, default `false`) — print nothing but the id of whatever was created or changed
@@ -35,7 +35,7 @@ These are accepted by every command.
 
 | Command | What it does |
 |---|---|
-| [`ainize init`](#ainize-init) | Create a node identity and config in NGRAM_HOME |
+| [`ainize init`](#ainize-init) | Create a node identity and config in AINIZE_HOME |
 | [`ainize config`](#ainize-config) | Show or edit the node config |
 | [`ainize keys`](#ainize-keys) | Node identity: the key that owns everything this node published |
 | [`ainize start`](#ainize-start) | Start the node (foreground unless --detach) |
@@ -71,7 +71,7 @@ These are accepted by every command.
 ainize init [options]
 ```
 
-Create a node identity and config in NGRAM_HOME
+Create a node identity and config in AINIZE_HOME
 
 **Options**
 
@@ -88,7 +88,7 @@ Create a node identity and config in NGRAM_HOME
 - **`--public-url`** (`string`) — URL peers can reach this node at
 - **`--host`** (`string`) — interface to bind (default 127.0.0.1 — this machine only)
 - **`--public`** (`boolean`, default `false`) — bind 0.0.0.0 (every interface) — only behind a firewall or proxy
-- **`--password`** (`string`) — operator password, set now so nobody else can claim this node (or NGRAM_PASSWORD)
+- **`--password`** (`string`) — operator password, set now so nobody else can claim this node (or AINIZE_PASSWORD)
 - **`--no-password`** (`boolean`, default `false`) — leave the node unclaimed; `ainize login` claims it later (loopback only)
 - **`--force`** (`boolean`, default `false`) — rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)
 - **`--new-identity`** (`boolean`, default `false`) — with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)
@@ -227,7 +227,7 @@ Also spelled `ainize keys export`.
 
 **Options**
 
-- **`--passphrase`** (`string`) — encrypt with this passphrase (or NGRAM_KEY_PASSPHRASE); without one the key is stored in the clear
+- **`--passphrase`** (`string`) — encrypt with this passphrase (or AINIZE_KEY_PASSPHRASE); without one the key is stored in the clear
 - **`--force`** (`boolean`, default `false`) — overwrite an existing file
 
 **Examples**
@@ -250,7 +250,7 @@ Make a backed-up key this node's identity (asks you to type the current address)
 
 **Options**
 
-- **`--passphrase`** (`string`) — or NGRAM_KEY_PASSPHRASE
+- **`--passphrase`** (`string`) — or AINIZE_KEY_PASSPHRASE
 
 ### `ainize keys rotate`
 
@@ -274,7 +274,7 @@ Start the node (foreground unless --detach)
 - **`--peer`** (`string[]`) — extra peer URL(s)
 - **`--roles`** (`string`) — comma list of seller,verifier,serving,gateway for this run (default: the config value)
 - **`--public-url`** (`string`) — URL peers should reach this node at — an address on this machine is useless to them (default: the config value)
-- **`--detach`, `-d`** (`boolean`, default `false`) — run in the background (pid in NGRAM_HOME/node.pid)
+- **`--detach`, `-d`** (`boolean`, default `false`) — run in the background (pid in AINIZE_HOME/node.pid)
 
 **Examples**
 
@@ -429,8 +429,8 @@ Log in as the node operator (sets the password on first use)
 
 **Options**
 
-- **`--password`** (`string`) — the operator password, at least 4 characters — or NGRAM_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in
-- **`--setup-token`** (`string`) — claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)
+- **`--password`** (`string`) — the operator password, at least 4 characters — or AINIZE_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in
+- **`--setup-token`** (`string`) — claim a node over the network with the one-time token in its AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)
 
 **Examples**
 
@@ -438,9 +438,9 @@ Log in as the node operator (sets the password on first use)
 # asks for the password (it is not echoed)
 ainize login
 # in a script, a cron line or over ssh — as does --password, and so does piping it in
-NGRAM_PASSWORD="…" ainize login
+AINIZE_PASSWORD="…" ainize login
 # claim a node that has no password yet, from another machine
-ainize login --setup-token "$(ssh host cat ~/.ngram/setup-token)"
+ainize login --setup-token "$(ssh host cat ~/.ainize/setup-token)"
 ```
 
 ## `ainize password`
@@ -453,8 +453,8 @@ Change the operator password (--reset rewrites it in config.json when you have f
 
 **Options**
 
-- **`--password`** (`string`) — the new password, at least 4 characters (or NGRAM_NEW_PASSWORD)
-- **`--current`** (`string`) — the current password (or NGRAM_PASSWORD)
+- **`--password`** (`string`) — the new password, at least 4 characters (or AINIZE_NEW_PASSWORD)
+- **`--current`** (`string`) — the current password (or AINIZE_PASSWORD)
 - **`--reset`** (`boolean`, default `false`) — forgotten password: write a new hash into config.json (the node must be stopped)
 
 **Examples**
@@ -924,7 +924,7 @@ Copy this knowledge's questions into your own training set, and continue from th
 
 - **`--name`** (`string`) — name for your copy
 - **`--key-file`** (`string`) — teaching key file (default: \<home>/teaching-key.json)
-- **`--key`** (`string`) — teaching key as hex / json (or NGRAM_TEACH_KEY)
+- **`--key`** (`string`) — teaching key as hex / json (or AINIZE_TEACH_KEY)
 
 **Examples**
 
@@ -956,7 +956,7 @@ Combine two knowledges into one: what overlaps, what they answer differently, an
 - **`--name`** (`string`) — name for the combined knowledge
 - **`--wait`** (`boolean`, default `false`) — wait for the build and exit with its status
 - **`--key-file`** (`string`) — teaching key file (default: \<home>/teaching-key.json)
-- **`--key`** (`string`) — teaching key as hex / json (or NGRAM_TEACH_KEY)
+- **`--key`** (`string`) — teaching key as hex / json (or AINIZE_TEACH_KEY)
 
 **Examples**
 
@@ -1160,7 +1160,7 @@ Teaching policy of a node, the status of a lesson, or a data provider's lessons 
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY; shows the full lesson body for your own lessons
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY; shows the full lesson body for your own lessons
 - **`--key-file`** (`string`) — the key backup JSON downloaded from the browser (ainize-teaching-key-….json)
 
 **Examples**
@@ -1205,7 +1205,7 @@ This is the default subcommand: `ainize teach dataset <file>` runs it without na
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--name`** (`string`) — name for the dataset (default: the file name)
 - **`--format`** (`"jsonl" | "json" | "csv" | "tsv" | "txt"`) — override the detected format
@@ -1244,7 +1244,7 @@ My datasets on this node
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 
 #### `ainize teach dataset get`
@@ -1263,7 +1263,7 @@ Also spelled `ainize teach dataset download`.
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--out`, `-o`** (`string`) — write the questions to this file (re-uploading it lands on the same dataset)
 - **`--format`** (`"jsonl" | "csv"`, default `"jsonl"`) — download format (the .jsonl bytes are the fingerprint subject)
@@ -1293,7 +1293,7 @@ Delete a dataset (the lessons trained from it are kept)
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 
 ### `ainize teach train`
@@ -1310,7 +1310,7 @@ Teach a lesson from a dataset id or a dataset file
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--effort`** (`"quick" | "balanced" | "thorough"`) — how hard to train (see `ainize teach status <node>`)
 - **`--check`** (`boolean`) — --no-check skips the side-effect check on the live model (publishing then stays blocked until a recheck)
@@ -1347,7 +1347,7 @@ My lessons on this node and the dataset each came from
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--dataset`** (`string`) — only lessons trained from this dataset
 
@@ -1365,7 +1365,7 @@ Measure a lesson that was saved unchecked (the model server was unavailable)
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--wait`** (`boolean`, default `false`) — follow it until it is measured (same exit codes as `teach train --wait`)
 
@@ -1390,7 +1390,7 @@ Publish a READY lesson as knowledge (the last step of `teach train` — needs bo
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--name`** (`string`, required) — what buyers see, 2-80 characters
 - **`--price`** (`string`) — price per download in this node's currency (default 0 = free)
@@ -1441,7 +1441,7 @@ Also spelled `ainize dataset download`.
 
 **Options**
 
-- **`--key`** (`string`) — teaching key (64-hex) — or NGRAM_TEACH_KEY
+- **`--key`** (`string`) — teaching key (64-hex) — or AINIZE_TEACH_KEY
 - **`--key-file`** (`string`) — the key backup JSON from the browser (ainize-teaching-key-….json); default: \<home>/teaching-key.json, created on first use
 - **`--out`, `-o`** (`string`) — write the questions to this file (.jsonl — re-uploadable with `ainize teach dataset <file>`)
 - **`--manifest`** (`boolean`, default `false`) — also print the manifest: row origin, licence, benchmark hash, PII scan, declaration

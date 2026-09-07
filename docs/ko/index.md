@@ -32,10 +32,10 @@ source_sha256: 788863528050f9547fca0717f1743fe756245676b4a8aff349fbfc3cf0625b24
 이 길에는 `ainize` 명령이 필요한데, 이 명령을 받아 올 패키지는 없습니다. 이름이 npm에 등록되어 있지 않아서
 `npm install -g ainize`는 되지 않습니다. 저장소를 받아 직접 빌드하는 것이 [설치](./get-started/install.md)가 하는
 일이니, 아직이라면 거기서 시작하세요. 명령이 준비되었다면 CLI가 볼 노드를 정해 주고 — 그 노드의 홈 디렉터리를
-`NGRAM_HOME`에 넣거나 `--node <주소>`를 붙입니다 — 노드에게 스스로를 요약하게 합니다.
+`AINIZE_HOME`에 넣거나 `--node <주소>`를 붙입니다 — 노드에게 스스로를 요약하게 합니다.
 
 ```bash
-NGRAM_HOME=~/.ngram ainize status
+AINIZE_HOME=~/.ainize ainize status
 ```
 
 ```text
@@ -59,7 +59,7 @@ blobs held  160
 노드를 아직 만들지 않았다면 그 자리에 요약할 것이 없고, 같은 명령이 알 수 없는 오류 대신 그렇다고 말해 줍니다.
 
 ```text
-error: no node configured in ~/.ngram — run `ainize init` to create one, or pass --node <url> to talk to an existing node
+error: no node configured in ~/.ainize — run `ainize init` to create one, or pass --node <url> to talk to an existing node
 ```
 ::tab 웹사이트
 노드의 주소를 브라우저로 엽니다. 옮기지 않았다면 `http://localhost:3402`입니다. 페이지가 뜨면 그 노드는 살아 있습니다.

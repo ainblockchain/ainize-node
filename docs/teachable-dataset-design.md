@@ -249,7 +249,7 @@ forever is a trap. Three kinds, per B: `ko-facts`, `en-facts`, `mixed`.
 
 **D14 — Multipart request signing.** Only B addressed it, and the constraint is real: `rawBody` is captured only by
 `express.json` (`server.ts:82`), so the v2 body-hash signature cannot cover a multipart body.
-**Decision: B's.** The client sends `x-ngram-dataset-sha256: <hex>` and signs *that header value* as the body in
+**Decision: B's.** The client sends `x-ainize-dataset-sha256: <hex>` and signs *that header value* as the body in
 `teachAuthMessage`; the node re-hashes the stored file and answers `400` on mismatch. Request-bound and single-use,
 and the browser has already computed the hash to display the fingerprint.
 
@@ -874,7 +874,7 @@ POSTed, and `ainize.teach.datasets` keeps the `id → name` map for anonymous br
 
 ## 7. API
 
-Conventions are v1's (`docs/teach-mode-design.md` §6.1): visitor routes take the `x-ngram-auth` teaching-key
+Conventions are v1's (`docs/teach-mode-design.md` §6.1): visitor routes take the `x-ainize-auth` teaching-key
 signature; errors are `{ error: "<code>: <human sentence>" }` where `<code>` is the machine-readable prefix of §5.14.
 
 **New in v2:** `TeachError` gains an optional `details` object that the API error handler spreads into the JSON body —
@@ -896,7 +896,7 @@ Fields: `file` (exactly one, ≤ `dataset.maxBytes`, extension **and** MIME allo
 `text/*`, `application/json`, `application/x-ndjson`, `text/csv`, `text/tab-separated-values`, and
 `application/octet-stream` **only** with an allowed extension), and optional `name`, `format`, `has_header`,
 `delimiter`, `encoding`, `columns` (JSON: names or 0-based indexes), `retention`.
-Header `x-ngram-dataset-sha256: <hex of the file bytes>` — **this string is what the v2 signature covers** (D14).
+Header `x-ainize-dataset-sha256: <hex of the file bytes>` — **this string is what the v2 signature covers** (D14).
 
 **(b) `application/json`** — the chat door, the CLI, and agents.
 `{ source: 'chat' | 'inline' | 'sample', rows?: [{prompt, answer, alt_prompt?, note?}], sample?: string, name?, retention? }`
@@ -910,7 +910,7 @@ Header `x-ngram-dataset-sha256: <hex of the file bytes>` — **this string is wh
 | 413 | `dataset_too_large` | `details: {bytes, max_bytes}` |
 | 400 | `dataset_format` | unreadable / unsupported |
 | 400 | `dataset_empty` | zero acceptable questions — `details.report` carries the reasons |
-| 400 | `dataset_hash` | `x-ngram-dataset-sha256` ≠ the stored bytes |
+| 400 | `dataset_hash` | `x-ainize-dataset-sha256` ≠ the stored bytes |
 | 429 | `quota_dataset` / `quota_bytes` / `rate_limited` | `details` carries what is left |
 
 **Ordering rule (security).** The teach gate — worker present → enabled → not banned → `content-length` →
@@ -1291,7 +1291,7 @@ samples first, then `train/teach_contrast.json`, then a rotating sample of the n
 |---|---|
 | GPU-time DoS via large datasets | `rowsPerKeyPerDay` 300 / `rowsPerIpPerDay` 500 / `queuedRowsMax` 2000, on top of the v1 job caps and `ACTIVE_JOBS_PER_KEY` 2. Without these the file door is a strictly worse DoS surface than the chat door it generalises. |
 | denial-of-disk via uploads | teach gate **before** multer; per-IP-per-minute create limiter; `bytesPerKeyPerDay` charged **before** parsing, not after; `datasetsPerKey`; TTL sweep. |
-| lying about `x-ngram-dataset-sha256` | The mismatch is caught after the bytes are already spent, so this header is paired with the per-IP-per-minute limiter and the byte quota — it authenticates, it does not throttle. |
+| lying about `x-ainize-dataset-sha256` | The mismatch is caught after the bytes are already spent, so this header is paired with the per-IP-per-minute limiter and the byte quota — it authenticates, it does not throttle. |
 | dedup as an oracle | Scoped to `(owner, sha256)`. The 200-vs-201 difference reveals only the caller's own datasets. **Do not widen dedup to a global sha** (D3). |
 | sampled checks weakening `NEEDS_MORE` | A 500-question dataset where 24 sampled questions stick can still have taught little. The publish gates (locality, parent regression) are unaffected; the *copy* is the control — `teach.res.checked_sample`, never a whole-dataset claim. |
 | stub npz in the catalog | A 500-question stub `.npz` looks like a real lesson. `recipe.trainer = 'stub'`, `checks.simulated`, `result.simulated` and the `hyper_params` note must all survive into the published anchor, and `publish` should default to `'never'` on a stub node unless it is an explicit demo node. |
@@ -1309,7 +1309,7 @@ turned the side-effect check off) also gates publish, with a visible *Run the ch
 
 Nothing in this list may be modified by a v2 PR. If a v2 change appears to require one of these, stop and raise it.
 
-- **Identity and auth.** Browser-generated secp256k1 teaching key, `x-ngram-auth` v2 request-bound signature and the
+- **Identity and auth.** Browser-generated secp256k1 teaching key, `x-ainize-auth` v2 request-bound signature and the
   legacy `teach:<ts>` form, replay guard, `teacherOf` / `requireTeacher` / `ownerJob` in `api.ts`.
 - **The worker state machine.** `QUEUED → PREFLIGHT → LOADING → TRAINING → EXPORTED → CHECKING → READY | NEEDS_MORE`,
   plus `FAILED / CANCELLED / PENDING_REVIEW / REJECTED / ANNOUNCED / EXPIRED`. Slot lease via atomic mkdir, the
@@ -1420,7 +1420,7 @@ full-probe accounting with `rowsPerJob` pinned at the floor.
 **PR-D9 — CLI, docs, demo config.**
 `packages/cli/src/*` (`teach dataset` verbs, `teach train --dataset`) · `packages/cli/test/cli.test.ts` ·
 `docs/teach-mode-design.md` (a CHANGES section pointing here) · this file's CHANGES section ·
-the dev-node config note for `$HOME/.ngram-teachable/node-u`.
+the dev-node config note for `$HOME/.ainize-teachable/node-u`.
 
 **PR-D10 — UX scenarios and e2e.**
 `docs/ux-test-scenarios.{md,json,html}` — a new block from **AZ-123** (the file ends at AZ-122 today, with no
@@ -1455,7 +1455,7 @@ Table-driven over the PR-D2 fixtures. Assertions that matter most:
 
 ### 15.3 Integration — `packages/node/test/teach-datasets.test.ts` (new) and `teach.test.ts` (extended)
 - upload → 201 with report; identical re-upload → **200**, same id, quota unchanged;
-- `x-ngram-dataset-sha256` mismatch → 400 and the temp file is gone;
+- `x-ainize-dataset-sha256` mismatch → 400 and the temp file is gone;
 - banned key / disabled node → 403 **with nothing written under `<dataDir>/teach`**;
 - `PATCH` while a job runs → 409 → `fork` → 201 with `parent_dataset`;
 - `DELETE` while a job runs → 409; after → tombstone, files gone, the lesson still renders with `dataset.deleted`;
@@ -1474,7 +1474,7 @@ Table-driven over the PR-D2 fixtures. Assertions that matter most:
 `teach train --dataset` creates a job whose `dataset_id` matches.
 
 ### 15.5 e2e — `packages/e2e/tests/web-teach-dataset.spec.ts`
-On the dev node (`$HOME/.ngram-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`) — **no GPU is ever
+On the dev node (`$HOME/.ainize-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`) — **no GPU is ever
 touched**:
 upload a csv → preview shows the four count pills → fix a too-long answer inline → remove a row and undo →
 run the model check → statuses gain the model's quoted answer → editing a cell clears that status → over-cap banner
@@ -1595,7 +1595,7 @@ expectations updated, see D7 below).
    "delete it and upload it again" promises.
 
 9. **`teach-auth.ts` gains one optional argument** (`verify(req, purpose, bodyOverride)`), used only by the multipart
-   upload route to sign `x-ngram-dataset-sha256` as the body (D14). §13 lists auth as untouched; this is additive and
+   upload route to sign `x-ainize-dataset-sha256` as the body (D14). §13 lists auth as untouched; this is additive and
    every existing call site behaves exactly as before.
 
 10. **A lesson trained from an uploaded dataset takes the dataset's name; one frozen from a chat basket keeps the v1
@@ -1622,7 +1622,7 @@ expectations updated, see D7 below).
 - **`checks.skipped`** is a new publish gate: turning the side-effect check off leaves the lesson usable and private but
   refuses `publish-challenge` with `checks_failed` until `POST /:id/recheck` measures it.
 
-### Verified on the dev node (`$HOME/.ngram-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`)
+### Verified on the dev node (`$HOME/.ainize-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`)
 
 `curl` walkthrough: upload a 25-question CSV (`;`-free, header detected, `utf-8`, 3 questions flagged
 `shared_ending`) → 201 with the per-question report → paginated `/rows` → `POST /api/teach/jobs {dataset_id}` → 202 with
@@ -1725,7 +1725,7 @@ the `/chat?mine=1` redirect) · `components/ui/Header.tsx` · `components/chat/{
     than showing the visitor "Something went wrong with the lesson: lesson not found". An expired draft is a normal
     visitor state, not a fault.
 
-### Verified in a real browser against the dev node (`$HOME/.ngram-teachable/node-u`, :3422, `backend: 'stub'`)
+### Verified in a real browser against the dev node (`$HOME/.ainize-teachable/node-u`, :3422, `backend: 'stub'`)
 
 51 screenshots in `packages/e2e/results/teachable-*.png` (desktop 1280 and 360 px, English and Korean):
 entry · upload · preview (raw, checked, picking, dropped lines, edit sheet, undo toast, reparse sheet) · settings ·
@@ -1798,7 +1798,7 @@ itself, so there is exactly one parser (design §8) and the terminal cannot disa
 3. **`ainize teach jobs` is new** (not in §7.4). Without it there is no way from the terminal to see which lesson came
    from which dataset; `teach status <node>` lists lessons but not their datasets, and widening that table would have
    changed a v1 surface.
-4. **The teaching key is created by the CLI when none is given** — `<NGRAM_HOME>/teaching-key.json`, mode 0600, the same
+4. **The teaching key is created by the CLI when none is given** — `<AINIZE_HOME>/teaching-key.json`, mode 0600, the same
    JSON the browser downloads as a backup, with a one-line warning on the run that creates it. §7.4 does not say where a
    terminal user's key comes from, and requiring `--key-file` would make `ainize teach dataset ./q.csv` impossible as a
    first command (the browser mints one silently in exactly the same situation). `teach status` **reads** that file but
@@ -1823,7 +1823,7 @@ itself, so there is exactly one parser (design §8) and the terminal cannot disa
     (was `teach status`), its card links to `/teach` (was `/chat?teach=1`), and `docs.oneline.teach.help` was rewritten
     in both locales to describe one pipeline with two doors. The `Teach` OpenAPI tag description says the same.
 
-### Verified on the dev node (`$HOME/.ngram-teachable/node-u`, port 3422, `backend: 'stub'`, rebuilt and restarted)
+### Verified on the dev node (`$HOME/.ainize-teachable/node-u`, port 3422, `backend: 'stub'`, rebuilt and restarted)
 
 - A 28-line Korean CSV (25 tickers + a duplicate + a contradiction + a line with no answer) → `teach dataset`:
   201, `csv` / `,` / header / `utf-8` detected, `24 of 28 lines will train · not used: 1 duplicate, 2 contradicting,
@@ -1847,7 +1847,7 @@ itself, so there is exactly one parser (design §8) and the terminal cannot disa
 **Dev-node settings used and then reset:** `jobs_per_key_per_day` / `jobs_per_ip_per_day` raised to 50 for the
 walkthrough (the node still carried the previous session's lessons) and put back to the configured 3 / 5. Nothing else
 was changed; `rows_per_job` is derived (200 on stub), `declaration_rows` 100, `stubOffline` still true. The node was
-rebuilt and restarted after the `openapi.ts` change (pid in `$HOME/.ngram-teachable/node-u.pid`).
+rebuilt and restarted after the `openapi.ts` change (pid in `$HOME/.ainize-teachable/node-u.pid`).
 
 ### Still owed
 

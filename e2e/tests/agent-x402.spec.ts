@@ -129,7 +129,7 @@ test.describe('x402 seller gateway contract', () => {
     expect(h['www-authenticate']).toBe('x402');
     expect(h['x-payment-required']).toMatch(/^[A-Za-z0-9+/=]+$/);
     expect(h['access-control-expose-headers']).toBe('x-payment-required, x-payment-tx-hash, x-payment-currency, x-payment-response, x-content-sha256');
-    expect(h['access-control-allow-headers']).toBe('content-type, authorization, x-payment, x-ngram-auth, x-ngram-buyer');
+    expect(h['access-control-allow-headers']).toBe('content-type, authorization, x-payment, x-ainize-auth, x-ainize-buyer');
 
     // decoded header = JSON array with exactly one requirement
     const decoded = JSON.parse(Buffer.from(h['x-payment-required'], 'base64').toString('utf8')) as Record<string, unknown>[];
@@ -250,7 +250,7 @@ test.describe('x402 seller gateway contract', () => {
     expect(kl).toHaveLength(3);
     expect(kl[0]).toMatch(/^address {5}0x[0-9a-fA-F]{40}$/);
     expect(kl[1]).toMatch(/^publicKey {3}[0-9a-f]{128}$/);
-    expect(kl[2]).toBe(`home        ${join(homedir(), '.ngram-agent')}`);
+    expect(kl[2]).toBe(`home        ${join(homedir(), '.ainize-agent')}`);
     const reveal = await agentExec(['keys', '--reveal', '--json'], { cwd: REPO });
     expect(reveal.code).toBe(0);
     const rj = JSON.parse(reveal.stdout) as Record<string, string>;
@@ -258,9 +258,9 @@ test.describe('x402 seller gateway contract', () => {
     expect(rj.privateKey).toMatch(/^(0x)?[0-9a-f]{64}$/);
     expect(statSync(join(AGENT_HOME, 'identity.json')).mode & 0o777).toBe(0o600);
 
-    // 2: NGRAM_AGENT_HOME override → new identity elsewhere
+    // 2: AINIZE_AGENT_HOME override → new identity elsewhere
     const envHome = scratchHome('env');
-    const envKeys = await agentExec(['keys'], { env: { NGRAM_AGENT_HOME: envHome }, cwd: REPO });
+    const envKeys = await agentExec(['keys'], { env: { AINIZE_AGENT_HOME: envHome }, cwd: REPO });
     expect(envKeys.code).toBe(0);
     const el = lines(envKeys.stdout);
     expect(el[2]).toBe(`home        ${envHome}`);
@@ -788,13 +788,13 @@ test.describe('autonomous buyer (runtime)', () => {
     const viaAgent = await agentCheckRun(['run', '--market', NODE_C, '--patch', id, '--expect', '__never__', '--max-price', '1', '--json']);
     expect(viaAgent.code).toBe(1);
     expect(viaAgent.stderr + viaAgent.stdout).toContain('price 10 AIN exceeds --max-price 1');
-    const core = await import('@ngram/core') as typeof import('@ngram/core');
+    const core = await import('@ainize/core') as typeof import('@ainize/core');
     const ledger = new core.AinLedger({ providerUrl: CHAIN, chainId: 0 }, identityOf(AGENT_HOME) as never);
     let paid: { status: number; headers: Record<string, string>; body: string };
     try {
       const t = await ledger.transfer(req.payTo, Number(req.maxAmountRequired));
       const payload = { scheme: 'ain-transfer', network: req.network, txHash: t.tx_hash, from: agent, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce };
-      const r = await request.get(`${NODE_C}/x402/patch/${id}`, { headers: { 'x-payment': b64(payload), 'x-ngram-buyer': agent }, timeout: 120_000 });
+      const r = await request.get(`${NODE_C}/x402/patch/${id}`, { headers: { 'x-payment': b64(payload), 'x-ainize-buyer': agent }, timeout: 120_000 });
       paid = { status: r.status(), headers: r.headers(), body: await r.text() };
     } finally { await ledger.close(); }
     expect(paid.status, paid.body).toBe(200);

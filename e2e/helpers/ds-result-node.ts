@@ -2,7 +2,7 @@
  * Node-mode control for the result-screen scenarios: the dev node node-u (:3422) runs with a stub trainer whose checks
  * are simulated by default, and several scenarios (AZ-183/184/188/189/190/191/202) only mean anything against the real
  * serving model. Switching modes is a config change plus a restart, and the restart carries the mailbox TWICE:
- * `NGRAM_RUNTIME_PATCH_DIR` sets `runtime.patchDir` in the node's own config, and `ENGRAM_PATCH_DIR` is the variable
+ * `AINIZE_RUNTIME_PATCH_DIR` sets `runtime.patchDir` in the node's own config, and `ENGRAM_PATCH_DIR` is the variable
  * the patch hook itself reads. Both are needed: the node RE-EXPORTS `ENGRAM_PATCH_DIR` from its own `patchDir()` when
  * it calls the hook (packages/node/src/runtime.ts), so a node without `runtime.patchDir` silently falls back to
  * `<runtime.repo>/ple_patch` — the SHARED production mailbox — and overrides whatever this helper exported.
@@ -22,9 +22,9 @@ import { NODE } from './ds-result-api';
 const execFileP = promisify(execFile);
 
 export const REPO = process.env.AINIZE_TEACHABLE_REPO ?? '/mnt/newdata/ainize/knowledge-marketplace-teachable';
-export const HOME = process.env.AINIZE_TEACHABLE_HOME ?? join(homedir(), '.ngram-teachable/node-u');
+export const HOME = process.env.AINIZE_TEACHABLE_HOME ?? join(homedir(), '.ainize-teachable/node-u');
 export const CLI = join(REPO, 'packages/cli/dist/bin.js');
-export const LOG = join(homedir(), '.ngram-teachable/node-u.log');
+export const LOG = join(homedir(), '.ainize-teachable/node-u.log');
 /** The dedicated e2e model server and its patch mailbox — GPUs 4+5 only. */
 export const LIVE_API = 'http://localhost:8002';
 export const PATCH_DIR = '/mnt/newdata/qwen3.8/ple_patch_e2e';
@@ -94,7 +94,7 @@ export async function setNodeMode(mode: NodeMode, restoreApi?: string): Promise<
   }
   await configSet('teach.stubOffline', 'false');
   await configSet('runtime.api', mode === 'live' ? LIVE_API : DEAD_API);
-  await restartNode({ ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR });
+  await restartNode({ ENGRAM_PATCH_DIR: PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: PATCH_DIR });
 }
 
 /** True once the node reports a usable serving model + patch hook. */
@@ -124,7 +124,7 @@ export async function runtimeReady(timeoutMs = 5 * 60_000): Promise<boolean> {
  */
 export interface PrivateNode {
   url: string; home: string; port: number;
-  /** (Re)start it with these environment overrides (NGRAM_TEACH_STUB_OFFLINE, NGRAM_RUNTIME_API, …). */
+  /** (Re)start it with these environment overrides (AINIZE_TEACH_STUB_OFFLINE, AINIZE_RUNTIME_API, …). */
   start: (env?: Record<string, string>) => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -166,8 +166,8 @@ export async function startPrivateNode(tag: string, env: Record<string, string> 
     const child = spawn(process.execPath, [CLI, '--home', home, 'start'], {
       cwd: REPO, detached: true, stdio: ['ignore', log, log],
       env: {
-        ...process.env, ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR,
-        NGRAM_TEACH_ENABLED: '1', NGRAM_TEACH_BACKEND: 'stub', NGRAM_RUNTIME_API: LIVE_API,
+        ...process.env, ENGRAM_PATCH_DIR: PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: PATCH_DIR,
+        AINIZE_TEACH_ENABLED: '1', AINIZE_TEACH_BACKEND: 'stub', AINIZE_RUNTIME_API: LIVE_API,
         ...env, ...extra,
       },
     });

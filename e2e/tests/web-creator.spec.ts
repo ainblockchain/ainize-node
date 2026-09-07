@@ -87,8 +87,8 @@ async function runFirstVisitSetup(page: Page, node: string): Promise<void> {
   expect(typeof body.token).toBe('string');
   expect(body.token.length).toBeGreaterThan(20);
   // response.headers() hides cookie headers — read the raw header list and the browser's cookie jar
-  expect((await res.headersArray()).some((h) => h.name.toLowerCase() === 'set-cookie' && h.value.startsWith('ngram_session='))).toBe(true);
-  expect((await page.context().cookies(node)).some((c) => c.name === 'ngram_session' && c.httpOnly)).toBe(true);
+  expect((await res.headersArray()).some((h) => h.name.toLowerCase() === 'set-cookie' && h.value.startsWith('ainize_session='))).toBe(true);
+  expect((await page.context().cookies(node)).some((c) => c.name === 'ainize_session' && c.httpOnly)).toBe(true);
 
   await page.waitForURL(`${node}/dashboard`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('My knowledge');
@@ -255,7 +255,7 @@ test('AZ-033 Log out from the user menu and lose access to console pages', async
   expect(await res.json()).toEqual({ ok: true });
   await page.waitForURL(`${NODE_A}/`);
   await expect(page.getByRole('link', { name: 'Node sign-in' })).toBeVisible();
-  expect((await context.cookies(NODE_A)).find((c) => c.name === 'ngram_session')).toBeUndefined();
+  expect((await context.cookies(NODE_A)).find((c) => c.name === 'ainize_session')).toBeUndefined();
 
   await page.goto(`${NODE_A}/explore`);
   const header = page.locator('header');
@@ -1026,7 +1026,7 @@ test('AZ-047 Review Files & changes: pairing hint, sync, file tree and change hi
   await expect(kv(page, 'Connected')).toHaveText('not yet');
   await expect(kv(page, 'Server')).toHaveText('https://aindrive.ainetwork.ai');
   await expect(kv(page, 'Folder')).toHaveText(d0.folder);
-  expect(d0.folder).toBe('/home/comcom/.ngram-cluster/node-a/data/drive');
+  expect(d0.folder).toBe('/home/comcom/.ainize-cluster/node-a/data/drive');
   await expect(kv(page, 'Files')).toHaveText(String(d0.files.length));
   await expect(page.getByRole('button', { name: 'Start sharing' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Sync' })).toBeEnabled();

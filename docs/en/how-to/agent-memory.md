@@ -35,7 +35,7 @@ thing that decides between them, and what it refuses to do.
 | GPU seconds | `--gpu-seconds-per-day` | the trainer's time |
 
 No cap set is not "unlimited": it means this agent will not spend that unit on its own, and it says so with the flag
-that would change it. **A cap can only be set from outside the loop** — from a flag, from `NGRAM_AGENT_*` in the
+that would change it. **A cap can only be set from outside the loop** — from a flag, from `AINIZE_AGENT_*` in the
 environment, or from `budget.*` in `<home>/agent.json`. A plan file cannot raise one, a market's answer cannot, and
 a 402 cannot. That is what makes it safe to leave running.
 
@@ -159,7 +159,7 @@ ainize-agent memory --why ef393190fa86
 ```
 
 **So the first bake is always your decision.** `bake_cost` can only be measured by a lesson that has already run, and
-a lesson run on `NGRAM_TEACH_BACKEND=stub` copies a fixture: its seconds are the cost of a file copy and are
+a lesson run on `AINIZE_TEACH_BACKEND=stub` copies a fixture: its seconds are the cost of a file copy and are
 deliberately not counted as a price. You turn it on one of two ways:
 
 ```bash
@@ -188,7 +188,7 @@ Two things it says out loud before it spends anything:
 - **the lesson is signed with this agent's own identity** — the same key that pays for its purchases. Everything it
   bakes and everything it buys is attributable to one address on a public record. That is deliberate (lineage needs
   it) and you should know it before the first lesson.
-- **on `NGRAM_TEACH_BACKEND=stub`** the lesson record, the dataset and the state machine are real and the knowledge
+- **on `AINIZE_TEACH_BACKEND=stub`** the lesson record, the dataset and the state machine are real and the knowledge
   file is a fixture that trains no weights. Nothing measured on a stub run says anything about a model.
 
 ## 6. When memory and the node disagree

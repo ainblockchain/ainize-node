@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, loadConfig, saveConfig } from '@ngram/core';
+import { defaultConfig, loadConfig, saveConfig } from '@ainize/core';
 import { startNode } from '../src/server.js';
 
 const freePort = () => new Promise<number>((res) => {

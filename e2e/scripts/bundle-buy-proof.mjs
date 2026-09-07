@@ -22,17 +22,17 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeHook, baseValue, writeFixture, ROW_DIM } from '../../node/test/fixtures/fake-hook.ts';
-import { bf16Bits, preStateSha256, readNpzMember } from '@ngram/core';
+import { bf16Bits, preStateSha256, readNpzMember } from '@ainize/core';
 
-const REPO = process.env.NGRAM_RUNTIME_REPO ?? '/mnt/newdata/qwen3.8';
+const REPO = process.env.AINIZE_RUNTIME_REPO ?? '/mnt/newdata/qwen3.8';
 const ROOT = new URL('../../../', import.meta.url).pathname;
-const PORT_BASE = Number(process.env.NGRAM_PORT_BASE ?? 3512);
+const PORT_BASE = Number(process.env.AINIZE_PORT_BASE ?? 3512);
 const PASS = 'bundle-proof';
 const HOME = mkdtempSync(join(tmpdir(), 'ngram-bundle-cluster-'));
 const MAILBOX = join(HOME, 'mailbox');
 const A = `http://localhost:${PORT_BASE}`, B = `http://localhost:${PORT_BASE + 1}`, C = `http://localhost:${PORT_BASE + 2}`;
 const BASE_ID = 'bundle-proof-base', CHILD_ID = 'bundle-proof-addon';
-const MODEL = 'demo-ngram-1b';
+const MODEL = 'demo-ainize-1b';
 
 let failures = 0;
 const must = (cond, what) => { if (!cond) { console.log(`FAIL  ${what}`); failures++; } else console.log(`  ok  ${what}`); };
@@ -72,8 +72,8 @@ const holds = (a, v) => Array.from({ length: 4 }, (_, i) => hook.word(a, i * 40)
 // ---------------------------------------------------------------- the cluster
 const clusterEnv = {
   ...process.env,
-  NGRAM_CLUSTER_HOME: HOME, NGRAM_PORT_BASE: String(PORT_BASE), NGRAM_LEDGER: 'local', NGRAM_SEED: '0',
-  NGRAM_RUNTIME_API: MODEL_API, NGRAM_RUNTIME_PATCH_DIR: MAILBOX, NGRAM_RUNTIME_REPO: REPO,
+  AINIZE_CLUSTER_HOME: HOME, AINIZE_PORT_BASE: String(PORT_BASE), AINIZE_LEDGER: 'local', AINIZE_SEED: '0',
+  AINIZE_RUNTIME_API: MODEL_API, AINIZE_RUNTIME_PATCH_DIR: MAILBOX, AINIZE_RUNTIME_REPO: REPO,
 };
 const cluster = (...args) => execFileSync(join(ROOT, 'scripts/cluster-restart.sh'), args, { env: clusterEnv, encoding: 'utf8' });
 
@@ -178,7 +178,7 @@ try {
     const { chromium } = await import('@playwright/test');
     const browser = await chromium.launch();
     const ctx = await browser.newContext();
-    await ctx.addCookies([{ name: 'ngram_session', value: tokens.C, url: C }]);
+    await ctx.addCookies([{ name: 'ainize_session', value: tokens.C, url: C }]);
     const page = await ctx.newPage();
     const author = (await call(B, `/api/patches/${CHILD_ID}`)).json.anchor.author;
     try {

@@ -2,7 +2,7 @@
  * Transparent logging reverse proxy in front of the demo serving model.
  *   :8012  →  http://localhost:8002   (the e2e vLLM instance; :8000 / :8001 are never touched)
  * Appends one JSON line per request to results/verify/model-wire.jsonl so the node→model wire can be read back.
- * Point the cluster at it with:  NGRAM_RUNTIME_API=http://localhost:8012 scripts/cluster-restart.sh
+ * Point the cluster at it with:  AINIZE_RUNTIME_API=http://localhost:8012 scripts/cluster-restart.sh
  */
 import { createServer } from 'node:http';
 import { appendFileSync, writeFileSync } from 'node:fs';

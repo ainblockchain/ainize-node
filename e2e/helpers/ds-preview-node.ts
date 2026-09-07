@@ -2,7 +2,7 @@
  * Node-side helpers for the dataset-preview scenarios (AZ-143…AZ-162).
  *
  * Everything here talks to the teach dev node the way a *visitor* does: with a teaching key and the request-bound v2
- * `x-ngram-auth` header (packages/node/src/teach-auth.ts). Nothing in this file uses the operator token except where a
+ * `x-ainize-auth` header (packages/node/src/teach-auth.ts). Nothing in this file uses the operator token except where a
  * scenario explicitly says the operator does it.
  *
  * It also owns the two node-lifecycle helpers two scenarios need and nothing else may use:
@@ -25,8 +25,8 @@ export const NODE = process.env.AINIZE_URL ?? 'http://localhost:3422';
 
 export const REPO = '/mnt/newdata/ainize/knowledge-marketplace-teachable';
 export const CLI_BIN = join(REPO, 'packages/cli/dist/bin.js');
-export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ngram-teachable/node-u');
-export const CLI_HOME = join(homedir(), '.ngram-teachable/cli');
+export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ainize-teachable/node-u');
+export const CLI_HOME = join(homedir(), '.ainize-teachable/cli');
 /** The dedicated e2e model server — GPUs 4+5, patch hook on. The owner forbids :8000 and :8001. */
 export const E2E_MODEL_API = 'http://localhost:8002';
 export const E2E_PATCH_DIR = '/mnt/newdata/qwen3.8/ple_patch_e2e';
@@ -43,7 +43,7 @@ export function teachHeader(key: TeacherKey, nodeAddress: string, method: string
   const ts = Date.now();
   const parts = ['teach', nodeAddress, method.toUpperCase(), path, String(ts)];
   if (body && body.length) parts.push(sha256(body));
-  return { 'x-ngram-auth': `${key.address}:${ts}:${signMessage(parts.join(':'), key.privateKey)}:v2` };
+  return { 'x-ainize-auth': `${key.address}:${ts}:${signMessage(parts.join(':'), key.privateKey)}:v2` };
 }
 
 let nodeAddressCache: string | null = null;
@@ -150,7 +150,7 @@ export async function cliRun(args: string[], home = CLI_HOME, env: Record<string
   const strip = (s: string) => s.split('\n').filter((l) => !l.includes('secp256k1 unavailable')).join('\n');
   try {
     const { stdout, stderr } = await execFileP(process.execPath, [CLI_BIN, '--home', home, ...args], {
-      timeout: 5 * 60_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, NGRAM_NODE_URL: NODE, ...env },
+      timeout: 5 * 60_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, AINIZE_NODE_URL: NODE, ...env },
     });
     return { code: 0, stdout: strip(stdout), stderr: strip(stderr) };
   } catch (e) {
@@ -203,7 +203,7 @@ export async function stopNode(): Promise<void> {
 
 /** Start node-u exactly the way the dev runbook does; `env` adds ENGRAM_PATCH_DIR for the live-model leg. */
 export async function startNode(env: Record<string, string> = {}): Promise<void> {
-  const log = join(homedir(), '.ngram-teachable/node-u.log');
+  const log = join(homedir(), '.ainize-teachable/node-u.log');
   const child = spawn('sh', ['-c', `exec node ${CLI_BIN} --home ${NODE_HOME} start >> ${log} 2>&1`], {
     detached: true, stdio: 'ignore', env: { ...process.env, ...env }, cwd: REPO,
   });
@@ -239,7 +239,7 @@ export const runtimeInfo = async (request: APIRequestContext): Promise<RuntimeIn
 
 /**
  * Run `body` with node-u pointed at the dedicated e2e model server (`runtime.api=:8002`, `teach.stubOffline=false`,
- * `NGRAM_RUNTIME_PATCH_DIR` + `ENGRAM_PATCH_DIR` in the environment: the node re-exports the hook's variable from its
+ * `AINIZE_RUNTIME_PATCH_DIR` + `ENGRAM_PATCH_DIR` in the environment: the node re-exports the hook's variable from its
  * own `runtime.patchDir`, so both are needed). Whatever happens, the node is put
  * back exactly as it was found and restarted, because every other scenario in the suite depends on the stub.
  */
@@ -278,9 +278,9 @@ export async function withLiveModel(body: (ctl: { pointRuntimeAt: (api: string) 
 
   try {
     await applyMode({ 'runtime.api': E2E_MODEL_API, 'teach.stubOffline': 'false' },
-      async () => (await policySays(false)()) && (await runtimeApiIs(E2E_MODEL_API)()), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: E2E_PATCH_DIR });
+      async () => (await policySays(false)()) && (await runtimeApiIs(E2E_MODEL_API)()), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: E2E_PATCH_DIR });
     await body({
-      pointRuntimeAt: async (api: string) => applyMode({ 'runtime.api': api }, runtimeApiIs(api), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: E2E_PATCH_DIR }),
+      pointRuntimeAt: async (api: string) => applyMode({ 'runtime.api': api }, runtimeApiIs(api), { ENGRAM_PATCH_DIR: E2E_PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: E2E_PATCH_DIR }),
     });
   } finally {
     await applyMode({ 'runtime.api': before.api, 'teach.stubOffline': before.stub ? 'true' : 'false' }, policySays(before.stub));

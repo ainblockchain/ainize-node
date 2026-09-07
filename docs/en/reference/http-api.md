@@ -21,9 +21,9 @@ A node serves this same description as OpenAPI 3.1 at `GET /api/openapi.json`, s
 
 The **Auth** column of each index below says what a request must carry.
 
-- **`operatorCookie`** — cookie `ngram_session`
+- **`operatorCookie`** — cookie `ainize_session`
 - **`operatorBearer`** — http `bearer`
-- **teaching key** — the `x-ngram-auth` header. There is no account: the key is the identity. Endpoints that accept it describe its exact form in their parameter table.
+- **teaching key** — the `x-ainize-auth` header. There is no account: the key is the identity. Endpoints that accept it describe its exact form in their parameter table.
 - **payment (x402)** — the endpoint answers `402` with an `x-payment-required` header; repeat the request with `X-PAYMENT`.
 - **none** — public.
 
@@ -309,7 +309,7 @@ The questions a knowledge was taught from (lineage design §6.1). `public`: anyo
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -350,7 +350,7 @@ Public sets, and the owner/operator. A `derivative` set is fetched with a derive
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -371,7 +371,7 @@ What the training set is made of (row origin, benchmark hash, merkle root, PII s
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -488,7 +488,7 @@ A buyer’s own request. `share: true` keeps the text (it is theirs to share); o
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -596,7 +596,7 @@ Lineage design SC-13. `share: false` (the default) counts the question and store
 
 Knowledge that can be live-tested on this node
 
-`items` are the ones that can be loaded right now (body held AND licensed). `elsewhere` is everything else this node’s model could run — not held, or held only because this node verified it — each with its price, its seller and why it cannot be tested, so a knowledge you want to build on is visible instead of absent. Plus runtime state, the shared-model lock, `applied` (what this node keeps loaded), `dirty` (bodies a live test found on the shared model that this node never loaded) and pairwise `overlaps`. With a verified `x-ngram-auth` (v2: `<address>:<ts>:<sig>:v2`, sig over `teach:<node>:GET:/api/chat/patches:<ts>`; legacy `teach:<ts>` still accepted) the response also carries the caller’s private `lessons`.
+`items` are the ones that can be loaded right now (body held AND licensed). `elsewhere` is everything else this node’s model could run — not held, or held only because this node verified it — each with its price, its seller and why it cannot be tested, so a knowledge you want to build on is visible instead of absent. Plus runtime state, the shared-model lock, `applied` (what this node keeps loaded), `dirty` (bodies a live test found on the shared model that this node never loaded) and pairwise `overlaps`. With a verified `x-ainize-auth` (v2: `<address>:<ts>:<sig>:v2`, sig over `teach:<node>:GET:/api/chat/patches:<ts>`; legacy `teach:<ts>` still accepted) the response also carries the caller’s private `lessons`.
 
 **Auth** — teaching key (optional)
 
@@ -604,7 +604,7 @@ Knowledge that can be live-tested on this node
 
 | Name | In | Type | Description |
 |---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | optional visitor signature (v2 request-bound form preferred) — adds `lessons` |
+| `x-ainize-auth` | `header` | `string` | optional visitor signature (v2 request-bound form preferred) — adds `lessons` |
 
 **Responses**
 
@@ -685,7 +685,7 @@ While the request is still queued the node drops it before calling the model and
 
 Compare answers before vs after the knowledge is loaded
 
-Temporarily loads one to three knowledges into the shared serving model (in list order, restored in reverse afterwards). In `compare` mode each column replays its own earlier answers: send `messages_base` (what the base model said) and `messages_patched` (what the patched model said) alongside `messages`, all ending with the same question — otherwise the second turn feeds the patched answer back to the un-patched model and the comparison stops being one. Every patched answer is metered as one usage event per knowledge. Anonymous visitors: 20 requests per hour. A private draft (a taught lesson before publishing) can be loaded only by its owner — send the visitor `x-ngram-auth` (v2) — or the operator; everyone else gets 404.
+Temporarily loads one to three knowledges into the shared serving model (in list order, restored in reverse afterwards). In `compare` mode each column replays its own earlier answers: send `messages_base` (what the base model said) and `messages_patched` (what the patched model said) alongside `messages`, all ending with the same question — otherwise the second turn feeds the patched answer back to the un-patched model and the comparison stops being one. Every patched answer is metered as one usage event per knowledge. Anonymous visitors: 20 requests per hour. A private draft (a taught lesson before publishing) can be loaded only by its owner — send the visitor `x-ainize-auth` (v2) — or the operator; everyone else gets 404.
 
 **Auth** — none
 
@@ -717,7 +717,7 @@ A signed intent from a teaching key (lineage design §6.1). Counted on the knowl
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -756,7 +756,7 @@ Story B of the lineage design: the published training set becomes a dataset owne
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -840,7 +840,7 @@ Create a dataset — upload a file, or freeze the questions collected in chat
 Two request shapes, one result.
 
 **multipart/form-data (the file door)** — one `file` (.jsonl .json .csv .tsv .txt, within `limits.dataset_max_bytes`), plus optional `name`, `format`, `has_header`, `delimiter`, `encoding`, `columns` (JSON), `retention`.
-A multipart body cannot be covered by the v2 body hash, so send `x-ngram-dataset-sha256: <hex of the file bytes>` and sign THAT string as the body; the node re-hashes the stored file and answers 400 `dataset_hash` on a mismatch.
+A multipart body cannot be covered by the v2 body hash, so send `x-ainize-dataset-sha256: <hex of the file bytes>` and sign THAT string as the body; the node re-hashes the stored file and answers 400 `dataset_hash` on a mismatch.
 
 **application/json (the chat door, the CLI, agents)** — `{source: "chat"|"inline"|"sample", rows: [{prompt, answer, alt_prompt?, note?}], sample?, name?, retention?}`.
 
@@ -852,8 +852,8 @@ The response carries the server’s per-row report: nothing is silently dropped,
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
-| `x-ngram-dataset-sha256` | `header` | `string` |   | multipart only: sha256 of the file bytes; this string is what the v2 signature covers |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-dataset-sha256` | `header` | `string` |   | multipart only: sha256 of the file bytes; this string is what the v2 signature covers |
 
 **Request body** — `multipart/form-data`, required
 
@@ -915,7 +915,7 @@ Newest first, tombstones included so a deleted dataset still explains itself.
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -942,7 +942,7 @@ Owner (signed) or operator. Anyone else gets 404 — a stranger is never told th
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -970,7 +970,7 @@ Touched questions are revalidated against the whole dataset, so a new duplicate 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -1000,7 +1000,7 @@ Files are removed and a tombstone stays, so a lesson reads "the dataset for this
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -1022,7 +1022,7 @@ One entry per SOURCE row — accepted or not — with its 1-based logical line i
 | Name | In | Type | Required | Default | Description |
 |---|---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes |   | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 | `offset` | `query` | `integer` |   | `0` |   |
 | `limit` | `query` | `integer` |   | `50` |   |
 | `status` | `query` | `"all"` \| `"ok"` \| `"rejected"` \| `"duplicate"` \| `"conflict"` \| `"too_long"` \| `"empty"` \| `"blocked"` \| `"not_parsed"` \| `"over_cap"` |   |   |   |
@@ -1057,7 +1057,7 @@ For "wrong columns or separator?". Nothing is re-uploaded. Only a dataset that h
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -1089,7 +1089,7 @@ Copy a dataset (optionally with an edit) — how you change one while a lesson i
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -1117,7 +1117,7 @@ The `.jsonl` bytes are the sha256 subject: download it, re-upload it, and you ge
 | Name | In | Type | Required | Default | Description |
 |---|---|---|---|---|---|
 | `id` | `path` | `string (uuid)` | yes |   | dataset id |
-| `x-ngram-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 | `format` | `query` | `"jsonl"` \| `"csv"` |   | `"jsonl"` |   |
 
 **Responses**
@@ -1139,7 +1139,7 @@ Re-asks every correction with the chosen knowledge loaded; costs one live-test u
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -1193,7 +1193,7 @@ Read-only. Unions the two published training sets by the parser key (NFC, whites
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -1262,7 +1262,7 @@ The body is `{dataset_id}` XOR the legacy `{facts}`. The legacy form materialise
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -1328,7 +1328,7 @@ My lessons (signed key)
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 | `mine` | `query` | `1` |   |   |
 
 **Responses**
@@ -1356,7 +1356,7 @@ Full body for the owner (signed) or the operator; everyone else gets {id, status
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -1377,7 +1377,7 @@ Queued or training lessons are cancelled (the trainer process gets SIGTERM); pri
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -1397,7 +1397,7 @@ Improve & retry: queue a new lesson with edited corrections (same knowledge cont
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -1424,7 +1424,7 @@ Re-runs the pipeline from the same dataset by default, one effort level higher; 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, optional
 
@@ -1456,7 +1456,7 @@ Owner or operator. Redacted for non-operators exactly as /api/events is.
 | Name | In | Type | Required | Default | Description |
 |---|---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |   |
-| `x-ngram-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes |   | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 | `since` | `query` | `integer` |   |   | last seen `cursor` |
 | `limit` | `query` | `integer` |   | `200` |   |
 
@@ -1491,7 +1491,7 @@ Owner or operator. Allowed for READY / NEEDS_MORE lessons whose `checks.executed
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -1513,7 +1513,7 @@ claim = sha256(canonical({patch_sha256, benchmark_hash, address, share})). `addr
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 | `payout_address` | `query` | `string` |   | AIN address, or `none` for credit only |
 
 **Responses**
@@ -1548,7 +1548,7 @@ The node writes `contributors[]` (with the signed claim) into the draft and eith
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Request body** — `application/json`, required
 
@@ -1601,7 +1601,7 @@ Keep it private: 7-day download links for the knowledge file, recipe.json and RU
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | `path` | `string` | yes |   |
-| `x-ngram-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
+| `x-ainize-auth` | `header` | `string` | yes | teaching-key signature. Request-bound (recommended): `<address>:<ts>:<sig>:v2` where sig = signMessage("teach:\<nodeAddress>:\<METHOD>:\<path+query>:\<ts>[:\<sha256(body)>]"); legacy: `<address>:<ts>:<sig>` over "teach:\<ts>". 5-minute window, every header is single-use (replays are refused). |
 
 **Responses**
 
@@ -1724,7 +1724,7 @@ Training sets this node holds (sha256, rows, access, licence)
 
 Download a published training set (.jsonl)
 
-Same gate as `/p2p/blob` (`x-ngram-auth` over `dataset:<sha256>`, 5-minute skew) plus the access level: a `derivative` set needs a derive token in `x-ngram-derive` (or `?token=`), from `POST /api/patches/{id}/derive-intent`.
+Same gate as `/p2p/blob` (`x-ainize-auth` over `dataset:<sha256>`, 5-minute skew) plus the access level: a `derivative` set needs a derive token in `x-ainize-derive` (or `?token=`), from `POST /api/patches/{id}/derive-intent`.
 
 **Auth** — teaching key (optional)
 
@@ -1733,8 +1733,8 @@ Same gate as `/p2p/blob` (`x-ngram-auth` over `dataset:<sha256>`, 5-minute skew)
 | Name | In | Type | Required |
 |---|---|---|---|
 | `sha256` | `path` | `string` | yes |
-| `x-ngram-auth` | `header` | `string` |   |
-| `x-ngram-derive` | `header` | `string` |   |
+| `x-ainize-auth` | `header` | `string` |   |
+| `x-ainize-derive` | `header` | `string` |   |
 | `token` | `query` | `string` |   |
 
 **Responses**
@@ -1795,7 +1795,7 @@ Download the knowledge body (.npz)
 |---|---|---|---|---|
 | `sha256` | `path` | `string` | yes |   |
 | `token` | `query` | `string` |   | download_token from the manifest |
-| `x-ngram-auth` | `header` | `string` |   | `<address>:<ts>:<sig>` — buyer / creator / verifier signature |
+| `x-ainize-auth` | `header` | `string` |   | `<address>:<ts>:<sig>` — buyer / creator / verifier signature |
 
 **Responses**
 
@@ -3150,7 +3150,7 @@ node-to-node protocol
 
 Peer introduction (exchange PeerInfo)
 
-The body is a claim. Sign `hello:<your endpoint>` in `x-ngram-auth` (`<address>:<ts>:<sig>`, 5-minute window) or the address and roles in it are not recorded — an unsigned hello only makes the endpoint known (item 326).
+The body is a claim. Sign `hello:<your endpoint>` in `x-ainize-auth` (`<address>:<ts>:<sig>`, 5-minute window) or the address and roles in it are not recorded — an unsigned hello only makes the endpoint known (item 326).
 
 **Auth** — teaching key (optional)
 
@@ -3158,7 +3158,7 @@ The body is a claim. Sign `hello:<your endpoint>` in `x-ngram-auth` (`<address>:
 
 | Name | In | Type | Description |
 |---|---|---|---|
-| `x-ngram-auth` | `header` | `string` | signature over `hello:<endpoint>` by the address the body claims |
+| `x-ainize-auth` | `header` | `string` | signature over `hello:<endpoint>` by the address the body claims |
 
 **Responses**
 

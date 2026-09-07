@@ -13,7 +13,7 @@ import {
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type DerivationKind, type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
-} from '@ngram/core';
+} from '@ainize/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
@@ -1978,7 +1978,7 @@ export class Market {
    * ticket: one 25 AIN purchase served an unlimited number of downloads for a day, to anyone it was pasted to,
    * and the seller had no record that it had happened. A per-download billing model with no enforcement behind it.
    *
-   * A token issued to an ADDRESS is now only redeemable by that address, proved by the same `x-ngram-auth`
+   * A token issued to an ADDRESS is now only redeemable by that address, proved by the same `x-ainize-auth`
    * signature every ainize client already sends — a settled buyer never needed the token anyway, so nothing that
    * paid loses access. The two browser-facing kinds (`contrib:` for a teacher fetching their own lesson,
    * `derive:` for a declared derivation) stay bearer, because a browser cannot sign — but they are counted and
@@ -2829,7 +2829,7 @@ export class Market {
     const tried: string[] = [];
     for (const cand of candidates) {
       try {
-        r1 = await fetch(cand.url, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
+        r1 = await fetch(cand.url, { headers: { 'x-ainize-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
         gw = cand.url;
         step('gateway', `${cand.url} (${cand.source})${tried.length ? ` — after ${tried.join(', ')} did not answer` : ''}`);
         break;
@@ -2907,7 +2907,7 @@ export class Market {
 
   /** Present an X-PAYMENT to a gateway and parse the manifest it answers with. */
   private async presentPayment(gw: string, encoded: string): Promise<{ manifest: PatchManifest; txHash: string; sha: string; royalty?: Record<string, string> }> {
-    const r = await fetch(gw, { headers: { [X402_HEADER_PAYMENT]: encoded, 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
+    const r = await fetch(gw, { headers: { [X402_HEADER_PAYMENT]: encoded, 'x-ainize-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
     if (!r.ok) throw new Error(`payment rejected: ${r.status} ${(await r.text()).slice(0, 300)}`);
     const text = await r.text();
     // The seller has been returning the whole split in this header since the beginning and the buyer threw it away,
@@ -4423,7 +4423,7 @@ export class Market {
       ?? this.store.listPeers().find((pr) => sameAddr(pr.address ?? '', q.owner))?.endpoint;
     if (!ep) throw conflict(`${name} costs ${q.terms.price} ${q.terms.currency} per ${q.terms.period_days} day(s) and this node cannot reach its curator (${q.owner}) to pay: no peer here knows that address. Add their node with \`ainize peers add <url>\` and try again.`);
     const url = `${ep.replace(/\/+$/, '')}/x402/branch/${encodeURIComponent(name)}`;
-    const r1 = await fetch(url, { headers: { 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
+    const r1 = await fetch(url, { headers: { 'x-ainize-buyer': this.address }, signal: AbortSignal.timeout(30_000) });
     if (r1.status !== 402) throw conflict(`${q.owner} did not quote for ${name}: ${r1.status} ${(await r1.text().catch(() => '')).slice(0, 200)}`);
     const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));
     const req = reqs.find((x) => x.scheme === (this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit')) ?? reqs[0];
@@ -4438,7 +4438,7 @@ export class Market {
       const h = Market.intentHash({ resource: req.resource, amount: req.maxAmountRequired, nonce: req.nonce, payTo: req.payTo, from: this.address });
       payload = { scheme: 'local-credit', network: 'local', txHash: h, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, proof: signMessage(h, this.cfg.identity.privateKey) };
     }
-    const r2 = await fetch(url, { headers: { [X402_HEADER_PAYMENT]: encodePayload(payload), 'x-ngram-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
+    const r2 = await fetch(url, { headers: { [X402_HEADER_PAYMENT]: encodePayload(payload), 'x-ainize-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
     if (!r2.ok) throw conflict(`the curator refused the payment for ${name}: ${r2.status} ${(await r2.text().catch(() => '')).slice(0, 300)}`);
     await this.refreshLedger().catch(() => undefined);
     const after = await this.subscriptionQuote(name).catch(() => null);

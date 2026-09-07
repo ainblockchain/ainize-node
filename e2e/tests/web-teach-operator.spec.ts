@@ -37,7 +37,7 @@ let declinedJob = '';
 let approvedJob = '';
 let patchId = '';
 
-const teachHeader = (id: Identity) => { const ts = Date.now(); return { 'x-ngram-auth': `${id.address}:${ts}:${signMessage(`teach:${ts}`, id.privateKey)}` }; };
+const teachHeader = (id: Identity) => { const ts = Date.now(); return { 'x-ainize-auth': `${id.address}:${ts}:${signMessage(`teach:${ts}`, id.privateKey)}` }; };
 
 /** Sign in through the real /signing page (the node's operator password; the helpers' PASSWORDS map only knows the demo cluster). */
 async function signIn(page: Page) {

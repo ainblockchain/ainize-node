@@ -32,19 +32,19 @@ Read from the tree on 2026-09-07. Nothing here is folklore, and nothing was meas
 | A5 | `runAgent` asks the serving model twice per run: once as a probe (`res.before`) and once after the apply (`res.after`). `--no-probe` exists precisely because the shared model's answer belongs to whoever else has something loaded. | `packages/agent/src/agent.ts:484-488,697; :63-70` |
 | A6 | The node's `applied` table is an **ordered stack**: `(patch_id PK, sha256, applied_at, reason, position, journal_path, stack_sha256)`, with `setApplied/listApplied/getApplied/reorderApplied`. | `packages/node/src/store.ts:231-232,1044-1060,1071-1083` |
 | A7 | `GET /api/runtime` is **public** (no `requireOperator`) and returns `applied` (ordered ids), `stack[]` (per layer: `patch_id, sha256, position, rows, journal, stack_sha256, body_present, present, checked_at`), the runtime status and the queue. | `packages/node/src/api.ts:1424-1434`; `packages/node/src/market.ts:3151-3169` |
-| A8 | The teach pipeline is reachable over HTTP with a **teaching key that is just a secp256k1 identity**: `POST /api/teach/datasets` (`source:'inline'`, `rows[]` ≤ 2000) → `POST /api/teach/jobs` (`dataset_id`, `base_ids`, `training`) → `GET /api/teach/jobs/:id` → `POST …/publish`. Auth is `x-ngram-auth: <address>:<ts>:<sig>:v2`, request-bound and single-use. | `packages/node/src/api.ts:1737-1762,1867-1921,1961`; `packages/node/src/teach-auth.ts:21-31` |
+| A8 | The teach pipeline is reachable over HTTP with a **teaching key that is just a secp256k1 identity**: `POST /api/teach/datasets` (`source:'inline'`, `rows[]` ≤ 2000) → `POST /api/teach/jobs` (`dataset_id`, `base_ids`, `training`) → `GET /api/teach/jobs/:id` → `POST …/publish`. Auth is `x-ainize-auth: <address>:<ts>:<sig>:v2`, request-bound and single-use. | `packages/node/src/api.ts:1737-1762,1867-1921,1961`; `packages/node/src/teach-auth.ts:21-31` |
 | A9 | The MCP package already contains the **whole** rows→dataset→preflight→job→poll pipeline as a tool handler, including the reservation of a scarce lesson and the refund on a refusal, plus `uploadTrainingSet()` as a plain exported function. | `packages/mcp/src/tools/teach.ts:65-114,288-460` |
 | A10 | `McpDataSource` is the MCP **client**: `connect/listTools/readResource/call/fetchRows/close`, retries only on JSON-RPC `-32001/-32000`, caps the result at 1 MB, and returns `{elapsed_ms, provenance{server,tool,arguments,arguments_sha256,fetched_at}}`. `fetchRows` ends at rows — it deliberately does **not** chain into training. | `packages/mcp/src/datasource.ts:14-15,66-233` |
 | A11 | A `RowMapping` is declarative JSON — `path`, `prompt`/`answer`/`alt_prompt`/`note` as `{field}` templates, `require`, `constants`, `max_rows` — mapped by `mapRows`, which enforces the node's own 400/200 char caps and de-dupes on the normalized prompt. `promptKey()` **is** the node's key; `rowsSha256()` reproduces the node's dataset id byte for byte. | `packages/mcp/src/rows.ts:96-103,146-232` |
 | A12 | The live path against The Graph is `search_subgraphs_by_keyword` → `get_deployment_30day_query_counts` → `get_schema_by_subgraph_id` → `execute_query_by_subgraph_id({subgraph_id, query})` over SSE at `https://subgraphs.mcp.thegraph.com/sse`, and one `fetchRows` of it produces block-pinned rows whose `note` carries the provenance line. | `packages/mcp/test/smoke-subgraph-mcp.test.ts:20-89`; `packages/mcp/references/subgraph-to-dataset.md` |
 | A13 | The node will not train an arbitrarily small lesson: `rowsPerJob.floorGradient = 8` (`floorStub = 200`), and the whole size derivation is skipped in favour of the floor while fewer than `ETA_MIN_SAMPLES = 3` gradient samples exist. Three stub jobs must never become an estimate. | `packages/core/src/config.ts:88,173,197,208` |
-| A14 | A teach job charges one of `jobsPerKeyPerDay` **at submit**, before PREFLIGHT, and is never refunded; `ACTIVE_JOBS_PER_KEY = 2`. `NGRAM_TEACH_BACKEND=stub` selects a backend that copies a fixture npz, needs no GPU, and stamps `recipe.trainer='stub'` / `checks.simulated` onto everything it produces. | `packages/node/src/teach.ts:248,1149-1152,2135,2378-2407`; `packages/core/src/config.ts:350` |
+| A14 | A teach job charges one of `jobsPerKeyPerDay` **at submit**, before PREFLIGHT, and is never refunded; `ACTIVE_JOBS_PER_KEY = 2`. `AINIZE_TEACH_BACKEND=stub` selects a backend that copies a fixture npz, needs no GPU, and stamps `recipe.trainer='stub'` / `checks.simulated` onto everything it produces. | `packages/node/src/teach.ts:248,1149-1152,2135,2378-2407`; `packages/core/src/config.ts:350` |
 | A15 | An anchor carries up to `TEACH_SAMPLES_ON_CHAIN = 32` `{prompt, expect}` benchmark samples; a knowledge's full training set is readable at `GET /api/patches/:id/dataset/rows` **only** when its access is `public` (or through a signed derive intent for `derivative`). | `packages/core/src/types.ts:57-63`; `packages/node/src/api.ts:684-690` |
 | A16 | `graph/bench` defines the break-even as `N*(k buyers) = (knowledge_price / k) / (cost_per_question_B − cost_per_question_C)` and **leaves it uncomputed** in run `r1` because arms B and C are not both scored and priced. `pricing.json` carries `PLACEHOLDER` sources and `knowledge.price: null`. There is no measured N\* in this repo today. | `graph/bench/runs/r1/summary.md:120-133`; `graph/bench/pricing.json` |
 | A17 | `Budget` in the MCP package is a check-and-hold with decimal-string arithmetic: `reserve()` throws `budget_exceeded` with cap/spent/remaining/needed, never clamps, and the cap is server configuration that **no tool argument can raise**. `PurchaseJournal` writes `intent` before the node is called. | `packages/mcp/src/money.ts:85-121,140-201` |
 | A18 | `publish` is off by default in the MCP server (`AINIZE_MCP_ALLOW_PUBLISH`, plus a separate `AINIZE_MCP_ALLOW_AIN_PUBLISH`), and the server's own instructions name `buy` and `publish_knowledge` as the two things that cannot be undone. | `packages/mcp/src/config.ts:103-107`; `packages/mcp/src/server.ts:52-56` |
 | A19 | There is no i18n machinery outside `packages/web/src/i18n` (`Dict = Record<string, {ko, en}>`). Every string in `packages/agent` and `packages/cli` is English. | `packages/web/src/i18n/index.ts:11`; `grep -rl i18n packages/*/src` |
-| A20 | The agent package depends only on `@ngram/core`, `chalk`, `yargs`. `@ngram/mcp` exports **only** `"."`, whose index pulls the MCP server, express and the SDK. | `packages/agent/package.json`; `packages/mcp/package.json:6-12` |
+| A20 | The agent package depends only on `@ainize/core`, `chalk`, `yargs`. `@ainize/mcp` exports **only** `"."`, whose index pulls the MCP server, express and the SDK. | `packages/agent/package.json`; `packages/mcp/package.json:6-12` |
 
 ---
 
@@ -84,7 +84,7 @@ edit to that file is additive and described in §9.
 
 **Both, with an authority split, and neither is ever edited to match the other.**
 
-| | Agent home `<NGRAM_AGENT_HOME>` | Node `applied` table (`GET /api/runtime`) |
+| | Agent home `<AINIZE_AGENT_HOME>` | Node `applied` table (`GET /api/runtime`) |
 |---|---|---|
 | Authority on | what **this agent** knows, owns, retrieved, paid, baked, and believes | what is **on the model** right now |
 | Survives | a restart, a reboot, the node being replaced, having no node at all | a node restart (it is SQLite); **not** a serving-model restart |
@@ -379,7 +379,7 @@ N\* has no token term (§6), and a second completion helper would be a second im
 exists.
 
 **i18n.** There is no CLI i18n machinery today (A19) and inventing a framework is out of scope, so: a ten-line
-`packages/agent/src/i18n.ts` (`lang()` from `NGRAM_LANG`/`LANG`, `t(dict, key, vars)`) plus one `{en, ko}` dictionary
+`packages/agent/src/i18n.ts` (`lang()` from `AINIZE_LANG`/`LANG`, `t(dict, key, vars)`) plus one `{en, ko}` dictionary
 **per module**, so that parallel groups never edit the same file — the reason the web splits `i18n/pages/*.ts`.
 Existing strings in `agent.ts`/`bin.ts` are untouched. Every new user-facing line ships in both languages:
 
@@ -410,7 +410,7 @@ cache keyed by `(stack_fp, row_key)`, the four reconciliation rules, and the `ag
 **Depends on:** nothing. `promptKey`/`rowsSha256` arrive through G2's subpath export; until it lands, G1 develops
 against the same normalization the node and `rows.ts` already agree on, and switches the import when G2 merges.
 
-### G2 — the `@ngram/mcp` seam
+### G2 — the `@ainize/mcp` seam
 `packages/mcp/package.json` (adds `"./client"` and `"./money"` subpath exports; `"."` unchanged) ·
 `packages/mcp/src/teach-run.ts` (new: `runTeachLesson(ctx, input, {signal, onState})`, lifted **verbatim** out of the
 `teach` tool's `run` closure) · `packages/mcp/src/tools/teach.ts` (now calls it) · `packages/mcp/test/teach-run.test.ts`
@@ -425,7 +425,7 @@ existing `packages/mcp/test/teach.test.ts` pins.
 
 Four kinds, per day, check-and-hold, `spend.jsonl` intent/settle/release, the refusal sentences, the "cap cannot be
 raised from inside" rule, and the node's `jobsPerKeyPerDay` as the second ceiling.
-**Depends on:** G2 (decimal-string arithmetic via `@ngram/mcp/money`), G1 (`i18n.ts` only).
+**Depends on:** G2 (decimal-string arithmetic via `@ainize/mcp/money`), G1 (`i18n.ts` only).
 
 ### G4 — plans, shapes, retrieval
 `packages/agent/src/plans.ts` · `packages/agent/src/retrieve.ts` · `packages/agent/src/strings/retrieve.ts` ·
@@ -433,7 +433,7 @@ raised from inside" rule, and the node's `jobsPerKeyPerDay` as the second ceilin
 
 Plan schema and loader, `skeleton()`, the shape key, pattern→slot compilation (EN + KO), the `McpDataSource` wiring,
 `retrieve` events with `new_rows`/`refetched`/`churned`, provenance sealed onto the rows.
-**Depends on:** G2 (`@ngram/mcp/client`), G1 (memory events and the row index), G3 (the `queries` reservation).
+**Depends on:** G2 (`@ainize/mcp/client`), G1 (memory events and the row index), G3 (the `queries` reservation).
 
 ### G5 — the loop, the bake, the CLI, the docs
 `packages/agent/src/ask.ts` · `packages/agent/src/bake.ts` · `packages/agent/src/bin.ts` ·
@@ -443,7 +443,7 @@ Plan schema and loader, `skeleton()`, the shape key, pattern→slot compilation 
 
 `shouldBake()` and its four gates, the bake through `runTeachLesson`, the `ask` / `memory` / `budget` / `plans`
 commands, and an e2e that drives recall → buy → retrieve → bake against a throwaway node with
-`NGRAM_TEACH_BACKEND=stub`.
+`AINIZE_TEACH_BACKEND=stub`.
 **Depends on:** G1, G2, G3, G4.
 
 Suggested order: **G2 and G1 in parallel → G3 → G4 → G5.**
@@ -452,15 +452,15 @@ Suggested order: **G2 and G1 in parallel → G3 → G4 → G5.**
 
 ## 11. What cannot be verified without a GPU
 
-Everything below is buildable and drivable today with `NGRAM_TEACH_BACKEND=stub` (A14) on a throwaway home pointed at
-`NGRAM_RUNTIME_API=http://127.0.0.1:9` — the job record exists, the dataset is real, the state machine runs, the
+Everything below is buildable and drivable today with `AINIZE_TEACH_BACKEND=stub` (A14) on a throwaway home pointed at
+`AINIZE_RUNTIME_API=http://127.0.0.1:9` — the job record exists, the dataset is real, the state machine runs, the
 budget reserves and settles. What the stub cannot produce is a trained engram, so these five stay **GPU-PENDING**, each
 with the command that would close it in a later window. `--gpus 4,5,6` is named explicitly because the shared engine on
 `:8002` and node-a are off limits while the four-arm re-run is measuring.
 
 1. **A real bake of a self-built dataset.** The stub copies a fixture npz; only a gradient run produces rows that
    change a model.
-   `NGRAM_TEACH_BACKEND=gradient ainize-agent ask "<q>" --bake-after 3 --lessons-per-day 1 --gpu-seconds-per-day 3600 --json`
+   `AINIZE_TEACH_BACKEND=gradient ainize-agent ask "<q>" --bake-after 3 --lessons-per-day 1 --gpu-seconds-per-day 3600 --json`
    against a node whose `teach.trainer.gpus` is `4,5,6`; then `ainize teach status <job>` must show
    `backend: gradient`, `checks.simulated: false` and a non-null `result.sha256`.
 2. **The baked engram answering its own shape.** Needs a serving model with the patch hook.

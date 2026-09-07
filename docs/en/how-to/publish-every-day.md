@@ -14,7 +14,7 @@ code the next one can stop on.
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-export NGRAM_PASSWORD="…"            # or --password; `ainize login` never blocks in a script
+export AINIZE_PASSWORD="…"            # or --password; `ainize login` never blocks in a script
 
 DAY=$(date +%F)
 ainize login
@@ -101,7 +101,7 @@ jq -r '.record_hash, .status, .verifiers_known, (.pending_supersedes[].id)' publ
 - **Verifiers.** Nothing you announce can be LISTED until `verifier.quorum` other nodes attest it. `ainize publish`
   says how many reachable verifiers this node knows the moment it announces; if that number is below the quorum,
   the loop will publish every night into a catalogue nobody can buy from.
-- **The teaching key.** The CLI keeps one at `<NGRAM_HOME>/teaching-key.json` and creates it on first use. It is the
+- **The teaching key.** The CLI keeps one at `<AINIZE_HOME>/teaching-key.json` and creates it on first use. It is the
   identity your lessons and their earnings belong to — back it up before the loop runs unattended.
 - **Quotas.** A node caps lessons and questions per key per day (`ainize teach status <node url>` prints the limits
   it will enforce), so a nightly bake sized above them stops with `quota_key`, not silently.

@@ -14,7 +14,7 @@ required first — except [Installation](./install.md), which left you with the 
 
 > [!NOTE]
 > Every block below is a command that was run and the output it printed. Two edits, and no others: absolute paths
-> are shortened (a node's home to `<NGRAM_HOME>`), and where a step could not be run at all, it says so in the text
+> are shortened (a node's home to `<AINIZE_HOME>`), and where a step could not be run at all, it says so in the text
 > instead of showing output. Nothing here is invented.
 
 ## What you need first
@@ -35,23 +35,23 @@ two works without one, and step 4 is the line that tells you which of the two si
 
 ## 1. Create the node
 
-A node keeps itself in one directory, named by `NGRAM_HOME`; unset, that is `~/.ngram`. Pick a directory and a port
+A node keeps itself in one directory, named by `AINIZE_HOME`; unset, that is `~/.ainize`. Pick a directory and a port
 now — 3402 is the default, and this transcript uses 3694 because the machine it ran on already had nodes on the
 lower numbers.
 
 ```bash
-export NGRAM_HOME=~/nodes/quickstart
+export AINIZE_HOME=~/nodes/quickstart
 ainize init --name quickstart --port 3694
 ```
 
 ```text
-✓ node initialised at <NGRAM_HOME>/config.json
+✓ node initialised at <AINIZE_HOME>/config.json
 name     quickstart
 address  0x4079e607370cC79B00c6051204bDb5c67a54FB12
 port     3694
 ledger   local
 roles    seller, verifier, serving
-the private key lives in <NGRAM_HOME>/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+the private key lives in <AINIZE_HOME>/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
 
 next: `ainize start`   (then `ainize login`, `ainize seed`)
 ```
@@ -104,7 +104,7 @@ ainize start -d
 
 ```text
 ✓ node started in the background (pid 766683) — port 3694
-  logs: <NGRAM_HOME>/node.log   stop: ainize stop
+  logs: <AINIZE_HOME>/node.log   stop: ainize stop
 ```
 
 `-d` (`--detach`) puts it in the background and writes the pid beside the log; without it the node runs in the
@@ -173,11 +173,11 @@ ainize login
 ```
 
 ```text
-✓ operator password set and logged in to http://localhost:3694 (token saved in <NGRAM_HOME>/cli.json)
+✓ operator password set and logged in to http://localhost:3694 (token saved in <AINIZE_HOME>/cli.json)
 ```
 
 The token in `cli.json` is what the CLI sends afterwards, so you log in once per home directory. (A script that
-cannot type at a prompt passes `--password`, or sets `NGRAM_PASSWORD`; that is how the line above was actually run.)
+cannot type at a prompt passes `--password`, or sets `AINIZE_PASSWORD`; that is how the line above was actually run.)
 
 `cli.json` also records the node's URL, and that is the one thing to remember about it: the CLI talks to the URL it
 logged in to, not to whatever `config.json` currently says. Change the node's port after logging in and every
@@ -208,7 +208,7 @@ Three nodes, not two, and the reason is the whole point of the marketplace: know
 work**. Your node from step 1 is one verifier. A seller and one more checker make up the other two. Build only a
 seller and everything it publishes sits at `1/2` for ever — verified once, by you, and never listed.
 
-`--home` picks which node a single command is for, so the next two can be run without disturbing the `NGRAM_HOME` you
+`--home` picks which node a single command is for, so the next two can be run without disturbing the `AINIZE_HOME` you
 set in step 1. First the seller: create it, fill it with demo knowledge, start it.
 
 ```bash
@@ -282,7 +282,7 @@ afterwards. Step 9 stops all three.
 
 ### Point your node at it
 
-Back to your own node — `NGRAM_HOME` still names it, so the `--home` prefix is gone again. Give it the seller's
+Back to your own node — `AINIZE_HOME` still names it, so the `--home` prefix is gone again. Give it the seller's
 address and the announcements start arriving:
 
 ```bash
@@ -323,10 +323,10 @@ ainize patch ls
 ```text
 ID               STATUS      AUTHOR              MODEL           ROWS    SIZE       PRICE  ATTEST  SOLD  BENCHMARK
 ───────────────  ──────────  ──────────────────  ─────────────  ─────  ──────  ──────────  ──────  ────  ────────────────
-law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
-law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
+law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
+law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
 ```
 
 Four columns carry the decision. `MODEL` has to match the model your node found in step 4, because a knowledge is
@@ -457,10 +457,10 @@ runtime unavailable — serving API unreachable  (chat needs a serving node; pas
 overlapping memory entries: law-kr-2026 ∩ law-us-2025 = 600; law-kr-2026 ∩ law-kr-2025 = 600; law-kr-2026 ∩ law-common-base = 600; law-us-2025 ∩ law-kr-2025 = 600; law-us-2025 ∩ law-common-base = 600; law-kr-2025 ∩ law-common-base = 600
 ID               NAME                                           MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
 ───────────────  ─────────────────────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
-law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ngram-1b     60        1,200     2/2 ✓  -
-law-us-2025      [synthetic] US federal law 2025                demo-ngram-1b     60        1,200     2/2 ✓  -
-law-kr-2025      [synthetic] Korean law revision 2025           demo-ngram-1b     60        1,200     2/2 ✓  -
-law-common-base  [synthetic] common legal basics                demo-ngram-1b     40        2,000     2/2 ✓  -
+law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ainize-1b     60        1,200     2/2 ✓  -
+law-us-2025      [synthetic] US federal law 2025                demo-ainize-1b     60        1,200     2/2 ✓  -
+law-kr-2025      [synthetic] Korean law revision 2025           demo-ainize-1b     60        1,200     2/2 ✓  -
+law-common-base  [synthetic] common legal basics                demo-ainize-1b     40        2,000     2/2 ✓  -
 
 ainize chat <ID> "<question>"   or   ainize chat <ID>   for an interactive session   (ainize chat --patch a,b loads up to 3 together)
 ```

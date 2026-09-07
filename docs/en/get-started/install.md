@@ -11,7 +11,7 @@ GPU or a model — that comes on the next page. Ten minutes, most of it waiting 
 > [!NOTE]
 > Every block below is a command that was run and the output it printed. The one edit is to absolute paths: the
 > machine this was recorded on keeps its scratch directories somewhere long and uninteresting, so a node's home
-> directory appears as `<NGRAM_HOME>` and a file beside it as `~/…`. Nothing else is changed, and nothing is invented.
+> directory appears as `<AINIZE_HOME>` and a file beside it as `~/…`. Nothing else is changed, and nothing is invented.
 
 ## First, Node 24
 
@@ -121,14 +121,14 @@ ainize --version
 0.1.0
 ```
 
-## Where a node lives: `NGRAM_HOME`
+## Where a node lives: `AINIZE_HOME`
 
 A node keeps everything it is in a single directory: its key, its settings, its ledger and the knowledge it holds.
-`NGRAM_HOME` names that directory. Leave it unset and it is `~/.ngram`; set it, and that is the node you are talking
+`AINIZE_HOME` names that directory. Leave it unset and it is `~/.ainize`; set it, and that is the node you are talking
 to for the rest of the session.
 
 ```bash
-export NGRAM_HOME=~/nodes/quickstart
+export AINIZE_HOME=~/nodes/quickstart
 ```
 
 One directory is one node. Two nodes on one machine means two directories and two ports — which is exactly how the
@@ -138,7 +138,7 @@ transcript on the next page was recorded. The `--home` option does the same thin
 `ainize init` creates the directory, and straight afterwards it holds only what `init` itself wrote:
 
 ```bash
-ls -1 "$NGRAM_HOME"
+ls -1 "$AINIZE_HOME"
 ```
 
 ```text

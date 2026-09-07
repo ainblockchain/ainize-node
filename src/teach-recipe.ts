@@ -4,7 +4,7 @@
  *                   model identity, probe results) plus the node-side lesson block
  *   RUN-LOCALLY.md  the "only me" instructions, rendered server-side with the lesson's identifiers filled in
  */
-import type { BenchmarkSpec, PatchRecipe } from '@ngram/core';
+import type { BenchmarkSpec, PatchRecipe } from '@ainize/core';
 
 /** Shape of `recipe.json` as written by `train/teach.py` (PR-4); every field is optional because the stub writes a subset. */
 export interface TrainerRecipe {

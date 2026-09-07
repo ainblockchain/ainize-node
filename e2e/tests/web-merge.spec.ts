@@ -9,7 +9,7 @@
  * measured on the two files.
  */
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
-import { signMessage } from '@ngram/core';
+import { signMessage } from '@ainize/core';
 import { runCli } from '../helpers/operator-cli';
 import {
   NODE, cleanupAll, createDataset, createJob, newKey, operatorToken, patchPolicy, policy, seedBrowserKey, tag,

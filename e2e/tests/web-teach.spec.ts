@@ -50,7 +50,7 @@ let draftId = '';
 let patchId = '';
 let lessonName = '';
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
-const teachHeader = (id: { address: string; privateKey: string }) => { const ts = Date.now(); return { 'x-ngram-auth': `${id.address}:${ts}:${signMessage(`teach:${ts}`, id.privateKey)}` }; };
+const teachHeader = (id: { address: string; privateKey: string }) => { const ts = Date.now(); return { 'x-ainize-auth': `${id.address}:${ts}:${signMessage(`teach:${ts}`, id.privateKey)}` }; };
 
 /**
  * The `stub` trainer does not train: it copies the 픽셀플러스 fixture. A node that measures its lessons against a real

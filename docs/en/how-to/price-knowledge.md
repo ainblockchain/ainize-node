@@ -32,7 +32,7 @@ ainize config set market.defaultPrice 2
 
 ```text
 ✓ market.defaultPrice = "2"  (the node reads config.json when it starts)
-! the node in ~/.ngram is running (pid 663087) and keeps using the value it started with — restart it to apply this (`ainize stop` then `ainize start -d`)
+! the node in ~/.ainize is running (pid 663087) and keeps using the value it started with — restart it to apply this (`ainize stop` then `ainize start -d`)
 ```
 
 After a restart, publishing without `--price` takes it:

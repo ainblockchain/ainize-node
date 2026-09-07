@@ -42,7 +42,7 @@ const ensureNodeD = async () => {
   const f = await runCli(['chain', 'fund', nodeAddress(HOME_D), '100'], { home: HOME_D });
   expect(f.code, f.stderr).toBe(0);
 };
-const dockerNames = async () => { try { return (await execFileP('docker', ['ps', '-a', '--filter', 'name=ngram-ain', '--format', '{{.Names}}'])).stdout.trim().split('\n').filter(Boolean); } catch { return null; } };
+const dockerNames = async () => { try { return (await execFileP('docker', ['ps', '-a', '--filter', 'name=ainize-ain', '--format', '{{.Names}}'])).stdout.trim().split('\n').filter(Boolean); } catch { return null; } };
 const A = { home: HOME_A };
 const B = { home: HOME_B };
 
@@ -91,7 +91,7 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.code).toBe(3);
     expect(r.stderr.trim()).toBe('error: wrong password — run `ainize login` first');
 
-    r = await runCli(['login'], { ...o, env: { NGRAM_PASSWORD: pw } });
+    r = await runCli(['login'], { ...o, env: { AINIZE_PASSWORD: pw } });
     expect(r.code, r.stderr || r.stdout).toBe(0);
     expect(r.stdout.trim()).toBe(`✓ logged in to ${NODE_B} (token saved in ${home}/cli.json)`);
     expect(statSync(join(home, 'cli.json')).mode & 0o777).toBe(0o600);
@@ -161,7 +161,7 @@ test.describe('operator: account / API / inspection', () => {
     // 10 bearer token → wallet
     const login = await request.post(`${NODE_B}/api/auth/login`, { data: { password: PASSWORDS[NODE_B] } });
     expect(login.status()).toBe(200);
-    expect(login.headers()['set-cookie'] ?? '').toMatch(/ngram_session=.*HttpOnly/i);
+    expect(login.headers()['set-cookie'] ?? '').toMatch(/ainize_session=.*HttpOnly/i);
     const token = (await login.json() as { token: string }).token;
     const wallet = await api<Record<string, unknown>>(request, '/api/me/wallet', { node: NODE_B, token });
     expect(wallet.status).toBe(200);
@@ -355,7 +355,7 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^health\s+true$/m);
     expect(r.stdout).toMatch(new RegExp(`^validator\\s+${VALIDATOR}$`, 'm'));
     expect(r.stdout).toMatch(/^last block\s+\d+$/m);
-    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+    expect(r.stdout).toMatch(/^container\s+ainize-ain: running$/m);
 
     const containersBefore = await dockerNames();
     r = await runCli(['chain', 'up'], A);
@@ -363,7 +363,7 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout.trim()).toMatch(new RegExp(`^✓ a local AIN chain is already SERVING on :8081 \\(validator ${VALIDATOR}, block \\d+\\) — nothing to do$`));
     expect(await dockerNames()).toEqual(containersBefore);   // no second container
     r = await runCli(['chain', 'status'], A);
-    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+    expect(r.stdout).toMatch(/^container\s+ainize-ain: running$/m);
 
     const before = (await api<{ balance: number }>(request, '/api/chain', { node: NODE_B })).body.balance;
     r = await runCli(['chain', 'fund', ADDR_B, '10'], A);
@@ -404,7 +404,7 @@ test.describe('operator: account / API / inspection', () => {
     expect(r.stdout).toMatch(/^reachable\s+no$/m);
     expect(r.stdout).toMatch(/^state\s+-$/m);
     expect(r.stdout).toMatch(/^health\s+-$/m);
-    expect(r.stdout).toMatch(/^container\s+ngram-ain: running$/m);
+    expect(r.stdout).toMatch(/^container\s+ainize-ain: running$/m);
   });
 
   test('AZ-070 Check the aindrive mirror: `drive status --files`, `drive sync`, `drive up` before pairing, and the changes API guard', async ({ request }) => {
@@ -1123,7 +1123,7 @@ test.describe('operator: fourth node', () => {
     expect(r.stdout.trim()).toBe(`✓ stopped node (pid ${pid})`);
     r = await runCli(['stop'], D);
     expect(r.code, r.stderr || r.stdout).toBe(0);
-    expect(r.stdout.trim()).toBe('no background node running for this NGRAM_HOME');
+    expect(r.stdout.trim()).toBe('no background node running for this AINIZE_HOME');
     expect(existsSync(join(HOME_D, 'node.pid'))).toBe(false);
     expect(await httpDown(NODE_D)).toBe(true);
   });
@@ -1508,7 +1508,7 @@ test.describe('operator: fourth node', () => {
     const agentAddr = /^address\s+(0x[0-9a-fA-F]{40})$/m.exec(keys.stdout)?.[1];
     expect(agentAddr).toBeTruthy();
     expect(keys.stdout).toMatch(/^publicKey\s+[0-9a-f]+$/m);
-    expect(keys.stdout).toMatch(/^home\s+\/home\/\S+\/\.ngram-agent$/m);
+    expect(keys.stdout).toMatch(/^home\s+\/home\/\S+\/\.ainize-agent$/m);
     r = await runCli(['chain', 'fund', agentAddr!, '5'], A);
     expect(r.stdout.trim()).toMatch(new RegExp(`^✓ funded ${agentAddr} with 5 AIN {2}tx 0x[0-9a-f]+ {2}balance now [\\d.]+ AIN$`));
     const cat = { ...(await agentRun(['catalog'])) }; cat.stdout = strip(cat.stdout);
@@ -1518,8 +1518,8 @@ test.describe('operator: fourth node', () => {
 
     // ---- steps 1-7 for REAL on a private throwaway cluster (same script, same binaries, same web UI) ----
     // scripts/cluster-restart.sh may not bounce the shared demo cluster while other groups use it, so the restart
-    // itself runs against a private 3-node cluster: NGRAM_CLUSTER_HOME=<scratch> NGRAM_PORT_BASE=<free port>
-    // NGRAM_LEDGER=local NGRAM_SEED=0 — nothing on the shared chain, no demo seed, and the home-scoped stop
+    // itself runs against a private 3-node cluster: AINIZE_CLUSTER_HOME=<scratch> AINIZE_PORT_BASE=<free port>
+    // AINIZE_LEDGER=local AINIZE_SEED=0 — nothing on the shared chain, no demo seed, and the home-scoped stop
     // (matched via /proc environ) cannot touch :3402. Adaptations to the private local-ledger cluster: the
     // surviving catalog entry is a draft this test publishes itself (deterministic without the shared vLLM),
     // prices are in CREDIT, and ledger.records grows by the per-boot `node` join announcements instead of
@@ -1540,7 +1540,7 @@ test.describe('operator: fourth node', () => {
     const P = { home: join(pHome, 'node-a') };
     const restartSh = async (...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
       try {
-        const o = await execFileP('bash', [join(REPO, 'scripts/cluster-restart.sh'), ...args], { env: { ...process.env, NGRAM_CLUSTER_HOME: pHome, NGRAM_PORT_BASE: String(base), NGRAM_LEDGER: 'local', NGRAM_SEED: '0' }, timeout: 120_000 });
+        const o = await execFileP('bash', [join(REPO, 'scripts/cluster-restart.sh'), ...args], { env: { ...process.env, AINIZE_CLUSTER_HOME: pHome, AINIZE_PORT_BASE: String(base), AINIZE_LEDGER: 'local', AINIZE_SEED: '0' }, timeout: 120_000 });
         return { code: 0, stdout: o.stdout, stderr: o.stderr };
       } catch (e) { const err = e as { code?: number; stdout?: string; stderr?: string }; return { code: typeof err.code === 'number' ? err.code : 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' }; }
     };
@@ -1590,7 +1590,7 @@ test.describe('operator: fourth node', () => {
         30_000, 1000,
       );
       expect(log).toContain(`[cluster] web UI → http://localhost:${base}   (B: ${base + 1}, C: ${base + 2}; homes under ${pHome}; ledger=local; teach backend=stub)`);
-      expect(log).not.toContain('seeded node-a');   // NGRAM_SEED=0: nothing was re-seeded
+      expect(log).not.toContain('seeded node-a');   // AINIZE_SEED=0: nothing was re-seeded
 
       // step 4: identities, counts and the catalog survived (the ledger only gained the boot announcements)
       const after = await Promise.all(urls.map(infoOf));
@@ -1712,13 +1712,13 @@ test.describe('operator: commands that report state', () => {
       const other = await throwawayNode('claimer', { port: t.port, start: false });
       try {
         expect((await other.init()).code).toBe(0);
-        const stolen = await runCli(['login'], { home: other.home, env: { NGRAM_PASSWORD: 'hack-me' } });
+        const stolen = await runCli(['login'], { home: other.home, env: { AINIZE_PASSWORD: 'hack-me' } });
         expect(stolen.code).toBe(2);
         expect(stolen.stderr).toContain(`${t.url} is answered by "unclaimed" (${shortAddr(me.address, 8)}), which has no operator password yet`);
         expect(stolen.stderr).toContain(`Refusing to claim someone else's node; re-run with --node ${t.url}`);
         expect(((await (await fetch(`${t.url}/api/auth/me`)).json()) as { needsSetup: boolean }).needsSetup, 'still unclaimed').toBe(true);
 
-        const named2 = await runCli(['login'], { home: other.home, node: t.url, env: { NGRAM_PASSWORD: 'hack-me' } });
+        const named2 = await runCli(['login'], { home: other.home, node: t.url, env: { AINIZE_PASSWORD: 'hack-me' } });
         expect(named2.code, named2.stderr).toBe(0);
         expect(named2.stdout).toContain(`operator password set and logged in to ${t.url}`);
       } finally { await other.stop(); }
@@ -1753,13 +1753,13 @@ test.describe('operator: commands that report state', () => {
       // step 4: nothing of b's is running, and nothing else is claimed
       const stopB = await b.cli(['stop']);
       expect(stopB.code).toBe(0);
-      expect(stopB.stdout.trim()).toBe('no background node running for this NGRAM_HOME');
+      expect(stopB.stdout.trim()).toBe('no background node running for this AINIZE_HOME');
       expect(stopB.stderr).toBe('');
 
       // steps 5-7: a node that ignores SIGTERM is killed, and only then reported stopped
       const pid = Number(readFileSync(join(a.home, 'node.pid'), 'utf8').trim());
       process.kill(pid, 'SIGSTOP');
-      const stopA = await a.cli(['stop'], { env: { NGRAM_STOP_GRACE_MS: '3000' } });
+      const stopA = await a.cli(['stop'], { env: { AINIZE_STOP_GRACE_MS: '3000' } });
       expect(stopA.code, stopA.stderr).toBe(0);
       expect(stopA.stderr).toContain(`! node ${pid} is still running 3 s after SIGTERM — sending SIGKILL`);
       expect(stopA.stdout.trim()).toBe(`✓ stopped node (pid ${pid}) — it ignored SIGTERM, so it was killed`);
@@ -1872,7 +1872,7 @@ test.describe('operator: commands that report state', () => {
     try {
       const cfgPath = join(t.home, 'config.json');
       expect(JSON.parse(readFileSync(cfgPath, 'utf8')).market.defaultPrice).toBe('0.1');
-      const login = await t.cli(['login'], { env: { NGRAM_PASSWORD: 'clobber-pass-1234' } });
+      const login = await t.cli(['login'], { env: { AINIZE_PASSWORD: 'clobber-pass-1234' } });
       expect(login.code, login.stderr).toBe(0);
       const token = JSON.parse(readFileSync(join(t.home, 'cli.json'), 'utf8')).token as string;
 
@@ -2081,7 +2081,7 @@ test.describe('operator: commands that report state', () => {
       for (const [k, v] of [['verifier.quorum', '1'], ['verifier.allowSelfAttest', 'true']]) expect((await t.cli(['config', 'set', k, v])).code).toBe(0);
       expect((await t.cli(['start', '-d'])).code).toBe(0);
       expect(await httpUp(t.url, 60_000)).toBe(true);
-      expect((await t.cli(['login'], { env: { NGRAM_PASSWORD: 'forget-pass-1234' } })).code).toBe(0);
+      expect((await t.cli(['login'], { env: { AINIZE_PASSWORD: 'forget-pass-1234' } })).code).toBe(0);
 
       const bench = (schema: string) => { const p = join(SCRATCH, `az235-${schema}-${RUN}.json`); writeFileSync(p, benchJson(schema)); return p; };
       const one = await t.cli(['publish', PIXEL_NPZ, '--name', 'adv v1', '--model', MODEL, '--benchmark', bench('az235a'), '--id', `adv-v1-${RUN}`, '--price', '1', '--test']);

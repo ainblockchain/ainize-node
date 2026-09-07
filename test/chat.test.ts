@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, type NodeConfig } from '@ngram/core';
+import { createIdentity, defaultConfig, type NodeConfig } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo } from '../src/seed.js';
@@ -41,7 +41,7 @@ before(async () => {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   const realExclusive = (rt.exclusive as (label: string, fn: () => Promise<unknown>) => Promise<unknown>).bind(N.market.runtime);
   Object.assign(rt, {
-    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ainize-1b', hook: true, repo: null, applied: [] }),
     isApplied: async (p: string) => table.has(p),
     applyRaw: async (p: string) => { calls.push(`apply:${idOf(p)}`); table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { calls.push(`remove:${idOf(p)}`); table.delete(p); return { code: 0, out: 'ok', err: '' }; },
@@ -49,7 +49,7 @@ before(async () => {
       const loaded = [...table.entries()].sort((a, b) => a[1] - b[1]).map(([p]) => idOf(p));
       calls.push(`chat[${loaded.join(',')}]`);
       seen.push(m.map((x) => ({ role: x.role, content: x.content })));
-      return { content: loaded.length ? `loaded=${loaded.join('+')}` : 'base', latency_ms: 1, model: 'demo-ngram-1b' };
+      return { content: loaded.length ? `loaded=${loaded.join('+')}` : 'base', latency_ms: 1, model: 'demo-ainize-1b' };
     },
     exclusive: (label: string, fn: () => Promise<unknown>) => { labels.push(label); return realExclusive(label, fn); },
   });
@@ -221,10 +221,10 @@ test('HTTP: patch_id OR patch_ids (exactly one); /api/chat/patches carries appli
   N.store.clearApplied('law-kr-2026');
   // a visitor signature (purpose `teach`) adds the (still empty) lessons[] and the verified address
   const id = createIdentity();
-  const p3 = await (await fetch(`${url}/api/chat/patches`, { headers: { 'x-ngram-auth': authHeader(id, 'teach') } })).json() as typeof p;
+  const p3 = await (await fetch(`${url}/api/chat/patches`, { headers: { 'x-ainize-auth': authHeader(id, 'teach') } })).json() as typeof p;
   assert.deepEqual(p3.lessons, []);
   assert.equal(p3.teacher, id.address);
-  const p4 = await (await fetch(`${url}/api/chat/patches`, { headers: { 'x-ngram-auth': authHeader(id, 'blob:x') } })).json() as typeof p;
+  const p4 = await (await fetch(`${url}/api/chat/patches`, { headers: { 'x-ainize-auth': authHeader(id, 'blob:x') } })).json() as typeof p;
   assert.equal(p4.lessons, undefined, 'a signature for another purpose is ignored');
 });
 

@@ -13,7 +13,7 @@ All 127 keys a node config accepts, the environment variables that override them
 
 ## How to read this page
 
-A node keeps its settings in `config.json` inside its home directory (`~/.ngram` unless `NGRAM_HOME` says otherwise). Read and change them with
+A node keeps its settings in `config.json` inside its home directory (`~/.ainize` unless `AINIZE_HOME` says otherwise). Read and change them with
 `ainize config show`, `ainize config get <key>`, `ainize config set <key> <value>` and `ainize config unset <key>` — see the [CLI reference](./cli.md#ainize-config).
 
 Keys are dotted paths. The **Type** column is the schema's own description of what a key holds, followed by the rules it enforces — the same sentence `ainize config set` prints when a value is refused.
@@ -25,7 +25,7 @@ Money is a decimal string everywhere in this product, never a JSON number: `"0.1
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `name` | a string — must not be empty | `node-` + the first 6 hex of the node address |   |
-| `dataDir` | a string — must not be empty | `<NGRAM_HOME>/data` |   |
+| `dataDir` | a string — must not be empty | `<AINIZE_HOME>/data` |   |
 | `port` | a number — must be a whole number; must be between 1 and 65535 | `3402` |   |
 | `host` | a string — must be an interface to bind: an IP address (0.0.0.0, 127.0.0.1, ::) or a hostname | `"127.0.0.1"` |   |
 | `publicUrl` | a string — must be an http(s) URL | unset |   |
@@ -168,21 +168,21 @@ These are read at start-up and overwrite what is in `config.json` for that run; 
 
 | Variable | Sets | Accepted values |
 |---|---|---|
-| `NGRAM_HOME` | the directory holding `config.json`, the node key and the data directory |   |
-| `NGRAM_PORT` | `port` |   |
-| `NGRAM_HOST` | `host` |   |
-| `NGRAM_PEERS` | `peers` |   |
-| `NGRAM_LEDGER` | `ledger.kind` | `"ain"`, `"local"` |
+| `AINIZE_HOME` | the directory holding `config.json`, the node key and the data directory |   |
+| `AINIZE_PORT` | `port` |   |
+| `AINIZE_HOST` | `host` |   |
+| `AINIZE_PEERS` | `peers` |   |
+| `AINIZE_LEDGER` | `ledger.kind` | `"ain"`, `"local"` |
 | `AIN_PROVIDER_URL` | `ledger.ain.providerUrl` |   |
-| `NGRAM_ROLES` | `roles` |   |
-| `NGRAM_PUBLIC_URL` | `publicUrl` |   |
-| `NGRAM_RUNTIME_REPO` | `runtime.repo` |   |
-| `NGRAM_RUNTIME_API` | `runtime.api` |   |
-| `NGRAM_RUNTIME_PATCH_DIR` | `runtime.patchDir` |   |
-| `NGRAM_TEACH_BACKEND` | `teach.backend` | `"stub"`, `"gradient"` |
-| `NGRAM_TEACH_ENABLED` | `teach.enabled` | `"1"`, `"0"` |
-| `NGRAM_TRUST_PROXY` | `server.trustProxy` |   |
-| `NGRAM_TEACH_STUB_OFFLINE` | `teach.stubOffline` | `"1"`, `"0"` |
+| `AINIZE_ROLES` | `roles` |   |
+| `AINIZE_PUBLIC_URL` | `publicUrl` |   |
+| `AINIZE_RUNTIME_REPO` | `runtime.repo` |   |
+| `AINIZE_RUNTIME_API` | `runtime.api` |   |
+| `AINIZE_RUNTIME_PATCH_DIR` | `runtime.patchDir` |   |
+| `AINIZE_TEACH_BACKEND` | `teach.backend` | `"stub"`, `"gradient"` |
+| `AINIZE_TEACH_ENABLED` | `teach.enabled` | `"1"`, `"0"` |
+| `AINIZE_TRUST_PROXY` | `server.trustProxy` |   |
+| `AINIZE_TEACH_STUB_OFFLINE` | `teach.stubOffline` | `"1"`, `"0"` |
 
 ## The default `config.json`
 
@@ -191,7 +191,7 @@ What `ainize init` writes, with the identity removed — it is minted per node.
 ```json
 {
   "name": "node-19e7e3",
-  "dataDir": "<NGRAM_HOME>/data",
+  "dataDir": "<AINIZE_HOME>/data",
   "port": 3402,
   "host": "127.0.0.1",
   "roles": [

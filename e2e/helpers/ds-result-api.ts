@@ -2,7 +2,7 @@
  * Helpers for the dataset-era RESULT screen scenarios (AZ-183…AZ-202, tests/web-ds-result.spec.ts).
  *
  * Everything a visitor does here is signed with a browser-held teaching key, so the suite mints its own keys and talks
- * to the node with the same `x-ngram-auth` header the web app sends (the legacy form: the node accepts it and refuses
+ * to the node with the same `x-ainize-auth` header the web app sends (the legacy form: the node accepts it and refuses
  * only an exact replay of the same signature on the same method+path, so every call gets a fresh timestamp).
  *
  * Nothing in this file touches the demo cluster (:3402-3404) or the AIN chain — it is bound to whatever AINIZE_URL
@@ -28,10 +28,10 @@ export function newTeachKey(name?: string): TeachKey {
   return { address: id.address, privateKey: id.privateKey, ...(name ? { name } : {}) };
 }
 
-/** `x-ngram-auth: <address>:<ts>:<sig over "teach:<ts>">` — the legacy form the node still accepts (teach-auth.ts). */
+/** `x-ainize-auth: <address>:<ts>:<sig over "teach:<ts>">` — the legacy form the node still accepts (teach-auth.ts). */
 export function teachHeaders(key: TeachKey): Record<string, string> {
   const ts = Date.now();
-  return { 'x-ngram-auth': `${key.address}:${ts}:${signMessage(`teach:${ts}`, key.privateKey)}` };
+  return { 'x-ainize-auth': `${key.address}:${ts}:${signMessage(`teach:${ts}`, key.privateKey)}` };
 }
 
 /** Put the key into the browser exactly where the web app keeps it (`ainize.teacher.key`, lib/teacherKey.ts). */
@@ -114,7 +114,7 @@ export async function createDataset(request: APIRequestContext, key: TeachKey, b
   return r.body.dataset;
 }
 
-/** Multipart upload, exactly like the browser: the sha256 of the bytes travels in `x-ngram-dataset-sha256`. */
+/** Multipart upload, exactly like the browser: the sha256 of the bytes travels in `x-ainize-dataset-sha256`. */
 export async function uploadDataset(
   request: APIRequestContext, key: TeachKey,
   file: { name: string; body: string; mimeType?: string }, meta: { name?: string; retention?: string } = {},
@@ -124,7 +124,7 @@ export async function uploadDataset(
   const sha = createHash('sha256').update(bytes).digest('hex');
   const send = async () => {
     const res = await request.post(`${NODE}/api/teach/datasets`, {
-      headers: { ...teachHeaders(key), 'x-ngram-dataset-sha256': sha },
+      headers: { ...teachHeaders(key), 'x-ainize-dataset-sha256': sha },
       multipart: {
         file: { name: file.name, mimeType: file.mimeType ?? 'text/plain', buffer: bytes },
         ...(meta.name ? { name: meta.name } : {}),

@@ -85,7 +85,7 @@ const fieldTable = (rows) => table(['Field', 'Type', 'Required', 'Description'],
 export function authOf(op) {
   const out = [];
   if (op.security) out.push('operator');
-  const teach = (op.parameters ?? []).find((p) => p.in === 'header' && p.name.toLowerCase() === 'x-ngram-auth');
+  const teach = (op.parameters ?? []).find((p) => p.in === 'header' && p.name.toLowerCase() === 'x-ainize-auth');
   if (teach) out.push(teach.required ? 'teaching key' : 'teaching key (optional)');
   if (op.responses?.['402']) out.push('payment (x402)');
   return out.length ? out.join(' + ') : 'none';
@@ -171,7 +171,7 @@ export function renderHttpApiPage(spec) {
     'The **Auth** column of each index below says what a request must carry.',
     '',
     ...schemes,
-    `- **teaching key** — the ${code('x-ngram-auth')} header. There is no account: the key is the identity. Endpoints that accept it describe its exact form in their parameter table.`,
+    `- **teaching key** — the ${code('x-ainize-auth')} header. There is no account: the key is the identity. Endpoints that accept it describe its exact form in their parameter table.`,
     `- **payment (x402)** — the endpoint answers ${code('402')} with an ${code('x-payment-required')} header; repeat the request with ${code('X-PAYMENT')}.`,
     '- **none** — public.',
   ].join('\n'));

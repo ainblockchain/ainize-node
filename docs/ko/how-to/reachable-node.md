@@ -13,7 +13,7 @@ source_sha256: 770b006e74650a7f198169e218f4a1e728567f23c790b6b824abe34560c33343
 
 `ainize status`에 이미 응답하는 노드가 있다고 보고 시작합니다. 아래 출력은 한 대의 컴퓨터에서 띄운 노드 세 개 — 3634
 포트의 판매 노드와 3635·3636 포트의 검증 노드 둘 — 에서 그대로 가져온 것이라 주소가 전부 localhost입니다. 홈 디렉터리
-경로만 읽기 좋게 `~/.ngram`으로 줄였고, 그 밖에는 손대지 않았습니다.
+경로만 읽기 좋게 `~/.ainize`으로 줄였고, 그 밖에는 손대지 않았습니다.
 
 ## `host`는 붙는 자리, `publicUrl`은 남이 받아 적는 주소
 
@@ -38,7 +38,7 @@ ainize config get publicUrl
 ```
 
 ```text
-publicUrl is not set in ~/.ngram/config.json (the node uses its built-in default)
+publicUrl is not set in ~/.ainize/config.json (the node uses its built-in default)
 ```
 
 이 문자열 하나가 생각보다 멀리까지 갑니다. 다른 노드에게 자기를 소개할 때 보내는 `endpoint`가 이 값이고, 다른 노드가
@@ -87,7 +87,7 @@ ainize config set publicUrl https://ainize.example.com
 ainize stop && ainize start -d
 ```
 
-`config.json`을 건드리지 않고 한 번만 바꾸고 싶다면 환경 변수 `NGRAM_PUBLIC_URL`이 같은 일을 합니다. 컨테이너에서
+`config.json`을 건드리지 않고 한 번만 바꾸고 싶다면 환경 변수 `AINIZE_PUBLIC_URL`이 같은 일을 합니다. 컨테이너에서
 유용합니다. 둘 다 [설정 레퍼런스](../reference/config.md#keys)에 있습니다.
 
 ## 이웃은 하나만 알려 주면 됩니다
@@ -109,7 +109,7 @@ ainize start -d --peer http://localhost:3634
 
 ```text
 ✓ node started in the background (pid 663842) — port 3635
-  logs: ~/.ngram/node.log   stop: ainize stop
+  logs: ~/.ainize/node.log   stop: ainize stop
 ```
 
 판매 노드에게는 아무도 알려 주지 않았지만 몇 초 만에 둘 다 알게 됩니다. 인사를 받은 노드가, 인사한 노드가 스스로 밝힌
@@ -232,8 +232,8 @@ peers    0 configured
 
 ## 백그라운드로 띄우고 지켜보기
 
-`ainize start -d`는 노드를 백그라운드로 띄우고, 프로세스 번호를 `NGRAM_HOME/node.pid`에, 노드가 찍는 모든 것을
-`NGRAM_HOME/node.log`에 남깁니다. 자식 프로세스가 실제로 응답할 때까지 기다렸다가 성공을 알리므로, 초록색 체크가 떴다면
+`ainize start -d`는 노드를 백그라운드로 띄우고, 프로세스 번호를 `AINIZE_HOME/node.pid`에, 노드가 찍는 모든 것을
+`AINIZE_HOME/node.log`에 남깁니다. 자식 프로세스가 실제로 응답할 때까지 기다렸다가 성공을 알리므로, 초록색 체크가 떴다면
 정말로 듣고 있다는 뜻입니다.
 
 ```bash
@@ -242,7 +242,7 @@ ainize start -d
 
 ```text
 ✓ node started in the background (pid 668391) — port 3634
-  logs: ~/.ngram/node.log   stop: ainize stop
+  logs: ~/.ainize/node.log   stop: ainize stop
 ```
 
 `ainize stop`은 그 pid 파일을 읽어 SIGTERM을 보내고, 기다렸다가, 필요하면 SIGKILL까지 갑니다. pid 파일은 없는데 포트에서

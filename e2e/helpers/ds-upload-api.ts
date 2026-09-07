@@ -2,8 +2,8 @@
  * Teaching-key signing, dataset bookkeeping and the create pacer for the dataset-upload scenarios (AZ-123…AZ-142).
  *
  * Three jobs:
- *  1. sign a request the way the browser does (`x-ngram-auth … :v2` over `teach:<node>:<METHOD>:<path>:<ts>[:sha]`,
- *     with the multipart variant that signs `x-ngram-dataset-sha256` instead of the body — design §D14);
+ *  1. sign a request the way the browser does (`x-ainize-auth … :v2` over `teach:<node>:<METHOD>:<path>:<ts>[:sha]`,
+ *     with the multipart variant that signs `x-ainize-dataset-sha256` instead of the body — design §D14);
  *  2. keep the shared dev node clean: every dataset a test creates is registered and deleted afterwards, and a
  *     final sweep removes anything this run left behind;
  *  3. pace dataset creation. The node refuses more than `dataset.createsPerIpPerMin` (10 on node-u) creates per
@@ -49,7 +49,7 @@ export async function teachApi<T = any>(
   const body = json === undefined ? undefined : JSON.stringify(json);
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
-  if (key) headers['x-ngram-auth'] = authHeaderV2(key, nodeAddress, method, path, body ?? null);
+  if (key) headers['x-ainize-auth'] = authHeaderV2(key, nodeAddress, method, path, body ?? null);
   const r = await request.fetch(`${node}${path}`, { method, headers, ...(body === undefined ? {} : { data: body }), timeout: 120_000 });
   const text = await r.text();
   let parsed: unknown = text;
@@ -59,7 +59,7 @@ export async function teachApi<T = any>(
 
 /**
  * A multipart dataset upload made the way the browser makes it: the v2 signature covers the value of
- * `x-ngram-dataset-sha256` (a multipart body is never captured as rawBody), and the node re-hashes the stored file.
+ * `x-ainize-dataset-sha256` (a multipart body is never captured as rawBody), and the node re-hashes the stored file.
  */
 export async function uploadDataset(
   request: APIRequestContext, node: string, nodeAddress: string, key: TeachKey,
@@ -71,7 +71,7 @@ export async function uploadDataset(
     await paceCreate();
     const r = await request.fetch(`${node}${path}`, {
       method: 'POST',
-      headers: { 'x-ngram-auth': authHeaderV2(key, nodeAddress, 'POST', path, declared), 'x-ngram-dataset-sha256': declared },
+      headers: { 'x-ainize-auth': authHeaderV2(key, nodeAddress, 'POST', path, declared), 'x-ainize-dataset-sha256': declared },
       multipart: { ...(opts.fields ?? {}), file: { name: filename, mimeType: 'application/octet-stream', buffer: bytes } },
       timeout: 120_000,
     });

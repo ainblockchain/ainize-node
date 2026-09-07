@@ -18,7 +18,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { defaultConfig, type NodeConfig } from '@ngram/core';
+import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo } from '../src/seed.js';
 import { matchBenchmarkSample, BENCH_MATCH_MIN } from '../src/market.js';
@@ -37,7 +37,7 @@ let reply = { text: 'hello', finish_reason: 'stop' as string };
 let gate: Promise<void> | null = null;
 let openGate: (() => void) | null = null;
 const bodies: Record<string, unknown>[] = [];
-const model = 'demo-ngram-1b';
+const model = 'demo-ainize-1b';
 
 const vllm: Server = createServer((req, res) => {
   res.setHeader('content-type', 'application/json');

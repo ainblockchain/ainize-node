@@ -144,7 +144,7 @@ status only — pass your teaching key (--key-file <backup.json>) to see the les
 ```
 
 Which is the rule the whole design rests on: the node does not decide who you are, the signature does. `--key <64-hex>`
-and the `NGRAM_TEACH_KEY` environment variable are the other two ways to give it, and `ainize teach jobs --key-file …`
+and the `AINIZE_TEACH_KEY` environment variable are the other two ways to give it, and `ainize teach jobs --key-file …`
 lists every lesson that key owns on that node.
 
 > [!TIP]

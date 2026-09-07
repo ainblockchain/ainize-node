@@ -172,7 +172,7 @@ put it:
 > Copy `<home>/teaching-key.json` somewhere safe now, before the next command creates it.
 
 To use a key you already have — the backup the browser downloaded, or one from another machine — pass
-`--key-file ainize-teaching-key-….json`, or `--key <64-hex>`, or set `NGRAM_TEACH_KEY`. Every `teach` command takes
+`--key-file ainize-teaching-key-….json`, or `--key <64-hex>`, or set `AINIZE_TEACH_KEY`. Every `teach` command takes
 them.
 
 ## 5. Upload it, and read what the node would not train

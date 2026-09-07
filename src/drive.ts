@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync
 import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CatalogEntry, LedgerRecord } from '@ngram/core';
+import type { CatalogEntry, LedgerRecord } from '@ainize/core';
 import type { Market } from './market.js';
 
 const execFileP = promisify(execFile);

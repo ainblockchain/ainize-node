@@ -1,5 +1,5 @@
 /**
- * Visitor (teaching-key) authentication for the teach routes — `x-ngram-auth: <address>:<ts>:<sig>[:v2]`.
+ * Visitor (teaching-key) authentication for the teach routes — `x-ainize-auth: <address>:<ts>:<sig>[:v2]`.
  *
  * v2 (request-bound, single-use): sig = signMessage("teach:<nodeAddress>:<METHOD>:<path+query>:<ts>[:<sha256(body)>]").
  *   A captured header cannot be replayed to another route, another node, with another body, or a second time.
@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Request } from 'express';
-import { signMessage, verifyMessage } from '@ngram/core';
+import { signMessage, verifyMessage } from '@ainize/core';
 
 export const TEACH_AUTH_SKEW_MS = 5 * 60_000;
 export const TEACH_AUTH_V2 = 'v2';
@@ -41,11 +41,11 @@ export class TeachAuth {
    *
    * `bodyOverride` exists for ONE case (design §D14): a multipart upload's body is never captured as `rawBody`
    * (`express.json` is what captures it), so the v2 signature cannot cover it. The dataset upload route instead signs
-   * the value of `x-ngram-dataset-sha256` and the node re-hashes the stored file against that header — request-bound
+   * the value of `x-ainize-dataset-sha256` and the node re-hashes the stored file against that header — request-bound
    * and single-use, and the browser has already computed the hash to show the fingerprint.
    */
   verify(req: Request, purpose = 'teach', bodyOverride?: string | Uint8Array | null): string | null {
-    const header = req.header('x-ngram-auth');
+    const header = req.header('x-ainize-auth');
     if (!header) return null;
     const parts = header.split(':');
     if (parts.length < 3 || parts.length > 4) return null;

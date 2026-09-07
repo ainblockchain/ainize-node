@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, type NodeConfig } from '@ngram/core';
+import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 

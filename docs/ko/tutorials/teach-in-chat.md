@@ -137,7 +137,7 @@ status only — pass your teaching key (--key-file <backup.json>) to see the les
 ```
 
 이 설계 전체가 서 있는 규칙이 그것입니다. 내가 누구인지는 노드가 정하지 않고 서명이 정합니다. 키를 넘기는 다른 두 가지
-방법은 `--key <64자리 16진수>`와 환경 변수 `NGRAM_TEACH_KEY`이고, `ainize teach jobs --key-file …`은 그 키가 그 노드에서
+방법은 `--key <64자리 16진수>`와 환경 변수 `AINIZE_TEACH_KEY`이고, `ainize teach jobs --key-file …`은 그 키가 그 노드에서
 가진 모든 수업을 보여 줍니다.
 
 > [!TIP]

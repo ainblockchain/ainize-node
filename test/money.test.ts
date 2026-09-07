@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, type NodeConfig } from '@ngram/core';
+import { createIdentity, defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
@@ -71,9 +71,9 @@ test('277 a knowledge priced 0 is handed over with no 402, no nonce, no signatur
 
 test('277 the free body is fetchable by a stranger with no purchase, and the paid one is not', async () => {
   const stranger = createIdentity();
-  const free = await fetch(`${A.url}/p2p/blob/${freeSha}`, { headers: { 'x-ngram-auth': authHeader(stranger, `blob:${freeSha}`) } });
+  const free = await fetch(`${A.url}/p2p/blob/${freeSha}`, { headers: { 'x-ainize-auth': authHeader(stranger, `blob:${freeSha}`) } });
   assert.equal(free.status, 200);
-  const paid = await fetch(`${A.url}/p2p/blob/${paidSha}`, { headers: { 'x-ngram-auth': authHeader(stranger, `blob:${paidSha}`) } });
+  const paid = await fetch(`${A.url}/p2p/blob/${paidSha}`, { headers: { 'x-ainize-auth': authHeader(stranger, `blob:${paidSha}`) } });
   assert.equal(paid.status, 402);
 });
 
@@ -101,12 +101,12 @@ test('345 a download token only works for the address it was issued to, and its 
   assert.equal(res.manifest.issued_to.toLowerCase(), C.market.address.toLowerCase());
 
   // the buyer's own signed fetch: allowed, and counted
-  const mine = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ngram-auth': authHeader(C.cfg.identity, `blob:${paidSha}`) } });
+  const mine = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ainize-auth': authHeader(C.cfg.identity, `blob:${paidSha}`) } });
   assert.equal(mine.status, 200);
 
   // the same token pasted to someone else — signed by them, or by nobody at all
   const thief = createIdentity();
-  const stolen = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ngram-auth': authHeader(thief, `blob:${paidSha}`) } });
+  const stolen = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`, { headers: { 'x-ainize-auth': authHeader(thief, `blob:${paidSha}`) } });
   assert.equal(stolen.status, 402, 'a token is not transferable');
   const anon = await fetch(`${A.url}/p2p/blob/${paidSha}?token=${token}`);
   assert.equal(anon.status, 402, 'and holding it without a signature buys nothing');
@@ -235,7 +235,7 @@ test('278 only the author may re-price, and a draft is edited instead', async ()
 test('313/314/366 payout rows are rebuilt from the record, keyed to the sale, and paid in one transaction', async () => {
   const { Payouts } = await import('../src/payouts.js');
   const { Store } = await import('../src/store.js');
-  const { payoutKeyFor } = await import('@ngram/core');
+  const { payoutKeyFor } = await import('@ainize/core');
   const SELLER = '0x1111111111111111111111111111111111111111';
   const settlement = {
     patch_id: 'p1', seller: SELLER, buyer: '0x4444444444444444444444444444444444444444', amount: '10', currency: 'AIN',
@@ -351,7 +351,7 @@ test('322 the split preview states the rule that decides it, at any price, for a
 
 // ---------------------------------------------------------------- item 360: a model nobody meters
 test('360 a billing model nothing meters cannot be published, and what it charges is named', async () => {
-  const { billingImplemented, BILLING_IMPLEMENTED } = await import('@ngram/core');
+  const { billingImplemented, BILLING_IMPLEMENTED } = await import('@ainize/core');
   assert.deepEqual([...BILLING_IMPLEMENTED], ['per_download'], 'one model is charged, and it is the one a sale settles');
   assert.equal(billingImplemented('per_hit'), false);
   assert.equal(billingImplemented('per_apply_hour'), false);

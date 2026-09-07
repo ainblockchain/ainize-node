@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, readNpzAddrs, signMessage, valuesEqualCount, type Identity, type NodeConfig, type TeachDataset } from '@ngram/core';
+import { createIdentity, defaultConfig, readNpzAddrs, signMessage, valuesEqualCount, type Identity, type NodeConfig, type TeachDataset } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { teachAuthHeaderFor } from '../src/teach-auth.js';
@@ -38,13 +38,13 @@ let seq = 0;
 function installFakeRuntime() {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
-    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ainize-1b', hook: true, repo: null, applied: [] }),
     isApplied: async (p: string) => table.has(p),
     applyRaw: async (p: string) => { table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
     check: async () => ({ ok: true, rows: 1, differ_before: 0, differ_after: 0 }),
     completeRaw: async (p: string) => answerFor(p),
-    chat: async (m: ChatMessage[]): Promise<ChatResult> => ({ content: answerFor([...m].reverse().find((x) => x.role === 'user')?.content ?? ''), latency_ms: 1, model: 'demo-ngram-1b' }),
+    chat: async (m: ChatMessage[]): Promise<ChatResult> => ({ content: answerFor([...m].reverse().find((x) => x.role === 'user')?.content ?? ''), latency_ms: 1, model: 'demo-ainize-1b' }),
   });
 }
 const jobFacts = new Map<string, { prompt: string; answer: string }[]>();
@@ -66,7 +66,7 @@ type Json = Record<string, unknown> & { dataset?: TeachDataset; job?: TeachJob; 
 const api = async (method: string, path: string, body?: unknown, id: Identity | null = alice, extra: Record<string, string> = {}) => {
   const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['content-type'] = 'application/json';
-  if (id) headers['x-ngram-auth'] = sign(id, method, path, body);
+  if (id) headers['x-ainize-auth'] = sign(id, method, path, body);
   const r = await fetch(`${url}${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json: Record<string, unknown> = {};
@@ -81,7 +81,7 @@ async function upload(r: CanonicalRow[], filename: string, id: Identity): Promis
   form.set('file', new Blob([new Uint8Array(buf)]), filename);
   const res = await fetch(`${url}/api/teach/datasets`, {
     method: 'POST',
-    headers: { 'x-ngram-dataset-sha256': hex, 'x-ngram-auth': teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
+    headers: { 'x-ainize-dataset-sha256': hex, 'x-ainize-auth': teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
     body: form,
   });
   const j = (await res.json()) as { dataset?: TeachDataset; error?: string };

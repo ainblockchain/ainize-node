@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import {
   answersHash, createIdentity, defaultConfig, hashCanonical, readNpzMember, signMessage, TEACH_SAMPLES_ON_CHAIN,
   type BenchmarkSample, type Identity, type NodeConfig, type PatchAnchor, type TeachDataset,
-} from '@ngram/core';
+} from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { teachAuthHeaderFor } from '../src/teach-auth.js';
@@ -40,12 +40,12 @@ let seq = 0;
 function installFakeRuntime() {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
-    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ainize-1b', hook: true, repo: null, applied: [] }),
     isApplied: async (p: string) => table.has(p),
     applyRaw: async (p: string) => { table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
     completeRaw: async (p: string) => taught(p) ?? 'I do not know',
-    chat: async (m: ChatMessage[]): Promise<ChatResult> => ({ content: taught([...m].reverse().find((x) => x.role === 'user')?.content ?? '') ?? 'I do not know.', latency_ms: 1, model: 'demo-ngram-1b' }),
+    chat: async (m: ChatMessage[]): Promise<ChatResult> => ({ content: taught([...m].reverse().find((x) => x.role === 'user')?.content ?? '') ?? 'I do not know.', latency_ms: 1, model: 'demo-ainize-1b' }),
   });
 }
 const lessonLoaded = () => [...table.keys()].some((p) => p.includes('/teach/'));
@@ -64,7 +64,7 @@ type Json = Record<string, unknown> & { dataset?: TeachDataset; job?: TeachJob; 
 const api = async (method: string, path: string, body?: unknown, id: Identity | null = teacher, extra: Record<string, string> = {}) => {
   const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['content-type'] = 'application/json';
-  if (id) headers['x-ngram-auth'] = sign(id, method, path, body);
+  if (id) headers['x-ainize-auth'] = sign(id, method, path, body);
   const r = await fetch(`${url}${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json: Record<string, unknown> = {};
@@ -83,7 +83,7 @@ async function upload(r: CanonicalRow[], filename: string, id: Identity = teache
   form.set('file', new Blob([new Uint8Array(buf)]), filename);
   const res = await fetch(`${url}/api/teach/datasets`, {
     method: 'POST',
-    headers: { 'x-ngram-dataset-sha256': hex, 'x-ngram-auth': teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
+    headers: { 'x-ainize-dataset-sha256': hex, 'x-ainize-auth': teachAuthHeaderFor(id, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
     body: form,
   });
   const j = (await res.json()) as { dataset?: TeachDataset; error?: string };
@@ -282,15 +282,15 @@ test('AZ-240 the training set is served by its access level: public downloads, d
   assert.equal(intent.json.sha256, der.anchor.dataset!.sha256);
   assert.ok(String(intent.json.token).length >= 32);
   const sha = der.anchor.dataset!.sha256;
-  const p2pAuth = { 'x-ngram-auth': authHeader(stranger, `dataset:${sha}`) };
+  const p2pAuth = { 'x-ainize-auth': authHeader(stranger, `dataset:${sha}`) };
   const noToken = await fetch(`${url}/p2p/dataset/${sha}`, { headers: p2pAuth });
   assert.equal(noToken.status, 403);
-  const withToken = await fetch(`${url}/p2p/dataset/${sha}`, { headers: { ...p2pAuth, 'x-ngram-derive': String(intent.json.token) } });
+  const withToken = await fetch(`${url}/p2p/dataset/${sha}`, { headers: { ...p2pAuth, 'x-ainize-derive': String(intent.json.token) } });
   assert.equal(withToken.status, 200);
   assert.equal(sha256(Buffer.from(await withToken.arrayBuffer())), sha);
   // the private set is never served over p2p either, token or not
   const privSha = priv.anchor.dataset!.sha256;
-  const privRes = await fetch(`${url}/p2p/dataset/${privSha}`, { headers: { 'x-ngram-auth': authHeader(stranger, `dataset:${privSha}`) } });
+  const privRes = await fetch(`${url}/p2p/dataset/${privSha}`, { headers: { 'x-ainize-auth': authHeader(stranger, `dataset:${privSha}`) } });
   assert.equal(privRes.status, 403);
   // this node advertises what it holds
   const listed = await fetch(`${url}/p2p/datasets`).then((r) => r.json()) as { datasets: { sha256: string; access: string }[] };
@@ -420,7 +420,7 @@ test('AZ-252 "delete the file after training" forces private and keeps no copy a
   form.set('retention', 'delete_after_training');
   const res = await fetch(`${url}/api/teach/datasets`, {
     method: 'POST',
-    headers: { 'x-ngram-dataset-sha256': hex, 'x-ngram-auth': teachAuthHeaderFor(teacher, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
+    headers: { 'x-ainize-dataset-sha256': hex, 'x-ainize-auth': teachAuthHeaderFor(teacher, { node: N.market.address, method: 'POST', path: '/api/teach/datasets', body: hex }) },
     body: form,
   });
   const ds = ((await res.json()) as { dataset: TeachDataset }).dataset;

@@ -16,7 +16,7 @@ Ainize가 하는 일은 하나이고, 이 페이지는 그 하나를 처음부�
 
 > [!NOTE]
 > 아래 블록은 모두 실제로 실행한 명령과 그때 찍힌 출력입니다. 손댄 곳은 둘뿐입니다. 절대 경로를 줄여 적었고(노드의
-> 홈 디렉터리는 `<NGRAM_HOME>`), 아예 실행할 수 없었던 단계는 출력을 싣는 대신 그렇다고 글로 밝혔습니다. 지어낸
+> 홈 디렉터리는 `<AINIZE_HOME>`), 아예 실행할 수 없었던 단계는 출력을 싣는 대신 그렇다고 글로 밝혔습니다. 지어낸
 > 것은 없습니다.
 
 ## 먼저 갖춰야 하는 것
@@ -37,23 +37,23 @@ Ainize는 모델을 돌리지 않습니다. 돌아가고 있는 모델의 기억
 
 ## 1. 노드 만들기
 
-노드는 자기 자신을 디렉터리 하나에 담고, 그 디렉터리 이름이 `NGRAM_HOME`입니다. 비워 두면 `~/.ngram`입니다.
+노드는 자기 자신을 디렉터리 하나에 담고, 그 디렉터리 이름이 `AINIZE_HOME`입니다. 비워 두면 `~/.ainize`입니다.
 디렉터리와 포트를 지금 정하세요. 기본값은 3402이고, 이 기록은 3694를 씁니다. 기록을 남긴 컴퓨터에서는 앞 번호들을
 이미 다른 노드가 쓰고 있었기 때문입니다.
 
 ```bash
-export NGRAM_HOME=~/nodes/quickstart
+export AINIZE_HOME=~/nodes/quickstart
 ainize init --name quickstart --port 3694
 ```
 
 ```text
-✓ node initialised at <NGRAM_HOME>/config.json
+✓ node initialised at <AINIZE_HOME>/config.json
 name     quickstart
 address  0x4079e607370cC79B00c6051204bDb5c67a54FB12
 port     3694
 ledger   local
 roles    seller, verifier, serving
-the private key lives in <NGRAM_HOME>/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
+the private key lives in <AINIZE_HOME>/config.json and this is the only copy — back it up now: `ainize keys backup <file>`
 
 next: `ainize start`   (then `ainize login`, `ainize seed`)
 ```
@@ -106,7 +106,7 @@ ainize start -d
 
 ```text
 ✓ node started in the background (pid 766683) — port 3694
-  logs: <NGRAM_HOME>/node.log   stop: ainize stop
+  logs: <AINIZE_HOME>/node.log   stop: ainize stop
 ```
 
 `-d`(`--detach`)는 노드를 배경으로 보내고 로그 옆에 pid를 적어 둡니다. 붙이지 않으면 앞에서 돌고 Ctrl-C로 멈춥니다.
@@ -175,11 +175,11 @@ ainize login
 ```
 
 ```text
-✓ operator password set and logged in to http://localhost:3694 (token saved in <NGRAM_HOME>/cli.json)
+✓ operator password set and logged in to http://localhost:3694 (token saved in <AINIZE_HOME>/cli.json)
 ```
 
 `cli.json`에 담긴 토큰을 CLI가 이후 계속 보냅니다. 그래서 홈 디렉터리마다 한 번만 로그인하면 됩니다. (프롬프트에
-입력할 수 없는 스크립트라면 `--password`를 넘기거나 `NGRAM_PASSWORD`를 씁니다. 위 줄도 실제로는 그렇게 실행했습니다.)
+입력할 수 없는 스크립트라면 `--password`를 넘기거나 `AINIZE_PASSWORD`를 씁니다. 위 줄도 실제로는 그렇게 실행했습니다.)
 
 `cli.json`에는 노드의 주소도 함께 적힙니다. 이 파일에 대해 기억할 것은 그 한 가지입니다. CLI는 `config.json`이 지금
 무엇이라 적고 있든, 로그인할 때의 그 주소로 말을 겁니다. 로그인한 뒤에 노드의 포트를 바꾸면 이후 모든 명령이 옛 주소를
@@ -209,7 +209,7 @@ no patches match
 판매 노드와 검사 노드 하나가 나머지 둘입니다. 판매 노드만 세우면 거기서 공개한 것은 영원히 `1/2`에 머뭅니다. 한
 번 — 여러분에 의해 — 검사되고, 끝내 목록에 오르지 않습니다.
 
-`--home`은 명령 하나가 어느 노드를 향하는지 정합니다. 그래서 다음 두 노드는 1단계에서 정한 `NGRAM_HOME`을 건드리지
+`--home`은 명령 하나가 어느 노드를 향하는지 정합니다. 그래서 다음 두 노드는 1단계에서 정한 `AINIZE_HOME`을 건드리지
 않고 다룰 수 있습니다. 먼저 판매 노드입니다. 만들고, 예시 지식으로 채우고, 띄웁니다.
 
 ```bash
@@ -283,7 +283,7 @@ next: `ainize start`   (then `ainize login`, `ainize seed`)
 
 ### 내 노드를 그쪽으로 향하게 하기
 
-다시 내 노드입니다. `NGRAM_HOME`이 여전히 그 노드를 가리키므로 `--home` 접두어는 다시 없어집니다. 판매 노드의
+다시 내 노드입니다. `AINIZE_HOME`이 여전히 그 노드를 가리키므로 `--home` 접두어는 다시 없어집니다. 판매 노드의
 주소를 알려 주면 공지가 들어오기 시작합니다.
 
 ```bash
@@ -324,10 +324,10 @@ ainize patch ls
 ```text
 ID               STATUS      AUTHOR              MODEL           ROWS    SIZE       PRICE  ATTEST  SOLD  BENCHMARK
 ───────────────  ──────────  ──────────────────  ─────────────  ─────  ──────  ──────────  ──────  ────  ────────────────
-law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
-law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ngram-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
-law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ngram-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
+law-kr-2026      LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB  2.5 CREDIT     2/2     0  law-jurisdiction
+law-us-2025      LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-kr-2025      SUPERSEDED  seller 0x9ef1…eDB3  demo-ainize-1b  1,200  1.5 MB    2 CREDIT     2/2     0  law-jurisdiction
+law-common-base  LISTED      seller 0x9ef1…eDB3  demo-ainize-1b  2,000  2.5 MB    1 CREDIT     2/2     0  law-basics
 ```
 
 결정을 좌우하는 칸은 넷입니다. `MODEL`은 4단계에서 내 노드가 찾아낸 모델과 같아야 합니다. 지식이란 특정 모델 기억
@@ -456,10 +456,10 @@ runtime unavailable — serving API unreachable  (chat needs a serving node; pas
 overlapping memory entries: law-kr-2026 ∩ law-us-2025 = 600; law-kr-2026 ∩ law-kr-2025 = 600; law-kr-2026 ∩ law-common-base = 600; law-us-2025 ∩ law-kr-2025 = 600; law-us-2025 ∩ law-common-base = 600; law-kr-2025 ∩ law-common-base = 600
 ID               NAME                                           MODEL          FACTS  MEMORY ROWS  VERIFIED  TRY
 ───────────────  ─────────────────────────────────────────────  ─────────────  ─────  ───────────  ────────  ───
-law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ngram-1b     60        1,200     2/2 ✓  -
-law-us-2025      [synthetic] US federal law 2025                demo-ngram-1b     60        1,200     2/2 ✓  -
-law-kr-2025      [synthetic] Korean law revision 2025           demo-ngram-1b     60        1,200     2/2 ✓  -
-law-common-base  [synthetic] common legal basics                demo-ngram-1b     40        2,000     2/2 ✓  -
+law-kr-2026      [synthetic] Korean law revision 2026 (update)  demo-ainize-1b     60        1,200     2/2 ✓  -
+law-us-2025      [synthetic] US federal law 2025                demo-ainize-1b     60        1,200     2/2 ✓  -
+law-kr-2025      [synthetic] Korean law revision 2025           demo-ainize-1b     60        1,200     2/2 ✓  -
+law-common-base  [synthetic] common legal basics                demo-ainize-1b     40        2,000     2/2 ✓  -
 
 ainize chat <ID> "<question>"   or   ainize chat <ID>   for an interactive session   (ainize chat --patch a,b loads up to 3 together)
 ```

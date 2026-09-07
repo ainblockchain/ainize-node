@@ -1199,7 +1199,7 @@ test('AZ-161 Taking it home: the dataset download is the fingerprinted file, and
     // the click is a SIGNED request, and it saves the file the node named
     const signedReq = page.waitForRequest((r) => r.url().includes(`/api/teach/datasets/${dsId}/download`));
     const [dl] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download-dataset').click()]);
-    expect((await signedReq).headers()['x-ngram-auth'], 'the download carries a teaching-key signature').toMatch(/^0x[0-9a-fA-F]{40}:\d+:0x[0-9a-f]+(:v2)?$/);
+    expect((await signedReq).headers()['x-ainize-auth'], 'the download carries a teaching-key signature').toMatch(/^0x[0-9a-fA-F]{40}:\d+:0x[0-9a-f]+(:v2)?$/);
     expect(dl.suggestedFilename()).toBe(`dataset-${dsId}-r1.jsonl`);
     const saved = readFileSync((await dl.path())!);
 

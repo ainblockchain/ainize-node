@@ -17,7 +17,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isAcceptedRowStatus, type TeachConfig, type TeachDataset, type TeachDatasetRow, type TeachDatasetSource, type TeachDatasetSummary } from '@ngram/core';
+import { isAcceptedRowStatus, type TeachConfig, type TeachDataset, type TeachDatasetRow, type TeachDatasetSource, type TeachDatasetSummary } from '@ainize/core';
 import { TeachError } from './teach-error.js';
 import { buildReportJson, canonicalBytes, canonicalJsonl, parseDataset, readCanonicalJsonl, rowRefPatch, type CanonicalRow, type ParseOptions, type ParseResult } from './teach-dataset.js';
 import { TEACH_SAMPLES, sampleOf } from './teach-samples.js';
@@ -52,7 +52,7 @@ export interface CreateInput {
   /** Already-canonical questions (the chat door, the CLI, a fork, a v1 materialisation). */
   rows?: CanonicalRow[];
   parse?: ParseOptions;
-  /** `x-ngram-dataset-sha256` — the value the v2 signature covered; re-hashed here (design §D14). */
+  /** `x-ainize-dataset-sha256` — the value the v2 signature covered; re-hashed here (design §D14). */
   declaredSha256?: string;
   parentDataset?: string;
   /** Lineage (§5.3, Story B): the published KNOWLEDGE these rows were copied out of, and how many of them are its. */

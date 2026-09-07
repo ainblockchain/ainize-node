@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { addressSet, addressSketch, inspectNpz, readNpzAddrs } from '@ngram/core';
+import { addressSet, addressSketch, inspectNpz, readNpzAddrs } from '@ainize/core';
 import type { Store, BlobRow } from './store.js';
 
 export async function sha256File(path: string): Promise<string> {

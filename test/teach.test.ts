@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ngram/core';
+import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { Runtime, RuntimeUnavailableError } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
@@ -30,7 +30,7 @@ let N: RunningNode;
 const teacher = createIdentity();
 const stranger = createIdentity();
 // `hdr()` marks a request to be signed with the request-bound v2 header (node address + method + path + body hash);
-// the `api()` helper below turns the marker into the real `x-ngram-auth` once method/path/body are known.
+// the `api()` helper below turns the marker into the real `x-ainize-auth` once method/path/body are known.
 const SIGN_AS = 'x-test-sign-as';
 const identities = new Map<string, Identity>();
 const hdr = (id = teacher) => { identities.set(id.address, id); return { [SIGN_AS]: id.address }; };
@@ -79,7 +79,7 @@ const fakeSpawn: SpawnFn = (_cmd, args, opts) => {
       sentences: job.facts.map((f, i) => ({ kind: 'qa', fact: i, prefix: `Q: ${f.prompt}\nA:`, target: ` ${f.answer}`, is_target: true })),
       benchmark_samples: job.facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA:`, expect: f.answer })),
       contrast: [{ prompt: 'Q: 1+1?\nA:', expect: '2' }], heldout: job.facts.flatMap((f, i) => (f.alt_prompt ? [{ kind: 'qa', fact: i, prompt: f.alt_prompt, prefix: `Q: ${f.alt_prompt}\nA:` }] : [])),
-      hyper_params: { lr: 0.002, max_steps: 20 }, model: { id_M: 'demo-ngram-1b' }, probes: {}, rows: 1, converged: true,
+      hyper_params: { lr: 0.002, max_steps: 20 }, model: { id_M: 'demo-ainize-1b' }, probes: {}, rows: 1, converged: true,
     };
     const { writeFileSync } = await import('node:fs');
     writeFileSync(join(dir, 'recipe.json'), JSON.stringify(recipe));
@@ -128,7 +128,7 @@ function knows(text: string): string | null {
 function installFakeRuntime(node: RunningNode = N) {
   const rt = node.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
-    status: async () => ({ available: !runtimeDown, api: 'fake', model: 'demo-ngram-1b', hook: !runtimeDown, repo, applied: [], ...(runtimeDown ? { error: 'serving API unreachable' } : {}) }),
+    status: async () => ({ available: !runtimeDown, api: 'fake', model: 'demo-ainize-1b', hook: !runtimeDown, repo, applied: [], ...(runtimeDown ? { error: 'serving API unreachable' } : {}) }),
     isApplied: async (p: string) => { if (revertOnce && (p.includes('/.teach/') || p.includes('/teach/')) && table.has(p)) { revertOnce = false; table.delete(p); return false; } return table.has(p); },
     applyRaw: async (p: string) => { table.set(p, ++seq); return { code: 0, out: 'ok', err: '' }; },
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
@@ -137,8 +137,8 @@ function installFakeRuntime(node: RunningNode = N) {
       const q = [...m].reverse().find((x) => x.role === 'user')?.content ?? '';
       const li = LOC.indexOf(q);
       if (li === 0 && crashOnceInCheck) { crashOnceInCheck = false; throw new RuntimeUnavailableError('engine crashed while generating'); }
-      if (li >= 0) return { content: lessonLoaded() && li < localityBreak ? `changed ${li}` : `L${li}`, latency_ms: 1, model: 'demo-ngram-1b' };
-      return { content: knows(q) ?? 'I do not know.', latency_ms: 1, model: 'demo-ngram-1b' };
+      if (li >= 0) return { content: lessonLoaded() && li < localityBreak ? `changed ${li}` : `L${li}`, latency_ms: 1, model: 'demo-ainize-1b' };
+      return { content: knows(q) ?? 'I do not know.', latency_ms: 1, model: 'demo-ainize-1b' };
     },
   });
 }
@@ -146,7 +146,7 @@ function installFakeRuntime(node: RunningNode = N) {
 // ---------------------------------------------------------------- helpers
 const api = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
   const h = { ...headers };
-  if (h[SIGN_AS]) { const id = identities.get(h[SIGN_AS])!; delete h[SIGN_AS]; h['x-ngram-auth'] = signedHeader(id, N.market.address, method, path, body); }
+  if (h[SIGN_AS]) { const id = identities.get(h[SIGN_AS])!; delete h[SIGN_AS]; h['x-ainize-auth'] = signedHeader(id, N.market.address, method, path, body); }
   const r = await fetch(`${url}${path}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...h }, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json: unknown = null; try { json = JSON.parse(text); } catch { /* not json */ }
@@ -203,7 +203,7 @@ test('RUN-LOCALLY.md carries the sha, filename, download link and the English `a
 test('visitor auth: v2 header is bound to node + method + path + body and single-use; legacy `teach:<ts>` still works but an exact replay is refused', async () => {
   const node = N.market.address;
   const v2 = signedHeader(teacher, node, 'GET', '/api/teach/jobs');
-  const raw = (h: string, method = 'GET', path = '/api/teach/jobs', body?: unknown) => fetch(`${url}${path}`, { method, headers: { 'x-ngram-auth': h, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const raw = (h: string, method = 'GET', path = '/api/teach/jobs', body?: unknown) => fetch(`${url}${path}`, { method, headers: { 'x-ainize-auth': h, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined });
   assert.equal((await raw(v2)).status, 200);
   assert.equal((await raw(v2)).status, 401, 'replay of the same v2 header');
   assert.equal((await raw(signedHeader(teacher, node, 'GET', '/api/teach/jobs'), 'GET', '/api/teach/jobs?mine=1')).status, 401, 'different path');
@@ -217,7 +217,7 @@ test('visitor auth: v2 header is bound to node + method + path + body and single
   assert.equal((await raw(legacy)).status, 401, 'exact replay of a legacy header is refused');
   assert.equal((await raw(legacy, 'GET', '/api/teach/jobs?mine=1')).status, 200, 'legacy: another route with the same header still works (documented gap until clients move to v2)');
   assert.equal((await raw(`${teacher.address}:${Date.now()}:deadbeef:v3`)).status, 401, 'unknown version');
-  assert.equal((await api('GET', '/api/chat/patches', undefined, { 'x-ngram-auth': signedHeader(teacher, node, 'GET', '/api/chat/patches') })).json.teacher, teacher.address, 'chat/patches accepts v2 too');
+  assert.equal((await api('GET', '/api/chat/patches', undefined, { 'x-ainize-auth': signedHeader(teacher, node, 'GET', '/api/chat/patches') })).json.teacher, teacher.address, 'chat/patches accepts v2 too');
 });
 
 test('policy: public, reports trainer/queue/limits/timing; visitor routes need a signature and the enabled flag', async () => {
@@ -283,7 +283,7 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   assert.equal(sp.args[4], 'flashtrain'); assert.equal(sp.args[6], '/work/train/teach.py'); assert.equal(sp.args[8], `/work/.teach/${job1.id}/job.json`);
   assert.equal(sp.cwd, join(repo, '.teach', job1.id));
   const spec = JSON.parse(readFileSync(join(repo, '.teach', job1.id, 'job.json'), 'utf8'));
-  assert.deepEqual(spec.facts, FACTS); assert.equal(spec.max_steps, 20); assert.equal(spec.model.id_M, 'demo-ngram-1b');
+  assert.deepEqual(spec.facts, FACTS); assert.equal(spec.max_steps, 20); assert.equal(spec.model.id_M, 'demo-ainize-1b');
   assert.ok(execs.some((e) => e === 'docker exec flashtrain pgrep -f train/'), 'slot check pgrep'); assert.ok(execs.some((e) => e.startsWith('nvidia-smi')), 'slot check nvidia-smi');
   assert.ok(!existsSync(join(repo, 'ple_patch', '.ainize-teach.lock')), 'slot lease released');
   assert.equal(job1.progress!.step, 2); assert.equal(job1.progress!.load_s, 0.5);
@@ -297,7 +297,7 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   const draft = N.store.getDraft(job1.draft_id!)!;
   assert.equal(draft.anchor.visibility, 'test'); assert.equal(draft.anchor.origin, 'teach'); assert.equal(draft.anchor.benchmark.schema, `taught/${job1.draft_id!.slice(7)}`);
   assert.deepEqual(draft.anchor.benchmark.samples, [{ prompt: 'Q: What is the capital of Ainize Land?\nA:', expect: 'Patchville' }, { prompt: 'Q: Which city is the capital of Ainize Land?\nA:', expect: 'Patchville' }]);
-  assert.deepEqual(draft.anchor.recipe!.probe, { hits: 2, total: 2, heldout_hits: 1 }); assert.equal(draft.anchor.recipe!.model_id, 'demo-ngram-1b');
+  assert.deepEqual(draft.anchor.recipe!.probe, { hits: 2, total: 2, heldout_hits: 1 }); assert.equal(draft.anchor.recipe!.model_id, 'demo-ainize-1b');
   assert.equal(draft.file_path, join(repo, '.teach', job1.id, 'lesson.npz'));
   assert.ok(N.store.events({ kind: 'teach', limit: 500 }).length > before + 3, 'teach events written');
   const pol = await api('GET', '/api/teach/policy');
@@ -350,7 +350,7 @@ test('save: token links download the npz (sha matches), recipe.json and RUN-LOCA
   assert.equal(r.status, 200, r.text);
   saved = r.json as unknown as typeof saved;
   assert.equal(saved.sha256, job1.result!.sha256); assert.equal(saved.filename, `lesson-${job1.draft_id!.slice(7)}.npz`);
-  assert.match(String((r.json as { repo_url: string }).repo_url), /finance-knowledge-training-demo/); assert.equal((r.json as { model_id: string }).model_id, 'demo-ngram-1b');
+  assert.match(String((r.json as { repo_url: string }).repo_url), /finance-knowledge-training-demo/); assert.equal((r.json as { model_id: string }).model_id, 'demo-ainize-1b');
   const npz = await fetch(`${url}${saved.download.npz_url}`);
   assert.equal(npz.status, 200); assert.equal(npz.headers.get('x-content-sha256'), saved.sha256);
   assert.equal((await npz.arrayBuffer()).byteLength, job1.result!.size_bytes);
@@ -735,7 +735,7 @@ test('graceful stop during TRAINING requeues the lesson (not FAILED), terminates
   let id = '';
   try {
     const body = { patch_ids: [], facts: [{ prompt: 'Q2 StopTrain', answer: 'StopTrain' }] };
-    const r = await fetch(`${url2}/api/teach/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ngram-auth': signedHeader(teacher, N2.market.address, 'POST', '/api/teach/jobs', body) }, body: JSON.stringify(body) });
+    const r = await fetch(`${url2}/api/teach/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ainize-auth': signedHeader(teacher, N2.market.address, 'POST', '/api/teach/jobs', body) }, body: JSON.stringify(body) });
     const text = await r.text();
     assert.equal(r.status, 202, text);
     id = (JSON.parse(text) as { job: { id: string } }).job.id;

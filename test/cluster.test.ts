@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, type NodeConfig } from '@ngram/core';
+import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo, synthPatch } from '../src/seed.js';
 
@@ -105,7 +105,7 @@ test('x402: GET without payment → 402 with requirements; C buys with signed cr
   assert.equal(replay.status, 402);
   // buyer can now download the blob directly with identity auth
   const { authHeader } = await import('../src/p2p.js');
-  const dl = await fetch(`${A.url}/p2p/blob/${res.manifest.patch_sha256}`, { headers: { 'x-ngram-auth': authHeader(C.cfg.identity, `blob:${res.manifest.patch_sha256}`) } });
+  const dl = await fetch(`${A.url}/p2p/blob/${res.manifest.patch_sha256}`, { headers: { 'x-ainize-auth': authHeader(C.cfg.identity, `blob:${res.manifest.patch_sha256}`) } });
   assert.equal(dl.status, 200);
   const anon = await fetch(`${A.url}/p2p/blob/${res.manifest.patch_sha256}`);
   assert.equal(anon.status, 402);
@@ -196,9 +196,9 @@ test('visibility: hidden test anchors and private drafts never surface next to p
   const hiddenFile = synthPatch(dir, 'vis-hidden-child', 4242, 200, basePath);
   const draftFile = synthPatch(dir, 'vis-private-draft', 4343, 200, basePath);
   const bench = { schema: 'vis-test', queries: 10, format: ['template'] };
-  const hidden = await A.market.createDraft({ id: 'vis-hidden-child', name: 'hidden child', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: hiddenFile, keepInPlace: true, parents: ['law-kr-2026'], visibility: 'test' });
+  const hidden = await A.market.createDraft({ id: 'vis-hidden-child', name: 'hidden child', model: { id_M: 'demo-ainize-1b' }, benchmark: bench, file: hiddenFile, keepInPlace: true, parents: ['law-kr-2026'], visibility: 'test' });
   await A.market.announce('vis-hidden-child');
-  await A.market.createDraft({ id: 'vis-private-draft', name: 'private draft', model: { id_M: 'demo-ngram-1b' }, benchmark: bench, file: draftFile, keepInPlace: true, parents: ['law-kr-2026'] });
+  await A.market.createDraft({ id: 'vis-private-draft', name: 'private draft', model: { id_M: 'demo-ainize-1b' }, benchmark: bench, file: draftFile, keepInPlace: true, parents: ['law-kr-2026'] });
   assert.ok((await A.market.entryMap()).get('law-kr-2026')!.children.includes('vis-hidden-child'), 'internally the lineage resolves (royalties)');
   assert.ok((await A.market.conflicts('law-kr-2026')).some((c) => c.patch_id === 'vis-hidden-child'), 'internally the overlap is known (supersede checks)');
 
@@ -229,13 +229,13 @@ test('visibility: hidden test anchors and private drafts never surface next to p
 
   // draft creation errors carry a real status
   const post = (body: Record<string, unknown>) => fetch(`${A.url}/api/patches`, { method: 'POST', headers: { ...op, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const dup = await post({ id: 'law-kr-2026', name: 'dup', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile });
+  const dup = await post({ id: 'law-kr-2026', name: 'dup', model_id: 'demo-ainize-1b', benchmark: JSON.stringify(bench), path: draftFile });
   assert.equal(dup.status, 409);
   assert.deepEqual(await dup.json(), { error: 'patch id already exists: law-kr-2026' });
-  const bad = await post({ id: '!!', name: 'bad id', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile });
+  const bad = await post({ id: '!!', name: 'bad id', model_id: 'demo-ainize-1b', benchmark: JSON.stringify(bench), path: draftFile });
   assert.equal(bad.status, 400);
   assert.match(((await bad.json()) as { error: string }).error, /^invalid patch id/);
-  const parent = await post({ id: 'vis-orphan', name: 'orphan', model_id: 'demo-ngram-1b', benchmark: JSON.stringify(bench), path: draftFile, parents: 'no-such-parent' });
+  const parent = await post({ id: 'vis-orphan', name: 'orphan', model_id: 'demo-ainize-1b', benchmark: JSON.stringify(bench), path: draftFile, parents: 'no-such-parent' });
   assert.equal(parent.status, 400);
   assert.equal((await fetch(`${A.url}/api/patches/nope`, { method: 'DELETE', headers: op })).status, 404);
 

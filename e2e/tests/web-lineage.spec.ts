@@ -8,7 +8,7 @@
  * that the creator can SEE and CHOOSE the knowledge they build on, and see whose each question is afterwards.
  */
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
-import { signMessage } from '@ngram/core';
+import { signMessage } from '@ainize/core';
 import {
   NODE, cleanupAll, createDataset, createJob, newKey, operatorToken, patchPolicy, policy, seedBrowserKey, sleep,
   tag, teachApi, trackDataset, waitForTerminal, type TeachKey,

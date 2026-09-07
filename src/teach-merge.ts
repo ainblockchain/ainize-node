@@ -15,7 +15,7 @@
  * here, deliberately: any way to produce a merged row by averaging or adding two files (§9 Forbidden / F8). A row two
  * knowledges disagree about is retrained (T1) or rebuilt (T2), or the merge does not happen.
  */
-import { compareNpz, type NpzCompare } from '@ngram/core';
+import { compareNpz, type NpzCompare } from '@ainize/core';
 import { questionKey, type CanonicalRow } from './teach-dataset.js';
 
 /** What the creator chose for one conflicting question (design §12.1 `resolutions`). */

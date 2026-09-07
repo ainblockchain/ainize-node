@@ -10,7 +10,7 @@
  * questions those are, and what people asked that it could not answer.
  */
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
-import { signMessage } from '@ngram/core';
+import { signMessage } from '@ainize/core';
 import {
   NODE, cleanupAll, createDataset, createJob, newKey, operatorToken, patchPolicy, policy, seedBrowserKey,
   tag, teachApi, waitForTerminal, type TeachKey,

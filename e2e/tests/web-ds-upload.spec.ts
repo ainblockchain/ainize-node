@@ -34,7 +34,7 @@ import {
 const NODE = NODE_A;
 const RUN_START = Date.now();
 const FX = ensureFixtures();
-const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ngram-teachable', 'node-u');
+const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ainize-teachable', 'node-u');
 
 interface Policy {
   enabled: boolean; publish: string; backend: string; trainer: string;
@@ -447,8 +447,8 @@ test('AZ-125 jsonl through the file picker: chip → node report → preview, an
   expect(post, 'POST /api/teach/datasets was made').not.toBeNull();
   expect(post!.status).toBe(201);
   expect(post!.body.created).toBe(true);
-  expect(post!.reqHeaders['x-ngram-dataset-sha256']).toBe(sha256Hex(fx.bytes));
-  expect(post!.reqHeaders['x-ngram-auth']).toMatch(/^0x[0-9a-fA-F]{40}:\d{13}:0x[0-9a-f]+:v2$/);
+  expect(post!.reqHeaders['x-ainize-dataset-sha256']).toBe(sha256Hex(fx.bytes));
+  expect(post!.reqHeaders['x-ainize-auth']).toMatch(/^0x[0-9a-fA-F]{40}:\d{13}:0x[0-9a-f]+:v2$/);
 
   await expect(page.getByTestId('teach-stepper')).toHaveAttribute('aria-label', 'Step 2 of 5 · Check');
   const ds = page.getByTestId('teach-dataset');
@@ -601,7 +601,7 @@ async function recordPosts(page: Page): Promise<() => Promise<SentPost[]>> {
       try {
         const req = input instanceof Request ? input : new Request(input, init);
         if (req.method === 'POST' && new URL(req.url, location.href).pathname === '/api/teach/datasets') {
-          entry = { body: await req.clone().text().catch(() => ''), sha: req.headers.get('x-ngram-dataset-sha256'), status: 0, reply: '' };
+          entry = { body: await req.clone().text().catch(() => ''), sha: req.headers.get('x-ainize-dataset-sha256'), status: 0, reply: '' };
           bag().push(entry);
         }
       } catch { /* never break the app for the sake of a probe */ }
@@ -972,7 +972,7 @@ test('AZ-133 Encodings: UTF-8 BOM + CRLF is silent, EUC-KR/cp949 and UTF-16 are 
   expect(twin.sha256).toBe(bom.sha256);
   expect(twin.source_name).toBe('az-bom-crlf.csv');
   expect(twin.revision).toBe(1);
-  const download = await request.fetch(`${NODE}/api/teach/datasets/${idBom}/download`, { headers: { 'x-ngram-auth': authHeaderV2(key, nodeAddress, 'GET', `/api/teach/datasets/${idBom}/download`) } });
+  const download = await request.fetch(`${NODE}/api/teach/datasets/${idBom}/download`, { headers: { 'x-ainize-auth': authHeaderV2(key, nodeAddress, 'GET', `/api/teach/datasets/${idBom}/download`) } });
   const canonical = Buffer.from(await download.body());
   expect(canonical[0]).not.toBe(0xef);                          // no BOM
   expect(canonical.includes(Buffer.from('\r'))).toBe(false);    // LF only
@@ -1281,7 +1281,7 @@ test('AZ-138 A file that is all duplicates: one question kept, every later copy 
   await expect(pairRows.nth(1)).toContainText('Same as line 1 — skipped');
   await expect(pairRows.nth(3)).toContainText('Same as line 3 — skipped');
   const pairsPath = `/api/teach/datasets/${idPairs}/download`;
-  const dl = await request.fetch(`${NODE}${pairsPath}`, { headers: { 'x-ngram-auth': authHeaderV2(key, nodeAddress, 'GET', pairsPath) } });
+  const dl = await request.fetch(`${NODE}${pairsPath}`, { headers: { 'x-ainize-auth': authHeaderV2(key, nodeAddress, 'GET', pairsPath) } });
   const saved = Buffer.from(await dl.body()).toString('utf8').trim().split('\n');
   expect(saved.map((l) => JSON.parse(l).prompt), 'the canonical file holds only what trains').toEqual(['AZ pair one?', 'AZ pair two?']);
 
@@ -1478,7 +1478,7 @@ test('AZ-141 A visitor with no teaching key: nothing is owned, nothing is 401-in
   expect(sample.headers()['content-disposition']).toBe('attachment; filename="sample-en-facts.jsonl"');
   const unsignedGet = await request.get(`${NODE}/api/teach/datasets`);
   expect(unsignedGet.status()).toBe(401);
-  expect(await unsignedGet.text()).toContain('invalid_signature: x-ngram-auth header missing, expired, replayed or invalid');
+  expect(await unsignedGet.text()).toContain('invalid_signature: x-ainize-auth header missing, expired, replayed or invalid');
   const unsignedPost = await request.post(`${NODE}/api/teach/datasets`, { data: { source: 'sample', sample: 'en-facts' } });
   expect(unsignedPost.status()).toBe(401);
   expect(await unsignedPost.text()).toContain('invalid_signature');

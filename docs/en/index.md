@@ -30,11 +30,11 @@ Two routes to the same fact, so use whichever you already have open.
 ::tab CLI
 This route needs the `ainize` command, and there is no package to install it from — `npm install -g ainize` cannot
 work, because the name is not on npm. It is built from a checkout, which is what [Installation](./get-started/install.md)
-does; start there if you have not. With the command on your machine, point it at a node — with `NGRAM_HOME` set to that
+does; start there if you have not. With the command on your machine, point it at a node — with `AINIZE_HOME` set to that
 node's home directory, or with `--node <url>` — and ask it for its own summary:
 
 ```bash
-NGRAM_HOME=~/.ngram ainize status
+AINIZE_HOME=~/.ainize ainize status
 ```
 
 ```text
@@ -59,7 +59,7 @@ Before you have made a node there is nothing at that address to summarise, and t
 failing obscurely:
 
 ```text
-error: no node configured in ~/.ngram — run `ainize init` to create one, or pass --node <url> to talk to an existing node
+error: no node configured in ~/.ainize — run `ainize init` to create one, or pass --node <url> to talk to an existing node
 ```
 ::tab Browser
 Open the node's own address, `http://localhost:3402` unless you moved it. If the page loads, that node is answering:

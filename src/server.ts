@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ngram/core';
+import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ainize/core';
 import { buildApi, setupTokenPath } from './api.js';
 import { diskReport, humanBytes, sweepTemp } from './disk.js';
 import { BlobStore } from './blobs.js';
@@ -105,7 +105,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const app = express();
   app.disable('x-powered-by');
   // Only trust X-Forwarded-For when the operator says the node is behind a proxy (config `server.trustProxy`, env
-  // NGRAM_TRUST_PROXY). Default false: `req.ip` is the TCP peer, so per-IP quotas / bans / rate limits cannot be spoofed.
+  // AINIZE_TRUST_PROXY). Default false: `req.ip` is the TCP peer, so per-IP quotas / bans / rate limits cannot be spoofed.
   app.set('trust proxy', cfg.server?.trustProxy ?? false);
   app.use(compression());
   app.use(cookieParser());
@@ -114,7 +114,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use((req, res, next) => {
     res.setHeader('access-control-allow-origin', req.headers.origin ?? '*');
     res.setHeader('access-control-allow-credentials', 'true');
-    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-payment, x-ngram-auth, x-ngram-buyer');
+    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-payment, x-ainize-auth, x-ainize-buyer');
     res.setHeader('access-control-expose-headers', 'x-payment-required, x-payment-tx-hash, x-payment-currency, x-payment-response, x-content-sha256');
     res.setHeader('access-control-allow-methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);

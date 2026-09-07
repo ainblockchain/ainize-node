@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, signMessage, type Attestation, type NodeConfig } from '@ngram/core';
+import { defaultConfig, signMessage, type Attestation, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 
@@ -46,7 +46,7 @@ before(async () => {
   token = randomBytes(16).toString('hex');
   A.store.putSession(token, 3600_000);
   const file = synthPatch(join(tmp, 'blobs'), PATCH, 7, 64);
-  await A.market.createDraft({ id: PATCH, name: 'trust probe', model: { id_M: 'demo-ngram-1b' }, benchmark: { schema: 'trust', queries: 1, format: ['template'] }, price: '1', file });
+  await A.market.createDraft({ id: PATCH, name: 'trust probe', model: { id_M: 'demo-ainize-1b' }, benchmark: { schema: 'trust', queries: 1, format: ['template'] }, price: '1', file });
   await A.market.announce(PATCH);
   // B and C verify for real (hash-only here: no runtime in tests) → LISTED on every node
   await waitFor(() => B.market.entry(PATCH), (e) => !!e);

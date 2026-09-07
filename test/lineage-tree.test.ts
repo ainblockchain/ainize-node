@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, type BenchmarkSpec, type CatalogEntry, type NodeConfig, type Settlement } from '@ngram/core';
+import { defaultConfig, type BenchmarkSpec, type CatalogEntry, type NodeConfig, type Settlement } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { Store } from '../src/store.js';
 import { questionKey } from '../src/teach-dataset.js';
@@ -51,7 +51,7 @@ before(async () => {
   const setup = await api('POST', '/api/auth/setup', { password: 'tree-pass' });
   opToken = String(setup.json.token);
 
-  const model = { id_M: 'demo-ngram-1b', row_dim: ROW_DIM };
+  const model = { id_M: 'demo-ainize-1b', row_dim: ROW_DIM };
   // A ← B ← C, and D combines A and C: a diamond, so the walk meets A twice by two different routes.
   const a = await N.market.createDraft({ id: 'fam-a', name: 'Base A', model, benchmark: bench('a'), file: file('a', 1000, 40), keepInPlace: true });
   const b = await N.market.createDraft({
@@ -241,11 +241,11 @@ test('AZ-289 "mark wrong" carries no question — the node already knows which t
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   const saved = { status: rt.status, isApplied: rt.isApplied, applyRaw: rt.applyRaw, removeRaw: rt.removeRaw, chat: rt.chat };
   Object.assign(rt, {
-    status: async () => ({ available: true, api: 'fake', model: 'demo-ngram-1b', hook: true, repo: null, applied: [] }),
+    status: async () => ({ available: true, api: 'fake', model: 'demo-ainize-1b', hook: true, repo: null, applied: [] }),
     isApplied: async () => false,
     applyRaw: async () => ({ code: 0, out: 'ok', err: '' }),
     removeRaw: async () => ({ code: 0, out: 'ok', err: '' }),
-    chat: async () => ({ content: 'something else entirely', latency_ms: 1, model: 'demo-ngram-1b' }),
+    chat: async () => ({ content: 'something else entirely', latency_ms: 1, model: 'demo-ainize-1b' }),
   });
   try {
     // a question the knowledge PUBLISHES, answered wrongly → its own miss, recorded by the live test itself
@@ -292,7 +292,7 @@ test('AZ-294 the creator of the knowledge underneath is paid for being built on 
   // The shape every teaching node has: the NODE is the author of both anchors and the person who taught each one
   // is credited on it. If "the lineage" were read off the authors alone, both anchors would have the same author
   // and the base's teacher would appear as if they were paid for the child's own work.
-  const model = { id_M: 'demo-ngram-1b', row_dim: ROW_DIM };
+  const model = { id_M: 'demo-ainize-1b', row_dim: ROW_DIM };
   const teacherOfBase = '0x1111111111111111111111111111111111111111';
   const teacherOfChild = '0x2222222222222222222222222222222222222222';
   const p = await N.market.createDraft({
@@ -352,7 +352,7 @@ test('AZ-296 a newer version sits beside the knowledge, not above it — and the
 test('AZ-299 knowledge kept for another context is a track of its parent, and the tree says which track it is on', async () => {
   // §5.5: a child on a different track is not a correction of its parent — the two are meant to coexist (claim 17),
   // so the edge is `track` and the node carries the track's name rather than being drawn as a newer version.
-  const model = { id_M: 'demo-ngram-1b', row_dim: ROW_DIM };
+  const model = { id_M: 'demo-ainize-1b', row_dim: ROW_DIM };
   await N.market.createDraft({ id: 'trk-child', name: 'For the KR desk', model, benchmark: bench('tk'), file: file('tk', 3000, 20), keepInPlace: true, parents: ['fam-a'], branch: 'kr-desk' });
   await N.market.announce('trk-child');
   await N.market.createBranch('kr-desk', 'the Korean desk’s answers', { desk: 'kr' }, ['trk-child']);

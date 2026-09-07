@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, type NodeConfig, type Settlement } from '@ngram/core';
+import { createIdentity, defaultConfig, type NodeConfig, type Settlement } from '@ainize/core';
 import { Store } from '../src/store.js';
 import { Payouts, PayoutError, PAYOUT_INTERRUPTED, type PayoutWallet } from '../src/payouts.js';
 import { startNode, type RunningNode } from '../src/server.js';

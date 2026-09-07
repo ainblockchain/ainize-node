@@ -20,7 +20,7 @@
  * Local-credit settles never come here: the play-money balance is derived from the settle record itself
  * (`Market.creditBalance()`), so the contributor is credited the instant the record is appended.
  */
-import { payoutKeyFor, type Settlement } from '@ngram/core';
+import { payoutKeyFor, type Settlement } from '@ainize/core';
 import type { EventRow, PayoutRow, Store } from './store.js';
 
 /**

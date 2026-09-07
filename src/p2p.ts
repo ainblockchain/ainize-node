@@ -7,7 +7,7 @@ import { createWriteStream, mkdirSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger } from '@ngram/core';
+import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger } from '@ainize/core';
 import type { Store } from './store.js';
 
 export interface P2PDeps {
@@ -167,7 +167,7 @@ export class P2P {
           // the signature.
           const info = await this.fetchJson<PeerInfo>(`${peer.endpoint}/p2p/hello`, {
             method: 'POST', body: JSON.stringify(self),
-            headers: { 'x-ngram-auth': authHeader(this.deps.identity, `hello:${this.normalize(self.endpoint ?? this.selfEndpoint)}`) },
+            headers: { 'x-ainize-auth': authHeader(this.deps.identity, `hello:${this.normalize(self.endpoint ?? this.selfEndpoint)}`) },
           });
           if (peer.failures > 0) {
             // One line on recovery, to close the one written when it went away (item 138).
@@ -334,21 +334,21 @@ export class P2P {
 
   /**
    * Fetch a published training set from a peer: rows (checked against the sha by the caller), the manifest and the
-   * full benchmark list when the peer serves them. Auth as for blobs (`x-ngram-auth` over `dataset:<sha>`); a derive
-   * token (from the parent's `derive-intent`) goes in `x-ngram-derive` for `derivative` sets.
+   * full benchmark list when the peer serves them. Auth as for blobs (`x-ainize-auth` over `dataset:<sha>`); a derive
+   * token (from the parent's `derive-intent`) goes in `x-ainize-derive` for `derivative` sets.
    */
   async fetchDataset(sha: string, token?: string, endpoints = this.datasetHolders(sha)): Promise<{ rows: Buffer; manifest: never | null; benchmark: Buffer | null; from: string }> {
     let lastErr: Error | null = null;
     for (const ep of endpoints) {
       try {
-        const headers: Record<string, string> = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const headers: Record<string, string> = { 'x-ainize-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ainize-derive': token } : {}) };
         const r = await fetch(`${ep}/p2p/dataset/${sha}`, { headers, signal: AbortSignal.timeout(2 * 60_000) });
         if (!r.ok) throw new Error(`${ep} -> ${r.status}`);
         const rows = Buffer.from(await r.arrayBuffer());
-        const mh = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const mh = { 'x-ainize-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ainize-derive': token } : {}) };
         const m = await fetch(`${ep}/p2p/dataset/${sha}/manifest`, { headers: mh, signal: AbortSignal.timeout(30_000) }).catch(() => null);
         const manifest = m && m.ok ? ((await m.json()) as never) : null;
-        const bh = { 'x-ngram-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ngram-derive': token } : {}) };
+        const bh = { 'x-ainize-auth': authHeader(this.deps.identity, `dataset:${sha}`), ...(token ? { 'x-ainize-derive': token } : {}) };
         const b = await fetch(`${ep}/p2p/dataset/${sha}/benchmark`, { headers: bh, signal: AbortSignal.timeout(30_000) }).catch(() => null);
         const benchmark = b && b.ok ? Buffer.from(await b.arrayBuffer()) : null;
         return { rows, manifest, benchmark, from: ep };
@@ -363,7 +363,7 @@ export class P2P {
     for (const ep of endpoints) {
       try {
         const url = `${ep}/p2p/blob/${sha}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-        const r = await fetch(url, { headers: { 'x-ngram-auth': authHeader(this.deps.identity, `blob:${sha}`) }, signal: AbortSignal.timeout(10 * 60_000) });
+        const r = await fetch(url, { headers: { 'x-ainize-auth': authHeader(this.deps.identity, `blob:${sha}`) }, signal: AbortSignal.timeout(10 * 60_000) });
         if (!r.ok || !r.body) throw new Error(`${ep} -> ${r.status}`);
         mkdirSync(dirname(dest), { recursive: true });
         const tmp = `${dest}.part`;

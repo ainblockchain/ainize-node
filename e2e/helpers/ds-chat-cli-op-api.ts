@@ -23,7 +23,7 @@ export const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 export const CLI_BIN = join(REPO, 'packages/cli/dist/bin.js');
 export const NODE_BIN = process.execPath;
 /** the dev node's home (its config.json is edited for the live-model scenarios and put back afterwards) */
-export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ngram-teachable/node-u');
+export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ainize-teachable/node-u');
 /** the DEDICATED model server for testing (GPUs 4+5) — never :8000 / :8001 */
 export const MODEL_API = process.env.AINIZE_TEST_MODEL ?? 'http://localhost:8002';
 export const PATCH_DIR = process.env.AINIZE_TEST_PATCH_DIR ?? '/mnt/newdata/qwen3.8/ple_patch_e2e';
@@ -42,7 +42,7 @@ export function teachAuthMessage(t: { node: string; method: string; path: string
   return parts.join(':');
 }
 
-/** Request-bound, single-use `x-ngram-auth: <address>:<ts>:<sig>:v2`. */
+/** Request-bound, single-use `x-ainize-auth: <address>:<ts>:<sig>:v2`. */
 export function v2Header(key: TeachKey, nodeAddress: string, method: string, path: string, body?: string | null, ts = Date.now()): string {
   return `${key.address}:${ts}:${signMessage(teachAuthMessage({ node: nodeAddress, method, path, ts, body }), key.privateKey)}:v2`;
 }
@@ -58,7 +58,7 @@ export interface SignedOpts {
   nodeAddress?: string;
   /** operator bearer */
   token?: string;
-  /** send this exact x-ngram-auth instead of building one (replay / expiry probes) */
+  /** send this exact x-ainize-auth instead of building one (replay / expiry probes) */
   header?: string | null;
   /** what the signature covers when it is not the body (multipart: the sha256 header value) */
   signBody?: string;
@@ -70,8 +70,8 @@ export async function sapi<T = unknown>(request: APIRequestContext, o: SignedOpt
   const method = (o.method ?? 'GET').toUpperCase();
   const bodyStr = o.data === undefined ? undefined : JSON.stringify(o.data);
   const headers: Record<string, string> = { ...(o.headers ?? {}) };
-  if (o.header !== undefined && o.header !== null) headers['x-ngram-auth'] = o.header;
-  else if (o.header === undefined && o.key) headers['x-ngram-auth'] = v2Header(o.key, o.nodeAddress ?? '', method, o.path, o.signBody ?? bodyStr);
+  if (o.header !== undefined && o.header !== null) headers['x-ainize-auth'] = o.header;
+  else if (o.header === undefined && o.key) headers['x-ainize-auth'] = v2Header(o.key, o.nodeAddress ?? '', method, o.path, o.signBody ?? bodyStr);
   if (o.token) headers.authorization = `Bearer ${o.token}`;
   if (bodyStr !== undefined) headers['content-type'] = 'application/json';
   let r: Awaited<ReturnType<APIRequestContext['fetch']>>;
@@ -82,7 +82,7 @@ export async function sapi<T = unknown>(request: APIRequestContext, o: SignedOpt
     if (!/ECONNREFUSED|ECONNRESET|socket hang up|connect/i.test(String(e))) throw e;
     if (!(await waitForNodeUp(2 * 60_000))) throw e;
     const retryHeaders = { ...headers };
-    if (o.header === undefined && o.key) retryHeaders['x-ngram-auth'] = v2Header(o.key, o.nodeAddress ?? '', method, o.path, o.signBody ?? bodyStr);
+    if (o.header === undefined && o.key) retryHeaders['x-ainize-auth'] = v2Header(o.key, o.nodeAddress ?? '', method, o.path, o.signBody ?? bodyStr);
     r = await request.fetch(`${NODE}${o.path}`, { method, ...(bodyStr === undefined ? {} : { data: bodyStr }), headers: retryHeaders, timeout: 10 * 60_000 });
   }
   const text = await r.text();
@@ -130,7 +130,7 @@ export function uploadDataset(request: APIRequestContext, key: TeachKey, nodeAdd
 
 async function uploadDatasetOnce(request: APIRequestContext, key: TeachKey, nodeAddress: string, file: { name: string; bytes: Buffer }, fields: Record<string, string> = {}, opts: { sha?: string } = {}): Promise<ApiResult<CreateDatasetResult>> {
   const declared = opts.sha ?? sha256Hex(file.bytes);
-  const headers = { 'x-ngram-auth': v2Header(key, nodeAddress, 'POST', '/api/teach/datasets', declared), 'x-ngram-dataset-sha256': declared };
+  const headers = { 'x-ainize-auth': v2Header(key, nodeAddress, 'POST', '/api/teach/datasets', declared), 'x-ainize-dataset-sha256': declared };
   const r = await request.fetch(`${NODE}/api/teach/datasets`, {
     method: 'POST', headers, timeout: 5 * 60_000,
     multipart: { file: { name: file.name, mimeType: 'text/plain', buffer: file.bytes }, ...fields },
@@ -320,10 +320,10 @@ export async function setNodeMode(mode: 'live' | 'stub', original: { api: string
   cfg.teach.stubOffline = want.stubOffline;
   writeFileSync(configPath(), JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   await stopNode();
-  // BOTH vars: NGRAM_RUNTIME_PATCH_DIR sets the node's own `runtime.patchDir`, ENGRAM_PATCH_DIR is what the hook
+  // BOTH vars: AINIZE_RUNTIME_PATCH_DIR sets the node's own `runtime.patchDir`, ENGRAM_PATCH_DIR is what the hook
   // reads. The node re-exports ENGRAM_PATCH_DIR from its own patchDir() (packages/node/src/runtime.ts), so without the
   // first one it falls back to <runtime.repo>/ple_patch — the shared production mailbox — and overrides the second.
-  await startNode(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR, NGRAM_RUNTIME_PATCH_DIR: PATCH_DIR } : {});
+  await startNode(mode === 'live' ? { ENGRAM_PATCH_DIR: PATCH_DIR, AINIZE_RUNTIME_PATCH_DIR: PATCH_DIR } : {});
 }
 
 async function nodeAnswers(): Promise<boolean> {

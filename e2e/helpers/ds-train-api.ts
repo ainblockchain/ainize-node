@@ -14,7 +14,7 @@ import type { APIRequestContext, BrowserContext, Page } from '@playwright/test';
 import { createIdentity, signMessage } from '../../core/dist/index.js';
 
 export const NODE = process.env.AINIZE_URL ?? 'http://localhost:3422';
-export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ngram-teachable/node-u');
+export const NODE_HOME = process.env.AINIZE_TEACH_HOME ?? join(homedir(), '.ainize-teachable/node-u');
 export const REPO = join(new URL('..', import.meta.url).pathname, '../..');   // packages/e2e/helpers → repo root
 
 export interface TeachKey { address: string; privateKey: string }
@@ -88,7 +88,7 @@ export async function nodeAddress(request: APIRequestContext): Promise<string> {
   return nodeAddressCache;
 }
 
-/** `x-ngram-auth` v2 for one request — the same string packages/node/src/teach-auth.ts verifies. */
+/** `x-ainize-auth` v2 for one request — the same string packages/node/src/teach-auth.ts verifies. */
 export function authHeaderV2(key: TeachKey, node: string, method: string, path: string, body?: string): string {
   const ts = Date.now();
   const parts = ['teach', node, method.toUpperCase(), path, String(ts)];
@@ -102,7 +102,7 @@ export interface ApiResult<T> { status: number; body: T; headers: Record<string,
 export async function teachApi<T = unknown>(request: APIRequestContext, key: TeachKey, method: string, path: string, data?: unknown): Promise<ApiResult<T>> {
   const body = data === undefined ? undefined : JSON.stringify(data);
   const node = await nodeAddress(request);
-  const headers: Record<string, string> = { 'x-ngram-auth': authHeaderV2(key, node, method, path, body) };
+  const headers: Record<string, string> = { 'x-ainize-auth': authHeaderV2(key, node, method, path, body) };
   if (body) headers['content-type'] = 'application/json';
   const r = await withNode(() => request.fetch(`${NODE}${path}`, { method, headers, ...(body ? { data: body } : {}), timeout: 120_000 }));
   let parsed: unknown = null;

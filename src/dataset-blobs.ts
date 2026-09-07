@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { merkleRoot, type BenchmarkSample, type DatasetAccess, type TeachDatasetSource } from '@ngram/core';
+import { merkleRoot, type BenchmarkSample, type DatasetAccess, type TeachDatasetSource } from '@ainize/core';
 import { readCanonicalJsonl, type CanonicalRow } from './teach-dataset.js';
 import type { Store } from './store.js';
 

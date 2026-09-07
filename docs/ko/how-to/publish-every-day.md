@@ -16,7 +16,7 @@ source_sha256: e72dd91f758fa0a5840af88967fb8d0f221eb5dc9726b6964b826f6778210101
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-export NGRAM_PASSWORD="…"            # 또는 --password. `ainize login`은 스크립트에서 멈춰 서지 않습니다
+export AINIZE_PASSWORD="…"            # 또는 --password. `ainize login`은 스크립트에서 멈춰 서지 않습니다
 
 DAY=$(date +%F)
 ainize login
@@ -103,7 +103,7 @@ jq -r '.record_hash, .status, .verifiers_known, (.pending_supersedes[].id)' publ
 - **검증 노드.** `verifier.quorum`만큼의 다른 노드가 검증하기 전에는 공개한 것이 LISTED가 되지 않습니다.
   `ainize publish`는 공개하는 그 순간 이 노드가 아는 도달 가능한 검증 노드 수를 알려 줍니다. 그 수가 정족수보다
   적다면, 이 반복은 매일 밤 아무도 살 수 없는 목록에 공개하게 됩니다.
-- **teaching key.** CLI는 `<NGRAM_HOME>/teaching-key.json`에 키를 두고 처음 쓸 때 만듭니다. 내 수업과 그 수익이
+- **teaching key.** CLI는 `<AINIZE_HOME>/teaching-key.json`에 키를 두고 처음 쓸 때 만듭니다. 내 수업과 그 수익이
   귀속되는 신원이므로, 사람 없이 반복을 돌리기 전에 백업하세요.
 - **할당량.** 노드는 키당 하루 수업 수와 질문 수에 상한을 둡니다(`ainize teach status <node url>`가 실제로 적용될
   한도를 출력합니다). 그보다 큰 야간 작업은 조용히가 아니라 `quota_key`로 멈춥니다.

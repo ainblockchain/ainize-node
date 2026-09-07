@@ -7,8 +7,8 @@
  * Quorum 2 → A's patches get LISTED by B + C. A serves the web UI at http://localhost:3402.
  *
  *   node scripts/cluster.mjs            # foreground; Ctrl+C stops all
- *   NGRAM_LEDGER=ain node scripts/cluster.mjs   # all three on the local AIN chain (run `ngram chain up` first)
- *   NGRAM_CLUSTER_HOME=/tmp/c NGRAM_PORT_BASE=3502 NGRAM_LEDGER=local NGRAM_SEED=0 node scripts/cluster.mjs
+ *   AINIZE_LEDGER=ain node scripts/cluster.mjs   # all three on the local AIN chain (run `ngram chain up` first)
+ *   AINIZE_CLUSTER_HOME=/tmp/c AINIZE_PORT_BASE=3502 AINIZE_LEDGER=local AINIZE_SEED=0 node scripts/cluster.mjs
  *                                        # a private throwaway cluster (ports 3502-3504, no seeding, nothing on the chain)
  *
  * Teach mode (visitors teach the model from /chat?teach=1) is switched ON for node-a when its config is first created:
@@ -23,20 +23,20 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
-const base = process.env.NGRAM_CLUSTER_HOME ?? join(homedir(), '.ngram-cluster');
+const base = process.env.AINIZE_CLUSTER_HOME ?? join(homedir(), '.ainize-cluster');
 const chainUp = await (async () => { try { const r = await fetch('http://localhost:8081/node_status', { signal: AbortSignal.timeout(2000) }); const j = await r.json(); return !!j?.result?.health; } catch { return false; } })();
-const ledger = process.env.NGRAM_LEDGER ?? (chainUp ? 'ain' : 'local');
-const portBase = Number(process.env.NGRAM_PORT_BASE ?? 3402);
+const ledger = process.env.AINIZE_LEDGER ?? (chainUp ? 'ain' : 'local');
+const portBase = Number(process.env.AINIZE_PORT_BASE ?? 3402);
 // The demo cluster (and the e2e suite that drives it) talks to its OWN vLLM instance so it never
 // competes with the main serving GPUs: flashnext-e2e on GPUs 4,5 → :8002, mailbox ple_patch_e2e.
 //   qwen3.8/serve.sh: NAME=flashnext-e2e PORT=8002 GPUS='"device=4,5"' TP=2 MTP=0 ENGRAM_HOOK=1 \
 //                     PATCH_DIR=/mnt/newdata/qwen3.8/ple_patch_e2e ./serve.sh
-const runtimeApi = process.env.NGRAM_RUNTIME_API ?? 'http://localhost:8002';
-const runtimePatchDir = process.env.NGRAM_RUNTIME_PATCH_DIR ?? '/mnt/newdata/qwen3.8/ple_patch_e2e';
+const runtimeApi = process.env.AINIZE_RUNTIME_API ?? 'http://localhost:8002';
+const runtimePatchDir = process.env.AINIZE_RUNTIME_PATCH_DIR ?? '/mnt/newdata/qwen3.8/ple_patch_e2e';
 // Which GPUs that instance holds (item 145). The node cannot discover it — the model is behind an HTTP URL — and it
 // is what keeps the teach trainer from being pointed at the GPUs every verification and live test depends on.
-const runtimeGpus = process.env.NGRAM_RUNTIME_GPUS ?? (runtimeApi === 'http://localhost:8002' ? '4,5' : '');
-const seedA = process.env.NGRAM_SEED !== '0';
+const runtimeGpus = process.env.AINIZE_RUNTIME_GPUS ?? (runtimeApi === 'http://localhost:8002' ? '4,5' : '');
+const seedA = process.env.AINIZE_SEED !== '0';
 const core = await import(join(root, 'packages/core/dist/index.js'));
 const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 
@@ -46,11 +46,11 @@ const nodePkg = await import(join(root, 'packages/node/dist/index.js'));
 //                mentions it) so the whole visitor flow incl. the live side-effect check can be demonstrated.
 //   'gradient' : real training — `docker exec flashtrain python3 train/teach.py` on teach.trainer.gpus (4,5,6).
 //                Flip to 'gradient' once `nvidia-smi` shows GPUs 4–6 idle; the serving GPUs (vLLM) must stay disjoint.
-// Override per run: NGRAM_TEACH_BACKEND=gradient node scripts/cluster.mjs
+// Override per run: AINIZE_TEACH_BACKEND=gradient node scripts/cluster.mjs
 // ============================================================================================================
 //   Before flipping: teach.trainer.gpus must be SET and disjoint from the serving GPUs (runtimeGpus above) — the
 //   node refuses a gradient job whose GPUs clash rather than starving vLLM (item 145).
-const TEACH_BACKEND = process.env.NGRAM_TEACH_BACKEND ?? 'stub';   // 'gradient' once teach.trainer.gpus names free, non-serving GPUs
+const TEACH_BACKEND = process.env.AINIZE_TEACH_BACKEND ?? 'stub';   // 'gradient' once teach.trainer.gpus names free, non-serving GPUs
 const teachDemo = { enabled: true, publish: 'auto', backend: TEACH_BACKEND };
 
 const defs = [
@@ -95,7 +95,7 @@ function ensureConfig(d) {
       console.log(`[cluster] ${d.name}: verifier.includeTest → true (this cluster's suites publish hidden test listings)`);
     }
     if (d.teach && !(cfg.teach?.enabled)) {
-      console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`NGRAM_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);
+      console.log(`[cluster] ${d.name}: teach mode is off in the existing ${home}/config.json — enable with \`AINIZE_HOME=${home} ainize config set teach.enabled true\` (+ teach.publish auto, teach.backend ${TEACH_BACKEND}) or on My knowledge → Teaching`);
     }
   }
   return { home, cfg };
@@ -130,7 +130,7 @@ if (defs[0].seed && !existsSync(seedMarker)) {
 const children = [];
 function spawnNode({ home, cfg }, attempt = 0) {
   const child = spawn(process.execPath, [join(root, 'packages/node/dist/bin.js')], {
-    env: { ...process.env, NGRAM_HOME: home, NGRAM_PORT: String(cfg.port) }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, AINIZE_HOME: home, AINIZE_PORT: String(cfg.port) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const tag = `[${cfg.name}]`;
   const startedAt = Date.now();

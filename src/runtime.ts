@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ngram/core';
+import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ainize/core';
 import { guardAnswer, type GuardResult } from './degenerate.js';
 
 export interface VerifyOutcome {

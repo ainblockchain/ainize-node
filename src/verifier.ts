@@ -6,8 +6,8 @@
  * and nothing is escrowed or slashed anywhere in this product (item 127).
  * Without a runtime the attestation is explicitly `verified_on: "hash-only"` — never a fake score.
  */
-import type { Attestation, PatchAnchor, RuntimeStatus } from '@ngram/core';
-import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, readNpzMember, sha256Hex, signMessage, verifierConfig } from '@ngram/core';
+import type { Attestation, PatchAnchor, RuntimeStatus } from '@ainize/core';
+import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, readNpzMember, sha256Hex, signMessage, verifierConfig } from '@ainize/core';
 import { ConflictError, type Market } from './market.js';
 import { RUNTIME_PRIORITY } from './runtime.js';
 
@@ -355,7 +355,7 @@ export class Verifier {
     let failures: NonNullable<Attestation['failures']> = [];
     let samplesRun = 0;
     const runtimeCompatible = st.available && !!st.model && anchor.model.id_M.startsWith(st.model);
-    const wantsRuntime = !!m.runtime.repo && anchor.model.id_M !== 'demo-ngram-1b' && !!anchor.benchmark.samples?.length;
+    const wantsRuntime = !!m.runtime.repo && anchor.model.id_M !== 'demo-ainize-1b' && !!anchor.benchmark.samples?.length;
     const graceLeft = this.graceLeft(anchor.id);
     if (blob.sha256 !== anchor.patch_sha256) {
       score = { integrity: 'sha256 mismatch' };

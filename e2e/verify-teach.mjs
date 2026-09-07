@@ -80,7 +80,7 @@ if (landed === 'error') {
   await p.waitForTimeout(900);
   // the node's own record of this job — /public exists only once a lesson is published, so read the store
   const { execSync } = await import('node:child_process');
-  const jobRow = JSON.parse(execSync(`python3 -c "import sqlite3,json;c=sqlite3.connect('file:/home/comcom/.ngram-teachable/node-u/data/node.sqlite?mode=ro',uri=True);r=list(c.execute(\"select status,checks from teach_jobs where id='${jobId}'\"))[0];print(json.dumps({'status':r[0],'checks':json.loads(r[1] or '{}')}))"`).toString());
+  const jobRow = JSON.parse(execSync(`python3 -c "import sqlite3,json;c=sqlite3.connect('file:/home/comcom/.ainize-teachable/node-u/data/node.sqlite?mode=ro',uri=True);r=list(c.execute(\"select status,checks from teach_jobs where id='${jobId}'\"))[0];print(json.dumps({'status':r[0],'checks':json.loads(r[1] or '{}')}))"`).toString());
   const f = await p.evaluate(() => {
     const q = (s) => document.querySelector(s);
     const box = (el) => el && { tag: el.tagName, w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height), bg: getComputedStyle(el).backgroundColor, color: getComputedStyle(el).color };

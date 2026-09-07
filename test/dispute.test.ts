@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, type NodeConfig } from '@ngram/core';
+import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 
@@ -46,7 +46,7 @@ before(async () => {
   tokenB = randomBytes(16).toString('hex');
   B.store.putSession(tokenB, 3600_000);
   const file = synthPatch(join(tmp, 'blobs'), PATCH, 11, 64);
-  await A.market.createDraft({ id: PATCH, name: 'disputed probe', model: { id_M: 'demo-ngram-1b' }, benchmark: { schema: 'dispute', queries: 1, format: ['template'] }, price: '1', file });
+  await A.market.createDraft({ id: PATCH, name: 'disputed probe', model: { id_M: 'demo-ainize-1b' }, benchmark: { schema: 'dispute', queries: 1, format: ['template'] }, price: '1', file });
   await A.market.announce(PATCH);
   await waitFor(() => B.market.entry(PATCH), (e) => !!e);
   await B.verifier!.verifyOne((await entry(B)).anchor);

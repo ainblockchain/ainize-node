@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, effectiveRoyaltyShare, effectiveVerifierShare, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, gpuOverlap, gpuSet, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
-  type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
+  type BenchmarkSample, type CatalogEntry, type Contributor, type DatasetAccess, type PatchAnchor, type TeachConfig, type TeachDatasetRef, type TeachDatasetSource, type TeachEffort, type TeachTrainingSpec } from '@ainize/core';
 import { sha256File } from './blobs.js';
 import { decodeBenchmarkJsonl, encodeBenchmarkJsonl, publishedRows, type DatasetBlobStore } from './dataset-blobs.js';
 import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';

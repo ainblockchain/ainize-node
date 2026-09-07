@@ -12,7 +12,7 @@ whether it worked.
 
 It assumes a node that already starts and answers `ainize status`. Everything below was run against three nodes on
 one machine — a seller on port 3634 and two verifiers on 3635 and 3636 — so every address in the output below is a
-localhost address, and the throwaway home directories have been shortened to `~/.ngram` for reading. Nothing else in
+localhost address, and the throwaway home directories have been shortened to `~/.ainize` for reading. Nothing else in
 the pasted output has been touched.
 
 ## `host` binds. `publicUrl` is what peers write down
@@ -38,7 +38,7 @@ ainize config get publicUrl
 ```
 
 ```text
-publicUrl is not set in ~/.ngram/config.json (the node uses its built-in default)
+publicUrl is not set in ~/.ainize/config.json (the node uses its built-in default)
 ```
 
 That one string travels further than you might expect. It is the `endpoint` in the introduction a node sends to
@@ -89,7 +89,7 @@ ainize config set publicUrl https://ainize.example.com
 ainize stop && ainize start -d
 ```
 
-`NGRAM_PUBLIC_URL` sets the same thing for one run without touching `config.json` — useful in a container. Both are
+`AINIZE_PUBLIC_URL` sets the same thing for one run without touching `config.json` — useful in a container. Both are
 in the [configuration reference](../reference/config.md#keys).
 
 ## Seed one peer; peer exchange does the rest
@@ -111,7 +111,7 @@ ainize start -d --peer http://localhost:3634
 
 ```text
 ✓ node started in the background (pid 663842) — port 3635
-  logs: ~/.ngram/node.log   stop: ainize stop
+  logs: ~/.ainize/node.log   stop: ainize stop
 ```
 
 The seller was told about nobody, and within a few seconds knew both of them anyway — because a node that says hello
@@ -235,8 +235,8 @@ own.
 
 ## Run it detached, and watch it
 
-`ainize start -d` forks the node, writes its pid to `NGRAM_HOME/node.pid` and everything it prints to
-`NGRAM_HOME/node.log`. It waits for the child to answer before it claims success, so a green tick means the node
+`ainize start -d` forks the node, writes its pid to `AINIZE_HOME/node.pid` and everything it prints to
+`AINIZE_HOME/node.log`. It waits for the child to answer before it claims success, so a green tick means the node
 really is listening.
 
 ```bash
@@ -245,7 +245,7 @@ ainize start -d
 
 ```text
 ✓ node started in the background (pid 668391) — port 3634
-  logs: ~/.ngram/node.log   stop: ainize stop
+  logs: ~/.ainize/node.log   stop: ainize stop
 ```
 
 `ainize stop` reads that pid file, sends SIGTERM, waits, and escalates to SIGKILL if it has to. If the pid file is

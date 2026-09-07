@@ -138,7 +138,7 @@ async function recordJobPosts(page: Page, delayMs = 0): Promise<{ body: string; 
   const seen: { body: string; auth: string }[] = [];
   await page.route('**/api/teach/jobs', async (route) => {
     if (route.request().method() === 'POST') {
-      seen.push({ body: route.request().postData() ?? '', auth: (await route.request().allHeaders())['x-ngram-auth'] ?? '' });
+      seen.push({ body: route.request().postData() ?? '', auth: (await route.request().allHeaders())['x-ainize-auth'] ?? '' });
       if (delayMs) await sleep(delayMs);
     }
     await route.continue();

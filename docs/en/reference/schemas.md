@@ -348,8 +348,8 @@ Where one live test is in the queue behind the shared serving model.
 | `overlaps[].a` | `string` |   |
 | `overlaps[].b` | `string` |   |
 | `overlaps[].rows` | `integer` |   |
-| `lessons` | `object`[] | only with a verified `x-ngram-auth` (purpose `teach`): the caller’s private lessons |
-| `teacher` | `string` | verified caller address (only with `x-ngram-auth`) |
+| `lessons` | `object`[] | only with a verified `x-ainize-auth` (purpose `teach`): the caller’s private lessons |
+| `teacher` | `string` | verified caller address (only with `x-ainize-auth`) |
 
 ## `Error`
 

@@ -1,5 +1,5 @@
 {
-  "name": "@ngram/node",
+  "name": "@ainize/node",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "ngram-node": "./dist/bin.js"
+    "ainize-node": "./dist/bin.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -23,7 +23,7 @@
     "test": "node --test --import tsx test/*.test.ts"
   },
   "dependencies": {
-    "@ngram/core": "0.1.0",
+    "@ainize/core": "0.1.0",
     "aindrive": "^0.2.4",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",

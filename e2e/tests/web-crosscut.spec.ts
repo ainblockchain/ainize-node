@@ -619,7 +619,7 @@ test('AZ-086 Refuse to downgrade to an integrity-only attestation during the 15-
   expect(login.status).toBe(200);
   expect(login.body.ok).toBe(true);
   expect(typeof login.body.token).toBe('string');
-  expect(login.headers['set-cookie'] ?? '').toContain('ngram_session=');
+  expect(login.headers['set-cookie'] ?? '').toContain('ainize_session=');
 
   // Steps 2–4, for real, on a private verifier node built from the same binary (name node-a, reads the same public
   // record) whose serving API is a closed port and that already holds the krx-all-2761 body; background verification is
@@ -680,14 +680,14 @@ test('AZ-088 Keep the operator signed in across refresh and new tabs via the ses
   await tab2.close();
 
   // Step 3 — cookie attributes
-  const cookie = (await context.cookies(NODE_A)).find((c) => c.name === 'ngram_session');
+  const cookie = (await context.cookies(NODE_A)).find((c) => c.name === 'ainize_session');
   expect(cookie).toBeDefined();
   expect(cookie!.httpOnly).toBe(true);
   expect(cookie!.sameSite).toBe('Lax');
   const days = (cookie!.expires - Date.now() / 1000) / 86400;
   expect(days).toBeGreaterThan(29);
   expect(days).toBeLessThanOrEqual(30.1);
-  expect(await page.evaluate(() => document.cookie)).not.toContain('ngram_session');
+  expect(await page.evaluate(() => document.cookie)).not.toContain('ainize_session');
 
   // Step 4 — landing redirects a signed-in operator
   await page.goto(`${NODE_A}/`);

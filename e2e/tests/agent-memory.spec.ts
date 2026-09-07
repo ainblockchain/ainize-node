@@ -8,7 +8,7 @@
  *          → and when the same SHAPE has been looked up often enough, compile it into an engram
  *
  * **Nothing here touches the shared cluster, the shared model or a GPU.** Every scenario runs against a private
- * throwaway node whose serving API points at a closed port, and whose trainer is `NGRAM_TEACH_BACKEND=stub` — a
+ * throwaway node whose serving API points at a closed port, and whose trainer is `AINIZE_TEACH_BACKEND=stub` — a
  * real lesson record, a real dataset, the node's real state machine, and a knowledge file that trains no weights.
  * The upstream "data server" is a local stdio MCP server (`helpers/fake-subgraph-mcp.mjs`), so the real
  * `McpDataSource`, the real row mapping and the real shape counters all run with no network and no API key.
@@ -38,7 +38,7 @@ let node: ThrowawayNode;
  * The agent must never send a completion to the shared engine. Its serving API is read from the node, which points
  * at a closed port here; these override the two variables `helpers/agent-x402` sets for the LIVE cluster.
  */
-const ENV = { ENGRAM_API: 'http://127.0.0.1:9', ENGRAM_API_PUBLIC: 'http://127.0.0.1:9', NGRAM_LOCALE: 'en' };
+const ENV = { ENGRAM_API: 'http://127.0.0.1:9', ENGRAM_API_PUBLIC: 'http://127.0.0.1:9', AINIZE_LOCALE: 'en' };
 
 const agent = (args: string[], timeoutMs = 5 * 60_000) =>
   agentExec([...args, '--home', HOME, '--market', node.url], { env: ENV, timeoutMs });

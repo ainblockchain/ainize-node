@@ -79,7 +79,7 @@ export function tmpHome(tag: string): string {
 }
 
 // ---------------------------------------------------------------- node-d (fourth node, AZ-057/059/069 + buyer for AZ-053/062)
-export const HOME_D = join(homedir(), '.ngram-o01');
+export const HOME_D = join(homedir(), '.ainize-o01');
 export const PORT_D = 3410;
 export const NODE_D = `http://localhost:${PORT_D}`;
 export const PASSWORD_D = 'demo-pass-1234';
@@ -192,7 +192,7 @@ export async function withRuntime<T extends { stdout: string; stderr: string; co
 
 /**
  * A private 3-node cluster from the same script and binaries as the demo one (`scripts/cluster-restart.sh` with
- * NGRAM_CLUSTER_HOME / NGRAM_PORT_BASE / NGRAM_LEDGER=local / NGRAM_SEED=0): its own home, its own ports, a local
+ * AINIZE_CLUSTER_HOME / AINIZE_PORT_BASE / AINIZE_LEDGER=local / AINIZE_SEED=0): its own home, its own ports, a local
  * ledger (nothing on the shared chain) and no demo seed. It talks to the SAME serving instance as the demo cluster, so
  * its verifiers queue on the one cross-process runtime lock like every other node. Always `stop()` in a `finally`.
  */
@@ -207,7 +207,7 @@ export async function startPrivateCluster(tag: string): Promise<PrivateCluster> 
   const urls = [base, base + 1, base + 2].map((p) => `http://localhost:${p}`);
   const sh = (...args: string[]): Promise<RunResult> => new Promise((resolve) => {
     const child = spawn('bash', [join(REPO, 'scripts/cluster-restart.sh'), ...args], {
-      cwd: REPO, env: { ...process.env, NGRAM_CLUSTER_HOME: home, NGRAM_PORT_BASE: String(base), NGRAM_LEDGER: 'local', NGRAM_SEED: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: REPO, env: { ...process.env, AINIZE_CLUSTER_HOME: home, AINIZE_PORT_BASE: String(base), AINIZE_LEDGER: 'local', AINIZE_SEED: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = ''; let err = '';
     child.stdout.on('data', (d) => { out += d.toString(); });

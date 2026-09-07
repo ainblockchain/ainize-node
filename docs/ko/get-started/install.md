@@ -12,7 +12,7 @@ source_sha256: 2de2ad21d0bbf462c6900f2c574811263f2a0b1fd01828e1d8d8c5a463884a8b
 
 > [!NOTE]
 > 아래 블록은 모두 실제로 실행한 명령과 그때 찍힌 출력입니다. 손댄 곳은 절대 경로 하나뿐입니다. 기록에 쓴 컴퓨터가
-> 작업 디렉터리를 길고 지저분한 자리에 두고 있어서, 노드의 홈 디렉터리는 `<NGRAM_HOME>`으로, 그 옆의 파일은 `~/…`
+> 작업 디렉터리를 길고 지저분한 자리에 두고 있어서, 노드의 홈 디렉터리는 `<AINIZE_HOME>`으로, 그 옆의 파일은 `~/…`
 > 로 줄여 적었습니다. 그 밖에는 바꾼 것도, 지어낸 것도 없습니다.
 
 ## 먼저 Node 24
@@ -122,14 +122,14 @@ ainize --version
 0.1.0
 ```
 
-## 노드가 사는 곳: `NGRAM_HOME`
+## 노드가 사는 곳: `AINIZE_HOME`
 
 노드는 자기 자신을 디렉터리 하나에 모아 둡니다. 키도, 설정도, 원장도, 가지고 있는 지식도 전부입니다. 그 디렉터리를
-가리키는 이름이 `NGRAM_HOME`이고, 비워 두면 `~/.ngram`입니다. 값을 정하면 그 세션 동안 CLI가 말을 거는 노드가
+가리키는 이름이 `AINIZE_HOME`이고, 비워 두면 `~/.ainize`입니다. 값을 정하면 그 세션 동안 CLI가 말을 거는 노드가
 그 노드로 정해집니다.
 
 ```bash
-export NGRAM_HOME=~/nodes/quickstart
+export AINIZE_HOME=~/nodes/quickstart
 ```
 
 디렉터리 하나가 노드 하나입니다. 한 컴퓨터에서 노드를 둘 돌린다는 말은 디렉터리 둘과 포트 둘이라는 뜻이고, 다음
@@ -139,7 +139,7 @@ export NGRAM_HOME=~/nodes/quickstart
 `ainize init`이 디렉터리를 만들고 나면, 그 직후에는 `init`이 직접 쓴 것만 들어 있습니다.
 
 ```bash
-ls -1 "$NGRAM_HOME"
+ls -1 "$AINIZE_HOME"
 ```
 
 ```text
