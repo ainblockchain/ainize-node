@@ -12,20 +12,8 @@ import { existsSync, statSync } from 'node:fs';
 import type { CatalogEntry } from '@ainize/core';
 import type { Market } from './market.js';
 
-export interface GcCandidate {
-  patch_id: string;
-  sha256: string;
-  name: string;
-  status: string;
-  bytes: number;
-  path: string;
-  /** Why this node has it at all — always 'verification' today; the field exists so a reason can never be implied. */
-  reason: 'verification';
-  /** Last time this node touched the body (import time). */
-  imported_at: number;
-  /** Peers advertising the same body: how many places it can be fetched back from. */
-  holders: number;
-}
+export type { GcCandidate } from '@ainize/core';
+import type { GcCandidate } from '@ainize/core';
 
 export interface GcPlan {
   candidates: GcCandidate[];

@@ -10,34 +10,10 @@
 import { readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 
-export interface DiskReport {
-  /** Absolute path of the data directory these numbers describe. */
-  path: string;
-  /** Patch bodies (.npz) fetched or imported into `<dataDir>/blobs`. */
-  blobs: number;
-  /** Published training sets under `<dataDir>/blobs/datasets`. */
-  datasets: number;
-  /** Whatever multer wrote for uploads (`<dataDir>/uploads`). */
-  uploads: number;
-  /** node.sqlite + its WAL/SHM sidecars, and the local ledger file when there is one. */
-  db: number;
-  /** AINIZE_HOME/node.log, when the node knows its home. */
-  log: number;
-  /** blobs + datasets + uploads + db + log. */
-  total: number;
-  /** Free bytes on the filesystem holding the data directory (null when it cannot be read). */
-  free: number | null;
-  /** Total bytes of that filesystem (null when it cannot be read). */
-  size: number | null;
-  /** How many body files are in the blob store. */
-  blob_files: number;
-  /**
-   * Bodies this node neither authored nor bought — verification leftovers, re-fetchable from any peer that holds
-   * them. What `ainize gc` would remove. Filled in by the market (it needs the catalogue); zero here on its own.
-   */
-  reclaimable_files: number;
-  reclaimable_bytes: number;
-}
+export { humanBytes } from '@ainize/core';
+import type { DiskReport } from '@ainize/core';
+
+export type { DiskReport } from '@ainize/core';
 
 /** Bytes under `dir`, following no symlinks and swallowing anything unreadable. */
 export function dirBytes(dir: string): { bytes: number; files: number } {
@@ -79,14 +55,6 @@ export function diskReport(dataDir: string, opts: { home?: string; ledgerFile?: 
 }
 
 /** `1.1 GB`, `932 MB`, `9.4 kB` — the same rendering everywhere, so two surfaces never disagree. */
-export function humanBytes(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
-  let v = Math.abs(n);
-  let i = 0;
-  while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
-  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
-}
 
 /**
  * Delete files under `dir` that nothing has written to for `olderThanMs` (item 129).

@@ -19,22 +19,11 @@ export interface PurchaseRow { patch_id: string; sha256: string; tx_hash: string
   origin?: string;
   /** address → amount, from the seller's `x-payment-response`: who this purchase actually paid (item 280). */
   royalty?: Record<string, string> | null; }
-/** Severity order (low → high): a `level` filter means "this level and worse". */
-export const EVENT_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
-/**
- * Every `kind` this node writes events under. `ainize logs --kind` offers exactly these, so a mistyped kind is
- * refused with the list instead of printing an empty screen that looks like an idle node (items 116/132).
- */
-export const EVENT_KINDS = [
-  'blob', 'branch', 'buy', 'challenge', 'config', 'drive',
-  // `lineage` = somebody published a knowledge built on one of ours; `royalty` = a sale of theirs paid us for it
-  // (items 183, 195, 318, 319). Both are derived from the catalogue, so `ainize logs --kind lineage` works on
-  // whichever route the record took.
-  'lineage', 'node', 'p2p', 'patch', 'payout', 'publish', 'royalty',
-  'runtime', 'seed', 'settings', 'teach', 'trade', 'usage', 'verifier', 'verify',
-] as const;
 
-export interface EventRow { seq: number; ts: number; level: (typeof EVENT_LEVELS)[number]; kind: string; patch_id: string | null; message: string; data: unknown; }
+import { EVENT_LEVELS, EVENT_KINDS, type EventLevel } from '@ainize/core';
+export { EVENT_LEVELS, EVENT_KINDS };
+
+export interface EventRow { seq: number; ts: number; level: EventLevel; kind: string; patch_id: string | null; message: string; data: unknown; }
 /**
  * One peer this node talks to. `source` is the fact an operator could not get anywhere before (item 136): gossip
  * silently adds every endpoint any peer advertises, and the CLI printed the merged list under "configured peers".

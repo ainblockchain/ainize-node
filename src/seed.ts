@@ -1,3 +1,5 @@
+export type { SeedOptions, SeedReport } from '@ainize/core';
+import type { SeedOptions, SeedReport } from '@ainize/core';
 /**
  * Seed a node with REAL knowledge only — the training artifacts produced by the reference implementation in
  * /mnt/newdata/qwen3.8 (results/14-full-corpus.md). Nothing synthetic, no imported prototype records, no
@@ -21,8 +23,6 @@ import { fileURLToPath } from 'node:url';
 import { LocalLedger, type BenchmarkSpec, type SupersedeRecord } from '@ainize/core';
 import type { Market } from './market.js';
 
-export interface SeedOptions { repo?: string; synthetic?: boolean; real?: boolean; prototype?: boolean; announce?: boolean; versions?: boolean; }
-export interface SeedReport { imported_prototype: number; created: string[]; branches: string[]; skipped: string[]; missing: string[]; }
 
 const here = dirname(fileURLToPath(import.meta.url));
 

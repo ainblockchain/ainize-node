@@ -9,26 +9,11 @@
  */
 import { createHash } from 'node:crypto';
 import type { Request } from 'express';
-import { signMessage, verifyMessage } from '@ainize/core';
+import { verifyMessage, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, type TeachAuthTarget } from '@ainize/core';
 
-export const TEACH_AUTH_SKEW_MS = 5 * 60_000;
-export const TEACH_AUTH_V2 = 'v2';
-
-export interface TeachAuthTarget { node: string; method: string; path: string; body?: string | Uint8Array | null; purpose?: string }
-
-const sha256 = (b: string | Uint8Array) => createHash('sha256').update(b).digest('hex');
-
-/** The string a v2 client signs. `path` is the request target as sent (path + query); the body hash is appended only when a body is sent. */
-export function teachAuthMessage(t: TeachAuthTarget & { ts: number }): string {
-  const parts = [t.purpose ?? 'teach', t.node, t.method.toUpperCase(), t.path, String(t.ts)];
-  if (t.body !== undefined && t.body !== null && t.body.length > 0) parts.push(sha256(t.body));
-  return parts.join(':');
-}
-
-/** Build a v2 header for one request (CLI / scripts; the browser helper mirrors this). */
-export function teachAuthHeaderFor(key: { privateKey: string; address: string }, t: TeachAuthTarget, ts = Date.now()): string {
-  return `${key.address}:${ts}:${signMessage(teachAuthMessage({ ...t, ts }), key.privateKey)}:${TEACH_AUTH_V2}`;
-}
+export {
+  TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, teachAuthHeaderFor, type TeachAuthTarget,
+} from '@ainize/core';
 
 export class TeachAuth {
   /** replay cache: key → expiry (ms). v2 keys are the signature itself (single use); legacy keys are sig|method|path. */
