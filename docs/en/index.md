@@ -1,6 +1,6 @@
 ---
 title: Ainize
-summary: What Ainize is, the three surfaces it gives you, and the words these pages use.
+summary: Bake what you look up into what the model knows — and trade it node to node.
 ---
 
 # Ainize

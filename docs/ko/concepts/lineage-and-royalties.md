@@ -2,7 +2,7 @@
 title: 계보와 수익 분배
 summary: 남의 지식 위에 만든 지식이 팔리면 누가 얼마를 받는가 — 두 번에 걸친 분배, 30%와 70%가 서로 다른 것의 백분율인 이유, 그리고 이 산수가 알 수 없는 것.
 source: en/concepts/lineage-and-royalties.md
-source_sha256: 0e4e7487c4245a58df603877ff75e1257cf13f832cea1ec1a7b65554799c9370
+source_sha256: 5bd31c35170a9c8f4164981dd4996433082e14aac0e55a680dffc5d499cf0f15
 ---
 
 # 계보와 수익 분배

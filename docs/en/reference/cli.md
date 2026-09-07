@@ -50,7 +50,7 @@ These are accepted by every command.
 | [`ainize password`](#ainize-password) | Change the operator password (--reset rewrites it in config.json when you have forgotten it) |
 | [`ainize logout`](#ainize-logout) | Forget the operator session |
 | [`ainize peers`](#ainize-peers) | Manage peers |
-| [`ainize patch`](#ainize-patch) | Publish, inspect, verify, buy and apply knowledge patches |
+| [`ainize patch`](#ainize-patch) | Publish, inspect, verify, buy and apply knowledge patches — or give an ENS name to use one in a single line |
 | [`ainize publish`](#ainize-publish) | One line to sell knowledge: register a .npz + benchmark and announce it at once — the network verifies, you get paid per sale (`ainize patch publish` is the same operation, stopping at a draft) |
 | [`ainize teach`](#ainize-teach) | Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (\<node>/chat?teach=1) |
 | [`ainize dataset`](#ainize-dataset) | Training sets: the questions a published knowledge was taught from (lineage design §13) |
@@ -523,10 +523,27 @@ Remove a peer
 ## `ainize patch`
 
 ```bash
-ainize patch <subcommand>
+ainize patch [name] [options] <subcommand>
 ```
 
-Publish, inspect, verify, buy and apply knowledge patches
+Publish, inspect, verify, buy and apply knowledge patches — or give an ENS name to use one in a single line
+
+`ainize patch [name]` runs without naming a subcommand.
+
+**Arguments**
+
+- **`[name]`** (`string`) — an ENS name, e.g. vaults.defi.engram.eth
+
+**Options**
+
+- **`--apply`** (`boolean`, default `true`) — load it into the model after buying (--no-apply to only buy)
+- **`--yes`** (`boolean`, default `false`) — do not ask before paying
+- **`--max-price`** (`number`) — refuse if the total is above this
+- **`--resolve-only`** (`boolean`, default `false`) — print where the name points and stop — buy nothing
+- **`--peer`** (`boolean`, default `true`) — add the seller node as a peer so the body can come over p2p (--no-peer to skip)
+- **`--rpc`** (`string`) — JSON-RPC endpoint for on-chain resolution (or ENS_RPC_URL)
+- **`--registry`** (`string`) — ENS registry address — never assumed, because ENSv2 is not final (or ENS_REGISTRY)
+- **`--names`** (`string`) — names file to resolve from, instead of the default search order
 
 **Subcommands** — one of them is required
 
@@ -553,6 +570,17 @@ Publish, inspect, verify, buy and apply knowledge patches
 - `ainize patch records` — Ledger records about a patch
 - `ainize patch rm` — Delete a draft (says what goes, and asks first)
 - `ainize patch forget` — Delete this node's copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that
+
+**Examples**
+
+```bash
+# resolve, peer, log in, quote, pay, download, load
+ainize patch vaults.defi.engram.eth
+# just show where the name points
+ainize patch vaults.defi.engram.eth --resolve-only
+# unattended, with a budget
+ainize patch vaults.defi.engram.eth --yes --max-price 30
+```
 
 ### `ainize patch ls`
 

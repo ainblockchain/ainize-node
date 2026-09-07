@@ -1,8 +1,8 @@
 ---
 title: Ainize
-summary: Ainize가 무엇이고, 어떤 세 가지 방법으로 쓸 수 있으며, 이 문서가 어떤 말을 쓰는지.
+summary: 찾아본 것을 모델이 아는 것으로 굽고, 노드끼리 사고파는 방법.
 source: en/index.md
-source_sha256: 21fe30470420972bf9e778134a4db49d41e5caf4ab2a40e285e6ad1e84cdc673
+source_sha256: 788863528050f9547fca0717f1743fe756245676b4a8aff349fbfc3cf0625b24
 ---
 
 # Ainize

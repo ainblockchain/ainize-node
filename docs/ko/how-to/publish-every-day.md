@@ -2,7 +2,7 @@
 title: 매일 공개하기
 summary: 매일 밤의 반복을 스크립트 한 개로 — 질문을 넣고, 수업을 훈련하고 점검하고, 붙었을 때만 공개하고, 어제 판본을 물리기까지. 각 단계의 종료 코드와 함께.
 source: en/how-to/publish-every-day.md
-source_sha256: d847661074ce7548f3abf9b7d46a07e4cc8b90d7a7c1873eaa8548530ab5c509
+source_sha256: e72dd91f758fa0a5840af88967fb8d0f221eb5dc9726b6964b826f6778210101
 ---
 
 # 매일 공개하기

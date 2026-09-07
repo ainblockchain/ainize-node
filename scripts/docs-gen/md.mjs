@@ -109,7 +109,13 @@ export function page(blocks) {
  */
 export function assertUniqueAnchors(pageText, file) {
   const seen = new Map();
+  // A `#` inside a fenced block is a SHELL COMMENT, not a heading, and the CLI page is mostly bash fences
+  // whose examples are rendered as `# what this does`. Counting those as headings made two commands sharing
+  // an example description ("unattended, with a budget") look like an anchor collision and refused the page.
+  let inFence = false;
   for (const line of pageText.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
     const m = /^(#{1,4}) +(.+?) *$/.exec(line);
     if (!m) continue;
     const s = slug(m[2]);

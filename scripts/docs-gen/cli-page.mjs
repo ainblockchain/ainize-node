@@ -94,7 +94,17 @@ export function readCliTree(repo) {
     const describe = must(literal(node.arguments[1]), 'a command description', node);
     const list = (Array.isArray(names) ? names : [names]).map(String);
     const primary = parseCommandString(list[0]);
-    if (primary.name === '$0') throw new Error(`docs-gen(cli): the first form of a command must not be '$0' (${list.join(' | ')})`);
+    // `$0` as the FIRST form is yargs' idiom for a group's DEFAULT command — `ainize patch <ens-name>` runs
+    // without naming a subcommand. It is not a command of its own and must not become a page entry called
+    // `$0`; it is a second way to invoke the PARENT. Record it there and stop. (`$0` as a LATER form is a
+    // per-command shorthand and is handled below.) A default command is usually declared `describe: false`
+    // because `--help` already lists the group, so its documentation is the parent's usage line.
+    if (primary.name === '$0') {
+      ctx.defaultForm = primary.tokens;
+      ctx.defaultIsGroup = true;   // `$0` under THIS node: `ainize <path> <tokens>` with no subcommand named
+      if (typeof describe === 'string' && describe) ctx.defaultDescribe = describe;
+      return ctx;   // its options and positionals belong to the PARENT, so keep collecting into it
+    }
     const cmd = newNode(primary.name, [...ctx.path, primary.name], typeof describe === 'string' ? describe : null);
     cmd.positionals = primary.tokens.map(tokenToPositional);
     for (const alt of list.slice(1)) {
@@ -220,7 +230,17 @@ function renderCommand(cmd, depth) {
   const out = [`${heading} ${code([PROG, ...cmd.path].join(' '))}`, '', ...fence('bash', synopsis(cmd))];
   if (cmd.describe) out.push('', inline(cmd.describe));
   if (cmd.aliases.length) out.push('', `Also spelled ${cmd.aliases.map((a) => code([PROG, ...cmd.path.slice(0, -1), a].join(' '))).join(', ')}.`);
-  if (cmd.defaultForm) out.push('', `This is the default subcommand: ${code([PROG, ...cmd.path.slice(0, -1), ...cmd.defaultForm].join(' '))} runs it without naming ${code(cmd.name)}.`);
+  if (cmd.defaultForm) {
+    // Two different things wear `$0`. As a LATER form of a command it is a shorthand for that command, so the
+    // command's own name drops off the path. As the FIRST form under a group it is the group's DEFAULT, so the
+    // group's name STAYS and what drops off is the subcommand you would otherwise have typed.
+    const form = cmd.defaultIsGroup
+      ? [PROG, ...cmd.path, ...cmd.defaultForm].join(' ')
+      : [PROG, ...cmd.path.slice(0, -1), ...cmd.defaultForm].join(' ');
+    out.push('', cmd.defaultIsGroup
+      ? `${code(form)} runs without naming a subcommand.`
+      : `This is the default subcommand: ${code(form)} runs it without naming ${code(cmd.name)}.`);
+  }
   if (cmd.positionals.length) out.push('', '**Arguments**', '', ...cmd.positionals.map(positionalLine));
   const opts = cmd.options.filter((o) => !o.global);
   if (opts.length) out.push('', '**Options**', '', ...opts.map(optionLine));
