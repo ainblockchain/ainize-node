@@ -2,49 +2,122 @@
   {
     "group": "Get started",
     "pages": [
-      { "page": "index", "title": "Ainize" },
-      { "page": "get-started/install", "title": "Installation" },
-      { "page": "get-started/quickstart", "title": "Quickstart" }
+      {
+        "page": "index",
+        "title": "Ainize"
+      },
+      {
+        "page": "get-started/install",
+        "title": "Installation"
+      },
+      {
+        "page": "get-started/quickstart",
+        "title": "Quickstart"
+      }
     ]
   },
   {
     "group": "Tutorials",
     "pages": [
-      { "page": "tutorials/teach-from-a-file", "title": "Teach from a file of questions" },
-      { "page": "tutorials/teach-in-chat",     "title": "Teach by correcting the model" },
-      { "page": "tutorials/buy-and-apply",     "title": "Use knowledge someone else published" }
+      {
+        "page": "tutorials/teach-from-a-file",
+        "title": "Teach from a file of questions"
+      },
+      {
+        "page": "tutorials/teach-in-chat",
+        "title": "Teach by correcting the model"
+      },
+      {
+        "page": "tutorials/buy-and-apply",
+        "title": "Use knowledge someone else published"
+      }
     ]
   },
   {
     "group": "Concepts",
     "pages": [
-      { "page": "concepts/knowledge-patch",       "title": "What a knowledge patch is" },
-      { "page": "concepts/verification",          "title": "What \"verified\" proves" },
-      { "page": "concepts/lineage-and-royalties", "title": "Lineage and royalties" },
-      { "page": "concepts/payment",               "title": "Paying without an account" }
+      {
+        "page": "concepts/knowledge-patch",
+        "title": "What a knowledge patch is"
+      },
+      {
+        "page": "concepts/verification",
+        "title": "What \"verified\" proves"
+      },
+      {
+        "page": "concepts/lineage-and-royalties",
+        "title": "Lineage and royalties"
+      },
+      {
+        "page": "concepts/payment",
+        "title": "Paying without an account"
+      }
     ]
   },
   {
     "group": "How-to",
     "pages": [
-      { "page": "how-to/reachable-node",      "title": "Run a node others can reach" },
-      { "page": "how-to/run-a-verifier",      "title": "What verifying costs" },
-      { "page": "how-to/price-knowledge",     "title": "Set a price and get paid" },
-      { "page": "how-to/build-on-knowledge",  "title": "Build on someone else's knowledge" },
-      { "page": "how-to/load-several",        "title": "Load several knowledges at once" },
-      { "page": "how-to/publish-every-day",   "title": "Publish every day" },
-      { "page": "how-to/failed-verification", "title": "When it will not list" }
+      {
+        "page": "how-to/reachable-node",
+        "title": "Run a node others can reach"
+      },
+      {
+        "page": "how-to/run-a-verifier",
+        "title": "What verifying costs"
+      },
+      {
+        "page": "how-to/price-knowledge",
+        "title": "Set a price and get paid"
+      },
+      {
+        "page": "how-to/build-on-knowledge",
+        "title": "Build on someone else's knowledge"
+      },
+      {
+        "page": "how-to/load-several",
+        "title": "Load several knowledges at once"
+      },
+      {
+        "page": "how-to/publish-every-day",
+        "title": "Publish every day"
+      },
+      {
+        "page": "how-to/failed-verification",
+        "title": "When it will not list"
+      },
+      {
+        "page": "how-to/agent-memory",
+        "title": "Give an agent a memory"
+      }
     ]
   },
   {
     "group": "Reference",
     "pages": [
-      { "page": "reference/cli", "title": "CLI reference" },
-      { "page": "reference/http-api", "title": "HTTP API reference" },
-      { "page": "reference/x402", "title": "Paying from your own client" },
-      { "page": "reference/schemas", "title": "Schemas" },
-      { "page": "reference/config", "title": "Configuration reference" },
-      { "page": "reference/errors", "title": "Error codes" }
+      {
+        "page": "reference/cli",
+        "title": "CLI reference"
+      },
+      {
+        "page": "reference/http-api",
+        "title": "HTTP API reference"
+      },
+      {
+        "page": "reference/x402",
+        "title": "Paying from your own client"
+      },
+      {
+        "page": "reference/schemas",
+        "title": "Schemas"
+      },
+      {
+        "page": "reference/config",
+        "title": "Configuration reference"
+      },
+      {
+        "page": "reference/errors",
+        "title": "Error codes"
+      }
     ]
   }
 ]
