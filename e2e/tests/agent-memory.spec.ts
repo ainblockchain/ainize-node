@@ -145,6 +145,22 @@ test('AZ-094 a question already in memory costs nothing at all', async () => {
   expect(r.json.cost.completions).toBe(0);
   expect(r.json.retrieved).toBeNull();
   expect(r.code).toBe(0);
+
+  /*
+   * …and the same claim for a question somebody would actually TYPE.
+   *
+   * The wording above is the PLAN's — `mapping.prompt` — and it is in none of that plan's own match patterns. This
+   * test asserted only that one, and so it passed for two months while every real phrasing paid for a lookup every
+   * single time: measured 2026-09-07, the second ask of "what is the contract address of USDC?" reported
+   * `recall.decision: "miss"` and spent a second query on a fact already on disk.
+   */
+  for (const asked of ['what is the contract address of USDC?', 'USDC contract address', 'USDC 컨트랙트 주소 알려줘']) {
+    const m = await ask(asked, ['--queries-per-day', '30', '--no-bake']);
+    expect(m.json.answer, `${asked} was not answered`).toBe('0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48');
+    expect(m.json.via, `${asked} did not come from memory`).toBe('memory');
+    expect(m.json.cost.queries, `${asked} paid for a lookup`).toBe(0);
+    expect(m.json.cost.completions).toBe(0);
+  }
 });
 
 test('AZ-095 the agent will not bake on a break-even it cannot compute, and names the missing term', async () => {
