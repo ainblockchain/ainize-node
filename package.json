@@ -20,10 +20,11 @@
     "dev": "tsx watch src/bin.ts",
     "start": "node dist/bin.js",
     "seed": "tsx src/seed.ts",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "0.1.0",
+    "@ainize/core": "github:ainblockchain/ainize-core",
     "aindrive": "^0.2.4",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
