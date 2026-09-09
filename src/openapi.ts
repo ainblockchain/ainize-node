@@ -445,7 +445,7 @@ export function buildOpenApi(base: string, version: string) {
 
 /** CLI reference (mirrors packages/cli) — rendered on the web /docs page next to the API. */
 export const CLI_REFERENCE = {
-  install: ['npm install -g ainize', '# or from the repo: npm run build && npm link -w packages/cli'],
+  install: ['npm install -g ainize', '# or from source: git clone github.com/ainblockchain/ainize-cli && npm install && npm run build && npm link'],
   oneLiners: {
     publish: { ko: '지식 올리기 (한 줄)', en: 'Publish knowledge (one line)', cmd: 'ainize publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25' },
     use: { ko: '지식 쓰기 (한 줄)', en: 'Use knowledge (one line)', cmd: 'ainize use krx-all-2761        # check verification → pay automatically → download → load into your model' },

@@ -167,7 +167,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
     app.get(/^\/(?!api\/|x402\/|p2p\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
   } else {
-    app.get('/', (_req, res) => { res.type('text').send(`ainize node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nweb UI not built — run \`npm run build -w packages/web\``); });
+    app.get('/', (_req, res) => { res.type('text').send(`ainize node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nno web UI here — it is its own build: github.com/ainblockchain/ainize-web\n(point webDist at its dist/, or serve it anywhere and hand it this node's URL)`); });
   }
 
   const server = createServer(app);
