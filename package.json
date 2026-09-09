@@ -11,6 +11,10 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "fixtures"
+  ],
   "bin": {
     "ainize-node": "./dist/bin.js"
   },
