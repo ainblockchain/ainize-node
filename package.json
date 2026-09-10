@@ -1,7 +1,19 @@
 {
   "name": "@ainize/node",
   "version": "0.1.0",
-  "private": true,
+  "description": "Ainize node — serves a base model whose conditional memory is extended by knowledge patches; teaches, verifies, publishes and trades patches on the AIN ledger",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ainblockchain/ainize-node.git"
+  },
+  "homepage": "https://github.com/ainblockchain/ainize",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +25,8 @@
   },
   "files": [
     "dist",
-    "fixtures"
+    "fixtures",
+    "trainer"
   ],
   "bin": {
     "ainize-node": "./dist/bin.js"
@@ -28,7 +41,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "github:ainblockchain/ainize-core",
+    "@ainize/core": "^0.1.0",
     "aindrive": "^0.2.4",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
