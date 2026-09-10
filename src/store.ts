@@ -524,12 +524,26 @@ export class Store {
 
   // local credit this node has issued (item 364)
   getGrant(address: string): CreditGrantRow | null {
-    const r = this.db.prepare('SELECT * FROM credit_grants WHERE address = ?').get(address) as Record<string, unknown> | undefined;
+    /**
+     * `COLLATE NOCASE`, because an address is checksummed (item 381).
+     *
+     * The grant was written under whatever spelling the payment carried — `0xAbC…` — and read back under
+     * whatever the next caller had, often the lowercase form, and SQLite's default collation for TEXT is
+     * BINARY: the row was simply not found. Meanwhile `creditStatement` counts spends and royalties with
+     * `.toLowerCase()`, so they always matched. A wallet that had been granted credit and spent some of it
+     * therefore reported `granted 0 − spent N` and was refused its own balance.
+     *
+     * The comparison is case-insensitive here rather than lowercasing on write, so rows already stored under a
+     * checksummed spelling are found too.
+     */
+    const r = this.db.prepare('SELECT * FROM credit_grants WHERE address = ? COLLATE NOCASE').get(address) as Record<string, unknown> | undefined;
     return r ? { address: r.address as string, amount: r.amount as string, reason: r.reason as string, granted_at: r.granted_at as number } : null;
   }
   /** Write the grant once. Returns the row that is now in force — an address is funded by this node exactly once. */
   putGrant(address: string, amount: string, reason: string): CreditGrantRow {
-    this.db.prepare('INSERT OR IGNORE INTO credit_grants (address, amount, reason, granted_at) VALUES (?, ?, ?, ?)').run(address, amount, reason, Date.now());
+    // Stored lowercase from here on, so `INSERT OR IGNORE` cannot mint a second grant for the same wallet under
+    // a different spelling — the cap that says "one grant per address" is only true if one address is one row.
+    this.db.prepare('INSERT OR IGNORE INTO credit_grants (address, amount, reason, granted_at) VALUES (?, ?, ?, ?)').run(address.toLowerCase(), amount, reason, Date.now());
     return this.getGrant(address)!;
   }
   listGrants(limit = 500): CreditGrantRow[] {

@@ -13,6 +13,7 @@ import {
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,
   type DerivationKind, type NodeConfig, type PatchAnchor, type PatchManifest, type PatchOrigin, type PeerInfo, type Settlement, type TeachConfig, type X402Payload, type X402Requirement,
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
+  sameAddr,
 } from '@ainize/core';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
@@ -478,7 +479,6 @@ export function challengedMessage(e: CatalogEntry): string {
 }
 
 /** Case-insensitive address compare — `0xAbC…` and `0xabc…` are one node, and a supersede rule that misses that is a takeover. */
-const sameAddr = (a: string | undefined | null, b: string | undefined | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
 /** sha256 hex compared the way addresses are: case-insensitively, and never true for an empty one. */
 const sameSha = (a: string | undefined | null, b: string | undefined | null) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const badInput = (msg: string, details?: Record<string, unknown>) => new MarketError(400, msg, details);

@@ -7,7 +7,7 @@
  * Without a runtime the attestation is explicitly `verified_on: "hash-only"` — never a fake score.
  */
 import type { Attestation, PatchAnchor, RuntimeStatus } from '@ainize/core';
-import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, readNpzMember, sha256Hex, signMessage, verifierConfig } from '@ainize/core';
+import { ATTESTATION_GOT_MAX, ATTESTATION_MAX_FAILURES, ATTESTATION_PROMPT_MAX, canonicalJson, readNpzMember, sha256Hex, signMessage, verifierConfig, sameAddr } from '@ainize/core';
 import { ConflictError, type Market } from './market.js';
 import { RUNTIME_PRIORITY } from './runtime.js';
 
@@ -190,13 +190,13 @@ export class Verifier {
       const report: VerifierRoundReport = { verified: 0, skipped: { test: 0, price: 0, budget: 0, busy: 0, window: 0 } };
       const minPrice = Number(v.minPrice ?? '0');
       for (const e of catalog) {
-        if (e.anchor.author === me && !cfg.verifier?.allowSelfAttest) continue;
+        if (sameAddr(e.anchor.author, me) && !cfg.verifier?.allowSelfAttest) continue;
         // What this node spends on unpaid work for strangers is the operator's decision, not the catalogue's size
         // (item 332). 209 of the 213 anchors on the demo chain were hidden test listings nobody could ever buy, and
         // each of them cost every verifier a download and a benchmark on every round.
         if (!v.includeTest && e.anchor.visibility === 'test') { report.skipped.test++; continue; }
         if (minPrice > 0 && Number(e.anchor.price || 0) < minPrice) { report.skipped.price++; continue; }
-        const mine = e.attestations.find((a) => a.verifier === me);
+        const mine = e.attestations.find((a) => sameAddr(a.verifier, me));
         const compatible = st.available && !!st.model && e.anchor.model.id_M.startsWith(st.model) && !!e.anchor.benchmark.samples?.length;
         // A run on a table that already carries this knowledge has no un-patched baseline: it would be recorded and
         // never counted (item 329), so it is not worth a GPU minute. Say so once, quietly, and move on.
@@ -317,11 +317,11 @@ export class Verifier {
     const m = this.market;
     const me = m.cfg.identity.address;
     const t0 = Date.now();
-    if (anchor.author.toLowerCase() === me.toLowerCase() && !m.cfg.verifier?.allowSelfAttest) {
+    if (sameAddr(anchor.author, me) && !m.cfg.verifier?.allowSelfAttest) {
       throw new ConflictError(`cannot verify your own knowledge: ${anchor.id} was published by this node (verifier.allowSelfAttest is false). A self-check never counts toward the quorum — another node has to verify it.`);
     }
     const e = await m.entry(anchor.id);
-    const mine = e?.attestations.find((a) => a.verifier === me);
+    const mine = e?.attestations.find((a) => sameAddr(a.verifier, me));
     const challengedAt = e?.open_challenge?.created_at ?? 0;
     if (mine && mine.created_at >= challengedAt) {
       // The one case where re-running its own verification still changes something: this node attested hash-only

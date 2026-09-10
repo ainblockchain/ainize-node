@@ -13,6 +13,7 @@ import { z } from 'zod';
 import {
   AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
+  sameAddr,
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
@@ -60,8 +61,6 @@ export interface ApiDeps {
 class HttpError extends Error { constructor(public status: number, message: string, /** extra fields merged into the JSON body — e.g. quota_reset on a 429 */ public body?: Record<string, unknown>) { super(message); } }
 const bad = (msg: string) => new HttpError(400, msg);
 const notFound = (msg = 'not found') => new HttpError(404, msg);
-/** Addresses are compared case-insensitively everywhere money or identity is decided (item 309). */
-const sameAddr = (a: string | undefined | null, b: string | undefined | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
 
 type Handler = (req: Request, res: Response) => Promise<unknown> | unknown;
 const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
@@ -410,7 +409,7 @@ export function buildApi(deps: ApiDeps): Router {
       return {
         sha256: b.sha256, path: b.path, size_bytes: b.size_bytes, rows: b.rows, imported_at: b.imported_at,
         patch_id: e?.id ?? null, name: e?.name ?? null, status: e?.status ?? null,
-        mine: !!e && map.get(e.id)?.anchor.author === market.address,
+        mine: !!e && sameAddr(map.get(e.id)?.anchor.author, market.address),
         purchased, applied: !!e && market.isApplied(e.id),
         reclaimable: reclaim.has(b.sha256), holders: market.p2p.holders(b.sha256).length,
       };
@@ -457,7 +456,7 @@ export function buildApi(deps: ApiDeps): Router {
       const pre = q.schema.endsWith('*') ? q.schema.slice(0, -1) : null;
       items = pre ? items.filter((e) => e.anchor.benchmark.schema.startsWith(pre)) : items.filter((e) => e.anchor.benchmark.schema === q.schema);
     }
-    if (q.author) items = items.filter((e) => e.anchor.author === q.author);
+    if (q.author) items = items.filter((e) => sameAddr(e.anchor.author, q.author));
     if (q.contributor) { const c = q.contributor.toLowerCase(); items = items.filter((e) => (e.anchor.contributors ?? []).some((x) => creditedAddress(x).toLowerCase() === c)); }
     if (q.origin) items = items.filter((e) => (e.anchor.origin ?? 'operator') === q.origin);
     const allBranches = q.branch || q.q ? await market.branches() : [];
@@ -592,7 +591,7 @@ export function buildApi(deps: ApiDeps): Router {
      * Items 195, 318: a child used to be a name and a status chip. What the ancestor actually needs to see is what
      * it is SOLD FOR — a child priced under its base is the base at a discount — and what it has paid them.
      */
-    const earnings = e.anchor.author === market.address ? await market.derivativeEarnings(e.anchor.id, map) : null;
+    const earnings = sameAddr(e.anchor.author, market.address) ? await market.derivativeEarnings(e.anchor.id, map) : null;
     const earnedFrom = new Map((earnings?.children ?? []).map((c) => [c.id, c]));
     const lineage = { parents: e.anchor.parents.map((p) => map.get(p)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status, price: x.anchor.price, currency: x.anchor.currency, author_name: x.anchor.author_name ?? null })),
       children: e.children.map((c) => map.get(c)).filter(visible).map((x) => ({ id: x.anchor.id, name: x.anchor.name, author: x.anchor.author, status: x.status, price: x.anchor.price, currency: x.anchor.currency, author_name: x.anchor.author_name ?? null,
@@ -621,7 +620,7 @@ export function buildApi(deps: ApiDeps): Router {
        */
       split: await market.saleSplit(e, undefined, map),
       dataset_held: !!e.anchor.dataset?.sha256 && market.datasets.has(e.anchor.dataset.sha256),
-      owned: e.anchor.author === market.address, purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
+      owned: sameAddr(e.anchor.author, market.address), purchased: !!market.store.getPurchase(e.anchor.id), has_body: market.blobs.has(e.anchor.patch_sha256),
       applied: market.isApplied(e.anchor.id), gateway_url: (e.anchor as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,
       /**
        * Where the seller answers TODAY (item 275). `gateway_url` above is the address frozen into the immutable
@@ -912,7 +911,7 @@ export function buildApi(deps: ApiDeps): Router {
     const known = await market.knownNodes();
     // A node this one is peered with is never "old", whatever the record says: it is on the network now.
     const peerEndpoints = new Set(market.p2p.peers().map((p) => p.endpoint.replace(/\/+$/, '')));
-    const fresh = known.filter((n) => n.address === market.address || peerEndpoints.has((n.endpoint ?? '').replace(/\/+$/, '')) || Date.now() - (n.last_seen ?? 0) < NODES_RECENT_MS);
+    const fresh = known.filter((n) => sameAddr(n.address, market.address) || peerEndpoints.has((n.endpoint ?? '').replace(/\/+$/, '')) || Date.now() - (n.last_seen ?? 0) < NODES_RECENT_MS);
     const shown = all ? known : fresh;
     const dup = market.duplicateNodeAddresses(known);
     const nodes = await Promise.all(shown.map(async (n) => ({
