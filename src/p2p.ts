@@ -7,7 +7,7 @@ import { createWriteStream, mkdirSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger } from '@ainize/core';
+import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger, isRecordRefusal } from '@ainize/core';
 import type { Store } from './store.js';
 
 export interface P2PDeps {
@@ -208,10 +208,30 @@ export class P2P {
             const cursor = this.deps.store.getPeer(peer.endpoint)?.cursor ?? 0;
             const res = await this.fetchJson<{ records: LedgerRecord[]; cursor: number }>(`${peer.endpoint}/p2p/records?since=${cursor}&limit=500`, {}, 20000);
             let added = 0;
+            /**
+             * The cursor only passes records this node has actually taken (item 374).
+             *
+             * It used to advance to `res.cursor` whatever happened in the loop, and the loop's `catch` only logged.
+             * A record rejected for a transient reason — a busy SQLite, a throw part-way through a write — was
+             * therefore never offered by that peer again: the next round asked `?since=<past it>`. It is gone from
+             * this node's ledger unless some other peer happens to re-gossip it, and an anchor lost that way takes
+             * its attestations and settlements with it, because `deriveCatalog` drops every record whose anchor it
+             * cannot find.
+             *
+             * A record the ledger REFUSES (a bad signature, a rule this node will not accept) is different: it will
+             * be refused again for ever, and stopping on it would wedge the sync. So only an unexpected failure
+             * holds the cursor, and it holds it at the last record that went in.
+             */
+            let stopAt: number | null = null;
             for (const rec of res.records ?? []) {
-              try { if (await this.deps.ledger.ingest(rec)) added++; } catch (e) { this.deps.log('warn', 'p2p', `rejected record ${rec.hash.slice(0, 12)} from ${peer.endpoint}: ${(e as Error).message}`); }
+              try { if (await this.deps.ledger.ingest(rec)) added++; }
+              catch (e) {
+                const why = (e as Error).message;
+                this.deps.log('warn', 'p2p', `rejected record ${rec.hash.slice(0, 12)} from ${peer.endpoint}: ${why}`);
+                if (!isRecordRefusal(e)) { stopAt = rec.ts ?? null; break; }
+              }
             }
-            this.deps.store.upsertPeer(peer.endpoint, { cursor: res.cursor ?? cursor });
+            this.deps.store.upsertPeer(peer.endpoint, { cursor: stopAt !== null ? Math.max(cursor, stopAt - 1) : (res.cursor ?? cursor) });
             if (added) this.deps.log('info', 'p2p', `synced ${added} record(s) from ${info.name} (${peer.endpoint})`);
           }
         } catch (e) {

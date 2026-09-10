@@ -1453,6 +1453,16 @@ export class TeachWorker {
     if (q.key_remaining <= 0) throw new TeachError(429, `quota_key: daily lesson limit (${c.jobsPerKeyPerDay}) reached for this key \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { key_remaining: 0, limit: c.jobsPerKeyPerDay, resets_at: q.resets_at });
     if (q.ip_remaining <= 0) throw new TeachError(429, `quota_ip: daily lesson limit (${c.jobsPerIpPerDay}) reached for this address \u2014 resets ${TeachWorker.resetLabel(q.resets_at)}`, { ip_remaining: 0, limit: c.jobsPerIpPerDay, resets_at: q.resets_at });
     if (charge > q.rows_remaining) throw new TeachError(429, `quota_rows: you have ${q.rows_remaining} of ${c.dataset.rowsPerKeyPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, limit: c.dataset.rowsPerKeyPerDay, asked: charge });
+    /**
+     * The per-address ceiling is checked here too, because it is charged here too (item 375).
+     *
+     * `chargeRows` below increments both buckets, and only the per-KEY one was ever compared with anything. A
+     * teaching key is minted in a browser for free, so one address rotating keys spent a fresh key budget each
+     * time while `rows:ip:<address>` — the bucket that exists to bound GPU-seconds per address rather than per
+     * key, which is the only thing a free identity cannot dodge — was incremented and never enforced. `rebuild`
+     * merges are the most expensive job this node runs, which is what made this the cheapest way in.
+     */
+    if (charge > q.rows_ip_remaining) throw new TeachError(429, `quota_rows: this address has ${q.rows_ip_remaining} of ${c.dataset.rowsPerIpPerDay} questions left to teach on this node today`, { rows_remaining: q.rows_remaining, rows_ip_remaining: q.rows_ip_remaining, limit: c.dataset.rowsPerIpPerDay, asked: charge });
 
     const now = Date.now(); const day = dayKey(now);
     const id = randomUUID();

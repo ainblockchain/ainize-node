@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { createIdentity, defaultConfig, hashCanonical, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ainize/core';
+import { createIdentity, defaultConfig, hashCanonical, recordHash, signMessage, verifyMessage, writeNpz, type Contributor, type Identity, type NodeConfig, type PatchAnchor } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { Runtime, RuntimeUnavailableError } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
@@ -265,7 +265,10 @@ test('preflight: already-known facts are skipped, static problems are invalid, c
   // live-test units a preflight costs: one per 3 model calls (facts + context blobs), charged to the IP and the key
   assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1] }), 1); assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1, 2, 3] }), 1);
   assert.equal(N.teach!.preflightUnits({ patchIds: [], facts: [1, 2, 3, 4] }), 2); assert.equal(N.teach!.preflightUnits({ patchIds: ['a', 'b', 'c', 'a'], facts: [1, 2, 3, 4, 5, 6, 7, 8] }), 4);
-  assert.equal(N.market.chatQuota(`key:${teacher.address.toLowerCase()}`, 20, 3600_000, false), 19, 'the key bucket was charged one unit');
+  // The bucket is keyed the way /api/chat keys its own — `market.visitorId(...)` — so a pre-flight and a live test
+  // spend the SAME budget. They used to key differently (raw string here, hashed there), which is why the comment
+  // above could say "charged to the IP and the key" while neither door could see what the other had spent.
+  assert.equal(N.market.chatQuota(N.market.visitorId(`key:${teacher.address.toLowerCase()}`), 20, 3600_000, false), 19, 'the key bucket was charged one unit');
   const known = await createJob([{ prompt: 'known question', answer: 'known', base_answer: 'KNOWN' }]);
   assert.equal(known.status, 409); assert.match(known.json.error!, /^already_known/);
 });
@@ -423,8 +426,21 @@ test('publish (review mode): signed claim → PENDING_REVIEW → operator approv
   assert.equal((((await api('GET', `/api/patches/${job1.draft_id}`)).json.anchor as PatchAnchor).contributors![0]).name, 'Test Teacher');
   // publish_status announced → listed once the verifiers list the anchor (spec §6.5)
   assert.equal(N.teach!.view(N.teach!.get(job1.id)!).publish_status, 'announced');
-  const att = (verifier: string) => ({ patch_id: job1.draft_id!, verifier, passed: true, verified_on: 'benchmark', score: { hits: 2, total: 2 }, created_at: Date.now() });
-  await N.ledger.append('attest', att('0x' + '7'.repeat(40)) as never); await N.ledger.append('attest', att('0x' + '8'.repeat(40)) as never);
+  /**
+   * Two verifications, from two verifiers, each signed by the verifier that made it.
+   *
+   * This used to be `N.ledger.append('attest', {verifier: '0x777…'})` — the node signing a verdict under somebody
+   * else's address, which is the exact record `deriveCatalog` now refuses (the chain rule has always been
+   * `auth.addr === $verifier`; the gossip path had no equivalent until it did). Signing them properly is also a
+   * better test: it exercises the path a real verifier's record takes into this node.
+   */
+  const attestAs = async (id: Identity) => {
+    const body = { patch_id: job1.draft_id!, verifier: id.address, passed: true, verified_on: 'benchmark', score: { hits: 2, total: 2 }, created_at: Date.now() };
+    const ts = Date.now(); const parents: string[] = [];
+    const hash = recordHash('attest', body, id.address, ts, parents);
+    await N.ledger.ingest({ hash, kind: 'attest', body, author: id.address, ts, parents, sig: signMessage(hash, id.privateKey) } as never);
+  };
+  await attestAs(createIdentity()); await attestAs(createIdentity());
   N.market.invalidate();
   assert.equal((await N.market.entry(job1.draft_id!))!.status, 'LISTED');
   await N.teach!.reconcilePublished(Date.now() + 120_000);

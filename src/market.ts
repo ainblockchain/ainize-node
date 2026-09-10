@@ -3656,6 +3656,20 @@ export class Market {
   readonly chatQueue = new ChatQueue();
 
   /** Per-visitor trial quota for public live tests (operator is unlimited). Returns remaining or -1 when exhausted. */
+  /**
+   * Give back a reservation the work never used (item 376).
+   *
+   * The free-try budget is peeked before the model runs and committed after, so a request that fails or hangs does
+   * not burn a try — a deliberate choice, and the right one for a single request. It is the wrong one for thirty:
+   * concurrent calls all peeked against the same untouched counter, all passed, and each drove its own round on
+   * the shared serving GPU. Taking the units up front and handing them back on failure keeps the promise and
+   * makes the budget mean something under load.
+   */
+  refundChatQuota(visitor: string, units = 1): void {
+    const u = this.chatUsage.get(visitor);
+    if (u) u.count = Math.max(0, u.count - units);
+  }
+
   chatQuota(visitor: string, limit = 20, windowMs = 3600_000, consume = true, units = 1): number {
     const now = Date.now();
     const u = this.chatUsage.get(visitor);

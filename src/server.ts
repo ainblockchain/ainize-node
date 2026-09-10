@@ -107,6 +107,30 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // Only trust X-Forwarded-For when the operator says the node is behind a proxy (config `server.trustProxy`, env
   // AINIZE_TRUST_PROXY). Default false: `req.ip` is the TCP peer, so per-IP quotas / bans / rate limits cannot be spoofed.
   app.set('trust proxy', cfg.server?.trustProxy ?? false);
+  /**
+   * Security headers, because of what this origin holds (item 377).
+   *
+   * A teaching key is a private key, it lives in this origin's `localStorage`, and it is not a session — it owns
+   * the lessons it signed and the money they earn. The same origin renders what visitors upload: dataset rows,
+   * display names, knowledge descriptions. React escapes all of it, `dangerouslySetInnerHTML` appears nowhere,
+   * and `NAME_BLOCKLIST` strips links, markup and invisible characters — so there was no known way in. A CSP is
+   * for the one nobody knows about, and the asset behind this door is somebody's income.
+   *
+   * `'unsafe-inline'` for styles is what styled-components needs; scripts get no such allowance. `connect-src`
+   * stays open because a node legitimately talks to peers, a chain and a runtime the operator chooses.
+   */
+  app.use((_req, res, next) => {
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:", "font-src 'self' data:", "connect-src *",
+      "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+    ].join('; '));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // A node is reachable over plain HTTP on a LAN by design, so HSTS is not set here: it would strand an operator
+    // who reaches their own node by IP. Put it on the reverse proxy that terminates TLS.
+    next();
+  });
   app.use(compression());
   app.use(cookieParser());
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent

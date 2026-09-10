@@ -302,10 +302,13 @@ test('D3: the second request says it is queued, names the holder, and can be can
   assert.equal(jb.charged, false);
   assert.match(jb.error, /cancelled while it was still queued/);
 
-  // …and the free try really was not spent: A consumed one, B none, so the next request sees one fewer
+  // …and the free try really was not spent. A try is now HELD from the moment a request is admitted and handed
+  // back if it does not run, so the number A reports is taken while B is still queued and holding one: it counts
+  // both. B's cancellation returns its try, C takes exactly that one back, and the total consumed is still A + C —
+  // so C sees the same number A did. If a cancelled request had burned its try, C would see one fewer.
   const quotaA = (await ra.json() as ChatBody).remaining_quota!;
   const rc = await (await ask('세 번째 질문', { request_id: 'req-c' })).json() as ChatBody;
-  assert.equal(rc.remaining_quota, quotaA - 1, 'the cancelled request must not have burned a free try');
+  assert.equal(rc.remaining_quota, quotaA, 'the cancelled request must not have burned a free try');
 
   const gone = await getJson<{ state: string }>('/api/chat/status?request_id=req-b');
   assert.equal(gone.state, 'gone');

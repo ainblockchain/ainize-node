@@ -1567,19 +1567,29 @@ export function buildApi(deps: ApiDeps): Router {
     // the machine-readable code matters: without it the browser cannot tell this HOURLY budget from the DAILY lesson
     // limit, and told the visitor to "come back tomorrow" for a quota that refills within the hour. `quota_reset` says
     // WHEN the hour is up, so the page can count down instead of guessing.
-    if (mine && market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, false) < 0) {
+    if (mine && market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, true) < 0) {
       throw new HttpError(429, mineIsShared
         ? `quota_chat_network: this address has used all ${CHAT_TRIES_PER_HOUR} free live tests for this hour — everyone sharing it shares them`
         : 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node',
       { quota_reset: market.chatQuotaResetsAt(mine), quota_scope: mineIsShared ? 'network' : 'you', ...(mineIsShared ? { quota_limit: CHAT_TRIES_PER_HOUR } : {}) });
     }
-    if (network && !mineIsShared && market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR, 3600_000, false) < 0) {
+    if (network && !mineIsShared && market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR, 3600_000, true) < 0) {
+      if (mine) market.refundChatQuota(mine);   // the caller's own try was reserved a line ago and is not being spent
       throw new HttpError(429, `quota_chat_network: this network has used all ${CHAT_TRIES_PER_NETWORK_HOUR} free live tests for this hour — everyone sharing this address shares them`, { quota_reset: market.chatQuotaResetsAt(network), quota_scope: 'network', quota_limit: CHAT_TRIES_PER_NETWORK_HOUR });
     }
     // private drafts (taught lessons) are testable only by their owner (signed x-ainize-auth) or the operator
-    const out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
-    const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR) : Infinity;
-    if (network && !mineIsShared) market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR);
+    // The tries are already taken. A request that fails or hangs gets them back, which is what "a failed request
+    // must not burn a free try" always meant — it just used to be implemented by not taking them at all, so
+    // concurrent callers each measured an untouched counter and every one of them passed.
+    let out;
+    try {
+      out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
+    } catch (e) {
+      if (mine) market.refundChatQuota(mine);
+      if (network && !mineIsShared) market.refundChatQuota(network);
+      throw e;
+    }
+    const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, false) : Infinity;
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR };
   }));
   /**
@@ -1841,11 +1851,31 @@ export function buildApi(deps: ApiDeps): Router {
     // Preflight spends live-test units in proportion to the model calls it drives (facts + context blobs), charged to the
     // IP AND the teaching key — one of them alone is free to spoof / mint (security review: preflight DoS).
     const units = t.preflightUnits({ patchIds: body.patch_ids, facts: body.facts });
-    const buckets = [`ip:${req.ip}`, `key:${address.toLowerCase()}`];
-    for (const b of buckets) if (market.chatQuota(b, 20, 3600_000, false, units) < 0) throw new HttpError(429, `quota_chat: free live-test quota exhausted for this hour (this pre-flight needs ${units} unit(s)) — try again later`);
-    const out = await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, baseIds, facts: body.facts, sampled });
-    for (const b of buckets) market.chatQuota(b, 20, 3600_000, true, units);
-    return out;
+    /**
+     * The same buckets the live test spends, and taken before the model runs (item 376).
+     *
+     * Two things were wrong. The units were peeked and only committed afterwards, so thirty concurrent pre-flights
+     * all measured an untouched counter, all passed, and each drove its own round on the shared serving GPU — the
+     * budget `preflightSlice` calls "the budget that actually protects the model". And the keys were raw
+     * `ip:<addr>` / `key:<addr>` strings while `/api/chat` keys on `market.visitorId(...)` hashes: different
+     * entries in the same map, so a pre-flight did not in fact draw on the live-test budget its comment says it
+     * spends, and either door could exhaust the model while the other still read "free tries remaining".
+     */
+    const buckets = [market.visitorId(`ip:${req.ip}`), market.visitorId(`key:${address.toLowerCase()}`)];
+    const taken: string[] = [];
+    for (const b of buckets) {
+      if (market.chatQuota(b, 20, 3600_000, true, units) < 0) {
+        for (const done of taken) market.refundChatQuota(done, units);
+        throw new HttpError(429, `quota_chat: free live-test quota exhausted for this hour (this pre-flight needs ${units} unit(s)) — try again later`, { quota_reset: market.chatQuotaResetsAt(b) });
+      }
+      taken.push(b);
+    }
+    try {
+      return await t.preflight({ address, ip: req.ip, patchIds: body.patch_ids, baseIds, facts: body.facts, sampled });
+    } catch (e) {
+      for (const b of taken) market.refundChatQuota(b, units);
+      throw e;
+    }
   }));
   /**
    * Design §12.2 — what combining two knowledges would mean, before anything is built. Read-only: it resolves both
