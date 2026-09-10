@@ -1218,6 +1218,24 @@ export class TeachWorker {
       // compared row by row, which is exactly what decides whether "just combine" is possible. Nothing of its
       // questions is read, and every build tier that needs them is refused with the same word.
       if (secret && !opts.allowPrivate) throw new TeachError(400, `base_private: the creator of ${id} kept its questions private, so nobody can build on it (you can still load it for comparison)`, { id });
+      /**
+       * A base is loaded into the model and trained under, so it needs the same licence every other door demands
+       * (item 327). This one was still deciding on blob presence alone, and `createJob` routes `base_ids` here
+       * rather than through `contextTargets` — so `--on <someone else's>` took a body this node holds only because
+       * it VERIFIED it, loaded it, trained on top of it, inherited its rows and published a lesson naming it in
+       * `parents[]`, with the base never bought. Same check, same words as the other five doors.
+       *
+       * `mine` is the exemption that matters here: a teacher building on their own lesson, and this node's own
+       * draft, were never purchases and must not be asked for one.
+       */
+      if (!mine && !this.market.hasLicense(entry)) {
+        const price = `${entry.anchor.price} ${entry.anchor.currency}`;
+        const verified = this.market.licenseOf(entry)?.source === 'verification';
+        throw new TeachError(400, verified
+          ? `knowledge_not_licensed: this node holds "${id}" because it verified it — scoring a knowledge is not a licence to teach on top of it. Buy it first (${price}): ainize patch buy ${id}`
+          : `knowledge_not_licensed: "${id}" has not been bought on this node — buy it first (${price}), then teach on top of it: ainize patch buy ${id}`,
+          { id, hint: 'buy', price: entry.anchor.price ?? '0', currency: entry.anchor.currency, name: entry.anchor.name });
+      }
       const blob = this.market.blobs.get(entry.anchor.patch_sha256);
       if (!blob) throw new TeachError(409, `base_not_held: this node does not hold the body of ${id} — buy or download it first`, { id });
       return { id, entry, path: blob.path, sha256: entry.anchor.patch_sha256, ...(secret ? { private: true } : {}) };
@@ -1684,7 +1702,27 @@ export class TeachWorker {
   // ------------------------------------------------------------ cancel / delete (spec §6.2 DELETE)
   async cancel(j: TeachJobRow, by: 'owner' | 'operator'): Promise<{ ok: true; status: 'CANCELLED' }> {
     if (['ANNOUNCED'].includes(j.status) || j.publish_status === 'announced' || j.publish_status === 'listed') throw new TeachError(409, 'published_immutable: published knowledge cannot be deleted');
-    if (['QUEUED', 'EXPORTED'].includes(j.status)) { this.cleanupFiles(j); this.finish(j.id, 'CANCELLED', { error: null }); }
+    if (['QUEUED', 'EXPORTED'].includes(j.status)) {
+      /**
+       * "Not running yet" is not the same as "the worker has not picked it up".
+       *
+       * `tick()` reads a QUEUED job and then awaits `acquireSlot` — docker inspect, pgrep, nvidia-smi, seconds of
+       * it — before anything marks the job as running. A DELETE inside that window used to take the QUEUED branch:
+       * it removed the job directory (`snapshot.jsonl`, `known.jsonl`, the npz) and wrote CANCELLED without ever
+       * setting `cancel_requested`, which is the only flag `cancelled()` consults. The worker came back from
+       * `acquireSlot`, wrote `status: 'PREFLIGHT'` unconditionally over the CANCELLED row, and trained the job to
+       * completion — on a GPU, against a quota already charged, with its keep-set deleted, so a lesson with a base
+       * silently trained without `known.jsonl`.
+       *
+       * The flag is set first and always, so a worker already inside the window stops at its next checkpoint
+       * whatever state the row is in.
+       */
+      this.store.updateTeachJob(j.id, { cancel_requested: true });
+      // Files go only when nothing is holding them. If this job is the one the worker is starting, the worker owns
+      // the directory until it notices the flag and cleans up itself.
+      if (this.current !== j.id) this.cleanupFiles(j);
+      this.finish(j.id, 'CANCELLED', { error: null });
+    }
     else if (['PREFLIGHT', 'TRAINING', 'LOADING', 'CHECKING'].includes(j.status)) {
       this.store.updateTeachJob(j.id, { cancel_requested: true });
       if (this.current === j.id && this.child) { try { this.child.kill('SIGTERM'); } catch { /* ignore */ } }
@@ -1881,6 +1919,9 @@ export class TeachWorker {
       this.log('warn', `node stopping during ${phase} → lesson ${job.id} requeued`, job.id);
     };
     try {
+      // A cancel that arrived while this job was waiting for the trainer slot is answered here, before the first
+      // write. Without it the unconditional `status: 'PREFLIGHT'` below overwrote a CANCELLED row and the job ran.
+      if (this.cancelled(job.id)) return;
       if (from === 'full') {
         // ---- PREFLIGHT (cheap re-run of the interactive one)
         this.store.updateTeachJob(job.id, { status: 'PREFLIGHT', started_at: Date.now(), blocked: null });
@@ -3160,6 +3201,20 @@ export class TeachWorker {
       if (e.status === 'DRAFT') throw new TeachError(400, `parent_not_listed: publish ${b.patch_id} first — it is the base of this lesson`, { id: b.patch_id });
       const ok = licenseCompatible({ license: e.anchor.dataset?.license, access: accessOf(e.anchor) }, { license, access });
       if (!ok.ok) throw new TeachError(400, ok.reason, { parent: b.patch_id, parent_license: e.anchor.dataset?.license ?? null });
+    }
+    /**
+     * The PII report describes the LIVE dataset; `pinDataset` publishes `<job>/snapshot.jsonl`, frozen when the
+     * job was created. Nothing tied the two together, and `assertIdle` does not block edits to a READY dataset —
+     * so the sequence "publish → dataset_pii: rows 3, 7 → delete rows 3 and 7 → publish again" passed the gate on
+     * a report describing rows that no longer exist and then pinned revision 1, personal information included, as
+     * a permanent content-addressed set anyone may fetch. The row numbers in the refusal named different rows
+     * from the ones that would actually be published, too.
+     *
+     * A scan is only evidence about the bytes it scanned. If the dataset has moved since the snapshot was taken,
+     * the report cannot speak for what is about to be pinned, and the publish stops until they agree again.
+     */
+    if (dataset && j.snapshot_sha256 && dataset.sha256 !== j.snapshot_sha256) {
+      throw new TeachError(409, `dataset_moved: "${dataset.id}" has been edited since this lesson was trained (it is revision ${dataset.revision} now, and the lesson holds the bytes it was trained on). What would be published is the frozen copy, which the current checks — personal information among them — have not looked at. Train again on the current questions, then publish.`, { dataset_id: dataset.id, dataset_sha256: dataset.sha256, snapshot_sha256: j.snapshot_sha256, revision: dataset.revision });
     }
     const piiRows = dataset ? this.datasets.piiRows(dataset) : [];
     if (access !== 'private' && piiRows.length) {

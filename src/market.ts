@@ -479,6 +479,8 @@ export function challengedMessage(e: CatalogEntry): string {
 
 /** Case-insensitive address compare — `0xAbC…` and `0xabc…` are one node, and a supersede rule that misses that is a takeover. */
 const sameAddr = (a: string | undefined | null, b: string | undefined | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
+/** sha256 hex compared the way addresses are: case-insensitively, and never true for an empty one. */
+const sameSha = (a: string | undefined | null, b: string | undefined | null) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const badInput = (msg: string, details?: Record<string, unknown>) => new MarketError(400, msg, details);
 const unavailable = (msg: string) => new MarketError(503, msg);
 
@@ -2024,11 +2026,25 @@ export class Market {
         ? 'this verifier has already attested every knowledge that shares this body — the verification exemption is spent'
         : 'no knowledge sharing this body is waiting for verification' };
     }
-    const key = `verify_lease:${sha}:${address.toLowerCase()}`;
+    /**
+     * One lease per verification, not one per lifetime (item 372).
+     *
+     * The key used to be `(body, verifier)` and nothing ever cleared it — despite this method's own promise that
+     * "the lease ends when its attestation lands" — so `VERIFY_LEASE_FETCHES` was a lifetime cap of three fetches
+     * of these bytes by this verifier, ever. `releaseBody` drops the body after every attestation, so each round
+     * needs its own fetch: on the fourth challenge of a long-lived listing every verifier was refused the body,
+     * `ensureBlob` failed, no attestation could answer the challenge, and the item stayed CHALLENGED for good.
+     *
+     * Naming the anchor and the challenge round it is answering makes the counter mean what the docstring says: a
+     * verifier that has attested moves on to a different key, and a new challenge is a new question and a new
+     * lease. Three fetches is then what it was meant to be — a bound on retries within one verification.
+     */
+    const round = waiting.open_challenge?.created_at ?? 0;
+    const key = `verify_lease:${sha}:${address.toLowerCase()}:${waiting.anchor.id}:${round}`;
     const prev = JSON.parse(this.store.get(key) ?? 'null') as { fetches: number; first: number } | null;
     const fetches = (prev?.fetches ?? 0) + 1;
     if (fetches > Market.VERIFY_LEASE_FETCHES) {
-      return { ok: false, reason: `this verifier has fetched ${prev?.fetches} copies of this body without attesting ${waiting.anchor.id}`, patch_id: waiting.anchor.id, fetches };
+      return { ok: false, reason: `this verifier has fetched ${prev?.fetches} copies of this body without attesting ${waiting.anchor.id}${round ? ' since the challenge it is answering' : ''}`, patch_id: waiting.anchor.id, fetches };
     }
     this.store.set(key, JSON.stringify({ fetches, first: prev?.first ?? Date.now() }));
     this.log('info', 'blob', `served ${waiting.anchor.id} body to verifier ${address.slice(0, 10)}… under a verification lease (fetch ${fetches}/${Market.VERIFY_LEASE_FETCHES}; the lease ends when its attestation lands)`, waiting.anchor.id, { verifier: address, sha256: sha, fetches });
@@ -2391,7 +2407,34 @@ export class Market {
    * redemption, nonce spent last, a transfer bound to its quote and signed by its payer, a short transfer held
    * rather than kept) protect the sale of a knowledge and the curation fee of a track (item 359).
    */
+  /**
+   * One payer at a time (item 373).
+   *
+   * A local-credit redemption reads the balance, and the settlement that spends it is appended several awaits
+   * later. Two 402s fetched back to back give a buyer two DISTINCT nonces — the nonce guard only stops the same
+   * one being spent twice — so both requests observed the pre-spend balance and both settled: a wallet granted
+   * 10 CREDIT bought two 10-CREDIT items and `creditStatement` afterwards reported −10.
+   *
+   * A node is one process, so a per-payer promise chain is the whole fix: the second redemption starts after the
+   * first has appended its settlement and therefore reads a balance that already includes it. Payers do not
+   * contend with each other, and a payer's own requests were never meant to run concurrently anyway.
+   */
+  private readonly payerChains = new Map<string, Promise<unknown>>();
+  private serialByPayer<T>(payer: string, fn: () => Promise<T>): Promise<T> {
+    const key = (payer || 'anonymous').toLowerCase();
+    const prev = this.payerChains.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    // The chain must not keep a rejected promise, or every later payment by this payer inherits the failure.
+    this.payerChains.set(key, next.then(() => undefined, () => undefined));
+    void next.catch(() => undefined);
+    return next;
+  }
+
   async settlePayment(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
+    return this.serialByPayer(decodePayload(header)?.from ?? '', () => this.settlePaymentInner(entry, resource, header));
+  }
+
+  private async settlePaymentInner(entry: CatalogEntry, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
     const price = Number(entry.anchor.price);
     const out = await this.verifyPayment({
       id: entry.anchor.id, patch_id: entry.anchor.id, seller: entry.anchor.author, price, currency: entry.anchor.currency,
@@ -2925,12 +2968,25 @@ export class Market {
   private async finishPurchase(entry: CatalogEntry, manifest: PatchManifest, o: { txHash: string; amount: string; scheme: string; redeemed: boolean; step: (s: string, d: string, id?: string) => void; royalty?: Record<string, string>; origin?: string }): Promise<PurchaseResult> {
     const { step } = o;
     const patchId = entry.anchor.id;
+    /**
+     * The bytes the seller offers must be the bytes the anchor names (item 371).
+     *
+     * Every step below trusted `manifest.patch_sha256` — the seller's own number — including the integrity check,
+     * which passed `expectSha: manifest.patch_sha256` and so compared the seller's claim with itself while the
+     * timeline told the buyer "sha256 matches on-ledger anchor". A seller answering the 402 with a manifest for
+     * different bytes was paid, and the mismatch only surfaced later as `base_not_held: … buy it first`, because
+     * the body had landed under a sha no anchor refers to. The agent client has always made this comparison
+     * (`agent.ts`); the node it buys through did not.
+     */
+    if (!sameSha(manifest.patch_sha256, entry.anchor.patch_sha256)) {
+      throw conflict(`the seller answered with a body that is not the one ${patchId} names: the anchor is ${entry.anchor.patch_sha256.slice(0, 16)}… and the manifest offers ${String(manifest.patch_sha256).slice(0, 16)}…. Nothing was downloaded and no licence was recorded.`, { patch_id: patchId, anchor_sha256: entry.anchor.patch_sha256, manifest_sha256: manifest.patch_sha256 });
+    }
     const dest = this.blobs.pathFor(manifest.patch_sha256);
     const origins = manifest.blob_urls.map((u) => { try { return new URL(u).origin; } catch { return ''; } }).filter(Boolean);
     if (!this.blobs.has(manifest.patch_sha256)) {
       const from = await this.p2p.fetchBlob(manifest.patch_sha256, dest, origins, manifest.download_token);
       const { blob } = await this.blobs.importFile(dest, { expectSha: manifest.patch_sha256 });
-      step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches on-ledger anchor`);
+      step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches the on-ledger anchor ${entry.anchor.patch_sha256.slice(0, 12)}…`);
     } else {
       step('download', 'body already present; sha256 matches on-ledger anchor');
     }
@@ -3068,7 +3124,7 @@ export class Market {
     if (!this.blobs.has(sha)) {
       const from = await this.p2p.fetchBlob(sha, this.blobs.pathFor(sha), origins);
       const { blob } = await this.blobs.importFile(this.blobs.pathFor(sha), { expectSha: sha });
-      step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches on-ledger anchor`);
+      step('download', `${(blob.size_bytes / 1e6).toFixed(1)} MB from ${from}; sha256 matches the on-ledger anchor ${entry.anchor.patch_sha256.slice(0, 12)}…`);
     } else step('download', 'body already present; sha256 matches on-ledger anchor');
     const path = this.blobs.get(sha)!.path;
     // No new manifest was issued (none was needed — the settlement is the right, and the body was fetched on a
@@ -4383,6 +4439,11 @@ export class Market {
 
   /** Settle one period of curation for a track this node owns (item 359). */
   async settleBranchPayment(b: BranchInfo, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
+    // Same balance/settle window as a knowledge sale, so the same per-payer chain (item 373).
+    return this.serialByPayer(decodePayload(header)?.from ?? '', () => this.settleBranchPaymentInner(b, resource, header));
+  }
+
+  private async settleBranchPaymentInner(b: BranchInfo, resource: string, header: string | undefined): Promise<{ settlement: Settlement; replayed?: boolean; error?: undefined } | { settlement?: undefined; error: string }> {
     const terms = b.terms;
     if (!terms) return { error: `${b.name} has no subscription terms — following it costs nothing` };
     const subject = `track:${b.name}`;
@@ -4428,6 +4489,30 @@ export class Market {
     const reqs = decodeRequirements(r1.headers.get(X402_HEADER_REQUIRED), await r1.json().catch(() => ({})));
     const req = reqs.find((x) => x.scheme === (this.ledger.kind === 'ain' ? 'ain-transfer' : 'local-credit')) ?? reqs[0];
     if (!req) throw conflict('402 without payment requirements');
+    /**
+     * The curator is quoted against their own published terms, exactly as a seller is against their listing.
+     *
+     * `buyOne` has refused a quote above the anchor's price since item 279; this path took `req.maxAmountRequired`
+     * from the curator's 402 and transferred it without ever looking at `q.terms.price` — the number the track
+     * advertises and the subscriber agreed to. A track listed at 0.5 CREDIT per 30 days whose owner answered with
+     * 500 was paid 500. The currency has to match for the comparison to mean anything, and a curator switching
+     * asset mid-quote is the same refusal.
+     */
+    const owed = Number(q.terms.price || 0);
+    if (req.asset && q.terms.currency && req.asset.toLowerCase() !== q.terms.currency.toLowerCase()) {
+      throw conflict(`${name} is priced in ${q.terms.currency} and its curator asks to be paid in ${req.asset} — nothing was transferred.`, { branch: name, terms_currency: q.terms.currency, quoted_currency: req.asset });
+    }
+    if (Number(req.maxAmountRequired) > owed + 1e-9) {
+      throw conflict(`${name} advertises ${q.terms.price} ${q.terms.currency} per ${q.terms.period_days} day(s) and its curator now asks ${req.maxAmountRequired} ${req.asset} — nothing was transferred. Re-read the track: if the terms really have changed, follow it again and this node will pay the new ones.`, { branch: name, terms_price: q.terms.price, quoted: req.maxAmountRequired });
+    }
+    /**
+     * The row goes in BEFORE the money moves, the way a knowledge purchase does. Without it a transfer the curator
+     * then refuses to honour left the money gone with no local receipt and no way to re-present the payment.
+     */
+    const pendingId = this.store.putPending({
+      patch_id: `branch:${name}`, gateway: ep, resource: req.resource, scheme: req.scheme, pay_to: req.payTo,
+      amount: req.maxAmountRequired, currency: req.asset, nonce: req.nonce, tx_hash: null, payload: null, status: 'quoted', error: null,
+    }).id;
     let payload: X402Payload;
     if (req.scheme === 'ain-transfer') {
       if (!(this.ledger instanceof AinLedger)) throw conflict('the curator wants AIN but this node runs the local ledger');
@@ -4439,7 +4524,16 @@ export class Market {
       payload = { scheme: 'local-credit', network: 'local', txHash: h, from: this.address, to: req.payTo, amount: req.maxAmountRequired, nonce: req.nonce, proof: signMessage(h, this.cfg.identity.privateKey) };
     }
     const r2 = await fetch(url, { headers: { [X402_HEADER_PAYMENT]: encodePayload(payload), 'x-ainize-buyer': this.address }, signal: AbortSignal.timeout(60_000) });
-    if (!r2.ok) throw conflict(`the curator refused the payment for ${name}: ${r2.status} ${(await r2.text().catch(() => '')).slice(0, 300)}`);
+    this.store.updatePending(pendingId, { tx_hash: payload.txHash ?? null, payload: encodePayload(payload), status: 'paid', error: null });
+    if (!r2.ok) {
+      const why = `${r2.status} ${(await r2.text().catch(() => '')).slice(0, 300)}`;
+      // The money left this node and the curator would not honour it. The row stays at 'paid' — which is exactly
+      // what store.ts calls "a purchase that owes this node a body" — carrying the payload, so the payment can be
+      // presented again instead of being a transfer nobody has a record of.
+      this.store.updatePending(pendingId, { status: 'paid', error: why });
+      throw conflict(`the curator refused the payment for ${name} after ${req.maxAmountRequired} ${req.asset} had already moved: ${why}. The payment is kept (\`ainize wallet\`) and can be presented again.`);
+    }
+    this.store.updatePending(pendingId, { status: 'settled', error: null });
     await this.refreshLedger().catch(() => undefined);
     const after = await this.subscriptionQuote(name).catch(() => null);
     this.log('info', 'branch', `paid ${req.maxAmountRequired} ${req.asset} to follow ${name} for ${q.terms.period_days} day(s) — the curation fee; the knowledge on it is still bought from its own publishers`, null, { branch: name, amount: req.maxAmountRequired });
