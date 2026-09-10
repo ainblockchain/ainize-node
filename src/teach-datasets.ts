@@ -216,8 +216,21 @@ export class TeachDatasets {
       sha256: sha, revision: 1, rows: parsed.rows.length, invalid_rows: parsed.summary.rejected, size_bytes: bytes.length,
       source_bytes: sourceBytes ? sourceBytes.length : null, source_name: input.filename ?? null, source_sha256: sourceBytes ? sha256(sourceBytes) : null,
       dir, summary: parsed.summary, parent_dataset: input.parentDataset ?? null,
-      // A set downloaded, edited and uploaded again still carries its rows' `from` pointers — they are inside the
-      // hashed bytes — so it is still a copy of that knowledge, and the card says so without being told.
+      // Where a parent comes from, in order (item 312).
+      //
+      // A set edited and uploaded again carries its rows' `from` pointers inside the hashed bytes, so it is
+      // recognisably a copy of that knowledge without anyone saying so. What that comment used to leave out is
+      // that `publishedRows` strips those pointers from the questions a knowledge PUBLISHES — §6.2 serves prompt,
+      // answer and, if the publisher opted in, the note, and nothing else. So the honest route — buy it, download
+      // its questions, edit, upload — arrived with no pointer at all and the copy looked like an original.
+      //
+      // The node knows something the bytes do not carry: `derive_intents` records that this key fetched that
+      // knowledge's questions and was handed a written commitment to declare it. It is deliberately NOT used to
+      // fill this field. `parent_patch` drives `undeclared_parent`, which REFUSES a lesson — and a fetch is not
+      // evidence that these particular rows came from there, so attributing on it would block someone who read a
+      // knowledge's questions and then taught something else entirely. The commitment is shown to the parent's
+      // creator instead (`/api/patches/:id` → derive intents), which is the enforcement this design chose: a
+      // promise on the record, answerable by a human, rather than a guess that blocks.
       parent_patch: input.parentPatch ?? soleParentPatch(parsed.rows), parent_dataset_sha: input.parentDatasetSha ?? null,
       // counted from the bytes that were actually accepted, never from what the caller claimed
       inherited_rows: input.parentPatch ?? soleParentPatch(parsed.rows) ? parsed.rows.filter((r) => r.from).length : null,
