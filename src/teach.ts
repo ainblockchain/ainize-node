@@ -3097,7 +3097,16 @@ export class TeachWorker {
     // that the catalogue snapshot does not carry would walk no parents at all and quietly report 70 % to the teacher
     // on a lesson that pays 49 %. Seeding the map with this entry makes the preview walk exactly what a sale will.
     all.set(entry.anchor.id, entry);
-    const split = royaltySplit(entry, all, 1, royaltyShare);
+    /**
+     * The preview is quoted the way the sale is (item 382).
+     *
+     * It left `verifierShare` out, while `settlePayment` always passes it — so the number a teacher signed their
+     * claim against was their share of a sale that pays no verifiers, and every real sale of a listed lesson pays
+     * them out of the same pot. The teacher saw a bigger figure at the moment of consent than they would ever be
+     * paid. No verifier has attested a draft yet, which is exactly why the floor has to be reserved here: it is
+     * the part of the price that is already spoken for.
+     */
+    const split = royaltySplit(entry, all, 1, royaltyShare, { verifierShare: this.market.cfg.market.verifierShare });
     // Names for the lineage lines: walk the same ancestor chain royaltySplit walks, so "30 % to the creators of
     // pixel-base, pixel-sa" names the knowledge that is actually being paid and not the first anchor by that author.
     const byAddr = new Map<string, string>();

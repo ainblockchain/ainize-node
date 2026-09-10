@@ -4134,7 +4134,10 @@ export class Market {
     /** kind of the edge parent → child: what the CHILD says it did to that parent, or `declared` when it says nothing. */
     const edgeKind = (parent: string, child: CatalogEntry): TreeEdge['kind'] => {
       const d = child.anchor.derivation;
-      if (d && d.bases.some((b) => b.patch_id === parent)) return d.kind === 'transfer' ? 'declared' : d.kind;
+      // `bases` is optional on the wire and every other reader treats it so (`anchor.derivation.bases ?? []`).
+      // Here it was dereferenced bare, so one gossiped anchor carrying `derivation` without it made
+      // `GET /api/patches/:id/tree` answer 500 for the whole tree it appeared in.
+      if (d && (d.bases ?? []).some((b) => b.patch_id === parent)) return d.kind === 'transfer' ? 'declared' : d.kind;
       const p = map.get(parent);
       if (p && (child.anchor.branch ?? 'main') !== (p.anchor.branch ?? 'main')) return 'track';
       return 'declared';
