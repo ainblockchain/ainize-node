@@ -379,7 +379,7 @@ The last one is new: Teachable NLP could say "deployed"; here the lesson is a fi
 
 ## 5. Screens and copy
 
-All strings live in `packages/web/src/i18n/pages/teach.ts` alongside the 253 existing v1 keys.
+All strings live in `ainize-web/src/i18n/pages/teach.ts` alongside the 253 existing v1 keys.
 Verified today: **zero collisions** — the prefixes `teach.entry.` `teach.step.` `teach.up.` `teach.rows.`
 `teach.set.` `teach.run.` `teach.res.` `teach.data.` do not exist in the file, and the nine new
 `teach.basket.*_ds` / `view` / `download` / `add_more` / `freeze_note` / `upload_link` keys do not collide with the
@@ -614,7 +614,7 @@ route** — shipping upload without operator visibility leaves an operator hosti
 The Teaching-tab policy form gains the new limits from §9, each shown with the visitor-facing sentence it produces,
 and each derived limit labelled `derived from {n} measured lessons` or `not measured yet — using the safe default`.
 
-### 5.11 Error mapping (`mapTeachError`, `packages/web/src/components/chat/teachUtil.ts`)
+### 5.11 Error mapping (`mapTeachError`, `ainize-web/src/components/chat/teachUtil.ts`)
 
 | server prefix | HTTP | en | ko |
 |---|---|---|---|
@@ -674,7 +674,7 @@ in, and a chat basket and an uploaded file are byte-identical artifacts by the t
 Directory mode `0700`, files `0600`. Never written inside the runtime repo. Only the job's trained **slice** is copied
 into the job dir as `facts.jsonl` for the trainer.
 
-### 6.3 `packages/core/src/types.ts`
+### 6.3 `ainize-core/src/types.ts`
 
 ```ts
 export type TeachDatasetSource = 'chat' | 'upload' | 'derived' | 'sample';
@@ -741,7 +741,7 @@ export interface TeachDatasetRef {
 Additions to existing types:
 
 ```ts
-// TeachJob (packages/node/src/teach.ts, re-exported)
+// TeachJob (ainize-node/src/teach.ts, re-exported)
 dataset?: TeachDatasetRef;
 training?: { effort: 'quick' | 'balanced' | 'thorough'; max_steps: number; eval_every: number; lr: number;
              rows_limit?: number; row_offset?: number; check_side_effects: boolean; use_alt: boolean };
@@ -757,7 +757,7 @@ dataset?: { sha256: string; rows: number; revision: number; source: TeachDataset
 dataset?: { sha256: string; rows: number; source: TeachDatasetSource };
 ```
 
-### 6.4 `packages/core/src/config.ts` — `TeachConfig` additions
+### 6.4 `ainize-core/src/config.ts` — `TeachConfig` additions
 
 ```ts
 dataset: {
@@ -802,7 +802,7 @@ queuedRowsMax: 2_000,
 and it is `rowsPerJob.floorGradient`. Existing keys (`jobsPerKeyPerDay` 3, `jobsPerIpPerDay` 5, `queueMax` 10,
 `contributorShare` 0.7, `locality.minSame` 11, `draftTtlDays` 7) are unchanged.
 
-### 6.5 SQLite (`packages/node/src/store.ts`)
+### 6.5 SQLite (`ainize-node/src/store.ts`)
 
 New table, additive `CREATE TABLE IF NOT EXISTS` in the same block as `teach_jobs`:
 
@@ -1023,7 +1023,7 @@ ainize teach status                       # unchanged, now prints the dataset li
 
 ## 8. Parser and validation rules
 
-New module `packages/node/src/teach-dataset.ts` — **pure functions over a `Buffer`**, no filesystem, no database, no
+New module `ainize-node/src/teach-dataset.ts` — **pure functions over a `Buffer`**, no filesystem, no database, no
 network, so the whole of §8 is unit-testable without a node. The service layer (§14 PR-D4) does the I/O.
 
 ### 8.1 Format detection
@@ -1347,46 +1347,46 @@ Ten PRs. Each is independently reviewable, each leaves the tree green, and the f
 while the web work is in flight. File lists are exact.
 
 **PR-D1 — core: dataset types and config.** No behaviour.
-`packages/core/src/types.ts` (`TeachDataset`, `TeachDatasetSummary`, `TeachDatasetRow`, `TeachDatasetRef`,
+`ainize-core/src/types.ts` (`TeachDataset`, `TeachDatasetSummary`, `TeachDatasetRow`, `TeachDatasetRef`,
 `TeachDatasetSource/Status`, `TeachRowStatus`; `PatchRecipe.dataset`, `PatchAnchor.dataset`) ·
-`packages/core/src/config.ts` (`TeachConfig.dataset` / `rowsPerJob` / `effort` / `check` / `preflight` /
+`ainize-core/src/config.ts` (`TeachConfig.dataset` / `rowsPerJob` / `effort` / `check` / `preflight` /
 `queuedRowsMax`, merged in `teachConfig()` like `trainer` and `locality`) ·
-`packages/core/test/config.test.ts`.
+`ainize-core/test/config.test.ts`.
 *Gate:* `npm test -w packages/core` green; a config written before v2 still loads with the new defaults filled.
 
 **PR-D2 — node: the parser, pure.** No I/O, no DB, no network.
-`packages/node/src/teach-dataset.ts` (detect → decode → parse → normalise → status → `report.json` shape;
-§8 in full) · `packages/node/test/teach-dataset.test.ts` (table-driven, ~60 fixtures) ·
-`packages/node/test/fixtures/datasets/*` (utf8/cp949/utf16 · CRLF/CR/LF · quoted CSV with embedded newlines and
+`ainize-node/src/teach-dataset.ts` (detect → decode → parse → normalise → status → `report.json` shape;
+§8 in full) · `ainize-node/test/teach-dataset.test.ts` (table-driven, ~60 fixtures) ·
+`ainize-node/test/fixtures/datasets/*` (utf8/cp949/utf16 · CRLF/CR/LF · quoted CSV with embedded newlines and
 commas · semicolon and pipe delimiters · headerless 2-column · aliased headers incl. Korean · ragged rows ·
 Alpaca · ChatML · JSON array · Q:/A: txt · blank-block txt · prompt-only txt · conflicts · duplicates ·
 over-length · blocked topic · bidi/zero-width · shared-ending group · 50k-line file).
-*Gate:* `node --test --import tsx packages/node/test/teach-dataset.test.ts`.
+*Gate:* `node --test --import tsx ainize-node/test/teach-dataset.test.ts`.
 
-**PR-D3 — node: store.** `packages/node/src/store.ts` — the `teach_datasets` table and indexes, the six additive
+**PR-D3 — node: store.** `ainize-node/src/store.ts` — the `teach_datasets` table and indexes, the six additive
 `teach_jobs` columns via the `PRAGMA table_info` idiom, the three `teach_stats` columns, `teachStats()` filtered to
 `backend`, `teachQuotaBump(key, day, n = 1)`, and the eight dataset accessors. Migration test: open a **v1** database
 file, assert every column arrives and every existing row still reads.
-*Gate:* `node --test --import tsx packages/node/test/{chat,cluster,payouts,teach}.test.ts` — never `ain.test.ts`.
+*Gate:* `node --test --import tsx ainize-node/test/{chat,cluster,payouts,teach}.test.ts` — never `ain.test.ts`.
 
 **PR-D4 — node: dataset service + API + operator moderation.**
-`packages/node/src/teach-datasets.ts` (service: create / reparse / patch / fork / delete / download / samples /
-retention sweep / quota charging) · `packages/node/src/api.ts` (the routes of §7.1–§7.2 with the **pre-multer teach
+`ainize-node/src/teach-datasets.ts` (service: create / reparse / patch / fork / delete / download / samples /
+retention sweep / quota charging) · `ainize-node/src/api.ts` (the routes of §7.1–§7.2 with the **pre-multer teach
 gate** and a dedicated multer instance; `TeachError.details` spread by the error handler) ·
-`packages/node/src/openapi.ts` · `packages/node/src/samples/{ko-facts,en-facts,mixed}.jsonl` ·
-`packages/node/test/teach-datasets.test.ts`.
+`ainize-node/src/openapi.ts` · `ainize-node/src/samples/{ko-facts,en-facts,mixed}.jsonl` ·
+`ainize-node/test/teach-datasets.test.ts`.
 *Gate:* upload → preview → patch → fork → download round-trips byte-identically; a banned key's upload writes
 **nothing** to disk; every error path unlinks the temp file.
 
 **PR-D5 — node: worker integration.**
-`packages/node/src/teach.ts` — `createJob({dataset_id | facts})` resolving to a dataset and materialising one for the
+`ainize-node/src/teach.ts` — `createJob({dataset_id | facts})` resolving to a dataset and materialising one for the
 legacy body; `facts` as the trained slice with `selected_indexes`; deterministic sampled preflight and check
 (`seed = sha256(dataset_sha256 + ':' + revision)`, composition per §D4) with the 68-call budget and the
 `lockTargetMs` / `lockAbortMs` guard; `progress.{phase,percent,rows_total,rows_touched,eval_sample,elapsed_s}`;
 rows-aware ETA and `rowsPerJob` derivation; `retrain`; lazy materialisation for v1 jobs; sweep passes;
-`putTeachStat` with `backend` / `rows_trained` / `sentences` · `packages/node/src/teach-recipe.ts`
-(`recipe.dataset`, `checks.taught.sampled`) · `packages/node/src/api.ts` (`/retrain`, `/events`, extended
-`policy` / `jobs` / `preflight`) · `packages/node/test/teach.test.ts` (extended).
+`putTeachStat` with `backend` / `rows_trained` / `sentences` · `ainize-node/src/teach-recipe.ts`
+(`recipe.dataset`, `checks.taught.sampled`) · `ainize-node/src/api.ts` (`/retrain`, `/events`, extended
+`policy` / `jobs` / `preflight`) · `ainize-node/test/teach.test.ts` (extended).
 *Gate:* **audit every reader of `job.facts`** — at 1000 questions it is no longer something to embed in an API
 response, a log line or an operator table. Grep and fix each site.
 
@@ -1404,29 +1404,29 @@ ignores unknown `job.json` keys): detect by the absence of an `eval` event carry
 full-probe accounting with `rowsPerJob` pinned at the floor.
 
 **PR-D7 — web: i18n + upload + preview.**
-`packages/web/src/i18n/pages/teach.ts` (all §5 keys — **re-grep for collisions first**) ·
-`packages/web/src/pages/TeachPage.tsx` (entry choice) · `TeachUploadPage.tsx` · `TeachDatasetPage.tsx` ·
-`packages/web/src/components/teach/{Stepper,DropZone,PasteTable,FormatHelp,DatasetTable,RowEditSheet,ReparseSheet}.tsx` ·
-`packages/web/src/components/chat/teachUtil.ts` (`mapTeachError` + the client-side display-only pre-parse) ·
-`packages/web/src/App.tsx` (**replace the `/teach → /chat?mine=1` redirect at line 58** with the new routes).
+`ainize-web/src/i18n/pages/teach.ts` (all §5 keys — **re-grep for collisions first**) ·
+`ainize-web/src/pages/TeachPage.tsx` (entry choice) · `TeachUploadPage.tsx` · `TeachDatasetPage.tsx` ·
+`ainize-web/src/components/teach/{Stepper,DropZone,PasteTable,FormatHelp,DatasetTable,RowEditSheet,ReparseSheet}.tsx` ·
+`ainize-web/src/components/chat/teachUtil.ts` (`mapTeachError` + the client-side display-only pre-parse) ·
+`ainize-web/src/App.tsx` (**replace the `/teach → /chat?mine=1` redirect at line 58** with the new routes).
 
 **PR-D8 — web: settings, progress, result, mine, basket.**
 `TeachSettingsPage.tsx` · `TeachLessonPage.tsx` (progress **and** result) · `TeachMinePage.tsx` ·
-`packages/web/src/components/teach/{EffortCards,StageRail,LiveTestBox,DatasetCard}.tsx` ·
-`packages/web/src/components/chat/LessonBasket.tsx` (dataset restyle + freeze receipt) ·
+`ainize-web/src/components/teach/{EffortCards,StageRail,LiveTestBox,DatasetCard}.tsx` ·
+`ainize-web/src/components/chat/LessonBasket.tsx` (dataset restyle + freeze receipt) ·
 `MyKnowledgePanel.tsx` (dataset-first) · `LessonCard.tsx` (`sampled`, `percent`) · `PublishSheet.tsx` (declaration).
 *Gate:* `cd packages/web && npx tsc -p tsconfig.json --noEmit && npx vite build`.
 
 **PR-D9 — CLI, docs, demo config.**
-`packages/cli/src/*` (`teach dataset` verbs, `teach train --dataset`) · `packages/cli/test/cli.test.ts` ·
+`ainize-cli/src/*` (`teach dataset` verbs, `teach train --dataset`) · `ainize-cli/test/cli.test.ts` ·
 `docs/teach-mode-design.md` (a CHANGES section pointing here) · this file's CHANGES section ·
 the dev-node config note for `$HOME/.ainize-teachable/node-u`.
 
 **PR-D10 — UX scenarios and e2e.**
 `docs/ux-test-scenarios.{md,json,html}` — a new block from **AZ-123** (the file ends at AZ-122 today, with no
 dataset or upload coverage at all; without this block the owner's "100 scenarios all passing" goal is measured
-against a spec that predates the file door) · `packages/e2e/tests/web-teach-dataset.spec.ts` ·
-`packages/e2e/tests/web-teach.spec.ts` (basket-as-dataset assertions).
+against a spec that predates the file door) · `ainize-node/e2e/tests/web-teach-dataset.spec.ts` ·
+`ainize-node/e2e/tests/web-teach.spec.ts` (basket-as-dataset assertions).
 
 **Landing order if the work must be cut short:** D1 → D2 → D3 → D4 → D5 → D7 → D8 is the minimum honest product
 (upload → preview → settings → progress → result, plus the basket rename). D6 is required before `rowsPerJob` may
@@ -1440,7 +1440,7 @@ rise above the floor. D10 is required before the owner's scenario goal can be cl
 Config merge fills every new block from a v1 `config.json`; `rowsPerJob` derivation returns the floor with < 3
 samples, clamps at the ceiling, and never exceeds `trainer.timeoutMs / (passes × s_per_row_p90) / 2`.
 
-### 15.2 Unit — `packages/node/test/teach-dataset.test.ts` (new)
+### 15.2 Unit — `ainize-node/test/teach-dataset.test.ts` (new)
 Table-driven over the PR-D2 fixtures. Assertions that matter most:
 - canonical output is **byte-identical** for the same logical data arriving as jsonl / csv / tsv / txt → one sha256;
 - `line` numbers survive quoted CSV newlines (a two-physical-line quoted field is **one** logical row);
@@ -1453,7 +1453,7 @@ Table-driven over the PR-D2 fixtures. Assertions that matter most:
 - a 50 001-line file stops at the cap and says so;
 - round-trip: parse → `rows.jsonl` → parse again → identical rows and sha256.
 
-### 15.3 Integration — `packages/node/test/teach-datasets.test.ts` (new) and `teach.test.ts` (extended)
+### 15.3 Integration — `ainize-node/test/teach-datasets.test.ts` (new) and `teach.test.ts` (extended)
 - upload → 201 with report; identical re-upload → **200**, same id, quota unchanged;
 - `x-ainize-dataset-sha256` mismatch → 400 and the temp file is gone;
 - banned key / disabled node → 403 **with nothing written under `<dataDir>/teach`**;
@@ -1469,11 +1469,11 @@ Table-driven over the PR-D2 fixtures. Assertions that matter most:
 - `teach_stats`: a stub job does **not** raise `timing.samples` for the gradient p50 — the D7 regression test;
 - v1 database file opens, v1 job renders, and its lazy materialisation on first download produces a valid dataset.
 
-### 15.4 CLI — `packages/cli/test/cli.test.ts`
+### 15.4 CLI — `ainize-cli/test/cli.test.ts`
 `teach dataset <file>` prints the report summary and the fingerprint; `teach dataset download` round-trips;
 `teach train --dataset` creates a job whose `dataset_id` matches.
 
-### 15.5 e2e — `packages/e2e/tests/web-teach-dataset.spec.ts`
+### 15.5 e2e — `ainize-node/e2e/tests/web-teach-dataset.spec.ts`
 On the dev node (`$HOME/.ainize-teachable/node-u`, port 3422, `backend: 'stub'`, `publish: 'auto'`) — **no GPU is ever
 touched**:
 upload a csv → preview shows the four count pills → fix a too-long answer inline → remove a row and undo →
@@ -1548,10 +1548,10 @@ Implements §6, §7.1–§7.3, §8, §9 (limits), §10 (progress/ETA), §11 (re-
 sampling, quotas) — the plan's PR-D1 through PR-D5 landed as one change because the store, the service, the API and the
 worker cannot be split without leaving the tree red. No UI, no trainer change (PR-D6), no CLI verbs (PR-D9).
 
-**Files.** `packages/core/src/{types,config}.ts` · `packages/core/test/config.test.ts` (new) ·
-`packages/node/src/teach-dataset.ts` (new, pure parser) · `teach-datasets.ts` (new, service) · `teach-error.ts` (new) ·
+**Files.** `ainize-core/src/{types,config}.ts` · `ainize-core/test/config.test.ts` (new) ·
+`ainize-node/src/teach-dataset.ts` (new, pure parser) · `teach-datasets.ts` (new, service) · `teach-error.ts` (new) ·
 `teach-samples.ts` (new) · `store.ts` · `market.ts` · `teach.ts` · `teach-recipe.ts` · `teach-auth.ts` · `api.ts` ·
-`openapi.ts` · `index.ts` · `packages/node/test/{teach-dataset,teach-datasets}.test.ts` (new) · `teach.test.ts` (two
+`openapi.ts` · `index.ts` · `ainize-node/test/{teach-dataset,teach-datasets}.test.ts` (new) · `teach.test.ts` (two
 expectations updated, see D7 below).
 
 ### Deviations from the sections above
@@ -1651,12 +1651,12 @@ Implements §5 in full (screens, copy, mobile, error mapping), the client half o
 screens share a stepper, a status vocabulary and an error map, and splitting them would have left `/teach/upload` with
 nowhere to go. No node, core, trainer or CLI change (PR-D6 / PR-D9 are still owed).
 
-**Files.** New: `packages/web/src/pages/{TeachPage,TeachUploadPage,TeachDatasetPage,TeachSettingsPage,TeachLessonPage,TeachMinePage}.tsx` ·
-`packages/web/src/components/teach/{Stepper,DropZone,PasteTable,FormatHelp,DatasetTable,RowEditSheet,ReparseSheet,EffortCards,StageRail,LiveTestBox,DatasetCard,util}.ts(x)` ·
-`packages/web/src/lib/teachDataset.ts`. Changed: `api/{api,types}.ts` (dataset endpoints, multipart signing, the
+**Files.** New: `ainize-web/src/pages/{TeachPage,TeachUploadPage,TeachDatasetPage,TeachSettingsPage,TeachLessonPage,TeachMinePage}.tsx` ·
+`ainize-web/src/components/teach/{Stepper,DropZone,PasteTable,FormatHelp,DatasetTable,RowEditSheet,ReparseSheet,EffortCards,StageRail,LiveTestBox,DatasetCard,util}.ts(x)` ·
+`ainize-web/src/lib/teachDataset.ts`. Changed: `api/{api,types}.ts` (dataset endpoints, multipart signing, the
 extended policy/job/progress/checks shapes) · `i18n/pages/teach.ts` (+286 keys) · `App.tsx` (the `/teach` routes replace
 the `/chat?mine=1` redirect) · `components/ui/Header.tsx` · `components/chat/{LessonBasket,LessonCard,PublishSheet,teachUtil}.tsx` ·
-`packages/e2e/tests/web-teach.spec.ts` (basket copy).
+`ainize-node/e2e/tests/web-teach.spec.ts` (basket copy).
 
 ### Deviations from §5
 
@@ -1717,7 +1717,7 @@ the `/chat?mine=1` redirect) · `components/ui/Header.tsx` · `components/chat/{
     `landing-nav-teach` still points at the chat door — two e2e specs assert that href, and the landing CTA is
     deliberately the conversational one.
 
-12. **`packages/e2e/tests/web-teach.spec.ts`** basket assertions were updated to the v2 copy (5 lines). The suite must
+12. **`ainize-node/e2e/tests/web-teach.spec.ts`** basket assertions were updated to the v2 copy (5 lines). The suite must
     be pointed at a node serving this branch's web build (`AINIZE_URL`); the rest of the e2e work is PR-D10.
 
 13. **One more error mapping than §5.11 lists.** A missing job answers the v1 shape — `404 {"error":"lesson not
@@ -1727,7 +1727,7 @@ the `/chat?mine=1` redirect) · `components/ui/Header.tsx` · `components/chat/{
 
 ### Verified in a real browser against the dev node (`$HOME/.ainize-teachable/node-u`, :3422, `backend: 'stub'`)
 
-51 screenshots in `packages/e2e/results/teachable-*.png` (desktop 1280 and 360 px, English and Korean):
+51 screenshots in `ainize-node/e2e/results/teachable-*.png` (desktop 1280 and 360 px, English and Korean):
 entry · upload · preview (raw, checked, picking, dropped lines, edit sheet, undo toast, reparse sheet) · settings ·
 progress · result (learned table, side effects, live test, keep-private sheet, publish sheet, declaration gate) ·
 retrain · my datasets · the chat basket (empty, filled, view-all sheet, freeze receipt, lesson card).
@@ -1762,11 +1762,11 @@ Implements §7.4 (CLI parity) and the documentation half of the plan's **PR-D9**
 component change — the only node file touched is `openapi.ts` (the CLI reference block, the `Teach` tag description and
 the teach one-liner), and the only web file is `DocsPage.tsx` plus its two i18n strings.
 
-**Files.** `packages/cli/src/commands/teach-dataset.ts` (new) · `packages/cli/src/commands/teach.ts` (v2 fields on the
-response types, the dataset / effort / progress / sampled lines, the read-only key fallback) · `packages/cli/src/bin.ts`
-(the `teach dataset` / `teach train` / `teach jobs` commands) · `packages/cli/src/client.ts` + `context.ts`
-(`CliError.details`) · `packages/cli/test/cli.test.ts` (five new tests) · `packages/node/src/openapi.ts` ·
-`packages/web/src/pages/DocsPage.tsx` · `packages/web/src/i18n/pages/docs.ts` · `README.md` ·
+**Files.** `ainize-cli/src/commands/teach-dataset.ts` (new) · `ainize-cli/src/commands/teach.ts` (v2 fields on the
+response types, the dataset / effort / progress / sampled lines, the read-only key fallback) · `ainize-cli/src/bin.ts`
+(the `teach dataset` / `teach train` / `teach jobs` commands) · `ainize-cli/src/client.ts` + `context.ts`
+(`CliError.details`) · `ainize-cli/test/cli.test.ts` (five new tests) · `ainize-node/src/openapi.ts` ·
+`ainize-web/src/pages/DocsPage.tsx` · `ainize-web/src/i18n/pages/docs.ts` · `README.md` ·
 `docs/teach-mode-design.md` (a pointer section) · this file.
 
 **What shipped**
@@ -1842,7 +1842,7 @@ itself, so there is exactly one parser (design §8) and the terminal cannot disa
   prompt-only `.txt` (`dataset_empty` **with the per-line report printed first**), and a deleted dataset (the tombstone
   still explains itself; the lesson still renders and says the questions were deleted by their owner).
 - `GET /api/docs` on the node serves the new CLI reference; `/docs` renders it at 1280 px in English and Korean with no
-  horizontal overflow (`packages/e2e/results/teachable-d3-docs-{en,ko}.png`).
+  horizontal overflow (`ainize-node/e2e/results/teachable-d3-docs-{en,ko}.png`).
 
 **Dev-node settings used and then reset:** `jobs_per_key_per_day` / `jobs_per_ip_per_day` raised to 50 for the
 walkthrough (the node still carried the previous session's lessons) and put back to the configured 3 / 5. Nothing else
@@ -1852,7 +1852,7 @@ rebuilt and restarted after the `openapi.ts` change (pid in `$HOME/.ainize-teach
 ### Still owed
 
 Unchanged from §14: **PR-D6** (trainer `teach.py`: `facts_file`, `eval_sample`, `probe_kinds`, scaled `max_contrast`)
-and **PR-D10** (`docs/ux-test-scenarios.*` from AZ-123, `packages/e2e/tests/web-teach-dataset.spec.ts`). §15.7's
+and **PR-D10** (`docs/ux-test-scenarios.*` from AZ-123, `ainize-node/e2e/tests/web-teach-dataset.spec.ts`). §15.7's
 measurements still block every visitor-facing minute figure, in the terminal exactly as in the browser: `teach status`
 prints *"not timed — this node simulates training (backend stub), so no duration here would be real"* rather than a
 number, and shows `{samples} of 3 lessons measured` on a gradient node that has not reached the minimum.

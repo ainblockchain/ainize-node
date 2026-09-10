@@ -25,26 +25,26 @@ Read from the tree on 2026-09-07. Nothing here is folklore, and nothing was meas
 
 | # | Fact | Where |
 |---|------|-------|
-| A1 | The agent already does the whole purchase: gap → catalog pick with quorum → `GET /x402/…` → 402 → pay (local-credit intent or AIN transfer) → verify manifest hash and body sha256 against the on-ledger anchor → apply without restart → re-ask. | `packages/agent/src/agent.ts:428-745` |
-| A2 | **The default is already to LEAVE the knowledge loaded.** `--restore` defaults to `false` and `bin.ts` passes `keep: !a.restore`; the removal branch runs only `if (o.keep === false)`. The file header's "restore (unless `--keep`)" is stale prose. What is missing is not the keeping — it is that **nothing is written down about what the model now knows**. | `packages/agent/src/agent.ts:7,702-707`; `packages/agent/src/bin.ts:65,79` |
-| A3 | The agent's only durable state is three files in `<home>`: `identity.json`, `purchases.jsonl` (patch_id, sha256, seller, amount, tx, path, at) and `pending-payments.jsonl` (the intent written *before* the money moves). There is no record of a question, an answer, a lookup or a fact. | `packages/agent/src/agent.ts:246-305`; `packages/agent/src/identity.ts:8-24` |
-| A4 | `spentToday(home)` already derives per-currency spend since UTC midnight from `purchases.jsonl`, and `watch --budget-per-day` already refuses a purchase that would cross it, with the arithmetic in the refusal. It covers **money only**. | `packages/agent/src/agent.ts:293-301,918-919` |
-| A5 | `runAgent` asks the serving model twice per run: once as a probe (`res.before`) and once after the apply (`res.after`). `--no-probe` exists precisely because the shared model's answer belongs to whoever else has something loaded. | `packages/agent/src/agent.ts:484-488,697; :63-70` |
-| A6 | The node's `applied` table is an **ordered stack**: `(patch_id PK, sha256, applied_at, reason, position, journal_path, stack_sha256)`, with `setApplied/listApplied/getApplied/reorderApplied`. | `packages/node/src/store.ts:231-232,1044-1060,1071-1083` |
-| A7 | `GET /api/runtime` is **public** (no `requireOperator`) and returns `applied` (ordered ids), `stack[]` (per layer: `patch_id, sha256, position, rows, journal, stack_sha256, body_present, present, checked_at`), the runtime status and the queue. | `packages/node/src/api.ts:1424-1434`; `packages/node/src/market.ts:3151-3169` |
-| A8 | The teach pipeline is reachable over HTTP with a **teaching key that is just a secp256k1 identity**: `POST /api/teach/datasets` (`source:'inline'`, `rows[]` ≤ 2000) → `POST /api/teach/jobs` (`dataset_id`, `base_ids`, `training`) → `GET /api/teach/jobs/:id` → `POST …/publish`. Auth is `x-ainize-auth: <address>:<ts>:<sig>:v2`, request-bound and single-use. | `packages/node/src/api.ts:1737-1762,1867-1921,1961`; `packages/node/src/teach-auth.ts:21-31` |
-| A9 | The MCP package already contains the **whole** rows→dataset→preflight→job→poll pipeline as a tool handler, including the reservation of a scarce lesson and the refund on a refusal, plus `uploadTrainingSet()` as a plain exported function. | `packages/mcp/src/tools/teach.ts:65-114,288-460` |
-| A10 | `McpDataSource` is the MCP **client**: `connect/listTools/readResource/call/fetchRows/close`, retries only on JSON-RPC `-32001/-32000`, caps the result at 1 MB, and returns `{elapsed_ms, provenance{server,tool,arguments,arguments_sha256,fetched_at}}`. `fetchRows` ends at rows — it deliberately does **not** chain into training. | `packages/mcp/src/datasource.ts:14-15,66-233` |
-| A11 | A `RowMapping` is declarative JSON — `path`, `prompt`/`answer`/`alt_prompt`/`note` as `{field}` templates, `require`, `constants`, `max_rows` — mapped by `mapRows`, which enforces the node's own 400/200 char caps and de-dupes on the normalized prompt. `promptKey()` **is** the node's key; `rowsSha256()` reproduces the node's dataset id byte for byte. | `packages/mcp/src/rows.ts:96-103,146-232` |
-| A12 | The live path against The Graph is `search_subgraphs_by_keyword` → `get_deployment_30day_query_counts` → `get_schema_by_subgraph_id` → `execute_query_by_subgraph_id({subgraph_id, query})` over SSE at `https://subgraphs.mcp.thegraph.com/sse`, and one `fetchRows` of it produces block-pinned rows whose `note` carries the provenance line. | `packages/mcp/test/smoke-subgraph-mcp.test.ts:20-89`; `packages/mcp/references/subgraph-to-dataset.md` |
-| A13 | The node will not train an arbitrarily small lesson: `rowsPerJob.floorGradient = 8` (`floorStub = 200`), and the whole size derivation is skipped in favour of the floor while fewer than `ETA_MIN_SAMPLES = 3` gradient samples exist. Three stub jobs must never become an estimate. | `packages/core/src/config.ts:88,173,197,208` |
-| A14 | A teach job charges one of `jobsPerKeyPerDay` **at submit**, before PREFLIGHT, and is never refunded; `ACTIVE_JOBS_PER_KEY = 2`. `AINIZE_TEACH_BACKEND=stub` selects a backend that copies a fixture npz, needs no GPU, and stamps `recipe.trainer='stub'` / `checks.simulated` onto everything it produces. | `packages/node/src/teach.ts:248,1149-1152,2135,2378-2407`; `packages/core/src/config.ts:350` |
-| A15 | An anchor carries up to `TEACH_SAMPLES_ON_CHAIN = 32` `{prompt, expect}` benchmark samples; a knowledge's full training set is readable at `GET /api/patches/:id/dataset/rows` **only** when its access is `public` (or through a signed derive intent for `derivative`). | `packages/core/src/types.ts:57-63`; `packages/node/src/api.ts:684-690` |
-| A16 | `graph/bench` defines the break-even as `N*(k buyers) = (knowledge_price / k) / (cost_per_question_B − cost_per_question_C)` and **leaves it uncomputed** in run `r1` because arms B and C are not both scored and priced. `pricing.json` carries `PLACEHOLDER` sources and `knowledge.price: null`. There is no measured N\* in this repo today. | `graph/bench/runs/r1/summary.md:120-133`; `graph/bench/pricing.json` |
-| A17 | `Budget` in the MCP package is a check-and-hold with decimal-string arithmetic: `reserve()` throws `budget_exceeded` with cap/spent/remaining/needed, never clamps, and the cap is server configuration that **no tool argument can raise**. `PurchaseJournal` writes `intent` before the node is called. | `packages/mcp/src/money.ts:85-121,140-201` |
-| A18 | `publish` is off by default in the MCP server (`AINIZE_MCP_ALLOW_PUBLISH`, plus a separate `AINIZE_MCP_ALLOW_AIN_PUBLISH`), and the server's own instructions name `buy` and `publish_knowledge` as the two things that cannot be undone. | `packages/mcp/src/config.ts:103-107`; `packages/mcp/src/server.ts:52-56` |
-| A19 | There is no i18n machinery outside `packages/web/src/i18n` (`Dict = Record<string, {ko, en}>`). Every string in `packages/agent` and `packages/cli` is English. | `packages/web/src/i18n/index.ts:11`; `grep -rl i18n packages/*/src` |
-| A20 | The agent package depends only on `@ainize/core`, `chalk`, `yargs`. `@ainize/mcp` exports **only** `"."`, whose index pulls the MCP server, express and the SDK. | `packages/agent/package.json`; `packages/mcp/package.json:6-12` |
+| A1 | The agent already does the whole purchase: gap → catalog pick with quorum → `GET /x402/…` → 402 → pay (local-credit intent or AIN transfer) → verify manifest hash and body sha256 against the on-ledger anchor → apply without restart → re-ask. | `ainize-agent/src/agent.ts:428-745` |
+| A2 | **The default is already to LEAVE the knowledge loaded.** `--restore` defaults to `false` and `bin.ts` passes `keep: !a.restore`; the removal branch runs only `if (o.keep === false)`. The file header's "restore (unless `--keep`)" is stale prose. What is missing is not the keeping — it is that **nothing is written down about what the model now knows**. | `ainize-agent/src/agent.ts:7,702-707`; `ainize-agent/src/bin.ts:65,79` |
+| A3 | The agent's only durable state is three files in `<home>`: `identity.json`, `purchases.jsonl` (patch_id, sha256, seller, amount, tx, path, at) and `pending-payments.jsonl` (the intent written *before* the money moves). There is no record of a question, an answer, a lookup or a fact. | `ainize-agent/src/agent.ts:246-305`; `ainize-agent/src/identity.ts:8-24` |
+| A4 | `spentToday(home)` already derives per-currency spend since UTC midnight from `purchases.jsonl`, and `watch --budget-per-day` already refuses a purchase that would cross it, with the arithmetic in the refusal. It covers **money only**. | `ainize-agent/src/agent.ts:293-301,918-919` |
+| A5 | `runAgent` asks the serving model twice per run: once as a probe (`res.before`) and once after the apply (`res.after`). `--no-probe` exists precisely because the shared model's answer belongs to whoever else has something loaded. | `ainize-agent/src/agent.ts:484-488,697; :63-70` |
+| A6 | The node's `applied` table is an **ordered stack**: `(patch_id PK, sha256, applied_at, reason, position, journal_path, stack_sha256)`, with `setApplied/listApplied/getApplied/reorderApplied`. | `ainize-node/src/store.ts:231-232,1044-1060,1071-1083` |
+| A7 | `GET /api/runtime` is **public** (no `requireOperator`) and returns `applied` (ordered ids), `stack[]` (per layer: `patch_id, sha256, position, rows, journal, stack_sha256, body_present, present, checked_at`), the runtime status and the queue. | `ainize-node/src/api.ts:1424-1434`; `ainize-node/src/market.ts:3151-3169` |
+| A8 | The teach pipeline is reachable over HTTP with a **teaching key that is just a secp256k1 identity**: `POST /api/teach/datasets` (`source:'inline'`, `rows[]` ≤ 2000) → `POST /api/teach/jobs` (`dataset_id`, `base_ids`, `training`) → `GET /api/teach/jobs/:id` → `POST …/publish`. Auth is `x-ainize-auth: <address>:<ts>:<sig>:v2`, request-bound and single-use. | `ainize-node/src/api.ts:1737-1762,1867-1921,1961`; `ainize-node/src/teach-auth.ts:21-31` |
+| A9 | The MCP package already contains the **whole** rows→dataset→preflight→job→poll pipeline as a tool handler, including the reservation of a scarce lesson and the refund on a refusal, plus `uploadTrainingSet()` as a plain exported function. | `ainize-mcp/src/tools/teach.ts:65-114,288-460` |
+| A10 | `McpDataSource` is the MCP **client**: `connect/listTools/readResource/call/fetchRows/close`, retries only on JSON-RPC `-32001/-32000`, caps the result at 1 MB, and returns `{elapsed_ms, provenance{server,tool,arguments,arguments_sha256,fetched_at}}`. `fetchRows` ends at rows — it deliberately does **not** chain into training. | `ainize-mcp/src/datasource.ts:14-15,66-233` |
+| A11 | A `RowMapping` is declarative JSON — `path`, `prompt`/`answer`/`alt_prompt`/`note` as `{field}` templates, `require`, `constants`, `max_rows` — mapped by `mapRows`, which enforces the node's own 400/200 char caps and de-dupes on the normalized prompt. `promptKey()` **is** the node's key; `rowsSha256()` reproduces the node's dataset id byte for byte. | `ainize-mcp/src/rows.ts:96-103,146-232` |
+| A12 | The live path against The Graph is `search_subgraphs_by_keyword` → `get_deployment_30day_query_counts` → `get_schema_by_subgraph_id` → `execute_query_by_subgraph_id({subgraph_id, query})` over SSE at `https://subgraphs.mcp.thegraph.com/sse`, and one `fetchRows` of it produces block-pinned rows whose `note` carries the provenance line. | `ainize-mcp/test/smoke-subgraph-mcp.test.ts:20-89`; `ainize-mcp/references/subgraph-to-dataset.md` |
+| A13 | The node will not train an arbitrarily small lesson: `rowsPerJob.floorGradient = 8` (`floorStub = 200`), and the whole size derivation is skipped in favour of the floor while fewer than `ETA_MIN_SAMPLES = 3` gradient samples exist. Three stub jobs must never become an estimate. | `ainize-core/src/config.ts:88,173,197,208` |
+| A14 | A teach job charges one of `jobsPerKeyPerDay` **at submit**, before PREFLIGHT, and is never refunded; `ACTIVE_JOBS_PER_KEY = 2`. `AINIZE_TEACH_BACKEND=stub` selects a backend that copies a fixture npz, needs no GPU, and stamps `recipe.trainer='stub'` / `checks.simulated` onto everything it produces. | `ainize-node/src/teach.ts:248,1149-1152,2135,2378-2407`; `ainize-core/src/config.ts:350` |
+| A15 | An anchor carries up to `TEACH_SAMPLES_ON_CHAIN = 32` `{prompt, expect}` benchmark samples; a knowledge's full training set is readable at `GET /api/patches/:id/dataset/rows` **only** when its access is `public` (or through a signed derive intent for `derivative`). | `ainize-core/src/types.ts:57-63`; `ainize-node/src/api.ts:684-690` |
+| A16 | `graph/bench` defines the break-even as `N*(k buyers) = (knowledge_price / k) / (cost_per_question_B − cost_per_question_C)` and **leaves it uncomputed** in run `r1` because arms B and C are not both scored and priced. `pricing.json` carries `PLACEHOLDER` sources and `knowledge.price: null`. There is no measured N\* in this repo today. | `ainize-bench/bench/runs/r1/summary.md:120-133`; `ainize-bench/bench/pricing.json` |
+| A17 | `Budget` in the MCP package is a check-and-hold with decimal-string arithmetic: `reserve()` throws `budget_exceeded` with cap/spent/remaining/needed, never clamps, and the cap is server configuration that **no tool argument can raise**. `PurchaseJournal` writes `intent` before the node is called. | `ainize-mcp/src/money.ts:85-121,140-201` |
+| A18 | `publish` is off by default in the MCP server (`AINIZE_MCP_ALLOW_PUBLISH`, plus a separate `AINIZE_MCP_ALLOW_AIN_PUBLISH`), and the server's own instructions name `buy` and `publish_knowledge` as the two things that cannot be undone. | `ainize-mcp/src/config.ts:103-107`; `ainize-mcp/src/server.ts:52-56` |
+| A19 | There is no i18n machinery outside `ainize-web/src/i18n` (`Dict = Record<string, {ko, en}>`). Every string in `packages/agent` and `packages/cli` is English. | `ainize-web/src/i18n/index.ts:11`; `grep -rl i18n packages/*/src` |
+| A20 | The agent package depends only on `@ainize/core`, `chalk`, `yargs`. `@ainize/mcp` exports **only** `"."`, whose index pulls the MCP server, express and the SDK. | `ainize-agent/package.json`; `ainize-mcp/package.json:6-12` |
 
 ---
 
@@ -74,8 +74,8 @@ ask "질문"
 Everything on the right-hand side exists. What this design adds is the left column: a memory, a shape counter, a
 budget with more than one currency, and the arrows between them.
 
-**`packages/agent/src/agent.ts` is not rewritten.** The loop calls `runAgent()` unchanged (with `noProbe: true`,
-`keep: true`), so `run`, `watch`, and `packages/e2e/tests/agent-x402.spec.ts` behave exactly as they do today. The one
+**`ainize-agent/src/agent.ts` is not rewritten.** The loop calls `runAgent()` unchanged (with `noProbe: true`,
+`keep: true`), so `run`, `watch`, and `ainize-node/e2e/tests/agent-x402.spec.ts` behave exactly as they do today. The one
 edit to that file is additive and described in §9.
 
 ---
@@ -292,7 +292,7 @@ from timing (A13). Three stub jobs must never become an estimate, and three look
 
 **Consequence, stated plainly: the first bake is always an owner decision.** With no measurement and no declared floor,
 autonomous baking is off, and `agent memory --why <shape>` prints which term is missing — the same refusal
-`graph/bench/runs/r1/summary.md:129` prints today. The owner turns it on one of two ways:
+`ainize-bench/bench/runs/r1/summary.md:129` prints today. The owner turns it on one of two ways:
 
 - `--bake-after <n>` — a **declared policy**, not a measurement, and labelled as such everywhere it appears; or
 - funding the lesson budget and letting the agent measure: the earliest possible autonomous bake is then the 4th
@@ -379,7 +379,7 @@ N\* has no token term (§6), and a second completion helper would be a second im
 exists.
 
 **i18n.** There is no CLI i18n machinery today (A19) and inventing a framework is out of scope, so: a ten-line
-`packages/agent/src/i18n.ts` (`lang()` from `AINIZE_LANG`/`LANG`, `t(dict, key, vars)`) plus one `{en, ko}` dictionary
+`ainize-agent/src/i18n.ts` (`lang()` from `AINIZE_LANG`/`LANG`, `t(dict, key, vars)`) plus one `{en, ko}` dictionary
 **per module**, so that parallel groups never edit the same file — the reason the web splits `i18n/pages/*.ts`.
 Existing strings in `agent.ts`/`bin.ts` are untouched. Every new user-facing line ships in both languages:
 
@@ -402,8 +402,8 @@ Docs: `docs/en/how-to/agent-memory.md` and `docs/ko/how-to/agent-memory.md`.
 Five groups. **No two groups touch the same file.** Every group is independently buildable and testable.
 
 ### G1 — memory store, recall index, reconciliation
-`packages/agent/src/memory.ts` · `packages/agent/src/i18n.ts` · `packages/agent/src/strings/memory.ts` ·
-`packages/agent/test/memory.test.ts` · `packages/agent/package.json` (adds a `test` script and the `tsx` dev dep)
+`ainize-agent/src/memory.ts` · `ainize-agent/src/i18n.ts` · `ainize-agent/src/strings/memory.ts` ·
+`ainize-agent/test/memory.test.ts` · `ainize-agent/package.json` (adds a `test` script and the `tsx` dev dep)
 
 Event log, atomic derived snapshot, prompt-key normalization, the stack fingerprint from `GET /api/runtime`, the answer
 cache keyed by `(stack_fp, row_key)`, the four reconciliation rules, and the `agent memory` view models.
@@ -411,35 +411,35 @@ cache keyed by `(stack_fp, row_key)`, the four reconciliation rules, and the `ag
 against the same normalization the node and `rows.ts` already agree on, and switches the import when G2 merges.
 
 ### G2 — the `@ainize/mcp` seam
-`packages/mcp/package.json` (adds `"./client"` and `"./money"` subpath exports; `"."` unchanged) ·
-`packages/mcp/src/teach-run.ts` (new: `runTeachLesson(ctx, input, {signal, onState})`, lifted **verbatim** out of the
-`teach` tool's `run` closure) · `packages/mcp/src/tools/teach.ts` (now calls it) · `packages/mcp/test/teach-run.test.ts`
+`ainize-mcp/package.json` (adds `"./client"` and `"./money"` subpath exports; `"."` unchanged) ·
+`ainize-mcp/src/teach-run.ts` (new: `runTeachLesson(ctx, input, {signal, onState})`, lifted **verbatim** out of the
+`teach` tool's `run` closure) · `ainize-mcp/src/tools/teach.ts` (now calls it) · `ainize-mcp/test/teach-run.test.ts`
 
 Why: the agent must not carry a second teach pipeline (A9) and must not pull express and the MCP *server* into a CLI
 (A20). A pure refactor plus additive exports; the tool's own inputs, outputs and error codes are unchanged, which the
-existing `packages/mcp/test/teach.test.ts` pins.
+existing `ainize-mcp/test/teach.test.ts` pins.
 **Depends on:** nothing.
 
 ### G3 — the budget and the spend ledger
-`packages/agent/src/budget.ts` · `packages/agent/src/strings/budget.ts` · `packages/agent/test/budget.test.ts`
+`ainize-agent/src/budget.ts` · `ainize-agent/src/strings/budget.ts` · `ainize-agent/test/budget.test.ts`
 
 Four kinds, per day, check-and-hold, `spend.jsonl` intent/settle/release, the refusal sentences, the "cap cannot be
 raised from inside" rule, and the node's `jobsPerKeyPerDay` as the second ceiling.
 **Depends on:** G2 (decimal-string arithmetic via `@ainize/mcp/money`), G1 (`i18n.ts` only).
 
 ### G4 — plans, shapes, retrieval
-`packages/agent/src/plans.ts` · `packages/agent/src/retrieve.ts` · `packages/agent/src/strings/retrieve.ts` ·
-`packages/agent/plans/graph-erc20.json` · `packages/agent/test/plans.test.ts` · `packages/agent/test/shape.test.ts`
+`ainize-agent/src/plans.ts` · `ainize-agent/src/retrieve.ts` · `ainize-agent/src/strings/retrieve.ts` ·
+`ainize-agent/plans/graph-erc20.json` · `ainize-agent/test/plans.test.ts` · `ainize-agent/test/shape.test.ts`
 
 Plan schema and loader, `skeleton()`, the shape key, pattern→slot compilation (EN + KO), the `McpDataSource` wiring,
 `retrieve` events with `new_rows`/`refetched`/`churned`, provenance sealed onto the rows.
 **Depends on:** G2 (`@ainize/mcp/client`), G1 (memory events and the row index), G3 (the `queries` reservation).
 
 ### G5 — the loop, the bake, the CLI, the docs
-`packages/agent/src/ask.ts` · `packages/agent/src/bake.ts` · `packages/agent/src/bin.ts` ·
-`packages/agent/src/agent.ts` (the single additive `askModelDetailed` seam, §9) · `packages/agent/src/strings/loop.ts` ·
-`packages/agent/README.md` · `docs/en/how-to/agent-memory.md` · `docs/ko/how-to/agent-memory.md` ·
-`packages/e2e/tests/agent-memory.spec.ts`
+`ainize-agent/src/ask.ts` · `ainize-agent/src/bake.ts` · `ainize-agent/src/bin.ts` ·
+`ainize-agent/src/agent.ts` (the single additive `askModelDetailed` seam, §9) · `ainize-agent/src/strings/loop.ts` ·
+`ainize-agent/README.md` · `docs/en/how-to/agent-memory.md` · `docs/ko/how-to/agent-memory.md` ·
+`ainize-node/e2e/tests/agent-memory.spec.ts`
 
 `shouldBake()` and its four gates, the bake through `runTeachLesson`, the `ask` / `memory` / `budget` / `plans`
 commands, and an e2e that drives recall → buy → retrieve → bake against a throwaway node with
@@ -468,7 +468,7 @@ with the command that would close it in a later window. `--gpus 4,5,6` is named 
    `recall` hit with **no** `retrieve` event in the same run.
 3. **N\* itself.** `retrieval_cost` is measurable offline (queries, ms, bytes), but `recall_cost` needs completions and
    `bake_cost` needs a gradient job's `total_s`. Until both exist, `agent memory --why <shape>` must print
-   "N\* not computable" and name the missing term — the same refusal `graph/bench/runs/r1/summary.md:129` prints today.
+   "N\* not computable" and name the missing term — the same refusal `ainize-bench/bench/runs/r1/summary.md:129` prints today.
 4. **Reconciliation against a live runtime.** Rules 1 and 3 of §2 need `GET /api/runtime` to report a stack whose
    `present` comes from a real `runtimeCheck()`; the stub path applies nothing, so only rules 2 and 4 are testable
    today.
@@ -478,7 +478,7 @@ with the command that would close it in a later window. `--gpus 4,5,6` is named 
 
 Not GPU-pending but key-pending, listed separately so it is not confused with the above: **churn** (§5.3) needs two
 live pulls of the same shape against The Graph — `GRAPH_API_KEY` and network, no GPU.
-`packages/mcp/test/smoke-subgraph-mcp.test.ts` is the existing precedent for a test that skips without the key and is
+`ainize-mcp/test/smoke-subgraph-mcp.test.ts` is the existing precedent for a test that skips without the key and is
 **never** replaced by a fixture.
 
 ---
@@ -486,7 +486,7 @@ live pulls of the same shape against The Graph — `GRAPH_API_KEY` and network, 
 ## 12. Compatibility, and what this deliberately does not do
 
 - `runAgent`, `watchAgent`, `AgentResult`, `exitCodeFor` and every existing flag keep their meanings; the four
-  `outcome` values are untouched, so automation and `packages/e2e/tests/agent-x402.spec.ts` are unaffected. The loop's
+  `outcome` values are untouched, so automation and `ainize-node/e2e/tests/agent-x402.spec.ts` are unaffected. The loop's
   new outcomes live only on the new `ask` command.
 - No second payment path: the loop calls `runAgent` for anything that costs money.
 - No second teach pipeline: the loop calls `runTeachLesson`, which *is* the MCP tool's own body (G2).

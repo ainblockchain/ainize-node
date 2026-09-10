@@ -325,7 +325,7 @@ Or upload a file instead →
 - Drag-drop always has a button equivalent; the paste box always has a label.
 - Editable cells are real inputs with labels (`Question, line 4`), not `contenteditable`.
 
-## 7. New i18n keys (`packages/web/src/i18n/pages/teach.ts`)
+## 7. New i18n keys (`ainize-web/src/i18n/pages/teach.ts`)
 
 All existing v1 keys stay. `{}` placeholders as in v1.
 

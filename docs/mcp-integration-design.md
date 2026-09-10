@@ -24,22 +24,22 @@ Read from the tree or measured on the live cluster on 2026-09-02…04. Nothing h
 
 | # | Fact | Where |
 |---|------|-------|
-| M1 | The node already has the async primitive for a live test: `POST /api/chat` accepts a caller-supplied `request_id` (≤ 64 chars), `GET /api/chat/status?request_id=` is public, free and quota-exempt, and `POST /api/chat/cancel` is free while queued. But **no endpoint starts a test and returns immediately** — the ticket is opened by the same POST that blocks. | `packages/node/src/api.ts:480-537`; `packages/node/src/market.ts:911-919`; `packages/node/src/chat-queue.ts:50,80,105,114` |
+| M1 | The node already has the async primitive for a live test: `POST /api/chat` accepts a caller-supplied `request_id` (≤ 64 chars), `GET /api/chat/status?request_id=` is public, free and quota-exempt, and `POST /api/chat/cancel` is free while queued. But **no endpoint starts a test and returns immediately** — the ticket is opened by the same POST that blocks. | `ainize-node/src/api.ts:480-537`; `ainize-node/src/market.ts:911-919`; `ainize-node/src/chat-queue.ts:50,80,105,114` |
 | M2 | A live test on an idle lock measured **8.2 s wall** on node-a (`applied_ms` 3255, two generations at ~394 ms, `max_tokens` 16). A stacked compare was measured at 317 s in critique 3. | `time curl -X POST :3402/api/chat …`; `docs/ux-critique-3.json` |
-| M3 | The shared runtime lock is cross-process (atomic `mkdir` + `holder.json`), waits **20 minutes** by default before throwing `shared runtime busy (<owner>: <label>) — try again later`, and breaks a lease only after `STALE_MS = 15 min`. The polite variant used by teach waits 2 min. | `packages/node/src/runtime.ts:133,146,161,174-186` |
-| M4 | Who holds the model is already public: `lockHolder()` → `{owner,label,since,alive,stale,mine}` and `queueState()` → `{running,waiting,lock}`, both surfaced by `GET /api/chat/patches` and `GET /api/chat/status` **together with the node's own `now`**, so "held for 41 s" is computed against the server clock, not the client's. | `packages/node/src/runtime.ts:123-143`; `packages/node/src/api.ts:465-479,520-531` |
-| M5 | Free live tests are metered at **20 units / rolling hour per visitor**, where the visitor id is an HMAC of `ip:<req.ip>`. One MCP server therefore = **one bucket for all its users**. Exhaustion is `429 quota_chat: …` with a machine-readable `quota_reset` epoch. The quota is checked without consuming and consumed after, so a hung request does not burn a try. | `packages/node/src/api.ts:503-512`; `packages/node/src/market.ts:873-892` |
-| M6 | There is **no quote endpoint and no price ceiling**. `POST /api/patches/:id/buy` is operator-gated and its whole body schema is `{ apply?: boolean }`; `Market.buy()` decodes the 402 requirements and pays on the next statement. | `packages/node/src/api.ts:417`; `packages/node/src/market.ts:757-800` |
-| M7 | `GET /x402/patch/:id` **with no `X-PAYMENT` header** answers `402` + `x-payment-required` + `{x402Version:1, requirements:[{scheme,network,asset,payTo,maxAmountRequired,resource,description,nonce,expires_at}], accepts}`. That *is* the seller's binding quote. Its only side effect is reserving a nonce with a 10-minute TTL. | `packages/node/src/api.ts:928-946`; `packages/node/src/market.ts:655-667` |
-| M8 | The gateway has **no returning-buyer branch**: it answers 402 to any request without `X-PAYMENT`, regardless of an existing settlement, and `Market.buy()` never consults `store.getPurchase()`. Buying twice pays twice. | `packages/node/src/api.ts:928-940`; `packages/node/src/market.ts:757-823` |
-| M9 | `Market.buy()` writes `store.putPurchase(...)` **after** the blob download. A download failure loses the manifest while the seller's settle record and the single-use nonce are already spent — the money is unrecoverable by retry. | `packages/node/src/market.ts:801-811,694-699,728` |
-| M10 | Recovery *is* possible without paying again: `mayDownload(sha, address)` grants the blob to any address that appears as `buyer` in a settlement for that sha (and to verifiers), so `GET /p2p/blob/:sha` with a signed `x-ainize-auth` over `blob:<sha>` works forever, while the manifest's own `download_token` expires after 24 h. `GET /api/me/purchases` (operator) returns the stored manifest, tx hash, amount, scheme and local path. | `packages/node/src/market.ts:641-652,744-756`; `packages/node/src/api.ts:338` |
-| M11 | Lineage base selection has **already landed** in the API: `POST /api/teach/jobs` accepts `base_ids` (≤ 2), `context_ids` (≤ 3), `mode: scratch\|extend\|fork\|merge`, `inherit`, `export: delta\|squash`, `force`; legacy `builds_on_context:true` is rewritten to `base_ids[0]` with a `Deprecation` header; `mode:'extend'` without `base_ids` is a 400; `mode:'merge'` is `merge_not_available`. `POST /api/teach/preflight` takes `base`-aware `patch_ids` plus `facts` XOR `{dataset_id, offset, limit}`. | `packages/node/src/api.ts:699-764` |
-| M12 | `GET /api/patches/:id` already returns `requires: [{id,name,held,price}]` derived from `anchor.base.stack` — the base stack a delta child needs — plus `lineage{parents,children}` one level, `purchased`, `has_body`, `owned`, `applied`, `dataset_held`. The 402 body does **not** carry `requires[]`; that is design §12.4, not shipped. | `packages/node/src/api.ts:191-208`; `docs/lineage-teach-design.md` §12.4 |
-| M13 | The L1 dataset surface exists (`GET /api/patches/:id/dataset`, `/dataset/rows`, `/dataset/manifest`, `POST /api/patches/:id/derive-intent`, `/p2p/dataset*`) with access levels `public \| derivative \| private` enforced per request, but **none of it appears in `GET /api/openapi.json`** (89 paths, hand-written). Tools must not be generated from the OpenAPI document. | `packages/node/src/api.ts:210-265,1007-1026`; `packages/node/src/openapi.ts` |
-| M14 | `GET /api/patches/:id/tree`, `/signals`, `/issues` and `?bundle=1` are PR **L6/L8 and do not exist**. What exists today for a family view is one-level `lineage`, `requires[]`, `supersedes/superseded_by`, `GET /api/ledger/graph` (`edges[].type: 'extends'\|'supersedes'`) and `GET /api/patches/:id/conflicts`. | `packages/node/src/api.ts:191-208,297-309,424-432`; `docs/lineage-teach-design.md` §12.5, §18 |
-| M15 | Teach ETA is deliberately `null` until ≥ 3 GRADIENT-backend samples exist (three 3-second stub jobs must never become an estimate), and a teach job burns one of `jobsPerKeyPerDay` (3 on node-u) at **submit** time, before PREFLIGHT — a failed job is not refunded. `ACTIVE_JOBS_PER_KEY = 2`. | `packages/node/src/teach.ts:946-959,773-777,809-810,171-178` |
-| M16 | Three secrets, three mechanisms: operator bearer from `POST /api/auth/login {password}` (30-day session, also a cookie); the visitor teaching key signing `x-ainize-auth: <address>:<ts>:<sig>:v2` **request-bound and single-use** (a replayed header fails by design); the node identity private key in `config.json`, which signs AIN transfers and credit intents. `POST /api/patches/:id/buy`, `/apply`, `/remove`, `/announce` and `/api/me/*` are operator-gated. | `packages/node/src/api.ts:53-131,338,417-419`; `packages/node/src/teach-auth.ts`; `packages/core/src/types.ts:416` |
+| M3 | The shared runtime lock is cross-process (atomic `mkdir` + `holder.json`), waits **20 minutes** by default before throwing `shared runtime busy (<owner>: <label>) — try again later`, and breaks a lease only after `STALE_MS = 15 min`. The polite variant used by teach waits 2 min. | `ainize-node/src/runtime.ts:133,146,161,174-186` |
+| M4 | Who holds the model is already public: `lockHolder()` → `{owner,label,since,alive,stale,mine}` and `queueState()` → `{running,waiting,lock}`, both surfaced by `GET /api/chat/patches` and `GET /api/chat/status` **together with the node's own `now`**, so "held for 41 s" is computed against the server clock, not the client's. | `ainize-node/src/runtime.ts:123-143`; `ainize-node/src/api.ts:465-479,520-531` |
+| M5 | Free live tests are metered at **20 units / rolling hour per visitor**, where the visitor id is an HMAC of `ip:<req.ip>`. One MCP server therefore = **one bucket for all its users**. Exhaustion is `429 quota_chat: …` with a machine-readable `quota_reset` epoch. The quota is checked without consuming and consumed after, so a hung request does not burn a try. | `ainize-node/src/api.ts:503-512`; `ainize-node/src/market.ts:873-892` |
+| M6 | There is **no quote endpoint and no price ceiling**. `POST /api/patches/:id/buy` is operator-gated and its whole body schema is `{ apply?: boolean }`; `Market.buy()` decodes the 402 requirements and pays on the next statement. | `ainize-node/src/api.ts:417`; `ainize-node/src/market.ts:757-800` |
+| M7 | `GET /x402/patch/:id` **with no `X-PAYMENT` header** answers `402` + `x-payment-required` + `{x402Version:1, requirements:[{scheme,network,asset,payTo,maxAmountRequired,resource,description,nonce,expires_at}], accepts}`. That *is* the seller's binding quote. Its only side effect is reserving a nonce with a 10-minute TTL. | `ainize-node/src/api.ts:928-946`; `ainize-node/src/market.ts:655-667` |
+| M8 | The gateway has **no returning-buyer branch**: it answers 402 to any request without `X-PAYMENT`, regardless of an existing settlement, and `Market.buy()` never consults `store.getPurchase()`. Buying twice pays twice. | `ainize-node/src/api.ts:928-940`; `ainize-node/src/market.ts:757-823` |
+| M9 | `Market.buy()` writes `store.putPurchase(...)` **after** the blob download. A download failure loses the manifest while the seller's settle record and the single-use nonce are already spent — the money is unrecoverable by retry. | `ainize-node/src/market.ts:801-811,694-699,728` |
+| M10 | Recovery *is* possible without paying again: `mayDownload(sha, address)` grants the blob to any address that appears as `buyer` in a settlement for that sha (and to verifiers), so `GET /p2p/blob/:sha` with a signed `x-ainize-auth` over `blob:<sha>` works forever, while the manifest's own `download_token` expires after 24 h. `GET /api/me/purchases` (operator) returns the stored manifest, tx hash, amount, scheme and local path. | `ainize-node/src/market.ts:641-652,744-756`; `ainize-node/src/api.ts:338` |
+| M11 | Lineage base selection has **already landed** in the API: `POST /api/teach/jobs` accepts `base_ids` (≤ 2), `context_ids` (≤ 3), `mode: scratch\|extend\|fork\|merge`, `inherit`, `export: delta\|squash`, `force`; legacy `builds_on_context:true` is rewritten to `base_ids[0]` with a `Deprecation` header; `mode:'extend'` without `base_ids` is a 400; `mode:'merge'` is `merge_not_available`. `POST /api/teach/preflight` takes `base`-aware `patch_ids` plus `facts` XOR `{dataset_id, offset, limit}`. | `ainize-node/src/api.ts:699-764` |
+| M12 | `GET /api/patches/:id` already returns `requires: [{id,name,held,price}]` derived from `anchor.base.stack` — the base stack a delta child needs — plus `lineage{parents,children}` one level, `purchased`, `has_body`, `owned`, `applied`, `dataset_held`. The 402 body does **not** carry `requires[]`; that is design §12.4, not shipped. | `ainize-node/src/api.ts:191-208`; `docs/lineage-teach-design.md` §12.4 |
+| M13 | The L1 dataset surface exists (`GET /api/patches/:id/dataset`, `/dataset/rows`, `/dataset/manifest`, `POST /api/patches/:id/derive-intent`, `/p2p/dataset*`) with access levels `public \| derivative \| private` enforced per request, but **none of it appears in `GET /api/openapi.json`** (89 paths, hand-written). Tools must not be generated from the OpenAPI document. | `ainize-node/src/api.ts:210-265,1007-1026`; `ainize-node/src/openapi.ts` |
+| M14 | `GET /api/patches/:id/tree`, `/signals`, `/issues` and `?bundle=1` are PR **L6/L8 and do not exist**. What exists today for a family view is one-level `lineage`, `requires[]`, `supersedes/superseded_by`, `GET /api/ledger/graph` (`edges[].type: 'extends'\|'supersedes'`) and `GET /api/patches/:id/conflicts`. | `ainize-node/src/api.ts:191-208,297-309,424-432`; `docs/lineage-teach-design.md` §12.5, §18 |
+| M15 | Teach ETA is deliberately `null` until ≥ 3 GRADIENT-backend samples exist (three 3-second stub jobs must never become an estimate), and a teach job burns one of `jobsPerKeyPerDay` (3 on node-u) at **submit** time, before PREFLIGHT — a failed job is not refunded. `ACTIVE_JOBS_PER_KEY = 2`. | `ainize-node/src/teach.ts:946-959,773-777,809-810,171-178` |
+| M16 | Three secrets, three mechanisms: operator bearer from `POST /api/auth/login {password}` (30-day session, also a cookie); the visitor teaching key signing `x-ainize-auth: <address>:<ts>:<sig>:v2` **request-bound and single-use** (a replayed header fails by design); the node identity private key in `config.json`, which signs AIN transfers and credit intents. `POST /api/patches/:id/buy`, `/apply`, `/remove`, `/announce` and `/api/me/*` are operator-gated. | `ainize-node/src/api.ts:53-131,338,417-419`; `ainize-node/src/teach-auth.ts`; `ainize-core/src/types.ts:416` |
 | M17 | Live cluster on this machine: node-a `:3402` (`ledger: 'ain'`, quorum 2, `royalty_share` 0.3, `contributor_share` 0.7), node-b `:3403`, node-c `:3404`, node-u `:3422` (`teachable-u`, `ledger: 'local'`, `publish: 'auto'`). All four share ONE serving model at `http://localhost:8002`. | `curl :3402/api/info`, `curl :3422/api/info`, `curl :3422/api/teach/policy` |
 | M18 | `docs/ux-critique-4.json` **does not exist**. The payment defects are recorded in `docs/ux-critique.json`, `-2`, `-3` and `ux-critique-owner.json`; critique 3 explicitly *downgraded* "a chain purchase buys only the child" (`merged[22]`) because today's children are stand-alone builds — the defect today is ambiguity and repeated payment, not a broken chain. | `ls docs/ux-critique-4*` (no match); `docs/ux-critique-3.json` |
 | M19 | `graph/README.md` (commit `d85365c`) already reserves the split: `graph/` holds the Subgraph/Substreams pipelines, the benchmark harness and "the MCP client side that calls The Graph's Subgraph MCP and hands its rows to `packages/mcp`", and mandates **live data only**. | `graph/README.md` |
@@ -78,7 +78,7 @@ Read from the tree or measured on the live cluster on 2026-09-02…04. Nothing h
   `challenge` and operator `announce` are not exposed. They are minutes-long, network-visible, or destructive, and an
   agent has no business driving them.
 - **`POST /api/runtime/complete`.** It is a raw completion that deliberately does *not* take the shared lock
-  (`packages/node/src/runtime.ts:339-343` — `completeDetailed` never enters `serial()`), so it races an in-flight live test and reads whatever happens to be on the
+  (`ainize-node/src/runtime.ts:339-343` — `completeDetailed` never enters `serial()`), so it races an in-flight live test and reads whatever happens to be on the
   table. Exposing it would make the before/after a lie.
 - **Merge.** `mode:'merge'` answers `merge_not_available` today (M11). The tool schema reserves the value and returns
   the node's own message.
@@ -123,7 +123,7 @@ carries* — and Ainize can then prove the difference with its own before/after 
 Graph-specific pipeline in `graph/` per `graph/README.md` (M19). The seam between them is deliberately narrow:
 
 ```ts
-// packages/mcp/src/rows.ts — the ONLY thing direction B hands direction A
+// ainize-mcp/src/rows.ts — the ONLY thing direction B hands direction A
 export interface TeachRow { prompt: string; answer: string; note?: string }
 export interface RowProvenance {
   source: 'mcp';
@@ -147,7 +147,7 @@ export interface RowProvenance {
 ### 3.1 Package layout
 
 ```
-packages/mcp/                      # NEW workspace, its own package.json (no shared-file edits except §14 PR M9)
+ainize-mcp/                      # NEW workspace, its own package.json (no shared-file edits except §14 PR M9)
   package.json                     # "@ainize/mcp", type: module, bin: { "ainize-mcp": "dist/bin.js" }
   tsconfig.json                    # extends ../../tsconfig.base.json (NodeNext ESM, strict, verbatimModuleSyntax)
   README.md                        # what it is, how to configure it, "What this server will never do without you"
@@ -174,7 +174,7 @@ graph/
 
 One binary, both transports, per M20:
 
-- **stdio** (default) — `StdioServerTransport`. This is what `claude mcp add ainize -- node packages/mcp/dist/bin.js`
+- **stdio** (default) — `StdioServerTransport`. This is what `claude mcp add ainize -- node ainize-mcp/dist/bin.js`
   spawns, and what Cursor's `mcpServers` block spawns.
 - **Streamable HTTP** — `--http <port>`, mounted with `createMcpExpressApp({ host, allowedHosts })` so DNS-rebinding
   protection is on for a localhost bind. Stateful sessions (`sessionIdGenerator: () => randomUUID()`) because the
@@ -305,7 +305,7 @@ use it.
 
 - **Errors** `not_found`.
 - **Notes** `attestations[].stake` is dropped on the way out — it was never escrowed and the UI already stopped calling
-  it money (`packages/core/src/types.ts:230-235`). `score` is passed through verbatim: it is the thing a judge reads.
+  it money (`ainize-core/src/types.ts:230-235`). `score` is passed through verbatim: it is the thing a judge reads.
 
 #### `family_tree`
 Ancestors, descendants, versions and conflicts around one knowledge.
@@ -455,7 +455,7 @@ knowledge loaded, and returns both answers side by side together with the verifi
     still a comparison; pretending it was scored is the lie the whole product is built to avoid.
   - `history` is optional and the server derives `messages_base`/`messages_patched` correctly: replaying the *patched*
     answer to the bare model would teach it the knowledge mid-test, which the node already refuses
-    (`packages/node/src/api.ts:500-502`).
+    (`ainize-node/src/api.ts:500-502`).
 
 #### `teach` — turn questions and answers into knowledge, optionally on top of an existing knowledge
 
@@ -551,7 +551,7 @@ knowledge loaded, and returns both answers side by side together with the verifi
   because unloading one knowledge writes the base model over rows another loaded knowledge shares
   (`docs/ux-critique-3.json`).
 - **Never** `scripts/patch.py` directly, and never the `packages/agent` code path — that is the critical defect
-  critique 3 records (`packages/agent/src/agent.ts:250-266`).
+  critique 3 records (`ainize-agent/src/agent.ts:250-266`).
 
 #### `job_status`, `job_cancel`, `job_list` — one handle vocabulary for the whole tier
 
@@ -1040,12 +1040,12 @@ claude mcp add ainize \
   -e AINIZE_NODE_URL=http://localhost:3422 \
   -e AINIZE_TEACH_KEY="$AINIZE_TEACH_KEY" \
   -e AINIZE_MCP_SESSION_BUDGET=0 \
-  -- node /mnt/newdata/ainize/knowledge-marketplace/packages/mcp/dist/bin.js
+  -- node /mnt/newdata/ainize/knowledge-marketplace/ainize-mcp/dist/bin.js
 ```
 
 ```bash
 # the same server over Streamable HTTP (run it once, share it with several clients)
-node packages/mcp/dist/bin.js --http 3499
+node ainize-mcp/dist/bin.js --http 3499
 claude mcp add --transport http ainize http://127.0.0.1:3499/mcp
 ```
 
@@ -1057,7 +1057,7 @@ Project scope writes a checked-in `.mcp.json`, so **never** put a secret in it �
   "mcpServers": {
     "ainize": {
       "command": "node",
-      "args": ["packages/mcp/dist/bin.js"],
+      "args": ["ainize-mcp/dist/bin.js"],
       "env": {
         "AINIZE_NODE_URL": "http://localhost:3422",
         "AINIZE_TEACH_KEY": "${AINIZE_TEACH_KEY}",
@@ -1077,7 +1077,7 @@ Same object shape, in `~/.cursor/mcp.json` (or the app's config):
   "mcpServers": {
     "ainize": {
       "command": "node",
-      "args": ["/abs/path/knowledge-marketplace/packages/mcp/dist/bin.js"],
+      "args": ["/abs/path/knowledge-marketplace/ainize-mcp/dist/bin.js"],
       "env": { "AINIZE_NODE_URL": "http://localhost:3422", "AINIZE_TEACH_KEY": "0x…" }
     }
   }
@@ -1089,7 +1089,7 @@ Same object shape, in `~/.cursor/mcp.json` (or the app's config):
 ChatGPT connects to **remote** MCP servers over Streamable HTTP, so run the HTTP mode behind a URL it can reach:
 
 ```bash
-node packages/mcp/dist/bin.js --http 3499 --public-url https://ainize.example.com/mcp
+node ainize-mcp/dist/bin.js --http 3499 --public-url https://ainize.example.com/mcp
 # then: ChatGPT → Settings → Connectors → Add → https://ainize.example.com/mcp
 ```
 
@@ -1118,7 +1118,7 @@ MCP client is visible to every other node on the machine. The README says this i
 
 ## 11. Direction B — Ainize as an MCP client
 
-### 11.1 The generic half (`packages/mcp/src/datasource.ts`)
+### 11.1 The generic half (`ainize-mcp/src/datasource.ts`)
 
 ```ts
 export interface McpDataSourceOptions {
@@ -1202,7 +1202,7 @@ and the daily lesson. One agent turn must not be able to burn a day's lessons on
 
 ### 11.6 The benchmark harness
 
-`graph/bench/` (already present as an untracked directory) measures the thing the whole integration claims: base model ·
+`ainize-bench/bench/` (already present as an untracked directory) measures the thing the whole integration claims: base model ·
 base + Subgraph MCP retrieval · base + Ainize knowledge · both — on accuracy, latency, tokens, cost, hallucinated-address
 rate and side effects. The Ainize columns come from `live_test`; the retrieval column from `McpDataSource`. This is the
 evidence a judge reads, and it is why direction B and direction A must share one row format.
@@ -1231,7 +1231,7 @@ compatibility:
 metadata:
   version: 0.1.0
   author: Ainize
-  documentation: packages/mcp/README.md
+  documentation: ainize-mcp/README.md
 ---
 ```
 
@@ -1286,7 +1286,7 @@ guess.* If the price, the base or the node is unspecified, ask.
 
 ### 12.5 Packaging
 
-`packages/mcp/.claude-plugin/{plugin.json,marketplace.json}` and `scripts/validate-skill.mjs` (frontmatter fields
+`ainize-mcp/.claude-plugin/{plugin.json,marketplace.json}` and `scripts/validate-skill.mjs` (frontmatter fields
 present, `name` matches the directory, body under budget, every `references/*.md` linked, every tool named in the body
 actually registered by `server.ts`) wired into `npm test -w packages/mcp`. Installable with
 `claude plugins add <owner>/<repo>` once the repo is public.
@@ -1295,7 +1295,7 @@ actually registered by `server.ts`) wired into `npm test -w packages/mcp`. Insta
 
 ## 13. Test plan
 
-### 13.1 Unit (`node --test --import tsx packages/mcp/test/*.test.ts`)
+### 13.1 Unit (`node --test --import tsx ainize-mcp/test/*.test.ts`)
 
 | Test | Asserts |
 |---|---|
@@ -1307,7 +1307,7 @@ actually registered by `server.ts`) wired into `npm test -w packages/mcp`. Insta
 | `schema.test.ts` | no input schema anywhere contains a field named like a credential or a node URL (a grep-shaped guard against regressions) |
 | `rows.test.ts` | `RowProvenance.rows_sha256` matches the canonical JSONL the node would hash; row hashes are stable across reorder-free rebuilds |
 
-### 13.2 Contract (`packages/mcp/test/endpoints.test.ts`)
+### 13.2 Contract (`ainize-mcp/test/endpoints.test.ts`)
 
 Every endpoint the tool set declares is pinged against a **private local-ledger cluster**
 (`AINIZE_CLUSTER_HOME=<tmpdir> AINIZE_PORT_BASE=3512 AINIZE_LEDGER=local AINIZE_SEED=0 scripts/cluster-restart.sh`) and the
@@ -1363,16 +1363,16 @@ immediately before editing it.**
 
 | PR | Scope | Files | Verify |
 |---|---|---|---|
-| **M0** Scaffolding | New workspace: `package.json` (`@ainize/mcp`, type module, bin `ainize-mcp`, deps `@modelcontextprotocol/sdk ^1.30.0`, `zod ^4.5.4`, `@ainize/core` 0.1.0), `tsconfig.json` extending the base, empty `src/bin.ts` that starts an `McpServer` on stdio and answers `initialize`, `src/config.ts` (env → Config + capability booleans + startup refusals), `src/client.ts` (the one place `fetch` is called), `src/scrub.ts` | `packages/mcp/{package.json,tsconfig.json,src/{bin,server,config,client,scrub}.ts,test/scrub.test.ts}` | `npx tsc -p packages/mcp/tsconfig.json --noEmit`; `claude mcp add` connects and lists 0 tools |
+| **M0** Scaffolding | New workspace: `package.json` (`@ainize/mcp`, type module, bin `ainize-mcp`, deps `@modelcontextprotocol/sdk ^1.30.0`, `zod ^4.5.4`, `@ainize/core` 0.1.0), `tsconfig.json` extending the base, empty `src/bin.ts` that starts an `McpServer` on stdio and answers `initialize`, `src/config.ts` (env → Config + capability booleans + startup refusals), `src/client.ts` (the one place `fetch` is called), `src/scrub.ts` | `ainize-mcp/{package.json,tsconfig.json,src/{bin,server,config,client,scrub}.ts,test/scrub.test.ts}` | `npx tsc -p ainize-mcp/tsconfig.json --noEmit`; `claude mcp add` connects and lists 0 tools |
 | **M1** READ tier | `search_knowledge`, `get_knowledge`, `family_tree`, `get_training_set`, `node_status`, `teacher_profile`, `my_library`; the result envelope; flattening; per-node caches | `src/tools/read.ts`, `src/tiers.ts`, `src/errors.ts`, `test/{read,schema}.test.ts` | integration §13.3 steps 1 against node-u |
 | **M2** Resources + prompts | `ainize://instructions`, `node/info`, `openapi`, `budget`, `knowledge/{id}`; the four prompts | `src/{resources,prompts}.ts` | a client shows 5 resources and 4 prompts |
 | **M3** Async core + `live_test` | `src/jobs.ts`; `live_test`, `job_status` (with `wait_ms`), `job_cancel`, `job_list`; the `model_lock` sentence; quota block; progress notifications | `src/tools/live.ts`, `src/jobs.ts`, `test/{jobs,lock,live}.test.ts` | §13.3 steps 2–3; §13.5 eval 1 and 8 |
-| **M4** Teach + preflight + datasets | `create_training_set`, `teach_preflight`, `teach` (with `base`/`compare_with`/`mode`/`export`/`inherit`), the `nothing_to_train` refusal, the last-lesson confirmation, ETA rendering. **Re-read `packages/node/src/api.ts:699-764`, `packages/node/src/teach.ts` and `docs/lineage-teach-design.md` §12.1 immediately before writing the schema** — L2–L9 are landing | `src/tools/teach.ts`, `test/{teach,eta}.test.ts` | §13.3 steps 4–5; eval 4 and 5 |
+| **M4** Teach + preflight + datasets | `create_training_set`, `teach_preflight`, `teach` (with `base`/`compare_with`/`mode`/`export`/`inherit`), the `nothing_to_train` refusal, the last-lesson confirmation, ETA rendering. **Re-read `ainize-node/src/api.ts:699-764`, `ainize-node/src/teach.ts` and `docs/lineage-teach-design.md` §12.1 immediately before writing the schema** — L2–L9 are landing | `src/tools/teach.ts`, `test/{teach,eta}.test.ts` | §13.3 steps 4–5; eval 4 and 5 |
 | **M5** Money | `quote` (with `requires[]`, affordability, dry run), the session budget, `src/money.ts` journal, `buy` (quote-gated, confirm-gated, capped, job-handled), `reconcile_purchase` | `src/tools/money.ts`, `src/money.ts`, `test/money.test.ts` | §13.4 steps 7–10; eval 2 and 3 |
 | **M6** Guarded mutations | `apply_knowledge`, `remove_knowledge` (opt-in, confirm, shared-model warning); `publish` (opt-in, `permanent_ledger_refused`, real split preview, `confirm_phrase`) | `src/tools/admin.ts` | §13.4 step 11; eval 6 |
 | **M7** Contract test + HTTP transport | `test/endpoints.test.ts` against a private local-ledger cluster; `--http` mode with `createMcpExpressApp`; `--chatgpt-compat` aliases; the `--http` refusal without `--i-am-the-only-user` | `src/bin.ts`, `test/endpoints.test.ts` | §13.2 green on a fresh cluster |
 | **M8** Direction B plumbing | `src/rows.ts` (`TeachRow`, `RowProvenance`), `src/datasource.ts` (`McpDataSource`), provenance stored by `create_training_set` | `src/{rows,datasource}.ts`, `test/rows.test.ts` | a stdio echo MCP server round-trips rows + provenance |
-| **M9** Docs, skill, eval, and the one shared edit | `README.md` (incl. "What this server will never do without you", EN + KO), `SKILL.md`, `references/*.md`, `EVAL.md`, `.claude-plugin/*`, `scripts/validate-skill.mjs`; **then** the single root edit adding `packages/mcp` to the `build`/`test`/`typecheck` script lines | `packages/mcp/**`, `package.json` (3 lines) | `npm run build`, `npm test`, `npm run typecheck` at the root |
+| **M9** Docs, skill, eval, and the one shared edit | `README.md` (incl. "What this server will never do without you", EN + KO), `SKILL.md`, `references/*.md`, `EVAL.md`, `.claude-plugin/*`, `scripts/validate-skill.mjs`; **then** the single root edit adding `packages/mcp` to the `build`/`test`/`typecheck` script lines | `ainize-mcp/**`, `package.json` (3 lines) | `npm run build`, `npm test`, `npm run typecheck` at the root |
 
 Direction B's Graph-specific work (`graph/mcp-client/`, the mappings, the benchmark harness) is tracked in `graph/` and
 depends only on M8.
@@ -1382,10 +1382,10 @@ depends only on M8.
 
 ### 14.1 Two upstream fixes worth landing later (not required by v1)
 
-1. **`requires[]` in the 402 body** (`Market.requirementsFor`, `packages/node/src/market.ts:655-665`) plus `status`,
+1. **`requires[]` in the 402 body** (`Market.requirementsFor`, `ainize-node/src/market.ts:655-665`) plus `status`,
    `superseded_by`, `license` and a split preview — design §12.4/D2. It makes an honest quote a single read for *every*
    x402 client, not just this one.
-2. **Write the purchase row before the download** (`Market.buy`, `packages/node/src/market.ts:801-811`): `putPurchase`
+2. **Write the purchase row before the download** (`Market.buy`, `ainize-node/src/market.ts:801-811`): `putPurchase`
    with `path: null` immediately after `settled`, updated after the blob lands, plus an endpoint that re-issues a
    manifest to an address holding a settle record. That removes the lost-manifest class at the source instead of
    compensating for it in `reconcile_purchase`.
@@ -1410,7 +1410,7 @@ Both touch `market.ts`, which the lineage job is editing. Coordinate first; comm
 | A key or token leaks through an error body, a log line or a SKILL example | No credential is a tool parameter or a return value; `src/scrub.ts` runs on every result and error; the README uses `${VAR}` indirection in every copy-paste block. |
 | `x-ainize-auth` is single-use; a retry looks like a wrong key (M16) | Sign per attempt, never cache a header, never follow redirects, use the JSON dataset door rather than multipart. |
 | The lineage job is editing `packages/{core,node,web,cli,e2e}` concurrently | `packages/mcp` is a new workspace; the only shared edit is three script lines in the root `package.json`, deliberately last (PR M9); the contract test (§13.2) fails loudly if a route moves. |
-| Tools generated from `GET /api/openapi.json` would silently lack the dataset surface and expose operator routes (M13) | Tool definitions are hand-written against `packages/node/src/api.ts`; the OpenAPI document is exposed as a *resource* with a header saying it is incomplete. |
+| Tools generated from `GET /api/openapi.json` would silently lack the dataset surface and expose operator routes (M13) | Tool definitions are hand-written against `ainize-node/src/api.ts`; the OpenAPI document is exposed as a *resource* with a header saying it is incomplete. |
 | Deep `CatalogEntry` objects exhaust the client's context | Search and detail return flattened rows with a stable vocabulary; the raw anchor is behind an explicit `include`. |
 | No Graph Gateway API key exists on this machine, and `graph/README.md` forbids fixtures (M19) | The key-absent path fails with an instruction, never a fallback. Direction B's tests are skipped, not faked, without a key. |
 | The SDK's task API is experimental and the default negotiated protocol is older than latest (M20) | Progress notifications only; no `experimental.tasks`; pin `@modelcontextprotocol/sdk ^1.30.0` and assert the negotiated version in the contract test. |

@@ -1,10 +1,11 @@
 # `docs/` — how Ainize documentation is written, built and kept true
 
-This directory holds two different kinds of writing, and the difference decides where a file goes.
+Two different kinds of writing, and the difference now decides which REPOSITORY a file goes in, not only which
+directory. The packages were split in September 2026; the published pages went with the thing that builds them.
 
 | | Published developer documentation | Internal working documents |
 |---|---|---|
-| Lives in | `docs/en/**`, `docs/ko/**` | `docs/internal/**` (today: `docs/*.md`, `docs/*.json`, `docs/*.html`) |
+| Lives in | **[ainize-web](https://github.com/ainblockchain/ainize-web)**, at `docs/en/**` and `docs/ko/**` | **here** — `ainize-node/docs/*.md`, `*.json`, `*.html` |
 | Audience | someone using Ainize | someone building Ainize |
 | Listed in a `_toctree.json` | yes — that is what "published" means | never |
 | Rendered at `/docs` on the web | yes | no |
@@ -12,6 +13,17 @@ This directory holds two different kinds of writing, and the difference decides 
 
 Hugging Face keeps design and internals in the repo but out of the published toctree. Ainize does the same. A `page:`
 entry that points at an internal document is a build error, not a shortcut.
+
+**Why the published half moved.** `ainize-web/src/pages/docs/pages.ts` inlines every page with
+`import.meta.glob` at build time, and it is the only thing that reads them — the node serves no markdown. When
+the glob reached across the old monorepo it matched nothing after the split, the build stayed green, and `/docs`
+shipped empty; `docs-shell.test.ts` now asserts a floor on the page count so that cannot happen quietly again.
+
+**One seam is left open, and it is worth knowing about.** `../scripts/docs-gen.mjs` still generates five of those
+pages out of `src/openapi.ts`, `@ainize/core`'s config schema and the CLI — all of which live here or next door,
+while its output belongs in ainize-web. It writes into a sibling checkout now rather than a sibling package, and
+`npm test` no longer runs `docs:check` alongside it, so a change to the API no longer fails a build when the
+reference page goes stale. Re-generating is a deliberate step until that is wired up again.
 
 **This file is part map, part plan, and it says which is which.** Built and running today: the loader, the renderer,
 the toctrees, the chrome, the `/docs/*` route, the five generated reference pages and the index — [§2](#2-how-markdown-becomes-docs)
@@ -38,7 +50,7 @@ Documentation is **markdown files in this directory**. There is no second copy.
 
 ### 2.1 Loading — Vite `import.meta.glob`, no new dependency
 
-`packages/web/src/pages/docs/pages.ts` holds one literal glob:
+`ainize-web/src/pages/docs/pages.ts` holds one literal glob:
 
 ```ts
 const PAGES = import.meta.glob('../../../../../docs/{en,ko}/**/*.md', {
@@ -61,7 +73,7 @@ it. Budget: at ~18 pages of prose this is tens of KB gzipped. **If the tree pass
 
 ### 2.2 Rendering — a small in-repo renderer, no new dependency
 
-`packages/web/src/components/docs/markdown.ts` (markdown → token tree) and `Markdown.tsx` (tokens → React elements,
+`ainize-web/src/components/docs/markdown.ts` (markdown → token tree) and `Markdown.tsx` (tokens → React elements,
 styled with the existing theme tokens).
 
 **Why not `marked` / `markdown-it` / `react-markdown`:**
@@ -118,7 +130,7 @@ word of content — and it is the natural place to enforce **in nav = finished**
 - Search is a client-side filter over page title, group, summary and headings — honest at this size, and it needs no
   index-building step.
 
-`packages/web/src/App.tsx` is shared with three other workflows, and the change there was **one line** — already made
+`ainize-web/src/App.tsx` is shared with three other workflows, and the change there was **one line** — already made
 and already in `App.tsx`:
 
 ```tsx
@@ -146,7 +158,7 @@ running nodes serve `packages/web/dist` directly, so `/docs/get-started/quicksta
 because it is the only option where a Korean reader browsing the repo on GitHub sees a Korean tree.
 
 **Nav and chrome are always Korean.** Sidebar group names, page titles, prev/next labels, the TOC-rail heading, the
-search placeholder — all through `packages/web/src/i18n/pages/docs.ts` and the `ko` toctree. Korean is written as
+search placeholder — all through `ainize-web/src/i18n/pages/docs.ts` and the `ko` toctree. Korean is written as
 Korean, never transliterated English.
 
 **A Korean reader never lands on a silently-English page.** A page not yet translated keeps its entry in the Korean
@@ -189,11 +201,11 @@ changes without its docs is a red build rather than a stale page.
 
 | Generated page | Source of truth | How it is read | Verified |
 |---|---|---|---|
-| `docs/en/reference/cli.md` | `packages/cli/src/bin.ts` | TypeScript AST (`ts.createSourceFile`) | ran it: **81** `.command()`, **144** `.option()`, **36** `.example()` recovered with their object literals intact — exact `describe`, `type`, `default`, `choices`, `demandOption`, `alias` |
-| `docs/en/reference/http-api.md` | `buildOpenApi()` in `packages/node/src/openapi.ts` | `tsx` imports the **TS source directly** | ran it: **99 paths / 114 operations / 8 tags / 28 schemas** |
+| `docs/en/reference/cli.md` | `ainize-cli/src/bin.ts` | TypeScript AST (`ts.createSourceFile`) | ran it: **81** `.command()`, **144** `.option()`, **36** `.example()` recovered with their object literals intact — exact `describe`, `type`, `default`, `choices`, `demandOption`, `alias` |
+| `docs/en/reference/http-api.md` | `buildOpenApi()` in `ainize-node/src/openapi.ts` | `tsx` imports the **TS source directly** | ran it: **99 paths / 114 operations / 8 tags / 28 schemas** |
 | `docs/en/reference/schemas.md` | same | same | one page of component schemas, `$ref`-linked from the endpoint page |
-| `docs/en/reference/config.md` | `configKeys()`, `configField()`, `configFieldType()` in `packages/core/src/config-schema.ts` + `defaultConfig()` | `tsx` imports the source | ran it: **105 keys** enumerated with per-key human types |
-| `docs/en/reference/errors.md` | `new TeachError(...)` / `new HttpError(...)` literals across `packages/node/src` | TypeScript AST | status + code + sentence are string literals at every call site |
+| `docs/en/reference/config.md` | `configKeys()`, `configField()`, `configFieldType()` in `ainize-core/src/config-schema.ts` + `defaultConfig()` | `tsx` imports the source | ran it: **105 keys** enumerated with per-key human types |
+| `docs/en/reference/errors.md` | `new TeachError(...)` / `new HttpError(...)` literals across `ainize-node/src` | TypeScript AST | status + code + sentence are string literals at every call site |
 
 Both toolchain pieces are **already present**: `typescript@5.9.3` is a root devDependency; `tsx@4.23.13` is hoisted from
 `packages/web`. **No new npm dependency is required for any part of this design** — not for loading markdown, not for
@@ -201,12 +213,12 @@ rendering it, not for generating reference, not for reading the toctree.
 
 Notes that will bite whoever writes the generator:
 
-- `packages/node/src/openapi.ts` has **zero imports**, which is why `tsx` can load it straight from source with no build
+- `ainize-node/src/openapi.ts` has **zero imports**, which is why `tsx` can load it straight from source with no build
   step. Do not make the generator depend on `dist/` — a stale `dist` is exactly the drift this is meant to end
   ([§8](#8-defects-these-pages-must-not-repeat), H7).
-- `packages/cli/src/bin.ts` ends in a top-level `await cli.parseAsync()`. The yargs instance **cannot** be imported and
+- `ainize-cli/src/bin.ts` ends in a top-level `await cli.parseAsync()`. The yargs instance **cannot** be imported and
   introspected. AST or nothing. (The AST route also needs no edit to `bin.ts`, which another workflow owns.)
-- `packages/node/src/teach-dataset.ts` contains a raw NUL byte, so `grep` calls it binary and silently matches nothing.
+- `ainize-node/src/teach-dataset.ts` contains a raw NUL byte, so `grep` calls it binary and silently matches nothing.
   The generator and any CI check must read files with `fs.readFileSync`, or use `grep -a`, or lose 716 lines in silence.
 - Every generated file opens with a banner naming its source file and the regeneration command, and every generated
   page is cross-linked to its hand-written guide and back.
@@ -263,8 +275,8 @@ Two pages, read in order. Nothing else in the tree is a prerequisite for them.
 
 | Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `get-started/install` | Installation | Node 24 and where the requirement is declared; clone → `npm install` → `npm run build` → `npm link -w packages/cli`, and `npx ainize` as the no-link alternative inside the repo; that **there is no npm-registry package** and `npm install -g ainize` cannot work ([§8](#8-defects-these-pages-must-not-repeat), H2); what `AINIZE_HOME` is and what `ainize init` writes into it; one verification line at the end. | no | root `package.json` (`engines`), `packages/cli/package.json`, `packages/cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
-| `get-started/quickstart` | Quickstart | The contract first — *run a node, load knowledge, watch the answer change*. `ainize init` → point `runtime.api` at your own serving model → `ainize start -d` → `ainize status`, reading the `runtime` line as the go/no-go gate → `ainize login` → join a peer or seed local knowledge → `ainize chat --list` → `ainize chat <id> "<question>"` for the before/after → `ainize use <id>`. Real pasted output for every step; the two model steps flagged. Ends with which group to read next and why. | **yes** — `chat` and the before/after are the last two steps | `packages/cli/src/bin.ts`, `packages/node/src/api.ts` (`POST /api/chat`), `packages/node/src/runtime.ts` |
+| `get-started/install` | Installation | Node 24 and where the requirement is declared; clone → `npm install` → `npm run build` → `npm link -w packages/cli`, and `npx ainize` as the no-link alternative inside the repo; that **there is no npm-registry package** and `npm install -g ainize` cannot work ([§8](#8-defects-these-pages-must-not-repeat), H2); what `AINIZE_HOME` is and what `ainize init` writes into it; one verification line at the end. | no | root `package.json` (`engines`), `ainize-cli/package.json`, `ainize-cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
+| `get-started/quickstart` | Quickstart | The contract first — *run a node, load knowledge, watch the answer change*. `ainize init` → point `runtime.api` at your own serving model → `ainize start -d` → `ainize status`, reading the `runtime` line as the go/no-go gate → `ainize login` → join a peer or seed local knowledge → `ainize chat --list` → `ainize chat <id> "<question>"` for the before/after → `ainize use <id>`. Real pasted output for every step; the two model steps flagged. Ends with which group to read next and why. | **yes** — `chat` and the before/after are the last two steps | `ainize-cli/src/bin.ts`, `ainize-node/src/api.ts` (`POST /api/chat`), `ainize-node/src/runtime.ts` |
 
 #### Tutorials — one whole task each
 
@@ -274,9 +286,9 @@ experiences, not one page with a tab.
 
 | Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `tutorials/teach-from-a-file` | Teach from a file of questions | `teach.enabled` is **off by default** and how to turn it on (and that the node keeps the value it started with, so it must be restarted); `ainize teach status` as the precondition check — trainer state, publish mode, per-key and per-IP quotas, the three effort presets; the five accepted formats and the column-mapping escape hatches; `ainize teach dataset upload`, and reading the *lines that will not train* table row by row — `empty`, `duplicate`, `conflict`, `too_long`, `blocked`, `over_cap`; fixing the file and re-uploading onto the same dataset; `ainize teach train --effort … --wait` and what each stage means; the checks block — taught vs side effects — and `TeachChecks.ok` as the gate that decides whether it may be published at all; what `--no-check` costs you. | **yes** — everything from `teach train` on | `packages/node/src/teach.ts`, `packages/node/src/teach-datasets.ts`, `packages/core/src/config.ts` (`DEFAULT_TEACH_CONFIG`), [`reference/schemas`](en/reference/schemas.md) (`TeachJob`, `TeachChecks`, `TeachDataset`) |
-| `tutorials/teach-in-chat` | Teach by correcting the model | The browser door: `<node>/chat?teach=1`, no account. The **teaching key** minted on first use — the one thing a reader can lose irrecoverably, so it is stated before the first correction, not after; where it is kept (`<home>/teaching-key.json`) and how the CLI reads it back (`--key`, `--key-file`, `AINIZE_TEACH_KEY`). Collecting corrections up to `teach.factsPerJob`; the lesson page at `/teach/lesson/<jobId>`; following the same lesson from the CLI with `ainize teach status <lesson-url> --key-file …`; keeping it private versus publishing, and what `teach.publish: review` means for how long that takes. | **yes** — a correction is a correction *to an answer* | `packages/node/src/teach.ts`, `packages/node/src/teach-auth.ts`, `packages/web/src/pages/ChatPage.tsx`, `packages/web/src/pages/TeachLessonPage.tsx` |
-| `tutorials/buy-and-apply` | Use knowledge someone else published | Finding it — `ainize patch ls --q`, and `/explore` for the same catalog in a browser. Reading `ainize patch get`: price, verification count, lineage, address-set overlaps. Trying before buying: the free live test, **20 per visitor per hour**, and the `429 quota_chat` when it runs out. Then `ainize patch buy` with its x402 trace line by line, or `ainize use` as the one-liner — including why `use` refuses a patch that is not LISTED, which is the first error most readers will hit. Then `patch apply`, `patch stack`, `patch remove --cascade`, and the `503` + `retry-after: 30` that means another process holds the shared runtime. | **yes** — the live test and every `apply` | `packages/core/src/x402.ts`, `packages/node/src/market.ts`, `packages/node/src/runtime.ts`, `packages/node/src/api.ts` |
+| `tutorials/teach-from-a-file` | Teach from a file of questions | `teach.enabled` is **off by default** and how to turn it on (and that the node keeps the value it started with, so it must be restarted); `ainize teach status` as the precondition check — trainer state, publish mode, per-key and per-IP quotas, the three effort presets; the five accepted formats and the column-mapping escape hatches; `ainize teach dataset upload`, and reading the *lines that will not train* table row by row — `empty`, `duplicate`, `conflict`, `too_long`, `blocked`, `over_cap`; fixing the file and re-uploading onto the same dataset; `ainize teach train --effort … --wait` and what each stage means; the checks block — taught vs side effects — and `TeachChecks.ok` as the gate that decides whether it may be published at all; what `--no-check` costs you. | **yes** — everything from `teach train` on | `ainize-node/src/teach.ts`, `ainize-node/src/teach-datasets.ts`, `ainize-core/src/config.ts` (`DEFAULT_TEACH_CONFIG`), [`reference/schemas`](en/reference/schemas.md) (`TeachJob`, `TeachChecks`, `TeachDataset`) |
+| `tutorials/teach-in-chat` | Teach by correcting the model | The browser door: `<node>/chat?teach=1`, no account. The **teaching key** minted on first use — the one thing a reader can lose irrecoverably, so it is stated before the first correction, not after; where it is kept (`<home>/teaching-key.json`) and how the CLI reads it back (`--key`, `--key-file`, `AINIZE_TEACH_KEY`). Collecting corrections up to `teach.factsPerJob`; the lesson page at `/teach/lesson/<jobId>`; following the same lesson from the CLI with `ainize teach status <lesson-url> --key-file …`; keeping it private versus publishing, and what `teach.publish: review` means for how long that takes. | **yes** — a correction is a correction *to an answer* | `ainize-node/src/teach.ts`, `ainize-node/src/teach-auth.ts`, `ainize-web/src/pages/ChatPage.tsx`, `ainize-web/src/pages/TeachLessonPage.tsx` |
+| `tutorials/buy-and-apply` | Use knowledge someone else published | Finding it — `ainize patch ls --q`, and `/explore` for the same catalog in a browser. Reading `ainize patch get`: price, verification count, lineage, address-set overlaps. Trying before buying: the free live test, **20 per visitor per hour**, and the `429 quota_chat` when it runs out. Then `ainize patch buy` with its x402 trace line by line, or `ainize use` as the one-liner — including why `use` refuses a patch that is not LISTED, which is the first error most readers will hit. Then `patch apply`, `patch stack`, `patch remove --cascade`, and the `503` + `retry-after: 30` that means another process holds the shared runtime. | **yes** — the live test and every `apply` | `ainize-core/src/x402.ts`, `ainize-node/src/market.ts`, `ainize-node/src/runtime.ts`, `ainize-node/src/api.ts` |
 
 #### Concepts — four ideas you cannot proceed without
 
@@ -285,10 +297,10 @@ traded *is*, what the network's promise about it *is worth*, where the money goe
 
 | Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `concepts/knowledge-patch` | What a knowledge patch is | The `.npz` as `addrs` / `before` / `after` over the serving model's memory table. Why **a row is a touched address, not a sentence**, and why "4 rows" and "1 fact" are both true of the same file. Why it can be applied to a running model with no restart: a file-based hook writes the `after` values into the live table, and the journal records what was displaced so `remove` can put it back. Why comparison is bf16-exact. What this design costs: the patch is bound to one model id, and two patches that touch the same addresses conflict — which is what the overlap table on `patch get` is for. Why it is not fine-tuning, stated as a difference in kind rather than a boast. | no | `packages/core/src/npz.ts`, `packages/core/src/lineage.ts` (`bf16Bits`), `packages/node/src/runtime.ts`, `PatchAnchor` in `packages/core/src/types.ts` |
-| `concepts/verification` | What "verified" proves — and what it does not | An attestation is one node's run, signed and on the record. Quorum counts **independent** attestations only: the author's own never counts (`verifier.allowSelfAttest` is false and the node refuses the write outright), so a network of two can never list anything and the default `verifier.quorum: 2` means *two nodes besides the publisher*. Executed versus `hash-only`, and the rule that decides everything: a patch that declares benchmark samples is never listed on integrity checks alone. `REJECTED` when failures reach quorum. A challenge holds an entry off sale **only until a verifier re-runs it** — and the honest wording of that, because nothing is escrowed, transferred or slashed anywhere in this product ([§8](#8-defects-these-pages-must-not-repeat), H6). Ends on the position: verified means somebody independent loaded it and scored it, not that it is right, so live-test it with your own questions. | no | `packages/core/src/catalog.ts`, `packages/node/src/verifier.ts`, [`reference/config`](en/reference/config.md) (`verifier.*`) |
-| `concepts/lineage-and-royalties` | Lineage and royalties | Parents are a relation on the anchor, frozen at publish. The split in two passes: a lineage pool of `market.royaltyShare` (0.3) divided evenly among the **unique ancestor authors**, each author's slice divided again across their own anchors and carved for that anchor's contributors; then the seller keeps the remainder, out of which a data provider is paid `teach.contributorShare` (0.7 by default) — so "70 %" and "30 %" are percentages of different things, which is the sentence this page exists to get right. The depth-16 walk cap, the cycle guard, at most 4 contributors and Σ share ≤ 1. States plainly up front that **building on someone else's knowledge is off by default** (`teach.lineage: false`, H5), so today lineage is what `--parents` and `--contributor` record at publish, not something the teach pipeline produces. | no | `royaltySplit` in `packages/core/src/catalog.ts`, `Contributor` in `packages/core/src/types.ts`, `packages/core/src/lineage.ts` |
-| `concepts/payment` | Paying without an account | HTTP 402 as a quote, not an error: the node answers with `x-payment-required` carrying base64 requirements, the client retries the same URL with `X-PAYMENT`, and the 200 comes back with `x-payment-tx-hash`. The two schemes that exist — `local-credit`, an HMAC proof against one node's own credit book, and `ain-transfer`, a real transfer on the AIN chain — and how `market.currency` picks between `CREDIT` and `AIN`. Why the settle record on the ledger is the receipt and what it proves. That a sale only happens for an entry the catalog calls `sellable`, which is where this page hands back to verification. **USDC is not listed** even though a type allows it ([§8](#8-defects-these-pages-must-not-repeat), H4). | no | `packages/core/src/x402.ts`, `packages/node/src/market.ts`, `packages/core/src/local-ledger.ts`, [`reference/schemas`](en/reference/schemas.md) (`X402Requirement`, `X402Payload`) |
+| `concepts/knowledge-patch` | What a knowledge patch is | The `.npz` as `addrs` / `before` / `after` over the serving model's memory table. Why **a row is a touched address, not a sentence**, and why "4 rows" and "1 fact" are both true of the same file. Why it can be applied to a running model with no restart: a file-based hook writes the `after` values into the live table, and the journal records what was displaced so `remove` can put it back. Why comparison is bf16-exact. What this design costs: the patch is bound to one model id, and two patches that touch the same addresses conflict — which is what the overlap table on `patch get` is for. Why it is not fine-tuning, stated as a difference in kind rather than a boast. | no | `ainize-core/src/npz.ts`, `ainize-core/src/lineage.ts` (`bf16Bits`), `ainize-node/src/runtime.ts`, `PatchAnchor` in `ainize-core/src/types.ts` |
+| `concepts/verification` | What "verified" proves — and what it does not | An attestation is one node's run, signed and on the record. Quorum counts **independent** attestations only: the author's own never counts (`verifier.allowSelfAttest` is false and the node refuses the write outright), so a network of two can never list anything and the default `verifier.quorum: 2` means *two nodes besides the publisher*. Executed versus `hash-only`, and the rule that decides everything: a patch that declares benchmark samples is never listed on integrity checks alone. `REJECTED` when failures reach quorum. A challenge holds an entry off sale **only until a verifier re-runs it** — and the honest wording of that, because nothing is escrowed, transferred or slashed anywhere in this product ([§8](#8-defects-these-pages-must-not-repeat), H6). Ends on the position: verified means somebody independent loaded it and scored it, not that it is right, so live-test it with your own questions. | no | `ainize-core/src/catalog.ts`, `ainize-node/src/verifier.ts`, [`reference/config`](en/reference/config.md) (`verifier.*`) |
+| `concepts/lineage-and-royalties` | Lineage and royalties | Parents are a relation on the anchor, frozen at publish. The split in two passes: a lineage pool of `market.royaltyShare` (0.3) divided evenly among the **unique ancestor authors**, each author's slice divided again across their own anchors and carved for that anchor's contributors; then the seller keeps the remainder, out of which a data provider is paid `teach.contributorShare` (0.7 by default) — so "70 %" and "30 %" are percentages of different things, which is the sentence this page exists to get right. The depth-16 walk cap, the cycle guard, at most 4 contributors and Σ share ≤ 1. States plainly up front that **building on someone else's knowledge is off by default** (`teach.lineage: false`, H5), so today lineage is what `--parents` and `--contributor` record at publish, not something the teach pipeline produces. | no | `royaltySplit` in `ainize-core/src/catalog.ts`, `Contributor` in `ainize-core/src/types.ts`, `ainize-core/src/lineage.ts` |
+| `concepts/payment` | Paying without an account | HTTP 402 as a quote, not an error: the node answers with `x-payment-required` carrying base64 requirements, the client retries the same URL with `X-PAYMENT`, and the 200 comes back with `x-payment-tx-hash`. The two schemes that exist — `local-credit`, an HMAC proof against one node's own credit book, and `ain-transfer`, a real transfer on the AIN chain — and how `market.currency` picks between `CREDIT` and `AIN`. Why the settle record on the ledger is the receipt and what it proves. That a sale only happens for an entry the catalog calls `sellable`, which is where this page hands back to verification. **USDC is not listed** even though a type allows it ([§8](#8-defects-these-pages-must-not-repeat), H4). | no | `ainize-core/src/x402.ts`, `ainize-node/src/market.ts`, `ainize-core/src/local-ledger.ts`, [`reference/schemas`](en/reference/schemas.md) (`X402Requirement`, `X402Payload`) |
 
 #### How-to — the three operator questions
 
@@ -297,9 +309,9 @@ other people cannot reach it, it has no price, and it will not list.
 
 | Slug | Title | Covers | Needs a model | Drawn from |
 |---|---|---|---|---|
-| `how-to/reachable-node` | Run a node others can reach | `host` binds, `publicUrl` is what peers are told — the distinction that decides whether gossip works at all. Seeding peers with `--peer` at `init` or `start` versus `ainize peers add` later, and how to tell the difference between "not peered" and "peered and silent" from `ainize nodes`. Which of the four roles each job needs, and what dropping `serving` costs. Running detached: the pid file, `ainize logs -f --kind p2p`, and `ainize status --check` as the one line a monitor or a deploy script should call. | no | `packages/node/src/server.ts`, `packages/node/src/p2p.ts`, `packages/cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
-| `how-to/price-knowledge` | Set a price and get paid | `market.defaultPrice` versus `--price`, and that **money is a decimal string everywhere**, never a JSON number. What `market.currency` settles as in each of its two values. Crediting a data provider with `--contributor addr:name:share`, what that share is a share *of*, and the ≤ 4 / Σ ≤ 1 rule the node enforces. Where the money then shows up: `ainize wallet` for balance and sales, `ainize payouts ls` for what is owed, and the settle record for the buyer's side. What can still be changed after an anchor is on the record and what cannot. | no | `packages/node/src/market.ts`, `packages/node/src/payouts.ts`, `validateContributors` in `packages/core/src`, [`reference/cli`](en/reference/cli.md#ainize-publish) |
-| `how-to/failed-verification` | When it will not list | Reading the evidence first: `ainize patch get` for the count, `ainize patch records` for who attested what and when. Then the three reasons an entry sits at `VERIFYING` and the different fix for each — no peer has a compatible model, the only attester is the author, or quorum needs more nodes than the network has. The grace window before a verifier gives up on a real run and falls back to `hash-only`, and why that fallback lists some patches and not others. `ainize patch challenge --reason` from the other side of the table: what it stops, what lifts it, and when superseding is the better move than arguing. | no | `packages/node/src/verifier.ts`, `packages/core/src/catalog.ts`, [`reference/errors`](en/reference/errors.md) |
+| `how-to/reachable-node` | Run a node others can reach | `host` binds, `publicUrl` is what peers are told — the distinction that decides whether gossip works at all. Seeding peers with `--peer` at `init` or `start` versus `ainize peers add` later, and how to tell the difference between "not peered" and "peered and silent" from `ainize nodes`. Which of the four roles each job needs, and what dropping `serving` costs. Running detached: the pid file, `ainize logs -f --kind p2p`, and `ainize status --check` as the one line a monitor or a deploy script should call. | no | `ainize-node/src/server.ts`, `ainize-node/src/p2p.ts`, `ainize-cli/src/context.ts`, [`reference/config`](en/reference/config.md) |
+| `how-to/price-knowledge` | Set a price and get paid | `market.defaultPrice` versus `--price`, and that **money is a decimal string everywhere**, never a JSON number. What `market.currency` settles as in each of its two values. Crediting a data provider with `--contributor addr:name:share`, what that share is a share *of*, and the ≤ 4 / Σ ≤ 1 rule the node enforces. Where the money then shows up: `ainize wallet` for balance and sales, `ainize payouts ls` for what is owed, and the settle record for the buyer's side. What can still be changed after an anchor is on the record and what cannot. | no | `ainize-node/src/market.ts`, `ainize-node/src/payouts.ts`, `validateContributors` in `ainize-core/src`, [`reference/cli`](en/reference/cli.md#ainize-publish) |
+| `how-to/failed-verification` | When it will not list | Reading the evidence first: `ainize patch get` for the count, `ainize patch records` for who attested what and when. Then the three reasons an entry sits at `VERIFYING` and the different fix for each — no peer has a compatible model, the only attester is the author, or quorum needs more nodes than the network has. The grace window before a verifier gives up on a real run and falls back to `hash-only`, and why that fallback lists some patches and not others. `ainize patch challenge --reason` from the other side of the table: what it stops, what lifts it, and when superseding is the better move than arguing. | no | `ainize-node/src/verifier.ts`, `ainize-core/src/catalog.ts`, [`reference/errors`](en/reference/errors.md) |
 
 **Twelve hand-written pages, eighteen in the tree.** Four of the twelve need a model runtime and eight do not, which
 is also the order to write them in: the eight can be finished and verified today, and the four can be written today
@@ -388,12 +400,12 @@ carries no risk. The move is a separate, later commit — because moving these f
 
 | What breaks | Where | Note |
 |---|---|---|
-| A **green test** | `packages/mcp/test/skill.test.ts:106` — `readFileSync(join(repo, 'docs', 'ux-test-scenarios.json'))` | hard-coded, no fallback; the test fails immediately |
+| A **green test** | `ainize-mcp/test/skill.test.ts:106` — `readFileSync(join(repo, 'docs', 'ux-test-scenarios.json'))` | hard-coded, no fallback; the test fails immediately |
 | A generator script | `scripts/render-ux-results.py:16,18,117,163` | four hard-coded `docs/…` paths, **no argv override** |
 | A generator script | `scripts/render-ux-scenarios.py:17-19` | argv-overridable, but the defaults are hard-coded |
 | `README.md` | 6 links into `docs/` | **owned by the landing-page workflow — coordinate before moving.** It is being edited live; the line numbers moved while this file was being written, so re-grep rather than trusting a citation |
 | ~100 cross-references between the internal documents themselves | `docs/*.md`, `docs/*.json` | `lineage-teach-design.md` alone carries 27 |
-| Scenario-id comments in tests | `packages/{core,node,mcp}/test/*.ts`, `packages/e2e/playwright.config.ts` | comments only, but they will mislead |
+| Scenario-id comments in tests | `packages/{core,node,mcp}/test/*.ts`, `ainize-node/e2e/playwright.config.ts` | comments only, but they will mislead |
 
 A full `grep` before moving is the next agent's job; the list above is where to start, and the `README.md` row is the one
 that needs another workflow's agreement rather than a `sed`.
@@ -405,16 +417,16 @@ that needs another workflow's agreement rather than a `sed`.
 Found while inventorying the surface. Each is a thing the current documentation asserts and the code does not do. They
 are listed here so no page inherits them.
 
-- **H1 — the hand-written CLI table is already stale.** `CLI_REFERENCE` (`packages/node/src/openapi.ts:378-452`) is
+- **H1 — the hand-written CLI table is already stale.** `CLI_REFERENCE` (`ainize-node/src/openapi.ts:378-452`) is
   served at `GET /api/docs` and rendered by the current `DocsPage`. It misses `patch stack`, `patch apply --with-base`
   and `patch remove --cascade` — all added the same morning it was inventoried — plus `patch conflicts`, `patch records`,
   `patch get`, `patch import`, `keys rotate`, `dataset get`, `route` and `nodes`. This is precisely what
   [§4](#4-what-is-generated-and-from-what) exists to end.
-- **H2 — `npm install -g ainize` cannot work, and one claim is still live.** `packages/cli/package.json` is
+- **H2 — `npm install -g ainize` cannot work, and one claim is still live.** `ainize-cli/package.json` is
   `"private": true`, and the name is unregistered: `npm view ainize version` → `E404` and
   `https://registry.npmjs.org/ainize` → HTTP 404 (both re-checked while writing this). The landing workflow has already
   fixed its two surfaces — the root `README.md` now says "there is no public npm package" and `LandingPage.tsx` no
-  longer carries the line. **What remains is ours to fix:** `packages/node/src/openapi.ts:379` still ships
+  longer carries the line. **What remains is ours to fix:** `ainize-node/src/openapi.ts:379` still ships
   `install: ['npm install -g ainize', …]`, and that is exactly the string the current `/docs` page renders;
   `openapi.ts:162` repeats `npx ainize --help` inside the OpenAPI description. `npx ainize` resolves only inside the
   repo, through the workspace symlink `node_modules/.bin/ainize`. The install page documents the clone-and-link path,
@@ -434,17 +446,17 @@ are listed here so no page inherits them.
 - **H7 — `/docs` truth is currently per-node-build.** The page renders whatever the running node's build returns; a node
   serving 89 paths against a source that builds 99 shows a stale reference with no indication. Generating from source in
   CI removes this. If any part of the new `/docs` still reads `GET /api/docs` live, it must show the node's build stamp.
-- **H8 — `grep` silently skips `packages/node/src/teach-dataset.ts`** (raw NUL byte → treated as binary). Any CI check
-  that greps `packages/node/src` loses 716 lines without an error. Read files, or use `grep -a`.
+- **H8 — `grep` silently skips `ainize-node/src/teach-dataset.ts`** (raw NUL byte → treated as binary). Any CI check
+  that greps `ainize-node/src` loses 716 lines without an error. Read files, or use `grep -a`.
 
 The next three were found by running the product while writing [§5.3](#53-what-was-run-to-write-this-plan), not by
 reading it. H9 and H10 are code defects and belong in the workflow report as well as here.
 
 - **H9 — a `bench.json` whose `format` is a string is accepted at publish and then breaks `patch get` for ever.**
-  `BenchmarkSpec.format` is `string[]` (`packages/core/src/types.ts:33`), but `market.ts:352` only fills a default —
+  `BenchmarkSpec.format` is `string[]` (`ainize-core/src/types.ts:33`), but `market.ts:352` only fills a default —
   `format: input.benchmark.format ?? ['template']` — and validates nothing. Publishing with `"format": "exact"`
   succeeded, announced, and anchored; `ainize patch get <id>` then died with
-  `error: a.benchmark.format.join is not a function` (`packages/cli/src/commands/patch.ts:65`), and since the anchor is
+  `error: a.benchmark.format.join is not a function` (`ainize-cli/src/commands/patch.ts:65`), and since the anchor is
   on the record the entry can never be inspected from the CLI again. Reproduced twice: the same file with
   `"format": ["template"]` prints normally. The `--benchmark` help string — `{schema, queries, format, samples}` —
   does not say `format` is an array, so a reader following the reference writes the broken form first. **Fix the
@@ -461,7 +473,7 @@ reading it. H9 and H10 are code defects and belong in the workflow report as wel
   built, which is exactly what a reader cannot tell from the outside.
 
 One correction to the brief while I am here: the web design system is a **single light palette**
-(`packages/web/src/theme/theme.ts`). There is no dark theme — only `components/public/Lifecycle.tsx` carries a local
+(`ainize-web/src/theme/theme.ts`). There is no dark theme — only `components/public/Lifecycle.tsx` carries a local
 `prefers-color-scheme` block. Docs pages use the same light theme as every other page.
 
 ---
@@ -482,7 +494,7 @@ cuts this plan makes; the rest were already settled.
 | **A hand-written `file-formats` reference page** | An earlier draft of this plan listed one. It is the exact thing [§4](#4-what-is-generated-and-from-what) exists to stop multiplying — a hand-kept table of things the code defines. What a guide actually needs from it (the `.npz` members, the `bench.json` shape) belongs in `concepts/knowledge-patch`, where it is *explained* rather than tabulated, and the rest belongs in a generator when someone writes one. |
 | **A separate "run a verifier" how-to** | Verifying is a role, not a job: `verifier` is on by default and `verifier.auto` runs the rounds. What an operator needs is on `how-to/reachable-node` (roles) and `how-to/failed-verification` (what the rounds decided). A third page would be two paragraphs and a link. |
 | **A separate royalties/payouts operator page** | `ainize payouts` is one command with two subcommands and it belongs beside the price that produced the payout. It lives inside `how-to/price-knowledge`. |
-| **Anything about MCP or the agent** | `packages/mcp/**` is another session's ground in this workflow, and its own `README.md` (853 lines) plus `packages/mcp/references/` (7 files) are already good developer documentation. A *Connect an agent* page linking to them is the right page and the wrong workflow. Flagged for whoever takes it: `packages/mcp/references/cli.md` is a **third** hand-written CLI reference and should become a link into the generated one. |
+| **Anything about MCP or the agent** | `ainize-mcp/**` is another session's ground in this workflow, and its own `README.md` (853 lines) plus `ainize-mcp/references/` (7 files) are already good developer documentation. A *Connect an agent* page linking to them is the right page and the wrong workflow. Flagged for whoever takes it: `ainize-mcp/references/cli.md` is a **third** hand-written CLI reference and should become a link into the generated one. |
 | The P2P compute market | `p2p-compute-market-design.md` is an unimplemented design. Documenting it would advertise a product that does not exist. |
 | `ainize-agent` (4 commands) | A demonstration harness for the x402 buyer loop, not a supported surface — and I have not run it. Add it when both are false. |
 | Building on someone else's knowledge (lineage how-to) | Off by default and returns 403 (H5). Concept page yes, how-to guide no. |
