@@ -16,6 +16,10 @@ advanced to core0.1.3 (`695a8ad6`) and node0.1.2 (`20e599a6`); this hardening br
 incorporates those changes. The compatible certification CLI is0.1.1 (`9acc9de`).
 The currently observed public `/api/info` still reports0.1.0, build
 `2026-09-10T14:15:13.517Z`; source availability is not proof of the running binary.
+The API version is the core `VERSION` constant, still0.1.0 in core0.1.3, not the
+npm package version. The refreshed local node also reports0.1.0 with a newer
+build stamp and handles the POST. Do not diagnose deployment from that version
+string alone; compare the actual POST response, build/image and source identity.
 
 ```bash
 ainize config set p2p.relayBlobs true

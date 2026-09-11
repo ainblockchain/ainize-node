@@ -59,3 +59,10 @@ curl -i -X POST http://127.0.0.1:3400/p2p/blob/f9f665f6fa1a6b37963a4845107c0c0a5
 - 최신 호환 이미지(core0.1.3/node0.1.2+보강/CLI0.1.1)에서 **실제 signed multipart 본문**을 다시 보냈다. 10:43:29 www 첫 번째,10:43:31 apex 두 번째 모두 HTML404 `Cannot POST /p2p/blob/...`, accepted=false. 새 앵커/데이터셋이나 학습을 만들지 않았다. 원문은 `kpi/evidence/signed_p2p_offer_r3_20260911/`.
 - blob0이면 없는 본문의 GET 실패는 설명된다. 그러나 빈 수신 노드도 처리해야 하는 POST 업로드의 HTML `Cannot POST`를 GET의 파일 부재와 같은 증거로 해석하지 않는다. 프록시인지 실행 바이너리인지의 확정은 관리자 내부3400 응답·실행 커밋 확인이 필요하다.
 - 이미지 전체 빌드/의존성 검사와 회귀55개가 통과했다. API-only 교체 전후 원본·학습 파일/ID 검증 및 링크 대상 별도 비공개 백업을 추가했다. 실행·검증 절차는 `deploy/source-refresh.md`이며 공개 서버에 배포되었다고 보고하지 않는다.
+
+## 11:03 UTC 로컬 API 교체 완료
+
+- 9번째 동일job의 실제 READY를 기다린 뒤 API 컨테이너만 교체했다. 새 인스턴스 시작11:02:46UTC, 이미지 `sha256:da23af1a5c75cfee61bdad8403f39cad31b6bd2860e7af590a6ffbf03f31c4b0`. 학습9개의 ID·dataset·result/checks와 기존 파일846개의 바이트/해시가 일치했다. `flashnext`/`flashtrain`의 컨테이너 ID·시작 시각·PID가 모두 그대로다. 링크 대상 학습 파일도 별도0600 비공개 백업했다.
+- 로컬의 본문·인증 없는 POST는 **JSON403 relay_disabled**다. 빈 수신/비활성 수신에도 route 자체는 응답한다. 공개 signed POST의 HTML404와 구분한다. 로컬은 발행자이며 추가 relay 저장소로 임의 개방하지 않았다.
+- `/api/info.version`은 npm 버전이 아니라 core의 `VERSION='0.1.0'` 상수다. 새 로컬 바이너리도0.1.0을 표시한다. 따라서 공개0.1.0 표시만으로 미배포를 단정하지 않는다. 공개 build9/10과 로컬 build9/11은 참고하되 실제 POST·실행 이미지/커밋으로 확인한다.
+- 후속 회귀 **56/56**(31+25) 및 실제 미종료job 재시작 거부 시험이 통과했다. 증빙 `ainize_runtime_operator_guard_tests_20260911/`, `ainize_runtime_upgrade_20260911/`. 이는 공개 P2P 복제나 Live 성공이 아니다.
