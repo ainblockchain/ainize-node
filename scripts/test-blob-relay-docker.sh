@@ -17,7 +17,7 @@ for package in core node; do
   target=$evidence/source/$package
   mkdir -p "$target"
   cp -a "$source/src" "$source/package.json" "$source"/tsconfig*.json "$target/"
-  for optional in test fixtures trainer scripts; do
+  for optional in test fixtures trainer scripts deploy; do
     if [ -d "$source/$optional" ]; then cp -a "$source/$optional" "$target/"; fi
   done
 done
@@ -30,7 +30,7 @@ for package in core node; do
   mkdir -p "$target"
   cp -a /source/$package/src /source/$package/package.json /source/$package/tsconfig*.json "$target/"
   cp -a /opt/ainize/ainize-$package/node_modules "$target/"
-  for optional in test fixtures trainer scripts; do
+  for optional in test fixtures trainer scripts deploy; do
     if [ -d /source/$package/$optional ]; then cp -a /source/$package/$optional "$target/"; fi
   done
 done
@@ -38,7 +38,7 @@ cd /tmp/ainize-core
 npm run build
 cd /tmp/ainize-node
 npm run build
-node --test --import tsx test/blob-relay.test.ts test/retry-public-blob.test.ts test/watchdog-snapshot.test.ts
+node --test --import tsx test/blob-relay.test.ts test/retry-public-blob.test.ts test/watchdog-snapshot.test.ts test/runtime-snapshot.test.ts
 node --test --import tsx test/guard-api.test.ts test/cluster.test.ts
 ' > "$evidence/container-id.txt"
 docker inspect "$name" --format '{{json .HostConfig}}' > "$evidence/host-config.json"
