@@ -40,7 +40,8 @@ async function main() {
   }
   const matches = expected.map(id => {
     const item = items.find(candidate => candidate.anchor.id === id);
-    return { id, found: Boolean(item), status: item?.status || null, listed: item?.status === 'LISTED' };
+    const verified = item?.status === 'VERIFIED' || item?.status === 'LISTED';
+    return { id, found: Boolean(item), status: item?.status || null, verified, listed: verified };
   });
   const result = {
     checkedAt: new Date().toISOString(), origin: origin.origin,
@@ -50,10 +51,11 @@ async function main() {
     expected, matches, requireListed,
     visibleCount: matches.filter(item => item.found).length,
     listedCount: matches.filter(item => item.listed).length,
+    verifiedCount: matches.filter(item => item.verified).length,
     catalogPresenceComplete: expected.length > 0 && matches.every(item => item.found),
     verificationComplete: expected.length > 0 && matches.every(item => item.listed),
     pass: expected.length > 0 && matches.every(item => requireListed ? item.listed : item.found),
-    scope: 'Public catalog presence and LISTED verification are separate observations; not an atomic snapshot, payment, model load, dataset, teach or inference proof.',
+    scope: 'Public catalog presence and VERIFIED (legacy LISTED) status are separate observations; not an atomic snapshot, payment, model load, dataset, teach or inference proof.',
   };
   fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
   console.log(JSON.stringify(result, null, 2));

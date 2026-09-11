@@ -184,7 +184,7 @@ export class Drive {
         if (blob) this.link(`${dir}/${e.anchor.patch_sha256}.npz`, blob.path);
         this.changelog(e.anchor.id, `${new Date(e.anchor.created_at).toISOString()} ${e.status === 'DRAFT' ? 'draft created' : 'announced'} by ${e.anchor.author} (sha256 ${e.anchor.patch_sha256.slice(0, 12)}…, ${e.anchor.rows} rows)`);
         for (const a of e.attestations) this.changelog(e.anchor.id, `${new Date(a.created_at || e.anchor.created_at).toISOString()} attested ${a.passed ? 'PASS' : 'FAIL'} by ${a.verifier_name ?? a.verifier} (${a.verified_on}) ${JSON.stringify(a.score)}`);
-        if (e.listed_at) this.changelog(e.anchor.id, `${new Date(e.listed_at).toISOString()} LISTED — quorum ${e.passed}/${e.quorum}`);
+        if (e.listed_at) this.changelog(e.anchor.id, `${new Date(e.listed_at).toISOString()} VERIFIED — quorum ${e.passed}/${e.quorum}`);
         for (const s of e.settlements) this.changelog(e.anchor.id, `${new Date(s.created_at).toISOString()} sold to ${s.buyer} for ${s.amount} ${s.currency} (${s.scheme}, tx ${s.tx_hash.slice(0, 12)}…)`);
         for (const sb of e.superseded_by) this.changelog(e.anchor.id, `superseded by ${sb}`);
       }

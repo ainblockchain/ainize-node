@@ -45,6 +45,16 @@ test('all 100 expected LISTED patches are checked across pages', async () => {
   assert.ok(result.calls.includes('/api/catalog?limit=200&offset=50'));
 });
 
+test('current VERIFIED and legacy LISTED share the verified counter without changing raw status', async () => {
+  const items = [{ anchor: { id: 'current' }, status: 'VERIFIED' }, { anchor: { id: 'legacy' }, status: 'LISTED' }];
+  const result = await runAudit([{ total: 2, items }], 'current,legacy');
+  assert.equal(result.code, 0);
+  assert.equal(result.result.verifiedCount, 2);
+  assert.equal(result.result.listedCount, 2);
+  assert.equal(result.result.matches[0].status, 'VERIFIED');
+  assert.equal(result.result.matches[1].status, 'LISTED');
+});
+
 test('ANNOUNCED is not LISTED', async () => {
   const result = await runAudit([{ total: 1, items: [{ anchor: { id: 'patch' }, status: 'ANNOUNCED' }] }], 'patch');
   assert.equal(result.code, 1);

@@ -12,6 +12,8 @@ The inference audit checkpoints raw response hashes. Resume validates those hash
 
 ## Tests
 
+The additional `lm_eval_ainize.py` adapter connects existing checked lessons to the real lm-evaluation-harness 0.4.13 `LM`/task evaluator, without replacing DART datasets or retraining. See [execution, counters, safety and evidence boundaries](docs/lm-eval-ainize-ko.md). Its exact-match metric is deliberately distinct from the earlier custom inference audit. Neither adapter installation nor fixture tests prove 100 live evaluations or incentive settlement.
+
 Node 24, no third-party dependencies:
 
 ```sh
@@ -37,7 +39,7 @@ The deployment wrapper freezes these two source modules, captures Docker image/l
 
 Install the JavaScript helpers in the existing `/mnt/newdata/gov/kpi/harness` and the `docker/` templates in `/mnt/newdata/gov/kpi/docker`; do not run these deployment-specific shell templates from this repository's source folder. They depend on the existing Ainize container/home, private credentials, evidence/results directories, Docker Compose configuration and locally built images. The chain recorder additionally requires the certification deployment's `common.js` and its configured ain-js dependency. This folder is not a clean-machine installer and does not publish Docker images or npm packages.
 
-- `verify-public-catalog.js` separates actual ID presence from independent LISTED verification. Its default exit gate requires LISTED; `CATALOG_REQUIRE_LISTED=0` checks presence only while still reporting `verificationComplete=false` for ANNOUNCED.
+- `verify-public-catalog.js` separates actual ID presence from VERIFIED status (legacy LISTED is also recognized). Its default exit gate requires verified status; the backward-compatible `CATALOG_REQUIRE_LISTED=0` checks presence only while still reporting `verificationComplete=false` for ANNOUNCED. Raw status is preserved and both `verifiedCount` and the legacy `listedCount` are returned.
 - `ainize-public-proxy.js` exposes only metadata, native P2P and download/payment routes on loopback port3412, upstream3410. It blocks teaching, operator authentication/management and model mutation; removes operator cookies/Bearer and spoofed forwarding headers; and bounds request size/time/connections. It preserves the node's signed entitlement gates, not bypasses them. This is route isolation, not a complete audit of the underlying P2P protocol. The proxy has no secret-home or Docker-socket mount and runs with1CPU/256MiB/read-only/no-extra-swap. Four isolated tests and real-loopback checks cover forwarding, rejected teaching/admin requests, and denied private-draft downloads.
 - `switch-ainize-market-ledger.sh` is the guarded, one-off maintenance used after three complete audits. It requires a deliberately stopped matching observer at a no-pending-submission checkpoint, all server jobs terminal and an empty runtime queue/stack. It backs up the secret home outside Git, changes only `ledger.kind`, preserves all job JSON and identity, then requires resuming the same RUN_ID. It refuses active jobs and does not kill/restart GPU containers or the ten-node chain. Do not reuse the historical PID or create a fake pause marker.
 

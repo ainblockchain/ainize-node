@@ -1,6 +1,6 @@
 {
   "name": "@ainize/node",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Ainize node — serves a base model whose conditional memory is extended by knowledge patches; teaches, verifies, publishes and trades patches on the AIN ledger",
   "license": "MIT",
   "repository": {
@@ -41,14 +41,14 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "^0.1.0",
+    "@ainize/core": "^0.1.3",
     "aindrive": "^0.2.4",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
     "multer": "^2.3.0",
-    "zod": "^4.5.4",
-    "yjs": "^13.6.30"
+    "yjs": "^13.6.30",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",
