@@ -43,6 +43,8 @@ Install the JavaScript helpers in the existing `/mnt/newdata/gov/kpi/harness` an
 
 The experiment's Ainize publisher now uses the public marketplace's `local` ledger. The independent AIN performance chain remains running, and evidence anchors use ain-js separately. Local DAG/CREDIT records are not AIN transfers or blockchain incentive settlement. Public HTTPS callback/Funnel enablement and the publisher's rights/permanence consent are still awaiting operator input. No knowledge has been published to the public marketplace by these helpers, and no verification policy has been weakened to fill the catalog.
 
+The 2026-09-11 08:04–08:06 UTC recheck confirms both catalogs are empty, including explicitly requested ANNOUNCED/VERIFYING statuses. Four local jobs are READY but all have `publish_status: none` and no published patch ID. This is unfinished `teach publish`, not evidence of a browser-cache bug. The [Korean diagnosis and administrator handoff](docs/Ainize_explore_빈목록_진단.md) separate source/package releases, dataset imports, marketplace publication and reverse-download connectivity.
+
 All observer/proxy tests:
 
 ```sh
