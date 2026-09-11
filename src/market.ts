@@ -2827,7 +2827,13 @@ export class Market {
     // counting, so the fraction here reads 0/2 on something that was on sale — the reason the buyer needs is the
     // challenge, not the arithmetic.
     if (entry.open_challenge || entry.status === 'CHALLENGED') throw conflict(challengedMessage(entry));
-    if (!entry.quorum_ok) throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy`);
+    // Unverified knowledge is sellable only when the operator has opted in, and it is STILL not LISTED —
+    // the status keeps saying ANNOUNCED, because relabelling it would spend the one signal this marketplace
+    // has. The buyer takes the risk knowingly; the record does not pretend the risk is absent.
+    if (!entry.quorum_ok && !this.cfg.verifier?.sellUnverified) {
+      throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy. `
+        + `The seller's node can allow this at the buyer's risk with \`verifier.sellUnverified true\`, and the knowledge stays ${entry.status}, not LISTED.`);
+    }
     if (!entry.sellable) throw conflict(challengedMessage(entry));
     return entry;
   }
