@@ -1,0 +1,11 @@
+{
+  "name": "ainize-dart100-evidence",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test/ainize-lifecycle.test.js"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
