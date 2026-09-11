@@ -41,6 +41,7 @@ export function blobRelay(market: Market): RequestHandler {
     try {
       if (held) {
         if (statSync(held.path).size !== expected || await sha256File(held.path) !== sha) throw new MarketError(409, 'held blob failed integrity check; operator repair required');
+        market.blobs.markRelayed(sha);
         return { ok: true, sha256: sha, size_bytes: expected, already_held: true };
       }
       const storage = multer.diskStorage({
@@ -76,6 +77,7 @@ export function blobRelay(market: Market): RequestHandler {
       const destination = market.blobs.pathFor(sha);
       if (existsSync(destination) && await sha256File(destination) !== sha) throw new MarketError(409, 'stored file failed integrity check; operator repair required');
       const { blob } = await market.blobs.importFile(req.file.path, { copy: true, expectSha: sha });
+      market.blobs.markRelayed(sha);
       market.log('info', 'blob', `relaying ${sha.slice(0, 12)} for ${entry.anchor.id} (${blob.size_bytes} bytes)`, entry.anchor.id);
       return { ok: true, sha256: sha, size_bytes: blob.size_bytes, already_held: false };
     } finally {

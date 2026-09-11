@@ -32,6 +32,14 @@ and copy space require additional disk headroom. Zero or unset disables relay.
 This is a single-node-process budget; do not share its data directory between
 multiple independently running receivers.
 
+Accepted relay bodies have a persistent retention flag in the blob database.
+Verification cleanup and `gc` do not discard them: an offered copy must not
+disappear immediately after attestation. Ordinary verification downloads retain
+their existing cleanup policy. The operator can explicitly release a relay copy
+with `ainize patch forget <id>`. This flag is a storage obligation, not a purchase
+or permission to apply paid knowledge. Older databases acquire the new column
+with a zero default; re-offering an already-held body establishes retention.
+
 Additional fixed bounds: 256 MiB encoded, 512 MiB expanded NPZ, eight concurrent
 offers, one file per request, and a 60-second upload deadline. Oversized files
 remain transferable by the existing authenticated pull path; this new public
@@ -56,6 +64,23 @@ It retries the existing body without adding another anchor, retraining, or
 publishing a dataset. `relayed: false` and an empty `accepted` list are failures
 to place the body, not a successful publication. Only explicitly configured
 peers receive automatic offers; peer exchange cannot silently add recipients.
+
+If the author node cannot safely restart because a trainer is active, the
+standalone recovery client can offer an already-published **free public** body
+using the same signed protocol and the existing identity file:
+
+```bash
+node scripts/retry-public-blob.mjs /private/config.json /path/to/body.npz published-id https://ainize.ai
+```
+
+Run it with installed node/core dependencies (Node 24), preferably in a Docker
+container with only the config and selected body mounted read-only. It checks
+the source hash, anchored size, author and ledger signature before transmitting;
+only the first 500 peer records are searched. It refuses redirects and bogus
+acknowledgments, and requires an authenticated GET read-back with the same hash
+after acceptance. It never prints the identity secret or request auth header.
+The client does not retrain, create an anchor, publish a dataset, or modify the
+running author node. A missing receiving route remains a failure, not success.
 
 Authentication, known published-public anchor, author, storage budget, and
 in-flight checks happen **before** multipart parsing. The receiver validates

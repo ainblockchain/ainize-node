@@ -50,6 +50,8 @@ export class BlobStore {
   }
 
   has(sha: string): boolean { return !!this.get(sha); }
+  markRelayed(sha: string): void { this.store.markBlobRelayed(sha); }
+  isRelayed(sha: string): boolean { return this.get(sha)?.relayed === 1; }
   list(): BlobRow[] { return this.store.listBlobs().filter((b) => existsSync(b.path)); }
 
   addrSet(sha: string): BigInt64Array | null {

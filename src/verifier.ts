@@ -507,7 +507,7 @@ export class Verifier {
   private async releaseBody(anchor: PatchAnchor, sha: string): Promise<void> {
     const m = this.market;
     const v = verifierConfig(m.cfg);
-    if (v.retainBodies) return;
+    if (v.retainBodies || m.blobs.isRelayed(sha)) return;
     const blob = m.blobs.get(sha);
     if (!blob) return;
     // Bodies are content-addressed: every id built from the same training output shares this file.
@@ -521,6 +521,7 @@ export class Verifier {
       if (lic && lic.source !== 'verification') return;
     }
     if (blob.path.startsWith(m.datasets.dir)) return;   // a training set, not a knowledge body
+    if (m.blobs.isRelayed(sha)) return;
     m.blobs.remove(sha);
     for (const e of sharing) m.store.clearLicense(e.anchor.id);
     this.released.files++;

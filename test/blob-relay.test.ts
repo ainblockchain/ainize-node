@@ -9,6 +9,10 @@ import { createIdentity, defaultConfig, LocalLedger, sha256Hex, writeNpz, type P
 import { startNode } from '../src/server.js';
 import { authHeader, P2P } from '../src/p2p.js';
 import { inspectReplicaNpz } from '../src/replica-npz.js';
+import { Verifier } from '../src/verifier.js';
+import { Store } from '../src/store.js';
+import { BlobStore } from '../src/blobs.js';
+import { gcPlan } from '../src/gc.js';
 
 async function fixture(context: TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'ainize-relay-'));
@@ -238,4 +242,58 @@ test('operator retries an existing signed knowledge without another publish reco
   assert.deepEqual(receipt.accepted, [receiver.url]);
   assert.deepEqual(readFileSync(receiver.node.market.blobs.get(author.sha)!.path), author.bytes);
   assert.equal((await author.node.ledger.anchors()).length, before);
+});
+
+test('relayed bodies survive verification cleanup and GC without granting a paid license', async context => {
+  const setup = await fixture(context); await setup.publish({ price: '1' });
+  assert.equal((await setup.offer()).status, 200);
+  const verifier = new Verifier(setup.node.market, 60_000);
+  const cleanup = verifier as unknown as { releaseBody: (anchor: PatchAnchor, sha: string) => Promise<void> };
+  await cleanup.releaseBody(setup.anchor, setup.sha);
+  assert.equal(setup.node.market.blobs.has(setup.sha), true);
+  assert.equal(setup.node.market.licenseOf((await setup.node.market.entry(setup.anchor.id))!), null);
+  const plan = await gcPlan(setup.node.market, { allowSoleCopy: true, keepPurchased: false });
+  assert.equal(plan.kept.relayed, 1);
+  assert.deepEqual(plan.candidates, []);
+});
+
+test('relay retention persists across database reopening and explicit removal clears it', async context => {
+  const setup = await fixture(context); await setup.publish();
+  assert.equal((await setup.offer()).status, 200);
+  const reopened = new Store(join(setup.cfg.dataDir, 'node.sqlite'));
+  try {
+    const blobs = new BlobStore(reopened, setup.cfg.dataDir);
+    assert.equal(blobs.isRelayed(setup.sha), true);
+    blobs.remove(setup.sha);
+    assert.equal(blobs.isRelayed(setup.sha), false);
+    await blobs.importFile(setup.file, { copy: true });
+    assert.equal(blobs.isRelayed(setup.sha), false);
+  } finally { reopened.close(); }
+});
+
+test('ordinary verification copies still follow the existing release policy', async context => {
+  const setup = await fixture(context); await setup.publish({ price: '1' });
+  await setup.node.market.blobs.importFile(setup.file, { copy: true });
+  const verifier = new Verifier(setup.node.market, 60_000);
+  const cleanup = verifier as unknown as { releaseBody: (anchor: PatchAnchor, sha: string) => Promise<void> };
+  await cleanup.releaseBody(setup.anchor, setup.sha);
+  assert.equal(setup.node.market.blobs.has(setup.sha), false);
+});
+
+test('verification cleanup rechecks retention after awaiting the catalog', async context => {
+  const setup = await fixture(context); await setup.publish({ price: '1' });
+  await setup.node.market.blobs.importFile(setup.file, { copy: true });
+  const original = setup.node.market.catalogAll.bind(setup.node.market);
+  let releaseCatalog!: () => void;
+  const gate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+  setup.node.market.catalogAll = async force => { await gate; return original(force); };
+  const verifier = new Verifier(setup.node.market, 60_000);
+  const cleanup = verifier as unknown as { releaseBody: (anchor: PatchAnchor, sha: string) => Promise<void> };
+  try {
+    const pending = cleanup.releaseBody(setup.anchor, setup.sha);
+    setup.node.market.blobs.markRelayed(setup.sha);
+    releaseCatalog();
+    await pending;
+    assert.equal(setup.node.market.blobs.has(setup.sha), true);
+  } finally { releaseCatalog(); setup.node.market.catalogAll = original; }
 });
