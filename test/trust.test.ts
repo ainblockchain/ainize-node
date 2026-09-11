@@ -48,18 +48,18 @@ before(async () => {
   const file = synthPatch(join(tmp, 'blobs'), PATCH, 7, 64);
   await A.market.createDraft({ id: PATCH, name: 'trust probe', model: { id_M: 'demo-ainize-1b' }, benchmark: { schema: 'trust', queries: 1, format: ['template'] }, price: '1', file });
   await A.market.announce(PATCH);
-  // B and C verify for real (hash-only here: no runtime in tests) → LISTED on every node
+  // B and C verify for real (hash-only here: no runtime in tests) → VERIFIED on every node
   await waitFor(() => B.market.entry(PATCH), (e) => !!e);
   await B.verifier!.verifyOne((await entry(B)).anchor);
   await waitFor(() => C.market.entry(PATCH), (e) => !!e);
   await C.verifier!.verifyOne((await entry(C)).anchor);
-  await waitFor(() => entry(A), (e) => e.status === 'LISTED');
+  await waitFor(() => entry(A), (e) => e.status === 'VERIFIED');
 });
 after(async () => { await Promise.all([A, B, C].map((n) => n?.stop())); rmSync(tmp, { recursive: true, force: true }); });
 
 test('item 146: the author cannot attest its own anchor — API 409, verifier 409, and the record would not count anyway', async () => {
   const e0 = await entry(A);
-  assert.equal(e0.status, 'LISTED');
+  assert.equal(e0.status, 'VERIFIED');
   assert.equal(e0.passed, 2);
   assert.equal(e0.self_checks, 0);
 
@@ -129,8 +129,8 @@ test('items 153 + 330: a QUORUM of re-runs answers the challenge — one is not 
   // the challenger re-runs it too: NOW the quorum has been re-established since the challenge, and the sale resumes
   const c = await entry(C);
   await C.verifier!.verifyOne(c.anchor);
-  const after = await waitFor(() => entry(A), (x) => x.status === 'LISTED');
-  assert.equal(after.status, 'LISTED');
+  const after = await waitFor(() => entry(A), (x) => x.status === 'VERIFIED');
+  assert.equal(after.status, 'VERIFIED');
   assert.equal(after.sellable, true);
   assert.equal(after.open_challenge, undefined);
   assert.equal(after.challenge_log[0].state, 'dismissed');

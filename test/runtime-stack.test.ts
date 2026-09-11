@@ -235,7 +235,7 @@ test('AZ-259 a verification killed halfway leaves a marker, and the next start t
 
 test('AZ-260 holding a body is not a licence to serve it (item 327)', { skip }, async () => {
   const foreign = {
-    status: 'LISTED', settlements: [],
+    status: 'VERIFIED', settlements: [],
     anchor: { id: 'foreign-1', author: '0x00000000000000000000000000000000deadbeef', patch_sha256: 'f'.repeat(64), price: '5', currency: 'CREDIT' },
   } as unknown as Parameters<typeof N.market.hasLicense>[0];
   assert.equal(N.market.hasLicense(foreign), false, 'a stranger’s knowledge is not usable by default');
