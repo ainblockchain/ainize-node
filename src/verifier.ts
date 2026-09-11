@@ -219,7 +219,7 @@ export class Verifier {
         }
         if (mine) {
           // Upgrade: we attested hash-only earlier but a compatible runtime is available now → re-verify for real.
-          if (mine.verified_on === 'hash-only' && compatible && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
+          if (mine.verified_on === 'hash-only' && compatible && ['VERIFIED', 'VERIFYING', 'ANNOUNCED'].includes(e.status) && !this.runtimeFailures.has(`upgraded:${e.anchor.id}`)) {
             if (this.standAside(v, report)) break;
             this.runtimeFailures.set(`upgraded:${e.anchor.id}`, 1);
             report.verified++;

@@ -117,3 +117,19 @@ the second. Thus the visible endpoint had not yet demonstrated this receiver,
 even though feature code was available. A relay-disabled **403** or signed-offer
 **403** proves route matching; a **404** HTML `Cannot POST` does not. Record the
 actual deployment commit and repeat the body transfer and Live test separately.
+
+## Compatibility and runtime cleanup
+
+The hardening branch incorporates node main `20e599a6` (node 0.1.2) and builds
+against merged core `695a8ad6` (core 0.1.3). It retains the upstream
+LISTED-to-VERIFIED terminology change rather than restoring older schemas.
+The last public control probes at 09:52 UTC still returned HTML `Cannot POST`
+on both domains; the presence of source on main does not establish deployment.
+
+A separate cleanup regression exposed a watchdog snapshot race: it read a
+visitor's applied stack before acquiring the runtime lock and could reconstruct
+that obsolete stack after a completed removal. The stack, top body and rebuild
+plan are now read inside the lock. Three deterministic regression tests fail on
+the former implementation and pass with the fix. This prevents the modeled race;
+it does not prove that this was the only cause of the observed DART audit cleanup
+failure. No running model or active training job was restarted to test this fix.

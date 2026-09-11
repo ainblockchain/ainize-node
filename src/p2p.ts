@@ -422,7 +422,6 @@ export class P2P {
     }
     return accepted;
   }
-
   /** Fetch a blob from a peer with identity auth (verifier/author/purchaser rights are checked by the peer). */
   async fetchBlob(sha: string, dest: string, endpoints = this.holders(sha), token?: string): Promise<string> {
     let lastErr: Error | null = null;

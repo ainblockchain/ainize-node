@@ -52,7 +52,7 @@ before(async () => {
   await B.verifier!.verifyOne((await entry(B)).anchor);
   await waitFor(() => C.market.entry(PATCH), (e) => !!e);
   await C.verifier!.verifyOne((await entry(C)).anchor);
-  await waitFor(() => entry(A), (e) => e.status === 'LISTED');
+  await waitFor(() => entry(A), (e) => e.status === 'VERIFIED');
   await waitFor(() => entry(B), (e) => e.sellable);
   await B.market.buy(PATCH);
 });
@@ -71,8 +71,8 @@ test('item 347: a settled buyer records that it did not work — the sale stands
   assert.ok(d.sig.length > 0);
 
   // it is NOT a challenge: the knowledge stays on sale and no verifier is asked for anything
-  const onA = await waitFor(() => entry(A), (e) => B.market.disputesFor(PATCH).length > 0 || e.status === 'LISTED');
-  assert.equal(onA.status, 'LISTED');
+  const onA = await waitFor(() => entry(A), (e) => B.market.disputesFor(PATCH).length > 0 || e.status === 'VERIFIED');
+  assert.equal(onA.status, 'VERIFIED');
   assert.equal(onA.sellable, true);
   assert.equal(onA.open_challenge, undefined);
 

@@ -1,5 +1,5 @@
 /**
- * Three in-process nodes on the local ledger: A sells, B and C verify (quorum 2) → LISTED;
+ * Three in-process nodes on the local ledger: A sells, B and C verify (quorum 2) → VERIFIED;
  * C buys via HTTP 402 (local-credit, signed intent) → settlement with lineage royalty → blob download;
  * conflict detection & supersede; branch subscription + gateway routing.
  */
@@ -47,15 +47,15 @@ test('seed: prototype ledger imports and synthetic patches are announced', async
   assert.equal(cat.find((e) => e.anchor.id === 'law-kr-2025')?.status, 'ANNOUNCED');
 });
 
-test('gossip replicates records to peers and verifiers reach quorum → LISTED', async () => {
-  const listed = await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2025')?.status === 'LISTED', 30000);
+test('gossip replicates records to peers and verifiers reach quorum → VERIFIED', async () => {
+  const listed = await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2025')?.status === 'VERIFIED', 30000);
   const e = listed.find((x) => x.anchor.id === 'law-kr-2025')!;
-  assert.equal(e.status, 'LISTED', JSON.stringify(e.attestations));
+  assert.equal(e.status, 'VERIFIED', JSON.stringify(e.attestations));
   assert.ok(e.attestations.every((a) => a.verified_on === 'hash-only' && a.passed));
   assert.ok(new Set(e.attestations.map((a) => a.verifier)).size >= 2);
   // C also sees it
-  const onC = await waitFor(() => C.market.catalog(true), (c) => c.find((x) => x.anchor.id === 'law-kr-2025')?.status === 'LISTED');
-  assert.equal(onC.find((x) => x.anchor.id === 'law-kr-2025')?.status, 'LISTED');
+  const onC = await waitFor(() => C.market.catalog(true), (c) => c.find((x) => x.anchor.id === 'law-kr-2025')?.status === 'VERIFIED');
+  assert.equal(onC.find((x) => x.anchor.id === 'law-kr-2025')?.status, 'VERIFIED');
   const v = await B.ledger.verify();
   assert.ok(v.valid, v.errors.join(','));
 });
@@ -63,7 +63,7 @@ test('gossip replicates records to peers and verifiers reach quorum → LISTED',
 test('conflict detection: KR and US law patches overlap; 2026 supersedes 2025 after listing', async () => {
   const conflicts = await A.market.conflicts('law-kr-2025');
   assert.ok(conflicts.some((c) => c.patch_id === 'law-us-2025' && c.overlap_rows > 0 && c.same_schema));
-  await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2026')?.status === 'LISTED', 30000);
+  await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2026')?.status === 'VERIFIED', 30000);
   await A.market.reconcileSupersedes();
   const cat = await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2025')?.status === 'SUPERSEDED', 10000);
   assert.equal(cat.find((e) => e.anchor.id === 'law-kr-2025')?.status, 'SUPERSEDED');

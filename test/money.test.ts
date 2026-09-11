@@ -188,7 +188,7 @@ test('236 the 402 says what is being sold: status, lineage, licence and the spli
     split_preview: { address: string; name: string | null; role: string; amount: string }[];
     maxAmountRequired: string;
   };
-  assert.equal(req.status, 'LISTED');
+  assert.equal(req.status, 'VERIFIED');
   assert.deepEqual(req.superseded_by, []);
   assert.equal(req.lineage.standalone, false, 'it is built on something and the quote says so');
   assert.deepEqual(req.lineage.parents.map((p) => p.id), ['money-base']);

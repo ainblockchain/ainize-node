@@ -59,7 +59,7 @@ const SEED = Date.now() % 2_000_000_000;
 const baseId = `ain-e2e-base-${RUN}`;
 const childId = `ain-e2e-child-${RUN}`;
 
-test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier attests under rule, LISTED', { skip: !up }, async () => {
+test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier attests under rule, VERIFIED', { skip: !up }, async () => {
   const dir = join(tmp, 'synth');
   // Per-run seeds. The AIN dev chain is shared and permanent, so a fixed seed puts the SAME bytes on the record
   // under a different identity every run — and `duplicate_body` (item 363) rightly refuses the second publisher.
@@ -80,9 +80,9 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
   assert.ok(childNode, 'child knowledge-graph node exists');
   const edges = graph.edges[childNode!] ?? {};
   assert.ok(Object.values(edges).some((e: any) => e.type === 'extends'), 'lineage is an `extends` edge in the ain-js knowledge graph');
-  const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'LISTED', 90000);
+  const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'VERIFIED', 90000);
   let e = cat.find((x) => x.anchor.id === childId)!;
-  assert.equal(e.status, 'LISTED', JSON.stringify(e.attestations));
+  assert.equal(e.status, 'VERIFIED', JSON.stringify(e.attestations));
   // The dev chain is shared with whatever else watches this app (the demo cluster's verifiers do), and a verifier only
   // picks up ANNOUNCED/VERIFYING items — so with quorum 1 someone else can list it before B's round reaches it. Ask B
   // directly in that case: the point of the assertion is that B's attestation is accepted under the rule, not that B
@@ -99,7 +99,7 @@ test('AIN ledger: anchor → knowledge graph entry + market mirror, verifier att
 });
 
 test('AIN x402: B buys with a real AIN transfer; seller verifies tx on chain; settlement + royalty on chain', { skip: !up }, async () => {
-  const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'LISTED', 60000);
+  const cat = await waitFor(() => B.market.catalog(true), (c) => c.find((e) => e.anchor.id === childId)?.status === 'VERIFIED', 60000);
   const target = cat.find((e) => e.anchor.id === childId)!;
   const balA0 = await (A.ledger as AinLedger).balance();
   const balB0 = await (B.ledger as AinLedger).balance();

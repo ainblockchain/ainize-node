@@ -45,3 +45,10 @@ curl -i -X POST http://127.0.0.1:3400/p2p/blob/f9f665f6fa1a6b37963a4845107c0c0a5
 - 기존 보안 보완: [d156d36 소스·39개 시험 릴리스](https://github.com/ainblockchain/ainize-node/releases/tag/p2p-blob-relay-hardening-20260911).
 - 후속 재전송·본문 보존 코드는 같은 [node PR #5](https://github.com/ainblockchain/ainize-node/pull/5)에 반영한다. 원문 계획의 100개 학습/평가·70개 실제 샤드 파이프라인·나머지 성능 목표는 이 진단으로 완료되지 않는다.
 
+## 10:10 UTC 후속 확인
+
+- 공개 저장소 main의 relay 구현(node `20e599a6`,0.1.2 / core `695a8ad6`,0.1.3)을 확인해 보강 PR에 병합했다. 충돌난 수신/송신 부분은 용량·인증·파일 보존 보강을 유지하고, upstream VERIFIED 명칭·core 의존성 변경도 유지했다.
+- 09:52 UTC www/apex 모두 blobs0이며 POST는 여전히 HTML404 `Cannot POST`다. 이는 무인증 경로 점검이며,09:11–09:12의 실제 서명/본문 전송 실패와 구분해 보존했다. 소스 병합과 공개 배포를 동일시하지 않는다.
+- DART7번째는 teach READY 및16개 비교추론 응답을 저장했지만 패치 제거 후 스택이 남아 감사가 실패했다. 유휴·소유 patch ID/SHA를 확인한 후 **그 패치만** 다시 제거하고,16개 원문을 재사용해 동일job/RUN_ID로 재개했다. 모델을 다시 올리거나 학습을 중복 제출하지 않았다.7개 감사완료·8번째 학습중이며 정답률은 기본44/56·대체9/56이다.
+- 별도 코드 검증에서 watchdog이 잠금 전에 읽은 옛 스택을 잠금 후 재적용하는 경쟁을 재현했다. 잠금 안에서 스택/최상위/복구 계획을 읽도록 수정했으며 회귀3건은 수정 전 모두 실패,수정 후 모두 통과했다. 이 경쟁이 실제7번째 실패의 유일한 원인이었다고 단정하지 않는다.
+- 추가 원문: `blob_relay_main_compat_20260911/`, `blob_relay_watchdog_red_20260911/`, `blob_relay_watchdog_green_20260911/`, `ainize_lifecycle100_20260911/recovery-7/`. 공개 본문 수신/Live 성공 및 현재 운영 노드에 이 수정이 배포됐는지는 여전히 별도 확인 대상이다.

@@ -113,7 +113,7 @@ export async function seedDemo(market: Market, opts: SeedOptions = {}): Promise<
     /**
      * Versions, not parents (lineage design §14 seed relabel): the newer file supersedes the older one on the same
      * benchmark schema. Written explicitly here rather than waiting for `reconcileSupersedes`, which only fires once
-     * the newer version is LISTED — a freshly seeded local node has no verifiers yet and would show three unrelated
+     * the newer version is VERIFIED — a freshly seeded local node has no verifiers yet and would show three unrelated
      * knowledges instead of one knowledge with two earlier versions.
      */
     let previous: string | undefined;

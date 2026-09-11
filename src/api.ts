@@ -5,7 +5,7 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { randomBytes } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
 import multer from 'multer';
@@ -14,7 +14,8 @@ import {
   AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   sameAddr,
-  type CatalogEntry, type LedgerRecord, type PatchAnchor,
+  parseStatus,
+  type CatalogEntry, type LedgerRecord, type PatchAnchor, type PatchStatus,
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
 import { blobRelay } from './blob-relay.js';
@@ -347,7 +348,10 @@ export function buildApi(deps: ApiDeps): Router {
     disk: await nodeDisk(),
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
     accepts_contributions: market.acceptsContributions(), contributor_share: market.teach().contributorShare,
-    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); return { patches: c.length, listed: c.filter((e) => e.status === 'LISTED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
+    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); const verified = c.filter((e) => e.status === 'VERIFIED').length;
+      // `listed` is the old name for `verified`, kept on the wire so an installed CLI or a dashboard built
+      // against it keeps reading a number instead of `undefined` — which would render as a blank, not an error.
+      return { patches: c.length, verified, listed: verified, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
     // item 338: the product says "any node can challenge a wrong one" and points at challenges as the safeguard that
     // replaced the deposit. On the demo chain that mechanism had fired zero times in 501 attestations, and no screen
     // said so — a reader inferred oversight that had never once happened. Keep the sentence, attach the number.
@@ -444,12 +448,19 @@ export function buildApi(deps: ApiDeps): Router {
     }).parse(req.query);
     // Private drafts never leak to anonymous callers — the facet lists (models/schemas) are derived from the same filtered set as the items.
     let items = await market.catalog();
+    /**
+     * The statuses this caller asked for, in canonical spelling. `VERIFIED` was called `LISTED` until recently
+     * and a published CLI is still out there saying so, so the filter is read through `parseStatus` rather than
+     * compared raw — otherwise `patch ls --status LISTED` silently matches nothing for everyone who has not
+     * upgraded, which is the worst shape this could take: an empty catalogue reads as "no such knowledge".
+     */
+    const want = q.status ? q.status.split(',').map((s) => parseStatus(s)).filter((s): s is PatchStatus => !!s) : null;
     if (!q.include_drafts || !isOperator(req)) items = items.filter((e) => e.status !== 'DRAFT');
     // Knowledge its own author retired is off the shelves (item 148) — `?status=RETIRED` still lists it, so the
     // publisher's own screens and `patch ls --status RETIRED` can find what was taken down.
-    if (!q.status?.split(',').includes('RETIRED')) items = items.filter((e) => e.status !== 'RETIRED');
+    if (!want?.includes('RETIRED')) items = items.filter((e) => e.status !== 'RETIRED');
     const facets = items;
-    if (q.status) items = items.filter((e) => q.status!.split(',').includes(e.status));
+    if (want) items = items.filter((e) => want.includes(e.status));
     if (q.model) items = items.filter((e) => e.anchor.model.id_M === q.model);
     // Item 188 — a trailing `*` is a prefix: every taught lesson gets its own `taught/<slug>-<hex>` subject by
     // design, so "all taught lessons" is one filter instead of 136 chips. An exact schema still matches exactly.
@@ -491,7 +502,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (needle) items = items.filter((e) => searchable(e).includes(needle));
     // "Most popular" ranks by status FIRST: downloads accumulate forever, so a retired single-fact patch with 187
     // downloads used to head the marketplace over the flagship it was replaced by. Tradeable before retired.
-    const statusRank = (s: string) => (s === 'LISTED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
+    const statusRank = (s: string) => (s === 'VERIFIED' ? 0 : s === 'SUPERSEDED' ? 2 : s === 'REJECTED' ? 3 : 1);
     /** The day this knowledge's DATA is true of: what the publisher declared, else when the file was registered. */
     const dataDay = (a: PatchAnchor): number => (a.as_of ? Date.parse(`${a.as_of}T00:00:00Z`) || a.created_at : a.created_at);
     // "Most built on" and "Doing well this week" (design §10) — the first is a network fact (children on the ledger
@@ -517,7 +528,7 @@ export function buildApi(deps: ApiDeps): Router {
     // SC-17 card lines: how often this knowledge was built on, and what a buyer has to load with it
     const page = items.slice(q.offset, q.offset + q.limit).map((e) => ({
       ...redactContributors(e), attestations: e.attestations.map((a) => ({ ...a, sig: undefined })),
-      // Item 254: what is still to happen before this is LISTED — null for anything already verified.
+      // Item 254: what is still to happen before this is VERIFIED — null for anything already verified.
       verifying: market.verificationProgress(e),
       // Item 269: `children` came straight off the derived entry, so `/api/catalog` listed a hidden test anchor —
       // and a private draft — as a child of a public knowledge, while `/api/patches/:id` and every page hid it. The
@@ -1150,7 +1161,7 @@ export function buildApi(deps: ApiDeps): Router {
   /**
    * DRAFT → ANNOUNCED. The response carries what the publisher has to know the moment the record is written
    * (item 147): how many reachable peers on this network actually verify, against the quorum this node needs. With
-   * fewer verifiers than the quorum nothing announced here can ever be LISTED, and the CLI says so instead of
+   * fewer verifiers than the quorum nothing announced here can ever be VERIFIED, and the CLI says so instead of
    * promising that "verifiers will now attest".
    */
   /**
@@ -2301,7 +2312,6 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.post('/p2p/blob/:sha', blobRelay(market));
-
   // published training sets between nodes (lineage design §6.6): same gate as /p2p/blob, plus the access level
   const datasetGateP2p = async (req: Request, sha: string) => {
     if (!market.datasets.has(sha)) throw notFound('dataset not held by this node');

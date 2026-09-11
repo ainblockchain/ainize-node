@@ -1,13 +1,13 @@
-node_modules/
+
+.ainize/
+# Bench transcripts live in the run's transcripts.tar.zst; score.mjs unpacks it here on first use.
 dist/
-*.log
 .env
 .env.*
 !.env.example
+graph/bench/runs/*/transcripts/
+*.log
+node_modules/
 packages/node/data/
 packages/web/dist/
-.ainize/
 *.tsbuildinfo
-
-# Bench transcripts live in the run's transcripts.tar.zst; score.mjs unpacks it here on first use.
-graph/bench/runs/*/transcripts/
