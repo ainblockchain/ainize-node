@@ -347,7 +347,10 @@ export function buildApi(deps: ApiDeps): Router {
     disk: await nodeDisk(),
     initial_credit: market.cfg.market.initialCredit, royalty_share: market.cfg.market.royaltyShare,
     accepts_contributions: market.acceptsContributions(), contributor_share: market.teach().contributorShare,
-    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); return { patches: c.length, listed: c.filter((e) => e.status === 'VERIFIED').length, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
+    counts: (() => { const c = market.catalogSync().filter((e) => e.status !== 'DRAFT'); const verified = c.filter((e) => e.status === 'VERIFIED').length;
+      // `listed` is the old name for `verified`, kept on the wire so an installed CLI or a dashboard built
+      // against it keeps reading a number instead of `undefined` — which would render as a blank, not an error.
+      return { patches: c.length, verified, listed: verified, verifying: c.filter((e) => e.status === 'ANNOUNCED' || e.status === 'VERIFYING').length, superseded: c.filter((e) => e.status === 'SUPERSEDED').length, rejected: c.filter((e) => e.status === 'REJECTED').length }; })(),
     // item 338: the product says "any node can challenge a wrong one" and points at challenges as the safeguard that
     // replaced the deposit. On the demo chain that mechanism had fired zero times in 501 attestations, and no screen
     // said so — a reader inferred oversight that had never once happened. Keep the sentence, attach the number.
