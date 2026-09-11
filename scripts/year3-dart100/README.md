@@ -16,9 +16,38 @@ Node 24, no third-party dependencies:
 
 ```sh
 node --test scripts/year3-dart100/test/ainize-lifecycle.test.js
+node --test scripts/year3-dart100/test/hf-import100.test.js
 ```
 
 Ten regression tests cover dataset binding without HF publication, optional manifest binding, uncertain submissions, job identity collisions, stack ownership, interrupted audits, historical evidence protection, tampering, and canonical denominators. They use fake CLI/model responses and do not establish real GPU training success.
+
+Two additional tests cover native HF import binding. `import-hf-dart100.js` calls the real CLI for 100 existing files and checks the immutable source revision, input/upload/canonical hashes, existing dataset ID, row count, `created=false` and absence of a new training job. It is a read/import observation, not new Hub publication or training. The optional historical DART HF repository is an input fixture, not a prerequisite for the separate lifecycle observer.
+
+The import observer requires an Ainize CLI build with `ainize dataset <url>` (source release: https://github.com/ainblockchain/ainize-cli/releases/tag/year3-hf-dataset-import-20260911), private operator/teaching home, registration evidence mounted read-only at `/registration`, an empty writable `/evidence`, and this CommonJS source directory. Run it in a resource-limited container with the existing Ainize API reachable at `http://localhost:3410`:
+
+```sh
+node /source/import-hf-dart100.js Minhyun/ainize-dart100-reproduction-20260911 9a523ed3268688e90ee18f1ecd93f4fb72a8f056
+```
+
+The deployment wrapper freezes these two source modules, captures Docker image/limits/state, and runs with 2 CPUs, cpuset 0–7, 2 GiB memory, no additional swap and a read-only root filesystem. Completed imports are recorded individually; a failure stops the observer without retraining, cancelling jobs or overwriting a previous run. The live import finished at 2026-09-11 07:30:47 UTC: 100/100 existing dataset IDs, 780 rows, exit zero. All 100 raw response hashes were independently rechecked. This is not 100 completed training jobs.
+
+`record-hf-imports.js` binds these imports to the separate ten-node AIN experiment chain through the deployment's existing `common.js`/ain-js helpers. It validates registration, raw responses and canonical bytes before recording a manifest hash. Actual transaction: `0xd53cdbd69b2e256234fff2d776a4b3be1613ac7c6c5467d60a168ee1870c5aa9`, block12297; FINALIZED receipt, exact independent node5 readback and node9 block inclusion checked. Manifest SHA256: `72f5e9a43497f04cab876269f6392a01947b4b44a4ef2fd52961c497832004b1`. This records integration evidence, not a new HF publication, training success, sale or incentive settlement.
+
+## Deployment helpers and public access
+
+Install the JavaScript helpers in the existing `/mnt/newdata/gov/kpi/harness` and the `docker/` templates in `/mnt/newdata/gov/kpi/docker`; do not run these deployment-specific shell templates from this repository's source folder. They depend on the existing Ainize container/home, private credentials, evidence/results directories, Docker Compose configuration and locally built images. The chain recorder additionally requires the certification deployment's `common.js` and its configured ain-js dependency. This folder is not a clean-machine installer and does not publish Docker images or npm packages.
+
+- `verify-public-catalog.js` separates actual ID presence from independent LISTED verification. Its default exit gate requires LISTED; `CATALOG_REQUIRE_LISTED=0` checks presence only while still reporting `verificationComplete=false` for ANNOUNCED.
+- `ainize-public-proxy.js` exposes only metadata, native P2P and download/payment routes on loopback port3412, upstream3410. It blocks teaching, operator authentication/management and model mutation; removes operator cookies/Bearer and spoofed forwarding headers; and bounds request size/time/connections. It preserves the node's signed entitlement gates, not bypasses them. This is route isolation, not a complete audit of the underlying P2P protocol. The proxy has no secret-home or Docker-socket mount and runs with1CPU/256MiB/read-only/no-extra-swap. Four isolated tests and real-loopback checks cover forwarding, rejected teaching/admin requests, and denied private-draft downloads.
+- `switch-ainize-market-ledger.sh` is the guarded, one-off maintenance used after three complete audits. It requires a deliberately stopped matching observer at a no-pending-submission checkpoint, all server jobs terminal and an empty runtime queue/stack. It backs up the secret home outside Git, changes only `ledger.kind`, preserves all job JSON and identity, then requires resuming the same RUN_ID. It refuses active jobs and does not kill/restart GPU containers or the ten-node chain. Do not reuse the historical PID or create a fake pause marker.
+
+The experiment's Ainize publisher now uses the public marketplace's `local` ledger. The independent AIN performance chain remains running, and evidence anchors use ain-js separately. Local DAG/CREDIT records are not AIN transfers or blockchain incentive settlement. Public HTTPS callback/Funnel enablement and the publisher's rights/permanence consent are still awaiting operator input. No knowledge has been published to the public marketplace by these helpers, and no verification policy has been weakened to fill the catalog.
+
+All observer/proxy tests:
+
+```sh
+node --test scripts/year3-dart100/test/*.test.js
+```
 
 ## Existing deployment
 
@@ -40,3 +69,5 @@ Reuse the same RUN_ID and unchanged snapshot when resuming. The shared flock pre
 ## Observed limits
 
 The initial live run adopts job `6314e86b-9ba2-4bc3-8a21-e3294663fdd7` without retraining. Its isolated 16-call audit reports 5/8 primary and 1/8 alternate answers correct; it is not a quality pass. At 2026-09-11 07:10 UTC two datasets have complete inference observations (11/16 primary, 2/16 alternate answers correct in aggregate), and the third job is submitted. This is not evidence of 100 completed lessons. The running immutable snapshot predates the completed-audit resume hash check, unique CLI-error filenames and removal of the old HF publication preflight; those changes are regression-tested, not retroactively attributed to that run. The old snapshot already passed that preflight and does not publish anything while it continues training.
+
+At 07:39 UTC three complete audits report19/24 primary and4/24 alternate answers correct in aggregate, zero all-answer passes. All three jobs, dataset IDs and operator identity survive the guarded Ainize ledger transition unchanged. The same RUN_ID/source resumed as attempt2; job4 `88b3422b-6bb1-4d97-986d-337e9f9331f7` is training. An observer process ended as part of intentional idle maintenance, not because a polling timeout was mistaken for stopped GPU work.
