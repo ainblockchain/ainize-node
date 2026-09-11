@@ -1582,7 +1582,7 @@ export function buildApi(deps: ApiDeps): Router {
     // concurrent callers each measured an untouched counter and every one of them passed.
     let out;
     try {
-      out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
+      out = await market.chat({ ...body, maxTokens: body.max_tokens, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
     } catch (e) {
       if (mine) market.refundChatQuota(mine);
       if (network && !mineIsShared) market.refundChatQuota(network);
