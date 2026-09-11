@@ -10,30 +10,19 @@ async function main() {
   assert.ok(runId && /^[A-Za-z0-9_-]{1,40}$/.test(runId), 'RUN_ID must be 1-40 safe characters');
   const output = path.join(root, 'evidence', runId);
   const registrationRun = process.env.AINIZE_REGISTRATION_RUN || 'ainize_datasets100_20260911';
-  const publicationRun = process.env.HF_PUBLICATION_RUN || 'hf_datasets_publish_r2_20260911';
-  for (const value of [registrationRun, publicationRun]) assert.ok(/^[A-Za-z0-9_-]+$/.test(value));
+  assert.ok(/^[A-Za-z0-9_-]+$/.test(registrationRun));
   const registrationBytes = fs.readFileSync(path.join(root, 'evidence', registrationRun, 'progress.json'));
-  const publication = JSON.parse(fs.readFileSync(path.join(root, 'evidence', publicationRun, 'publication.json')));
-  assert.equal(publication.pass, true);
-  assert.equal(publication.verifiedFiles, 202);
-  assert.ok(/^[a-f0-9]{40}$/.test(publication.commit));
-  assert.ok(/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(publication.repoId));
-  const manifestBytes = fs.readFileSync(path.join(root, 'evidence', publicationRun, 'download', 'manifest.json'));
-  const manifest = JSON.parse(manifestBytes);
-  const publishedResponse = await fetch(`https://huggingface.co/datasets/${publication.repoId}/resolve/${publication.commit}/manifest.json`, { signal: AbortSignal.timeout(60000) });
-  assert.ok(publishedResponse.ok, 'public HF manifest unavailable');
-  assert.equal(sha256(Buffer.from(await publishedResponse.arrayBuffer())), sha256(manifestBytes), 'public manifest mismatch');
-  const entries = entriesFrom(registrationBytes, manifest);
+  const entries = entriesFrom(registrationBytes);
   for (const entry of entries) {
     assert.equal(sha256(fs.readFileSync(path.join(root, 'evidence', registrationRun, `${entry.lessonId}-canonical.jsonl`))), entry.sha256);
   }
-  const identity = { runId, registrationRun, registrationSha256: sha256(registrationBytes), repoId: publication.repoId, revision: publication.commit, manifestSha256: sha256(manifestBytes) };
+  const identity = { runId, registrationRun, registrationSha256: sha256(registrationBytes) };
   const filename = path.join(output, 'progress.json');
   let state = { version: 1, identity, startedAt: new Date().toISOString(), attempts: 0, complete: false, entries: entries.map((entry, index) => ({ ...entry, name: `${runId}-${String(index + 1).padStart(3, '0')}`, status: 'PENDING' })) };
   if (fs.existsSync(filename)) {
     state = JSON.parse(fs.readFileSync(filename));
     assert.equal(state.version, 1);
-    assert.deepEqual(state.identity, identity, 'resume inputs changed');
+    for (const [key, value] of Object.entries(identity)) assert.equal(state.identity[key], value, 'resume registration inputs changed');
     assert.deepEqual(state.entries.map(({ lessonId, datasetId, sha256: hash, rows }) => ({ lessonId, datasetId, sha256: hash, rows })), entries);
   }
   state.attempts++;

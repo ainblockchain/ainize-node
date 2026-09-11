@@ -16,6 +16,14 @@ function registrationFixture() {
 const entry = { datasetId: 'dataset-1', name: 'run-001', sha256: sha256('rows'), rows: 2 };
 const job = { id: 'job-1', name: entry.name, dataset: { id: entry.datasetId, sha256: entry.sha256, rows: 2 }, mode: 'scratch', context_patch_ids: [], training: { effort: 'balanced' }, status: 'TRAINING' };
 
+test('100 registered datasets require no Hugging Face publication or remote manifest', () => {
+  const fixture = registrationFixture();
+  assert.equal(entriesFrom(fixture.bytes).length, 100);
+  const registration = JSON.parse(fixture.bytes);
+  registration.datasets[1].datasetId = registration.datasets[0].datasetId;
+  assert.throws(() => entriesFrom(Buffer.from(JSON.stringify(registration))), /duplicate datasetId/);
+});
+
 test('exactly 100 unique registered configurations bind to the published hashes', () => {
   const fixture = registrationFixture();
   assert.equal(entriesFrom(fixture.bytes, fixture.manifest).length, 100);

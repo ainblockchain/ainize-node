@@ -7,13 +7,15 @@ const terminalStatuses = new Set(['READY', 'NEEDS_MORE', 'FAILED', 'CANCELLED', 
 
 function entriesFrom(registrationBytes, manifest) {
   const registration = JSON.parse(registrationBytes);
-  assert.equal(manifest.registrationSha256, sha256(registrationBytes), 'registration hash changed');
   assert.equal(registration.datasets.length, 100);
-  assert.equal(manifest.datasets.length, 100);
+  if (manifest) {
+    assert.equal(manifest.registrationSha256, sha256(registrationBytes), 'registration hash changed');
+    assert.equal(manifest.datasets.length, 100);
+    assert.equal(new Set(manifest.datasets.map(dataset => dataset.config)).size, 100, 'duplicate HF config');
+  }
   for (const key of ['datasetId', 'lessonId', 'canonicalSha256']) {
     assert.equal(new Set(registration.datasets.map(dataset => dataset[key])).size, 100, `duplicate ${key}`);
   }
-  assert.equal(new Set(manifest.datasets.map(dataset => dataset.config)).size, 100, 'duplicate HF config');
   return registration.datasets.map(dataset => {
     assert.equal(dataset.ok, true);
     assert.ok(Object.keys(dataset.checks).length > 0 && Object.values(dataset.checks).every(value => value === true));
@@ -21,11 +23,13 @@ function entriesFrom(registrationBytes, manifest) {
     assert.ok(/^[A-Za-z0-9_-]+$/.test(dataset.datasetId));
     assert.ok(/^[a-f0-9]{64}$/.test(dataset.canonicalSha256));
     assert.ok(Number.isInteger(dataset.rows) && dataset.rows > 0);
-    const published = manifest.datasets.find(entry => entry.config === dataset.lessonId);
-    assert.ok(published, 'missing HF config');
-    assert.equal(published.ainizeDatasetId, dataset.datasetId);
-    assert.equal(published.sha256, dataset.canonicalSha256);
-    assert.equal(published.rows, dataset.rows);
+    if (manifest) {
+      const configured = manifest.datasets.find(entry => entry.config === dataset.lessonId);
+      assert.ok(configured, 'missing HF config');
+      assert.equal(configured.ainizeDatasetId, dataset.datasetId);
+      assert.equal(configured.sha256, dataset.canonicalSha256);
+      assert.equal(configured.rows, dataset.rows);
+    }
     return { lessonId: dataset.lessonId, datasetId: dataset.datasetId, sha256: dataset.canonicalSha256, rows: dataset.rows };
   });
 }

@@ -4,7 +4,7 @@ Experimental, deployment-specific evidence tooling. It does not claim 100 distin
 
 ## Scope
 
-The existing deployment has 100 registered DART task datasets (780 canonical rows) and a public Hugging Face dataset repository, `Minhyun/ainize-dart100-reproduction-20260911`, at revision `9a523ed3268688e90ee18f1ecd93f4fb72a8f056`. The harness verifies the immutable public manifest against all registered IDs and canonical hashes before starting.
+The existing deployment has 100 registered DART task datasets (780 canonical rows). The harness verifies the registration evidence, unique dataset IDs and canonical hashes before starting. Publishing a Hugging Face dataset repository is not a prerequisite: the requirement is tool integration, not new Hub publication. The optional historical HF artifact is not a success gate or required network dependency. An HF URL import can supply an Ainize dataset ID through the ordinary teaching API.
 
 It adopts a unique matching scratch/balanced lesson, persists submission intent before POST, and polls the same job ID. Ambiguous or missing jobs after an uncertain POST stop the observer rather than authorizing a duplicate submission. Checked READY and NEEDS_MORE drafts are evaluated across all canonical primary and supplied alternate prompts. Execution completion and answer accuracy are separate counters. Failed, cancelled, expired or unchecked lessons remain explicit failures, not dropped denominators.
 
@@ -18,11 +18,11 @@ Node 24, no third-party dependencies:
 node --test scripts/year3-dart100/test/ainize-lifecycle.test.js
 ```
 
-Nine regression tests cover dataset binding, uncertain submissions, job identity collisions, stack ownership, interrupted audits, historical evidence protection, tampering, and canonical denominators. They use fake CLI/model responses and do not establish real GPU training success.
+Ten regression tests cover dataset binding without HF publication, optional manifest binding, uncertain submissions, job identity collisions, stack ownership, interrupted audits, historical evidence protection, tampering, and canonical denominators. They use fake CLI/model responses and do not establish real GPU training success.
 
 ## Existing deployment
 
-This is not a fresh-machine bootstrap. Current paths are `/mnt/newdata/gov/kpi`, Ainize CLI `/opt/ainize/ainize-cli/dist/bin.js`, and API `http://localhost:3410`. Existing operator credentials, registered datasets, immutable HF publication evidence, and the actual PLE model/trainer are prerequisites. Do not copy secret homes, API tokens or `.env` into this repository.
+This is not a fresh-machine bootstrap. Current paths are `/mnt/newdata/gov/kpi`, Ainize CLI `/opt/ainize/ainize-cli/dist/bin.js`, and API `http://localhost:3410`. Existing operator credentials, registered dataset evidence/canonical files, and the actual PLE model/trainer are prerequisites. Do not copy secret homes, API tokens or `.env` into this repository.
 
 Place these four JavaScript modules in a frozen source directory under `kpi/evidence/<RUN_ID>/source`, preserve their SHA256 manifest, and execute within the configured Ainize Docker container. The deployment wrapper also snapshots Ainize, serving and trainer image IDs and Docker CPU/GPU/memory limits.
 
@@ -39,4 +39,4 @@ Reuse the same RUN_ID and unchanged snapshot when resuming. The shared flock pre
 
 ## Observed limits
 
-The initial live run adopts job `6314e86b-9ba2-4bc3-8a21-e3294663fdd7` without retraining. Its isolated 16-call audit reports 5/8 primary and 1/8 alternate answers correct; it is not a quality pass. A second registered dataset is training under a different job ID. This is not evidence of 100 completed lessons. The running snapshot predates the additional completed-audit resume hash check and unique CLI-error filenames in this source; those additions are regression-tested, not retroactively attributed to that run.
+The initial live run adopts job `6314e86b-9ba2-4bc3-8a21-e3294663fdd7` without retraining. Its isolated 16-call audit reports 5/8 primary and 1/8 alternate answers correct; it is not a quality pass. At 2026-09-11 07:10 UTC two datasets have complete inference observations (11/16 primary, 2/16 alternate answers correct in aggregate), and the third job is submitted. This is not evidence of 100 completed lessons. The running immutable snapshot predates the completed-audit resume hash check, unique CLI-error filenames and removal of the old HF publication preflight; those changes are regression-tested, not retroactively attributed to that run. The old snapshot already passed that preflight and does not publish anything while it continues training.
