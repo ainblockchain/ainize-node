@@ -1,5 +1,20 @@
 # Ainize 0–3단계와 Hugging Face 연동
 
+## 최신 진행: 2026-09-11 08:20 UTC — P2P 목록 공개, Live test 미완료
+
+사용자가 DART 재배포 권한과 영구 공개에 명시적으로 동의했고, HTTPS 프록시 대신 **네이티브 P2P** 사용을 요구했다. 따라서 Funnel을 필수 조건으로 삼은 이전 안내를 철회했다. 대기 중이던 Funnel 활성화 명령만 종료했으며 공개 터널은 개통하지 않았다.
+
+- 기존 READY job 두 개를 실제 `teach publish`로 발행했다. 대표자명 `taught-ainize-teach-first-20260-855df1`, 소재지 `taught-ainize-lifecycle100-2026-cf9a6f`이다. 기본 무료 가격0, public dataset, public-source declaration을 사용하고 원래 개인정보/서명/검증 게이트를 그대로 통과했다.
+- 공개 카탈로그 **2건·ANNOUNCED·독립 검증0/2**를 확인했다. 새 브라우저 컨텍스트의 실제 `/explore` 화면에도 두 카드가 보이며 스크린샷을 저장했다. `/p2p/records`의 로컬/공개 anchor 본문·해시가 일치한다. 소스 릴리스나 HF 게시를 목록 공개로 대신 보고한 것이 아니다.
+- 대표전화 job 발행은 `dataset_pii`(phone, 8행)로 거절됐다. 사용자 권한 확인만으로 이 게이트를 해제하거나 private으로 자동 전환하지 않았다. 실패를 보존하고 미발행으로 둔다.
+- **Live test는 아직 실패한다.** 공개 `/api/chat/patches`에서 두 항목 모두 `reason: not_held`, 테스트 가능 items0이다. 실제 공개 `POST /api/chat`도 HTTP409 `this node does not hold the patch body`로 재현했다. 공개 모델은 available=true이지만 본문 `has_body=false`, dataset_held=false다.
+- 현재 네이티브 P2P는 서명된 anchor를 push하지만 NPZ 본문은 `GET /p2p/blob/:sha`로 pull한다. peer의 `localhost:3410` 주소가 원격에서 이 머신을 가리키지 않아 본문을 가져오지 못한다. 자동 NAT traversal/본문 push가 이미 있다고 주장하지 않는다. 관리자에게 기존 outbound P2P 본문 수신·릴레이 기능의 프로토콜/주소/배포 버전을 문의했다. 프록시 개통을 다시 요구하거나 LISTED/라이선스 검사를 무력화하지 않는다.
+
+증빙: `ainize_p2p_publish_first_20260911/`, `ainize_p2p_publish_second_20260911/`, 실패 `ainize_p2p_publish_third_20260911/`, `public_catalog_two_p2p_20260911/`, `public_explore_browser_20260911/`, `ainize_p2p_publish_20260911/`. 모두 `kpi/evidence/` 아래에 있다. **목록 공개2건은 본문 복제·Live test 성공·100개 학습/추론·유상 구매를 뜻하지 않는다.**
+
+아래07:47 진행과 관리자 요청은 이후 정정된 이전 관측이다.
+
+
 ## 최신 진행: 2026-09-11 07:47 UTC
 
 - HF native CLI 가져오기가 **100/100 데이터셋·780행** 완료되었다. 모든 원문 로그 SHA를 재검증했고 기존 Ainize ID/정규 해시가 같으며 새 학습 job은 만들지 않았다. `hf_native_dart100_20260911`, exit0이다.

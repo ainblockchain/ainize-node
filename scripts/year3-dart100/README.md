@@ -45,6 +45,10 @@ The experiment's Ainize publisher now uses the public marketplace's `local` ledg
 
 The 2026-09-11 08:04–08:06 UTC recheck confirms both catalogs are empty, including explicitly requested ANNOUNCED/VERIFYING statuses. Four local jobs are READY but all have `publish_status: none` and no published patch ID. This is unfinished `teach publish`, not evidence of a browser-cache bug. The [Korean diagnosis and administrator handoff](docs/Ainize_explore_빈목록_진단.md) separate source/package releases, dataset imports, marketplace publication and reverse-download connectivity.
 
+**08:20 UTC update:** the publisher explicitly confirmed redistribution rights and permanent publication, and required native P2P instead of a Funnel/proxy prerequisite. Two existing READY jobs were then published as `taught-ainize-teach-first-20260-855df1` and `taught-ainize-lifecycle100-2026-cf9a6f`. Both appear in the public catalog and a fresh browser's explore page as ANNOUNCED, with0/2 independent verifiers. Matching complete signed anchors were compared on both nodes and validated with core `LocalLedger.validate`. A third publication, the telephone dataset, was refused by the PII gate and remains unpublished; no automatic private fallback was used.
+
+**Live test still fails:** the public model is available, but `has_body=false` and `/api/chat/patches` reports `not_held`. An actual public `POST /api/chat` returned HTTP409, “this node does not hold the patch body”. Native P2P currently pushes records but pulls NPZ bodies from peer endpoints; the sender's localhost endpoint cannot serve a different host. No NAT traversal or outbound blob-push support is claimed here. Existing public P2P receive/relay capability and deployment details were requested from the administrator. The pending Funnel CLI was terminated without creating a tunnel. Public source release, catalog visibility, body replication and successful Live test remain distinct outcomes.
+
 All observer/proxy tests:
 
 ```sh
