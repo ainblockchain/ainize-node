@@ -6,7 +6,7 @@
  *      │          │            └► FAILED (trainer error / timeout)
  *      │          └► back to QUEUED with jitter on 'shared runtime busy'
  *      └► CANCELLED                       READY without save/publish ─► EXPIRED after draftTtlDays
- *   publish: READY ─► PENDING_REVIEW ─► (approve) ANNOUNCED ─► existing VERIFYING ─► LISTED | REJECTED
+ *   publish: READY ─► PENDING_REVIEW ─► (approve) ANNOUNCED ─► existing VERIFYING ─► VERIFIED | REJECTED
  *
  * Training never touches the serving model: the gradient backend runs `train/teach.py` inside the trainer container
  * (docker exec, stdout JSON-lines protocol §8.2) under a trainer-slot lease; the stub backend copies a fixture npz
@@ -712,7 +712,7 @@ export class TeachWorker {
     const p = normAnswer(f.prompt.replace(/^q:/i, '')); const a = normAnswer(f.answer);
     if (p.length < 4) return null;
     for (const e of await this.market.catalog()) {
-      if (!['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status)) continue;
+      if (!['VERIFIED', 'VERIFYING', 'ANNOUNCED'].includes(e.status)) continue;
       for (const s of e.anchor.benchmark.samples ?? []) {
         const sp = normAnswer(s.prompt.replace(/^q:/i, '').replace(/a:$/i, ''));
         if ((sp.includes(p) || p.includes(sp)) && normAnswer(s.expect) === a) return e;
@@ -1802,7 +1802,7 @@ export class TeachWorker {
     const cat = await this.market.catalog();
     for (const j of announced) {
       const e = cat.find((x) => x.anchor.id === j.patch_id);
-      if (e && ['LISTED', 'SUPERSEDED', 'CHALLENGED'].includes(e.status)) { this.store.updateTeachJob(j.id, { publish_status: 'listed' }); this.log('info', `lesson ${j.id} is listed as ${j.patch_id}`, j.id); }
+      if (e && ['VERIFIED', 'SUPERSEDED', 'CHALLENGED'].includes(e.status)) { this.store.updateTeachJob(j.id, { publish_status: 'listed' }); this.log('info', `lesson ${j.id} is listed as ${j.patch_id}`, j.id); }
     }
   }
 
@@ -2848,7 +2848,7 @@ export class TeachWorker {
     }
     const benchmark = lessonBenchmark(`taught/${slug}-${hex}`, lineage.samples);
     if (lineage.answers_hash) benchmark.answers_hash = lineage.answers_hash;
-    const listed = new Set((await this.market.catalog()).filter((e) => e.status === 'LISTED').map((e) => e.anchor.id));
+    const listed = new Set((await this.market.catalog()).filter((e) => e.status === 'VERIFIED').map((e) => e.anchor.id));
     // legacy `builds_on` (declared parents, never trained on top) stays as it was; a base stack is recorded whole
     const parents = lineage.parents ?? (job.builds_on ? job.context.filter((p) => listed.has(p)) : []);
     const anchor = await this.market.createDraft({

@@ -320,7 +320,7 @@ export interface TrackOverlap {
 }
 
 /**
- * An item on its way to LISTED, as THIS node can see it (item 254): who has not answered yet, how many of them can
+ * An item on its way to VERIFIED, as THIS node can see it (item 254): who has not answered yet, how many of them can
  * run this knowledge's model, and how long verification has actually taken here before. Nothing is estimated that
  * was not measured — `typical_ms` is null on a node that has never listed anything.
  */
@@ -821,7 +821,7 @@ export class Market {
       }
     }
     // The author's own takedown (item 148), applied over the derived status: RETIRED is terminal and outranks
-    // LISTED / SUPERSEDED / CHALLENGED. Only a record signed by the anchor's author counts, so a stranger's
+    // VERIFIED / SUPERSEDED / CHALLENGED. Only a record signed by the anchor's author counts, so a stranger's
     // `retire` record cannot take a listing down the way a stranger's `supersede` record used to.
     for (const r of retires) {
       const b = r.body as Partial<RetireRecord> | null;
@@ -1461,7 +1461,7 @@ export class Market {
   }
 
   /**
-   * Item 157 — `draft not found` was the whole answer for five different situations: a REJECTED anchor, a LISTED
+   * Item 157 — `draft not found` was the whole answer for five different situations: a REJECTED anchor, a VERIFIED
    * one, an ANNOUNCED one, a draft somebody else's node holds, and an id that never existed. A publisher looking at
    * `krx-ticker-codes ANNOUNCED` one line above in `patch ls` was told it does not exist, which sends people
    * hunting for a sync bug instead of reading the status. `forgetBody` has said the right thing for a draft since
@@ -1592,7 +1592,7 @@ export class Market {
       if (!e) throw notFound(`--replaces ${id}: no knowledge with that id on this node`);
       if (!sameAddr(e.anchor.author, this.address)) throw conflict(`--replaces ${id}: it was published by ${e.anchor.author_name ?? e.anchor.author} — only its own author can retire it. Overlapping knowledge from another node coexists with yours.`, { patch_id: id, author: e.anchor.author });
       if (anchor.parents.includes(id)) throw conflict(`--replaces ${id}: it is a declared base of ${anchor.id}, and an add-on does not retire what it was built on — its buyers need it underneath.`, { patch_id: id });
-      if (!['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(e.status)) throw conflict(`--replaces ${id}: it is ${e.status}, so there is nothing on sale to retire.`, { patch_id: id, status: e.status });
+      if (!['VERIFIED', 'VERIFYING', 'ANNOUNCED'].includes(e.status)) throw conflict(`--replaces ${id}: it is ${e.status}, so there is nothing on sale to retire.`, { patch_id: id, status: e.status });
       if (e.anchor.created_at >= anchor.created_at) throw conflict(`--replaces ${id}: it was published after ${anchor.id} — a newer version cannot be replaced by an older one.`, { patch_id: id });
       const known = conflicts.find((c) => c.patch_id === id);
       out.push(known ?? {
@@ -1626,7 +1626,7 @@ export class Market {
       ? new Set((anchor.derivation.bases ?? []).map((b) => b.patch_id))
       : new Set<string>();
     return conflicts.filter((c) => c.same_schema && !c.cross_branch && c.same_author && (!c.lineage || declaredUpdate.has(c.patch_id))
-      && c.created_at < firstSeen && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
+      && c.created_at < firstSeen && ['VERIFIED', 'VERIFYING', 'ANNOUNCED'].includes(c.status));
   }
 
   /**
@@ -1693,12 +1693,12 @@ export class Market {
     return out;
   }
 
-  /** When one of our announced patches gets LISTED and overlapped an older same-schema patch, mark supersede (§14 [0072]). */
+  /** When one of our announced patches gets VERIFIED and overlapped an older same-schema patch, mark supersede (§14 [0072]). */
   async reconcileSupersedes(): Promise<void> {
     const cat = await this.catalog(true);
     const byId = new Map(cat.map((x) => [x.anchor.id, x]));
     for (const e of cat) {
-      if (!sameAddr(e.anchor.author, this.address) || e.status !== 'LISTED') continue;
+      if (!sameAddr(e.anchor.author, this.address) || e.status !== 'VERIFIED') continue;
       const raw = this.store.get(`pending_supersede:${e.anchor.id}`);
       if (!raw) continue;
       const pending = JSON.parse(raw) as ConflictInfo[];
@@ -1773,7 +1773,7 @@ export class Market {
 
   /**
    * Who could actually verify what this node announces. `ainize publish` used to promise "verifiers will now attest"
-   * on a solo node with no peers, where nothing announced can ever be LISTED (item 147). Reachable = answered a
+   * on a solo node with no peers, where nothing announced can ever be VERIFIED (item 147). Reachable = answered a
    * gossip round recently, not merely known: two dead endpoints used to read as a healthy peer count.
    */
   async verifierReach(freshMs = 5 * 60_000): Promise<{ known: number; reachable: number; verifiers: number; quorum: number; self_attest: boolean; endpoints: string[] }> {
@@ -2612,7 +2612,7 @@ export class Market {
    * Status becomes VERIFYING only once an attestation exists, and "verifying <id>" is a line in the verifier's own
    * log, not a record anyone else can read — so for the minutes both verifiers were executing the benchmark the
    * catalogue said ANNOUNCED and the card said "Registered · awaiting verification". A morning script waiting for
-   * LISTED could not tell "nobody picked it up" from "almost done".
+   * VERIFIED could not tell "nobody picked it up" from "almost done".
    *
    * Everything here is measured on this node: who answers gossip and calls itself a verifier, which of them serve
    * the model this knowledge names, which have already attested — and how long this node's OWN anchors have taken
@@ -2827,12 +2827,12 @@ export class Market {
     // counting, so the fraction here reads 0/2 on something that was on sale — the reason the buyer needs is the
     // challenge, not the arithmetic.
     if (entry.open_challenge || entry.status === 'CHALLENGED') throw conflict(challengedMessage(entry));
-    // Unverified knowledge is sellable only when the operator has opted in, and it is STILL not LISTED —
+    // Unverified knowledge is sellable only when the operator has opted in, and it is STILL not VERIFIED —
     // the status keeps saying ANNOUNCED, because relabelling it would spend the one signal this marketplace
     // has. The buyer takes the risk knowingly; the record does not pretend the risk is absent.
     if (!entry.quorum_ok && !this.cfg.verifier?.sellUnverified) {
       throw conflict(`verification quorum not met (${entry.passed}/${entry.quorum}) — refusing to buy. `
-        + `The seller's node can allow this at the buyer's risk with \`verifier.sellUnverified true\`, and the knowledge stays ${entry.status}, not LISTED.`);
+        + `The seller's node can allow this at the buyer's risk with \`verifier.sellUnverified true\`, and the knowledge stays ${entry.status}, not VERIFIED.`);
     }
     if (!entry.sellable) throw conflict(challengedMessage(entry));
     return entry;
@@ -4456,7 +4456,7 @@ export class Market {
       description: `Curation of the track ${b.name} for ${terms.period_days} day(s) — ${b.patch_ids.length} knowledge on it today. The knowledge itself is bought from its own publishers.`,
       nonce, expires_at: Date.now() + 10 * 60_000,
       ...(scheme === 'ain-transfer' ? { transfer_key: transferKeyFor(resource, nonce) } : {}),
-      total: terms.price, self_contained: true, single_use: true, status: 'LISTED',
+      total: terms.price, self_contained: true, single_use: true, status: 'VERIFIED',
     }];
   }
 
@@ -4589,7 +4589,7 @@ export class Market {
     if (!e) throw notFound('patch not found');
     // Item 257 — a track is the list every subscriber's node buys and loads automatically, so an unverified bake has
     // no business on it: `branch add` used to accept an ANNOUNCED 0/2 body with a ✓ and every subscriber then bought it.
-    if (e.status !== 'LISTED' && !opts.force) {
+    if (e.status !== 'VERIFIED' && !opts.force) {
       throw conflict(`not_listed: ${patchId} is ${e.status} (verification ${e.passed}/${e.quorum}) — subscribers buy and load whatever is on a track, so only verified knowledge belongs on one. Wait for the quorum${e.status === 'REJECTED' || e.status === 'CHALLENGED' ? '' : ' (it usually takes a few minutes)'}, or add it anyway with --force.`,
         { patch_id: patchId, status: e.status, passed: e.passed, quorum: e.quorum });
     }
@@ -4598,7 +4598,7 @@ export class Market {
     const rec = await this.ledger.append('branch', nb);
     this.invalidate();
     await this.p2p?.broadcast(rec).catch(() => undefined);
-    this.log('info', 'branch', `${patchId} added to ${name}${retires.length ? ` — it supersedes ${retires.join(', ')}, which subscribers will stop loading (the id stays on the track as history)` : ''}${e.status !== 'LISTED' ? ` — WARNING: it is ${e.status}, not verified` : ''}`, patchId);
+    this.log('info', 'branch', `${patchId} added to ${name}${retires.length ? ` — it supersedes ${retires.join(', ')}, which subscribers will stop loading (the id stays on the track as history)` : ''}${e.status !== 'VERIFIED' ? ` — WARNING: it is ${e.status}, not verified` : ''}`, patchId);
     return nb;
   }
 
@@ -4661,7 +4661,7 @@ export class Market {
         items.push({ ...row, plan: 'retired', reason: `withdrawn by its publisher${why ? ` ("${why}")` : ''} — not loaded; buyers who already paid keep their copy` });
         continue;
       }
-      if (e.status !== 'LISTED' || !e.sellable) { items.push({ ...row, plan: 'blocked', reason: `${e.status} (verification ${e.passed}/${e.quorum}) — not loaded${e.status === 'REJECTED' ? ': the network rejected this bake' : ''}` }); continue; }
+      if (e.status !== 'VERIFIED' || !e.sellable) { items.push({ ...row, plan: 'blocked', reason: `${e.status} (verification ${e.passed}/${e.quorum}) — not loaded${e.status === 'REJECTED' ? ': the network rejected this bake' : ''}` }); continue; }
       if (a.author.toLowerCase() === this.address.toLowerCase()) { items.push({ ...row, plan: 'own', reason: 'published by this node' }); continue; }
       if (this.hasLicense(e)) { items.push({ ...row, plan: 'held', reason: this.licenseOf(e)?.source === 'free' ? 'free — nothing to pay' : 'already bought by this node' }); continue; }
       items.push({ ...row, plan: 'buy', reason: `${a.price} ${a.currency} to ${a.author_name ?? a.author.slice(0, 10)}…` });

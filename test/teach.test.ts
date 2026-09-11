@@ -442,7 +442,7 @@ test('publish (review mode): signed claim → PENDING_REVIEW → operator approv
   };
   await attestAs(createIdentity()); await attestAs(createIdentity());
   N.market.invalidate();
-  assert.equal((await N.market.entry(job1.draft_id!))!.status, 'LISTED');
+  assert.equal((await N.market.entry(job1.draft_id!))!.status, 'VERIFIED');
   await N.teach!.reconcilePublished(Date.now() + 120_000);
   assert.equal(N.teach!.view(N.teach!.get(job1.id)!).publish_status, 'listed');
   assert.equal((await api('GET', `/api/teacher/${teacher.address}`)).json.lessons!.length, 1);
@@ -487,7 +487,7 @@ test('publish (auto mode) with a declared payout wallet announces directly; cred
   assert.equal(pub.status, 200, pub.text); assert.equal(pub.json.status, 'ANNOUNCED'); assert.equal(pub.json.url, `/${N.market.address}/${job.draft_id}`);
   const rec = (await N.ledger.anchors()).find((a) => a.body.id === job.draft_id)!;
   assert.deepEqual(rec.body.contributors, [{ address: wallet, signer: teacher.address, name: 'Test Teacher', share: 0.7, role: 'data_provider', proof: 'declared', sig: pub.json && (N.teach!.get(job.id) && rec.body.contributors![0].sig) }]);
-  assert.deepEqual(rec.body.parents, [], 'no LISTED context → no parents even with builds_on');
+  assert.deepEqual(rec.body.parents, [], 'no VERIFIED context → no parents even with builds_on');
   // attribution: the lesson is shown under the SIGNER's page, never under the declared payout wallet (it only receives money)
   assert.deepEqual((await api('GET', `/api/teacher/${wallet}`)).json.lessons, []);
   assert.ok(((await api('GET', `/api/teacher/${teacher.address}`)).json.lessons as { id: string }[]).some((l) => l.id === job.draft_id));
