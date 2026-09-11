@@ -24,6 +24,28 @@ export function jobBindings(jobs) {
   })).sort((left, right) => left.id.localeCompare(right.id));
 }
 
+export async function operatorJobs(home, request = fetch) {
+  const credentials = path.join(home, 'cli.json');
+  assert.equal((await lstat(credentials)).mode & 0o077, 0, 'operator credential file must be private');
+  const state = JSON.parse(await readFile(credentials, 'utf8'));
+  const origin = new URL(state.nodeUrl);
+  assert.ok(origin.protocol === 'https:' || origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname));
+  assert.ok(!origin.username && !origin.password && origin.pathname === '/' && !origin.search && !origin.hash, 'origin-only operator URL required');
+  assert.ok(typeof state.token === 'string' && state.token, 'operator login required');
+  const response = await request(new URL('/api/me/teach/jobs', origin), { headers: { authorization: `Bearer ${state.token}` }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+  assert.ok(response.ok && response.headers.get('content-type')?.includes('application/json'), `operator jobs returned HTTP ${response.status}`);
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    assert.ok(size <= 8 * 1024 ** 2, 'operator job list is too large');
+    chunks.push(chunk);
+  }
+  const jobs = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  assert.ok(Array.isArray(jobs.items) && jobs.items.length < 500, 'operator job list may be truncated');
+  return jobs;
+}
+
 export async function inventory(home, trainerRoot) {
   const files = {};
   const allowed = trainerRoot ? await realpath(trainerRoot) : null;
@@ -67,7 +89,11 @@ export function compareSnapshots(before, after) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === 'capture') {
+  if (command === 'jobs') {
+    const [home, destination] = args;
+    assert.ok(destination, 'jobs <home> <destination.json>');
+    await writeFile(destination, JSON.stringify(await operatorJobs(home), null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  } else if (command === 'capture') {
     const [home, jobsPath, infoPath, destination, trainerRoot] = args;
     assert.ok(destination, 'capture <home> <jobs.json> <info.json> <destination.json> [trainer-root]');
     const jobs = JSON.parse(await readFile(jobsPath, 'utf8'));

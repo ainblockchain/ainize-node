@@ -17,7 +17,7 @@ fi
 for container in flashnext flashtrain; do
   docker inspect "$container" --format '{{.Id}} {{.State.StartedAt}} {{.State.Pid}}' > "$OUT/$container-before.txt"
 done
-bash "$KPI/docker/ainize-cli.sh" teach jobs --json > "$OUT/jobs-before.json"
+node "$SNAPSHOT" jobs "$KPI/ainize/home-docker" "$OUT/jobs-before.json"
 curl --fail --silent --show-error --max-time 30 http://localhost:3410/api/info > "$OUT/info-before.json"
 cp "$SNAPSHOT" "$OUT/runtime-snapshot.mjs"
 sha256sum "$OUT/runtime-snapshot.mjs" > "$OUT/source.sha256"
@@ -41,7 +41,7 @@ docker inspect ain-cert-ainize-node-1 --format '{{json .HostConfig}}' > "$OUT/li
 for attempt in {1..60}; do
   if curl --fail --silent --max-time 5 http://localhost:3410/readyz > "$OUT/ready.json"; then
     node -e 'const value=JSON.parse(require("fs").readFileSync(process.argv[1])); if (value.ready !== true && value.ok !== true) throw Error("not backend readiness JSON")' "$OUT/ready.json"
-    bash "$KPI/docker/ainize-cli.sh" teach jobs --json > "$OUT/jobs-after.json"
+    node "$OUT/runtime-snapshot.mjs" jobs "$KPI/ainize/home-docker" "$OUT/jobs-after.json"
     curl --fail --silent --show-error --max-time 30 http://localhost:3410/api/info > "$OUT/info-after.json"
     node "$OUT/runtime-snapshot.mjs" capture "$KPI/ainize/home-docker" "$OUT/jobs-after.json" "$OUT/info-after.json" "$OUT/inventory-after.json" "$TRAINER_ROOT"
     node "$OUT/runtime-snapshot.mjs" verify "$OUT/inventory-before.json" "$OUT/inventory-after.json" > "$OUT/preservation.json"

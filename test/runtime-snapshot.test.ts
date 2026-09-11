@@ -4,10 +4,28 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { compareSnapshots, inventory, jobBindings, requireIdle } from '../deploy/runtime-snapshot.mjs';
+import { compareSnapshots, inventory, jobBindings, operatorJobs, requireIdle } from '../deploy/runtime-snapshot.mjs';
 
 const info = { runtime: { available: true, applied: [], queue: { running: null, waiting: 0, queued: [], lock: null } } };
 const jobs = { items: [{ id: 'job-one', status: 'READY', dataset: { id: 'dataset-one', sha256: 'body-hash' }, result: { sha256: 'patch-hash' }, checks: { executed: true } }] };
+
+test('maintenance enumerates every operator-visible job, not only one teaching key owner', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'ainize-operator-jobs-'));
+  try {
+    await writeFile(path.join(home, 'cli.json'), JSON.stringify({ nodeUrl: 'http://localhost:3410', token: 'fixture-token' }), { mode: 0o600 });
+    const allJobs = { items: [...jobs.items, { id: 'another-owner', status: 'TRAINING' }] };
+    const result = await operatorJobs(home, async (url, options) => {
+      assert.equal(url.pathname, '/api/me/teach/jobs');
+      assert.equal(options.headers.authorization, 'Bearer fixture-token');
+      assert.equal(options.redirect, 'error');
+      return new Response(JSON.stringify(allJobs), { headers: { 'content-type': 'application/json' } });
+    });
+    assert.equal(result.items.length, 2);
+    assert.throws(() => requireIdle(info, result), /unfinished/);
+    await assert.rejects(operatorJobs(home, async () => new Response('frontend HTML')), /HTTP/);
+    await assert.rejects(operatorJobs(home, async () => new Response('{}', { status: 401 })), /401/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 test('maintenance requires terminal jobs and an idle, empty runtime', () => {
   requireIdle(info, jobs);

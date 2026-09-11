@@ -11,7 +11,11 @@ The receiver needs both the node implementation and the relay configuration
 fields in [ainize-core PR #3](https://github.com/ainblockchain/ainize-core/pull/3).
 Do not identify that implementation by a package version alone: on 2026-09-11,
 core main and this feature branch both called themselves 0.1.2, but only the
-feature branch contained `relayBlobs` and `maxRelayBytes`.
+feature branch contained `relayBlobs` and `maxRelayBytes`. Later that day main
+advanced to core0.1.3 (`695a8ad6`) and node0.1.2 (`20e599a6`); this hardening branch
+incorporates those changes. The compatible certification CLI is0.1.1 (`9acc9de`).
+The currently observed public `/api/info` still reports0.1.0, build
+`2026-09-10T14:15:13.517Z`; source availability is not proof of the running binary.
 
 ```bash
 ainize config set p2p.relayBlobs true
