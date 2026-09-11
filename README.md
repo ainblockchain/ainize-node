@@ -28,6 +28,9 @@ node's identity.
 The explorer UI is a separate build ([ainize-web](https://github.com/ainblockchain/ainize-web)); point
 `webDist` at it to have this process serve it too.
 
+Publishers behind NAT can offer bodies to opt-in peers using the
+[outbound P2P relay](docs/blob-relay.md), including retrying already-announced knowledge.
+
 ## The rules this node will not bend
 
 - **Publishing is not selling.** Two independent nodes must load the patch into the real model and

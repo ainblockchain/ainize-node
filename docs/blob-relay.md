@@ -1,0 +1,94 @@
+# Outbound P2P knowledge relay
+
+This extends the existing `POST /p2p/blob/:sha` protocol from PR #5. It does not
+require a public seller URL, port forwarding, Tailscale Funnel, a new dataset
+publication, or retraining. A publisher behind NAT makes an outbound connection
+to an operator-configured peer that opts into holding knowledge bodies.
+
+## Receiver configuration
+
+The receiver needs both the node implementation and the relay configuration
+fields in [ainize-core PR #3](https://github.com/ainblockchain/ainize-core/pull/3).
+Do not identify that implementation by a package version alone: on 2026-09-11,
+core main and this feature branch both called themselves 0.1.2, but only the
+feature branch contained `relayBlobs` and `maxRelayBytes`.
+
+```bash
+ainize config set p2p.relayBlobs true
+ainize config set p2p.maxRelayBytes 10737418240
+```
+
+Apply the config using the deployment's normal safe restart procedure. Do not
+restart a shared trainer or model while an experiment holds its runtime lock.
+Forward `POST /p2p/blob/:sha` to this node, in addition to the existing P2P routes.
+Neither `/api/me/*` nor operator/teaching APIs need to become public for relaying.
+
+The size setting is a conservative aggregate storage budget: **all locally held
+knowledge blobs**, plus reservations for concurrent incoming bodies, count
+toward it. Existing local/imported bodies therefore reduce relay headroom. This
+avoids losing accounting across restarts without a new database migration. It
+is not a per-file limit and is not a whole-filesystem quota; temporary upload
+and copy space require additional disk headroom. Zero or unset disables relay.
+This is a single-node-process budget; do not share its data directory between
+multiple independently running receivers.
+
+Additional fixed bounds: 256 MiB encoded, 512 MiB expanded NPZ, eight concurrent
+offers, one file per request, and a 60-second upload deadline. Oversized files
+remain transferable by the existing authenticated pull path; this new public
+ingress deliberately accepts a smaller, bounded subset. Required knowledge
+arrays are little-endian int64 addresses and C-order float32 before/after rows.
+ZIP64 central directories and archives with more than 64 arrays are refused.
+
+## Protocol and recovery
+
+1. Gossip the signed anchor using the existing ledger protocol.
+2. POST multipart field `blob` to `/p2p/blob/<sha256>`, with the existing
+   `x-ainize-auth: authHeader(authorIdentity, "blob:<sha256>")` signature.
+3. Check the JSON receipt (`ok`, exact `sha256`, `size_bytes`, `already_held`).
+   An HTML 200 is not a successful relay. Repeated valid offers are idempotent.
+4. Check `/p2p/blobs`, the public knowledge detail's `has_body`, and finally run
+   the real Live test. A successful file transfer does not prove answer quality.
+
+For knowledge announced before the receiver was deployed, log into the **author
+node** as its operator and call `POST /api/patches/<id>/relay` (for example, from
+that node's browser console with `fetch('/api/patches/<id>/relay', {method:'POST'})`).
+It retries the existing body without adding another anchor, retraining, or
+publishing a dataset. `relayed: false` and an empty `accepted` list are failures
+to place the body, not a successful publication. Only explicitly configured
+peers receive automatic offers; peer exchange cannot silently add recipients.
+
+Authentication, known published-public anchor, author, storage budget, and
+in-flight checks happen **before** multipart parsing. The receiver validates
+exact anchored size, hash and dimensions, bounded ZIP inflation, and existing
+destination integrity before registration. It cleans temporary files on
+rejection and disconnection. Drafts, test anchors, retired/rejected knowledge,
+unrelated authors, and corrupt stored copies are not acknowledged as valid.
+
+Relaying does not grant a purchase, change verification quorum, mark knowledge
+verified, or waive dataset access/PII rules. Paid-body relays must be peers the
+publisher trusts to store those bytes; API download gates are not encryption
+against the relay operator. The legacy signature purpose is retained for wire
+compatibility and is not bound to an HTTP method or recipient; relay deployment
+does not resolve that pre-existing protocol limitation.
+
+## Reproducible validation
+
+```bash
+bash scripts/test-blob-relay-docker.sh /path/to/ainize-core /path/to/new-evidence
+```
+
+The default prebuilt dependency image is
+`ain-cert-ainize-cli:hf-import-20260911-r5`; provide `AINIZE_TEST_IMAGE` for an
+equivalent local image with Node 24, Python/NumPy, and core/node dependencies
+under `/opt/ainize/ainize-{core,node}`. Source directories and the root filesystem
+are read-only. Tests build both exact source trees in an executable tmpfs, with
+network isolation, CPU quota 2, CPU set 0–7, RAM/swap ceiling 4 GiB, and no GPU.
+The wrapper preserves build/test failures and container state as well as success.
+The fixtures are synthetic, not the DART100 performance or public Live evidence.
+
+The public route probes at 2026-09-11 08:48 and 08:54 UTC returned HTTP 404
+(`Cannot POST /p2p/blob/...`) on both apex and www at the first check and www at
+the second. Thus the visible endpoint had not yet demonstrated this receiver,
+even though feature code was available. A relay-disabled **403** or signed-offer
+**403** proves route matching; a **404** HTML `Cannot POST` does not. Record the
+actual deployment commit and repeat the body transfer and Live test separately.

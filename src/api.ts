@@ -5,7 +5,7 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { randomBytes } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
 import multer from 'multer';
@@ -17,6 +17,7 @@ import {
   type CatalogEntry, type LedgerRecord, type PatchAnchor,
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
+import { blobRelay } from './blob-relay.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
@@ -1163,6 +1164,16 @@ export function buildApi(deps: ApiDeps): Router {
     const record = await market.announce(id, { replaces: body.replaces, autoSupersede: body.auto_supersede });
     return { record, retires: market.pendingSupersedes(id), verifiers: await market.verifierReach(), visibility: record.body.visibility ?? 'public' };
   }));
+  router.post('/api/patches/:id/relay', requireOperator, wrap(async (req) => {
+    const entry = await market.entry(req.params.id as string);
+    if (!entry) throw notFound('knowledge not found');
+    if (!sameAddr(entry.anchor.author, market.address)) throw new HttpError(403, 'only this knowledge author may retry its offer');
+    if (entry.status === 'DRAFT' || entry.status === 'RETIRED' || entry.status === 'REJECTED' || entry.anchor.visibility === 'test') throw new HttpError(409, 'a published public knowledge is required');
+    const blob = market.blobs.get(entry.anchor.patch_sha256);
+    if (!blob) throw new HttpError(409, 'knowledge body is not held by this author node');
+    const accepted = await market.p2p.offerBlob(blob.sha256, blob.path);
+    return { id: entry.anchor.id, sha256: blob.sha256, accepted, relayed: accepted.length > 0 };
+  }));
   /**
    * The exit (item 148): an author-signed `retire` record takes their own knowledge off sale for good. The anchor
    * stays on the permanent record, the catalogue drops it, /x402/patch/:id answers 410, and everyone who already
@@ -2289,57 +2300,7 @@ export function buildApi(deps: ApiDeps): Router {
     createReadStream(blob.path).pipe(res);
   }));
 
-  /**
-   * A publisher OFFERS its patch body to this node, so a node nobody can reach can still be a seller.
-   *
-   * Every other blob transfer here is a pull — the fetcher goes to the holder. That suits a consumer behind a
-   * firewall and fails a PUBLISHER behind one: the verifier has to reach in, cannot, and the anchor sits at
-   * ANNOUNCED for ever with no error raised anywhere. This is the one direction that has to be a push.
-   *
-   * WHY ACCEPTING IS SAFE, and it is not a matter of trusting the caller:
-   *
-   *   - the sha in the path must name an anchor this node already knows, from the gossiped ledger. An
-   *     offer for a body nobody has announced is refused, so this is not open storage.
-   *   - the uploader must sign as that anchor's AUTHOR. Only the publisher can place their own bytes.
-   *   - `importFile` rehashes the file and refuses a mismatch, and rejects anything that is not a patch
-   *     (`addrs` missing). So a relay cannot be made to serve content other than what the author published
-   *     — the signed anchor already fixes the hash, and the bytes are checked against it.
-   *
-   * Off unless `p2p.relayBlobs`, and bounded by `p2p.maxRelayBytes`: holding bytes for other people is a cost
-   * and a node should say yes to it deliberately.
-   */
-  router.post('/p2p/blob/:sha', upload.single('blob'), wrap(async (req) => {
-    const sha = String(req.params.sha ?? '').toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(sha)) throw bad('sha must be a 64-character hex sha256');
-    const cfgP2p = market.cfg.p2p ?? {};
-    if (!cfgP2p.relayBlobs) throw new HttpError(403, 'relay_disabled: this node does not hold blobs for other nodes (p2p.relayBlobs)');
-
-    const file = (req as Request & { file?: { path: string; size: number } }).file;
-    if (!file) throw bad('attach the patch body as multipart field `blob`');
-    const cleanup = () => { try { unlinkSync(file.path); } catch { /* already gone */ } };
-
-    try {
-      const max = cfgP2p.maxRelayBytes ?? 0;
-      if (max > 0 && file.size > max) throw new HttpError(413, `blob is ${file.size} bytes; this node relays at most ${max} (p2p.maxRelayBytes)`);
-
-      // The anchor must already be known, and the offer must be signed by ITS author. Both together are what
-      // make this a relay rather than free storage for anyone who can reach the port.
-      const entry = (await market.catalogAll()).find((e) => e.anchor.patch_sha256 === sha);
-      if (!entry) throw notFound(`no anchor known to this node names ${sha.slice(0, 12)} — announce it first, so the offer can be checked against a signed record`);
-      const offerer = verifyAuthHeader(req.header('x-ainize-auth'), `blob:${sha}`);
-      if (!offerer || !sameAddr(offerer, entry.anchor.author)) {
-        throw new HttpError(403, `only the author of ${entry.anchor.id} may place its body here`);
-      }
-
-      if (market.blobs.get(sha)) return { ok: true, sha256: sha, already_held: true };
-      // importFile rehashes and refuses a mismatch — the signed anchor fixes the hash, this checks the bytes.
-      const { blob } = await market.blobs.importFile(file.path, { copy: true, expectSha: sha });
-      market.log('info', 'blob', `relaying ${sha.slice(0, 12)} for ${entry.anchor.id} (${blob.size_bytes} bytes) on behalf of ${entry.anchor.author.slice(0, 10)}`, entry.anchor.id);
-      return { ok: true, sha256: sha, size_bytes: blob.size_bytes, already_held: false };
-    } finally {
-      cleanup();
-    }
-  }));
+  router.post('/p2p/blob/:sha', blobRelay(market));
 
   // published training sets between nodes (lineage design §6.6): same gate as /p2p/blob, plus the access level
   const datasetGateP2p = async (req: Request, sha: string) => {
