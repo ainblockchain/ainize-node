@@ -66,3 +66,14 @@ curl -i -X POST http://127.0.0.1:3400/p2p/blob/f9f665f6fa1a6b37963a4845107c0c0a5
 - 로컬의 본문·인증 없는 POST는 **JSON403 relay_disabled**다. 빈 수신/비활성 수신에도 route 자체는 응답한다. 공개 signed POST의 HTML404와 구분한다. 로컬은 발행자이며 추가 relay 저장소로 임의 개방하지 않았다.
 - `/api/info.version`은 npm 버전이 아니라 core의 `VERSION='0.1.0'` 상수다. 새 로컬 바이너리도0.1.0을 표시한다. 따라서 공개0.1.0 표시만으로 미배포를 단정하지 않는다. 공개 build9/10과 로컬 build9/11은 참고하되 실제 POST·실행 이미지/커밋으로 확인한다.
 - 후속 회귀 **56/56**(31+25) 및 실제 미종료job 재시작 거부 시험이 통과했다. 증빙 `ainize_runtime_operator_guard_tests_20260911/`, `ainize_runtime_upgrade_20260911/`. 이는 공개 P2P 복제나 Live 성공이 아니다.
+
+
+## 11:54 UTC 실제 원본의 빈 수신 노드 재현
+
+- 공개 네 노드의 blobs0 보고를 부정하지 않는다. 그러나 이 머신에 남은 두 원본의 공개 anchor 서명·작성자·전체 SHA·크기를 다시 확인하고, **원본 파일을 전혀 마운트하지 않은 빈 별도 Ainize 노드**로 실제 P2P 전송했다. 새 학습이나 새 anchor를 만들지 않았다.
+- 첫 실행은 두 본문 수신과 해시 재다운로드까지 성공했지만, 첫 중복 전송의 조기200 응답 뒤 Node24.21.0의 file-backed Blob 송신이 `ERR_INVALID_STATE: ReadableStream is already closed`로 종료됐다. 이 실패는 `ainize_original_replay_20260911/`에 그대로 보존했다.
+- `src/blob-upload.ts`에 async-generator/Readable multipart 전송을 추가해 P2P와 standalone 복구 클라이언트가 함께 사용하게 했다. 256MiB 파일·4KiB 응답·60초 전체 기한·redirect 미추적·스트림 정리를 유지한다. 중간 native-http 대안의 EPIPE 실패2회도 보존했고, 최종 구현은 회귀62개와 별도40개 반복 시험(큰 파일 조기 응답400회)을 통과했다.
+- 수정 이미지 `sha256:f45a08b206bc56a4c97a004e1229e7c64aceac7a17c2b300bf5b14470cae53ea`의 두 번째 실제 실행: 빈 수신0→2건, 본문 POST4회(초회2+중복2)·GET해시4회, 같은 수신 노드 재시작 후 GET해시2회 통과. 앵커2개의 원래 해시 유지, GC 실제 실행에서도2개 보존·삭제0이다. 원본없는 GET404·무인증 POST403·앵커없는 서명 POST JSON404·앵커전파 후 POST200을 각각 구분했다.
+- 각 컨테이너는 Docker internal network·공개포트 없음·runc·GPU 미할당·CPU1·RAM/전체 memory+swap1GiB·CPU set0–7·PID128·read-only·tmpfs64MiB다. 수신 노드에 publisher 비밀키/원본은 없고, 재시작 후 확인 클라이언트에도 원본 마운트가 없다. 기존 flashnext/flashtrain/실제 Ainize API의 ID·시작시각·PID는 그대로다. 별도 수신 노드의 실험이지 공개 서버나 운영 API의 교체가 아니다.
+- **공개 재전송은 여전히 실패**: 수정 클라이언트로11:54:44 www와11:54:47 apex에 실제 원본을 offer했으나 모두 HTML404 `Cannot POST`, accepted=false다. 관리자 내부3400의 POST 응답/실행 커밋 확인이 필요하며, 프록시와 실행 바이너리 중 원인을 단정하지 않는다. 공개 복제·VERIFIED·Live 성공으로 보고하지 않는다.
+- 성공 원문: `kpi/evidence/ainize_original_replay_r2_20260911/summary.json` 및 전체 송수신/재시작 로그. 회귀 `ainize_stream_upload_tests_r3_20260911/`, 반복 `ainize_stream_upload_repeat_r3_20260911/`, 공개 실패 `signed_p2p_offer_stream_20260911/`. 실행법은 `scripts/run-public-blob-replay.sh`와 `docs/blob-relay.md`다. 비밀 홈·키·NPZ는 진단 릴리스에서 제외한다.

@@ -38,7 +38,7 @@ cd /tmp/ainize-core
 npm run build
 cd /tmp/ainize-node
 npm run build
-node --test --import tsx test/blob-relay.test.ts test/retry-public-blob.test.ts test/watchdog-snapshot.test.ts test/runtime-snapshot.test.ts
+node --test --import tsx test/blob-upload.test.ts test/blob-relay.test.ts test/retry-public-blob.test.ts test/replay-public-blobs.test.ts test/watchdog-snapshot.test.ts test/runtime-snapshot.test.ts
 node --test --import tsx test/guard-api.test.ts test/cluster.test.ts
 ' > "$evidence/container-id.txt"
 docker inspect "$name" --format '{{json .HostConfig}}' > "$evidence/host-config.json"

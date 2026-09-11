@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, openAsBlob, readFileSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { LocalLedger, signMessage } from '@ainize/core';
+import { uploadBlob } from '../dist/blob-upload.js';
 
 const [configPath, filePath, patchId, peer = 'https://www.ainize.ai'] = process.argv.slice(2);
 const emit = result => process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...result })}\n`);
@@ -42,14 +43,12 @@ async function main() {
   if (!record || !LocalLedger.validate(record) || !identityMatches(record.author) || !identityMatches(record.body.author)) throw new Error('matching author-signed public anchor not found in the first 500 peer records');
   if (record.body.visibility === 'test' || record.body.price !== '0' || record.body.size_bytes !== size) throw new Error('this recovery tool only offers exact-size, already-published free public knowledge');
   emit({ stage: 'local-body-verified', patchId, author: identity.address, sha256: sha, sizeBytes: size, anchorHash: record.hash, anchorSignatureValid: true });
-  const form = new FormData();
-  form.append('blob', await openAsBlob(filePath), `${sha}.npz`);
   const endpoint = `${origin.origin}/p2p/blob/${sha}`;
-  const response = await fetch(endpoint, { method: 'POST', body: form, headers: headers(), redirect: 'error', signal: AbortSignal.timeout(60_000) });
-  const raw = (await boundedBody(response, 4096)).toString('utf8');
+  const response = await uploadBlob(endpoint, sha, filePath, headers()['x-ainize-auth']);
+  const raw = response.body;
   let receipt;
   try { receipt = JSON.parse(raw); } catch { receipt = raw; }
-  const accepted = response.ok && receipt?.ok === true && receipt.sha256 === sha && (receipt.size_bytes === size || (receipt.already_held === true && receipt.size_bytes === undefined));
+  const accepted = response.status >= 200 && response.status < 300 && response.contentType.includes('application/json') && receipt?.ok === true && receipt.sha256 === sha && (receipt.size_bytes === size || (receipt.already_held === true && receipt.size_bytes === undefined));
   emit({ stage: 'signed-p2p-offer', endpoint, method: 'POST', status: response.status, bytesOffered: size, receipt, accepted });
   if (!accepted) { process.exitCode = 1; return; }
   const download = await fetch(endpoint, { headers: headers(), redirect: 'error', signal: AbortSignal.timeout(60_000) });

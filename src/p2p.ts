@@ -3,13 +3,14 @@
  * (local-ledger mode: set reconciliation by `received_at` cursor + push on new record),
  * blob availability and authenticated blob fetch.
  */
-import { createWriteStream, mkdirSync, renameSync, openAsBlob } from 'node:fs';
+import { createWriteStream, mkdirSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger, isRecordRefusal } from '@ainize/core';
 import type { Store } from './store.js';
 import { sha256File } from './blobs.js';
+import { uploadBlob } from './blob-upload.js';
 
 export interface P2PDeps {
   identity: Identity;
@@ -392,32 +393,18 @@ export class P2P {
    */
   async offerBlob(sha: string, path: string, endpoints = this.peers().filter(peer => peer.source === 'configured').map(peer => peer.endpoint)): Promise<string[]> {
     const accepted: string[] = [];
-    let body: Blob;
+    let size: number;
     try {
       if (!/^[0-9a-f]{64}$/.test(sha) || await sha256File(path) !== sha) return accepted;
-      body = await openAsBlob(path);
+      size = statSync(path).size;
     } catch { return accepted; }
     for (const endpoint of new Set(endpoints.map(value => this.normalize(value)))) {
       if (endpoint === this.normalize(this.selfEndpoint)) continue;
       try {
-        const form = new FormData();
-        form.append('blob', body, `${sha}.npz`);
-        const response = await fetch(`${endpoint}/p2p/blob/${sha}`, {
-          method: 'POST', body: form,
-          headers: { 'x-ainize-auth': authHeader(this.deps.identity, `blob:${sha}`) },
-          signal: AbortSignal.timeout(60_000), redirect: 'error',
-        });
-        if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) { await response.body?.cancel(); continue; }
-        const chunks: Uint8Array[] = [];
-        let bytes = 0;
-        if (!response.body) continue;
-        for await (const chunk of response.body) {
-          bytes += chunk.length;
-          if (bytes > 4096) throw new Error('relay acknowledgment exceeds the limit');
-          chunks.push(chunk);
-        }
-        const receipt = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
-        if (receipt.ok === true && receipt.sha256 === sha && (receipt.size_bytes === body.size || (receipt.already_held === true && receipt.size_bytes === undefined))) accepted.push(endpoint);
+        const response = await uploadBlob(`${endpoint}/p2p/blob/${sha}`, sha, path, authHeader(this.deps.identity, `blob:${sha}`));
+        if (response.status < 200 || response.status >= 300 || !response.contentType.includes('application/json')) continue;
+        const receipt = JSON.parse(response.body) as Record<string, unknown>;
+        if (receipt.ok === true && receipt.sha256 === sha && (receipt.size_bytes === size || (receipt.already_held === true && receipt.size_bytes === undefined))) accepted.push(endpoint);
       } catch { /* a peer that will not hold it is not a publish failure */ }
     }
     return accepted;

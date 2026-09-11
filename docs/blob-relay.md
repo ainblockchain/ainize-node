@@ -90,6 +90,71 @@ after acceptance. It never prints the identity secret or request auth header.
 The client does not retrain, create an anchor, publish a dataset, or modify the
 running author node. A missing receiving route remains a failure, not success.
 
+Both `P2P.offerBlob` and the recovery client use the same bounded HTTP(S)
+multipart file-stream transport in `src/blob-upload.ts`. A receiver can reply
+before consuming the upload (disabled, unknown anchor, or already held). On the
+tested Node24.21.0, the former `fetch`/file-backed Blob path terminated the sender
+with an uncaught `ERR_INVALID_STATE` during a repeated3.68MB original offer.
+The new transport supplies multipart bytes through an async-generator-backed
+Node Readable instead of a file-backed Blob, bounds the response to4KiB and the
+entire operation to60s, does not follow redirects, and closes file/request streams
+on completion or failure. The response still has to finish within the bounds and
+pass the caller's receipt checks. It does not suppress arbitrary uncaught
+exceptions. An intermediate native-http implementation produced EPIPE failures
+in the large early-response regression; those failed attempts are retained, not
+counted as a validated implementation. See the [Node stream API](https://nodejs.org/docs/latest-v24.x/api/stream.html#streamreadablefromiterable-options).
+
+### Isolated replay of existing public originals
+
+This is a storage/transport experiment, not public-node deployment, independent
+attestation, a Live inference test, or evidence that all100 datasets completed.
+The fixture manifest contains `{"version":1,"records":[originalSignedAnchor,...]}`
+copied from the public ledger, not newly signed replacements. Only already-public
+free anchors are accepted; files must have exact signed hashes and sizes.
+
+```bash
+AINIZE_REPLAY_IMAGE=your-locally-built-compatible-image \
+  bash scripts/run-public-blob-replay.sh /input/manifest.json /private/publisher-config.json \
+  /private/sha-named-originals /evidence/new-run /private/new-receiver-state
+```
+
+Build the compatible image with `deploy/build-source-refresh.sh`; the image must
+contain the new `dist/blob-upload.js` as well as matching core/node code. The
+wrapper requires Docker, Bash and host Node, freezes the replay client/manifest,
+and records image identity, runtime hashes, network/limits, logs and exit states.
+The evidence and private-state directories must not already exist. The receiver
+has its own new identity/storage and no mount of publisher keys or source bodies.
+Only the sender receives the original config and selected read-only file mounts.
+The check client after restart has no source-body mounts. Private state, publisher
+config and NPZ bodies must not be included in a diagnostic release archive.
+
+Containers use an internal Docker network with no published ports, `runc`, no
+GPU/devices, one CPU quota each, CPU set0–7 (override `AINIZE_REPLAY_CPUSET`), RAM
+and total RAM+swap ceiling1GiB,128PID cap, read-only rootfs,64MiB tmpfs and dropped
+capabilities. The receiver cannot reach the active model/trainer: its runtime
+endpoints are its own loopback port1, teaching is disabled, and it has no peers
+or verifier role. Only this experiment's containers/network are stopped/removed;
+the private receiver state is retained outside public evidence.
+
+The run first demonstrates these distinct states on an empty receiver:
+
+| Request | Expected response |
+|---|---|
+| GET missing body | JSON404, blob not held |
+| POST without authentication | JSON403, signed offer required |
+| Signed POST before the anchor | JSON404, no published public anchor |
+| Original anchor gossip then signed original body POST | JSON200, exact hash/size |
+| Repeated body POST at the full storage budget | JSON200, already_held=true |
+
+Then it checks authenticated GET byte hashes, stops/starts the same receiver,
+checks both hashes again from a body-less check container, and executes GC with
+`allowSoleCopy=true, keepPurchased=false` without losing relayed copies. Original
+anchor hashes/counts must not change. Thus a JSON404 for an unknown anchor is a
+valid receiver response; HTML `Cannot POST` is a different observed result. An
+empty public blob list alone cannot distinguish these conditions or prove that
+the original publisher's files are gone. Inspect the private backend response
+and actual running commit before deciding whether a proxy or binary is at fault.
+
 Authentication, known published-public anchor, author, storage budget, and
 in-flight checks happen **before** multipart parsing. The receiver validates
 exact anchored size, hash and dimensions, bounded ZIP inflation, and existing

@@ -29,9 +29,25 @@ for (const mode of ['success', 'html-404', 'html-200', 'wrong-download', 'tamper
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {registerHooks} from 'node:module';
 import {verifyMessage} from ${JSON.stringify(pathToFileURL(resolve('node_modules/@ainize/core/dist/index.js')).href)};
 const bytes = readFileSync(${JSON.stringify(filePath)});
 const mode = ${JSON.stringify(mode)};
+globalThis.testUpload = async (url, sha, file, authorization) => {
+  assert.ok(!['paid-anchor','tampered-anchor'].includes(mode), 'invalid anchor must not send a body');
+  assert.equal(url, 'https://relay.invalid/p2p/blob/${sha}');
+  assert.equal(sha, '${sha}');
+  assert.deepEqual(readFileSync(file), bytes);
+  const [address, timestamp, signature] = authorization.split(':');
+  assert.equal(address, ${JSON.stringify(identity.address)});
+  assert.ok(verifyMessage('blob:${sha}:' + timestamp, signature, address));
+  if (mode.startsWith('html-')) return {status:mode === 'html-404' ? 404 : 200,contentType:'text/html',body:'Cannot POST /p2p/blob'};
+  return {status:200,contentType:'application/json',body:JSON.stringify({ok:true,sha256:sha,size_bytes:bytes.length,already_held:false})};
+};
+registerHooks({load(url, context, nextLoad) {
+  if (url === ${JSON.stringify(pathToFileURL(resolve('dist/blob-upload.js')).href)}) return {format:'module',shortCircuit:true,source:'export const uploadBlob = (...args) => globalThis.testUpload(...args);'};
+  return nextLoad(url, context);
+}});
 globalThis.fetch = async (url, options) => {
   assert.equal(options.redirect, 'error');
   if (String(url).includes('/p2p/records?')) return Response.json({records: [${JSON.stringify(record)}]});
@@ -39,12 +55,7 @@ globalThis.fetch = async (url, options) => {
   const [address, timestamp, signature] = options.headers['x-ainize-auth'].split(':');
   assert.equal(address, ${JSON.stringify(identity.address)});
   assert.ok(verifyMessage('blob:${sha}:' + timestamp, signature, address));
-  if (options.method === 'POST') {
-    const uploaded = Buffer.from(await options.body.get('blob').arrayBuffer());
-    assert.deepEqual(uploaded, bytes);
-    if (mode.startsWith('html-')) return new Response('Cannot POST /p2p/blob', {status: mode === 'html-404' ? 404 : 200});
-    return Response.json({ok:true,sha256:${JSON.stringify(sha)},size_bytes:bytes.length,already_held:false});
-  }
+  assert.notEqual(options.method, 'POST');
   return new Response(mode === 'wrong-download' ? Buffer.alloc(bytes.length) : bytes);
 };
 process.argv = [process.execPath, 'retry-public-blob.mjs', ${JSON.stringify(configPath)}, ${JSON.stringify(filePath)}, 'recovery-test', 'https://relay.invalid'];
