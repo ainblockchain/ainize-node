@@ -143,6 +143,17 @@ test('D1: the node sends the configured stop sequences, and no penalties by defa
   assert.equal(b.presence_penalty, undefined);
 });
 
+test('HTTP max_tokens reaches both model calls and defaults to 200', async () => {
+  for (const limit of [1, 128, 1024, undefined]) {
+    bodies.length = 0;
+    const response = await ask('token budget test', { mode: 'compare', ...(limit === undefined ? {} : { max_tokens: limit }) });
+    assert.equal(response.status, 200);
+    const requests = bodies.filter(body => body.path === '/v1/chat/completions');
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(body => body.max_tokens === (limit ?? 200)));
+  }
+});
+
 test('D1: "<think>" is dropped from the stop list when the caller asked for thinking', async () => {
   bodies.length = 0;
   await ask('안녕하세요', { thinking: true });
