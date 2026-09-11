@@ -3,7 +3,7 @@
  * (local-ledger mode: set reconciliation by `received_at` cursor + push on new record),
  * blob availability and authenticated blob fetch.
  */
-import { createWriteStream, mkdirSync, renameSync } from 'node:fs';
+import { createWriteStream, mkdirSync, renameSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -375,6 +375,37 @@ export class P2P {
       } catch (e) { lastErr = e as Error; }
     }
     throw lastErr ?? new Error(`no peer holds the training set ${sha.slice(0, 12)}`);
+  }
+
+  /**
+   * PUSH this node's own blob to peers, so a publisher nobody can reach can still be a seller.
+   *
+   * Everything else here is a pull, which is right for a consumer behind a firewall and wrong for a PUBLISHER
+   * behind one: the verifier has to reach in, cannot, and the anchor sits at ANNOUNCED for ever. Nothing errors —
+   * the anchor gossips, the catalogue lists it, and the body is simply unobtainable. This is the one direction
+   * that has to be a push.
+   *
+   * Best-effort by design: a peer that refuses (relay off, too large, does not know the anchor yet) is not a
+   * publish failure, so this NEVER throws. It returns the peers that accepted, and the caller logs the count —
+   * a publisher who ends up with zero relays should be told, not left to find out at verification time.
+   */
+  async offerBlob(sha: string, path: string, endpoints = this.peers().map((p) => p.endpoint)): Promise<string[]> {
+    const accepted: string[] = [];
+    const body = readFileSync(path);
+    for (const ep of endpoints) {
+      if (this.normalize(ep) === this.normalize(this.selfEndpoint)) continue;
+      try {
+        const form = new FormData();
+        form.append('blob', new Blob([body]), `${sha}.npz`);
+        const r = await fetch(`${ep}/p2p/blob/${sha}`, {
+          method: 'POST', body: form,
+          headers: { 'x-ainize-auth': authHeader(this.deps.identity, `blob:${sha}`) },
+          signal: AbortSignal.timeout(10 * 60_000),
+        });
+        if (r.ok) accepted.push(ep);
+      } catch { /* a peer that will not hold it is not a publish failure */ }
+    }
+    return accepted;
   }
 
   /** Fetch a blob from a peer with identity auth (verifier/author/purchaser rights are checked by the peer). */

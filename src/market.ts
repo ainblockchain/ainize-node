@@ -1570,7 +1570,30 @@ export class Market {
         : opts.autoSupersede === false ? ' — nothing is retired (--keep-others)' : ''),
       id, { conflicts, retires });
     await this.p2p?.broadcast(rec).catch(() => undefined);
+    /**
+     * Offer the BODY to peers, not just the anchor.
+     *
+     * Broadcast sends the record. The record names a sha, and every route that moves a sha is a pull — the
+     * verifier comes to the author. A publisher behind NAT or a firewall passes this line with a perfectly good
+     * announce and no way for anyone to fetch what it announced: the catalogue lists it, the status never leaves
+     * ANNOUNCED, and nothing anywhere reports an error. Pushing the body to whoever will hold it is what closes
+     * that, and it is best-effort — peers that decline are normal, so this cannot fail a publish.
+     */
+    void this.offerBody(anchor.patch_sha256, blob.path, id);
     return rec;
+  }
+
+  /** Push a just-announced body to relaying peers, and say plainly when nobody took it (see `announce`). */
+  private async offerBody(sha: string, path: string, id: string): Promise<void> {
+    if (!this.p2p) return;
+    try {
+      const took = await this.p2p.offerBlob(sha, path);
+      if (took.length) this.log('info', 'publish', `${took.length} peer(s) now hold the body of ${id}: ${took.join(', ')}`, id, { relays: took });
+      else this.log('warn', 'publish', `no peer accepted the body of ${id} — verifiers must reach ${this.publicUrl} themselves to fetch it. `
+        + `If this node is not reachable from outside, ${id} will stay ANNOUNCED: ask a peer to set \`p2p.relayBlobs true\`.`, id);
+    } catch (e) {
+      this.log('warn', 'publish', `could not offer the body of ${id} to peers: ${(e as Error).message}`, id);
+    }
   }
 
   /** What this announce will retire once verifiers pass it — read back by the API and the CLI (item 248). */
