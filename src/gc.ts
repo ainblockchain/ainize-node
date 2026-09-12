@@ -19,7 +19,7 @@ export interface GcPlan {
   candidates: GcCandidate[];
   bytes: number;
   /** Bodies looked at and kept, by the reason they were kept. */
-  kept: { authored: number; purchased: number; applied: number; draft: number; unlisted: number; too_new: number; sole_copy: number };
+  kept: { authored: number; purchased: number; applied: number; draft: number; unlisted: number; too_new: number; sole_copy: number; relayed: number };
 }
 
 export interface GcOptions {
@@ -35,7 +35,7 @@ export interface GcOptions {
 export async function gcPlan(market: Market, opts: GcOptions = {}): Promise<GcPlan> {
   const keepPurchased = opts.keepPurchased !== false;
   const now = Date.now();
-  const kept: GcPlan['kept'] = { authored: 0, purchased: 0, applied: 0, draft: 0, unlisted: 0, too_new: 0, sole_copy: 0 };
+  const kept: GcPlan['kept'] = { authored: 0, purchased: 0, applied: 0, draft: 0, unlisted: 0, too_new: 0, sole_copy: 0, relayed: 0 };
   const catalog = await market.catalogAll();
   const bySha = new Map<string, CatalogEntry[]>();
   for (const e of catalog) {
@@ -51,6 +51,7 @@ export async function gcPlan(market: Market, opts: GcOptions = {}): Promise<GcPl
     // only bodies this node actually copied into its own blob directory: an imported file that lives in the
     // operator's own results folder is theirs, not ours to delete
     if (!b.path.startsWith(market.blobs.dir) || b.path.startsWith(datasetDir)) continue;
+    if (market.blobs.isRelayed(b.sha256)) { kept.relayed++; continue; }
     if (draftShas.has(b.sha256)) { kept.draft++; continue; }
     const entries = bySha.get(b.sha256) ?? [];
     if (!entries.length) { kept.unlisted++; continue; }                       // nothing on the record points at it
@@ -80,6 +81,7 @@ export async function gcRun(market: Market, opts: GcOptions & { dryRun?: boolean
   let freed = 0;
   for (const cand of plan.candidates) {
     try {
+      if (market.blobs.isRelayed(cand.sha256)) continue;
       market.blobs.remove(cand.sha256);
       if (!existsSync(cand.path)) { removed.push(cand); freed += cand.bytes; }
     } catch { /* a body that will not delete is reported by omission, never as freed bytes */ }

@@ -3,12 +3,14 @@
  * (local-ledger mode: set reconciliation by `received_at` cursor + push on new record),
  * blob availability and authenticated blob fetch.
  */
-import { createWriteStream, mkdirSync, renameSync, readFileSync } from 'node:fs';
+import { createWriteStream, mkdirSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { signMessage, verifyMessage, type LedgerRecord, type PeerInfo, type Identity, type Ledger, isRecordRefusal } from '@ainize/core';
 import type { Store } from './store.js';
+import { sha256File } from './blobs.js';
+import { uploadBlob } from './blob-upload.js';
 
 export interface P2PDeps {
   identity: Identity;
@@ -389,25 +391,24 @@ export class P2P {
    * publish failure, so this NEVER throws. It returns the peers that accepted, and the caller logs the count —
    * a publisher who ends up with zero relays should be told, not left to find out at verification time.
    */
-  async offerBlob(sha: string, path: string, endpoints = this.peers().map((p) => p.endpoint)): Promise<string[]> {
+  async offerBlob(sha: string, path: string, endpoints = this.peers().filter(peer => peer.source === 'configured').map(peer => peer.endpoint)): Promise<string[]> {
     const accepted: string[] = [];
-    const body = readFileSync(path);
-    for (const ep of endpoints) {
-      if (this.normalize(ep) === this.normalize(this.selfEndpoint)) continue;
+    let size: number;
+    try {
+      if (!/^[0-9a-f]{64}$/.test(sha) || await sha256File(path) !== sha) return accepted;
+      size = statSync(path).size;
+    } catch { return accepted; }
+    for (const endpoint of new Set(endpoints.map(value => this.normalize(value)))) {
+      if (endpoint === this.normalize(this.selfEndpoint)) continue;
       try {
-        const form = new FormData();
-        form.append('blob', new Blob([body]), `${sha}.npz`);
-        const r = await fetch(`${ep}/p2p/blob/${sha}`, {
-          method: 'POST', body: form,
-          headers: { 'x-ainize-auth': authHeader(this.deps.identity, `blob:${sha}`) },
-          signal: AbortSignal.timeout(10 * 60_000),
-        });
-        if (r.ok) accepted.push(ep);
+        const response = await uploadBlob(`${endpoint}/p2p/blob/${sha}`, sha, path, authHeader(this.deps.identity, `blob:${sha}`));
+        if (response.status < 200 || response.status >= 300 || !response.contentType.includes('application/json')) continue;
+        const receipt = JSON.parse(response.body) as Record<string, unknown>;
+        if (receipt.ok === true && receipt.sha256 === sha && (receipt.size_bytes === size || (receipt.already_held === true && receipt.size_bytes === undefined))) accepted.push(endpoint);
       } catch { /* a peer that will not hold it is not a publish failure */ }
     }
     return accepted;
   }
-
   /** Fetch a blob from a peer with identity auth (verifier/author/purchaser rights are checked by the peer). */
   async fetchBlob(sha: string, dest: string, endpoints = this.holders(sha), token?: string): Promise<string> {
     let lastErr: Error | null = null;

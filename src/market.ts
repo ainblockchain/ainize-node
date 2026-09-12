@@ -3556,17 +3556,17 @@ export class Market {
     const st = await this.runtime.status();
     if (!st.available) return;
     await this.recoverRuntime();
-    const cur = this.store.listApplied();
-    if (!cur.length) return;
-    const top = cur[cur.length - 1];
-    const blob = this.blobs.get(top.sha256);
-    if (!blob) return;
-    const target = await this.layersOfExact(cur.map((a) => a.patch_id)).catch((e) => { this.log('error', 'runtime', `cannot rebuild the stack: ${(e as Error).message}`); return null; });
-    if (!target?.length) return;
     // The probe itself happens INSIDE the lock. Reading the table while another operation is halfway through writing
     // it would report "reverted" for a stack that is perfectly fine, and the rebuild would then discard live journals.
     // When the lock is held by someone else there is nothing to fix yet — the next tick is 20 s away.
     await this.runtime.exclusiveTry('watchdog', async () => {
+      const cur = this.store.listApplied();
+      if (!cur.length) return;
+      const top = cur[cur.length - 1];
+      const blob = this.blobs.get(top.sha256);
+      if (!blob) return;
+      const target = await this.layersOfExact(cur.map(row => row.patch_id)).catch(error => { this.log('error', 'runtime', `cannot rebuild the stack: ${(error as Error).message}`); return null; });
+      if (!target?.length) return;
       const status = await this.runtime.statusOf(blob.path, { journal: top.journal_path ?? undefined });
       // Whatever it says, WRITE IT DOWN (item 215): this is the only measurement of the live table anything makes.
       if (status) this.noteRuntimeCheck(top.patch_id, top.sha256, status.applied, 'watchdog');

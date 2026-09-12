@@ -8,7 +8,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { PatchAnchor, PeerInfo, PatchManifest, TeachDatasetSource, TeachDatasetStatus, TeachDatasetSummary, TeachTrainingSpec } from '@ainize/core';
 
-export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; }
+export interface BlobRow { sha256: string; path: string; size_bytes: number; rows: number; row_dim: number; imported_at: number; relayed?: number; }
 /** AIN that arrived for a knowledge and did not cover its price — held for the payer, never kept (item 279). */
 export interface PartialPaymentRow { tx_hash: string; patch_id: string; payer: string; amount: string; currency: string; nonce: string | null; resource: string | null; transfer_key: string | null; consumed_by: string | null; created_at: number }
 
@@ -308,6 +308,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_partial_payments_payer ON partial_payments(patch_id, payer);`);
     // Item 314: a royalty transfer used to be an anonymous push with nothing tying it to the sale it honoured.
     add('payouts', { transfer_key: 'TEXT', recorded: 'INTEGER NOT NULL DEFAULT 0' });
+    add('blobs', { relayed: 'INTEGER NOT NULL DEFAULT 0' });
     // Item 362: a purchase a subscription made on its own read exactly like one the operator chose to make.
     // Item 280: what the money was split into, as the seller reported it in `x-payment-response`.
     add('purchases', { origin: "TEXT NOT NULL DEFAULT 'manual'", royalty: 'TEXT' });
@@ -360,6 +361,7 @@ export class Store {
       .run(b.sha256, b.path, b.size_bytes, b.rows, b.row_dim, b.imported_at);
   }
   getBlob(sha: string): BlobRow | null { return (this.db.prepare('SELECT * FROM blobs WHERE sha256 = ?').get(sha) as BlobRow | undefined) ?? null; }
+  markBlobRelayed(sha: string) { this.db.prepare('UPDATE blobs SET relayed = 1 WHERE sha256 = ?').run(sha); }
   listBlobs(): BlobRow[] { return this.db.prepare('SELECT * FROM blobs ORDER BY imported_at DESC').all() as unknown as BlobRow[]; }
   deleteBlob(sha: string) { this.db.prepare('DELETE FROM blobs WHERE sha256 = ?').run(sha); this.db.prepare('DELETE FROM addrsets WHERE sha256 = ?').run(sha); }
   putAddrSet(sha: string, addrs: BigInt64Array) {
