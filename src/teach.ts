@@ -188,7 +188,7 @@ export interface TeachPolicyView {
   backend: 'gradient' | 'stub';
   queue: { depth: number; max: number; position_eta_s?: number | null; queued_rows: number; queued_rows_max: number };
   limits: {
-    facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; prompt_max: number; answer_max: number;
+    facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; active_jobs_per_key: number; prompt_max: number; answer_max: number;
     dataset_max_bytes: number; dataset_max_rows: number; dataset_max_source_lines: number;
     rows_per_job: number; rows_per_job_source: 'default' | 'measured' | 'operator';
     rows_per_key_per_day: number; rows_per_ip_per_day: number; datasets_per_key_per_day: number; dataset_ttl_days: number;
@@ -579,6 +579,7 @@ export class TeachWorker {
       },
       limits: {
         facts_per_job: c.factsPerJob, jobs_per_key_per_day: c.jobsPerKeyPerDay, jobs_per_ip_per_day: c.jobsPerIpPerDay, prompt_max: PROMPT_MAX, answer_max: ANSWER_MAX,
+        active_jobs_per_key: c.activeJobsPerKey ?? ACTIVE_JOBS_PER_KEY,
         dataset_max_bytes: c.dataset.maxBytes, dataset_max_rows: c.dataset.maxRows, dataset_max_source_lines: c.dataset.maxSourceLines,
         rows_per_job: rows.rows, rows_per_job_source: rows.source,
         rows_per_key_per_day: c.dataset.rowsPerKeyPerDay, rows_per_ip_per_day: c.dataset.rowsPerIpPerDay,
@@ -1298,7 +1299,8 @@ export class TeachWorker {
     const rowsWaiting = active.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
     if (rowsWaiting >= c.queuedRowsMax) throw new TeachError(503, `trainer_paused: ${rowsWaiting} questions are already waiting on this node — try again later`);
     const mineActive = active.filter((j) => j.contributor.toLowerCase() === address.toLowerCase()).length;
-    if (mineActive >= ACTIVE_JOBS_PER_KEY) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — wait for them to finish`);
+    const activeLimit = c.activeJobsPerKey ?? ACTIVE_JOBS_PER_KEY;
+    if (mineActive >= activeLimit) throw new TeachError(429, `quota_key: you already have ${mineActive} lesson(s) in progress on this node — the configured limit is ${activeLimit}`);
   }
 
   // ------------------------------------------------------------ merge (design §9, §12.2 POST /api/teach/merge/preview)
