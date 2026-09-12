@@ -1,5 +1,5 @@
 /**
- * `docs/en/reference/cli.md` — generated from the yargs declarations in `packages/cli/src/bin.ts`.
+ * `docs/en/reference/cli.md` — generated from the yargs declarations in `packages/cli/src/main.ts`.
  *
  * bin.ts ends in a top-level `await cli.parseAsync()`, so the yargs instance cannot be imported and asked what it
  * knows; the command tree is read from the syntax tree instead. Every name, description, type, default, choice list
@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { ts, parseFile, literal, Unresolved, resolveConst, tsFiles } from './ts.mjs';
 import { PROG, code, value, inline, cell, table, fence, slug } from './md.mjs';
 
-const BIN = 'packages/cli/src/bin.ts';
+// `bin.ts` is now a launcher that checks the Node version and dynamically imports the CLI; the yargs
+// declarations moved to `main.ts`. Reading the old path would silently generate an empty command list.
+const BIN = 'packages/cli/src/main.ts';
 
 /** A command, positional or option that the AST could not read is a bug in this generator, not a page to publish. */
 const must = (v, what, node) => {
