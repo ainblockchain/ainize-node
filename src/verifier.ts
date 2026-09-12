@@ -88,12 +88,42 @@ export class Verifier {
     // the whole of `ainize logs`' default window. An anchor that is only waiting announces itself once and then
     // goes quiet until something actually changes.
     const quiet = this.waitingQuiet.has(anchor.id);
-    try { await this.verifyOne(anchor, { quiet }); this.waitingQuiet.delete(anchor.id); }
+    try { await this.verifyOne(anchor, { quiet }); this.waitingQuiet.delete(anchor.id); this.failures.delete(anchor.id); }
     catch (err) {
       if (err instanceof RuntimeWaitError) { this.waitingQuiet.add(anchor.id); waiting.push({ id: anchor.id, detail: err.detail, left: err.graceLeftMs }); return; }
       this.waitingQuiet.delete(anchor.id);
-      this.market.log('warn', 'verifier', `${what} ${anchor.id} failed: ${(err as Error).message}`, anchor.id);
+      this.report(anchor, what, err as Error);
     }
+  }
+
+  /**
+   * Consecutive identical failures per anchor, so a permanent one is said once and not every five seconds.
+   *
+   * An anchor nobody holds the body of fails with the same `fetch failed` for ever: the round runs every
+   * `intervalMs`, so ainize.ai logged that line 17,000 times a day for two anchors whose seller node no longer
+   * exists, and `ainize logs` showed nothing else. The RuntimeWaitError path above already had this problem and
+   * solved it for its own case; a failure that is not the runtime got no such treatment.
+   */
+  private failures = new Map<string, { message: string; n: number }>();
+
+  /**
+   * Say it the 1st, 2nd, 4th, 8th … time and then hourly.
+   *
+   * Not a retry backoff: the attempt itself is cheap and stopping it would strand an anchor whose holder comes
+   * back. What is expensive is the log, which is the operator's only window onto the node. The count travels in
+   * the line, so "this has been failing 900 times" is visible instead of implied by scrollback.
+   */
+  private report(anchor: PatchAnchor, what: string, err: Error): void {
+    const message = err.message;
+    const prev = this.failures.get(anchor.id);
+    const n = prev && prev.message === message ? prev.n + 1 : 1;
+    this.failures.set(anchor.id, { message, n });
+    const hourly = Math.max(1, Math.round(3_600_000 / (this.market.cfg.verifier?.intervalMs ?? 5_000)));
+    const say = n <= 2 || (n & (n - 1)) === 0 || n % hourly === 0;
+    if (!say) return;
+    this.market.log('warn', 'verifier', n === 1
+      ? `${what} ${anchor.id} failed: ${message}`
+      : `${what} ${anchor.id} has failed ${n} times with the same error: ${message}`, anchor.id, { attempts: n });
   }
 
   /**
