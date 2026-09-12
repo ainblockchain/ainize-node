@@ -44,7 +44,13 @@ export interface TeachFact { prompt: string; answer: string; alt_prompt?: string
 export interface TeachProgress {
   step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; started_at?: number;
   /** Which stage the rail is on. The big bar is always the real `step / max_steps` inside `train` — never a computed percent. */
-  phase?: 'load' | 'train' | 'check';
+  /**
+   * `baseline` is the stretch between the model being loaded and the first training step, where every question is
+   * asked of the un-patched model once. It used to be folded into `load`, and on a large lesson that is most of
+   * the run: measured on a 200-question lesson, the model loaded in 6.4 minutes and the job then sat in `load` at
+   * 10% for another 77 — the operator's only reading being "still loading", for over an hour.
+   */
+  phase?: 'load' | 'baseline' | 'train' | 'check';
   /**
    * Stage-weighted (load 10 % / train 75 % / check 15 %) and clamped monotonic, for compact surfaces only. It is NOT a
    * time estimate and no surface may label it as one.
@@ -255,7 +261,10 @@ export const ACTIVE_JOB_STATUSES = ['QUEUED', 'PREFLIGHT', 'LOADING', 'TRAINING'
 /** kv flag: the trainer answered with a `sampled` eval, so it understands `eval_sample` and `facts_file` (design §16). */
 const TRAINER_SAMPLING_KEY = 'teach:trainer:eval_sample';
 /** Stage weights for the additional `progress.percent` (design §D5). */
-const PHASE_WEIGHT = { load: 0.10, train: 0.75, check: 0.15 };
+// `baseline` asks every question of the un-patched model once, so it grows with the lesson while `load` does not.
+// On the 200-question lesson measured here it was 77 of the run's first 83 minutes — weighting it with load would
+// pin the bar at 10% through the longest phase of a large job.
+const PHASE_WEIGHT = { load: 0.05, baseline: 0.15, train: 0.65, check: 0.15 };
 /**
  * Display names are public ("Taught by …"): no links/markup, no ASCII or Unicode control / bidi / zero-width characters
  * (an RTL override would render "Op‮erator" on chips, teacher pages and the immutable public record) and a minimal slur
@@ -2263,9 +2272,11 @@ export class TeachWorker {
    */
   private bumpPercent(p: TeachProgress) {
     const frac = p.max_steps > 0 ? Math.min(1, p.step / p.max_steps) : 0;
-    const computed = p.phase === 'check' ? (PHASE_WEIGHT.load + PHASE_WEIGHT.train) * 100 + PHASE_WEIGHT.check * 50
-      : p.phase === 'train' ? PHASE_WEIGHT.load * 100 + PHASE_WEIGHT.train * 100 * frac
-        : PHASE_WEIGHT.load * 100 * (p.load_s === undefined ? 0.5 : 1);
+    const beforeTrain = (PHASE_WEIGHT.load + PHASE_WEIGHT.baseline) * 100;
+    const computed = p.phase === 'check' ? (beforeTrain + PHASE_WEIGHT.train * 100) + PHASE_WEIGHT.check * 50
+      : p.phase === 'train' ? beforeTrain + PHASE_WEIGHT.train * 100 * frac
+        : p.phase === 'baseline' ? PHASE_WEIGHT.load * 100 + PHASE_WEIGHT.baseline * 100 * 0.5
+          : PHASE_WEIGHT.load * 100 * (p.load_s === undefined ? 0.5 : 1);
     p.percent = Math.round(Math.max(p.percent ?? 0, computed));
   }
 
@@ -2274,7 +2285,14 @@ export class TeachWorker {
     state.progress.rows_total = state.progress.rows_total ?? job.facts.length;
     switch (ev.event) {
       case 'load': state.progress.load_s = n(ev.secs); state.progress.phase = 'load'; this.bumpPercent(state.progress); this.store.updateTeachJob(job.id, { progress: state.progress as unknown as Record<string, unknown> }); break;
-      case 'baseline': state.progress.total = n(ev.total) ?? state.progress.total; state.progress.hits = n(ev.hits) ?? 0; break;
+      // The trainer emits this ONCE, after probing every question — so its arrival is the only evidence the
+      // baseline stretch is over, and it was the one event that updated nothing anybody could see. Persisting it
+      // is what moves a large job off "still loading".
+      case 'baseline':
+        state.progress.total = n(ev.total) ?? state.progress.total; state.progress.hits = n(ev.hits) ?? 0;
+        state.progress.phase = 'baseline'; this.bumpPercent(state.progress);
+        this.store.updateTeachJob(job.id, { progress: state.progress as unknown as Record<string, unknown> });
+        break;
       case 'step': {
         state.progress.step = n(ev.step) ?? state.progress.step; state.progress.max_steps = n(ev.max_steps) ?? state.progress.max_steps;
         state.progress.loss = n(ev.loss); state.progress.hits = n(ev.hits) ?? state.progress.hits; state.progress.total = n(ev.total) ?? state.progress.total;
