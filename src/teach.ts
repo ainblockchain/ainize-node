@@ -2208,7 +2208,7 @@ export class TeachWorker {
     const c = this.cfg;
     return {
       max_contrast: c.trainer.maxContrast ?? clampInt(Math.ceil(rows / 2), 8, 64),
-      micro: rows < 32 ? 16 : 64,
+      micro: c.trainer.microBatch ?? (rows < 32 ? 16 : 64),
       eval_every_scaled: rows < 32 ? 2 : Math.ceil(rows / 32),
       eval_sample_n: Math.min(rows, c.check.sampleRows),
     };
