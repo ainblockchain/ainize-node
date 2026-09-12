@@ -9,17 +9,18 @@
  */
 import { createHash } from 'node:crypto';
 import type { Request } from 'express';
-import { verifyMessage, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, type TeachAuthTarget } from '@ainize/core';
+import { verifyMessage, verifyDelegation, DELEGATE_HEADER, DELEGATION_MAX_MS, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, type TeachAuthTarget } from '@ainize/core';
 
 export {
   TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, teachAuthHeaderFor, type TeachAuthTarget,
+  DELEGATE_HEADER, DELEGATION_MAX_MS, delegateMessage, delegateHeader, parseDelegation, verifyDelegation,
 } from '@ainize/core';
 
 export class TeachAuth {
   /** replay cache: key → expiry (ms). v2 keys are the signature itself (single use); legacy keys are sig|method|path. */
   private seen = new Map<string, number>();
   private lastPrune = 0;
-  constructor(private readonly nodeAddress: string, private readonly skewMs = TEACH_AUTH_SKEW_MS) {}
+  constructor(private readonly nodeAddress: string, private readonly skewMs = TEACH_AUTH_SKEW_MS, private readonly delegationMaxMs = DELEGATION_MAX_MS) {}
 
   /**
    * Verified teaching-key address for `req`, or null (missing, malformed, expired, wrong node/route/body, or replayed).
@@ -53,7 +54,17 @@ export class TeachAuth {
     this.prune(now);
     if (this.seen.has(key)) return null;
     this.seen.set(key, ts + this.skewMs);
-    return address;
+    /**
+     * The signature above proves who sent THIS request. A delegation, when one is attached, says whose request it
+     * is — an AIN Wallet owner authorising a browser key once instead of confirming a prompt per request.
+     *
+     * The order matters and is deliberate: the per-request proof is verified and burned FIRST, so a delegated
+     * request has exactly the replay, route and body binding an undelegated one has. A delegation that does not
+     * check out is not an error here, it is simply absent: the caller is then the signing key itself, which is a
+     * real identity with its own lessons, so falling back to it is the honest reading rather than a refusal.
+     */
+    const owner = verifyDelegation(req.header(DELEGATE_HEADER), { node: this.nodeAddress, delegate: address, now, maxMs: this.delegationMaxMs }, verifyMessage);
+    return owner ?? address;
   }
 
   private prune(now: number) {

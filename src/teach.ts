@@ -139,6 +139,14 @@ interface DatasetPublication { access: DatasetAccess; license: string; include_n
 export interface TeachJob {
   id: string;
   status: TeachStatus;
+  /**
+   * Where this training run is recorded on the AI Network. Present only when the node writes to a chain at all.
+   *
+   * Everything else about a published knowledge is checkable by a stranger — the anchor, the attestations, the
+   * settlements — and the step that produced it was the exception: "this was trained" was a claim the seller's own
+   * database made about itself. This is the path where that claim stops being private.
+   */
+  chain?: { path: string; tx_hash: string | null };
   contributor: { address: string; name?: string };
   context_patch_ids: string[];
   builds_on_context: boolean;
@@ -1616,6 +1624,9 @@ export class TeachWorker {
     const out: TeachJob = {
       id: j.id, status: j.status as TeachStatus, contributor: { address: j.contributor, ...(j.contributor_name ? { name: j.contributor_name } : {}) },
       context_patch_ids: j.context, builds_on_context: j.builds_on, facts: j.facts as TeachFact[], name: j.name ?? undefined,
+      // Where this run is written on the AI Network. Absent, not null-shaped, on a node with a local ledger:
+      // there is no chain, and a path field holding null reads as "the write failed" rather than "there is none".
+      ...(j.chain_path ? { chain: { path: j.chain_path, tx_hash: j.chain_tx ?? null } } : {}),
       ...(j.bases ? { bases: j.bases.map((b) => {
         // a base is usually a listed knowledge, but Story A3's base is the visitor's OWN draft — the copy has to be
         // able to say "not published yet ({status})", so drafts are looked up too
@@ -1817,6 +1828,43 @@ export class TeachWorker {
 
   private finish(id: string, status: TeachStatus, extra: Partial<TeachJobRow> = {}) {
     this.store.updateTeachJob(id, { status, finished_at: Date.now(), blocked: null, ...extra });
+    void this.noteOnChain(id, status);
+  }
+
+  /**
+   * Put the lesson's state on the AI Network, at its transitions.
+   *
+   * WHY THE CHAIN AND NOT ONLY THE NODE. Everything about a published knowledge is checkable by a stranger — the
+   * anchor, the attestations, the settlements — except the one step that produced it. "This was trained" was a
+   * claim the seller's own database made about itself. A row on the chain at a path anyone can read turns the
+   * training run into part of the same record as the sale: which node, which dataset hash, how many questions,
+   * when it started and how it ended, all of it signed by the node that did it.
+   *
+   * WHAT IT DELIBERATELY IS NOT. Not a ledger record — a lesson may still fail, and a record DAG that anchors and
+   * attestations live in is no place for a job. Not per step either: twenty passes is twenty writes and this is a
+   * blockchain. Transitions only, and the value replaces itself.
+   *
+   * A node on a local ledger has no chain and writes nothing; the job then reports `chain: null`, which is the
+   * truth rather than an invented path.
+   */
+  private async noteOnChain(id: string, status: TeachStatus): Promise<void> {
+    const ledger = this.market.ledger as { noteLesson?: (jobId: string, v: Record<string, unknown>) => Promise<{ path: string; tx_hash: string } | null> };
+    if (typeof ledger.noteLesson !== 'function') return;
+    const j = this.store.getTeachJob(id);
+    if (!j) return;
+    try {
+      const at = await ledger.noteLesson(id, {
+        status,
+        contributor: j.contributor,
+        dataset_sha256: j.dataset_sha256 ?? null,
+        rows: j.facts.length,
+        effort: (j.training as { effort?: string } | null)?.effort ?? null,
+        started_at: j.created_at,
+        patch_id: j.patch_id ?? j.draft_id ?? null,
+        sha256: j.sha256 ?? null,
+      });
+      if (at) this.store.updateTeachJob(id, { chain_path: at.path, chain_tx: at.tx_hash });
+    } catch { /* a chain that refuses the write must not fail a lesson that is otherwise fine */ }
   }
   /** A finished lesson releases its dataset: back to `ready`, or removed now when its owner asked for that. */
   private releaseDataset(job: TeachJobRow) {
@@ -1990,6 +2038,7 @@ export class TeachWorker {
         const dir = this.jobDir(job);
         mkdirSync(dir, { recursive: true });
         this.store.updateTeachJob(job.id, { status: 'TRAINING', job_dir: dir, progress: { step: 0, max_steps: this.cfg.trainer.maxSteps, hits: 0, total: facts.length, started_at: Date.now() } });
+        void this.noteOnChain(job.id, 'TRAINING');   // the run is now really happening — that is the fact worth recording
         this.log('info', `training started (${this.cfg.backend}) for ${job.id}`, job.id);
         const tr = await this.train({ ...job, job_dir: dir });
         releaseSlot();

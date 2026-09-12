@@ -13,7 +13,7 @@ import { z } from 'zod';
 import {
   AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
-  sameAddr,
+  sameAddr, verifyMessage, operatorLoginMessage, LOGIN_NONCE_TTL_MS,
   parseStatus,
   type CatalogEntry, type LedgerRecord, type PatchAnchor, type PatchStatus,
 } from '@ainize/core';
@@ -255,6 +255,8 @@ export function buildApi(deps: ApiDeps): Router {
     const wait = Math.ceil((rec.until - now) / 1000);
     throw new HttpError(429, `too_many_attempts: ${rec.n} wrong passwords from this address — wait ${wait}s before trying again. If you have forgotten it, run \`ainize password --reset\` on the machine this node runs on.`, { retry_after_s: wait, attempts: rec.n });
   };
+  /** Single-use sign-in nonces: nonce → expiry. In memory, because a restart forgetting them is correct. */
+  const loginNonces = new Map<string, number>();
   const loginFailed = (req: Request) => {
     const key = loginKey(req);
     const now = Date.now();
@@ -291,6 +293,50 @@ export function buildApi(deps: ApiDeps): Router {
     market.store.deleteAllSessions();
     market.log('info', 'auth', 'operator password changed — every existing session was signed out');
     return { ok: true, token: newSession(res) };
+  }));
+  /**
+   * Sign-in by signature, for an operator who has a key instead of a password.
+   *
+   * Two steps, because a signature on its own is a bearer token: the node issues a single-use nonce, the operator
+   * signs `ainize-login:<nodeAddress>:<nonce>`, and the node checks the recovered address. The node address is in
+   * the message, so a signature made at one node is worthless at another; the nonce is single-use and short-lived,
+   * so a captured one buys nothing.
+   *
+   * WHO IS ALLOWED. The node's own address, always — whoever holds that key already owns everything this node
+   * published, and asking them for a password as well protects nothing. Plus whatever `operatorAddresses` lists,
+   * which is how a person signs in from an AIN Wallet on another machine. An address gets into that list only
+   * through a config change by someone who already has operator access, so this is not a way in.
+   *
+   * The password route stays. A node with no key to hand and a person with no extension both still need it, and
+   * removing a working path to make a new one look better is not an improvement.
+   */
+  router.post('/api/auth/challenge', wrap((req) => {
+    loginGuard(req);
+    const nonce = randomBytes(16).toString('hex');
+    loginNonces.set(nonce, Date.now() + LOGIN_NONCE_TTL_MS);
+    // Keep the map small without a timer: every issue drops what has already expired.
+    for (const [n, exp] of loginNonces) if (exp <= Date.now()) loginNonces.delete(n);
+    return { nonce, expires_at: Date.now() + LOGIN_NONCE_TTL_MS, node: market.address, message: operatorLoginMessage({ node: market.address, nonce }) };
+  }));
+  router.post('/api/auth/wallet', wrap((req, res) => {
+    const { address, nonce, signature } = z.object({ address: z.string(), nonce: z.string(), signature: z.string() }).parse(req.body);
+    loginGuard(req);
+    const exp = loginNonces.get(nonce);
+    // Burned whatever happens next: a nonce that has been shown a wrong signature is spent, not retryable.
+    loginNonces.delete(nonce);
+    if (!exp || exp <= Date.now()) { loginFailed(req); throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one'); }
+    const allowed = [market.address, ...(market.cfg.operatorAddresses ?? [])];
+    if (!allowed.some((a) => sameAddr(a, address))) {
+      loginFailed(req);
+      throw new HttpError(403, `${address} is not an operator of this node. Its own key always is; any other address has to be added to \`operatorAddresses\` by someone who already has operator access (\`ainize config set operatorAddresses ${address}\`).`);
+    }
+    if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
+      const n = loginFailed(req);
+      throw new HttpError(401, 'that signature does not come from the address it claims', { attempts: n });
+    }
+    loginFails.delete(loginKey(req));
+    market.log('info', 'auth', `operator signed in as ${address}${sameAddr(address, market.address) ? " (this node's own key)" : ''}`);
+    return { ok: true, token: newSession(res), address };
   }));
   router.post('/api/auth/logout', wrap((req, res) => {
     const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;
@@ -1502,6 +1548,16 @@ export function buildApi(deps: ApiDeps): Router {
         patch_id: a.id, name: a.name, author: a.author, author_name: a.author_name ?? null,
         price: a.price, currency: a.currency, status: r.entry.status, rows: a.rows, queries: a.benchmark.queries,
         reason: r.reason, buyable: r.buyable, requests: r.requests,
+        /**
+         * How many peers advertise this body — so "we do not have it" can be told apart from "nobody has it".
+         *
+         * `not_held` used to carry the hedge "the publisher may be offline", which is the right thing to say when
+         * a holder exists and is not answering, and the wrong thing when the count is zero. Zero means no node
+         * this one has heard of is carrying the body at all: the anchor outlived the only copy, and no amount of
+         * waiting will produce it. A visitor who was sent a link deserves that stated rather than implied, and a
+         * node operator reading it deserves to know which of the two failures they are looking at.
+         */
+        holders: market.p2p?.holders(a.patch_sha256).length ?? 0,
         // Where the seller answers TODAY, not the address frozen into the anchor (item 275): this row is what a
         // visitor is pointed at, and a seller that changed its port would be a dead link here.
         gateway_url: market.gatewaysFor(a)[0]?.url ?? (a as PatchAnchor & { gateway_url?: string }).gateway_url ?? null,

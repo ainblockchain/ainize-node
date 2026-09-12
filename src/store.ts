@@ -66,6 +66,8 @@ export interface TeachJobRow {
   result: { sha256: string; rows: number; size_bytes: number } | null; blocked: string | null; name: string | null;
   /** Teach mode v2: the dataset this job trained a slice of. NULL on v1 rows — they render as `source: 'derived'`. */
   dataset_id: string | null; dataset_sha256: string | null; dataset_rows: number | null; dataset_source: string | null;
+  /** Where this run is on the AI Network — absent on a node whose ledger is local, which has no chain to write to. */
+  chain_path?: string | null; chain_tx?: string | null;
   /** Effort preset + the resolved trainer knobs (v2); NULL on v1 rows. */
   training: TeachTrainingSpec | null;
   /** Sampled preflight accounting `{checked, of, known}` (v2). */
@@ -280,6 +282,8 @@ export class Store {
       // merge (§9): the two parents, the tier, and what was chosen for each conflicting question
       merge: 'TEXT',
       snapshot_sha256: 'TEXT', dataset_pub: 'TEXT',
+      // Where this training run is recorded on the AI Network, when the node writes to one at all.
+      chain_path: 'TEXT', chain_tx: 'TEXT',
     });
     // lineage §5.3: a training set can be a copy of a published KNOWLEDGE's set, and remembers which one
     add('teach_datasets', { parent_patch: 'TEXT', parent_dataset_sha: 'TEXT', inherited_rows: 'INTEGER' });
