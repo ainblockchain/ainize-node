@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { synthPatch } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
 
@@ -355,10 +356,7 @@ test('360 a billing model nothing meters cannot be published, and what it charge
   assert.deepEqual([...BILLING_IMPLEMENTED], ['per_download'], 'one model is charged, and it is the one a sale settles');
   assert.equal(billingImplemented('per_hit'), false);
   assert.equal(billingImplemented('per_apply_hour'), false);
-  const token = await (async () => {
-    const r = await fetch(`${A.url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: A.cfg.operator?.password ?? '' }) });
-    return r.ok ? ((await r.json()) as { token: string }).token : '';
-  })();
+  const token = await operatorToken(A.url, A.cfg.identity).catch(() => '');
   if (token) {
     const r = await fetch(`${A.url}/api/patches/${PAID_ID}`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ billing: 'per_hit' }) });
     assert.equal(r.status, 400);

@@ -203,35 +203,32 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const url = bound === null ? selfUrl : `http://${everyInterface ? 'localhost' : cfg.host}:${bound}`;
 
   /**
-   * A node with no operator password is claimed by the first caller that reaches `POST /api/auth/setup` (item 121).
-   * Claiming is loopback-only, so an operator who administers the node over the network needs a second proof that
-   * they are the owner: this one-time token, written where only the user the node runs as can read it. It is deleted
-   * the moment the node is claimed, and re-minted on any start that finds the node still unclaimed.
+   * The one-time enrolment token, written where only the user the node runs as can read it.
+   *
+   * Adding an address to this node's operators is loopback-only, because it is exactly as privileged as being one.
+   * An operator who administers the node over the network needs a second proof that they are the owner, and this is
+   * it. Re-minted on every start that finds it missing, and deleted the moment it is used.
+   *
+   * It is no longer a CLAIM token: the node's own key is always an operator, so there is no state in which the node
+   * is unowned and waiting for whoever asks first. What the token buys is enrolling a SECOND address.
    */
   if (opts.home) {
     const tokenFile = setupTokenPath(opts.home);
-    if (cfg.operatorPasswordHash) { try { if (existsSync(tokenFile)) writeFileSync(tokenFile, '', { mode: 0o600 }); } catch { /* nothing to clean up */ } }
-    else {
-      try {
-        mkdirSync(opts.home, { recursive: true });
-        const existing = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
-        if (!existing) writeFileSync(tokenFile, randomBytes(24).toString('hex') + '\n', { mode: 0o600 });
-      } catch { /* the loopback path still works */ }
-    }
+    try {
+      mkdirSync(opts.home, { recursive: true });
+      const existing = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
+      if (!existing) writeFileSync(tokenFile, randomBytes(24).toString('hex') + '\n', { mode: 0o600 });
+    } catch { /* the loopback path still works */ }
   }
 
   if (!opts.quiet) {
     console.log(`ainize node "${cfg.name}" listening on ${url}${bound !== null && everyInterface ? `  (bound to ${cfg.host}:${bound} — reachable from every interface)` : ''}`);
     console.log(`  identity : ${cfg.identity.address}`);
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
-    if (!cfg.operatorPasswordHash) {
-      console.log(`  ${everyInterface ? '! ' : ''}this node has no operator password yet — set one with \`ainize login\`${everyInterface ? ' NOW: it is reachable from every interface' : ''}`);
-      if (opts.home) console.log(`    claiming it from another machine needs the one-time token in ${setupTokenPath(opts.home)}`);
-    }
-  }
-  // The same two facts in the event log, where `ainize logs` and the console can see them.
-  if (!cfg.operatorPasswordHash) {
-    market.log(everyInterface ? 'warn' : 'info', 'auth', `this node has no operator password: it is unclaimed${everyInterface ? ` and bound to ${cfg.host} (every interface)` : ' (loopback only)'} — run \`ainize login\` to claim it`);
+    console.log(`  operator : this node's own key — \`ainize login\` signs in with it, no password`);
+    const others = cfg.operatorAddresses ?? [];
+    if (others.length) console.log(`             also ${others.join(', ')}`);
+    else if (opts.home) console.log(`             to add another address, from that machine: \`ainize operators add <address>\` with the token in ${setupTokenPath(opts.home)}`);
   }
   if (everyInterface && cfg.server?.trustProxy === false) {
     market.log('info', 'config', `host is ${cfg.host}: this node accepts connections from every interface. Bind it to 127.0.0.1 (\`ainize config set host 127.0.0.1\`) unless it is meant to be public.`);

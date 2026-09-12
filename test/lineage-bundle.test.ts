@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { synthPatch } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-bundle-'));
@@ -138,8 +139,7 @@ test('AZ-314 loading the add-on alone is refused by name, and `bundle` is read f
   });
   // §12.4 spells the flag `?bundle=1`. C has already bought both, so this asserts the route reads the query and
   // charges nothing — not a second sale.
-  const claim = await fetch(`${C.url}/api/auth/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'bundle-pass' }) });
-  const token = (await claim.json() as { token?: string }).token;
+  const token = await operatorToken(C.url, C.cfg.identity);
   assert.ok(token, 'operator session');
   const r = await fetch(`${C.url}/api/patches/${CHILD_ID}/buy?bundle=1`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' });
   const text = await r.text();

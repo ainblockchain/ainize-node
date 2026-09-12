@@ -12,6 +12,7 @@ import { createIdentity, defaultConfig, type NodeConfig, type Settlement } from 
 import { Store } from '../src/store.js';
 import { Payouts, PayoutError, PAYOUT_INTERRUPTED, type PayoutWallet } from '../src/payouts.js';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 
 const SELF = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -217,8 +218,7 @@ before(async () => {
   cfg.host = '127.0.0.1'; cfg.publicUrl = url; cfg.gossipIntervalMs = 60_000;
   cfg.teach = { ...cfg.teach!, enabled: true, backend: 'stub', checkStubLessons: true };
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { intervalMs: 60 } });
-  const setup = await api('POST', '/api/auth/setup', { password: 'payouts-pass' });
-  opToken = String(setup.json.token);
+  opToken = await operatorToken(N.url, cfg.identity);
 });
 after(async () => { await N?.stop(); rmSync(tmp, { recursive: true, force: true }); });
 

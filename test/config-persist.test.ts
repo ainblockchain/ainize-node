@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, loadConfig, saveConfig } from '@ainize/core';
 import { startNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 
 const freePort = () => new Promise<number>((res) => {
   const s = createServer();
@@ -27,9 +28,7 @@ test("a console save keeps the CLI's edits, and a peer added then removed is rem
   const node = await startNode(cfg, { home, quiet: true, serveWeb: false });
   try {
     const url = `http://127.0.0.1:${port}`;
-    const setup = await fetch(`${url}/api/auth/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'persist-pass-1234' }) });
-    assert.equal(setup.status, 200);
-    const { token } = (await setup.json()) as { token: string };
+    const token = await operatorToken(url, cfg.identity);
     const peers = (method: 'POST' | 'DELETE', endpoint: string) => fetch(`${url}/api/peers`, {
       method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ endpoint }),
     });
@@ -43,7 +42,6 @@ test("a console save keeps the CLI's edits, and a peer added then removed is rem
     let now = loadConfig(home)!;
     assert.deepEqual(now.peers, ['http://127.0.0.1:9']);
     assert.equal(now.market.defaultPrice, '9.99', 'the CLI edit survived the console save');
-    assert.equal(typeof now.operatorPasswordHash, 'string', 'the password set at setup was written too');
 
     assert.equal((await peers('DELETE', 'http://127.0.0.1:9')).status, 200);
     now = loadConfig(home)!;

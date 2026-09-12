@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, type BenchmarkSpec, type CatalogEntry, type NodeConfig, type Settlement } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { Store } from '../src/store.js';
 import { questionKey } from '../src/teach-dataset.js';
 import { writeFixture, ROW_DIM } from './fixtures/fake-hook.js';
@@ -48,8 +49,7 @@ before(async () => {
   cfg.runtime = { ...cfg.runtime, repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.verifier = { ...(cfg.verifier ?? {}), auto: false } as NodeConfig['verifier'];
   N = await startNode(cfg, { quiet: true, serveWeb: false });
-  const setup = await api('POST', '/api/auth/setup', { password: 'tree-pass' });
-  opToken = String(setup.json.token);
+  opToken = await operatorToken(N.url, cfg.identity);
 
   const model = { id_M: 'demo-ainize-1b', row_dim: ROW_DIM };
   // A ← B ← C, and D combines A and C: a diamond, so the walk meets A twice by two different routes.

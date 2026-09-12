@@ -11,7 +11,7 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, verifyPassword, hashPassword, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   sameAddr, verifyMessage, operatorLoginMessage, LOGIN_NONCE_TTL_MS,
   parseStatus,
@@ -216,23 +216,53 @@ export function buildApi(deps: ApiDeps): Router {
 
   router.get('/api/auth/me', wrap((req) => ({
     signedIn: isOperator(req), address: market.address, name: market.cfg.name, roles: market.cfg.roles,
-    // `needsSetup: true` on an unauthenticated public request is a beacon saying "nobody owns me" — it is answered
-    // truthfully only to a caller who could actually claim the node (this machine, or the operator already signed in).
-    needsSetup: !market.cfg.operatorPasswordHash && (mayClaim(req) || isOperator(req)),
+    /**
+     * `needsSetup` is gone with the password. A node is never unclaimed now: its own key is always an operator, and
+     * that key is in the config file this process is reading. There is no state in which nobody owns the node, so
+     * there is nothing for a caller to be told to set up.
+     *
+     * `canEnroll` replaces it, and answers a different question — may THIS caller add an address to the operator
+     * list? True on the node's own machine or with the one-time token, and, like `needsSetup` before it, answered
+     * truthfully only to a caller who could actually do it. To anyone else it is false, which is not a beacon.
+     */
+    canEnroll: mayClaim(req) || isOperator(req),
+    operators: isOperator(req) ? [market.address, ...(market.cfg.operatorAddresses ?? [])] : undefined,
   })));
-  router.post('/api/auth/setup', wrap((req, res) => {
-    if (market.cfg.operatorPasswordHash) throw new HttpError(409, 'operator password already set');
+  /** Single-use sign-in nonces: nonce → expiry. In memory, because a restart forgetting them is correct. */
+  const loginNonces = new Map<string, number>();
+
+  /**
+   * Add an address to this node's operators, and sign it in.
+   *
+   * This is what remains of "claiming" a node once the password is gone. The node's own key is always an operator,
+   * so nothing has to be claimed to get in — what this is for is the OTHER person: an AIN Wallet on a laptop, a
+   * colleague, a second machine. Adding one is exactly as privileged as being one, so it needs either an operator
+   * session already, or the one-time token that only the OS user running the node can read.
+   *
+   * The address has to SIGN, not merely be typed: otherwise a typo enrols an address nobody holds the key to, and
+   * the node would report an operator who can never sign in.
+   */
+  router.post('/api/auth/enroll', wrap((req, res) => {
+    const { address, nonce, signature } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), nonce: z.string(), signature: z.string() }).parse(req.body);
     if (!mayClaim(req)) {
-      market.log('warn', 'auth', `refused a remote attempt to claim this unclaimed node from ${req.socket?.remoteAddress ?? 'an unknown address'}`);
+      market.log('warn', 'auth', `refused a remote attempt to enrol ${address} as an operator from ${req.socket?.remoteAddress ?? 'an unknown address'}`);
       // the path is deliberately NOT named: a remote caller has no business learning where this node's home is
-      throw new HttpError(403, 'setup_local_only: this node has no operator password yet, and it can only be claimed from the machine it runs on — run `ainize login` there, or send the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
+      throw new HttpError(403, 'enroll_local_only: an address is added to this node\'s operators from the machine it runs on (`ainize operators add <address>`), or with the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
     }
-    const { password } = z.object({ password: z.string().min(4) }).parse(req.body);
-    market.cfg.operatorPasswordHash = hashPassword(password);
-    deps.saveConfig();
-    if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the claim stands either way */ } }
-    market.log('info', 'auth', 'operator password set — this node is claimed');
-    return { ok: true, token: newSession(res) };
+    const exp = loginNonces.get(nonce);
+    loginNonces.delete(nonce);
+    if (!exp || exp <= Date.now()) throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one');
+    if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
+      throw new HttpError(401, 'that signature does not come from the address it claims');
+    }
+    const have = market.cfg.operatorAddresses ?? [];
+    if (!sameAddr(market.address, address) && !have.some((a) => sameAddr(a, address))) {
+      market.cfg.operatorAddresses = [...have, address];
+      deps.saveConfig();
+      market.log('info', 'auth', `${address} added to this node's operators`);
+    }
+    if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the enrolment stands either way */ } }
+    return { ok: true, token: newSession(res), address };
   }));
   /**
    * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
@@ -255,8 +285,6 @@ export function buildApi(deps: ApiDeps): Router {
     const wait = Math.ceil((rec.until - now) / 1000);
     throw new HttpError(429, `too_many_attempts: ${rec.n} wrong passwords from this address — wait ${wait}s before trying again. If you have forgotten it, run \`ainize password --reset\` on the machine this node runs on.`, { retry_after_s: wait, attempts: rec.n });
   };
-  /** Single-use sign-in nonces: nonce → expiry. In memory, because a restart forgetting them is correct. */
-  const loginNonces = new Map<string, number>();
   const loginFailed = (req: Request) => {
     const key = loginKey(req);
     const now = Date.now();
@@ -266,34 +294,6 @@ export function buildApi(deps: ApiDeps): Router {
     if (n === LOGIN_FREE_TRIES + 1 || n % 10 === 0) market.log('warn', 'auth', `${n} failed sign-in attempts from ${key} — the next one is refused for ${Math.ceil(loginDelayMs(n) / 1000)}s`);
     return n;
   };
-  router.post('/api/auth/login', wrap((req, res) => {
-    const { password } = z.object({ password: z.string() }).parse(req.body);
-    loginGuard(req);
-    // Without this the remote console showed a login box that could never work, because `needsSetup` is hidden above.
-    if (!market.cfg.operatorPasswordHash) throw new HttpError(409, `not_claimed: this node has no operator password yet — set one on the machine it runs on (\`ainize login\`), or POST /api/auth/setup with the one-time token in AINIZE_HOME/setup-token`);
-    if (!verifyPassword(password, market.cfg.operatorPasswordHash)) {
-      const n = loginFailed(req);
-      throw new HttpError(401, n > LOGIN_FREE_TRIES
-        ? `wrong password (${n} failed attempts — the next try is refused for ${Math.ceil(loginDelayMs(n) / 1000)}s; \`ainize password --reset\` on this node's machine sets a new one)`
-        : 'wrong password', { attempts: n, retry_after_s: Math.ceil(loginDelayMs(n) / 1000) });
-    }
-    loginFails.delete(loginKey(req));
-    return { ok: true, token: newSession(res) };
-  }));
-  /**
-   * Change the operator password (item 121 / review-1 item 34: there was no route, so a claimed node could never be
-   * un-claimed and a leaked password was permanent). The current password is required even with a valid session, and
-   * every other session is dropped — a stolen cookie must not survive the change.
-   */
-  router.post('/api/auth/password', requireOperator, wrap((req, res) => {
-    const { current, password } = z.object({ current: z.string(), password: z.string().min(4) }).parse(req.body);
-    if (!market.cfg.operatorPasswordHash || !verifyPassword(current, market.cfg.operatorPasswordHash)) throw new HttpError(401, 'wrong password');
-    market.cfg.operatorPasswordHash = hashPassword(password);
-    deps.saveConfig();
-    market.store.deleteAllSessions();
-    market.log('info', 'auth', 'operator password changed — every existing session was signed out');
-    return { ok: true, token: newSession(res) };
-  }));
   /**
    * Sign-in by signature, for an operator who has a key instead of a password.
    *
@@ -328,7 +328,7 @@ export function buildApi(deps: ApiDeps): Router {
     const allowed = [market.address, ...(market.cfg.operatorAddresses ?? [])];
     if (!allowed.some((a) => sameAddr(a, address))) {
       loginFailed(req);
-      throw new HttpError(403, `${address} is not an operator of this node. Its own key always is; any other address has to be added to \`operatorAddresses\` by someone who already has operator access (\`ainize config set operatorAddresses ${address}\`).`);
+      throw new HttpError(403, `${address} is not an operator of this node. Its own key always is; any other address has to be added by someone who already has operator access, on the machine this node runs on (\`ainize operators --add ${address}\`).`);
     }
     if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
       const n = loginFailed(req);

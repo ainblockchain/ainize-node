@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { seedDemo, synthPatch } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-test-'));
@@ -209,8 +210,7 @@ test('visibility: hidden test anchors and private drafts never surface next to p
   const conf = await (await fetch(`${A.url}/api/patches/law-kr-2026/conflicts`)).json() as { conflicts: { patch_id: string }[] };
   assert.ok(!conf.conflicts.some((c) => c.patch_id.startsWith('vis-')));
 
-  const setup = await (await fetch(`${A.url}/api/auth/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'test-pass-a' }) })).json() as { token: string };
-  const op = { authorization: `Bearer ${setup.token}` };
+  const op = { authorization: `Bearer ${await operatorToken(A.url, A.cfg.identity)}` };
   const mine = await (await fetch(`${A.url}/api/patches/law-kr-2026`, { headers: op })).json() as Detail;
   assert.ok(mine.lineage.children.some((c) => c.id === 'vis-private-draft'), 'operator sees their own draft');
   assert.ok(!mine.lineage.children.some((c) => c.id === 'vis-hidden-child'), 'hidden test anchors stay hidden even for the operator (same rule as the catalog)');

@@ -14,6 +14,7 @@ import { createIdentity, defaultConfig, hashCanonical, recordHash, signMessage, 
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { Runtime, RuntimeUnavailableError } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { seedDemo } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
 import { Store } from '../src/store.js';
@@ -177,8 +178,7 @@ before(async () => {
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { spawn: fakeSpawn, exec: fakeExec, intervalMs: 60, stubDelayMs: 5, runtimeGraceMs: 300, retryMs: 100 } });
   await seedDemo(N.market, { real: false, synthetic: true });
   installFakeRuntime();
-  const setup = await api('POST', '/api/auth/setup', { password: 'teach-pass' });
-  opToken = String(setup.json.token);
+  opToken = await operatorToken(N.url, cfg.identity);
 });
 after(async () => { await N?.stop(); rmSync(tmp, { recursive: true, force: true }); });
 

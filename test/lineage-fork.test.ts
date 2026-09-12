@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { createIdentity, defaultConfig, signMessage, type Identity, type NodeConfig, type TeachDataset } from '@ainize/core';
 import type { ChatMessage, ChatResult } from '../src/runtime.js';
 import { startNode, type RunningNode } from '../src/server.js';
+import { operatorToken } from './fixtures/operator.js';
 import { teachAuthHeaderFor } from '../src/teach-auth.js';
 import { canonicalJsonl, readCanonicalJsonl, type CanonicalRow } from '../src/teach-dataset.js';
 import type { TeachJob } from '../src/teach.js';
@@ -161,7 +162,7 @@ before(async () => {
   };
   N = await startNode(cfg, { quiet: true, serveWeb: false, teachHooks: { intervalMs: 40, stubDelayMs: 2, runtimeGraceMs: 200, retryMs: 60 } });
   installFakeRuntime();
-  opToken = String((await api('POST', '/api/auth/setup', { password: 'fork-pass' }, null)).json.token);
+  opToken = await operatorToken(N.url, cfg.identity);
 });
 after(async () => { await N?.stop(); rmSync(tmp, { recursive: true, force: true }); });
 
