@@ -1869,6 +1869,30 @@ export class TeachWorker {
     return null;
   }
 
+  /**
+   * The UUIDs of the GPUs `teach.trainer.gpus` names, for `CUDA_VISIBLE_DEVICES`.
+   *
+   * WHY UUIDs AND NOT THE INDICES. `teach.trainer.gpus` is written in HOST indices — that is what an operator reads
+   * off `nvidia-smi` — and the trainer runs inside a container that was given a subset of the machine's GPUs, so it
+   * numbers them from zero again. Host 6 is container 2 here. Passing the host index through would pin the trainer
+   * to a GPU that is not the one checked, or to none at all. A UUID means the same card on both sides.
+   *
+   * Empty when nvidia-smi cannot be read: the caller then leaves CUDA_VISIBLE_DEVICES alone rather than pinning the
+   * trainer to a guess.
+   */
+  private async trainerGpuUuids(): Promise<string[]> {
+    const want = gpuSet(this.cfg.trainer.gpus);
+    if (!want.size) return [];
+    const sm = await this.execFn('nvidia-smi', ['--query-gpu=index,uuid', '--format=csv,noheader'], 15_000).catch(() => ({ code: 1, out: '', err: '' }));
+    if (sm.code !== 0) return [];
+    const out: string[] = [];
+    for (const line of sm.out.split('\n')) {
+      const [idx, uuid] = line.split(',').map((x) => x.trim());
+      if (uuid && want.has(idx)) out.push(uuid);
+    }
+    return out;
+  }
+
   /** Trainer-slot lease (spec §8.3 QUEUED → PREFLIGHT): atomic mkdir under the shared repo + pgrep + nvidia-smi. */
   private async acquireSlot(job: TeachJobRow): Promise<{ ok: true; release: () => void } | { ok: false; reason: string }> {
     const c = this.cfg;
@@ -2184,7 +2208,27 @@ export class TeachWorker {
     // T0 *just combine*: no trainer, no GPU — the file is the row union of the two parents, written here (design §9).
     if (job.merge?.tier === 'union') return this.runUnion(job, dir, modelId, parents);
     if (c.backend === 'stub') return this.runStub(job, dir, modelId, parents);
-    const args = ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True', c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`];
+    /**
+     * Pin the trainer to the GPUs the pre-flight actually checked.
+     *
+     * `teach.trainer.gpus` was a guard and nothing more: the pre-flight measured free memory on those cards, and
+     * then ran the trainer with no device restriction at all, whose own default is `cuda:0,cuda:1,cuda:2`. On this
+     * cluster that is host GPUs 4, 5 and 6 — two of which serve the model. So the check that exists precisely to
+     * keep training off the serving GPUs was followed by training on the serving GPUs, and the only symptom would
+     * have been vLLM slowing down under a load nobody attributed to it.
+     */
+    const env = ['-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True'];
+    const uuids = await this.trainerGpuUuids();
+    const devices: string[] = [];
+    if (uuids.length) {
+      env.push('-e', `CUDA_VISIBLE_DEVICES=${uuids.join(',')}`);
+      // With CUDA_VISIBLE_DEVICES set, the visible cards are renumbered from zero, so the trainer's device list is
+      // always 0..n-1 regardless of where they sit on the host or in the container.
+      devices.push('--devices', uuids.map((_, i) => `cuda:${i}`).join(','));
+    } else {
+      this.log('warn', `could not resolve teach.trainer.gpus (${c.trainer.gpus}) to GPU UUIDs — the trainer runs unpinned and may land on the serving GPUs`, job.id);
+    }
+    const args = ['exec', '-i', ...env, c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`, ...devices];
     const out = await this.runProcess(job, dir, 'docker', args);
     if (out.ok && parents.length) {
       // Nothing may be called "built on" unless the trainer confirms it loaded the stack and exported against it

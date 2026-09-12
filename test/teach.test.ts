@@ -104,7 +104,11 @@ const fakeExec: ExecFn = async (cmd, args) => {
     return { code: 0, out: '4242', err: '' };
   }
   if (cmd === 'docker' && args.includes('kill')) return { code: 0, out: '', err: '' };
-  if (cmd === 'nvidia-smi') return { code: 0, out: '4, 1000, 40960\n5, 1000, 40960\n6, 1000, 40960', err: '' };
+  if (cmd === 'nvidia-smi') {
+    // two queries now: free memory for the slot check, and index→uuid so the trainer can be pinned by UUID
+    if (args.some((a) => a.includes('uuid'))) return { code: 0, out: '4, GPU-aaaa\n5, GPU-bbbb\n6, GPU-cccc', err: '' };
+    return { code: 0, out: '4, 1000, 40960\n5, 1000, 40960\n6, 1000, 40960', err: '' };
+  }
   return { code: 127, out: '', err: 'unknown command' };
 };
 
@@ -283,7 +287,14 @@ test('lifecycle: QUEUED → PREFLIGHT → TRAINING (docker exec, stdout protocol
   job1 = await waitFor(r.json.job!.id, ['READY']);
   const sp = spawns[spawns.length - 1];
   assert.deepEqual(sp.args.slice(0, 4), ['exec', '-i', '-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True']);
-  assert.equal(sp.args[4], 'flashtrain'); assert.equal(sp.args[6], '/work/train/teach.py'); assert.equal(sp.args[8], `/work/.teach/${job1.id}/job.json`);
+  // The trainer is PINNED to the GPUs the slot check measured, by UUID — `teach.trainer.gpus` is written in host
+  // indices and the container renumbers its own from zero, so an index would pin the wrong card or none. Without
+  // this the trainer's own default (cuda:0,cuda:1,cuda:2) put training on the GPUs serving the model, which is the
+  // exact thing the pre-flight exists to prevent.
+  assert.ok(sp.args.includes('-e') && sp.args.includes('CUDA_VISIBLE_DEVICES=GPU-cccc'), `pinned by uuid: ${sp.args.join(' ')}`);
+  assert.deepEqual(sp.args.slice(-2), ['--devices', 'cuda:0']);
+  const at = sp.args.indexOf('flashtrain');
+  assert.ok(at > 0); assert.equal(sp.args[at + 2], '/work/train/teach.py'); assert.equal(sp.args[at + 4], `/work/.teach/${job1.id}/job.json`);
   assert.equal(sp.cwd, join(repo, '.teach', job1.id));
   const spec = JSON.parse(readFileSync(join(repo, '.teach', job1.id, 'job.json'), 'utf8'));
   assert.deepEqual(spec.facts, FACTS); assert.equal(spec.max_steps, 20); assert.equal(spec.model.id_M, 'demo-ainize-1b');
