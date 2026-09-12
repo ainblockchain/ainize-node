@@ -104,7 +104,23 @@ function browserId(req: Request, res: Response): string | null {
  * The TCP peer, not `req.ip`: with `server.trustProxy` on, `req.ip` is whatever X-Forwarded-For says, so it can be
  * forged by the very caller we are gating. Claiming an unclaimed node is only ever allowed from this machine.
  */
+/**
+ * Did this request come from THIS machine, with nothing in between?
+ *
+ * The TCP peer alone is not an answer. Behind a reverse proxy every request arrives from 127.0.0.1, because the
+ * peer IS the proxy — so on ainize.ai, where nginx terminates TLS and forwards to the node on loopback, the whole
+ * internet looked local. That gate is what guards enrolling an operator, which is as privileged as being one.
+ *
+ * A forwarding header is therefore disqualifying, whatever it says. It is attacker-controlled and cannot be used
+ * to establish trust — but its PRESENCE is still evidence, in the one direction that is safe: a proxy was in the
+ * path, so the peer address belongs to the proxy and not to the caller. A process on this machine talking to the
+ * node directly sends no such header, and an attacker cannot make nginx omit one it always appends.
+ *
+ * So this errs towards refusing a local caller who put a proxy in their own way, and never towards admitting a
+ * remote one. The one-time token is the way in for anyone this turns away.
+ */
 export function isLoopbackRequest(req: Request): boolean {
+  if (req.header('x-forwarded-for') || req.header('x-real-ip') || req.header('forwarded')) return false;
   const a = req.socket?.remoteAddress ?? '';
   return a === '::1' || a === '127.0.0.1' || a.startsWith('127.') || a === '::ffff:127.0.0.1' || /^::ffff:127\./.test(a) || a === '';
 }
@@ -243,12 +259,13 @@ export function buildApi(deps: ApiDeps): Router {
    * the node would report an operator who can never sign in.
    */
   router.post('/api/auth/enroll', wrap((req, res) => {
-    const { address, nonce, signature } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), nonce: z.string(), signature: z.string() }).parse(req.body);
+    // Authorisation before validation: a caller who may not enrol learns nothing about the shape of the request.
     if (!mayClaim(req)) {
-      market.log('warn', 'auth', `refused a remote attempt to enrol ${address} as an operator from ${req.socket?.remoteAddress ?? 'an unknown address'}`);
+      market.log('warn', 'auth', `refused an attempt to enrol an operator from ${req.socket?.remoteAddress ?? 'an unknown address'}${req.header('x-forwarded-for') ? ' (forwarded by a proxy, so not local)' : ''}`);
       // the path is deliberately NOT named: a remote caller has no business learning where this node's home is
-      throw new HttpError(403, 'enroll_local_only: an address is added to this node\'s operators from the machine it runs on (`ainize operators add <address>`), or with the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
+      throw new HttpError(403, 'enroll_local_only: an address is added to this node\'s operators from the machine it runs on (`ainize operators --add <address>`), or with the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
     }
+    const { address, nonce, signature } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), nonce: z.string(), signature: z.string() }).parse(req.body);
     const exp = loginNonces.get(nonce);
     loginNonces.delete(nonce);
     if (!exp || exp <= Date.now()) throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one');

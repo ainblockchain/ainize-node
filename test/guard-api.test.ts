@@ -339,3 +339,32 @@ test('D3: an unknown or foreign request id is "gone", never someone else\'s stat
 test('D3: the lock file is left clean after every request', () => {
   assert.equal(existsSync(join(MAILBOX, '.ainize-runtime.lock')), false);
 });
+
+test('behind a proxy, a forwarded request is not "local" — enrolling an operator stays shut', async () => {
+  /**
+   * The gate that guards enrolling an operator read the TCP peer, and behind a reverse proxy the TCP peer is the
+   * proxy: on ainize.ai, where nginx forwards to the node on loopback, every request on the internet passed it.
+   * Anyone could have added their own address to the node's operators.
+   *
+   * A forwarding header is disqualifying whatever it says. It is attacker-controlled, so it cannot establish
+   * trust — but its presence is evidence in the one direction that is safe: something proxied this, so the peer
+   * address is not the caller's.
+   */
+  const post = (path: string, headers: Record<string, string> = {}) =>
+    fetch(`${N.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
+
+  const direct = await (await fetch(`${N.url}/api/auth/me`)).json() as { canEnroll: boolean };
+  assert.equal(direct.canEnroll, true, 'a direct loopback caller is local');
+
+  for (const h of [{ 'x-forwarded-for': '203.0.113.7' }, { 'x-real-ip': '203.0.113.7' }, { forwarded: 'for=203.0.113.7' }]) {
+    const me = await (await fetch(`${N.url}/api/auth/me`, { headers: h })).json() as { canEnroll: boolean };
+    assert.equal(me.canEnroll, false, `${Object.keys(h)[0]} means a proxy was in the path`);
+    const r = await post('/api/auth/enroll', h);
+    assert.equal(r.status, 403, `${Object.keys(h)[0]}: enrolment refused`);
+    assert.match((await r.json() as { error: string }).error, /enroll_local_only/);
+  }
+
+  // And the refusal names the way in for whoever this turns away, rather than leaving them with a closed door.
+  const r = await post('/api/auth/enroll', { 'x-forwarded-for': '203.0.113.7' });
+  assert.match((await r.json() as { error: string }).error, /setup-token/);
+});
