@@ -41,7 +41,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "^0.2.1",
+    "@ainize/core": "^0.2.2",
     "aindrive": "^0.2.4",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
