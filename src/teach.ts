@@ -2324,6 +2324,11 @@ export class TeachWorker {
   private async runProcess(job: TeachJobRow, dir: string, cmd: string, args: string[]): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const c = this.cfg;
     const state = { facts: job.facts.map((f) => ({ ...f })), progress: { ...((job.progress as unknown as TeachProgress) ?? { step: 0, max_steps: c.trainer.maxSteps, hits: 0, total: job.facts.length }) }, done: null as DoneEvent | null, error: null as string | null };
+    const startedAt = Date.now();
+    // When the timeout fires, WHERE it was spent decides what to change. A run that never left the load phase
+    // wants a bigger `trainer.timeoutMs`; one that was on step 14 of 20 wants fewer rows or fewer passes. The
+    // message used to name neither, so the only reading available was "my data is bad".
+    let loadedAt: number | null = null;
     const child = this.spawnFn(cmd, args, { cwd: dir, env: { ...process.env } });
     this.child = child;
     let stderrTail = '';
@@ -2340,7 +2345,11 @@ export class TeachWorker {
     const lines = child.stdout ? createInterface({ input: child.stdout }) : null;
     lines?.on('line', (line) => {
       const s = line.trim(); if (!s.startsWith('{')) return;
-      try { this.handleEvent(job, JSON.parse(s), state); } catch { /* not an event line */ }
+      try {
+        const ev = JSON.parse(s) as { type?: string };
+        if (loadedAt === null && ev.type && ev.type !== 'load') loadedAt = Date.now();
+        this.handleEvent(job, ev, state);
+      } catch { /* not an event line */ }
     });
     // a final `done` line without a trailing newline is only emitted when stdout ends — wait for the reader, not just the exit
     const drained = lines ? new Promise<void>((res) => lines.once('close', () => res())) : Promise.resolve();
@@ -2350,7 +2359,14 @@ export class TeachWorker {
     this.child = null;
     if (this.stopped && !state.done) return { ok: false, error: STOPPING };
     if (killedForCancel || this.store.getTeachJob(job.id)?.cancel_requested) return { ok: false, error: 'cancelled' };
-    if (timedOut) return { ok: false, error: `timeout: trainer exceeded ${Math.round(c.trainer.timeoutMs / 60000)} min` };
+    if (timedOut) {
+      const mins = (ms: number) => `${Math.round(ms / 60_000)} min`;
+      const spent = Date.now() - startedAt;
+      const where = loadedAt === null
+        ? `it never finished loading the model (${mins(spent)} so far), so raise \`teach.trainer.timeoutMs\` — fewer rows will not help`
+        : `loading took ${mins(loadedAt - startedAt)} and training reached step ${(state.progress.step ?? 0)}/${state.progress.max_steps}, so either raise \`teach.trainer.timeoutMs\` or train fewer rows`;
+      return { ok: false, error: `timeout: trainer exceeded ${mins(c.trainer.timeoutMs)} — ${where}` };
+    }
     if (state.error) return { ok: false, error: state.error.slice(0, 500) };
     if (code !== 0 || !state.done) return { ok: false, error: `trainer exited with code ${code}${stderrTail ? `: ${stderrTail.trim().split('\n').slice(-3).join(' | ').slice(0, 400)}` : ''}` };
     const npz = join(dir, 'lesson.npz');
