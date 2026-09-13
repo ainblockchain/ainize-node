@@ -11,6 +11,7 @@
 import { relative, join } from 'node:path';
 import { ts, parseFile, tsFiles, literal, walk, resolveConst } from './ts.mjs';
 import { code, cell, table } from './md.mjs';
+import { at as srcPath } from './paths.mjs';
 
 /** `'quota_rows: this node trains up to 300 questions'` -> the code and the sentence, or null when there is none. */
 export function splitCoded(message) {
@@ -181,8 +182,8 @@ export function codedErrors(files, classes, repo) {
 }
 
 export function renderErrorsPage(repo) {
-  const nodeSrc = join(repo, 'packages/node/src');
-  const files = [...tsFiles(nodeSrc), ...tsFiles(join(repo, 'packages/core/src'))];
+  const nodeSrc = srcPath(repo, 'packages/node/src');
+  const files = [...tsFiles(nodeSrc), ...tsFiles(srcPath(repo, 'packages/core/src'))];
   const classes = errorClasses(files);
   const env = envelope(join(nodeSrc, 'api.ts'));
 

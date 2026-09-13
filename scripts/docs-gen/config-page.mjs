@@ -13,6 +13,7 @@
 import { join } from 'node:path';
 import { ts, parseFile, literal, Unresolved, walk } from './ts.mjs';
 import { code, cell, table, fence } from './md.mjs';
+import { at as srcPath } from './paths.mjs';
 
 const HOME = '<AINIZE_HOME>';
 /** A fixed key so the generated page is byte-identical on every machine; it is never printed. */
@@ -144,8 +145,8 @@ function runtimeRepoProbe(file) {
 export function renderConfigPage(repo, mods) {
   const { configKeys, configField, configFieldType, PROTECTED_CONFIG_KEYS } = mods.schema;
   const { defaultConfig } = mods.config;
-  const configFile = join(repo, 'packages/core/src/config.ts');
-  const docs = interfaceDocs(join(repo, 'packages/core/src/types.ts'), 'NodeConfig');
+  const configFile = srcPath(repo, 'packages/core/src/config.ts');
+  const docs = interfaceDocs(srcPath(repo, 'packages/core/src/types.ts'), 'NodeConfig');
   const defaults = defaultConfig({ home: HOME, privateKey: FIXED_KEY });
   const probePath = runtimeRepoProbe(configFile);
   const protectedKeys = new Set(PROTECTED_CONFIG_KEYS);
@@ -210,7 +211,7 @@ export function renderConfigPage(repo, mods) {
 
   blocks.push('## Protected keys');
   blocks.push([
-    `${code('ainize config set')} refuses these: the identity is the node's only key pair, and the password hash is written by ${code('ainize login')}.`,
+    `${code('ainize config set')} refuses these. The identity is the node's only key pair — changing it changes who everything this node published belongs to. ${code('operatorPasswordHash')} is a field nothing reads any more: it is still parsed so a config that has one still loads, and still refused here because there is nothing left that would act on it.`,
     '',
     ...PROTECTED_CONFIG_KEYS.map((k) => `- ${code(k)}`),
   ].join('\n'));

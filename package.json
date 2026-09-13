@@ -38,6 +38,8 @@
     "start": "node dist/bin.js",
     "seed": "tsx src/seed.ts",
     "test": "node --test --import tsx test/*.test.ts",
+    "docs:gen": "node scripts/docs-gen.mjs",
+    "docs:check": "node scripts/docs-gen.mjs --check",
     "prepare": "npm run build"
   },
   "dependencies": {

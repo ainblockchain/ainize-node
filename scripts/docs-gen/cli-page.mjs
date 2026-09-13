@@ -8,6 +8,7 @@
 import { join } from 'node:path';
 import { ts, parseFile, literal, Unresolved, resolveConst, tsFiles } from './ts.mjs';
 import { PROG, code, value, inline, cell, table, fence, slug } from './md.mjs';
+import { at as srcPath } from './paths.mjs';
 
 // `bin.ts` is now a launcher that checks the Node version and dynamically imports the CLI; the yargs
 // declarations moved to `main.ts`. Reading the old path would silently generate an empty command list.
@@ -37,9 +38,9 @@ function tokenToPositional(tok) {
 }
 
 export function readCliTree(repo) {
-  const file = join(repo, BIN);
+  const file = srcPath(repo, BIN);
   const src = parseFile(file);
-  const nodeSources = [...tsFiles(join(repo, 'packages/node/src')), ...tsFiles(join(repo, 'packages/core/src'))];
+  const nodeSources = [...tsFiles(srcPath(repo, 'packages/node/src')), ...tsFiles(srcPath(repo, 'packages/core/src'))];
 
   // Builder helpers — `const keyOpts = (y) => y.option('key', …).option('key-file', …)` — add their options to
   // every command whose builder calls them. Collected first, and skipped by the main pass so they do not land on

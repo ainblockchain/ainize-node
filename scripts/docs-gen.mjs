@@ -19,7 +19,8 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { at, label, requireSiblings } from './docs-gen/paths.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const REPO = dirname(dirname(SELF));
@@ -38,13 +39,14 @@ const { renderHttpApiPage, renderSchemasPage } = await import('./docs-gen/openap
 const { renderConfigPage } = await import('./docs-gen/config-page.mjs');
 const { renderErrorsPage } = await import('./docs-gen/errors-page.mjs');
 
-const { buildOpenApi } = await import('../packages/node/src/openapi.ts');
-const schema = await import('../packages/core/src/config-schema.ts');
-const config = await import('../packages/core/src/config.ts');
+requireSiblings(REPO);
+const { buildOpenApi } = await import(pathToFileURL(at(REPO, 'packages/node/src/openapi.ts')).href);
+const schema = await import(pathToFileURL(at(REPO, 'packages/core/src/config-schema.ts')).href);
+const config = await import(pathToFileURL(at(REPO, 'packages/core/src/config.ts')).href);
 
 /** The node's own default port and version, so the page never carries the address of whoever generated it. */
 const BASE_URL = 'http://localhost:3402';
-const NODE_VERSION = JSON.parse(readFileSync(join(REPO, 'packages/node/package.json'), 'utf8')).version;
+const NODE_VERSION = JSON.parse(readFileSync(at(REPO, 'packages/node/package.json'), 'utf8')).version;
 
 function build() {
   const spec = buildOpenApi(BASE_URL, NODE_VERSION);
@@ -59,8 +61,8 @@ function build() {
       path: 'docs/en/reference/cli.md',
       title: 'CLI reference',
       summary: `Every ${'`ainize`'} command, argument and option, generated from the CLI's own declarations`,
-      sources: ['packages/cli/src/bin.ts'],
-      lead: `Every command the ${'`ainize`'} CLI accepts — ${cli.counts.top} top-level commands, ${cli.counts.leaves} of them runnable — with the arguments, options, defaults and examples each one declares. The binary is also installed as ${'`ngram`'}; the two names run the same program.`,
+      sources: ['packages/cli/src/main.ts'].map(label),
+      lead: `Every command the ${'`ainize`'} CLI accepts — ${cli.counts.top} top-level commands, ${cli.counts.leaves} of them runnable — with the arguments, options, defaults and examples each one declares.`,
       blocks: cli.blocks,
       counts: cli.counts,
     },
@@ -68,7 +70,7 @@ function build() {
       path: 'docs/en/reference/http-api.md',
       title: 'HTTP API reference',
       summary: 'Every endpoint an Ainize node serves, with parameters, bodies and responses',
-      sources: ['packages/node/src/openapi.ts'],
+      sources: ['packages/node/src/openapi.ts'].map(label),
       lead: `${http.counts.operations} operations on ${http.counts.paths} paths, grouped into the ${http.counts.tags} areas a node serves. Body shapes shared between endpoints are on the [Schemas](./schemas.md) page; the codes an error can carry are on [Error codes](./errors.md).`,
       blocks: http.blocks,
       counts: http.counts,
@@ -77,7 +79,7 @@ function build() {
       path: 'docs/en/reference/schemas.md',
       title: 'Schemas',
       summary: 'The reusable request and response shapes of the node HTTP API',
-      sources: ['packages/node/src/openapi.ts'],
+      sources: ['packages/node/src/openapi.ts'].map(label),
       lead: `The ${schemas.counts.schemas} named shapes the [HTTP API](./http-api.md) refers to.`,
       blocks: schemas.blocks,
       counts: schemas.counts,
@@ -86,7 +88,7 @@ function build() {
       path: 'docs/en/reference/config.md',
       title: 'Configuration reference',
       summary: 'Every key of a node config.json, its type, its default and the rules it is checked against',
-      sources: ['packages/core/src/config-schema.ts', 'packages/core/src/config.ts', 'packages/core/src/types.ts'],
+      sources: ['packages/core/src/config-schema.ts', 'packages/core/src/config.ts', 'packages/core/src/types.ts'].map(label),
       lead: `All ${cfg.counts.keys} keys a node config accepts, the environment variables that override them, and the file ${'`ainize init`'} writes.`,
       blocks: cfg.blocks,
       counts: cfg.counts,
@@ -95,7 +97,7 @@ function build() {
       path: 'docs/en/reference/errors.md',
       title: 'Error codes',
       summary: 'The error envelope, and every machine-readable code a node can answer with',
-      sources: ['packages/node/src'],
+      sources: ['packages/node/src', 'packages/core/src'].map(label),
       lead: `What an error body looks like, how a thrown error becomes an HTTP status, and the ${errors.counts.codes} codes a client can match on.`,
       blocks: errors.blocks,
       counts: errors.counts,
@@ -129,7 +131,7 @@ function assertLinksResolve(pages) {
       const file = target ? join(dirname(p.path), target).replace(/\\/g, '/') : p.path;
       const known = anchors.get(file);
       if (!known) {
-        if (!existsSync(join(REPO, file))) throw new Error(`${p.path}: link to ${target} — no such file in the docs tree`);
+        if (!existsSync(at(REPO, file))) throw new Error(`${p.path}: link to ${target} — no such file in the docs tree`);
         continue;                                                   // a hand-written page: docs-check.mjs owns its anchors
       }
       if (hash && !known.has(hash)) throw new Error(`${p.path}: link to ${target}#${hash} — no such heading on that page`);
@@ -165,7 +167,7 @@ assertLinksResolve(pages);
 let failed = 0;
 
 for (const p of pages) {
-  const abs = join(REPO, p.path);
+  const abs = at(REPO, p.path);
   const onDisk = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
   const same = onDisk === p.text;
   if (check) {
