@@ -667,9 +667,21 @@ export function buildApi(deps: ApiDeps): Router {
     return { ok: true, delegate, sessions_ended: ended, bindings: market.store.bindingsOf(who.address) };
   }));
 
+  /**
+   * Sign out the session that made this request — whichever way it arrived.
+   *
+   * This deleted the COOKIE session and nothing else, so a caller holding a bearer token was answered `ok` and
+   * stayed signed in for the rest of the token's thirty days. The CLI forgot the token locally, which is what
+   * made it look like it had worked; the node went on honouring it, and anyone who had read it off the disk or
+   * out of a log could keep using it.
+   *
+   * It was survivable while the only bearer token was the CLI's, on the node's own machine, held by whoever
+   * already had the node's key. It stopped being survivable the moment `ainize login` started handing one to a
+   * laptop — and `logout --forget` promises to leave nothing behind, which it could not keep.
+   */
   router.post('/api/auth/logout', wrap((req, res) => {
-    const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;
-    if (cookie) market.store.deleteSession(cookie);
+    const token = sessionToken(req);
+    if (token) market.store.deleteSession(token);
     res.clearCookie(SESSION_COOKIE);
     return { ok: true };
   }));

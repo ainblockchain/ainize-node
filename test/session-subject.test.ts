@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, type NodeConfig } from '@ainize/core';
+import { createIdentity, defaultConfig, signMessage, type NodeConfig } from '@ainize/core';
 import { Store } from '../src/store.js';
 import { startNode, type RunningNode } from '../src/server.js';
 import { operatorToken } from './fixtures/operator.js';
@@ -90,4 +90,30 @@ test('a subject is one address whatever case it is written in', () => {
   assert.deepEqual(rows.map((r) => r.token).sort(), [...mine].sort());
   assert.deepEqual(rows.map((r) => r.scheme).sort(), ['ain', 'eip191']);
   assert.equal(s.sessionsOf(b.address).length, 1, "another address's sessions are not yours");
+});
+
+test('logging out ends the session that asked, however it arrived', async () => {
+  // This deleted the cookie session and nothing else. A caller holding a bearer token got `ok` and stayed signed
+  // in for the rest of its thirty days — the CLI forgot the token locally, which is exactly what made the bug
+  // invisible, while the node went on honouring it for anyone who had read it off a disk or out of a log.
+  const bearer = await operatorToken(url, identity);
+  assert.ok(N.store.getSession(bearer));
+  const out = await fetch(`${url}/api/auth/logout`, { method: 'POST', headers: { authorization: `Bearer ${bearer}` } });
+  assert.equal(out.status, 200);
+  assert.equal(N.store.getSession(bearer), null, 'the token that asked to be signed out must not still work');
+
+  const me = await (await fetch(`${url}/api/auth/me`, { headers: { authorization: `Bearer ${bearer}` } })).json() as { signedIn: boolean };
+  assert.equal(me.signedIn, false);
+
+  // The cookie path, which always worked, still does — a jar carries it the way a browser would.
+  const ch = await (await fetch(`${url}/api/auth/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json() as { nonce: string; message: string };
+  const login = await fetch(`${url}/api/auth/wallet`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ address: identity.address, nonce: ch.nonce, signature: signMessage(ch.message, identity.privateKey) }),
+  });
+  const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]!;
+  const token = ((await login.json()) as { token: string }).token;
+  assert.ok(N.store.getSession(token));
+  await fetch(`${url}/api/auth/logout`, { method: 'POST', headers: { cookie } });
+  assert.equal(N.store.getSession(token), null);
 });
