@@ -375,10 +375,11 @@ export function buildApi(deps: ApiDeps): Router {
     return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address: address.toLowerCase() };
   }));
   /**
-   * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
-   * unlimited guesses at it — nothing in `node/src` counted an attempt. Wrong answers now cost time, doubling from
-   * one second after the third failure up to half a minute, and the refusal names the recovery command instead of
-   * leaving a locked-out operator to guess. Keyed by the TCP peer, never `req.ip`: with `server.trustProxy` on,
+   * Item 89: one password guarded sales, publishing, the wallet and the model runtime, and the door accepted
+   * unlimited guesses at it — nothing in `node/src` counted an attempt. The password is gone, but the door is
+   * not: a signature can be guessed at too, and a node with sign-in open to anyone is worth throttling more, not
+   * less. Wrong answers cost time, doubling from one second after the third failure up to half a minute, and a
+   * successful sign-in clears the bucket. Keyed by the TCP peer, never `req.ip`: with `server.trustProxy` on,
    * `req.ip` is whatever X-Forwarded-For says, so the attacker being throttled could choose their own bucket.
    * Successful sign-in clears the bucket, so one typo costs a returning operator nothing.
    */
@@ -393,7 +394,9 @@ export function buildApi(deps: ApiDeps): Router {
     const rec = loginFails.get(loginKey(req));
     if (!rec || now >= rec.until) return;
     const wait = Math.ceil((rec.until - now) / 1000);
-    throw new HttpError(429, `too_many_attempts: ${rec.n} wrong passwords from this address — wait ${wait}s before trying again. If you have forgotten it, run \`ainize password --reset\` on the machine this node runs on.`, { retry_after_s: wait, attempts: rec.n });
+    // Nothing here is a password any more, so the refusal no longer offers to reset one. A failed attempt is a
+    // signature that did not check out, and the only thing to do about it is use the key that does.
+    throw new HttpError(429, `too_many_attempts: ${rec.n} signatures from this address did not check out — wait ${wait}s before trying again.`, { retry_after_s: wait, attempts: rec.n });
   };
   const loginFailed = (req: Request) => {
     const key = loginKey(req);

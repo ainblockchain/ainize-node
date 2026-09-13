@@ -466,10 +466,11 @@ export const CLI_REFERENCE = {
   },
   groups: [
     { name: 'Getting started', commands: [
-      { cmd: 'ainize init [--name --port --password … --host 127.0.0.1|--public --ledger local|ain --peer <url>...]', desc: 'create the node identity (AIN address) and config. --password claims the node before it ever listens; without it the node is unclaimed until `ainize login`, and can only be claimed from its own machine. The node binds 127.0.0.1 unless you ask for --public' },
+      { cmd: 'ainize init [--name --port --host 127.0.0.1|--public --ledger local|ain --peer <url>...]', desc: 'create the node identity (AIN address) and config. That key owns the node from the moment it exists, so there is nothing to claim and no secret to set. The node binds 127.0.0.1 unless you ask for --public' },
       { cmd: 'ainize start [-d]', desc: 'run the node (web UI + API); -d runs in the background (node.log rolls at 32 MB, two generations kept)' },
-      { cmd: 'ainize login [--setup-token …]', desc: 'operator login (first run sets the password). Claiming an unclaimed node over the network needs the one-time token it writes to AINIZE_HOME/setup-token' },
-      { cmd: 'ainize password [--reset]', desc: 'change the operator password (every other session is signed out). Forgotten it? Stop the node and `password --reset` writes a new hash into config.json — the file that already holds the node key' },
+      { cmd: 'ainize login', desc: "on the node's own machine: signs a challenge with the key in config.json, which already owns everything this node published. Anywhere else: prints a link to open in a browser, where one wallet signature authorises this machine's own key to act as you — after that it signs in with that key alone" },
+      { cmd: 'ainize whoami | bindings [--end 0x…]', desc: 'which address you act as and which key is doing the acting; every machine that speaks for you, and shutting one out (its sessions end with it)' },
+      { cmd: 'ainize operators [--add 0x… | --remove 0x…]', desc: 'who owns this node. Its own key always does; an owner can add another from here or from Account settings in the browser' },
       { cmd: 'ainize status | logs [--follow] | stop', desc: 'status / event log / stop' },
     ] },
     { name: 'Using knowledge', commands: [
@@ -516,7 +517,7 @@ export const CLI_REFERENCE = {
       { cmd: 'ainize keys import <file> [--passphrase …] | keys rotate', desc: 'make a backed-up key this node\'s identity again, or mint a new one; both copy config.json aside first and ask you to type the current address' },
       { cmd: 'ainize config show | ainize config get <key> | ainize config set <key> <value> | ainize config unset <key>', desc: 'the node config (AINIZE_HOME/config.json). `set` validates against the config schema: an unknown key is refused with the nearest real one, a wrong type or an out-of-range value with what the key wants. Teach settings changed in the console override this file and survive a restart — `show` and `get` mark every one of them, `set` writes both, `unset` clears the override' },
       { cmd: 'ainize blobs ls | ainize gc [--dry-run --older-than 30d --no-keep-purchased]', desc: 'the disk: every knowledge file this node holds with its size and why it has it, and a way to delete the copies verification downloaded — each of them re-fetchable from a peer that holds it. `ainize status` reports the totals and what is free' },
-      { cmd: 'ainize init --force [--new-identity]', desc: 'rewrite config.json keeping this node\'s identity and operator password (the old file is copied aside). --new-identity replaces the key and asks you to type the current address first' },
+      { cmd: 'ainize init --force [--new-identity]', desc: 'rewrite config.json keeping this node\'s identity (the old file is copied aside). --new-identity replaces the key — and with it everything this node published belongs to, so it asks you to type the current address first' },
       { cmd: 'ainize status [--check] | ainize logs [--kind … --level warn] | ainize nodes | ainize logout', desc: 'status (--check = readiness, exits 1 when the ledger or the runtime is not usable), the node\'s own event log, the nodes it knows, and forgetting the operator session' },
       { cmd: 'GET /healthz · GET /readyz', desc: 'liveness and readiness for an uptime check or a Kubernetes probe: /readyz answers 503 with the failing check when the ledger is unreachable or a serving/verifier node has no runtime' },
     ] },

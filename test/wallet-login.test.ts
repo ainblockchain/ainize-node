@@ -134,3 +134,17 @@ test('a wallet signature is still worthless at a node it was not made for, and t
   const r = await post('/api/auth/wallet', { address: HUMAN.address, nonce: ch.nonce, signature: personalSign(elsewhere, HUMAN.privateKey) });
   assert.equal(r.status, 401);
 });
+
+test('nothing anywhere still offers a password', async () => {
+  // The operator password is gone: the route that took one, the `ainize password` command, and the scrypt helpers
+  // in core. What outlives a removal like that is the PROSE — a docs page telling someone to run a command that
+  // no longer exists, or a throttle offering to reset a secret nothing checks. That is what this reads.
+  const docs = await (await fetch(`${url}/api/docs`)).json() as { openapi: unknown; cli: { groups: { commands: { cmd: string; desc: string }[] }[] } };
+  const lines = docs.cli.groups.flatMap((g) => g.commands).map((c) => `${c.cmd} — ${c.desc}`);
+  const offering = lines.filter((l) => /password/i.test(l));
+  assert.deepEqual(offering, [], `the CLI reference still tells someone about a password:\n${offering.join('\n')}`);
+  assert.ok(!lines.some((l) => /^ainize password/.test(l)), 'and `ainize password` is not a command any more');
+  // The API description may say there is none — that is the sentence a reader needs — but nothing may ask for one.
+  const spec = JSON.stringify(docs.openapi);
+  assert.ok(!/"password"/.test(spec), 'no request body anywhere takes a password field');
+});
