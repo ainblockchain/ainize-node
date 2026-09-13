@@ -51,6 +51,15 @@ before(async () => {
 });
 after(async () => { await N?.stop(); rmSync(tmp, { recursive: true, force: true }); });
 
+test('live source reads require a wallet session and reject arbitrary destinations', async () => {
+  const anonymous = await post('/api/chat/source', { source: 'ens', name: 'patch.example.eth' });
+  assert.equal(anonymous.status, 401);
+  const nonce = await challenge('eip191');
+  const login = await post('/api/auth/wallet', { address: HUMAN.address, nonce: nonce.nonce, signature: personalSign(nonce.message, HUMAN.privateKey) });
+  const invalid = await post('/api/chat/source', { source: 'ens', name: 'patch.example.eth', rpc: 'http://localhost:1' }, { authorization: `Bearer ${login.body.token}` });
+  assert.equal(invalid.status, 400);
+});
+
 test('a MetaMask signature signs in, and the session says a person made it', async () => {
   const ch = await challenge('eip191');
   assert.equal(ch.scheme, 'eip191');

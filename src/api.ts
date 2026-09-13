@@ -53,6 +53,7 @@ import { PayoutError } from './payouts.js';
 import { EVENT_LEVELS } from './store.js';
 import type { EventRow, TeachJobRow } from './store.js';
 import { buildOpenApi, CLI_REFERENCE } from './openapi.js';
+import { readLiveSource, sourceRequest } from './live-sources.js';
 
 export interface ApiDeps {
   market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void;
@@ -1928,6 +1929,24 @@ export function buildApi(deps: ApiDeps): Router {
     const operator = isNodeOwner(req);
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.requestPatch(req.params.id as string, visitor);
+  }));
+  let sourceBusy = 0;
+  let sourceWindow = 0;
+  let sourceCalls = 0;
+  router.post('/api/chat/source', wrap(async (req, res) => {
+    if (!isSignedIn(req)) throw new HttpError(401, 'Sign in with your wallet to query live sources');
+    const body = sourceRequest.parse(req.body);
+    const now = Date.now();
+    if (now - sourceWindow >= 60000) { sourceWindow = now; sourceCalls = 0; }
+    if (sourceBusy >= 2 || sourceCalls >= 12) {
+      res.setHeader('Retry-After', '60');
+      throw new HttpError(429, 'Live source capacity reached; retry in one minute');
+    }
+    sourceCalls++;
+    sourceBusy++;
+    try { return await readLiveSource(body); }
+    catch { throw new HttpError(502, 'Live provider lookup failed. No cached or invented result was substituted. Check the name/symbol and server provider configuration.'); }
+    finally { sourceBusy--; }
   }));
   router.post('/api/chat', wrap(async (req, res) => {
     const history = z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24);
