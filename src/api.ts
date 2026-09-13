@@ -13,11 +13,12 @@ import { z } from 'zod';
 import {
   AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
-  sameAddr, verifyMessage, operatorLoginMessage, LOGIN_NONCE_TTL_MS,
+  sameAddr, verifyMessage, verifyAuth, operatorLoginMessage, LOGIN_NONCE_TTL_MS, type AuthScheme,
   parseStatus,
   type CatalogEntry, type LedgerRecord, type PatchAnchor, type PatchStatus,
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
+import { walletLoginMessage, requestOrigin } from './wallet-login.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
@@ -288,8 +289,21 @@ export function buildApi(deps: ApiDeps): Router {
     canEnroll: mayClaim(req) || isOperator(req),
     operators: isOperator(req) ? owners().map((o) => o.address) : undefined,
   })));
-  /** Single-use sign-in nonces: nonce → expiry. In memory, because a restart forgetting them is correct. */
-  const loginNonces = new Map<string, number>();
+  /**
+   * Single-use sign-in nonces. In memory, because a restart forgetting them is correct.
+   *
+   * A nonce now carries the exact message that was issued for it, and the scheme it was issued under. Both matter.
+   *
+   * Storing the MESSAGE means verification never rebuilds it: the node checks the signature against the bytes it
+   * handed out, so the readable wallet message can say whatever is useful to a person — a site, a timestamp, a
+   * node name — without any of it having to survive a round trip or be re-derived identically on the way back.
+   *
+   * Storing the SCHEME means the caller cannot pick one at the end. The two schemes hash the same string
+   * differently, and they mean different things: `ain` is a key acting on its own, `eip191` is a person who read a
+   * prompt. Letting the signature's presenter say which rules apply would let them choose which of those two
+   * claims the node records — so the choice is made when the challenge is asked for, and fixed from then on.
+   */
+  const loginNonces = new Map<string, { message: string; scheme: AuthScheme; expires: number }>();
 
   /**
    * Add an address to this node's operators, and sign it in.
@@ -310,10 +324,10 @@ export function buildApi(deps: ApiDeps): Router {
       throw new HttpError(403, 'enroll_local_only: an address is added to this node\'s operators from the machine it runs on (`ainize operators --add <address>`), or with the one-time token in its AINIZE_HOME/setup-token as the x-setup-token header');
     }
     const { address, nonce, signature } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), nonce: z.string(), signature: z.string() }).parse(req.body);
-    const exp = loginNonces.get(nonce);
+    const rec = loginNonces.get(nonce);
     loginNonces.delete(nonce);
-    if (!exp || exp <= Date.now()) throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one');
-    if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
+    if (!rec || rec.expires <= Date.now()) throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one');
+    if (!verifyAuth(rec.scheme, rec.message, signature, address)) {
       throw new HttpError(401, 'that signature does not come from the address it claims');
     }
     // The grant goes in the database, not the config file. A config file is the recovery path — hand-edited on
@@ -325,7 +339,7 @@ export function buildApi(deps: ApiDeps): Router {
       market.log('info', 'auth', `${address} added to this node's owners`);
     }
     if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the enrolment stands either way */ } }
-    return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
+    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address };
   }));
   /**
    * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
@@ -375,30 +389,38 @@ export function buildApi(deps: ApiDeps): Router {
    */
   router.post('/api/auth/challenge', wrap((req) => {
     loginGuard(req);
+    // Default `ain`, so a CLI built before this existed asks for exactly what it asked for before.
+    const { scheme } = z.object({ scheme: z.enum(['ain', 'eip191']).default('ain') }).parse(req.body ?? {});
     const nonce = randomBytes(16).toString('hex');
-    loginNonces.set(nonce, Date.now() + LOGIN_NONCE_TTL_MS);
+    const expires = Date.now() + LOGIN_NONCE_TTL_MS;
+    const message = scheme === 'eip191'
+      ? walletLoginMessage({ node: market.address, nodeName: market.cfg.name, nonce, origin: requestOrigin(req.header('origin')), expiresAt: expires })
+      : operatorLoginMessage({ node: market.address, nonce });
+    loginNonces.set(nonce, { message, scheme, expires });
     // Keep the map small without a timer: every issue drops what has already expired.
-    for (const [n, exp] of loginNonces) if (exp <= Date.now()) loginNonces.delete(n);
-    return { nonce, expires_at: Date.now() + LOGIN_NONCE_TTL_MS, node: market.address, message: operatorLoginMessage({ node: market.address, nonce }) };
+    for (const [n, rec] of loginNonces) if (rec.expires <= Date.now()) loginNonces.delete(n);
+    return { nonce, expires_at: expires, node: market.address, scheme, message };
   }));
   router.post('/api/auth/wallet', wrap((req, res) => {
     const { address, nonce, signature } = z.object({ address: z.string(), nonce: z.string(), signature: z.string() }).parse(req.body);
     loginGuard(req);
-    const exp = loginNonces.get(nonce);
+    const rec = loginNonces.get(nonce);
     // Burned whatever happens next: a nonce that has been shown a wrong signature is spent, not retryable.
     loginNonces.delete(nonce);
-    if (!exp || exp <= Date.now()) { loginFailed(req); throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one'); }
+    if (!rec || rec.expires <= Date.now()) { loginFailed(req); throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one'); }
     if (!isOwner(address)) {
       loginFailed(req);
-      throw new HttpError(403, `${address} is not an operator of this node. Its own key always is; any other address has to be added by someone who already has operator access, on the machine this node runs on (\`ainize operators --add ${address}\`).`);
+      throw new HttpError(403, `${address} does not own this node. Its own key always does; any other address is added by an owner — from a browser they are signed into, or on the machine this node runs on (\`ainize operators add ${address}\`).`);
     }
-    if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
+    // The stored message, under the stored scheme. Neither is taken from the request: a signature's presenter
+    // chooses nothing about how it is checked.
+    if (!verifyAuth(rec.scheme, rec.message, signature, address)) {
       const n = loginFailed(req);
       throw new HttpError(401, 'that signature does not come from the address it claims', { attempts: n });
     }
     loginFails.delete(loginKey(req));
-    market.log('info', 'auth', `operator signed in as ${address}${sameAddr(address, market.address) ? " (this node's own key)" : ''}`);
-    return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
+    market.log('info', 'auth', `${address} signed in${sameAddr(address, market.address) ? " (this node's own key)" : ''} with ${rec.scheme === 'eip191' ? 'a browser wallet' : 'a key'}`);
+    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address, scheme: rec.scheme };
   }));
   /**
    * Who owns this node, and adding or removing one — from a browser, by an owner, without a shell.

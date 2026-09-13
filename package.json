@@ -1,7 +1,7 @@
 {
   "name": "@ainize/node",
   "version": "0.2.7",
-  "description": "Ainize node \u2014 serves a base model whose conditional memory is extended by knowledge patches; teaches, verifies, publishes and trades patches on the AIN ledger",
+  "description": "Ainize node — serves a base model whose conditional memory is extended by knowledge patches; teaches, verifies, publishes and trades patches on the AIN ledger",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -51,6 +51,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@noble/secp256k1": "^2.3.0",
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
