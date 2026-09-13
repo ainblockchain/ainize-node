@@ -2037,7 +2037,11 @@ export class TeachWorker {
         phase = 'training';
         const dir = this.jobDir(job);
         mkdirSync(dir, { recursive: true });
-        this.store.updateTeachJob(job.id, { status: 'TRAINING', job_dir: dir, progress: { step: 0, max_steps: this.cfg.trainer.maxSteps, hits: 0, total: facts.length, started_at: Date.now() } });
+        // The DENOMINATOR is this job's own step count, not the node's ceiling. They differ whenever an effort
+        // preset asks for fewer passes than `trainer.maxSteps` allows — and then a finished lesson reads
+        // "12/20" and looks like it stopped early, which is what a person acts on.
+        const steps = (job.training as TeachTrainingSpec | null)?.max_steps ?? this.cfg.trainer.maxSteps;
+        this.store.updateTeachJob(job.id, { status: 'TRAINING', job_dir: dir, progress: { step: 0, max_steps: steps, hits: 0, total: facts.length, started_at: Date.now() } });
         void this.noteOnChain(job.id, 'TRAINING');   // the run is now really happening — that is the fact worth recording
         this.log('info', `training started (${this.cfg.backend}) for ${job.id}`, job.id);
         const tr = await this.train({ ...job, job_dir: dir });
