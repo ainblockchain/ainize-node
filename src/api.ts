@@ -4,7 +4,7 @@
  *  /x402/*  trading endpoints (HTTP 402 Payment Required flow, ain-js compatible)
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
@@ -18,7 +18,7 @@ import {
   type CatalogEntry, type LedgerRecord, type PatchAnchor, type PatchStatus,
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
-import { walletLoginMessage, requestOrigin } from './wallet-login.js';
+import { walletLoginMessage, deviceAuthMessage, safeLabel, requestOrigin } from './wallet-login.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
@@ -170,13 +170,17 @@ export function buildApi(deps: ApiDeps): Router {
    * that could hold one, since the only way to get a session was to sign with the node's key. Saying so here
    * keeps every caller from having to decide what a null subject means.
    */
-  const sessionSubject = (req: Request): { address: string; scheme: string } | null => {
+  const sessionSubject = (req: Request): { address: string; scheme: string; viaKey: string | null } | null => {
     const token = sessionToken(req);
     if (!token) return null;
     const row = market.store.getSession(token);
     if (!row) return null;
-    return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain' };
+    return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain', viaKey: row.via_key ?? null };
   };
+  /** Hex sha256, for comparing a secret against a stored hash rather than against the secret itself. */
+  const sha256Hex = (v: string): string => createHash('sha256').update(v).digest('hex');
+  /** Constant time over two equal-length hex digests — a poll that guesses must learn nothing from how long it took. */
+  const timingEqual = (a: string, b: string): boolean => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   /**
    * Every address that owns this node, and on what grounds.
    *
@@ -268,7 +272,7 @@ export function buildApi(deps: ApiDeps): Router {
    * It used to record neither, so every route behind `requireOwner` saw one undifferentiated "signed in"
    * and the node could not answer "whose session is this" — which is the question a wallet binding is made of.
    */
-  const newSession = (res: Response, who: { subject: string; scheme: 'ain' | 'eip191' }): string => {
+  const newSession = (res: Response, who: { subject: string; scheme: 'ain' | 'eip191'; viaKey?: string | null }): string => {
     const token = randomBytes(24).toString('hex');
     market.store.putSession(token, SESSION_TTL_MS, who);
     res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS });
@@ -311,7 +315,7 @@ export function buildApi(deps: ApiDeps): Router {
     const who = sessionSubject(req);
     const owner = isNodeOwner(req);
     return {
-      signedIn: !!who, subject: who?.address ?? null, scheme: who?.scheme ?? null, isOwner: owner,
+      signedIn: !!who, subject: who?.address ?? null, scheme: who?.scheme ?? null, via_key: who?.viaKey ?? null, isOwner: owner,
       scope: [...(who ? ['self'] : []), ...(owner ? ['owner'] : [])],
       address: market.address, name: market.cfg.name, roles: market.cfg.roles,
       canEnroll: mayClaim(req) || owner,
@@ -368,7 +372,7 @@ export function buildApi(deps: ApiDeps): Router {
       market.log('info', 'auth', `${address} added to this node's owners`);
     }
     if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the enrolment stands either way */ } }
-    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address };
+    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address: address.toLowerCase() };
   }));
   /**
    * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
@@ -456,9 +460,30 @@ export function buildApi(deps: ApiDeps): Router {
      * which reads the owner lists rather than the mere existence of a session. Signing in still costs a signature
      * over a fresh single-use nonce, so this is not a way to mint sessions for free.
      */
-    const owner = isOwner(address);
-    market.log('info', 'auth', `${address} signed in${sameAddr(address, market.address) ? " (this node's own key)" : ''} with ${rec.scheme === 'eip191' ? 'a browser wallet' : 'a key'}${owner ? ' — an owner of this node' : ''}`);
-    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address, scheme: rec.scheme, isOwner: owner, scope: owner ? ['self', 'owner'] : ['self'] };
+    /**
+     * A bound key signs in as the person who bound it.
+     *
+     * This is what makes `ainize login` a thing you do once rather than every morning: the wallet approved this
+     * key months ago, the node wrote that down, and from then on the CLI proves itself with its own key alone.
+     * The session's SUBJECT is the person — their knowledge, their payouts, their ownership — and `via_key`
+     * records that a machine, not they, actually signed, so "end that laptop" stays a question with an answer.
+     *
+     * The scheme stays `ain`, because that is what really happened: a key acted on its own. Recording `eip191`
+     * here would claim a person read a prompt during a sign-in nobody watched.
+     */
+    const bound = market.store.binding(address);
+    // Lowercase, always. A bound sign-in answers with the owner as the store holds it and an unbound one answered
+    // with whatever casing the caller sent, so the same field came back in two different shapes depending on a
+    // fact the caller could not see. Everything here compares with `sameAddr`, and one canonical form is what
+    // keeps a client that compares strings from being right only half the time.
+    const subject = (bound ? bound.owner : address).toLowerCase();
+    if (bound) market.store.touchBinding(address);
+    const owner = isOwner(subject);
+    market.log('info', 'auth', `${subject} signed in${sameAddr(subject, market.address) ? " (this node's own key)" : ''} with ${bound ? `a key it authorised (${address})` : rec.scheme === 'eip191' ? 'a browser wallet' : 'a key'}${owner ? ' — an owner of this node' : ''}`);
+    return {
+      ok: true, token: newSession(res, { subject, scheme: rec.scheme, viaKey: bound ? address : null }),
+      address: subject, via_key: bound ? address.toLowerCase() : null, scheme: rec.scheme, isOwner: owner, scope: owner ? ['self', 'owner'] : ['self'],
+    };
   }));
   /**
    * Who owns this node, and adding or removing one — from a browser, by an owner, without a shell.
@@ -506,6 +531,139 @@ export function buildApi(deps: ApiDeps): Router {
     market.log('info', 'auth', `${address} no longer owns this node (revoked by ${me ?? 'an owner'}${ended ? `, ${ended} session(s) ended` : ''})`);
     return { ok: true, address, sessions_ended: ended, owners: owners() };
   }));
+  /**
+   * `ainize login` — a command line asking a person to vouch for it.
+   *
+   * THE PROBLEM. The CLI holds a key and signs every request with it, which is right: it cannot open a wallet
+   * prompt, and a key that signs for itself is the whole identity model here. What that key cannot be is
+   * RECOGNISED — nothing connects it to the person whose knowledge it publishes and whose payouts it moves. The
+   * old answer was to make the CLI's key an operator by editing a file on the machine, which works only for
+   * somebody who is already on that machine and makes every laptop a separate identity.
+   *
+   * THE SHAPE. The CLI asks for a code, prints a URL and waits. The person opens it in a browser they are already
+   * signed into, reads what is being authorised, and approves it with one wallet signature. The CLI collects a
+   * session and from then on signs with its own key alone — no wallet, no prompt, no key copied anywhere.
+   *
+   * WHAT THE CODE IS. The whole secret, so it is short-lived, single-use, and useless on its own: collecting the
+   * session needs the poll secret the CLI kept and never printed, and the node stores only its hash. Somebody
+   * reading the URL over a shoulder can open the page and see what is being asked, and can approve it with THEIR
+   * wallet — which binds the CLI to them, not them to the CLI, and is visible to the person running it.
+   */
+  const DEVICE_TTL_MS = 10 * 60_000;
+  const DEVICE_BINDING_MS = 90 * 24 * 3600_000;
+  router.post('/api/auth/device', wrap((req) => {
+    // Unauthenticated on purpose: a CLI with nothing but its own key is exactly who this is for. The rate limiter
+    // is the session throttle, keyed by TCP peer, so a script cannot paper the node with pending grants.
+    loginGuard(req);
+    const { delegate, label } = z.object({
+      delegate: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+      label: z.string().max(80).optional(),
+    }).parse(req.body);
+    market.store.sweepDeviceGrants();
+    const code = randomBytes(16).toString('base64url');
+    const pollSecret = randomBytes(24).toString('base64url');
+    const expires = Date.now() + DEVICE_BINDING_MS;
+    const message = deviceAuthMessage({ node: market.address, nodeName: market.cfg.name, delegate, label, expiresAt: expires, code });
+    market.store.putDeviceGrant({ code, delegate, label: label ? safeLabel(label) : null, pollHash: sha256Hex(pollSecret), message, expires, ttlMs: DEVICE_TTL_MS });
+    market.log('info', 'auth', `${delegate} asked to be authorised${label ? ` as "${safeLabel(label)}"` : ''} — waiting for someone to approve it in a browser`);
+    return {
+      code, poll_secret: pollSecret, interval_ms: 2000, expires_at: Date.now() + DEVICE_TTL_MS,
+      // The node's own idea of where it is reachable. A CLI talking to 127.0.0.1 gets a 127.0.0.1 link, which is
+      // right: the URL has to be openable by whoever is looking at that terminal.
+      url: `${market.publicUrl.replace(/\/$/, '')}/authorize?code=${encodeURIComponent(code)}`,
+    };
+  }));
+
+  /** What is being asked, for the page that shows it. The code is the credential, so this needs no session. */
+  router.get('/api/auth/device/:code', wrap((req) => {
+    const g = market.store.deviceGrant(String(req.params.code));
+    if (!g) throw new HttpError(404, 'no_such_request: that authorisation link is not one this node issued');
+    const state = g.claimed_at ? 'claimed' : g.approved_at ? 'approved' : g.expires_at <= Date.now() ? 'expired' : 'pending';
+    // `message` is the exact string the wallet will be asked to sign. The page renders it rather than composing
+    // its own version, so what a person reads on the page and what they read in MetaMask cannot drift apart.
+    return {
+      status: state, delegate: g.delegate, label: g.label, message: g.message, expires: g.expires,
+      expires_at: g.expires_at, node: market.address, name: market.cfg.name, owner: g.owner,
+    };
+  }));
+
+  /**
+   * Approving it: one wallet signature over the message the node issued.
+   *
+   * A session alone would be enough to know WHO — but not enough to say they meant this. The signature is what
+   * the person actually reads, it names the key and the window, and it cannot be produced by a page acting on a
+   * session it found. So: signed in (which says a wallet is present and which one), plus a signature over the
+   * stored string (which says they read this particular request and approved it).
+   */
+  router.post('/api/auth/device/:code/approve', wrap((req) => {
+    const who = sessionSubject(req);
+    if (!who) throw new HttpError(401, 'sign in with your wallet before authorising anything to act as you');
+    const { signature } = z.object({ signature: z.string() }).parse(req.body);
+    const g = market.store.deviceGrant(String(req.params.code));
+    if (!g) throw new HttpError(404, 'no_such_request: that authorisation link is not one this node issued');
+    if (g.claimed_at) throw new HttpError(409, 'already_used: that request was already collected');
+    if (g.approved_at) throw new HttpError(409, 'already_approved: that request has already been answered');
+    if (g.expires_at <= Date.now()) throw new HttpError(410, 'expired: the request timed out — run `ainize login` again');
+    // Under `eip191` and against the STORED message: the presenter of a signature chooses neither the rules nor
+    // the bytes. Anything else would let a page have a wallet sign one thing and the node record another.
+    if (!verifyAuth('eip191', g.message, signature, who.address)) throw new HttpError(401, 'that signature does not come from the address that is signed in');
+    market.store.approveDeviceGrant(g.code, who.address);
+    market.store.putBinding(g.delegate, who.address, g.label);
+    market.log('info', 'auth', `${who.address} authorised ${g.delegate}${g.label ? ` ("${g.label}")` : ''} to act as them`);
+    return { ok: true, delegate: g.delegate, owner: who.address, expires: g.expires };
+  }));
+
+  /**
+   * The CLI collecting its session. Polled, so the answer to "not yet" has to be cheap and boring.
+   *
+   * The poll secret is what makes this the CLI's to collect and nobody else's — the code is in a URL that was
+   * printed to a terminal and may have been read by anyone. Compared in constant time and stored only as a hash,
+   * so neither a copy of the database nor a timing signal hands the session to somebody else.
+   */
+  router.post('/api/auth/device/:code/claim', wrap((req, res) => {
+    const { poll_secret } = z.object({ poll_secret: z.string() }).parse(req.body);
+    const g = market.store.deviceGrant(String(req.params.code));
+    if (!g || !timingEqual(sha256Hex(poll_secret), g.poll_hash)) throw new HttpError(404, 'no_such_request: that authorisation link is not one this node issued');
+    if (g.claimed_at) throw new HttpError(409, 'already_used: that request was already collected');
+    if (!g.approved_at || !g.owner) {
+      if (g.expires_at <= Date.now()) throw new HttpError(410, 'expired: nobody approved it in time — run `ainize login` again');
+      return { status: 'pending' as const };
+    }
+    // Single-use, and the UPDATE is the thing that decides it: two polls that raced must not both get a session.
+    if (!market.store.claimDeviceGrant(g.code)) throw new HttpError(409, 'already_used: that request was already collected');
+    const owner = g.owner;
+    market.store.touchBinding(g.delegate);
+    const token = newSession(res, { subject: owner, scheme: 'eip191', viaKey: g.delegate });
+    market.log('info', 'auth', `${g.delegate} collected a session as ${owner}`);
+    return { status: 'approved' as const, token, owner, delegate: g.delegate, expires: g.expires, isOwner: isOwner(owner) };
+  }));
+
+  /**
+   * Every machine that speaks for you, and ending one.
+   *
+   * A binding outlives a session on purpose — that is what stops `ainize login` being a thing you do every
+   * morning — so it has to be visible and it has to be revocable, and revoking has to end the sessions the key
+   * already collected. A revocation a 30-day cookie outlives is not a revocation.
+   */
+  router.get('/api/auth/bindings', wrap((req) => {
+    const who = sessionSubject(req);
+    if (!who) throw new HttpError(401, 'sign in with your wallet to see what acts as you');
+    return { bindings: market.store.bindingsOf(who.address), via: who.viaKey ?? null };
+  }));
+  router.delete('/api/auth/bindings/:delegate', wrap((req) => {
+    const who = sessionSubject(req);
+    if (!who) throw new HttpError(401, 'sign in with your wallet to end what acts as you');
+    const delegate = z.string().regex(/^0x[0-9a-fA-F]{40}$/).parse(req.params.delegate);
+    const b = market.store.binding(delegate);
+    // Only your own: a binding names a person, and reading someone else's list is not something a session buys.
+    if (!b || !sameAddr(b.owner, who.address)) throw new HttpError(404, `${delegate} does not act as you`);
+    market.store.removeBinding(delegate);
+    let ended = 0;
+    for (const sess of market.store.sessionsVia(delegate)) { market.store.deleteSession(sess.token); ended++; }
+    market.log('info', 'auth', `${who.address} ended ${delegate}${b.label ? ` ("${b.label}")` : ''} (${ended} session(s))`);
+    return { ok: true, delegate, sessions_ended: ended, bindings: market.store.bindingsOf(who.address) };
+  }));
+
   router.post('/api/auth/logout', wrap((req, res) => {
     const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;
     if (cookie) market.store.deleteSession(cookie);

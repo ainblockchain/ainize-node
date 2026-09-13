@@ -29,6 +29,38 @@ export function walletLoginMessage(t: { node: string; nodeName?: string; nonce: 
 }
 
 /**
+ * What a person reads before they let a command line speak for them.
+ *
+ * This is the one prompt in the product where the wrong click has a lasting consequence: a sign-in expires, a
+ * binding does not. So it says the three things that decide whether to approve — WHICH key, on WHICH machine, and
+ * for HOW long — and it says them in the bytes being signed, not only on the page around them. A field that lived
+ * only in the page could be varied freely by whoever built the link while the wallet showed something reassuring.
+ *
+ * The label is the CLI's own words about itself and is shown in quotes for exactly that reason. It is never a
+ * claim the node stands behind, and it is stripped of anything that could forge structure in the message.
+ */
+export function deviceAuthMessage(t: { node: string; nodeName?: string; delegate: string; label?: string | null; expiresAt: number; code: string }): string {
+  return [
+    'Authorize a command line to act as you',
+    '',
+    `Node:    ${t.nodeName ? `${t.nodeName} (${t.node})` : t.node}`,
+    `Key:     ${t.delegate}`,
+    ...(t.label ? [`Named:   "${safeLabel(t.label)}"  (its own description of itself)`] : []),
+    `Until:   ${new Date(t.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
+    `Request: ${t.code}`,
+    '',
+    'From now until then, that key can act as this address on this node: teach, publish, spend what',
+    'this address may spend. It is not a transaction and moves no funds now. You can end it at any',
+    'time from Account settings. If you did not just run `ainize login`, reject it.',
+  ].join('\n');
+}
+
+/** A label is the CLI's own words. Newlines and quotes would let it forge lines in the message around it. */
+export function safeLabel(label: string): string {
+  return label.replace(/[\r\n"]+/g, ' ').trim().slice(0, 60);
+}
+
+/**
  * The site a sign-in is being asked from, as the node sees it — never as the caller claims it.
  *
  * The Origin header is set by the browser and cannot be written by page script, which is what makes it worth

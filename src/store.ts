@@ -42,6 +42,27 @@ export interface PeerRow {
 }
 /** An endpoint `peers rm` took out: gossip must not put it back (item 137). */
 export interface BlockedPeerRow { endpoint: string; blocked_at: number; reason: string | null; }
+
+/** A CLI's request to be vouched for, and the answer once a person has given one. */
+export interface DeviceGrant {
+  code: string;
+  /** the CLI key's address — what the person is being asked to speak for */
+  delegate: string;
+  label: string | null;
+  poll_hash: string;
+  /** the exact string the wallet is asked to sign, kept so verification never rebuilds it */
+  message: string;
+  /** when the authorisation the person signs runs out — not when the code does */
+  expires: number;
+  created_at: number;
+  expires_at: number;
+  approved_at: number | null;
+  owner: string | null;
+  claimed_at: number | null;
+}
+
+/** This key speaks for this person, until they say otherwise. */
+export interface Binding { delegate: string; owner: string; label: string | null; created_at: number; last_seen_at: number | null; }
 /** One recorded promise to build on a knowledge (item 312): the key that asked, when, and the child that kept it. */
 export interface DeriveIntentRow { parent_id: string; child_key: string; dataset_sha256: string; first_at: number; last_at: number; fetches: number; declared_by: string | null; }
 /** Starting local credit issued by THIS node to one address (item 364) — the grant a balance is derived from. */
@@ -215,6 +236,24 @@ export class Store {
       -- add a colleague without a shell. This table is that second list. added_by records which owner did it,
       -- because "who let them in" is the first question asked about an account nobody recognises.
       CREATE TABLE IF NOT EXISTS owners (address TEXT PRIMARY KEY, added_at REAL NOT NULL, added_by TEXT, note TEXT);
+      -- A CLI asking a person at a browser to vouch for it, and the answer.
+      --
+      -- The CLI holds a key of its own and signs every request with it, which is right: a command-line tool cannot
+      -- open a wallet prompt, and a key that signs for itself is the whole identity model here. What it cannot do
+      -- is be RECOGNISED — nothing connects that key to the person whose knowledge and whose payouts it acts on.
+      --
+      -- So "ainize login" prints a URL. The code in it is the whole secret, so it is a single-use row with a short
+      -- life, and the poll secret the CLI keeps is stored as a hash: a copy of this database must not let its
+      -- reader collect a session that a person approved for somebody else.
+      CREATE TABLE IF NOT EXISTS device_grants (code TEXT PRIMARY KEY, delegate TEXT NOT NULL, label TEXT, poll_hash TEXT NOT NULL,
+        message TEXT NOT NULL, expires REAL NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, approved_at REAL, owner TEXT, claimed_at REAL);
+      -- What the approval leaves behind: this key acts as this person, until they say otherwise.
+      --
+      -- Not a delegation, which is signed once and carried on every request and capped at a day. A binding is
+      -- written down here, so the CLI can sign in again months later with nothing but its own key, and so the
+      -- person can see every machine that speaks for them and end any of them.
+      CREATE TABLE IF NOT EXISTS bindings (delegate TEXT PRIMARY KEY, owner TEXT NOT NULL, label TEXT, created_at REAL NOT NULL, last_seen_at REAL);
+      CREATE INDEX IF NOT EXISTS idx_bindings_owner ON bindings(owner);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, resource TEXT NOT NULL, amount TEXT NOT NULL, pay_to TEXT NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
       -- Money moves before a manifest comes back, so the INTENT is written first (item 274): one row per x402
@@ -309,6 +348,14 @@ export class Store {
      * sign with it.
      */
     add('sessions', { subject: 'TEXT', scheme: 'TEXT' });
+    /**
+     * Which key stood in for the subject, when one did.
+     *
+     * A session made by a CLI whose key is bound belongs to the PERSON — that is the point of binding — but it was
+     * not made by the person, and "sign this machine out" is a question about the key, not about them. Null means
+     * the subject signed for itself.
+     */
+    add('sessions', { via_key: 'TEXT' });
     // published training sets held by this node (design §5.2) — content-addressed like `blobs`
     this.db.exec(`CREATE TABLE IF NOT EXISTS dataset_blobs (sha256 TEXT PRIMARY KEY, rows INTEGER NOT NULL, size_bytes INTEGER NOT NULL, access TEXT NOT NULL,
       license TEXT NOT NULL, patch_id TEXT, pinned_at REAL NOT NULL)`);
@@ -519,10 +566,10 @@ export class Store {
   }
 
   // sessions
-  putSession(token: string, ttlMs: number, who?: { subject: string; scheme: string }) {
+  putSession(token: string, ttlMs: number, who?: { subject: string; scheme: string; viaKey?: string | null }) {
     const now = Date.now();
-    this.db.prepare('INSERT INTO sessions (token, created_at, expires_at, subject, scheme) VALUES (?, ?, ?, ?, ?)')
-      .run(token, now, now + ttlMs, who?.subject?.toLowerCase() ?? null, who?.scheme ?? null);
+    this.db.prepare('INSERT INTO sessions (token, created_at, expires_at, subject, scheme, via_key) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(token, now, now + ttlMs, who?.subject?.toLowerCase() ?? null, who?.scheme ?? null, who?.viaKey?.toLowerCase() ?? null);
   }
   /**
    * Who is behind this token, or null if it is not a live session.
@@ -531,9 +578,9 @@ export class Store {
    * than being handed a guess. Every current caller treats it as the node's own key, because that is the only
    * identity that could hold a session then.
    */
-  getSession(token: string): { subject: string | null; scheme: string | null; expires_at: number } | null {
-    const r = this.db.prepare('SELECT subject, scheme, expires_at FROM sessions WHERE token = ?').get(token) as
-      { subject: string | null; scheme: string | null; expires_at: number } | undefined;
+  getSession(token: string): { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number } | null {
+    const r = this.db.prepare('SELECT subject, scheme, via_key, expires_at FROM sessions WHERE token = ?').get(token) as
+      { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number } | undefined;
     return r && r.expires_at > Date.now() ? r : null;
   }
   /** Every live session for one address — what a "signed in on 3 devices" list reads, and what revoking clears. */
@@ -567,6 +614,50 @@ export class Store {
   /** True if a row went away — false means the address was never granted here, which the caller must not call success. */
   removeOwner(address: string): boolean {
     return this.db.prepare('DELETE FROM owners WHERE address = ?').run(address.toLowerCase()).changes > 0;
+  }
+
+  // device grants — a CLI asking to be vouched for
+  putDeviceGrant(g: { code: string; delegate: string; label: string | null; pollHash: string; message: string; expires: number; ttlMs: number }) {
+    const now = Date.now();
+    this.db.prepare('INSERT INTO device_grants (code, delegate, label, poll_hash, message, expires, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(g.code, g.delegate.toLowerCase(), g.label, g.pollHash, g.message, g.expires, now, now + g.ttlMs);
+  }
+  /** The grant behind a code, live or not — the caller decides what expired means, since it is a different answer to each of them. */
+  deviceGrant(code: string): DeviceGrant | null {
+    return (this.db.prepare('SELECT * FROM device_grants WHERE code = ?').get(code) as DeviceGrant | undefined) ?? null;
+  }
+  approveDeviceGrant(code: string, owner: string) {
+    this.db.prepare('UPDATE device_grants SET approved_at = ?, owner = ? WHERE code = ? AND approved_at IS NULL').run(Date.now(), owner.toLowerCase(), code);
+  }
+  /** Marks a grant collected. Returns false if somebody already collected it — a code is good for exactly one session. */
+  claimDeviceGrant(code: string): boolean {
+    return this.db.prepare('UPDATE device_grants SET claimed_at = ? WHERE code = ? AND claimed_at IS NULL').run(Date.now(), code).changes > 0;
+  }
+  /** Expired codes are worthless and a person's laptop name is not worth keeping; swept on every new grant. */
+  sweepDeviceGrants() {
+    this.db.prepare('DELETE FROM device_grants WHERE expires_at < ? AND (claimed_at IS NOT NULL OR approved_at IS NULL)').run(Date.now() - 3600_000);
+  }
+
+  // bindings — this key speaks for this person
+  putBinding(delegate: string, owner: string, label: string | null) {
+    this.db.prepare('INSERT INTO bindings (delegate, owner, label, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(delegate) DO UPDATE SET owner = excluded.owner, label = COALESCE(excluded.label, bindings.label)')
+      .run(delegate.toLowerCase(), owner.toLowerCase(), label, Date.now(), null);
+  }
+  binding(delegate: string): Binding | null {
+    return (this.db.prepare('SELECT * FROM bindings WHERE delegate = ?').get(delegate.toLowerCase()) as Binding | undefined) ?? null;
+  }
+  bindingsOf(owner: string): Binding[] {
+    return this.db.prepare('SELECT * FROM bindings WHERE owner = ? ORDER BY created_at').all(owner.toLowerCase()) as unknown as Binding[];
+  }
+  touchBinding(delegate: string) {
+    this.db.prepare('UPDATE bindings SET last_seen_at = ? WHERE delegate = ?').run(Date.now(), delegate.toLowerCase());
+  }
+  removeBinding(delegate: string): boolean {
+    return this.db.prepare('DELETE FROM bindings WHERE delegate = ?').run(delegate.toLowerCase()).changes > 0;
+  }
+  /** Every live session a given key made on someone's behalf — what revoking that machine has to end. */
+  sessionsVia(delegate: string): { token: string }[] {
+    return this.db.prepare('SELECT token FROM sessions WHERE via_key = ? AND expires_at > ?').all(delegate.toLowerCase(), Date.now()) as { token: string }[];
   }
   /** Sign every operator session out — what a password change must do, or a stolen cookie outlives it (item 121). */
   deleteAllSessions(): number { return this.db.prepare('DELETE FROM sessions').run().changes as number; }

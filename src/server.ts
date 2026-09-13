@@ -253,10 +253,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (gpuClash && market.teach().enabled) {
     market.log('error', 'teach', `gradient training cannot start: ${gpuClash}. Lessons will stay queued until this is fixed (\`ainize config set teach.trainer.gpus …\`, \`ainize config set runtime.gpus …\`, or teach.backend "stub").`);
   }
-  // A config written before 2026-09 still carries `verifier.stake`. Nothing was ever escrowed or slashed for it, so
-  // the node ignores it and says so once — an operator must not go on believing money is at risk (item 127).
+  // A config written before 2026-09 still carries `verifier.stake`: a number the node declared about itself, which
+  // escrowed nothing (item 127). Bonds are a different thing in the same place, so the warning has to say which —
+  // an operator reading "stake is ignored" must not conclude that nothing is at risk any more (`bond.ts`).
   if (cfg.verifier?.stake !== undefined) {
-    market.log('warn', 'config', `verifier.stake ("${cfg.verifier.stake}") is ignored: no deposit is escrowed, transferred or slashed anywhere in this product. An attestation is backed by this node's signature on a permanent public record, and any node can challenge it. Remove the key from ${join(dirname(cfg.dataDir), 'config.json')}.`);
+    market.log('warn', 'config', `verifier.stake ("${cfg.verifier.stake}") is ignored: it was a number this node declared about itself and nothing was ever escrowed for it. A bond is not that — it is AIN this node stakes on the knowledge app, read from the chain by whoever counts the attestation, and an attestation from an unbonded address now counts toward no quorum. Remove the key from ${join(dirname(cfg.dataDir), 'config.json')} and see \`ainize bond\`; \`verifier.requireBond\` sets what this node demands of OTHERS.`);
   }
 
   // background loops
