@@ -287,6 +287,20 @@ export class Store {
     });
     // lineage §5.3: a training set can be a copy of a published KNOWLEDGE's set, and remembers which one
     add('teach_datasets', { parent_patch: 'TEXT', parent_dataset_sha: 'TEXT', inherited_rows: 'INTEGER' });
+    /**
+     * A session had no subject.
+     *
+     * The table was `(token, created_at, expires_at)` and `hasSession` returned a boolean, so once anyone was
+     * signed in the node could not tell WHO — the operator and the node's own key were the same thing to every
+     * route behind `requireOperator`. That is why "bind this CLI key to my wallet" could not be built: there
+     * was nothing for a binding to point at.
+     *
+     * `subject` is the address that signed in. `scheme` says how they proved it — `ain` for a key this product
+     * generated, `eip191` for a person at a browser wallet. Rows written before this migration have neither,
+     * and are treated as the node's own key, which is what they were: the only way to get a session was to
+     * sign with it.
+     */
+    add('sessions', { subject: 'TEXT', scheme: 'TEXT' });
     // published training sets held by this node (design §5.2) — content-addressed like `blobs`
     this.db.exec(`CREATE TABLE IF NOT EXISTS dataset_blobs (sha256 TEXT PRIMARY KEY, rows INTEGER NOT NULL, size_bytes INTEGER NOT NULL, access TEXT NOT NULL,
       license TEXT NOT NULL, patch_id TEXT, pinned_at REAL NOT NULL)`);
@@ -497,7 +511,28 @@ export class Store {
   }
 
   // sessions
-  putSession(token: string, ttlMs: number) { const now = Date.now(); this.db.prepare('INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)').run(token, now, now + ttlMs); }
+  putSession(token: string, ttlMs: number, who?: { subject: string; scheme: string }) {
+    const now = Date.now();
+    this.db.prepare('INSERT INTO sessions (token, created_at, expires_at, subject, scheme) VALUES (?, ?, ?, ?, ?)')
+      .run(token, now, now + ttlMs, who?.subject?.toLowerCase() ?? null, who?.scheme ?? null);
+  }
+  /**
+   * Who is behind this token, or null if it is not a live session.
+   *
+   * `subject` is null for a session created before sessions had one; the caller decides what that means rather
+   * than being handed a guess. Every current caller treats it as the node's own key, because that is the only
+   * identity that could hold a session then.
+   */
+  getSession(token: string): { subject: string | null; scheme: string | null; expires_at: number } | null {
+    const r = this.db.prepare('SELECT subject, scheme, expires_at FROM sessions WHERE token = ?').get(token) as
+      { subject: string | null; scheme: string | null; expires_at: number } | undefined;
+    return r && r.expires_at > Date.now() ? r : null;
+  }
+  /** Every live session for one address — what a "signed in on 3 devices" list reads, and what revoking clears. */
+  sessionsOf(subject: string): { token: string; scheme: string | null; created_at: number; expires_at: number }[] {
+    return this.db.prepare('SELECT token, scheme, created_at, expires_at FROM sessions WHERE subject = ? AND expires_at > ? ORDER BY created_at DESC')
+      .all(subject.toLowerCase(), Date.now()) as { token: string; scheme: string | null; created_at: number; expires_at: number }[];
+  }
   hasSession(token: string): boolean {
     const r = this.db.prepare('SELECT expires_at FROM sessions WHERE token = ?').get(token) as { expires_at: number } | undefined;
     return !!r && r.expires_at > Date.now();

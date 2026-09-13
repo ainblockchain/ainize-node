@@ -155,13 +155,28 @@ export function buildApi(deps: ApiDeps): Router {
   const dropTemp = (req: Request) => { const f = req.file?.path; if (f && existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* already gone */ } } };
 
   // ------------------------------------------------------------ auth (operator)
-  const isOperator = (req: Request): boolean => {
+  /** The token on this request, from the cookie a browser sends or the bearer a CLI sends. */
+  const sessionToken = (req: Request): string | null => {
     const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;
-    if (cookie && market.store.hasSession(cookie)) return true;
+    if (cookie) return cookie;
     const auth = req.header('authorization');
-    if (auth?.startsWith('Bearer ') && market.store.hasSession(auth.slice(7))) return true;
-    return false;
+    return auth?.startsWith('Bearer ') ? auth.slice(7) : null;
   };
+  /**
+   * Who is signed in on this request, or null.
+   *
+   * A session written before sessions had a subject reports the node's own address: that was the only identity
+   * that could hold one, since the only way to get a session was to sign with the node's key. Saying so here
+   * keeps every caller from having to decide what a null subject means.
+   */
+  const sessionSubject = (req: Request): { address: string; scheme: string } | null => {
+    const token = sessionToken(req);
+    if (!token) return null;
+    const row = market.store.getSession(token);
+    if (!row) return null;
+    return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain' };
+  };
+  const isOperator = (req: Request): boolean => sessionSubject(req) !== null;
   const requireOperator = (req: Request, _res: Response, next: NextFunction) => {
     if (!isOperator(req)) return next(new HttpError(401, 'operator login required'));
     next();
@@ -206,9 +221,15 @@ export function buildApi(deps: ApiDeps): Router {
   };
 
   const SESSION_TTL_MS = 30 * 24 * 3600_000;
-  const newSession = (res: Response): string => {
+  /**
+   * A session now records WHO it belongs to and how they proved it.
+   *
+   * It used to record neither, so every route behind `requireOperator` saw one undifferentiated "signed in"
+   * and the node could not answer "whose session is this" — which is the question a wallet binding is made of.
+   */
+  const newSession = (res: Response, who: { subject: string; scheme: 'ain' | 'eip191' }): string => {
     const token = randomBytes(24).toString('hex');
-    market.store.putSession(token, SESSION_TTL_MS);
+    market.store.putSession(token, SESSION_TTL_MS, who);
     res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS });
     return token;
   };
@@ -279,7 +300,7 @@ export function buildApi(deps: ApiDeps): Router {
       market.log('info', 'auth', `${address} added to this node's operators`);
     }
     if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the enrolment stands either way */ } }
-    return { ok: true, token: newSession(res), address };
+    return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
   }));
   /**
    * Item 89: one password guards sales, publishing, the wallet and the model runtime, and the door accepted
@@ -353,7 +374,7 @@ export function buildApi(deps: ApiDeps): Router {
     }
     loginFails.delete(loginKey(req));
     market.log('info', 'auth', `operator signed in as ${address}${sameAddr(address, market.address) ? " (this node's own key)" : ''}`);
-    return { ok: true, token: newSession(res), address };
+    return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
   }));
   router.post('/api/auth/logout', wrap((req, res) => {
     const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;
