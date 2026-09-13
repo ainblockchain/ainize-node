@@ -2004,10 +2004,22 @@ export class TeachWorker {
   private async runJob(job: TeachJobRow, from: 'full' | 'check', releaseSlot: () => void = () => undefined): Promise<void> {
     this.current = job.id;
     let phase: 'preflight' | 'training' | 'checking' = from === 'full' ? 'preflight' : 'checking';
-    const requeue = () => {   // graceful stop: back to QUEUED (or EXPORTED) without touching the restart marker — the next start picks it up
+    /**
+     * Graceful stop: back to QUEUED (or EXPORTED) without touching the restart marker — the next start picks it up.
+     *
+     * And it says what that costs, because "requeued" reads as harmless and is not. There is no checkpoint: the
+     * trainer runs inside the container and dies with the stop, so the next start begins at the model load again.
+     * On this model that is an hour of GPU before the first training step, and an operator restarting a node
+     * deserves to see the number rather than discover it later in a timestamp.
+     */
+    const requeue = () => {
+      const prog = job.progress as unknown as TeachProgress | null;
+      const spent = prog?.started_at ? Math.round((Date.now() - prog.started_at) / 60_000) : null;
       const back: Partial<TeachJobRow> = phase === 'checking' ? { status: 'EXPORTED', blocked: null } : { status: 'QUEUED', blocked: null, progress: null, container_pid: null, started_at: null };
       this.store.updateTeachJob(job.id, back);
-      this.log('warn', `node stopping during ${phase} → lesson ${job.id} requeued`, job.id);
+      this.log('warn', `node stopping during ${phase} → lesson ${job.id} requeued`
+        + (phase === 'checking' ? ' — the trained file is kept, only the checks re-run'
+          : `, and it restarts from the model load${spent !== null ? ` — ${spent} min of training discarded` : ''}${prog?.step ? ` (it was at pass ${prog.step}/${prog.max_steps})` : ''}`), job.id);
     };
     try {
       // A cancel that arrived while this job was waiting for the trainer slot is answered here, before the first
