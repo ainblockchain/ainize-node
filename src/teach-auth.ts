@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Request } from 'express';
-import { verifyMessage, verifyDelegation, DELEGATE_HEADER, DELEGATION_MAX_MS, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, type TeachAuthTarget } from '@ainize/core';
+import { verifyMessage, verifyAuth, verifyDelegation, DELEGATE_HEADER, DELEGATION_MAX_MS, TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, type TeachAuthTarget } from '@ainize/core';
 
 export {
   TEACH_AUTH_SKEW_MS, TEACH_AUTH_V2, teachAuthMessage, teachAuthHeaderFor, type TeachAuthTarget,
@@ -56,14 +56,21 @@ export class TeachAuth {
     this.seen.set(key, ts + this.skewMs);
     /**
      * The signature above proves who sent THIS request. A delegation, when one is attached, says whose request it
-     * is — an AIN Wallet owner authorising a browser key once instead of confirming a prompt per request.
+     * is — a wallet owner authorising a browser key once instead of confirming a prompt per request.
+     *
+     * `verifyAuth` rather than `verifyMessage`, because a MetaMask owner can only sign EIP-191 and an AIN Wallet
+     * owner can only sign the other. The header names which, and this is where that name is honoured; a header
+     * that names no scheme means `ain`, which is what every delegation written before wallets existed is.
      *
      * The order matters and is deliberate: the per-request proof is verified and burned FIRST, so a delegated
      * request has exactly the replay, route and body binding an undelegated one has. A delegation that does not
      * check out is not an error here, it is simply absent: the caller is then the signing key itself, which is a
      * real identity with its own lessons, so falling back to it is the honest reading rather than a refusal.
      */
-    const owner = verifyDelegation(req.header(DELEGATE_HEADER), { node: this.nodeAddress, delegate: address, now, maxMs: this.delegationMaxMs }, verifyMessage);
+    const owner = verifyDelegation(req.header(DELEGATE_HEADER), { node: this.nodeAddress, delegate: address, now, maxMs: this.delegationMaxMs },
+      // `verifyAuth` names the scheme first and `verifyDelegation` hands it over last; the adapter is written out
+      // rather than the two being bent to match, because one of them is published and the other has three callers.
+      (message, signature, addr, scheme) => verifyAuth(scheme, message, signature, addr));
     return owner ?? address;
   }
 
