@@ -131,7 +131,9 @@ test('public API surface', async () => {
   const one = await (await fetch(`${A.url}/api/patches/law-kr-2026`)).json() as { lineage: { parents: { id: string }[] }; conflicts: unknown[] };
   assert.equal(one.lineage.parents[0].id, 'law-kr-2025');
   const me = await (await fetch(`${A.url}/api/me/patches`)).json() as { error?: string };
-  assert.equal(me.error, 'operator login required');
+  // Not "operator login required": there is no operator login. A caller with no session is asked to sign in; one
+  // who is signed in and simply does not own the node gets 403 and is told so (owners.test.ts).
+  assert.equal(me.error, 'sign in with your wallet to do this');
   const graph = await (await fetch(`${A.url}/api/ledger/graph`)).json() as { edges: { type: string }[] };
   assert.ok(graph.edges.some((e) => e.type === 'extends'));
 });

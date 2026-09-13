@@ -79,7 +79,11 @@ test('the two lists that were always there are both owners, and each says where 
 });
 
 test('an owner grants ownership from a browser, and the grant works immediately', async () => {
-  assert.equal((await signIn(GRANTED)).status, 403, 'not an owner yet');
+  // Signing in is open to anyone — it buys a name, not a permission. What the grant changes is `isOwner`.
+  const before = await signIn(GRANTED);
+  assert.equal(before.status, 200, JSON.stringify(before.body));
+  assert.equal(before.body.isOwner, false);
+  assert.equal((await api('GET', '/api/auth/owners', undefined, before.body.token as string)).status, 403, 'a name is not a key to the node');
 
   const add = await api('POST', '/api/auth/owners', { address: GRANTED.address, note: 'a colleague' }, op);
   assert.equal(add.status, 200);
@@ -89,8 +93,13 @@ test('an owner grants ownership from a browser, and the grant works immediately'
 
   const now = await signIn(GRANTED);
   assert.equal(now.status, 200, JSON.stringify(now.body));
+  assert.equal(now.body.isOwner, true);
+  assert.deepEqual(now.body.scope, ['self', 'owner']);
   // The session records the address that signed, not "an operator" — which is what makes the next step possible.
   assert.equal(N.store.getSession(now.body.token as string)?.subject, lower(GRANTED.address));
+  // Ownership is read per request, never copied onto the session: the session held before the grant is now an
+  // owner's session too, without signing in again, and a revocation will take it away the same way.
+  assert.equal((await api('GET', '/api/auth/owners', undefined, before.body.token as string)).status, 200);
 });
 
 test('granting twice keeps the first grant rather than rewriting who let them in', async () => {
@@ -101,13 +110,20 @@ test('granting twice keeps the first grant rather than rewriting who let them in
 });
 
 test('a stranger can neither read the owners nor add themselves', async () => {
-  assert.equal((await api('GET', '/api/auth/owners')).status, 401);
-  // Not loopback in spirit but it is in fact 127.0.0.1 here, so `mayClaim` is true — what this pins is that the
-  // unauthenticated ADD path is the enrolment path, which demands a signature from the address, and not a free
-  // grant. A stranger off-machine gets 401 from the same route.
+  assert.equal((await api('GET', '/api/auth/owners')).status, 401, 'with no session at all');
+  // This test runs on 127.0.0.1, so `mayClaim` — "is this caller on the machine the node runs on" — is true for
+  // every request it makes. That is deliberately not enough to be granted ownership: a local caller may ENROL,
+  // which costs a signature from the address and leaves proof the key exists, but a grant records who vouched
+  // and there is no such thing as a grant nobody is accountable for.
   const r = await api('POST', '/api/auth/enroll', { address: STRANGER.address, nonce: 'nope', signature: '0x00' });
   assert.equal(r.status, 401, JSON.stringify(r.body));
-  assert.equal((await signIn(STRANGER)).status, 403);
+  // They can sign in — anyone can — and it gets them a name and nothing else.
+  const theirs = await signIn(STRANGER);
+  assert.equal(theirs.status, 200);
+  assert.deepEqual(theirs.body.scope, ['self']);
+  const grab = await api('POST', '/api/auth/owners', { address: STRANGER.address }, theirs.body.token as string);
+  assert.equal(grab.status, 403, 'a signed-in stranger cannot make themselves an owner');
+  assert.equal((await api('GET', '/api/auth/owners', undefined, theirs.body.token as string)).status, 403);
 });
 
 test('revoking a grant ends the sessions it bought', async () => {
@@ -120,7 +136,9 @@ test('revoking a grant ends the sessions it bought', async () => {
   assert.ok((gone.body.sessions_ended as number) >= 1, JSON.stringify(gone.body));
   assert.equal(N.store.getSession(theirs), null);
   assert.equal((await api('GET', '/api/auth/owners', undefined, theirs)).status, 401);
-  assert.equal((await signIn(GRANTED)).status, 403, 'and they are not an owner any more');
+  const after = await signIn(GRANTED);
+  assert.equal(after.body.isOwner, false, 'signing in again gets a name, not the ownership back');
+  assert.equal((await api('GET', '/api/auth/owners', undefined, after.body.token as string)).status, 403);
 });
 
 test('what the HTTP layer did not create, it will not remove', async () => {

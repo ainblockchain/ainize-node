@@ -177,7 +177,6 @@ export function buildApi(deps: ApiDeps): Router {
     if (!row) return null;
     return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain' };
   };
-  const isOperator = (req: Request): boolean => sessionSubject(req) !== null;
   /**
    * Every address that owns this node, and on what grounds.
    *
@@ -201,8 +200,26 @@ export function buildApi(deps: ApiDeps): Router {
     return out;
   };
   const isOwner = (address: string): boolean => owners().some((o) => sameAddr(o.address, address));
-  const requireOperator = (req: Request, _res: Response, next: NextFunction) => {
-    if (!isOperator(req)) return next(new HttpError(401, 'operator login required'));
+  /**
+   * Does the person on this request own the node — not merely, are they signed in.
+   *
+   * Those were the same question for as long as owning the node was the only reason to have a session: sign-in
+   * refused anyone who was not an owner, so a session WAS ownership. Now a wallet signs in as itself, to teach and
+   * to be paid, and most of those people will never own anything. So the check reads the subject and asks.
+   *
+   * Computed per request, never stored on the session. Ownership changes — a grant, a revocation, an edit to the
+   * config file — and a scope copied onto a 30-day session at sign-in would keep answering the old question for a
+   * month. Revocation ends sessions for exactly that reason; this makes the other two paths behave the same way.
+   */
+  const isNodeOwner = (req: Request): boolean => {
+    const who = sessionSubject(req);
+    return !!who && isOwner(who.address);
+  };
+  /** Signed in as somebody — a far weaker claim than owning the node, and it guards far less. */
+  const isSignedIn = (req: Request): boolean => sessionSubject(req) !== null;
+  const requireOwner = (req: Request, _res: Response, next: NextFunction) => {
+    if (!isSignedIn(req)) return next(new HttpError(401, 'sign in with your wallet to do this'));
+    if (!isNodeOwner(req)) return next(new HttpError(403, `${sessionSubject(req)?.address} does not own this node — this is for whoever runs it`));
     next();
   };
 
@@ -248,7 +265,7 @@ export function buildApi(deps: ApiDeps): Router {
   /**
    * A session now records WHO it belongs to and how they proved it.
    *
-   * It used to record neither, so every route behind `requireOperator` saw one undifferentiated "signed in"
+   * It used to record neither, so every route behind `requireOwner` saw one undifferentiated "signed in"
    * and the node could not answer "whose session is this" — which is the question a wallet binding is made of.
    */
   const newSession = (res: Response, who: { subject: string; scheme: 'ain' | 'eip191' }): string => {
@@ -275,20 +292,32 @@ export function buildApi(deps: ApiDeps): Router {
     return !!want && !!got && got === want;
   };
 
-  router.get('/api/auth/me', wrap((req) => ({
-    signedIn: isOperator(req), address: market.address, name: market.cfg.name, roles: market.cfg.roles,
-    /**
-     * `needsSetup` is gone with the password. A node is never unclaimed now: its own key is always an operator, and
-     * that key is in the config file this process is reading. There is no state in which nobody owns the node, so
-     * there is nothing for a caller to be told to set up.
-     *
-     * `canEnroll` replaces it, and answers a different question — may THIS caller add an address to the operator
-     * list? True on the node's own machine or with the one-time token, and, like `needsSetup` before it, answered
-     * truthfully only to a caller who could actually do it. To anyone else it is false, which is not a beacon.
-     */
-    canEnroll: mayClaim(req) || isOperator(req),
-    operators: isOperator(req) ? owners().map((o) => o.address) : undefined,
-  })));
+  /**
+   * Who you are here, and what that lets you do — two answers, because they stopped being one.
+   *
+   * `signedIn` used to mean "is an operator", since nobody else could hold a session. It now means what it says,
+   * and `isOwner` carries the other half. A UI that read `signedIn` as permission would be wrong about every
+   * person who is not the owner, which after this is nearly everyone — so the field that grants nothing kept the
+   * old name, and the field that grants something is new and has to be asked for by name.
+   *
+   * `needsSetup` went with the password. A node is never unclaimed: its own key always owns it, and that key is in
+   * the config file this process is reading, so there is no state in which nobody owns the node.
+   *
+   * `canEnroll` answers a third thing — may THIS caller make themselves an owner? True on the node's own machine
+   * or with the one-time token, and, like `needsSetup` before it, answered truthfully only to a caller who could
+   * actually do it. To anyone else it is false, which is not a beacon.
+   */
+  router.get('/api/auth/me', wrap((req) => {
+    const who = sessionSubject(req);
+    const owner = isNodeOwner(req);
+    return {
+      signedIn: !!who, subject: who?.address ?? null, scheme: who?.scheme ?? null, isOwner: owner,
+      scope: [...(who ? ['self'] : []), ...(owner ? ['owner'] : [])],
+      address: market.address, name: market.cfg.name, roles: market.cfg.roles,
+      canEnroll: mayClaim(req) || owner,
+      operators: owner ? owners().map((o) => o.address) : undefined,
+    };
+  }));
   /**
    * Single-use sign-in nonces. In memory, because a restart forgetting them is correct.
    *
@@ -408,10 +437,6 @@ export function buildApi(deps: ApiDeps): Router {
     // Burned whatever happens next: a nonce that has been shown a wrong signature is spent, not retryable.
     loginNonces.delete(nonce);
     if (!rec || rec.expires <= Date.now()) { loginFailed(req); throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one'); }
-    if (!isOwner(address)) {
-      loginFailed(req);
-      throw new HttpError(403, `${address} does not own this node. Its own key always does; any other address is added by an owner — from a browser they are signed into, or on the machine this node runs on (\`ainize operators add ${address}\`).`);
-    }
     // The stored message, under the stored scheme. Neither is taken from the request: a signature's presenter
     // chooses nothing about how it is checked.
     if (!verifyAuth(rec.scheme, rec.message, signature, address)) {
@@ -419,8 +444,21 @@ export function buildApi(deps: ApiDeps): Router {
       throw new HttpError(401, 'that signature does not come from the address it claims', { attempts: n });
     }
     loginFails.delete(loginKey(req));
-    market.log('info', 'auth', `${address} signed in${sameAddr(address, market.address) ? " (this node's own key)" : ''} with ${rec.scheme === 'eip191' ? 'a browser wallet' : 'a key'}`);
-    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address, scheme: rec.scheme };
+    /**
+     * Anyone may sign in. Owning the node stopped being the price of having a name here.
+     *
+     * It used to be: this route refused any address that was not an operator, because a session WAS ownership and
+     * nothing else. That held while the only person who ever opened the page was whoever ran the machine. It stops
+     * holding the moment a teacher has to be known in order to be paid — and the refusal a person met, "you are
+     * not an operator of this node", was the product telling them their own wallet was the wrong kind of thing.
+     *
+     * What a session buys on its own is a name: `scope: ['self']`. Every privileged route asks `isNodeOwner`,
+     * which reads the owner lists rather than the mere existence of a session. Signing in still costs a signature
+     * over a fresh single-use nonce, so this is not a way to mint sessions for free.
+     */
+    const owner = isOwner(address);
+    market.log('info', 'auth', `${address} signed in${sameAddr(address, market.address) ? " (this node's own key)" : ''} with ${rec.scheme === 'eip191' ? 'a browser wallet' : 'a key'}${owner ? ' — an owner of this node' : ''}`);
+    return { ok: true, token: newSession(res, { subject: address, scheme: rec.scheme }), address, scheme: rec.scheme, isOwner: owner, scope: owner ? ['self', 'owner'] : ['self'] };
   }));
   /**
    * Who owns this node, and adding or removing one — from a browser, by an owner, without a shell.
@@ -433,18 +471,23 @@ export function buildApi(deps: ApiDeps): Router {
    * because nothing else vouches for it and a typo would enrol an address nobody can sign for. A grant is
    * different: an owner who is signed in is vouching, the grant is listed with their name on it, and it can be
    * taken back — so the cost of a typo is one visible row and one DELETE, not a phantom owner.
+   *
+   * Which is exactly why being on the machine is NOT enough here, though it is enough to enrol. The two are the
+   * same power in the end — a local process can enrol an address it holds the key to — but they are not the same
+   * evidence. Enrolment leaves a signature proving the key exists; a grant leaves a name, and a grant with no
+   * owner behind it would leave a row saying nobody vouched for this. There is no such thing as a grant with no
+   * one accountable for it, so the route asks for the owner rather than for the machine.
    */
-  router.get('/api/auth/owners', requireOperator, wrap(() => ({ owners: owners() })));
-  router.post('/api/auth/owners', wrap((req) => {
-    if (!isOperator(req) && !mayClaim(req)) throw new HttpError(401, 'only an owner of this node may add another');
+  router.get('/api/auth/owners', requireOwner, wrap(() => ({ owners: owners() })));
+  router.post('/api/auth/owners', requireOwner, wrap((req) => {
     const { address, note } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), note: z.string().max(200).optional() }).parse(req.body);
-    const by = sessionSubject(req)?.address ?? null;
+    const by = sessionSubject(req)!.address;
     if (isOwner(address)) return { ok: true, address, already: true, owners: owners() };
     market.store.addOwner(address, by, note ?? null);
     market.log('info', 'auth', `${address} granted ownership of this node by ${by ?? 'the machine it runs on'}`);
     return { ok: true, address, already: false, owners: owners() };
   }));
-  router.delete('/api/auth/owners/:address', requireOperator, wrap((req) => {
+  router.delete('/api/auth/owners/:address', requireOwner, wrap((req) => {
     const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/).parse(req.params.address);
     const me = sessionSubject(req)?.address;
     const listed = owners().find((o) => sameAddr(o.address, address));
@@ -529,7 +572,7 @@ export function buildApi(deps: ApiDeps): Router {
     // What this node itself spends verifying for others, and what it gives back (items 332 / 333 / 336).
     verifier_work: deps.verifier?.work() ?? null,
     // item 142: what this node has to spend, for the operator only — a visitor has no business reading the wallet.
-    ...(isOperator(req) ? { balance: await nodeBalance() } : {}),
+    ...(isNodeOwner(req) ? { balance: await nodeBalance() } : {}),
   })));
 
   /**
@@ -572,7 +615,7 @@ export function buildApi(deps: ApiDeps): Router {
   };
 
   /** Every body this node holds, with why it has it and whether `gc` would take it (item 128). */
-  router.get('/api/me/blobs', requireOperator, wrap(async () => {
+  router.get('/api/me/blobs', requireOwner, wrap(async () => {
     const plan = await gcRun(market, { dryRun: true });
     const reclaim = new Map(plan.candidates.map((c) => [c.sha256, c]));
     const map = await market.entryMap();
@@ -595,7 +638,7 @@ export function buildApi(deps: ApiDeps): Router {
    * Delete the verification copies. `dry_run` is the default so nothing is removed by a mistyped filter; the answer
    * is the same shape either way, so the CLI can show the plan and then repeat the call for real.
    */
-  router.post('/api/me/blobs/gc', requireOperator, wrap(async (req) => {
+  router.post('/api/me/blobs/gc', requireOwner, wrap(async (req) => {
     const b = z.object({
       dry_run: z.boolean().default(true),
       keep_purchased: z.boolean().default(true),
@@ -625,7 +668,7 @@ export function buildApi(deps: ApiDeps): Router {
      * upgraded, which is the worst shape this could take: an empty catalogue reads as "no such knowledge".
      */
     const want = q.status ? q.status.split(',').map((s) => parseStatus(s)).filter((s): s is PatchStatus => !!s) : null;
-    if (!q.include_drafts || !isOperator(req)) items = items.filter((e) => e.status !== 'DRAFT');
+    if (!q.include_drafts || !isNodeOwner(req)) items = items.filter((e) => e.status !== 'DRAFT');
     // Knowledge its own author retired is off the shelves (item 148) — `?status=RETIRED` still lists it, so the
     // publisher's own screens and `patch ls --status RETIRED` can find what was taken down.
     if (!want?.includes('RETIRED')) items = items.filter((e) => e.status !== 'RETIRED');
@@ -724,7 +767,7 @@ export function buildApi(deps: ApiDeps): Router {
    * (includeTestAnchors) or the subject itself is a test anchor — so fixtures never surface on public knowledge pages.
    */
   const relativeVisible = (req: Request, subject: CatalogEntry) => {
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const showTest = !!market.cfg.includeTestAnchors || subject.anchor.visibility === 'test';
     return (x: CatalogEntry | undefined): x is CatalogEntry => !!x && (x.status !== 'DRAFT' || operator) && (x.anchor.visibility !== 'test' || showTest);
   };
@@ -766,7 +809,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/patches/:id', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
     if (!e) throw await unknownPatch(req.params.id as string);
-    if (e.status === 'DRAFT' && !isOperator(req)) throw notFound('patch not found');
+    if (e.status === 'DRAFT' && !isNodeOwner(req)) throw notFound('patch not found');
     const map = await market.entryMap();
     const visible = relativeVisible(req, e);
     /**
@@ -835,7 +878,7 @@ export function buildApi(deps: ApiDeps): Router {
   /** The entry behind `/api/patches/:id/dataset*`, its sha, and who is asking (teaching key or operator). */
   const datasetOf = async (req: Request) => {
     const e = await market.entry(req.params.id as string);
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     if (!e || (e.status === 'DRAFT' && !operator)) throw notFound('patch not found');
     const sha = e.anchor.dataset?.sha256;
     if (!sha) throw new HttpError(404, 'dataset_unavailable: this knowledge has no published training set');
@@ -916,7 +959,7 @@ export function buildApi(deps: ApiDeps): Router {
   }));
 
   router.get('/api/patches/:id/events', wrap(async (req) => {
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const e = await market.entry(req.params.id as string);
     if (e?.status === 'DRAFT' && !operator) throw notFound('patch not found');
     return { events: publicEvents(market.store.events({ patch_id: req.params.id as string, limit: Number(req.query.limit ?? 200) }), operator) };
@@ -975,14 +1018,14 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/patches/:id/tree', wrap(async (req) => {
     const q = z.object({ depth: z.coerce.number().min(1).max(TREE_MAX_DEPTH).default(4), dir: z.enum(['up', 'down', 'both']).default('both') }).parse(req.query);
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     return market.lineageTree(e.anchor.id, { depth: q.depth, dir: q.dir, visible: relativeVisible(req, e) });
   }));
 
   /** SC-11 — what this knowledge is doing. `network` comes from the ledger and the peer table; `node` is this node's own 30 days, labelled. */
   router.get('/api/patches/:id/signals', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     const s = await market.signalsOf(e);
     return { patch_id: e.anchor.id, network: { scope: 'network', ...s.network }, node: { scope: 'node', ...s.node } };
   }));
@@ -995,7 +1038,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/patches/:id/issues', wrap(async (req) => {
     const q = z.object({ kind: z.enum(['own_miss', 'preflight', 'free_wrong', 'request', 'gap']).optional(), status: z.enum(['open', 'covered', 'all']).default('open'), limit: z.coerce.number().min(1).max(200).default(50) }).parse(req.query);
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     const samples = e.anchor.benchmark.samples ?? [];
     const items = market.store.listIssues(e.anchor.id, q).map((i) => ({
       id: i.id, kind: i.kind, count: i.count, people: i.people, topic: i.topic,
@@ -1055,7 +1098,7 @@ export function buildApi(deps: ApiDeps): Router {
     // Item 269: fixtures and archived tracks are hidden by default. `?include_test=1` / `?include_archived=1` is how
     // the owner's own screens (and the e2e suite) still see everything they wrote.
     const q = z.object({ include_test: z.coerce.boolean().default(false), include_archived: z.coerce.boolean().default(false) }).parse(req.query);
-    const branches = await market.branches({ includeTest: q.include_test && isOperator(req), includeArchived: q.include_archived });
+    const branches = await market.branches({ includeTest: q.include_test && isNodeOwner(req), includeArchived: q.include_archived });
     const subs = await market.ledger.subscriptions();
     const nodes = await market.knownNodes();
     return { branches: await Promise.all(branches.map(async (b) => {
@@ -1122,13 +1165,13 @@ export function buildApi(deps: ApiDeps): Router {
       limit: Number(req.query.limit ?? 200),
       kind: req.query.kind as string | undefined,
       level: EVENT_LEVELS.includes(req.query.level as (typeof EVENT_LEVELS)[number]) ? (req.query.level as (typeof EVENT_LEVELS)[number]) : undefined,
-    }), isOperator(req)),
+    }), isNodeOwner(req)),
   })));
   router.get('/api/chain', wrap(async () => market.chainStatus()));
 
   // ------------------------------------------------------------ operator actions
-  router.get('/api/me/patches', requireOperator, wrap(async () => ({ items: (await market.catalogAll()).filter((e) => e.anchor.author === market.address) })));
-  router.get('/api/me/purchases', requireOperator, wrap(async () => {
+  router.get('/api/me/patches', requireOwner, wrap(async () => ({ items: (await market.catalogAll()).filter((e) => e.anchor.author === market.address) })));
+  router.get('/api/me/purchases', requireOwner, wrap(async () => {
     const map = await market.entryMap();
     return { items: await Promise.all(market.store.listPurchases().map(async (p) => {
       const e = map.get(p.patch_id) ?? null;
@@ -1157,7 +1200,7 @@ export function buildApi(deps: ApiDeps): Router {
    *
    * `verification` is the same money seen by the other party (item 325): what this node earned by verifying.
    */
-  router.get('/api/me/wallet', requireOperator, wrap(async () => {
+  router.get('/api/me/wallet', requireOwner, wrap(async () => {
     const setts = await market.ledger.settlements();
     const me = market.address.toLowerCase();
     const sales = setts.filter((s) => sameAddr(s.body.seller, market.address)).map((s) => s.body);
@@ -1223,16 +1266,16 @@ export function buildApi(deps: ApiDeps): Router {
    * earned could spend it only by buying knowledge through the same node. A local-ledger node answers 409 with the
    * reason — its balance is development credit and there is nothing to send.
    */
-  router.post('/api/me/wallet/send', requireOperator, wrap(async (req) => {
+  router.post('/api/me/wallet/send', requireOwner, wrap(async (req) => {
     const b = z.object({ to: z.string(), amount: z.coerce.number(), memo: z.string().max(200).optional() }).parse(req.body ?? {});
     return market.walletSend(b.to, b.amount, { memo: b.memo });
   }));
   // Royalty payouts (spec §6.4 / §9.3): every AIN transfer attempt owed to a creator or data provider, newest first.
-  router.get('/api/me/payouts', requireOperator, wrap(async (req) => {
+  router.get('/api/me/payouts', requireOwner, wrap(async (req) => {
     const q = z.object({ status: z.enum(['pending', 'paying', 'paid', 'failed']).optional(), address: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).optional() }).parse(req.query);
     return { items: market.store.listPayouts({ status: q.status, address: q.address, limit: q.limit ?? 200 }), summary: market.payouts.summary(), max_attempts: market.payouts.maxAttempts, retry_ms: market.payouts.retryMs, wallet: !!market.payouts.wallet };
   }));
-  router.post('/api/me/payouts/:id/retry', requireOperator, wrap(async (req) => {
+  router.post('/api/me/payouts/:id/retry', requireOwner, wrap(async (req) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) throw bad('payout id must be a positive integer');
     return { payout: await market.payouts.retry(id) };
@@ -1242,9 +1285,9 @@ export function buildApi(deps: ApiDeps): Router {
    * the payouts table existed, a wiped data dir or a crash between the append and the enqueue used to leave a
    * public debt with no row — unpayable by any button in the product.
    */
-  router.post('/api/me/payouts/reconcile', requireOperator, wrap(async () => market.reconcilePayouts()));
+  router.post('/api/me/payouts/reconcile', requireOwner, wrap(async () => market.reconcilePayouts()));
 
-  router.post('/api/patches', requireOperator, upload.single('file'), wrap(async (req) => {
+  router.post('/api/patches', requireOwner, upload.single('file'), wrap(async (req) => {
     // item 129: multer has already written the whole body into <dataDir>/uploads. `createDraft` copies it into the
     // blob store, so the temp copy is dead the moment this handler returns — and on every rejection below it is dead
     // immediately. Nothing used to unlink it, on either path.
@@ -1314,7 +1357,7 @@ export function buildApi(deps: ApiDeps): Router {
       return { anchor };
     } finally { dropTemp(req); }
   }));
-  router.patch('/api/patches/:id', requireOperator, wrap(async (req) => {
+  router.patch('/api/patches/:id', requireOwner, wrap(async (req) => {
     const patch = z.object({
       name: z.string().min(2).optional(), description: z.string().optional(), price: z.string().regex(PRICE_RE, 'price must be a non-negative number').optional(), branch: z.string().optional(),
       benchmark: z.object({}).passthrough().optional(), license: z.string().optional(), billing: billingEnum,
@@ -1327,7 +1370,7 @@ export function buildApi(deps: ApiDeps): Router {
     const update = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined).map(([k, v]) => [k, k === 'contributors' && v === null ? [] : v]));
     return { anchor: market.updateDraft(req.params.id as string, update as never) };
   }));
-  router.delete('/api/patches/:id', requireOperator, wrap(async (req) => { market.deleteDraft(req.params.id as string); return { ok: true }; }));
+  router.delete('/api/patches/:id', requireOwner, wrap(async (req) => { market.deleteDraft(req.params.id as string); return { ok: true }; }));
   /**
    * DRAFT → ANNOUNCED. The response carries what the publisher has to know the moment the record is written
    * (item 147): how many reachable peers on this network actually verify, against the quorum this node needs. With
@@ -1339,7 +1382,7 @@ export function buildApi(deps: ApiDeps): Router {
    * retires — the daily case, where today's facts touch different rows from yesterday's and nothing overlaps —
    * and `auto_supersede: false` keeps every overlapping listing of theirs on sale (a dated snapshot kept on purpose).
    */
-  router.post('/api/patches/:id/announce', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/announce', requireOwner, wrap(async (req) => {
     const body = z.object({ replaces: z.array(z.string()).optional(), auto_supersede: z.boolean().optional() }).parse(req.body ?? {});
     const id = req.params.id as string;
     const record = await market.announce(id, { replaces: body.replaces, autoSupersede: body.auto_supersede });
@@ -1350,11 +1393,11 @@ export function buildApi(deps: ApiDeps): Router {
    * stays on the permanent record, the catalogue drops it, /x402/patch/:id answers 410, and everyone who already
    * bought it keeps their copy and their download rights.
    */
-  router.post('/api/patches/:id/retire', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/retire', requireOwner, wrap(async (req) => {
     const { reason } = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
     return market.retire(req.params.id as string, reason ?? '');
   }));
-  router.post('/api/patches/:id/verify', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/verify', requireOwner, wrap(async (req) => {
     if (!deps.verifier) throw bad('this node is not a verifier');
     const e = await market.entry(req.params.id as string);
     if (!e) throw notFound();
@@ -1367,7 +1410,7 @@ export function buildApi(deps: ApiDeps): Router {
   // A challenge stops every sale of a knowledge and spends another operator's GPU minutes on the re-run, so the API
   // no longer invents a reason for a caller that did not give one (item 328): `market.challenge` refuses a body
   // without one, an address may hold only one open challenge per anchor, and a dismissed one has a cool-down.
-  router.post('/api/patches/:id/challenge', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/challenge', requireOwner, wrap(async (req) => {
     const challenge = await market.challenge(req.params.id as string, String(req.body?.reason ?? ''));
     return { ok: true, challenge, record: await market.challengeRecord(market.address) };
   }));
@@ -1378,12 +1421,12 @@ export function buildApi(deps: ApiDeps): Router {
    * the record that a sale was contested — the one risk a buyer carries and could not get back, and which the
    * network never learned about, so a bad seller's record stayed clean.
    */
-  router.post('/api/patches/:id/dispute', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/dispute', requireOwner, wrap(async (req) => {
     const b = z.object({ reason: z.string(), settle_hash: z.string().optional() }).parse(req.body ?? {});
     const dispute = await market.dispute(req.params.id as string, b.reason, { role: 'claim', settleHash: b.settle_hash });
     return { ok: true, dispute, disputes: market.disputesFor(req.params.id as string) };
   }));
-  router.post('/api/patches/:id/dispute/answer', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/dispute/answer', requireOwner, wrap(async (req) => {
     const b = z.object({ reason: z.string(), settle_hash: z.string() }).parse(req.body ?? {});
     const dispute = await market.dispute(req.params.id as string, b.reason, { role: 'answer', settleHash: b.settle_hash });
     return { ok: true, dispute, disputes: market.disputesFor(req.params.id as string) };
@@ -1401,7 +1444,7 @@ export function buildApi(deps: ApiDeps): Router {
     };
   }));
 
-  router.post('/api/patches/:id/buy', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/buy', requireOwner, wrap(async (req) => {
     const b = z.object({ apply: z.boolean().optional(), bundle: z.boolean().optional(), with_required: z.boolean().optional(), max_total: z.number().optional(), again: z.boolean().optional() }).parse(req.body ?? {});
     // The bases underneath are bought first, deepest first, one settlement each (design §12.4, item 270). The design
     // spells this `?bundle=1` and this node has always taken it as `with_required` in the body; both are accepted,
@@ -1419,7 +1462,7 @@ export function buildApi(deps: ApiDeps): Router {
    */
   router.get('/api/patches/:id/quote', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     return market.quoteFor(e);
   }));
   /**
@@ -1427,7 +1470,7 @@ export function buildApi(deps: ApiDeps): Router {
    * the catalogue folds over the anchor — the quote, the 402 and the charge all read `anchor.price`, so they move
    * together. Only the author's own records count, and every price ever set stays on the ledger.
    */
-  router.post('/api/patches/:id/price', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/price', requireOwner, wrap(async (req) => {
     const b = z.object({ price: z.string(), reason: z.string().max(500).optional() }).parse(req.body ?? {});
     return market.setPrice(req.params.id as string, b.price, b.reason ?? '');
   }));
@@ -1439,14 +1482,14 @@ export function buildApi(deps: ApiDeps): Router {
    */
   router.get('/api/patches/:id/split', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     const q = z.object({ price: z.coerce.number().min(0).optional() }).parse(req.query);
     return market.saleSplit(e, q.price);
   }));
   /** Every price this knowledge has been sold at, oldest first (item 278) — public, so a discount can be checked. */
   router.get('/api/patches/:id/price', wrap(async (req) => {
     const e = await market.entry(req.params.id as string) as (MarketEntry | null);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     return {
       patch_id: e.anchor.id, price: e.anchor.price, currency: e.anchor.currency,
       list_price: e.list_price ?? e.anchor.price, repriced_at: e.repriced_at ?? null,
@@ -1457,12 +1500,12 @@ export function buildApi(deps: ApiDeps): Router {
    * Collect a knowledge this node has already paid for, without paying again (item 273): a re-issued manifest
    * against the recorded payment, or the body itself over the signed peer path the settlement already unlocks.
    */
-  router.post('/api/patches/:id/collect', requireOperator, wrap(async (req) => market.collect(req.params.id as string)));
+  router.post('/api/patches/:id/collect', requireOwner, wrap(async (req) => market.collect(req.params.id as string)));
   /**
    * Payments that left this node and were never answered with a manifest (item 274). Money on the chain and no
    * body: this is where an operator sees it, and `POST /api/patches/:id/collect` is how it is finished.
    */
-  router.get('/api/me/pending-payments', requireOperator, wrap(async () => ({
+  router.get('/api/me/pending-payments', requireOwner, wrap(async () => ({
     // Only rows that COST something: a 'quoted' row is a 402 this node answered and never paid, which owes nobody
     // anything. `paid` means the money left and no manifest came back.
     items: market.store.listPending({ status: ['paid'], limit: 200 }).map((r) => ({ ...r, payload: undefined })),
@@ -1491,14 +1534,14 @@ export function buildApi(deps: ApiDeps): Router {
     };
   };
   router.get('/api/credit/:address', wrap(async (req) => creditOf(req.params.address as string)));
-  router.get('/api/me/credit', requireOperator, wrap(async () => creditOf(market.address)));
+  router.get('/api/me/credit', requireOwner, wrap(async () => creditOf(market.address)));
   // §12.4 — `with_base` loads everything the knowledge was trained on top of, in order, under one runtime lock;
   // without it an add-on whose base is not loaded is refused (409 needs_base) instead of writing rows over the wrong table.
   // Item 212 — with `async: true` the POST answers 202 with a job and the caller polls GET /api/runtime/jobs/:id.
   // The shared model lock has no upper bound on how long it is held (another node's live test, a verification), and
   // a synchronous POST that outlived the HTTP client's header timeout was reported as "cannot reach node", exit 2,
   // minutes before the node ran it anyway.
-  router.post('/api/patches/:id/apply', requireOperator, wrap(async (req, res) => {
+  router.post('/api/patches/:id/apply', requireOwner, wrap(async (req, res) => {
     const { with_base, async: wantJob } = z.object({ with_base: z.boolean().optional(), async: z.boolean().optional() }).parse(req.body ?? {});
     const id = req.params.id as string;
     if (!(await market.entry(id))) throw notFound('patch not found');
@@ -1523,22 +1566,22 @@ export function buildApi(deps: ApiDeps): Router {
     }
     return { result: await market.removePatch(id, { cascade }), stack: await market.stack() };
   };
-  router.post('/api/patches/:id/remove', requireOperator, wrap(unload as never));
-  router.delete('/api/patches/:id/apply', requireOperator, wrap(unload as never));
-  router.post('/api/patches/:id/forget', requireOperator, wrap(async (req) => {
+  router.post('/api/patches/:id/remove', requireOwner, wrap(unload as never));
+  router.delete('/api/patches/:id/apply', requireOwner, wrap(unload as never));
+  router.post('/api/patches/:id/forget', requireOwner, wrap(async (req) => {
     const { all_sharing } = z.object({ all_sharing: z.boolean().optional() }).parse(req.body ?? {});
     return market.forgetBody(req.params.id as string, { allSharing: all_sharing });
   }));
   router.get('/api/patches/:id/conflicts', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
-    if (!e || (e.status === 'DRAFT' && !isOperator(req))) throw notFound('patch not found');
+    if (!e || (e.status === 'DRAFT' && !isNodeOwner(req))) throw notFound('patch not found');
     // Overlap partners that are private drafts are only shown to the operator; hidden test anchors stay hidden (see relativeVisible).
     const map = await market.entryMap();
     const conflicts = (await market.conflicts(e.anchor.id)).filter((c) => relativeVisible(req, e)(map.get(c.patch_id)));
     return { conflicts };
   }));
 
-  router.post('/api/branches', requireOperator, wrap(async (req) => {
+  router.post('/api/branches', requireOwner, wrap(async (req) => {
     const b = z.object({
       name: z.string(), description: z.string().default(''), context: z.record(z.string(), z.string()).default({}), patch_ids: z.array(z.string()).default([]),
       // item 269: a fixture track says so when it is created, and is on no public list from then on
@@ -1552,7 +1595,7 @@ export function buildApi(deps: ApiDeps): Router {
    * who assembles other people's knowledge was paid nothing for the assembling. The fee is the curator's; the
    * knowledge on the track is still bought from whoever published it.
    */
-  router.post('/api/branches/:name/terms', requireOperator, wrap(async (req) => {
+  router.post('/api/branches/:name/terms', requireOwner, wrap(async (req) => {
     const b = z.object({
       price: z.string().regex(PRICE_RE, 'price must be a non-negative number').nullable().optional(),
       currency: z.string().optional(), period_days: z.coerce.number().int().min(1).max(365).optional(),
@@ -1564,29 +1607,29 @@ export function buildApi(deps: ApiDeps): Router {
   /** What one period costs, whether this node's is paid, and what the track's own last 30 days actually cost. */
   router.get('/api/branches/:name/subscription', wrap(async (req) => market.subscriptionQuote(decodeURIComponent(req.params.name as string))));
   /** Item 269 — the owner is done with a track: it comes off /network, off the router and out of `branch ls`. */
-  router.post('/api/branches/:name/archive', requireOperator, wrap(async (req) => {
+  router.post('/api/branches/:name/archive', requireOwner, wrap(async (req) => {
     const { archived } = z.object({ archived: z.boolean().default(true) }).parse(req.body ?? {});
     return { branch: await market.archiveBranch(decodeURIComponent(req.params.name as string), archived) };
   }));
-  router.post('/api/branches/:name/patches', requireOperator, wrap(async (req) => {
+  router.post('/api/branches/:name/patches', requireOwner, wrap(async (req) => {
     const { patch_id, force } = z.object({ patch_id: z.string().min(1), force: z.boolean().optional() }).parse(req.body ?? {});
     return { branch: await market.addToBranch(decodeURIComponent(req.params.name as string), patch_id, { force }) };
   }));
   /** Item 357 — what subscribing would spend, item by item, before anything is spent. */
   const quoteBranch = async (req: { params: Record<string, unknown> }) => ({ quote: await market.quoteBranch(decodeURIComponent(req.params.name as string)) });
-  router.post('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
-  router.get('/api/branches/:name/quote', requireOperator, wrap(quoteBranch as never));
+  router.post('/api/branches/:name/quote', requireOwner, wrap(quoteBranch as never));
+  router.get('/api/branches/:name/quote', requireOwner, wrap(quoteBranch as never));
   // The answer says what was bought, loaded and skipped; a partial acquisition is a 409 and nothing is broadcast.
-  router.post('/api/branches/:name/subscribe', requireOperator, wrap(async (req) => {
+  router.post('/api/branches/:name/subscribe', requireOwner, wrap(async (req) => {
     // item 214: `replace` is the caller saying yes to loading the track over knowledge already in the model
     const { replace } = z.object({ replace: z.boolean().default(false) }).parse(req.body ?? {});
     return market.subscribe(decodeURIComponent(req.params.name as string), 'subscribe', { replace });
   }));
-  router.post('/api/branches/:name/unsubscribe', requireOperator, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe')));
+  router.post('/api/branches/:name/unsubscribe', requireOwner, wrap(async (req) => market.subscribe(decodeURIComponent(req.params.name as string), 'unsubscribe')));
   /** Item 255 — bring a subscribed track up to date now (the 20-second tick does the same thing). */
-  router.post('/api/branches/:name/sync', requireOperator, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string), { retryNow: true })));
+  router.post('/api/branches/:name/sync', requireOwner, wrap(async (req) => market.syncSubscription(decodeURIComponent(req.params.name as string), { retryNow: true })));
 
-  router.post('/api/runtime/complete', requireOperator, wrap(async (req) => {
+  router.post('/api/runtime/complete', requireOwner, wrap(async (req) => {
     const { prompt, max_tokens, raw } = z.object({
       prompt: z.string().min(1).max(2000), max_tokens: z.coerce.number().min(1).max(256).default(16),
       /** `raw: true` = no stop sequences and no degeneracy guard — exactly what this endpoint sent before D1. */
@@ -1614,14 +1657,14 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.get('/api/runtime/stack', wrap(async () => ({ stack: await market.stack(), journal_dir: market.runtime.journalDir() })));
   /** Item 212 — where a queued apply/remove is, and what the shared model is doing while it waits. */
-  router.get('/api/runtime/jobs', requireOperator, wrap(async () => ({ jobs: market.listRuntimeJobs().slice(0, 50) })));
-  router.get('/api/runtime/jobs/:id', requireOperator, wrap(async (req) => {
+  router.get('/api/runtime/jobs', requireOwner, wrap(async () => ({ jobs: market.listRuntimeJobs().slice(0, 50) })));
+  router.get('/api/runtime/jobs/:id', requireOwner, wrap(async (req) => {
     const job = market.runtimeJob(req.params.id as string);
     if (!job) throw notFound('no such runtime job (a node restart forgets queued jobs — check `ainize patch stack`)');
     return { job };
   }));
   /** What `patch.py check` measures against the live table for one knowledge: is its base underneath, row for row? */
-  router.get('/api/patches/:id/check', requireOperator, wrap(async (req) => {
+  router.get('/api/patches/:id/check', requireOwner, wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
     if (!e) throw new HttpError(404, 'patch not found');
     const blob = market.blobs.get(e.anchor.patch_sha256);
@@ -1631,7 +1674,7 @@ export function buildApi(deps: ApiDeps): Router {
     return { patch_id: e.anchor.id, export: e.anchor.base?.export ?? null, base_stack: (e.anchor.base?.stack ?? []).map((b) => b.patch_id), ...check };
   }));
 
-  router.post('/api/peers', requireOperator, wrap(async (req) => {
+  router.post('/api/peers', requireOwner, wrap(async (req) => {
     const ep = String(req.body.endpoint);
     // Adding is also the way BACK from a removal: gossip may not re-add a removed endpoint, but the operator may (item 137).
     const { unblocked } = market.p2p.addPeer(ep);
@@ -1639,7 +1682,7 @@ export function buildApi(deps: ApiDeps): Router {
     deps.saveConfig();
     return { ok: true, unblocked };
   }));
-  router.delete('/api/peers', requireOperator, wrap(async (req) => {
+  router.delete('/api/peers', requireOwner, wrap(async (req) => {
     const ep = String(req.body.endpoint);
     // `removed` is the fact the CLI needs to stop reporting success for a peer that was never there (item 138);
     // `blocked` is what keeps the next gossip round from teaching it straight back (item 137).
@@ -1653,7 +1696,7 @@ export function buildApi(deps: ApiDeps): Router {
       : `peer ${ep} removed by the operator (not blocked: gossip may learn it again)`, null, { endpoint: ep, blocked: out.blocked });
     return { ok: true, ...out };
   }));
-  router.post('/api/chain/setup', requireOperator, wrap(async () => {
+  router.post('/api/chain/setup', requireOwner, wrap(async () => {
     if (!(market.ledger instanceof AinLedger)) throw bad('node is not on the AIN ledger');
     return market.ledger.setupApp();
   }));
@@ -1663,7 +1706,7 @@ export function buildApi(deps: ApiDeps): Router {
     // hidden contributor names are redacted here too (public response), like /api/catalog and /api/patches/:id
     // Item 108 — the operator's own unannounced drafts are testable on this node and POST /api/chat loads them, so
     // the picker that calls itself the list of what can be tested here lists them too. Anonymous callers see none.
-    const rows = await market.chatCatalog({ ownDrafts: isOperator(req) });
+    const rows = await market.chatCatalog({ ownDrafts: isNodeOwner(req) });
     const items = rows.filter((r) => r.testable).map((r) => redactContributors(r.entry));
     // Item 297 — knowledge this node's model could run but cannot load: it used to be absent from the picker
     // entirely (no row, no price, no seller), so the chained purchase the product is built on had no first step.
@@ -1699,7 +1742,7 @@ export function buildApi(deps: ApiDeps): Router {
       // `applied` is what this node keeps loaded; `dirty` is what a live test found on the shared model that this
       // node never loaded — a leftover from another process, which the next test unloads and does not put back.
       applied: market.pinnedPatchIds(), dirty: market.recentDirty(), overlaps: market.chatOverlaps(items),
-      operator: isOperator(req),
+      operator: isNodeOwner(req),
       ...(teacher ? { lessons: deps.teach ? await deps.teach.lessonsFor(teacher) : ([] as CatalogEntry[]), teacher } : {}),
     };
   }));
@@ -1709,7 +1752,7 @@ export function buildApi(deps: ApiDeps): Router {
    * command that would satisfy it.
    */
   router.post('/api/chat/patches/:id/request', wrap(async (req) => {
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.requestPatch(req.params.id as string, visitor);
   }));
@@ -1737,7 +1780,7 @@ export function buildApi(deps: ApiDeps): Router {
       .refine((b) => !b.messages_base || tail(b.messages_base) === tail(b.messages), { message: 'messages_base must end with the same message as messages — both columns answer one question', path: ['messages_base'] })
       .refine((b) => !b.messages_patched || tail(b.messages_patched) === tail(b.messages), { message: 'messages_patched must end with the same message as messages — both columns answer one question', path: ['messages_patched'] })
       .parse(req.body);
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const caller = teachAuth.verify(req);
     /**
      * The turn's identity stays keyed on the address: GET /api/chat/status, the cancel route and the "this answer is
@@ -1789,7 +1832,7 @@ export function buildApi(deps: ApiDeps): Router {
    */
   router.get('/api/chat/status', wrap(async (req) => {
     const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.query);
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     const q = market.runtime.queueState();
     return { ...market.chatQueue.status(request_id, visitor), lock: q.lock, running: q.running, waiting: market.chatQueue.waiting(), now: Date.now() };
@@ -1801,7 +1844,7 @@ export function buildApi(deps: ApiDeps): Router {
    */
   router.post('/api/chat/cancel', wrap(async (req) => {
     const { request_id } = z.object({ request_id: z.string().min(1).max(64) }).parse(req.body);
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     return market.chatQueue.cancel(request_id, visitor);
   }));
@@ -1819,7 +1862,7 @@ export function buildApi(deps: ApiDeps): Router {
       verdict: z.literal('wrong').default('wrong'),
       share: z.boolean().default(false),
     }).parse(req.body ?? {});
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
     const turn = market.turn(body.turn_id, visitor);
     if (!turn) throw new HttpError(404, 'turn_unknown: that live test is not one this node remembers for you (it may have been restarted)');
@@ -1843,8 +1886,8 @@ export function buildApi(deps: ApiDeps): Router {
     return { turn_id: body.turn_id, shared: body.share, items: out };
   }));
 
-  router.get('/api/me/settings', requireOperator, wrap(async () => ({ settings: market.settings() })));
-  router.patch('/api/me/settings', requireOperator, wrap(async (req) => {
+  router.get('/api/me/settings', requireOwner, wrap(async () => ({ settings: market.settings() })));
+  router.patch('/api/me/settings', requireOwner, wrap(async (req) => {
     const patch = z.object({ notifications: z.enum(['all', 'sales', 'none']).optional(), display_name: z.string().min(1).max(64).optional(), payout_address: z.string().optional() }).parse(req.body);
     const settings = market.updateSettings(patch);
     deps.saveConfig();
@@ -1869,7 +1912,7 @@ export function buildApi(deps: ApiDeps): Router {
   const jobOr404 = (t: TeachWorker, id: string): TeachJobRow => { const j = t.get(id); if (!j) throw notFound('lesson not found'); return j; };
   /** Owner (signed) or operator. */
   const ownerJob = (req: Request, id: string, opts: { operator?: boolean } = {}): { t: TeachWorker; j: TeachJobRow; address: string | null; operator: boolean } => {
-    const t = needTeach(); const j = jobOr404(t, id); const address = teacherOf(req); const operator = isOperator(req);
+    const t = needTeach(); const j = jobOr404(t, id); const address = teacherOf(req); const operator = isNodeOwner(req);
     if (t.isOwner(j, address)) { t.assertEnabled(); t.assertNotBanned(address, req.ip); return { t, j, address, operator: false }; }
     if (opts.operator !== false && operator) return { t, j, address, operator: true };
     if (!address) throw new HttpError(401, 'invalid_signature: x-ainize-auth header missing, expired or invalid');
@@ -1964,11 +2007,11 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/teach/datasets', wrap(async (req) => { const address = requireTeacher(req); const t = visitorGate(req, address); return { items: t.datasets.listMine(address) }; }));
   router.get('/api/teach/datasets/:id', wrap(async (req) => {
     const t = needTeach();
-    return { dataset: t.datasets.view(t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req))) };
+    return { dataset: t.datasets.view(t.datasets.owned(req.params.id as string, teacherOf(req), isNodeOwner(req))) };
   }));
   router.get('/api/teach/datasets/:id/rows', wrap(async (req) => {
     const t = needTeach();
-    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req));
+    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isNodeOwner(req));
     const q = z.object({
       offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(50), status: z.string().max(20).default('all'),
       // SC-5: which rows are mine, which came from the knowledge this set was copied from, which of its answers I changed
@@ -1996,13 +2039,13 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   router.delete('/api/teach/datasets/:id', wrap(async (req) => {
     const t = needTeach();
-    const operator = isOperator(req);
+    const operator = isNodeOwner(req);
     const d = t.datasets.owned(req.params.id as string, teacherOf(req), operator);
     return t.datasets.remove(d, operator && d.owner.toLowerCase() !== (teacherOf(req) ?? '').toLowerCase() ? 'operator' : 'owner');
   }));
   router.get('/api/teach/datasets/:id/download', wrap(async (req, res) => {
     const t = needTeach();
-    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isOperator(req));
+    const d = t.datasets.owned(req.params.id as string, teacherOf(req), isNodeOwner(req));
     const format = req.query.format === 'csv' ? 'csv' : 'jsonl';
     const out = t.datasets.download(d, format);
     res.status(200).type(out.contentType).set({ 'content-disposition': `attachment; filename="${out.filename}"`, 'x-content-sha256': out.sha256 }).send(out.body);
@@ -2016,7 +2059,7 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/teach/bases/:id', wrap(async (req) => {
     const address = requireTeacher(req);
     const t = visitorGate(req, address);
-    return t.knowledgeFor(req.params.id as string, { address, operator: isOperator(req) });
+    return t.knowledgeFor(req.params.id as string, { address, operator: isNodeOwner(req) });
   }));
   router.post('/api/teach/preflight', wrap(async (req) => {
     const address = requireTeacher(req); const t = visitorGate(req, address);
@@ -2144,7 +2187,7 @@ export function buildApi(deps: ApiDeps): Router {
     const address = teacherOf(req);
     // warms the catalog cache the view reads synchronously, so "Built on {name}" is a name and not an id
     if (j.bases?.length) await market.catalog().catch(() => undefined);
-    return { job: t.isOwner(j, address) || isOperator(req) ? t.view(j) : t.publicView(j) };
+    return { job: t.isOwner(j, address) || isNodeOwner(req) ? t.view(j) : t.publicView(j) };
   }));
   router.delete('/api/teach/jobs/:id', wrap(async (req) => { const { t, j, operator } = ownerJob(req, req.params.id as string); return t.cancel(j, operator ? 'operator' : 'owner'); }));
   router.post('/api/teach/jobs/:id/retry', wrap(async (req, res) => {
@@ -2168,7 +2211,7 @@ export function buildApi(deps: ApiDeps): Router {
       .filter((e) => (e.data as { job_id?: string } | null)?.job_id === j.id && (!q.since || e.seq > q.since))
       .sort((a, b) => a.seq - b.seq).slice(-q.limit);
     // the owner is not the operator: the same redaction /api/events applies (draft ids, keys, prompts stay out)
-    const events = publicEvents(rows, isOperator(req)).map((e) => ({ seq: e.seq, ts: e.ts, level: e.level, message: e.message, data: e.data }));
+    const events = publicEvents(rows, isNodeOwner(req)).map((e) => ({ seq: e.seq, ts: e.ts, level: e.level, message: e.message, data: e.data }));
     void t;
     return { events, cursor: events.length ? events[events.length - 1].seq : (q.since ?? 0) };
   }));
@@ -2232,8 +2275,8 @@ export function buildApi(deps: ApiDeps): Router {
 
   // ------------------------------------------------------------ teach mode — operator (spec §6.4)
   const policyView = async (t: TeachWorker) => ({ policy: market.teachSettings(), effective: market.teach(), trainer: await t.trainerState(true) });
-  router.get('/api/me/teach/policy', requireOperator, wrap(async () => policyView(needTeach())));
-  router.patch('/api/me/teach/policy', requireOperator, wrap(async (req) => {
+  router.get('/api/me/teach/policy', requireOwner, wrap(async () => policyView(needTeach())));
+  router.patch('/api/me/teach/policy', requireOwner, wrap(async (req) => {
     const t = needTeach();
     const b = z.object({
       // every field is nullable: `null` clears the override so the node falls back to config.json (item 125)
@@ -2272,36 +2315,36 @@ export function buildApi(deps: ApiDeps): Router {
    * What visitors have uploaded to the operator's machine. Shipping the upload route without this would leave an
    * operator hosting content they cannot see or delete, so it lands in the same PR (design §5.10).
    */
-  router.get('/api/me/teach/datasets', requireOperator, wrap(async (req) => {
+  router.get('/api/me/teach/datasets', requireOwner, wrap(async (req) => {
     const q = z.object({ limit: z.coerce.number().int().min(1).max(1000).default(200) }).parse(req.query);
     const t = needTeach();
     market.log('info', 'teach', 'operator opened the uploaded-datasets moderation view');
     return { items: t.datasets.listAll(q.limit) };
   }));
-  router.get('/api/me/teach/jobs', requireOperator, wrap(async () => ({ items: needTeach().listAll() })));
-  router.post('/api/me/teach/jobs/:id/approve', requireOperator, wrap(async (req) => { const t = needTeach(); return t.announceJob(jobOr404(t, req.params.id as string)); }));
-  router.post('/api/me/teach/jobs/:id/reject', requireOperator, wrap(async (req) => {
+  router.get('/api/me/teach/jobs', requireOwner, wrap(async () => ({ items: needTeach().listAll() })));
+  router.post('/api/me/teach/jobs/:id/approve', requireOwner, wrap(async (req) => { const t = needTeach(); return t.announceJob(jobOr404(t, req.params.id as string)); }));
+  router.post('/api/me/teach/jobs/:id/reject', requireOwner, wrap(async (req) => {
     const t = needTeach(); const { reason } = z.object({ reason: z.string().min(1).max(500) }).parse(req.body ?? {});
     t.reject(jobOr404(t, req.params.id as string), reason);
     return { ok: true, status: 'REJECTED' };
   }));
-  router.post('/api/me/teach/jobs/:id/cancel', requireOperator, wrap(async (req) => { const t = needTeach(); return t.cancel(jobOr404(t, req.params.id as string), 'operator'); }));
-  router.get('/api/me/teach/contributors', requireOperator, wrap(async () => ({ items: market.store.listContributors() })));
-  router.post('/api/me/teach/contributors/:address', requireOperator, wrap(async (req) => {
+  router.post('/api/me/teach/jobs/:id/cancel', requireOwner, wrap(async (req) => { const t = needTeach(); return t.cancel(jobOr404(t, req.params.id as string), 'operator'); }));
+  router.get('/api/me/teach/contributors', requireOwner, wrap(async () => ({ items: market.store.listContributors() })));
+  router.post('/api/me/teach/contributors/:address', requireOwner, wrap(async (req) => {
     const address = addressParam(req.params.address as string);
     const { hidden } = z.object({ hidden: z.boolean().optional() }).parse(req.body ?? {});
     if (!market.store.getContributor(address)) market.store.touchContributor(address, {});
     if (hidden !== undefined) market.store.setContributorHidden(address, hidden);
     return { ok: true, contributor: market.store.getContributor(address) };
   }));
-  router.get('/api/me/teach/bans', requireOperator, wrap(async () => ({ items: market.store.listBans() })));
-  router.post('/api/me/teach/bans', requireOperator, wrap(async (req) => {
+  router.get('/api/me/teach/bans', requireOwner, wrap(async () => ({ items: market.store.listBans() })));
+  router.post('/api/me/teach/bans', requireOwner, wrap(async (req) => {
     const b = z.object({ kind: z.enum(['address', 'ip']), value: z.string().min(1).max(200), reason: z.string().max(500).optional() }).parse(req.body ?? {});
     const ban = market.store.addBan(b.kind, b.value, b.reason ?? null);
     market.log('warn', 'teach', `${b.kind} ${b.value} blocked by the operator${b.reason ? `: ${b.reason}` : ''}`);
     return { ban };
   }));
-  router.delete('/api/me/teach/bans/:id', requireOperator, wrap(async (req) => { market.store.deleteBan(Number(req.params.id)); return { ok: true }; }));
+  router.delete('/api/me/teach/bans/:id', requireOwner, wrap(async (req) => { market.store.deleteBan(Number(req.params.id)); return { ok: true }; }));
 
   // ------------------------------------------------------------ aindrive (files & change history)
   router.get('/api/drive', wrap(async () => {
@@ -2314,7 +2357,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (!path || path.includes('..') || path.startsWith('/')) throw bad('path must be relative to the drive folder');
     return deps.drive.changes(path);
   }));
-  router.post('/api/drive', requireOperator, wrap(async (req) => {
+  router.post('/api/drive', requireOwner, wrap(async (req) => {
     if (!deps.drive) throw notFound('drive integration disabled');
     const { action } = z.object({ action: z.enum(['up', 'stop', 'sync', 'login', 'status']) }).parse(req.body);
     if (action === 'up') return deps.drive.up();
