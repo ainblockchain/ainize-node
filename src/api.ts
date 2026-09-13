@@ -177,6 +177,29 @@ export function buildApi(deps: ApiDeps): Router {
     return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain' };
   };
   const isOperator = (req: Request): boolean => sessionSubject(req) !== null;
+  /**
+   * Every address that owns this node, and on what grounds.
+   *
+   * Three sources, and the order is the order of authority. The node's own key owns what the node published and
+   * cannot be revoked — revoking it would only mean the node could no longer act for itself. `operatorAddresses`
+   * in the config file is the recovery path: edited with a text editor on the machine, so it survives a lost
+   * session, a lost database and a wallet that will not connect. The `owners` table is what a browser can write —
+   * a grant made by an owner who was signed in, and the only one of the three that an API call may take away.
+   */
+  const owners = (): { address: string; source: 'node' | 'config' | 'granted'; added_at: number | null; added_by: string | null; note: string | null }[] => {
+    const out: { address: string; source: 'node' | 'config' | 'granted'; added_at: number | null; added_by: string | null; note: string | null }[] =
+      [{ address: market.address, source: 'node', added_at: null, added_by: null, note: "this node's own key" }];
+    for (const a of market.cfg.operatorAddresses ?? []) {
+      if (!out.some((o) => sameAddr(o.address, a))) out.push({ address: a, source: 'config', added_at: null, added_by: null, note: null });
+    }
+    for (const r of market.store.owners()) {
+      // A config entry added later for an address already granted here wins the label: it is the stronger claim,
+      // and showing `granted` would invite someone to revoke a row that leaves them an owner anyway.
+      if (!out.some((o) => sameAddr(o.address, r.address))) out.push({ ...r, source: 'granted' });
+    }
+    return out;
+  };
+  const isOwner = (address: string): boolean => owners().some((o) => sameAddr(o.address, address));
   const requireOperator = (req: Request, _res: Response, next: NextFunction) => {
     if (!isOperator(req)) return next(new HttpError(401, 'operator login required'));
     next();
@@ -263,7 +286,7 @@ export function buildApi(deps: ApiDeps): Router {
      * truthfully only to a caller who could actually do it. To anyone else it is false, which is not a beacon.
      */
     canEnroll: mayClaim(req) || isOperator(req),
-    operators: isOperator(req) ? [market.address, ...(market.cfg.operatorAddresses ?? [])] : undefined,
+    operators: isOperator(req) ? owners().map((o) => o.address) : undefined,
   })));
   /** Single-use sign-in nonces: nonce → expiry. In memory, because a restart forgetting them is correct. */
   const loginNonces = new Map<string, number>();
@@ -293,11 +316,13 @@ export function buildApi(deps: ApiDeps): Router {
     if (!verifyMessage(operatorLoginMessage({ node: market.address, nonce }), signature, address)) {
       throw new HttpError(401, 'that signature does not come from the address it claims');
     }
-    const have = market.cfg.operatorAddresses ?? [];
-    if (!sameAddr(market.address, address) && !have.some((a) => sameAddr(a, address))) {
-      market.cfg.operatorAddresses = [...have, address];
-      deps.saveConfig();
-      market.log('info', 'auth', `${address} added to this node's operators`);
+    // The grant goes in the database, not the config file. A config file is the recovery path — hand-edited on
+    // the machine, read at startup — and an HTTP request rewriting it means every enrolment races whatever else
+    // is holding that file, and lands in a file the owner did not edit. `owners()` reads both, so an address
+    // granted here is an owner immediately and the config list keeps meaning what it always meant.
+    if (!isOwner(address)) {
+      market.store.addOwner(address, null, 'enrolled from this machine');
+      market.log('info', 'auth', `${address} added to this node's owners`);
     }
     if (deps.home) { try { rmSync(setupTokenPath(deps.home), { force: true }); } catch { /* the enrolment stands either way */ } }
     return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
@@ -363,8 +388,7 @@ export function buildApi(deps: ApiDeps): Router {
     // Burned whatever happens next: a nonce that has been shown a wrong signature is spent, not retryable.
     loginNonces.delete(nonce);
     if (!exp || exp <= Date.now()) { loginFailed(req); throw new HttpError(401, 'the sign-in challenge has expired — ask for a new one'); }
-    const allowed = [market.address, ...(market.cfg.operatorAddresses ?? [])];
-    if (!allowed.some((a) => sameAddr(a, address))) {
+    if (!isOwner(address)) {
       loginFailed(req);
       throw new HttpError(403, `${address} is not an operator of this node. Its own key always is; any other address has to be added by someone who already has operator access, on the machine this node runs on (\`ainize operators --add ${address}\`).`);
     }
@@ -375,6 +399,47 @@ export function buildApi(deps: ApiDeps): Router {
     loginFails.delete(loginKey(req));
     market.log('info', 'auth', `operator signed in as ${address}${sameAddr(address, market.address) ? " (this node's own key)" : ''}`);
     return { ok: true, token: newSession(res, { subject: address, scheme: 'ain' }), address };
+  }));
+  /**
+   * Who owns this node, and adding or removing one — from a browser, by an owner, without a shell.
+   *
+   * Until now the only way in was `/api/auth/enroll`, which needs the machine itself: a loopback connection or a
+   * token readable only by the OS user the node runs as. That is right for the FIRST owner and wrong for every one
+   * after: a person holding the owning wallet, looking at their own node in a browser, could not add a colleague.
+   *
+   * Adding here needs no signature from the address, unlike enrolment. Enrolment has to prove the key exists,
+   * because nothing else vouches for it and a typo would enrol an address nobody can sign for. A grant is
+   * different: an owner who is signed in is vouching, the grant is listed with their name on it, and it can be
+   * taken back — so the cost of a typo is one visible row and one DELETE, not a phantom owner.
+   */
+  router.get('/api/auth/owners', requireOperator, wrap(() => ({ owners: owners() })));
+  router.post('/api/auth/owners', wrap((req) => {
+    if (!isOperator(req) && !mayClaim(req)) throw new HttpError(401, 'only an owner of this node may add another');
+    const { address, note } = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), note: z.string().max(200).optional() }).parse(req.body);
+    const by = sessionSubject(req)?.address ?? null;
+    if (isOwner(address)) return { ok: true, address, already: true, owners: owners() };
+    market.store.addOwner(address, by, note ?? null);
+    market.log('info', 'auth', `${address} granted ownership of this node by ${by ?? 'the machine it runs on'}`);
+    return { ok: true, address, already: false, owners: owners() };
+  }));
+  router.delete('/api/auth/owners/:address', requireOperator, wrap((req) => {
+    const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/).parse(req.params.address);
+    const me = sessionSubject(req)?.address;
+    const listed = owners().find((o) => sameAddr(o.address, address));
+    // Where the claim actually lives is checked BEFORE whether it is your own, because it is the more useful answer
+    // when both apply: an owner deleting themselves out of the config file needs to be told about the config file,
+    // not told to ask a colleague who cannot help either.
+    if (listed?.source === 'node') throw new HttpError(400, "this is the node's own key: it owns what this node published, and revoking it would only stop the node acting for itself");
+    if (listed?.source === 'config') throw new HttpError(400, `${address} is listed in operatorAddresses in this node's config file — remove it there, on the machine this node runs on (\`ainize operators remove ${address}\`), and restart`);
+    // Not yourself: an owner who revokes their own only claim is locked out of the thing they were administering,
+    // and the fix needs the machine. Another owner can still do it, which is the check this is asking for.
+    if (sameAddr(me, address)) throw new HttpError(400, 'you cannot revoke your own ownership — ask another owner, or remove the address from the config file on the machine this node runs on');
+    if (!market.store.removeOwner(address)) throw new HttpError(404, `${address} does not own this node`);
+    // Revocation that leaves a live session is not revocation: the 30-day cookie would outlast it by a month.
+    let ended = 0;
+    for (const sess of market.store.sessionsOf(address)) { market.store.deleteSession(sess.token); ended++; }
+    market.log('info', 'auth', `${address} no longer owns this node (revoked by ${me ?? 'an owner'}${ended ? `, ${ended} session(s) ended` : ''})`);
+    return { ok: true, address, sessions_ended: ended, owners: owners() };
   }));
   router.post('/api/auth/logout', wrap((req, res) => {
     const cookie = req.cookies?.[SESSION_COOKIE] as string | undefined;

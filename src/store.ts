@@ -207,6 +207,14 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, level TEXT NOT NULL, kind TEXT NOT NULL, patch_id TEXT, message TEXT NOT NULL, data TEXT);
       CREATE INDEX IF NOT EXISTS idx_events_patch ON events(patch_id);
       CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, created_at REAL NOT NULL, expires_at REAL NOT NULL);
+      -- Who owns this node, beyond the addresses that own it by construction.
+      --
+      -- operatorAddresses in the config file stays exactly as authoritative as it was: it is the recovery path, the
+      -- one an owner who has lost every session still has, because it is edited with a text editor on the machine
+      -- itself. What it could never be is WRITTEN from a browser — a person holding the owning wallet had no way to
+      -- add a colleague without a shell. This table is that second list. added_by records which owner did it,
+      -- because "who let them in" is the first question asked about an account nobody recognises.
+      CREATE TABLE IF NOT EXISTS owners (address TEXT PRIMARY KEY, added_at REAL NOT NULL, added_by TEXT, note TEXT);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, resource TEXT NOT NULL, amount TEXT NOT NULL, pay_to TEXT NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
       -- Money moves before a manifest comes back, so the INTENT is written first (item 274): one row per x402
@@ -538,6 +546,28 @@ export class Store {
     return !!r && r.expires_at > Date.now();
   }
   deleteSession(token: string) { this.db.prepare('DELETE FROM sessions WHERE token = ?').run(token); }
+
+  // owners
+  /**
+   * Addresses granted ownership at runtime — never the node's own key or the config list, which are owners
+   * without being written anywhere and would go stale here the moment either changed.
+   */
+  owners(): { address: string; added_at: number; added_by: string | null; note: string | null }[] {
+    return this.db.prepare('SELECT address, added_at, added_by, note FROM owners ORDER BY added_at').all() as
+      { address: string; added_at: number; added_by: string | null; note: string | null }[];
+  }
+  hasOwner(address: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM owners WHERE address = ?').get(address.toLowerCase());
+  }
+  /** Idempotent: granting ownership twice keeps the first grant, so a repeated click never rewrites who let them in. */
+  addOwner(address: string, addedBy: string | null, note?: string | null) {
+    this.db.prepare('INSERT OR IGNORE INTO owners (address, added_at, added_by, note) VALUES (?, ?, ?, ?)')
+      .run(address.toLowerCase(), Date.now(), addedBy?.toLowerCase() ?? null, note ?? null);
+  }
+  /** True if a row went away — false means the address was never granted here, which the caller must not call success. */
+  removeOwner(address: string): boolean {
+    return this.db.prepare('DELETE FROM owners WHERE address = ?').run(address.toLowerCase()).changes > 0;
+  }
   /** Sign every operator session out — what a password change must do, or a stolen cookie outlives it (item 121). */
   deleteAllSessions(): number { return this.db.prepare('DELETE FROM sessions').run().changes as number; }
 
