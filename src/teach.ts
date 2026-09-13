@@ -2413,8 +2413,11 @@ export class TeachWorker {
     lines?.on('line', (line) => {
       const s = line.trim(); if (!s.startsWith('{')) return;
       try {
-        const ev = JSON.parse(s) as { type?: string };
-        if (loadedAt === null && ev.type && ev.type !== 'load') loadedAt = Date.now();
+        // `event`, not `type` — the trainer's protocol is {"event": "..."} and handleEvent switches on it. Reading
+        // the wrong field left loadedAt null for ever, so a run killed at step 12 was reported as "it never
+        // finished loading the model", which is the opposite of what happened and points at the wrong fix.
+        const ev = JSON.parse(s) as { event?: string };
+        if (loadedAt === null && ev.event && ev.event !== 'load') loadedAt = Date.now();
         this.handleEvent(job, ev, state);
       } catch { /* not an event line */ }
     });
@@ -2431,7 +2434,10 @@ export class TeachWorker {
       const spent = Date.now() - startedAt;
       const where = loadedAt === null
         ? `it never finished loading the model (${mins(spent)} so far), so raise \`teach.trainer.timeoutMs\` — fewer rows will not help`
-        : `loading took ${mins(loadedAt - startedAt)} and training reached step ${(state.progress.step ?? 0)}/${state.progress.max_steps}, so either raise \`teach.trainer.timeoutMs\` or train fewer rows`;
+        : `loading and the baseline took ${mins(loadedAt - startedAt)} and training reached step ${(state.progress.step ?? 0)}/${state.progress.max_steps}`
+          + ` — raise \`teach.trainer.timeoutMs\`, or cut the work: fewer passes (\`teach.effort.<preset>.maxSteps\`),`
+          + ` or fewer evaluations (\`teach.effort.<preset>.evalEvery\`, which is what dominates a large lesson:`
+          + ` an evaluation re-asks EVERY probe, so it costs about as much as the baseline did, every time it runs)`;
       return { ok: false, error: `timeout: trainer exceeded ${mins(c.trainer.timeoutMs)} — ${where}` };
     }
     if (state.error) return { ok: false, error: state.error.slice(0, 500) };

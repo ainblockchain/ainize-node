@@ -1,6 +1,6 @@
 {
   "name": "@ainize/node",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Ainize node \u2014 serves a base model whose conditional memory is extended by knowledge patches; teaches, verifies, publishes and trades patches on the AIN ledger",
   "license": "MIT",
   "repository": {
