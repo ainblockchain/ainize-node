@@ -199,7 +199,7 @@ test('a row left "paying" by a crash is never re-sent automatically: at start it
 
 // ---------------------------------------------------------------- HTTP: operator endpoints + public teacher reconciliation
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-payouts-test-'));
-const PORT = 34051;
+const PORT = 24051;
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 let opToken = '';

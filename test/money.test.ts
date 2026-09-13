@@ -42,9 +42,9 @@ let freeSha = '';
 let paidSha = '';
 
 before(async () => {
-  A = await startNode(mk('A', 34321, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  B = await startNode(mk('B', 34322, ['http://127.0.0.1:34321'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  C = await startNode(mk('C', 34323, ['http://127.0.0.1:34321', 'http://127.0.0.1:34322'], ['verifier']), { quiet: true, serveWeb: false });
+  A = await startNode(mk('A', 24321, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  B = await startNode(mk('B', 24322, ['http://127.0.0.1:24321'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  C = await startNode(mk('C', 24323, ['http://127.0.0.1:24321', 'http://127.0.0.1:24322'], ['verifier']), { quiet: true, serveWeb: false });
   const freeFile = synthPatch(join(tmp, 'synth'), 'money-free', 21, 300);
   const paidFile = synthPatch(join(tmp, 'synth'), 'money-paid', 22, 300);
   freeSha = (await A.market.createDraft({ id: FREE_ID, name: 'Free lesson', model: { id_M: 'M' }, benchmark: bench('money/free'), price: '0', file: freeFile, keepInPlace: true })).patch_sha256;

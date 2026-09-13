@@ -25,7 +25,7 @@ const HAVE_REF = existsSync(join(REF_REPO, 'scripts', 'patch.py')) && existsSync
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-stack-test-'));
 const repo = join(tmp, 'repo');
 const mailbox = join(repo, 'ple_patch');
-const PORT = 34077;   // 34071 belongs to dispute.test.ts; `node --test` runs the files in one pool, so a shared constant is a hard EADDRINUSE, not a flake
+const PORT = 24077;   // 24071 belongs to dispute.test.ts; `node --test` runs the files in one pool, so a shared constant is a hard EADDRINUSE, not a flake
 let N: RunningNode;
 let hook: FakeHook;
 let model: Server;

@@ -14,7 +14,7 @@ import { seedDemo } from '../src/seed.js';
 import { authHeader } from '../src/p2p.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-chat-test-'));
-const PORT = 34031;
+const PORT = 24031;
 let N: RunningNode;
 
 /** What the fake serving model has loaded right now (npz path → order of application) and the call log. */

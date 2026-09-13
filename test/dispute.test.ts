@@ -19,7 +19,7 @@ import { startNode, type RunningNode } from '../src/server.js';
 import { synthPatch } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-dispute-'));
-const PORT = { A: 34071, B: 34072, C: 34073 };   // 3407x is this file's range
+const PORT = { A: 24071, B: 24072, C: 24073 };   // 2407x is this file's range
 const mk = (name: string, port: number, peers: string[], roles: NodeConfig['roles']): NodeConfig => {
   const cfg = defaultConfig({ home: join(tmp, name), name, port, peers, roles, ledger: 'local' });
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };   // no runtime → hash-only attestations, no model calls

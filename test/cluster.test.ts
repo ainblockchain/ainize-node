@@ -33,9 +33,9 @@ async function waitFor<T>(fn: () => Promise<T>, pred: (v: T) => boolean, ms = 15
 }
 
 before(async () => {
-  A = await startNode(mk('A', 34021, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  B = await startNode(mk('B', 34022, ['http://127.0.0.1:34021'], ['verifier']), { quiet: true, serveWeb: false });
-  C = await startNode(mk('C', 34023, ['http://127.0.0.1:34021'], ['verifier', 'serving']), { quiet: true, serveWeb: false });
+  A = await startNode(mk('A', 24021, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  B = await startNode(mk('B', 24022, ['http://127.0.0.1:24021'], ['verifier']), { quiet: true, serveWeb: false });
+  C = await startNode(mk('C', 24023, ['http://127.0.0.1:24021'], ['verifier', 'serving']), { quiet: true, serveWeb: false });
 });
 after(async () => { await Promise.all([A, B, C].map((n) => n?.stop())); rmSync(tmp, { recursive: true, force: true }); });
 

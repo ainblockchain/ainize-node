@@ -21,7 +21,7 @@ import { canonicalJsonl, type CanonicalRow } from '../src/teach-dataset.js';
 import type { TeachJob } from '../src/teach.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-ds-test-'));
-const PORT = 34047;
+const PORT = 24047;
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 const teacher = createIdentity();

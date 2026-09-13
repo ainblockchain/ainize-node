@@ -25,7 +25,7 @@ import { canonicalJsonl, readCanonicalJsonl, type CanonicalRow } from '../src/te
 import type { TeachJob } from '../src/teach.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-lineage-merge-test-'));
-const PORT = 34091;
+const PORT = 24091;
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 const alice = createIdentity();     // publishes A

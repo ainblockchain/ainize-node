@@ -45,9 +45,9 @@ const CHILD_ID = 'bundle-addon';
 const bench = (schema: string) => ({ schema, queries: 10, format: ['template'], collateral_bound_nat: 0.1 });
 
 before(async () => {
-  A = await startNode(mk('A', 34101, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  B = await startNode(mk('B', 34102, ['http://127.0.0.1:34101'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
-  C = await startNode(mk('C', 34103, ['http://127.0.0.1:34101', 'http://127.0.0.1:34102'], ['verifier']), { quiet: true, serveWeb: false });
+  A = await startNode(mk('A', 24101, [], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  B = await startNode(mk('B', 24102, ['http://127.0.0.1:24101'], ['seller', 'verifier']), { quiet: true, serveWeb: false });
+  C = await startNode(mk('C', 24103, ['http://127.0.0.1:24101', 'http://127.0.0.1:24102'], ['verifier']), { quiet: true, serveWeb: false });
 });
 after(async () => { await Promise.all([A, B, C].map((n) => n?.stop())); rmSync(tmp, { recursive: true, force: true }); });
 

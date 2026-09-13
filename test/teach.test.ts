@@ -25,7 +25,7 @@ import { ACTIVE_JOBS_PER_KEY, checkDisplayName, normalizeDisplayName, slugify, t
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-teach-test-'));
 const repo = join(tmp, 'repo');
 mkdirSync(join(repo, 'ple_patch'), { recursive: true });
-const PORT = 34041;
+const PORT = 24041;
 const url = `http://127.0.0.1:${PORT}`;
 let N: RunningNode;
 const teacher = createIdentity();
@@ -747,7 +747,7 @@ test('stub backend offline (stubOffline): preflight + checks simulated without t
 // ---------------------------------------------------------------- second node: graceful stop + crash recovery (spec §8.5, security review §6)
 const home2 = join(tmp, 'N2'); const repo2 = join(tmp, 'repo2');
 mkdirSync(join(repo2, 'ple_patch'), { recursive: true });
-const PORT2 = 34042; const url2 = `http://127.0.0.1:${PORT2}`;
+const PORT2 = 24042; const url2 = `http://127.0.0.1:${PORT2}`;
 async function startSecond(): Promise<RunningNode> {
   const cfg: NodeConfig = defaultConfig({ home: home2, name: 'N2', port: PORT2, peers: [], roles: ['seller', 'serving'], ledger: 'local' });
   cfg.runtime = { repo: repo2, api: 'http://127.0.0.1:1', python: 'python3' };

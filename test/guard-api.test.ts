@@ -26,7 +26,7 @@ import { ChatQueue } from '../src/chat-queue.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ngram-guard-test-'));
 const MAILBOX = join(tmp, 'ple_patch_e2e');
-const PORT = 34037;
+const PORT = 24037;
 let N: RunningNode;
 let url = '';
 let token = '';

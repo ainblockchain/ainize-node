@@ -35,8 +35,8 @@ async function waitFor<T>(fn: () => Promise<T>, pred: (v: T) => boolean, ms = 60
 let A: RunningNode, B: RunningNode;
 before(async () => {
   if (!up) return;
-  const cfgA = mk('A', 34033, [], ['seller', 'verifier']);   // 3403x: 34031 is chat.test.ts, 34037 is guard-api.test.ts
-  const cfgB = mk('B', 34034, ['http://127.0.0.1:34033'], ['verifier']);
+  const cfgA = mk('A', 24033, [], ['seller', 'verifier']);   // 2403x: 24031 is chat.test.ts, 24037 is guard-api.test.ts
+  const cfgB = mk('B', 24034, ['http://127.0.0.1:24033'], ['verifier']);
   await fundFromGenesis(PROVIDER, cfgA.identity.address, 500);
   await fundFromGenesis(PROVIDER, cfgB.identity.address, 500);
   // app + market rules (idempotent — the chain may already have the app from an earlier run)
