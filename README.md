@@ -28,6 +28,15 @@ node's identity.
 The explorer UI is a separate build ([ainize-web](https://github.com/ainblockchain/ainize-web)); point
 `webDist` at it to have this process serve it too.
 
+## Native inference accounting
+
+Opt-in `AINIZE_INFERENCE_RECORDS=true` records completed chat requests in bounded,
+durable batches on the AIN ledger. AINSCAN displays their reported throughput in
+ordinary transaction details, separately from onchain TPS. It requires the updated
+core implementation and installed chain rules, and can incur transaction fees.
+See [inference records](docs/inference-records.md) for completion semantics,
+privacy, journal retention, uncertain submissions and remaining live verification.
+
 ## The rules this node will not bend
 
 - **Publishing is not selling.** Two independent nodes must load the patch into the real model and

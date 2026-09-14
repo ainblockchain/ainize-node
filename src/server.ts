@@ -13,6 +13,7 @@ import { buildApi, setupTokenPath } from './api.js';
 import { diskReport, humanBytes, sweepTemp } from './disk.js';
 import { BlobStore } from './blobs.js';
 import { Market } from './market.js';
+import { InferenceRecords, type InferenceLedger } from './inference-records.js';
 import { P2P } from './p2p.js';
 import { Runtime } from './runtime.js';
 import { Store } from './store.js';
@@ -72,6 +73,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       `fix it with \`ainize config set <key> <value>\` (or \`ainize config unset <key>\` for the default) in ${join(dirname(cfg.dataDir), 'config.json')}`);
   }
 
+  const recordInference = process.env.AINIZE_INFERENCE_RECORDS === 'true';
+  if (recordInference && (cfg.ledger.kind !== 'ain'
+    || typeof (AinLedger.prototype as InferenceLedger).noteInferenceBatch !== 'function')) {
+    throw new Error('AINIZE_INFERENCE_RECORDS requires an AIN ledger and a core build with noteInferenceBatch');
+  }
   const store = new Store(join(cfg.dataDir, 'node.sqlite'));
   // item 131: what the LAST run did, read before this one overwrites it.
   const lastStart = Number(store.get('node.started_at') ?? 0);
@@ -88,6 +94,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   await ledger.init();
 
   market = new Market(cfg, ledger, store, blobs, runtime);
+  if (recordInference) market.inferenceRecords = new InferenceRecords(store, ledger as InferenceLedger,
+    message => market.log('info', 'inference', message));
   const selfUrl = cfg.publicUrl ?? `http://localhost:${cfg.port}`;
   const p2p = new P2P({ identity: cfg.identity, ledger, store, selfInfo: () => market.selfInfo(), log: (l, k, m, d) => market.log(l, k, m, null, d) }, cfg.peers, cfg.gossipIntervalMs, selfUrl, cfg.p2p ?? {});
   market.p2p = p2p;
@@ -315,12 +323,18 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   driveSync.unref?.();
   setTimeout(() => { drive.sync().catch(() => undefined); }, 2000).unref?.();
 
+  const inferenceTimer = recordInference ? setInterval(() => {
+    void market.inferenceRecords!.flush().catch(() => market.log('warn', 'inference', 'Inference batch persistence failed; inspect the journal'));
+  }, 60_000) : null;
+  inferenceTimer?.unref();
+
   return {
     cfg, market, ledger, store, verifier, drive, teach, server, url,
     async stop() {
       // The record of a clean shutdown (item 131): without this line a SIGKILL and a `ainize stop` left byte-identical
       // histories, and the next start could not tell an operator which of the two had happened.
       market.log('info', 'node', 'node stopping (clean shutdown)');
+      if (inferenceTimer) clearInterval(inferenceTimer);
       try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
       clearInterval(watchdog);
       clearInterval(retention);
@@ -330,6 +344,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       market.payouts.stop();
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
+      await market.inferenceRecords?.flush().catch(() => market.log('warn', 'inference', 'Inference batch flush failed during shutdown'));
+      await market.inferenceRecords?.flush().catch(() => market.log('warn', 'inference', 'Remaining inference receipts could not be flushed'));
       await ledger.close();
       store.close();
     },

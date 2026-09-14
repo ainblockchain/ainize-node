@@ -21,6 +21,7 @@ import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import type { ChatStreamChunk } from './chat-stream.js';
+import type { InferenceRecords } from './inference-records.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
 import type { Store, BlobRow, CreditGrantRow, EventRow, LicenseRow, LicenseSource } from './store.js';
 import { Payouts } from './payouts.js';
@@ -567,6 +568,7 @@ interface PaymentSubject {
 }
 
 export class Market {
+  inferenceRecords?: InferenceRecords;
   /**
    * This PROCESS's id, minted at start-up and carried in `PeerInfo.instance` (item 139). Two endpoints answering for
    * one address are either one node that moved — same instance — or two nodes sharing an identity, which routes
@@ -3748,7 +3750,17 @@ export class Market {
     // what the visible queue used to show for "ask the model with nothing of mine loaded".
     const qIds = (opts.patchIds ?? (opts.patchId ? [opts.patchId] : [])).map((s) => String(s).trim()).filter(Boolean);
     const ticket = opts.requestId ? this.chatQueue.open(opts.requestId, opts.visitor, qIds.length ? `chat:${qIds.join('+')}` : 'chat:base') : null;
-    try { return await this.chatInner(opts); } finally { if (ticket) this.chatQueue.close(ticket.id); }
+    try {
+      const outcome = await this.chatInner(opts);
+      const results = [outcome.base, outcome.patched].filter(result => result !== null);
+      if (!opts.signal?.aborted && outcome.model && results.length
+        && results.every(result => result.model === outcome.model && result.finish_reason === 'stop'
+          && !result.truncated && result.content.trim())) {
+        try { this.inferenceRecords?.completed(outcome.model); }
+        catch { this.log('warn', 'inference', 'Inference receipt persistence failed; coverage is incomplete'); }
+      }
+      return outcome;
+    } finally { if (ticket) this.chatQueue.close(ticket.id); }
   }
 
   private async chatInner(opts: ChatOpts): Promise<ChatOutcome> {

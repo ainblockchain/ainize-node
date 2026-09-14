@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { defaultConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../src/server.js';
 import { Market } from '../src/market.js';
+import { InferenceRecords } from '../src/inference-records.js';
 
 test('headless node forwards model SSE before completion and preserves JSON mode', { timeout: 20000 }, async () => {
   const home = mkdtempSync(join(tmpdir(), 'ainize-stream-http-'));
@@ -27,7 +28,7 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     requestedTokens = input.max_tokens;
     if (!input.stream) {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ choices: [{ message: { content: 'JSON answer' }, finish_reason: 'stop' }] }));
+      response.end(JSON.stringify({ choices: [{ message: { content: 'JSON answer' }, finish_reason: input.messages[0].content === 'Cut short' ? 'length' : 'stop' }] }));
       return;
     }
     response.setHeader('content-type', 'text/event-stream');
@@ -47,6 +48,11 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     const config = defaultConfig({ home, name: 'headless-stream', port: 3400, peers: [], roles: ['serving'], ledger: 'local' });
     config.runtime = { api: `http://127.0.0.1:${upstreamPort}` };
     node = await startNode(config, { listen: false, quiet: true, teachWorker: false });
+    const counts: number[] = [];
+    node.market.inferenceRecords = new InferenceRecords(node.store, { noteInferenceBatch: async batch => {
+      counts.push(batch.request_count);
+      return { path: '/fixture/inference', tx_hash: 'fixture-transaction' };
+    } }, () => {});
     Object.assign(node.market.runtime, { status: async () => ({ available: true, model: 'test-model' }), models: async () => 'test-model' });
     await new Promise<void>(resolve => node!.server.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${(node.server.address() as { port: number }).port}`;
@@ -74,9 +80,15 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     assert.match(remainder, /ainize.result/);
     assert.match(remainder, /\[DONE\]/);
     assert.equal(node.store.get(Market.RESTORE_KEY), '');
+    await node.market.inferenceRecords.flush();
+    assert.deepEqual(counts, [1]);
     const plain = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     assert.equal(plain.status, 200);
     assert.equal((await plain.json()).base.content, 'JSON answer');
+    const truncated = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, messages: [{ role: 'user', content: 'Cut short' }] }) });
+    assert.equal(truncated.status, 200);
+    assert.equal((await truncated.json()).base.finish_reason, 'length');
     const denied = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, patch_ids: ['private-missing'], mode: 'patched', stream: true }) });
     assert.equal(denied.status, 404);
     assert.match(denied.headers.get('content-type')!, /application\/json/);
@@ -89,6 +101,8 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     const deadline = Date.now() + 3000;
     while (node.store.get(Market.RESTORE_KEY) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(node.store.get(Market.RESTORE_KEY), '');
+    await node.market.inferenceRecords.flush();
+    assert.deepEqual(counts, [1, 1]);
   } finally {
     release();
     node?.server.closeAllConnections();
