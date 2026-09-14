@@ -1,0 +1,9 @@
+{
+  "controllerOS": "Debian GNU/Linux 12 (bookworm)",
+  "modelServerOS": "Ubuntu 24.04.3 LTS",
+  "controllerNodeVersion": "24.21.0",
+  "gpuDevices": [0, 1, 2, 3],
+  "gpuModel": "NVIDIA A100-SXM4-80GB",
+  "memoryMiBPerGPU": 81920,
+  "scope": "Observed existing environment, not the five-L40S or uniform-Ubuntu acceptance environment"
+}

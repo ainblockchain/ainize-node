@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-b4fe4f199295b402e3f9bdb42c6d3276","object":"chat.completion.chunk","created":1789353162,"model":"Qwen3.8-Flash-Next","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"prompt_token_ids":null,"prompt_text":null,"ainize_mode":"base"}
+
+data: {"id":"chatcmpl-b4fe4f199295b402e3f9bdb42c6d3276","object":"chat.completion.chunk","created":1789353162,"model":"Qwen3.8-Flash-Next","choices":[{"index":0,"delta":{"content":"OK"},"logprobs":null,"finish_reason":"stop","stop_reason":null,"token_ids":null}],"ainize_mode":"base"}
+
+data: {"id":"chatcmpl-b4fe4f199295b402e3f9bdb42c6d3276","object":"chat.completion.chunk","created":1789353162,"model":"Qwen3.8-Flash-Next","choices":[],"usage":{"prompt_tokens":17,"total_tokens":19,"completion_tokens":2,"completion_tokens_details":{"reasoning_tokens":0}},"system_fingerprint":"vllm-0.1.dev20073+g8e685d198-tp4-ep-ac6e87a3","ainize_mode":"base"}
+
+event: ainize.result
+data: {"turn_id":"96c548df0f97e2d886","patch_id":"","patch_ids":[],"mode":"base","base":{"content":"OK","reasoning":null,"usage":{"prompt_tokens":17,"total_tokens":19,"completion_tokens":2,"completion_tokens_details":{"reasoning_tokens":0}},"latency_ms":13528,"model":"Qwen3.8-Flash-Next","finish_reason":"stop","truncated":null,"shown_chars":2,"raw_chars":2},"patched":null,"applied_ms":null,"was_applied":false,"model":"Qwen3.8-Flash-Next","benchmark_hit":null,"applied":[],"benchmark_hits":{},"dirty":[],"history":{"base":1,"patched":1,"split":false},"inference_receipt":{"id":"7c9ba758-249c-4123-ad8b-48387eb22dee","model_id":"Qwen3.8-Flash-Next","completed_at":1789353175669},"remaining_quota":19,"quota_limit":20}
+
+data: [DONE]

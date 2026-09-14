@@ -1,0 +1,24 @@
+{
+  "image": "sha256:bd995759b5b8ac51062e04c9e4d7c91c382d1ba377bb787e24dca2ccb39925e9",
+  "cpuNano": 4000000000,
+  "memoryBytes": 343597383680,
+  "gpu": [
+    {
+      "Capabilities": [
+        [
+          "gpu"
+        ]
+      ],
+      "Count": 0,
+      "DeviceIDs": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "Driver": "",
+      "Options": {}
+    }
+  ],
+  "startedAt": "2026-09-11T04:59:26.171887834Z"
+}

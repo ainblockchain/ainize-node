@@ -37,6 +37,11 @@ core implementation and installed chain rules, and can incur transaction fees.
 See [inference records](docs/inference-records.md) for completion semantics,
 privacy, journal retention, uncertain submissions and remaining live verification.
 
+A [real-model-to-chain reproduction](docs/live-chat-chain-reproduction.md) now
+includes one native streaming response, its persisted receipt and the actual
+containing block. It is a single base-mode integration check, not a patched-load
+benchmark, five-GPU-node deployment or public release.
+
 ## The rules this node will not bend
 
 - **Publishing is not selling.** Two independent nodes must load the patch into the real model and
