@@ -4,11 +4,13 @@
  * plus the vLLM OpenAI-compatible API for free-generation scoring. All operations are serialised.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ainize/core';
 import { guardAnswer, type GuardResult } from './degenerate.js';
 import { consumeChatStream, type ChatStreamChunk } from './chat-stream.js';
+import { claimSharedLease, leaseLiveness } from './shared-lease.js';
 
 export interface VerifyOutcome {
   passed: boolean;
@@ -143,14 +145,9 @@ export class Runtime {
 
   get repo(): string | null { return this.cfg.repo && existsSync(this.cfg.repo) ? this.cfg.repo : null; }
 
-  /**
-   * Serialise runtime mutations. Several nodes on one machine share ONE serving model, so in addition to the
-   * in-process queue we take a cross-process lock (atomic mkdir under the shared repo) with a lease; a stale
-   * lease (crashed holder) is broken after `staleMs`.
-   */
   private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void, priority = Runtime.priorityOf(label)): Promise<T> {
     const run = async () => {
-      const release = await this.acquireLock(label, undefined, waitMs);
+      const release = await this.acquireLock(label, waitMs);
       this.busy = { label, since: Date.now() };
       // The caller learns the wait is over the instant the lock is ours — before any model call — so a request
       // that is still queued can be told apart from one that is running (and cancelled for free while queued).
@@ -216,31 +213,24 @@ export class Runtime {
    * instance's memory table — taking its lock — while `status` said `runtime available · hook ok`.
    */
   patchDirSource(): 'config' | 'repo' | 'none' { return this.cfg.patchDir ? 'config' : this.repo ? 'repo' : 'none'; }
+  private readonly lockIdentity = randomUUID();
   private lockDir(): string | null { const d = this.patchDir(); return d ? join(d, '.ainize-runtime.lock') : null; }
 
-  /**
-   * Who holds the shared runtime lock right now (null = free).
-   * `alive`/`stale` use exactly the checks acquireLock() uses to break a lease, so the UI never reports a dead
-   * holder as a live one: before this, a holder.json left behind by a killed node made the "someone else is
-   * testing" banner permanent while every request in fact succeeded instantly (D3, inverted).
-   */
-  lockHolder(): { owner: string; label: string; since: number; alive: boolean; stale: boolean; mine: boolean } | null {
+  lockHolder(): { owner: string; label: string; since: number; alive: boolean; stale: boolean; mine: boolean; liveness: 'alive' | 'dead' | 'unknown' } | null {
     const dir = this.lockDir();
     if (!dir || !existsSync(dir)) return null;
-    let h: { owner: string; label: string; since: number };
-    try { h = JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { return null; }
-    if (!h || typeof h.owner !== 'string') return null;
-    return { ...h, alive: Runtime.holderAlive(h.owner), stale: Date.now() - h.since > Runtime.STALE_MS, mine: h.owner === this.owner };
+    let holder: Record<string, unknown>;
+    try { holder = JSON.parse(readFileSync(join(dir, 'holder.json'), 'utf8')); } catch { holder = {}; }
+    if (!holder || typeof holder !== 'object') holder = {};
+    const liveness = leaseLiveness(holder);
+    const owner = typeof holder.owner === 'string' ? holder.owner : 'unknown';
+    const since = typeof holder.since === 'number' && Number.isFinite(holder.since) ? holder.since : 0;
+    return { owner, label: typeof holder.label === 'string' ? holder.label : 'unreadable lease', since,
+      alive: liveness !== 'dead', liveness, stale: since > 0 && Date.now() - since > Runtime.STALE_MS,
+      mine: holder.instance_id === this.lockIdentity };
   }
 
-  /** Lease length: a holder older than this is broken by acquireLock() and reported `stale` by lockHolder(). */
   static readonly STALE_MS = 15 * 60_000;
-  /** A `pid:<n>` holder on this machine is probed the way acquireLock() probes it; any other owner is assumed alive. */
-  private static holderAlive(owner: string): boolean {
-    const pid = owner.startsWith('pid:') ? Number(owner.slice(4)) : null;
-    if (!pid || pid === process.pid) return true;
-    try { process.kill(pid, 0); return true; } catch { return false; }
-  }
 
   /**
    * What the shared model is doing and how many callers are behind it (D3 — the queue must be visible).
@@ -255,24 +245,16 @@ export class Runtime {
     };
   }
 
-  private async acquireLock(label: string, staleMs = Runtime.STALE_MS, waitMs: number = 20 * 60_000): Promise<() => void> {
+  private async acquireLock(label: string, waitMs: number = 20 * 60_000): Promise<() => void> {
     const dir = this.lockDir();
     if (!dir) return () => undefined;
     const t0 = Date.now();
     for (;;) {
-      try {
-        mkdirSync(dir);
-        writeFileSync(join(dir, 'holder.json'), JSON.stringify({ owner: this.owner, label, since: Date.now() }));
-        return () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
-      } catch {
-        const holder = this.lockHolder();
-        const holderPid = holder?.owner.startsWith('pid:') ? Number(holder.owner.slice(4)) : null;
-        let holderAlive = true;
-        if (holderPid && holderPid !== process.pid) { try { process.kill(holderPid, 0); } catch { holderAlive = false; } }
-        if (!holder || !holderAlive || Date.now() - holder.since > staleMs) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } continue; }
-        if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${holder.owner}: ${holder.label}) — try again later`);
-        await new Promise((r) => setTimeout(r, 250 + Math.random() * 250));
-      }
+      const release = claimSharedLease(dir, { owner: this.owner, label, since: Date.now(), instance_id: this.lockIdentity });
+      if (release) return release;
+      const holder = this.lockHolder();
+      if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${holder?.owner ?? 'unknown'}: ${holder?.label ?? 'unreadable lease'}) — verify the holder before recovering an orphaned lease`);
+      await new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 250));
     }
   }
 

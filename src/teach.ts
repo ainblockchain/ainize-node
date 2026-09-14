@@ -28,6 +28,7 @@ import { TREE_MAX_DEPTH, type Caller, type Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
 import { lessonChainRecord, lessonChainSubmissions, type LessonChainSubmission } from './teach-chain-record.js';
+import { claimSharedLease } from './shared-lease.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
 import { canonicalBytes, endingKey, questionKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
 import { mergeQuestions, mergeRows, mergeRowReport, mergeTiers, type MergeConflict, type MergeResolution, type MergeTiers } from './teach-merge.js';
@@ -253,7 +254,6 @@ const TAUGHT_MIN_RATIO = 0.75;
 const DEFAULT_RUNTIME_GRACE_MS = 15 * 60_000;
 /** Bounded grace for a BUSY shared model (item 244) — `teach.check.lockGraceMs` overrides it. */
 const DEFAULT_LOCK_GRACE_MS = 30 * 60_000;
-const SLOT_STALE_MS = 45 * 60_000;
 const DEFAULT_RETRY_MS = 15_000;
 const BLOCKED_LOG_MS = 5 * 60_000;
 /** Error message that means "the node is shutting down" — the job is requeued, never FAILED. */
@@ -1962,24 +1962,8 @@ export class TeachWorker {
     const repo = this.market.runtime.repo;
     if (!repo) return { ok: false, reason: 'runtime repo not configured' };
     const dir = join(repo, 'ple_patch', '.ainize-teach.lock');
-    const holderPath = join(dir, 'holder.json');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        mkdirSync(dir);
-        writeFileSync(holderPath, JSON.stringify({ owner: `pid:${process.pid}`, job: job.id, since: Date.now() }));
-        break;
-      } catch {
-        let holder: { owner: string; since: number } | null = null;
-        try { holder = JSON.parse(readFileSync(holderPath, 'utf8')); } catch { /* ignore */ }
-        const pid = holder?.owner.startsWith('pid:') ? Number(holder.owner.slice(4)) : null;
-        let alive = true;
-        if (pid && pid !== process.pid) { try { process.kill(pid, 0); } catch { alive = false; } }
-        if (!holder || !alive || Date.now() - holder.since > SLOT_STALE_MS) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } continue; }
-        return { ok: false, reason: `another node is training (${holder.owner})` };
-      }
-    }
-    if (!existsSync(holderPath)) return { ok: false, reason: 'could not take the trainer lease' };
-    const release = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
+    const release = claimSharedLease(dir, { owner: `pid:${process.pid}`, job: job.id, since: Date.now() });
+    if (!release) return { ok: false, reason: 'trainer lease is held; verify the holder before recovering an orphaned lease' };
     // (b) an operator training job inside the container owns the GPUs
     const pg = await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', 'train/'], 15_000);
     if (pg.code === 0 && pg.out.trim()) { release(); return { ok: false, reason: `operator training job is using the trainer (pid ${pg.out.trim().split(/\s+/)[0]})` }; }

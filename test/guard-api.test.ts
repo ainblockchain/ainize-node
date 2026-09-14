@@ -255,14 +255,15 @@ test('D3: GET /api/chat/patches reports the lock with liveness, the node clock a
   assert.deepEqual(p.queue, { running: null, waiting: 0 });
 });
 
-test('D3: a lock left behind by a dead process is reported as not alive (it used to look busy for ever)', async () => {
+test('D3: a legacy PID lease has unknown liveness across container namespaces', async () => {
   const dir = join(MAILBOX, '.ainize-runtime.lock');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'holder.json'), JSON.stringify({ owner: 'pid:999999', label: 'chat:krx-all-2761', since: Date.now() - 70 * 3600_000 }));
   try {
-    const p = await getJson<{ lock: { owner: string; alive: boolean; stale: boolean; mine: boolean } }>('/api/chat/patches');
+    const p = await getJson<{ lock: { owner: string; alive: boolean; stale: boolean; mine: boolean; liveness: string } }>('/api/chat/patches');
     assert.equal(p.lock.owner, 'pid:999999');
-    assert.equal(p.lock.alive, false);
+    assert.equal(p.lock.alive, true);
+    assert.equal(p.lock.liveness, 'unknown');
     assert.equal(p.lock.stale, true);
     assert.equal(p.lock.mine, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }

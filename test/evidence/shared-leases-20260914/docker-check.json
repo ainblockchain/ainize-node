@@ -1,0 +1,24 @@
+{
+  "scope": "Two Docker PID namespaces sharing one test lease, not GPU concurrency or performance proof",
+  "passed": true,
+  "holder": {
+    "owner": "pid:1",
+    "since": 1,
+    "namespace": "pid:[4026533288]"
+  },
+  "contender": {
+    "pid": 1,
+    "namespace": "pid:[4026535618]",
+    "holderLiveness": "unknown",
+    "acquired": false,
+    "originalLeasePreserved": true
+  },
+  "perContainer": {
+    "image": "sha256:52e634617c0fad0207eeba4262ecdf142fc886649253ac42e4730ce75bd04dd5",
+    "cpuNano": 1000000000,
+    "memoryBytes": 536870912,
+    "memorySwapBytes": 536870912,
+    "network": "none"
+  },
+  "checks": "Different PID namespaces, old lease not evicted, original holder preserved, normal release removed lease"
+}
