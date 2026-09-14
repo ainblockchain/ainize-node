@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lessonChainRecord } from '../src/teach-chain-record.js';
+import { lessonChainRecord, lessonChainSubmissions } from '../src/teach-chain-record.js';
 import type { TeachJobRow } from '../src/store.js';
 
 function job(overrides: Partial<TeachJobRow> = {}): TeachJobRow {
@@ -39,5 +39,24 @@ test('model identity comes only from a supplied trainer recipe, never a guessed 
   assert.equal(lessonChainRecord(job(), 'QUEUED', 'gradient').model_id, null);
   for (const invalid of ['', '   ', 42, {}, null, 'a'.repeat(513)]) {
     assert.equal(lessonChainRecord(job(), 'READY', 'stub', invalid).model_id, null);
+  }
+});
+
+test('training submission remains available after a later ready transaction', () => {
+  const values = new Map([
+    ['teach.chain.job.TRAINING', JSON.stringify({ status: 'TRAINING', submittedAt: 100, acknowledgedAt: 120, path: '/lesson', txHash: 'training-tx', outcome: 'submitted', secret: 'not exported' })],
+    ['teach.chain.job.READY', JSON.stringify({ status: 'READY', submittedAt: 200, acknowledgedAt: 220, path: '/lesson', txHash: 'ready-tx', outcome: 'submitted' })],
+  ]);
+  const records = lessonChainSubmissions('job', key => values.get(key));
+  assert.equal(records.length, 2);
+  assert.equal(records[0].txHash, 'training-tx');
+  assert.equal(records[1].txHash, 'ready-tx');
+  assert.ok(!JSON.stringify(records).includes('secret'));
+});
+
+test('local ledgers and malformed stored receipts never produce invented submissions', () => {
+  assert.deepEqual(lessonChainSubmissions('job', () => null), []);
+  for (const raw of ['{', 'null', '{}', JSON.stringify({ status: 'TRAINING', submittedAt: 100, acknowledgedAt: 99, outcome: 'submitted' })]) {
+    assert.deepEqual(lessonChainSubmissions('job', () => raw), []);
   }
 });

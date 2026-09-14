@@ -27,7 +27,7 @@ import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import { TREE_MAX_DEPTH, type Caller, type Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
-import { lessonChainRecord } from './teach-chain-record.js';
+import { lessonChainRecord, lessonChainSubmissions, type LessonChainSubmission } from './teach-chain-record.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
 import { canonicalBytes, endingKey, questionKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
 import { mergeQuestions, mergeRows, mergeRowReport, mergeTiers, type MergeConflict, type MergeResolution, type MergeTiers } from './teach-merge.js';
@@ -148,6 +148,7 @@ export interface TeachJob {
    * database made about itself. This is the path where that claim stops being private.
    */
   chain?: { path: string; tx_hash: string | null };
+  chain_submissions?: LessonChainSubmission[];
   contributor: { address: string; name?: string };
   context_patch_ids: string[];
   builds_on_context: boolean;
@@ -1628,6 +1629,7 @@ export class TeachWorker {
       // Where this run is written on the AI Network. Absent, not null-shaped, on a node with a local ledger:
       // there is no chain, and a path field holding null reads as "the write failed" rather than "there is none".
       ...(j.chain_path ? { chain: { path: j.chain_path, tx_hash: j.chain_tx ?? null } } : {}),
+      chain_submissions: lessonChainSubmissions(j.id, key => this.store.get(key)),
       ...(j.bases ? { bases: j.bases.map((b) => {
         // a base is usually a listed knowledge, but Story A3's base is the visitor's OWN draft — the copy has to be
         // able to say "not published yet ({status})", so drafts are looked up too
