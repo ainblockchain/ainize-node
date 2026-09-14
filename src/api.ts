@@ -27,6 +27,7 @@ import { diskReport, type DiskReport } from './disk.js';
 import { gcRun, type GcOptions } from './gc.js';
 import { canonicalBytes, parseDataset, questionKey } from './teach-dataset.js';
 import { ChatCancelledError } from './chat-queue.js';
+import { readInferenceRecords } from './inference-records.js';
 import type { Verifier } from './verifier.js';
 
 /**
@@ -1254,6 +1255,18 @@ export function buildApi(deps: ApiDeps): Router {
     const q = z.object({ since: z.coerce.number().optional(), kind: z.string().optional(), limit: z.coerce.number().max(5000).default(200) }).parse(req.query);
     const recs = await market.ledger.list({ since: q.since, kind: q.kind as never, limit: q.limit });
     return { info: await market.ledger.info(), records: recs.reverse() };
+  }));
+  router.get('/api/ledger/inference', requireOwner, wrap(async (req) => {
+    const query = z.object({ offset: z.coerce.number().int().min(0).max(1000).default(0),
+      limit: z.coerce.number().int().min(1).max(100).default(50), id: z.string().uuid().optional(),
+      receipts: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
+    }).refine(value => !value.receipts || !!value.id, { message: 'Receipt export requires one batch id' }).parse(req.query);
+    let records;
+    try { records = readInferenceRecords(market.store, query); }
+    catch { throw new HttpError(503, 'Stored inference journal is invalid; preserve it for operator reconciliation'); }
+    if (query.id && !records.total) throw notFound('Inference batch not found');
+    return { enabled: !!market.inferenceRecords, ...records,
+      scope: 'Server completions, not client delivery. Submitted does not mean included. A matching commitment does not prove inference quality.' };
   }));
   router.get('/api/ledger/verify', wrap(async () => market.ledger.verify()));
   router.get('/api/ledger/graph', wrap(async () => {

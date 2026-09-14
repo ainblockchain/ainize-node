@@ -40,6 +40,31 @@ completions. Archive the SQLite database and reconcile submissions before an
 operator resets retention. This first implementation has no automatic archive
 or administrative retry command. Back up the journal across node upgrades.
 
+## Inspect and export
+
+After logging in as an operator of this node, the CLI reads the native node API:
+
+```sh
+ainize ledger inference --json
+ainize ledger inference --offset 50 --limit 50 --json
+ainize ledger inference <local-batch-id> --receipts --json
+```
+
+The endpoint is `GET /api/ledger/inference`, authenticated with the existing
+operator session (Bearer token or cookie). Anonymous requests get 401, signed-in
+non-operators get 403. This read never submits, retries or flushes transactions.
+It also exposes retained records when the recorder is disabled. Listing is
+newest-first with at most 100 entries per request. Pagination is a live view, not
+a snapshot; collectors must deduplicate IDs if new batches arrive while paging.
+
+`--receipts` requires one local batch ID. `receipt_commitment_valid` checks the
+array's hash, count, unique receipt IDs, model and observation interval; absent
+or altered receipts return false, malformed stored data returns 503. This check
+does not independently prove real inference or client delivery. The local batch
+ID locates the operator's submission journal only: use the returned `tx_hash`
+in AINSCAN's normal transaction search and `path` in its database browser. No
+experiment ID or benchmark API is added to AINSCAN.
+
 Tests cover real native HTTP handling against a mock streaming model, plus a fake
 chain writer for durable state ordering, commitments, concurrent flushes,
 restart and uncertain submissions. They do not prove real GPU throughput or AIN

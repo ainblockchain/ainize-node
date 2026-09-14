@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson, sha256Hex } from '@ainize/core';
+import { z } from 'zod';
 
 interface Batch {
   version: 1;
@@ -22,6 +23,42 @@ interface Journal { started_at: number; receipts: Receipt[]; entries: Entry[] }
 interface Storage { get(key: string): string | null; set(key: string, value: string): void }
 export interface InferenceLedger {
   noteInferenceBatch?(batch: Batch): Promise<{ path: string; tx_hash: string } | null>;
+}
+
+const batchSchema = z.object({
+  version: z.literal(1), model_id: z.string().min(1).max(512).refine(value => !!value.trim()),
+  request_count: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  started_at: z.number().int().positive().max(8640000000000000),
+  finished_at: z.number().int().positive().max(8640000000000000),
+  receipt_root: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().refine(batch => batch.finished_at > batch.started_at);
+const entrySchema = z.object({
+  id: z.string().uuid(), batch: batchSchema,
+  state: z.enum(['pending', 'submitting', 'submitted', 'unconfirmed']),
+  path: z.string().min(1).max(1024).optional(), tx_hash: z.string().min(1).max(128).optional(),
+}).strict();
+const receiptSchema = z.object({ id: z.string().uuid(), model_id: z.string().min(1).max(512),
+  completed_at: z.number().int().positive().max(8640000000000000) }).strict();
+const journalSchema = z.object({ started_at: z.number().int().positive().max(8640000000000000),
+  receipts: z.array(receiptSchema).max(5000), entries: z.array(entrySchema).max(1000) }).strict();
+
+export function readInferenceRecords(store: Storage, opts: { offset: number; limit: number; id?: string; receipts?: boolean }) {
+  const raw = store.get('inference.journal.v1');
+  const journal = raw ? journalSchema.parse(JSON.parse(raw)) : null;
+  const selected = journal?.entries.filter(entry => !opts.id || entry.id === opts.id).reverse() ?? [];
+  const entries = selected.slice(opts.offset, opts.offset + opts.limit).map(entry => {
+    if (!opts.receipts) return entry;
+    const saved = store.get(`inference.receipts.${entry.id}`);
+    const receipts = saved ? z.array(receiptSchema).max(5000).parse(JSON.parse(saved)) : null;
+    const valid = receipts !== null && receipts.length === entry.batch.request_count
+      && new Set(receipts.map(receipt => receipt.id)).size === receipts.length
+      && receipts.every(receipt => receipt.model_id === entry.batch.model_id
+        && receipt.completed_at >= entry.batch.started_at && receipt.completed_at <= entry.batch.finished_at)
+      && sha256Hex(canonicalJson(receipts)) === entry.batch.receipt_root;
+    return { ...entry, receipts, receipt_commitment_valid: valid };
+  });
+  return { total: selected.length, offset: opts.offset, limit: opts.limit,
+    unbatched_receipts: journal?.receipts.length ?? 0, entries };
 }
 
 export class InferenceRecords {
