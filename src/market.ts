@@ -21,7 +21,7 @@ import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import type { ChatStreamChunk } from './chat-stream.js';
-import type { InferenceRecords } from './inference-records.js';
+import type { InferenceRecords, InferenceReceipt } from './inference-records.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
 import type { Store, BlobRow, CreditGrantRow, EventRow, LicenseRow, LicenseSource } from './store.js';
 import { Payouts } from './payouts.js';
@@ -514,6 +514,7 @@ export interface ChatOpts {
 
 /** The answer(s) of one live test, plus what was loaded and how it scored. */
 export interface ChatOutcome {
+  inference_receipt?: InferenceReceipt;
   /** SC-13: the handle *Mark wrong* sends back. Lives in memory on the node that answered the turn (see `rememberTurn`). */
   turn_id: string;
   patch_id: string; patch_ids: string[]; mode: string; base: ChatResult | null; patched: ChatResult | null;
@@ -3756,7 +3757,7 @@ export class Market {
       if (!opts.signal?.aborted && outcome.model && results.length
         && results.every(result => result.model === outcome.model && result.finish_reason === 'stop'
           && !result.truncated && result.content.trim())) {
-        try { this.inferenceRecords?.completed(outcome.model); }
+        try { outcome.inference_receipt = this.inferenceRecords?.completed(outcome.model); }
         catch { this.log('warn', 'inference', 'Inference receipt persistence failed; coverage is incomplete'); }
       }
       return outcome;

@@ -15,6 +15,15 @@ finish reason and no truncation. Exceptions and already-aborted requests do not
 count. This is server completion before final HTTP delivery, not proof that the
 client received `[DONE]`. Calls bypassing `Market.chat` are outside coverage.
 
+The final JSON response or SSE `ainize.result` includes `inference_receipt` only
+after the receipt has been saved locally. It contains the exact `id`, `model_id`
+and `completed_at` fields retained in the batch commitment. No prompt or answer
+is copied into it. Recording disabled, rejected/truncated completions, capacity
+limits or storage errors produce no receipt. The receipt is not a transaction
+hash: the batch is submitted later. Clients must finish the stream before
+counting delivery, and must match this receipt to the operator's batch export
+and containing chain transaction before claiming onchain coverage.
+
 Every 60 seconds, receipts are grouped by model and submitted as native batches
 to `/apps/knowledge/market/inference_batches/<node-address>/<batch-id>`. The
 interval spans the preceding observation boundary to this flush, including idle

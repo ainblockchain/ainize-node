@@ -79,16 +79,26 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     for (;;) { const part = await reader.read(); if (part.done) break; remainder += new TextDecoder().decode(part.value); }
     assert.match(remainder, /ainize.result/);
     assert.match(remainder, /\[DONE\]/);
+    const streamed = JSON.parse(remainder.split('event: ainize.result\ndata: ')[1].split('\n')[0]);
+    assert.ok(streamed.inference_receipt.id);
     assert.equal(node.store.get(Market.RESTORE_KEY), '');
     await node.market.inferenceRecords.flush();
     assert.deepEqual(counts, [1]);
+    const journal = JSON.parse(node.store.get('inference.journal.v1')!);
+    const retained = JSON.parse(node.store.get(`inference.receipts.${journal.entries[0].id}`)!);
+    assert.deepEqual(retained, [streamed.inference_receipt]);
     const plain = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     assert.equal(plain.status, 200);
-    assert.equal((await plain.json()).base.content, 'JSON answer');
+    const plainBody = await plain.json();
+    assert.equal(plainBody.base.content, 'JSON answer');
+    assert.ok(plainBody.inference_receipt.id);
+    assert.notEqual(plainBody.inference_receipt.id, streamed.inference_receipt.id);
     const truncated = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ...body, messages: [{ role: 'user', content: 'Cut short' }] }) });
     assert.equal(truncated.status, 200);
-    assert.equal((await truncated.json()).base.finish_reason, 'length');
+    const truncatedBody = await truncated.json();
+    assert.equal(truncatedBody.base.finish_reason, 'length');
+    assert.equal(truncatedBody.inference_receipt, undefined);
     const denied = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, patch_ids: ['private-missing'], mode: 'patched', stream: true }) });
     assert.equal(denied.status, 404);
     assert.match(denied.headers.get('content-type')!, /application\/json/);

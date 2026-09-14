@@ -11,7 +11,8 @@ interface Batch {
   receipt_root: string;
 }
 
-interface Receipt { id: string; model_id: string; completed_at: number }
+export interface InferenceReceipt { id: string; model_id: string; completed_at: number }
+type Receipt = InferenceReceipt;
 interface Entry {
   id: string;
   batch: Batch;
@@ -88,8 +89,10 @@ export class InferenceRecords {
       this.report('Inference receipt not recorded: invalid model/clock or journal capacity reached; coverage is incomplete');
       return;
     }
-    this.journal.receipts.push({ id: randomUUID(), model_id: model, completed_at: completedAt });
+    const receipt = { id: randomUUID(), model_id: model, completed_at: completedAt };
+    this.journal.receipts.push(receipt);
     this.save();
+    return { ...receipt };
   }
 
   flush(): Promise<void> {
