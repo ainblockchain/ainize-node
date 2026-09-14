@@ -1854,8 +1854,9 @@ export class TeachWorker {
     const j = this.store.getTeachJob(id);
     if (!j) return;
     try {
+      const recipeModelId = j.job_dir ? this.readTrainerRecipe(j.job_dir)?.model?.id_M : null;
       const submittedAt = Date.now();
-      const at = await ledger.noteLesson(id, { ...lessonChainRecord(j, status, this.cfg.backend), submitted_at: submittedAt });
+      const at = await ledger.noteLesson(id, { ...lessonChainRecord(j, status, this.cfg.backend, recipeModelId), submitted_at: submittedAt });
       if (at) this.store.updateTeachJob(id, { chain_path: at.path, chain_tx: at.tx_hash });
       this.store.set(`teach.chain.${id}.${status}`, JSON.stringify({ status, submittedAt,
         acknowledgedAt: Date.now(), path: at?.path ?? null, txHash: at?.tx_hash ?? null,

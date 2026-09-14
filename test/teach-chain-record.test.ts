@@ -33,3 +33,11 @@ test('queued jobs and stub training cannot silently look like measured gradient 
 test('unavailable trainer clocks are not replaced with job creation time', () => {
   assert.equal(lessonChainRecord(job({ progress: { started_at: 'unknown' } }), 'TRAINING', 'gradient').training_started_at, null);
 });
+
+test('model identity comes only from a supplied trainer recipe, never a guessed default', () => {
+  assert.equal(lessonChainRecord(job(), 'READY', 'gradient', 'owner/model').model_id, 'owner/model');
+  assert.equal(lessonChainRecord(job(), 'QUEUED', 'gradient').model_id, null);
+  for (const invalid of ['', '   ', 42, {}, null, 'a'.repeat(513)]) {
+    assert.equal(lessonChainRecord(job(), 'READY', 'stub', invalid).model_id, null);
+  }
+});

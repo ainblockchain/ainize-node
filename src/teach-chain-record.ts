@@ -1,6 +1,6 @@
 import type { TeachJobRow } from './store.js';
 
-export function lessonChainRecord(job: TeachJobRow, status: string, backend: string) {
+export function lessonChainRecord(job: TeachJobRow, status: string, backend: string, recipeModelId: unknown = null) {
   const trainingStartedAt = job.progress?.started_at;
   return {
     status,
@@ -14,6 +14,7 @@ export function lessonChainRecord(job: TeachJobRow, status: string, backend: str
     training_started_at: typeof trainingStartedAt === 'number' && Number.isSafeInteger(trainingStartedAt) ? trainingStartedAt : null,
     finished_at: job.finished_at,
     backend,
+    model_id: typeof recipeModelId === 'string' && recipeModelId.trim() && recipeModelId.length <= 512 ? recipeModelId : null,
     patch_id: job.patch_id ?? job.draft_id ?? null,
     sha256: job.sha256 ?? null,
   };
