@@ -29,3 +29,6 @@ CREATED=true
 docker inspect "$NAME" --format '{"image":"{{.Image}}","cpuNano":{{.HostConfig.NanoCpus}},"memoryBytes":{{.HostConfig.Memory}},"memorySwapBytes":{{.HostConfig.MemorySwap}},"network":"{{.HostConfig.NetworkMode}}"}' > "$OUTPUT/hf-controller-docker.json"
 timeout 240 docker start -a "$NAME"
 [[ $(docker inspect "$NAME" --format '{{.State.ExitCode}}') == 0 ]]
+if [[ -n "${AINSCAN_SOURCE:-}" ]]; then
+  AINSCAN_TRAINING_SOURCE=hf bash "$CORE/scripts/verify-explorer-records.sh" "$OUTPUT"
+fi

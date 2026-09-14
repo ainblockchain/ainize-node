@@ -34,6 +34,23 @@ export AIN_TEST_FOLLOWUP=/absolute/path/to/ainize-node/scripts/run-hf-training-c
 bash scripts/test-inference-chain.sh /absolute/path/to/new-output
 ```
 
+To verify the resulting HF-backed transaction in actual AINSCAN pages before
+the private chain is removed, also set these variables before the same command:
+
+```sh
+export AINSCAN_SOURCE=/absolute/path/to/ainscan
+export AINSCAN_BUILD_DIR=/absolute/path/to/successful-production-build-output
+export AINSCAN_IMAGE=sha256:52e634617c0fad0207eeba4262ecdf142fc886649253ac42e4730ce75bd04dd5
+```
+
+The build output must come from AINSCAN's `scripts/verify-production-build.sh`,
+and its recorded clean source commit must match the current clean checkout.
+The optional explorer starts only after the HF binding check succeeds. Its
+CPU=1, memory=1 GiB production server uses the still-running private chain and
+binds only to loopback. It does not deploy or query the public AINSCAN website.
+The parent keeps the chain alive until all explorer checks finish. The explorer
+checks use this actual job's READY transaction, not replacement synthetic lessons.
+
 The parent sets up a private chain using its standard public development key.
 Never use/fund that key on a public network. The chain has CPU=2 and memory=4 GiB
 on its own internal Docker network. The controller also has CPU=2 and memory=4
@@ -94,3 +111,17 @@ rerunning with the repository's strict semantics passed without source changes.
 This proves one real source/import/native-record connection using simulated
 training. It does not prove 100 dataset integrations, inference, AINSCAN rendering
 of this particular transaction, public deployment or any performance target.
+
+## Optional explorer run, 2026-09-14
+
+A subsequent fresh run with the explorer variables enabled passed all seven
+AINSCAN route checks, including eight dedicated training detail fields. This
+run's actual HF-backed READY transaction
+`0x511f8d60f511007316ad4197b058faa63c7bf109c00a57d4f528100d72e441d2`
+was finalized in block 89 and displayed **415 ms**, matching its recorded block
+and submission timestamps. AINSCAN source was `7c40ae3`, production build
+`oEhap0hdJErgigG__fIg2`. Selected HTML, binding and block evidence is committed in
+ainize-core at `test/evidence/hf-cli-ainscan-20260914/`, with detailed scope and
+the initial Copy-button parsing failure documented in its reproduction guide.
+The backend still displayed `stub`; this adds actual explorer rendering evidence,
+not real model training/inference, a performance-target pass or public deployment.
