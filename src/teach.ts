@@ -413,6 +413,7 @@ export class TeachWorker {
   private policyCache: { at: number; value: TeachPolicyView } | null = null;
   private policyHits = new Map<string, { count: number; window: number }>();
   private checkWaitSince = new Map<string, number>();
+  private chainSubmissions = new Map<string, Promise<void>>();
   /** When each job first found the shared model BUSY (item 244) — the bounded grace is measured from here. */
   private lockWaitSince = new Map<string, number>();
   private lastLockLog = new Map<string, number>();
@@ -1857,13 +1858,23 @@ export class TeachWorker {
     if (!j) return;
     try {
       const recipeModelId = j.job_dir ? this.readTrainerRecipe(j.job_dir)?.model?.id_M : null;
-      const submittedAt = Date.now();
-      const at = await ledger.noteLesson(id, { ...lessonChainRecord(j, status, this.cfg.backend, recipeModelId), submitted_at: submittedAt });
-      if (at) this.store.updateTeachJob(id, { chain_path: at.path, chain_tx: at.tx_hash });
-      this.store.set(`teach.chain.${id}.${status}`, JSON.stringify({ status, submittedAt,
-        acknowledgedAt: Date.now(), path: at?.path ?? null, txHash: at?.tx_hash ?? null,
-        outcome: at ? 'submitted' : 'unconfirmed' }));
-      if (!at) this.log('warn', 'Training state was not confirmed as submitted to the blockchain', id);
+      const record = lessonChainRecord(j, status, this.cfg.backend, recipeModelId);
+      const previous = this.chainSubmissions.get(id) ?? Promise.resolve();
+      const submission = previous.catch(() => undefined).then(async () => {
+        const submittedAt = Date.now();
+        const at = await ledger.noteLesson!(id, { ...record, submitted_at: submittedAt });
+        if (at) this.store.updateTeachJob(id, { chain_path: at.path, chain_tx: at.tx_hash });
+        this.store.set(`teach.chain.${id}.${status}`, JSON.stringify({ status, submittedAt,
+          acknowledgedAt: Date.now(), path: at?.path ?? null, txHash: at?.tx_hash ?? null,
+          outcome: at ? 'submitted' : 'unconfirmed' }));
+        if (!at) this.log('warn', 'Training state was not confirmed as submitted to the blockchain', id);
+      });
+      this.chainSubmissions.set(id, submission);
+      try {
+        await submission;
+      } finally {
+        if (this.chainSubmissions.get(id) === submission) this.chainSubmissions.delete(id);
+      }
     } catch {
       this.log('warn', 'Training state blockchain recording failed; the lesson may continue without on-chain evidence', id);
     }
