@@ -27,6 +27,7 @@ import { MODEL_UNAVAILABLE, RuntimeUnavailableError } from './runtime.js';
 import { TREE_MAX_DEPTH, type Caller, type Market } from './market.js';
 import type { Store, TeachDatasetRecord, TeachFactRow, TeachJobRow } from './store.js';
 import { TeachError } from './teach-error.js';
+import { lessonChainRecord } from './teach-chain-record.js';
 import { TeachDatasets, type DatasetView } from './teach-datasets.js';
 import { canonicalBytes, endingKey, questionKey, readCanonicalJsonl, rowRefIndex, rowRefPatch, type CanonicalRow } from './teach-dataset.js';
 import { mergeQuestions, mergeRows, mergeRowReport, mergeTiers, type MergeConflict, type MergeResolution, type MergeTiers } from './teach-merge.js';
@@ -1853,18 +1854,16 @@ export class TeachWorker {
     const j = this.store.getTeachJob(id);
     if (!j) return;
     try {
-      const at = await ledger.noteLesson(id, {
-        status,
-        contributor: j.contributor,
-        dataset_sha256: j.dataset_sha256 ?? null,
-        rows: j.facts.length,
-        effort: (j.training as { effort?: string } | null)?.effort ?? null,
-        started_at: j.created_at,
-        patch_id: j.patch_id ?? j.draft_id ?? null,
-        sha256: j.sha256 ?? null,
-      });
+      const submittedAt = Date.now();
+      const at = await ledger.noteLesson(id, { ...lessonChainRecord(j, status, this.cfg.backend), submitted_at: submittedAt });
       if (at) this.store.updateTeachJob(id, { chain_path: at.path, chain_tx: at.tx_hash });
-    } catch { /* a chain that refuses the write must not fail a lesson that is otherwise fine */ }
+      this.store.set(`teach.chain.${id}.${status}`, JSON.stringify({ status, submittedAt,
+        acknowledgedAt: Date.now(), path: at?.path ?? null, txHash: at?.tx_hash ?? null,
+        outcome: at ? 'submitted' : 'unconfirmed' }));
+      if (!at) this.log('warn', 'Training state was not confirmed as submitted to the blockchain', id);
+    } catch {
+      this.log('warn', 'Training state blockchain recording failed; the lesson may continue without on-chain evidence', id);
+    }
   }
   /** A finished lesson releases its dataset: back to `ready`, or removed now when its owner asked for that. */
   private releaseDataset(job: TeachJobRow) {
