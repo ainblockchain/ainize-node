@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ainize/core';
 import { guardAnswer, type GuardResult } from './degenerate.js';
+import { consumeChatStream, type ChatStreamChunk } from './chat-stream.js';
 
 export interface VerifyOutcome {
   passed: boolean;
@@ -321,7 +322,7 @@ export class Runtime {
   }
 
   /** Chat completion on the serving model (OpenAI-compatible). Thinking is off by default so short factual answers come back directly. */
-  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number; sampling?: SamplingOptions | null } = {}): Promise<ChatResult> {
+  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number; sampling?: SamplingOptions | null; signal?: AbortSignal; onChunk?: (chunk: ChatStreamChunk) => Promise<void> } = {}): Promise<ChatResult> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
     const sampling = this.sampling('chat', opts.sampling);
@@ -332,20 +333,26 @@ export class Runtime {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           model, messages,
+          ...(opts.onChunk ? { stream: true, stream_options: { include_usage: true } } : {}),
           max_tokens: opts.maxTokens ?? sampling?.maxTokens ?? 256,
           temperature: opts.temperature ?? sampling?.temperature ?? 0,
           chat_template_kwargs: { enable_thinking: !!opts.thinking },
           ...Runtime.samplingBody(sampling, !!opts.thinking),
         }),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
+        signal: AbortSignal.any([AbortSignal.timeout(opts.timeoutMs ?? 300_000), ...(opts.signal ? [opts.signal] : [])]),
       });
-    } catch (e) { throw this.markDown(`chat: ${(e as Error).message}`); }
+    } catch (e) {
+      if (opts.signal?.aborted) throw e;
+      throw this.markDown(`chat: ${(e as Error).message}`);
+    }
     if (!r.ok) {
       const text = (await r.text().catch(() => '')).slice(0, 200);
       if (Runtime.isModelFailure(r.status)) throw this.markDown(`chat failed: ${r.status} ${text}`);
       throw new Error(`chat failed: ${r.status} ${text}`);
     }
-    const j = (await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string }; finish_reason?: string }[]; usage?: Record<string, unknown> };
+    const streamed = opts.onChunk ? await consumeChatStream(r, opts.onChunk) : null;
+    const j = (streamed ? { choices: [{ message: { content: streamed.content, reasoning_content: streamed.reasoning }, finish_reason: streamed.finishReason }], usage: streamed.usage }
+      : await r.json()) as { choices: { message: { content: string | null; reasoning_content?: string; reasoning?: string }; finish_reason?: string }[]; usage?: Record<string, unknown> };
     const c = j.choices?.[0];
     const m = c?.message;
     this.downUntil = 0;

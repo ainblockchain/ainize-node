@@ -20,6 +20,7 @@ import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
 import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
+import type { ChatStreamChunk } from './chat-stream.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
 import type { Store, BlobRow, CreditGrantRow, EventRow, LicenseRow, LicenseSource } from './store.js';
 import { Payouts } from './payouts.js';
@@ -489,6 +490,8 @@ export interface Caller { address?: string | null; operator?: boolean }
 
 /** One live test: what to load, what to ask, and (D3) the client's id for it. */
 export interface ChatOpts {
+  signal?: AbortSignal;
+  onChunk?: (chunk: ChatStreamChunk, mode: 'base' | 'patched') => Promise<void>;
   patchIds?: string[]; patchId?: string;
   /** The conversation, ending with the question to answer. Used for both columns unless one is overridden below. */
   messages: ChatMessage[];
@@ -3789,13 +3792,14 @@ export class Market {
     // the patched model said. Same last question either way (POST /api/chat rejects a pair that disagrees on it).
     const msgsBase = opts.messagesBase ? clamp(opts.messagesBase) : msgs;
     const msgsPatched = opts.messagesPatched ? clamp(opts.messagesPatched) : msgs;
-    const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking };
+    const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking, signal: opts.signal };
     const label = baseOnly ? 'chat:base' : `chat:${ids.join('+')}`;
     // `onEnter` fires the instant the shared lock is ours, before any model call: that is both when the client's
     // "queued" turns into "running" and the last moment a give-up costs the visitor nothing.
     let gaveUp = false;
     const onEnter = opts.requestId ? () => { gaveUp = !this.chatQueue.enter(opts.requestId!); } : undefined;
     return this.runtime.exclusive(label, async () => {
+      opts.signal?.throwIfAborted();
       if (gaveUp) throw new ChatCancelledError();
       // NOTE: inside exclusive() use the *Raw variants — apply()/remove() take the same lock and would deadlock.
       //
@@ -3842,12 +3846,12 @@ export class Market {
         if (mode === 'base' || mode === 'compare') {
           // Everything the test is about comes off — through the journal, so a knowledge underneath it stays standing.
           await this.assertStack(belowLayers, chatReason);
-          base = await this.runtime.chat(msgsBase, chatOpts);
+          base = await this.runtime.chat(msgsBase, { ...chatOpts, onChunk: opts.onChunk ? chunk => opts.onChunk!(chunk, 'base') : undefined });
         }
         if (mode === 'patched' || mode === 'compare') {
           const res = await this.assertStack([...belowLayers, ...testLayers], chatReason);
           targets.forEach((t, i) => { appliedMs[i] = res.ms[t.id] ?? null; });
-          patched = await this.runtime.chat(msgsPatched, chatOpts);
+          patched = await this.runtime.chat(msgsPatched, { ...chatOpts, onChunk: opts.onChunk ? chunk => opts.onChunk!(chunk, 'patched') : undefined });
         }
       } finally {
         // Always leave this node serving exactly what it served before the test — the recorded stack, in its recorded

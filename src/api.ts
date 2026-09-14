@@ -5,6 +5,7 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { once } from 'node:events';
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
@@ -1957,6 +1958,7 @@ export function buildApi(deps: ApiDeps): Router {
       // knowledge exists, and the only thing a visitor can ask on a node with an empty catalog.
       patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['base', 'patched', 'compare']).default('compare'),
+      stream: z.boolean().default(false),
       messages: history,
       /**
        * Compare mode with a history: the per-column conversations. `messages_base` replays what the BASE model
@@ -2008,14 +2010,45 @@ export function buildApi(deps: ApiDeps): Router {
     // must not burn a free try" always meant — it just used to be implemented by not taking them at all, so
     // concurrent callers each measured an untouched counter and every one of them passed.
     let out;
+    const abort = new AbortController();
+    const disconnect = () => { if (!res.writableEnded) abort.abort(); };
+    if (body.stream) res.once('close', disconnect);
+    const streamId = `chatcmpl-${randomBytes(16).toString('hex')}`;
+    const streamCreated = Math.floor(Date.now() / 1000);
+    const writeStream = async (frame: string) => {
+      abort.signal.throwIfAborted();
+      if (!res.headersSent) {
+        res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+        res.flushHeaders();
+      }
+      if (!res.write(frame)) await once(res, 'drain', { signal: abort.signal });
+      res.flush?.();
+    };
     try {
-      out = await market.chat({ ...body, requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
+      out = await market.chat({ ...body, maxTokens: body.max_tokens, signal: abort.signal,
+        onChunk: body.stream ? async (chunk, mode) => {
+          await writeStream(`data: ${JSON.stringify({ ...chunk, id: streamId, created: streamCreated, ainize_mode: mode,
+            choices: chunk.choices.map(choice => ({ ...choice, index: body.mode === 'compare' && mode === 'patched' ? 1 : 0 })) })}\n\n`);
+        } : undefined,
+        requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
     } catch (e) {
       if (mine) market.refundChatQuota(mine);
       if (network && !mineIsShared) market.refundChatQuota(network);
+      res.off('close', disconnect);
+      if (res.headersSent) {
+        if (!res.destroyed) res.end(`event: error\ndata: ${JSON.stringify({ error: { message: 'Chat stream interrupted', type: 'stream_error' } })}\n\n`);
+        return;
+      }
       throw e;
     }
     const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, false) : Infinity;
+    if (body.stream) {
+      try {
+        await writeStream(`event: ainize.result\ndata: ${JSON.stringify({ ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      } finally { res.off('close', disconnect); }
+      return;
+    }
     return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR };
   }));
   /**

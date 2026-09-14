@@ -5,7 +5,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
@@ -60,11 +59,6 @@ export const UPLOAD_TEMP_TTL_MS = 3600_000;
 /** Warn about the volume below this share of free space, or below this many bytes, whichever bites first (item 128). */
 export const DISK_WARN_FRACTION = 0.05;
 export const DISK_WARN_BYTES = 2 * 1000 ** 3;
-
-function defaultWebDist(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '..', '..', 'web', 'dist');
-}
 
 export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promise<RunningNode> {
   // A config nothing ever checked used to boot: `port notanumber` bound an ephemeral port, `roles admin` silently
@@ -186,8 +180,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     res.status(404).json({ error: 'not found', hint: 'health checks: /healthz (the process is alive) and /readyz (ledger + runtime); /api/info for detail' });
   });
 
-  const webDist = opts.webDist ?? defaultWebDist();
-  if (opts.serveWeb !== false && existsSync(join(webDist, 'index.html'))) {
+  const webDist = opts.webDist ? resolve(opts.webDist) : undefined;
+  if (opts.serveWeb !== false && webDist && existsSync(join(webDist, 'index.html'))) {
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
     app.get(/^\/(?!api\/|x402\/|p2p\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
   } else {
