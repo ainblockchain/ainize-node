@@ -322,9 +322,10 @@ export class Runtime {
   }
 
   /** Chat completion on the serving model (OpenAI-compatible). Thinking is off by default so short factual answers come back directly. */
-  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number; sampling?: SamplingOptions | null; signal?: AbortSignal; onChunk?: (chunk: ChatStreamChunk) => Promise<void> } = {}): Promise<ChatResult> {
+  async chat(messages: ChatMessage[], opts: { maxTokens?: number; temperature?: number; thinking?: boolean; timeoutMs?: number; sampling?: SamplingOptions | null; signal?: AbortSignal; expectedModel?: string; onChunk?: (chunk: ChatStreamChunk) => Promise<void> } = {}): Promise<ChatResult> {
     const model = await this.models();
     if (!model || !this.cfg.api) throw new Error('serving API unreachable');
+    if (opts.expectedModel && model !== opts.expectedModel) throw new Error('Requested model is no longer served by this runtime');
     const sampling = this.sampling('chat', opts.sampling);
     const t0 = Date.now();
     let r: Response;

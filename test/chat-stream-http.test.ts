@@ -56,7 +56,10 @@ test('headless node forwards model SSE before completion and preserves JSON mode
     const chatContent = specification.paths['/api/chat'].post.responses['200'].content;
     assert.ok(chatContent['application/json']);
     assert.ok(chatContent['text/event-stream']);
-    const body = { patch_ids: [], mode: 'base', messages: [{ role: 'user', content: 'Say hello' }], max_tokens: 7 };
+    const body = { patch_ids: [], mode: 'base', model: 'test-model', messages: [{ role: 'user', content: 'Say hello' }], max_tokens: 7 };
+    const wrongModel = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, model: 'other-model', stream: true }) });
+    assert.equal(wrongModel.status, 409);
+    assert.match(wrongModel.headers.get('content-type')!, /application\/json/);
     const response = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, stream: true }), signal: AbortSignal.timeout(15000) });
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type')!, /text\/event-stream/);

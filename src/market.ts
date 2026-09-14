@@ -490,6 +490,7 @@ export interface Caller { address?: string | null; operator?: boolean }
 
 /** One live test: what to load, what to ask, and (D3) the client's id for it. */
 export interface ChatOpts {
+  model?: string;
   signal?: AbortSignal;
   onChunk?: (chunk: ChatStreamChunk, mode: 'base' | 'patched') => Promise<void>;
   patchIds?: string[]; patchId?: string;
@@ -3792,7 +3793,8 @@ export class Market {
     // the patched model said. Same last question either way (POST /api/chat rejects a pair that disagrees on it).
     const msgsBase = opts.messagesBase ? clamp(opts.messagesBase) : msgs;
     const msgsPatched = opts.messagesPatched ? clamp(opts.messagesPatched) : msgs;
-    const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking, signal: opts.signal };
+    if (opts.model && st.model !== opts.model) throw conflict(`requested model ${opts.model} is not served by this node`);
+    const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking, signal: opts.signal, expectedModel: opts.model };
     const label = baseOnly ? 'chat:base' : `chat:${ids.join('+')}`;
     // `onEnter` fires the instant the shared lock is ours, before any model call: that is both when the client's
     // "queued" turns into "running" and the last moment a give-up costs the visitor nothing.

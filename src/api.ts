@@ -1959,6 +1959,7 @@ export function buildApi(deps: ApiDeps): Router {
       patch_id: z.string().min(1).optional(), patch_ids: z.array(z.string().min(1)).max(MAX_CHAT_PATCHES).optional(),
       mode: z.enum(['base', 'patched', 'compare']).default('compare'),
       stream: z.boolean().default(false),
+      model: z.string().min(1).max(512).optional(),
       messages: history,
       /**
        * Compare mode with a history: the per-column conversations. `messages_base` replays what the BASE model
