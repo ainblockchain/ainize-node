@@ -23,7 +23,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize/core';
-import { API_SAM_PREFIX, verifySamAuth } from './sam.js';
+import { API_SAM_PREFIX, verifySamAuth, type MeshRelay } from './sam.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -207,13 +207,20 @@ export function listAgents(cfg: NodeConfig): AgentConfig[] {
   return raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
 }
 
-/** What the list needs from the rest of the node to show agents it does not itself operate. */
+/** What the list needs from the rest of the node to show — and serve — agents it does not itself operate. */
 export interface AgentsDeps {
   /** The peer table and node registry, as `market.knownNodes()` returns it. */
   knownNodes?: () => Promise<PeerInfo[]>;
   /** This node's own address, so its own row is not listed twice. */
   selfAddress?: string;
+  /** The mesh hop (sam.ts). Without it this node lists peers' agents; with it, it also serves them. */
+  relay?: MeshRelay;
+  /** This node's public base URL, for the addresses it hands out. */
+  publicUrl?: () => string | undefined;
 }
+
+/** How long an id → peer resolution is reused. The peer table is gossiped; it does not change per request. */
+const REGISTRY_TTL_MS = 30_000;
 
 export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const r = Router();
@@ -221,6 +228,51 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   // express 5 types a wildcard param as string | string[]; an agent id is always one segment
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? '';
   const find = (id: string) => listAgents(cfg).find((a) => a.id === id);
+  /** The address this node is known by: its configured public URL, or the host the request came in on. */
+  const publicBase = (req: Request) => deps.publicUrl?.() ?? (cfg as NodeConfig & { publicUrl?: string }).publicUrl
+    ?? `${req.protocol}://${req.get('host') ?? ''}`;
+
+  /**
+   * Agents this node has REGISTERED from the peer table: id → the node that runs it.
+   *
+   * This is what gives a peer's agent an address here. The nodes are already connected over p2p, so nothing
+   * about the network has to change for it — the advert arrived on a gossip round, and this node can reach
+   * the peer on the same link it learned it from. A caller only ever sees `/agents/<id>` on this node.
+   *
+   * **Local wins, then most recently seen.** Two nodes may run an agent with the same id, and an id is not an
+   * identity; whoever this node runs itself is never shadowed by a peer, and between peers the fresher advert
+   * holds the name. The peer-qualified mesh path (`/sam/<peer>/a2a/<id>`) always reaches a specific one, so
+   * nothing is unreachable — only the short name is contested.
+   */
+  let registry = new Map<string, { peer: string; node: PeerInfo }>();
+  let registryAt = 0;
+  const registered = async (): Promise<Map<string, { peer: string; node: PeerInfo }>> => {
+    if (Date.now() - registryAt < REGISTRY_TTL_MS) return registry;
+    const self = (deps.selfAddress ?? cfg.identity?.address ?? '').toLowerCase();
+    const next = new Map<string, { peer: string; node: PeerInfo }>();
+    const seenAt = new Map<string, number>();
+    for (const node of (await deps.knownNodes?.().catch(() => [])) ?? []) {
+      if (!node?.agents?.length || (node.address ?? '').toLowerCase() === self) continue;
+      for (const ad of node.agents) {
+        if (!ad?.id || !ad.url) continue;
+        const at = node.last_seen ?? 0;
+        if ((seenAt.get(ad.id) ?? -1) >= at) continue;
+        seenAt.set(ad.id, at);
+        next.set(ad.id, { peer: node.address, node });
+      }
+    }
+    registry = next;
+    registryAt = Date.now();
+    return registry;
+  };
+  /** The remote agent behind an id, ready to call — or null when this node has no such registration. */
+  const remote = async (id: string) => {
+    if (find(id) || !deps.relay) return null;
+    const hit = (await registered()).get(id);
+    if (!hit) return null;
+    const peerUrl = deps.relay.resolve(hit.peer);
+    return peerUrl ? { ...hit, peerUrl, relay: deps.relay } : null;
+  };
 
   /**
    * §6.1 — what the operator's list is built from. Public on purpose: the A2A URLs are public endpoints
@@ -271,6 +323,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      * counted none of them and a zero would read as "nobody uses it".
      */
     const self = (deps.selfAddress ?? (cfg as NodeConfig & { identity?: { address?: string } }).identity?.address ?? '').toLowerCase();
+    const base = (publicUrl ?? '').replace(/\/+$/, '');
+    const reg = await registered();
     const seen = new Set(out.map((a) => a.a2a_url));
     /**
      * One row per (node, agent), newest advert wins.
@@ -289,6 +343,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         const prior = byAgent.get(key);
         const seen_at = node.last_seen ?? 0;
         if (prior && prior.seen_at >= seen_at) continue;
+        const front = reg.get(ad.id)?.peer === node.address;
+        const mesh = `${base}${API_SAM_PREFIX}/${node.address}/a2a/${ad.id}`;
         byAgent.set(key, { seen_at, row: {
           id: ad.id,
           name: ad.name || ad.id,
@@ -299,8 +355,20 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
           extensions: ad.extensions ?? [],
           provider: null,
           documentation_url: null,
-          a2a_url: ad.url,
-          card_url: `${ad.url.replace(/\/+$/, '')}/.well-known/agent-card.json`,
+          /**
+           * The address to give somebody else.
+           *
+           * This node's own, when it has registered the agent: the nodes are connected over p2p already, so a
+           * caller does not need to reach the peer — this node does, and it can. The peer's own address is
+           * still reported as `origin_url`, because who runs an agent is not a detail to hide from whoever is
+           * about to send it their text.
+           *
+           * An id is not an identity, so when two nodes run one id only the registered one gets the short
+           * address here; the other keeps the peer-qualified mesh URL, which always reaches exactly it.
+           */
+          a2a_url: front ? agentUrl(base, ad.id) : mesh,
+          card_url: `${(front ? agentUrl(base, ad.id) : mesh).replace(/\/+$/, '')}/.well-known/agent-card.json`,
+          origin_url: ad.url,
           /**
            * Where a caller on THIS node sends the request.
            *
@@ -310,7 +378,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
            * their LAN. The mesh path forwards it from this node instead, which is the one machine that can
            * reach both ends.
            */
-          call_url: `${(publicUrl ?? '').replace(/\/+$/, '')}${API_SAM_PREFIX}/${node.address}/a2a/${ad.id}`,
+          call_url: mesh,
           reachable: ad.reachable ?? null,
           last_checked: node.last_seen ?? null,
           error: null,
@@ -327,8 +395,18 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const serveCard = async (req: Request, res: Response) => {
     const id = one(req.params.id);
     const a = find(id);
-    if (!a) return res.status(404).json({ error: `no agent "${id}" on this node` });
     const tail = `/${(req.params as { path?: string[] }).path?.join('/') ?? ''}`.replace(/\/+$/, '') || '/';
+    if (!a) {
+      // Registered from the peer table: the card is the peer's, rewritten so it is followed back here. A
+      // client never learns which node runs the agent, which is the point of registering it.
+      const via = await remote(id);
+      if (!via) return res.status(404).json({ error: `no agent "${id}" on this node` });
+      if (!CARD_PATHS.includes(tail)) return res.status(404).json({ error: 'not found' });
+      const base = agentUrl(publicBase(req), id);
+      const out = await via.relay.card(via.peer, via.peerUrl, id, base, req.header('a2a-version'));
+      if ('error' in out) return res.status(out.status).json({ error: out.error });
+      return res.json(out.card);
+    }
     if (!CARD_PATHS.includes(tail)) return res.status(404).json({ error: 'not found' });
 
     const { card, error } = await fetchCard(a);
@@ -349,7 +427,35 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const callAgent = async (req: Request, res: Response) => {
     const id = one(req.params.id);
     const a = find(id);
-    if (!a) return res.status(404).json({ error: `no agent "${id}" on this node` });
+    if (!a) {
+      const via = await remote(id);
+      if (!via) return res.status(404).json({ error: `no agent "${id}" on this node` });
+      if (rateLimited(req.ip ?? 'unknown')) {
+        return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
+      }
+      // the gate runs on the way out to the peer, exactly as it does on the mesh path — same code, same refusal
+      const refusal = await via.relay.gate(via.peer, via.peerUrl, req.header('x-sam-required-labels'));
+      if (refusal) return res.status(refusal.status).type('text/plain').send(refusal.body);
+      const body = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+      if (body.length > MAX_BODY_BYTES) {
+        return res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'request body too large' } });
+      }
+      const out = await via.relay.call(via.peer, via.peerUrl, id, body, {
+        ...(req.header('authorization') ? { Authorization: req.header('authorization') as string } : {}),
+        ...(req.header('a2a-version') ? { 'A2A-Version': req.header('a2a-version') as string } : {}),
+      });
+      if ('error' in out) {
+        return res.status(504).json({
+          jsonrpc: '2.0', id: (req.body as { id?: unknown })?.id ?? null,
+          error: { code: -32603, message: `agent did not answer: ${out.error}` },
+        });
+      }
+      const c = calls.get(id) ?? { total: 0, last_at: null };
+      calls.set(id, { total: c.total + 1, last_at: Date.now() });
+      res.status(out.status);
+      res.setHeader('Content-Type', out.contentType);
+      return res.send(out.body);
+    }
     if (rateLimited(req.ip ?? 'unknown')) {
       return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
     }

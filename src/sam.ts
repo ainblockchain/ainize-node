@@ -264,15 +264,37 @@ export interface SamDeps {
 
 interface Verdict { until: number }
 
-export function buildSam(deps: SamDeps): Router {
-  const r = Router();
+/**
+ * The hop itself, with no routes attached.
+ *
+ * Two surfaces need it and they are not the same surface. `/sam/{peer}/a2a/{service}` is the mesh path, where
+ * the caller names the peer. `/agents/{id}` is the front door: an agent this node has REGISTERED from the peer
+ * table gets an address here, and a caller that uses it never learns which node runs the agent — which is the
+ * point, since the marketplace is what it was given. One implementation, so the labels gate, the signature and
+ * the rate limit cannot drift apart between them.
+ */
+export interface MeshRelay {
+  /** Where a peer address answers, from THIS node's peer table. Null for an address it does not know. */
+  resolve(peer: string): string | null;
+  /** The labels gate. Null to proceed, or the HTTP refusal to send — checked before any body leaves. */
+  gate(peer: string, peerUrl: string, requiredLabels: string | undefined): Promise<{ status: number; body: string } | null>;
+  /** Fetch a remote agent card and rewrite it to be followed at `base`. */
+  card(peer: string, peerUrl: string, service: string, base: string, a2aVersion?: string): Promise<{ card: Record<string, unknown> } | { status: number; error: string }>;
+  /** Forward one JSON-RPC body to the peer's agent. */
+  call(peer: string, peerUrl: string, service: string, body: Buffer, headers: Record<string, string>): Promise<{ status: number; contentType: string; body: Buffer } | { error: string }>;
+  /** Per-IP ceiling. Every call it forwards is spent on somebody else's machine. */
+  limited(ip: string): boolean;
+  enabled(): boolean;
+}
+
+export function makeMeshRelay(deps: SamDeps): MeshRelay {
   const gate = new Map<string, Verdict>();
-  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? '';
   const sam = () => samConfig(deps.cfg);
   const selfUrl = () => deps.selfUrl().replace(/\/+$/, '');
+  const rateLimited = meshLimiter();
 
   /** Where a peer address actually lives. Never a URL from the path — that would make this an open proxy. */
-  const resolvePeer = (peer: string): string | null => {
+  const resolve = (peer: string): string | null => {
     if (peer === deps.identity.address) return selfUrl();
     for (const p of deps.peers()) if (p.address && p.address === peer) return p.endpoint.replace(/\/+$/, '');
     return null;
@@ -283,7 +305,7 @@ export function buildSam(deps: SamDeps): Router {
    * to send. Positive verdicts are cached per (peer, requirement, floor) — a verdict under one floor says
    * nothing about another, so the floor is part of the key.
    */
-  const labelGate = async (peer: string, peerUrl: string, header: string | undefined): Promise<{ status: number; body: string } | null> => {
+  const gateFor = async (peer: string, peerUrl: string, header: string | undefined): Promise<{ status: number; body: string } | null> => {
     const parsed = parseRequiredLabels(header);
     if ('error' in parsed) return { status: 400, body: `Invalid X-Sam-Required-Labels header: ${parsed.error}` };
     const required = parsed.labels;
@@ -315,6 +337,64 @@ export function buildSam(deps: SamDeps): Router {
   };
 
   const enabled = () => sam().enabled !== false;
+
+  /**
+   * Fetch a remote agent card and rewrite it for `base`.
+   *
+   * The agent's own card names addresses on the provider's machine; a client that followed them would post to
+   * its own. Whatever error the agent gives is relayed as the agent's, not masked as a mesh failure — an
+   * operator debugging a 404 needs to know it came from their own process.
+   */
+  const card: MeshRelay['card'] = async (peer, peerUrl, service, base, a2aVersion) => {
+    let body: unknown = null;
+    try {
+      const upstream = await fetch(`${peerUrl}${AGENT_PREFIX}/${service}/${CARD_PATH}`, {
+        headers: { Accept: 'application/json', ...(a2aVersion ? { 'A2A-Version': a2aVersion } : {}) },
+        signal: AbortSignal.timeout(CARD_TIMEOUT_MS),
+      });
+      if (!upstream.ok) return { status: upstream.status, error: `agent card of "${service}" on ${peer}: HTTP ${upstream.status}` };
+      body = JSON.parse((await upstream.text()).slice(0, MAX_CARD_BYTES));
+    } catch (e) {
+      deps.log?.('warn', 'sam', `agent card fetch from ${peer} failed: ${(e as Error).message}`);
+      return { status: 502, error: `Bad Gateway: agent card fetch failed (${(e as Error).message})` };
+    }
+    const out = regenerateCard(body, base);
+    return 'error' in out ? { status: 502, error: `Bad Gateway: ${out.error}` } : out;
+  };
+
+  const call: MeshRelay['call'] = async (peer, peerUrl, service, body, headers) => {
+    try {
+      const upstream = await fetch(`${peerUrl}${AGENT_PREFIX}/${service}`, {
+        method: 'POST',
+        body,
+        headers: {
+          'Content-Type': 'application/json',
+          // signed and bound to this exact target: a captured header is useless against another agent
+          'x-ainize-auth': samAuthHeader(deps.identity, peer, service),
+          ...headers,
+        },
+        signal: AbortSignal.timeout(EGRESS_TIMEOUT_MS),
+      });
+      return {
+        status: upstream.status,
+        contentType: upstream.headers.get('content-type') ?? 'application/json',
+        body: Buffer.from(await upstream.arrayBuffer()),
+      };
+    } catch (e) {
+      deps.log?.('warn', 'sam', `egress to ${peer}/${service} failed: ${(e as Error).message}`);
+      return { error: (e as Error).message };
+    }
+  };
+
+  return { resolve, gate: gateFor, card, call, limited: rateLimited, enabled };
+}
+
+export function buildSam(deps: SamDeps, relay: MeshRelay = makeMeshRelay(deps)): Router {
+  const r = Router();
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? '';
+  const sam = () => samConfig(deps.cfg);
+  const selfUrl = () => deps.selfUrl().replace(/\/+$/, '');
+  const enabled = () => relay.enabled();
 
   // ── provider side: what this node says about itself, and what it offers the mesh
   r.get(`${SAM_PREFIX}/labels`, (_req, res) => {
@@ -350,36 +430,22 @@ export function buildSam(deps: SamDeps): Router {
   // gossip round that was happening anyway, and `/api/agents` merges it — a second fan-out of HTTP requests
   // would be a slower answer to a question the peer table has already answered. This file is about CALLING.
 
-  // ── caller side: the egress path
+  // ── caller side: the egress path. The machinery is `relay`; these are the routes onto it.
   const routeOf = (req: Request) => ({ peer: one(req.params.peer), service: one(req.params.service) });
+  const off = (res: Response) => res.status(404).json({ error: 'the mesh is switched off on this node (sam.enabled)' });
+  const unknownPeer = (res: Response, peer: string) => res.status(404).json({ error: `peer "${peer}" is not in this node's peer table` });
 
   /**
    * Card regeneration. Served at the well-known path AND at the bare service root, because resolvers disagree
    * about which one a pathful base URL means, and a client that guesses wrong gets an HTML page from the SPA.
    */
   const serveCard = (prefix: string) => async (req: Request, res: Response) => {
-    if (!enabled()) return res.status(404).json({ error: 'the mesh is switched off on this node (sam.enabled)' });
+    if (!enabled()) return off(res);
     const { peer, service } = routeOf(req);
-    const peerUrl = resolvePeer(peer);
-    if (!peerUrl) return res.status(404).json({ error: `peer "${peer}" is not in this node's peer table` });
-    let card: unknown = null;
-    try {
-      const upstream = await fetch(`${peerUrl}${AGENT_PREFIX}/${service}/${CARD_PATH}`, {
-        headers: { Accept: 'application/json', ...(req.header('a2a-version') ? { 'A2A-Version': req.header('a2a-version') as string } : {}) },
-        signal: AbortSignal.timeout(CARD_TIMEOUT_MS),
-      });
-      if (!upstream.ok) {
-        // the agent's own error is the useful one; relay the status rather than masking it as a mesh failure
-        return res.status(upstream.status).json({ error: `agent card of "${service}" on ${peer}: HTTP ${upstream.status}` });
-      }
-      const text = (await upstream.text()).slice(0, MAX_CARD_BYTES);
-      card = JSON.parse(text);
-    } catch (e) {
-      deps.log?.('warn', 'sam', `agent card fetch from ${peer} failed: ${(e as Error).message}`);
-      return res.status(502).json({ error: `Bad Gateway: agent card fetch failed (${(e as Error).message})` });
-    }
-    const out = regenerateCard(card, meshUrl(selfUrl(), peer, service, prefix));
-    if ('error' in out) return res.status(502).json({ error: `Bad Gateway: ${out.error}` });
+    const peerUrl = relay.resolve(peer);
+    if (!peerUrl) return unknownPeer(res, peer);
+    const out = await relay.card(peer, peerUrl, service, meshUrl(selfUrl(), peer, service, prefix), req.header('a2a-version'));
+    if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out.card);
   };
 
@@ -390,60 +456,37 @@ export function buildSam(deps: SamDeps): Router {
   }
 
   /** The call itself. Gate first, forward second — the order is the feature. */
-  const relay = async (req: Request, res: Response) => {
-    if (!enabled()) return res.status(404).json({ error: 'the mesh is switched off on this node (sam.enabled)' });
-    const { peer, service } = routeOf(req);
-    const peerUrl = resolvePeer(peer);
-    if (!peerUrl) return res.status(404).json({ error: `peer "${peer}" is not in this node's peer table` });
-
-    const refusal = await labelGate(peer, peerUrl, req.header(HEADER_REQUIRED_LABELS));
-    if (refusal) return res.status(refusal.status).type('text/plain').send(refusal.body);
-
-    const raw = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
-    if (raw.length > MAX_BODY_BYTES) {
-      return res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'request body too large' } });
-    }
-    const target = `${peerUrl}${AGENT_PREFIX}/${service}`;
-    try {
-      const upstream = await fetch(target, {
-        method: 'POST',
-        body: raw,
-        headers: {
-          'Content-Type': 'application/json',
-          // signed and bound to this exact target: a captured header is useless against another agent
-          'x-ainize-auth': samAuthHeader(deps.identity, peer, service),
-          // the local credential never leaves the node; Authorization stays the destination's to use
-          ...(req.header('authorization') ? { Authorization: req.header('authorization') as string } : {}),
-          ...(req.header(HEADER_AGENT) ? { 'X-Sam-Agent': req.header(HEADER_AGENT) as string } : {}),
-          ...(req.header('a2a-version') ? { 'A2A-Version': req.header('a2a-version') as string } : {}),
-        },
-        signal: AbortSignal.timeout(EGRESS_TIMEOUT_MS),
-      });
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/json');
-      res.send(Buffer.from(await upstream.arrayBuffer()));
-    } catch (e) {
-      deps.log?.('warn', 'sam', `egress to ${peer}/${service} failed: ${(e as Error).message}`);
-      res.status(504).json({
-        jsonrpc: '2.0', id: (req.body as { id?: unknown })?.id ?? null,
-        error: { code: -32603, message: `agent did not answer: ${(e as Error).message}` },
-      });
-    }
-  };
-  /**
-   * A per-IP limit in front of the relay.
-   *
-   * `/agents/<id>` has one because a public URL a crawler can find must not be able to spend the node's GPU.
-   * This path spends SOMEBODY ELSE'S — every call is forwarded to a peer, on that operator's machine — so it
-   * needs the same limit for the same reason, one step further out.
-   */
-  const rateLimited = meshLimiter();
   for (const prefix of SAM_PREFIXES) {
-    r.post(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service`, (req: Request, res: Response) => {
-      if (rateLimited(req.ip ?? 'unknown')) {
+    r.post(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service`, async (req: Request, res: Response) => {
+      if (!enabled()) return off(res);
+      const { peer, service } = routeOf(req);
+      const peerUrl = relay.resolve(peer);
+      if (!peerUrl) return unknownPeer(res, peer);
+      if (relay.limited(req.ip ?? 'unknown')) {
         return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
       }
-      return relay(req, res);
+      const refusal = await relay.gate(peer, peerUrl, req.header(HEADER_REQUIRED_LABELS));
+      if (refusal) return res.status(refusal.status).type('text/plain').send(refusal.body);
+
+      const raw = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+      if (raw.length > MAX_BODY_BYTES) {
+        return res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'request body too large' } });
+      }
+      const out = await relay.call(peer, peerUrl, service, raw, {
+        // the local credential never leaves the node; Authorization stays the destination's to use
+        ...(req.header('authorization') ? { Authorization: req.header('authorization') as string } : {}),
+        ...(req.header(HEADER_AGENT) ? { 'X-Sam-Agent': req.header(HEADER_AGENT) as string } : {}),
+        ...(req.header('a2a-version') ? { 'A2A-Version': req.header('a2a-version') as string } : {}),
+      });
+      if ('error' in out) {
+        return res.status(504).json({
+          jsonrpc: '2.0', id: (req.body as { id?: unknown })?.id ?? null,
+          error: { code: -32603, message: `agent did not answer: ${out.error}` },
+        });
+      }
+      res.status(out.status);
+      res.setHeader('Content-Type', out.contentType);
+      res.send(out.body);
     });
   }
 

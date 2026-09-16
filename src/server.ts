@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents } from './agents.js';
-import { buildSam } from './sam.js';
+import { buildSam, makeMeshRelay } from './sam.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ainize/core';
@@ -162,21 +162,33 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
 
-  // A2A agents this node operates (NEWS-AGENT-REQUIREMENTS §5). Mounted before the SPA catch-all so that
-  // `/agents/<id>/.well-known/agent-card.json` is a card and not an HTML page — an A2A client that receives
-  // index.html reports "no name in card" and the real cause is invisible.
-  app.use(buildAgents(cfg, { knownNodes: () => market.knownNodes(), selfAddress: cfg.identity.address }));
-
-  // Agent-to-agent across nodes, on SAM's wire contract (sam.ts): the mesh path, card regeneration and the
-  // fail-closed labels gate. Mounted beside the agent surface because the two are halves of one thing — this is
-  // the caller's side of what `/agents/<id>` serves.
-  app.use(buildSam({
+  const samDeps = {
     cfg,
     identity: cfg.identity,
     peers: () => store.listPeers().map((p) => ({ address: p.address, endpoint: p.endpoint })),
     selfUrl: () => market.publicUrl,
-    log: (level, kind, message, data) => market.log(level, kind, message, null, data),
+    log: (level: 'debug' | 'info' | 'warn' | 'error', kind: string, message: string, data?: unknown) =>
+      market.log(level, kind, message, null, data),
+  };
+
+  // A2A agents this node operates (NEWS-AGENT-REQUIREMENTS §5). Mounted before the SPA catch-all so that
+  // `/agents/<id>/.well-known/agent-card.json` is a card and not an HTML page — an A2A client that receives
+  // index.html reports "no name in card" and the real cause is invisible.
+  // The mesh hop is shared: `/sam/<peer>/a2a/<id>` names the peer, `/agents/<id>` is the address this node
+  // hands out for an agent it has registered from the peer table. One implementation, so the labels gate, the
+  // signature and the rate limit cannot drift apart between the two doors.
+  const mesh = makeMeshRelay(samDeps);
+  app.use(buildAgents(cfg, {
+    knownNodes: () => market.knownNodes(),
+    selfAddress: cfg.identity.address,
+    relay: mesh,
+    publicUrl: () => market.publicUrl,
   }));
+
+  // Agent-to-agent across nodes, on SAM's wire contract (sam.ts): the mesh path, card regeneration and the
+  // fail-closed labels gate. Mounted beside the agent surface because the two are halves of one thing — this is
+  // the caller's side of what `/agents/<id>` serves.
+  app.use(buildSam(samDeps, mesh));
 
   // ---------------------------------------------------------------- health probes (item 134)
   // Everything that is not an API route used to be answered 200 with the web app, so `/healthz` — the path every
