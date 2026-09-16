@@ -19,7 +19,7 @@ import { startNode, type RunningNode } from '../src/server.js';
 import { seedDemo } from '../src/seed.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ainize-hookless-test-'));
-const PORT = 24071;
+const PORT = 24040;   // 24071-24073 belong to dispute.test.ts; `node --test` runs the files in one pool, so a shared constant is a hard EADDRINUSE
 let N: RunningNode;
 
 /** What the serving side has loaded. Changing it must be visible to the very next named-model request. */
