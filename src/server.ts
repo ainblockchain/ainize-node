@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents } from './agents.js';
+import { buildSam } from './sam.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ainize/core';
@@ -141,7 +142,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use((req, res, next) => {
     res.setHeader('access-control-allow-origin', req.headers.origin ?? '*');
     res.setHeader('access-control-allow-credentials', 'true');
-    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-payment, x-ainize-auth, x-ainize-buyer');
+    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-payment, x-ainize-auth, x-ainize-buyer, a2a-version, x-sam-required-labels, x-sam-authentication, x-sam-agent');
     res.setHeader('access-control-expose-headers', 'x-payment-required, x-payment-tx-hash, x-payment-currency, x-payment-response, x-content-sha256');
     res.setHeader('access-control-allow-methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -165,6 +166,17 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // `/agents/<id>/.well-known/agent-card.json` is a card and not an HTML page — an A2A client that receives
   // index.html reports "no name in card" and the real cause is invisible.
   app.use(buildAgents(cfg));
+
+  // Agent-to-agent across nodes, on SAM's wire contract (sam.ts): the mesh path, card regeneration and the
+  // fail-closed labels gate. Mounted beside the agent surface because the two are halves of one thing — this is
+  // the caller's side of what `/agents/<id>` serves.
+  app.use(buildSam({
+    cfg,
+    identity: cfg.identity,
+    peers: () => store.listPeers().map((p) => ({ address: p.address, endpoint: p.endpoint })),
+    selfUrl: () => market.publicUrl,
+    log: (level, kind, message, data) => market.log(level, kind, message, null, data),
+  }));
 
   // ---------------------------------------------------------------- health probes (item 134)
   // Everything that is not an API route used to be answered 200 with the web app, so `/healthz` — the path every
@@ -197,7 +209,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const webDist = opts.webDist ? resolve(opts.webDist) : undefined;
   if (opts.serveWeb !== false && webDist && existsSync(join(webDist, 'index.html'))) {
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
-    app.get(/^\/(?!api\/|x402\/|p2p\/|agents\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
+    app.get(/^\/(?!api\/|x402\/|p2p\/|agents\/|sam\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
   } else {
     app.get('/', (_req, res) => { res.type('text').send(`ainize node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nno web UI here — it is its own build: github.com/ainblockchain/ainize-web\n(point webDist at its dist/, or serve it anywhere and hand it this node's URL)`); });
   }
