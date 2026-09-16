@@ -46,6 +46,19 @@ import { signMessage, verifyMessage } from '@ainize/core';
 import { AGENT_PREFIX, listAgents, summariseCard, type CardSummary } from './agents.js';
 
 export const SAM_PREFIX = '/sam';
+/**
+ * The same mesh path under `/api`, for the browser.
+ *
+ * A visitor on a marketplace page cannot call a peer's agent directly. The agent's own address is on the
+ * operator's network, and a page served over HTTPS that fetches `http://192.168.x.x` is blocked twice over —
+ * as mixed content, and by the browser's public-to-private network permission, which asks the visitor for
+ * "local network access" and is the right answer to the wrong question. The call has to go through a node,
+ * which is what the mesh path is for; this mount is that path on the prefix the web app already talks to.
+ *
+ * Node-to-node traffic still uses `/sam`. This alias exists for the page, not for the protocol.
+ */
+export const API_SAM_PREFIX = '/api/sam';
+export const SAM_PREFIXES = [SAM_PREFIX, API_SAM_PREFIX];
 export const SERVICE_TYPE_A2A = 'a2a';
 export const HEADER_REQUIRED_LABELS = 'x-sam-required-labels';
 export const HEADER_AUTHENTICATION = 'x-sam-authentication';
@@ -228,9 +241,15 @@ export function regenerateCard(card: unknown, base: string): { card: Record<stri
   return { card: c };
 }
 
-/** The mesh URL of one remote agent, as served by THIS node. */
-export const meshUrl = (selfUrl: string, peer: string, service: string): string =>
-  `${selfUrl.replace(/\/+$/, '')}${SAM_PREFIX}/${peer}/${SERVICE_TYPE_A2A}/${service}`;
+/**
+ * The mesh URL of one remote agent, as served by THIS node.
+ *
+ * `prefix` is the mount the caller actually used, because that is the only address it is known to be able to
+ * reach: a card fetched through `/api/sam` that answers with a `/sam` URL sends the client somewhere it has
+ * not been able to test, and behind a proxy that forwards only `/api` that is an HTML page.
+ */
+export const meshUrl = (selfUrl: string, peer: string, service: string, prefix: string = SAM_PREFIX): string =>
+  `${selfUrl.replace(/\/+$/, '')}${prefix}/${peer}/${SERVICE_TYPE_A2A}/${service}`;
 
 /* ------------------------------------------------------------------ the routes */
 
@@ -338,7 +357,7 @@ export function buildSam(deps: SamDeps): Router {
    * Card regeneration. Served at the well-known path AND at the bare service root, because resolvers disagree
    * about which one a pathful base URL means, and a client that guesses wrong gets an HTML page from the SPA.
    */
-  const serveCard = async (req: Request, res: Response) => {
+  const serveCard = (prefix: string) => async (req: Request, res: Response) => {
     if (!enabled()) return res.status(404).json({ error: 'the mesh is switched off on this node (sam.enabled)' });
     const { peer, service } = routeOf(req);
     const peerUrl = resolvePeer(peer);
@@ -359,17 +378,19 @@ export function buildSam(deps: SamDeps): Router {
       deps.log?.('warn', 'sam', `agent card fetch from ${peer} failed: ${(e as Error).message}`);
       return res.status(502).json({ error: `Bad Gateway: agent card fetch failed (${(e as Error).message})` });
     }
-    const out = regenerateCard(card, meshUrl(selfUrl(), peer, service));
+    const out = regenerateCard(card, meshUrl(selfUrl(), peer, service, prefix));
     if ('error' in out) return res.status(502).json({ error: `Bad Gateway: ${out.error}` });
     res.json(out.card);
   };
 
-  r.get(`${SAM_PREFIX}/:peer/${SERVICE_TYPE_A2A}/:service`, serveCard);
-  r.get(`${SAM_PREFIX}/:peer/${SERVICE_TYPE_A2A}/:service/.well-known/agent-card.json`, serveCard);
-  r.get(`${SAM_PREFIX}/:peer/${SERVICE_TYPE_A2A}/:service/.well-known/agent.json`, serveCard);
+  for (const prefix of SAM_PREFIXES) {
+    r.get(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service`, serveCard(prefix));
+    r.get(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service/.well-known/agent-card.json`, serveCard(prefix));
+    r.get(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service/.well-known/agent.json`, serveCard(prefix));
+  }
 
   /** The call itself. Gate first, forward second — the order is the feature. */
-  r.post(`${SAM_PREFIX}/:peer/${SERVICE_TYPE_A2A}/:service`, async (req: Request, res: Response) => {
+  const relay = async (req: Request, res: Response) => {
     if (!enabled()) return res.status(404).json({ error: 'the mesh is switched off on this node (sam.enabled)' });
     const { peer, service } = routeOf(req);
     const peerUrl = resolvePeer(peer);
@@ -408,9 +429,40 @@ export function buildSam(deps: SamDeps): Router {
         error: { code: -32603, message: `agent did not answer: ${(e as Error).message}` },
       });
     }
-  });
+  };
+  /**
+   * A per-IP limit in front of the relay.
+   *
+   * `/agents/<id>` has one because a public URL a crawler can find must not be able to spend the node's GPU.
+   * This path spends SOMEBODY ELSE'S — every call is forwarded to a peer, on that operator's machine — so it
+   * needs the same limit for the same reason, one step further out.
+   */
+  const rateLimited = meshLimiter();
+  for (const prefix of SAM_PREFIXES) {
+    r.post(`${prefix}/:peer/${SERVICE_TYPE_A2A}/:service`, (req: Request, res: Response) => {
+      if (rateLimited(req.ip ?? 'unknown')) {
+        return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
+      }
+      return relay(req, res);
+    });
+  }
 
   return r;
+}
+
+/** Same window and ceiling as the agent proxy in agents.ts; one counter per node, not one per process. */
+function meshLimiter() {
+  const WINDOW_MS = 60_000;
+  const PER_IP = 20;
+  const seen = new Map<string, number[]>();
+  return (ip: string) => {
+    const now = Date.now();
+    const hits = (seen.get(ip) ?? []).filter((t) => now - t < WINDOW_MS);
+    hits.push(now);
+    seen.set(ip, hits);
+    if (seen.size > 5000) for (const [k, v] of seen) if (!v.some((t) => now - t < WINDOW_MS)) seen.delete(k);
+    return hits.length > PER_IP;
+  };
 }
 
 /** The egress signature, bound to the peer and service it is for (SAM's peer-bound challenge, ainize's keys). */

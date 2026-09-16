@@ -23,7 +23,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize/core';
-import { verifySamAuth } from './sam.js';
+import { API_SAM_PREFIX, verifySamAuth } from './sam.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -248,6 +248,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         documentation_url: h?.card?.documentation_url ?? null,
         a2a_url: agentUrl(publicUrl, a.id),
         card_url: `${agentUrl(publicUrl, a.id)}/.well-known/agent-card.json`,
+        // this node runs it, so its own address is also where a call goes
+        call_url: agentUrl(publicUrl, a.id),
         reachable: h?.reachable ?? null,
         last_checked: h?.checked_at ?? null,
         error: h?.error ?? null,
@@ -299,6 +301,16 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
           documentation_url: null,
           a2a_url: ad.url,
           card_url: `${ad.url.replace(/\/+$/, '')}/.well-known/agent-card.json`,
+          /**
+           * Where a caller on THIS node sends the request.
+           *
+           * Not `a2a_url`: that address is on the other operator's network, and a browser on an HTTPS page
+           * that fetches it is refused twice — as mixed content, and by the public-to-private network
+           * permission, which asks the visitor for local network access for a site that has no business on
+           * their LAN. The mesh path forwards it from this node instead, which is the one machine that can
+           * reach both ends.
+           */
+          call_url: `${(publicUrl ?? '').replace(/\/+$/, '')}${API_SAM_PREFIX}/${node.address}/a2a/${ad.id}`,
           reachable: ad.reachable ?? null,
           last_checked: node.last_seen ?? null,
           error: null,

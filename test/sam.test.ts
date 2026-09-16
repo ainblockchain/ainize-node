@@ -171,6 +171,9 @@ test('a card the mesh cannot carry at all is an error, not a card pointing at th
 
 test('the mesh URL is the caller’s own node plus the peer and service', () => {
   assert.equal(meshUrl('https://a.example/', '0xabc', 'news'), 'https://a.example/sam/0xabc/a2a/news');
+  // a card fetched through the browser mount must answer with that mount: it is the one the client has
+  // actually reached, and behind a proxy that forwards only /api the other one is an HTML page
+  assert.equal(meshUrl('https://a.example', '0xabc', 'news', '/api/sam'), 'https://a.example/api/sam/0xabc/a2a/news');
 });
 
 /* ---------------------------------------------------------------- caller attribution */
