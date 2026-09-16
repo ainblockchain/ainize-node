@@ -343,6 +343,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         const prior = byAgent.get(key);
         const seen_at = node.last_seen ?? 0;
         if (prior && prior.seen_at >= seen_at) continue;
+        // `ad.url` is used to decide there IS an agent there and to reach it; it is never put in the answer
         const front = reg.get(ad.id)?.peer === node.address;
         const mesh = `${base}${API_SAM_PREFIX}/${node.address}/a2a/${ad.id}`;
         byAgent.set(key, { seen_at, row: {
@@ -360,15 +361,14 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
            *
            * This node's own, when it has registered the agent: the nodes are connected over p2p already, so a
            * caller does not need to reach the peer — this node does, and it can. The peer's own address is
-           * still reported as `origin_url`, because who runs an agent is not a detail to hide from whoever is
-           * about to send it their text.
+           * NOT reported: it is how this node reaches the peer, usually on the operator's own network, and
+           * a visitor can neither use it nor should be handed it. Browser → this node → the peer.
            *
            * An id is not an identity, so when two nodes run one id only the registered one gets the short
            * address here; the other keeps the peer-qualified mesh URL, which always reaches exactly it.
            */
           a2a_url: front ? agentUrl(base, ad.id) : mesh,
           card_url: `${(front ? agentUrl(base, ad.id) : mesh).replace(/\/+$/, '')}/.well-known/agent-card.json`,
-          origin_url: ad.url,
           /**
            * Where a caller on THIS node sends the request.
            *
@@ -384,7 +384,15 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
           error: null,
           calls: null,
           last_call_at: null,
-          node: { address: node.address, name: node.name, endpoint: node.endpoint },
+          /**
+           * WHO runs it — a name and an identity, never a location.
+           *
+           * The peer's endpoint is how this node reaches it, and on most deployments that is an address on
+           * the operator's own network. Publishing it tells a visitor nothing they can use and tells everyone
+           * else the shape of somebody's LAN. The chain is browser → this node → the peer, and only the first
+           * hop is anyone else's business.
+           */
+          node: { address: node.address, name: node.name },
         } as unknown as (typeof out)[number] });
       }
     }

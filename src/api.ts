@@ -5,6 +5,7 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { publicEndpoint, publicPeerInfo } from './endpoints.js';
 import { once } from 'node:events';
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -727,11 +728,27 @@ export function buildApi(deps: ApiDeps): Router {
   };
 
   router.get('/api/info', wrap(async (req) => ({
-    node: await (async () => { await market.catalog(); const self = await market.selfInfo(); return { ...self, blobs: await market.publicBlobs(self.blobs) }; })(), ledger: await market.ledger.info(), runtime: await runtimeInfo(),
+    node: await (async () => {
+      await market.catalog();
+      const self = await market.selfInfo();
+      const shown = { ...self, blobs: await market.publicBlobs(self.blobs) };
+      // this node's OWN publicUrl is public by definition; its agents' URLs follow the same rule as a peer's
+      return isNodeOwner(req) ? shown : publicPeerInfo(shown)!;
+    })(),
+    ledger: await market.ledger.info(),
+    // `runtime.api` is where the model server listens, which is an internal address on every real deployment
+    runtime: await (async () => {
+      const rt = await runtimeInfo();
+      return isNodeOwner(req) ? rt : { ...rt, api: publicEndpoint((rt as { api?: string }).api) };
+    })(),
     quorum: market.cfg.verifier?.quorum ?? 2, currency: market.cfg.market.currency, peers: market.p2p.peers().length,
     // `peers` stays the plain count every existing client reads; `peer_status` is the fact nobody had (item 170):
     // which peers actually ANSWERED, how many of those verify, and which publish on a ledger this node cannot read.
-    peer_status: market.p2p.health(),
+    peer_status: (() => {
+      const h = market.p2p.health();
+      // `mismatched` names peers by endpoint (endpoints.ts) — the same rule as /api/nodes
+      return isNodeOwner(req) ? h : { ...h, mismatched: h.mismatched.map((m) => ({ ...m, endpoint: publicEndpoint(m.endpoint) })) };
+    })(),
     // item 128: four stores grow without bound and nothing reported a single byte of them. `free` is the filesystem
     // holding dataDir; `reclaimable_*` is what `ainize gc` could take back (bodies this node neither wrote nor bought).
     disk: await nodeDisk(),
@@ -1327,14 +1344,37 @@ export function buildApi(deps: ApiDeps): Router {
     const fresh = known.filter((n) => sameAddr(n.address, market.address) || peerEndpoints.has((n.endpoint ?? '').replace(/\/+$/, '')) || Date.now() - (n.last_seen ?? 0) < NODES_RECENT_MS);
     const shown = all ? known : fresh;
     const dup = market.duplicateNodeAddresses(known);
-    const nodes = await Promise.all(shown.map(async (n) => ({
-      ...n, blobs: await market.publicBlobs(n.blobs ?? []), blobs_advertised: (n.blobs ?? []).length,
+    /**
+     * A visitor may not be told where this node's peers live (endpoints.ts).
+     *
+     * Half a peer table is normally on the operator's own network, and a public page that prints
+     * `http://192.168.1.41:3402` or a column of `http://localhost:35xx` links is describing somebody's LAN to
+     * strangers and handing each reader a link to their own machine. The operator sees the addresses — they
+     * are the one debugging an unreachable peer — and everyone else gets the node's name, address and roles,
+     * which is what the page is actually about.
+     */
+    const operator = isNodeOwner(req);
+    const endpointOf = (e: string | null | undefined) => (operator ? (e ?? null) : publicEndpoint(e));
+    const nodes = await Promise.all(shown.map(async (raw) => {
+      const n = operator ? raw : publicPeerInfo(raw)!;
+      return {
+      ...n, endpoint: endpointOf(n.endpoint), blobs: await market.publicBlobs(n.blobs ?? []), blobs_advertised: (n.blobs ?? []).length,
       ledger_mismatch: n.address !== market.address && !!n.ledger && n.ledger !== own,
       // item 139: two nodes on one identity. The registry keeps one of them and nothing said the other existed.
-      ...(dup.has(n.address?.toLowerCase() ?? '') ? { duplicate_endpoints: dup.get(n.address.toLowerCase()) } : {}),
-    })));
+      ...(dup.has(n.address?.toLowerCase() ?? '') ? {
+        duplicate_endpoints: (dup.get(n.address.toLowerCase()) ?? []).map((e) => endpointOf(e)).filter((e): e is string => !!e),
+      } : {}),
+    };
+    }));
     const peers = market.p2p.peers().map((p) => ({
       ...p,
+      endpoint: endpointOf(p.endpoint),
+      // the whole gossiped record rides along, and it carries its own copy of the address (endpoints.ts)
+      info: operator ? p.info : publicPeerInfo(p.info),
+      // where this node heard about the peer is an address too
+      learned_from: operator ? p.learned_from : publicEndpoint(p.learned_from),
+      // the name a row is identified by when its address cannot be shown
+      name: p.info?.name ?? null,
       reachable: p.failures === 0 && p.last_seen > 0,
       ledger: p.info?.ledger ?? null,
       ledger_mismatch: !!p.info?.ledger && p.info.ledger !== own,
@@ -1342,7 +1382,13 @@ export function buildApi(deps: ApiDeps): Router {
     // Endpoints the operator removed: gossip may not re-add them, and `peers ls` says so rather than leaving the
     // operator to wonder why a peer they keep hearing about is not in the table (item 137).
     return {
-      nodes, peers, blocked: market.p2p.blocked(), self: market.address, ledger: own, peer_status: market.p2p.health(),
+      nodes, peers, blocked: operator ? market.p2p.blocked() : market.p2p.blocked().map((b) => ({ ...b, endpoint: publicEndpoint(b.endpoint) })),
+      self: market.address, ledger: own,
+      // `mismatched` names a peer by endpoint too — same rule, same reason
+      peer_status: operator ? market.p2p.health() : (() => {
+        const h = market.p2p.health();
+        return { ...h, mismatched: h.mismatched.map((m) => ({ ...m, endpoint: publicEndpoint(m.endpoint) })) };
+      })(),
       // item 140: what the filter left out, so a surface can offer the rest instead of pretending this is everything.
       nodes_total: known.length, nodes_hidden: all ? 0 : known.length - shown.length, nodes_window_ms: NODES_RECENT_MS, all,
     };
