@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
+import { buildAgents } from './agents.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ainize/core';
@@ -160,6 +161,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
 
+  // A2A agents this node operates (NEWS-AGENT-REQUIREMENTS §5). Mounted before the SPA catch-all so that
+  // `/agents/<id>/.well-known/agent-card.json` is a card and not an HTML page — an A2A client that receives
+  // index.html reports "no name in card" and the real cause is invisible.
+  app.use(buildAgents(cfg));
+
   // ---------------------------------------------------------------- health probes (item 134)
   // Everything that is not an API route used to be answered 200 with the web app, so `/healthz` — the path every
   // uptime check tries first — reported a perfectly healthy node while its model server was gone. These two answer
@@ -191,7 +197,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const webDist = opts.webDist ? resolve(opts.webDist) : undefined;
   if (opts.serveWeb !== false && webDist && existsSync(join(webDist, 'index.html'))) {
     app.use(express.static(webDist, { maxAge: '1h', index: false }));
-    app.get(/^\/(?!api\/|x402\/|p2p\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
+    app.get(/^\/(?!api\/|x402\/|p2p\/|agents\/).*/, (_req, res) => { res.sendFile(join(webDist, 'index.html')); });
   } else {
     app.get('/', (_req, res) => { res.type('text').send(`ainize node ${cfg.name} (${cfg.identity.address})\nAPI: /api/info  catalog: /api/catalog\nno web UI here — it is its own build: github.com/ainblockchain/ainize-web\n(point webDist at its dist/, or serve it anywhere and hand it this node's URL)`); });
   }
