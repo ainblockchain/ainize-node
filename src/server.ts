@@ -165,7 +165,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // A2A agents this node operates (NEWS-AGENT-REQUIREMENTS §5). Mounted before the SPA catch-all so that
   // `/agents/<id>/.well-known/agent-card.json` is a card and not an HTML page — an A2A client that receives
   // index.html reports "no name in card" and the real cause is invisible.
-  app.use(buildAgents(cfg));
+  app.use(buildAgents(cfg, { knownNodes: () => market.knownNodes(), selfAddress: cfg.identity.address }));
 
   // Agent-to-agent across nodes, on SAM's wire contract (sam.ts): the mesh path, card regeneration and the
   // fail-closed labels gate. Mounted beside the agent surface because the two are halves of one thing — this is

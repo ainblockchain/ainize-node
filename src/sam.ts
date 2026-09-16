@@ -41,7 +41,7 @@
  * every workspace on the older dialect would otherwise be cut off from the mesh.
  */
 import { Router, type Request, type Response } from 'express';
-import type { NodeConfig } from '@ainize/core';
+import type { NodeConfig, SamMeshConfig } from '@ainize/core';
 import { signMessage, verifyMessage } from '@ainize/core';
 import { AGENT_PREFIX, listAgents, summariseCard, type CardSummary } from './agents.js';
 
@@ -60,24 +60,7 @@ const CARD_TIMEOUT_MS = 10_000;
 export const LABEL_GATE_TTL_MS = 5 * 60_000;
 const ATTESTATION_TTL_MS = 60 * 60_000;
 
-/** What `config.json` may say about this node's place in the mesh. Every field is optional; absent is off. */
-export interface SamConfig {
-  /** false turns the mesh routes off entirely. */
-  enabled?: boolean;
-  /** What this node declares about itself, e.g. `{ region: 'kr', jurisdiction: 'kr' }`. */
-  labels?: Record<string, string>;
-  /** Addresses whose signature over a label set this node believes. Empty = no label requirement can pass. */
-  labelAuthorities?: string[];
-  /**
-   * Accept a peer's signature over its OWN labels. Off by default and deliberately so: it turns the gate from
-   * "a party I trust said so" into "the party being checked said so", which is a routing hint, not a control.
-   */
-  trustSelfAttestedLabels?: boolean;
-  /** The operator's floor: EVERY pair must be attested by the provider, whatever the caller asked for. */
-  egressRequireLabels?: Record<string, string>;
-}
-
-export const samConfig = (cfg: NodeConfig): SamConfig => (cfg as NodeConfig & { sam?: SamConfig }).sam ?? {};
+export const samConfig = (cfg: NodeConfig): SamMeshConfig => cfg.sam ?? {};
 
 /* ------------------------------------------------------------------ labels (api/labels.go) */
 
@@ -344,6 +327,10 @@ export function buildSam(deps: SamDeps): Router {
     res.json({ peer: deps.identity.address, labels: sam().labels ?? {}, services });
   });
 
+  // Listing agents across nodes is NOT here. `PeerInfo.agents` already carries an advert to every peer on the
+  // gossip round that was happening anyway, and `/api/agents` merges it — a second fan-out of HTTP requests
+  // would be a slower answer to a question the peer table has already answered. This file is about CALLING.
+
   // ── caller side: the egress path
   const routeOf = (req: Request) => ({ peer: one(req.params.peer), service: one(req.params.service) });
 
@@ -421,36 +408,6 @@ export function buildSam(deps: SamDeps): Router {
         error: { code: -32603, message: `agent did not answer: ${(e as Error).message}` },
       });
     }
-  });
-
-  /**
-   * Every agent this node can reach — its own, plus one row per agent on every peer that answers. This is what
-   * puts a peer's agents in the marketplace: without it a visitor sees only the agents of whichever node they
-   * happen to have opened.
-   */
-  r.get('/api/sam/agents', async (_req: Request, res: Response) => {
-    const rows = await Promise.all(deps.peers().map(async (p) => {
-      if (!p.address || p.address === deps.identity.address) return [];
-      try {
-        const r2 = await fetch(`${p.endpoint.replace(/\/+$/, '')}${SAM_PREFIX}/services?type=a2a`, {
-          headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(CARD_TIMEOUT_MS),
-        });
-        if (!r2.ok) return [];
-        const body = await r2.json() as { peer?: string; labels?: Record<string, string>; services?: { name: string; display_name?: string; description?: string | null }[] };
-        return (body.services ?? []).map((s) => ({
-          peer: p.address as string,
-          peer_endpoint: p.endpoint,
-          labels: body.labels ?? {},
-          id: s.name,
-          name: s.display_name ?? s.name,
-          description: s.description ?? null,
-          // the address a client is given is on THIS node, which is the point of the mesh path
-          a2a_url: meshUrl(selfUrl(), p.address as string, s.name),
-          card_url: `${meshUrl(selfUrl(), p.address as string, s.name)}/${CARD_PATH}`,
-        }));
-      } catch { return []; }
-    }));
-    res.json({ agents: rows.flat() });
   });
 
   return r;

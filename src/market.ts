@@ -15,6 +15,7 @@ import {
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
   sameAddr,
 } from '@ainize/core';
+import { agentAdverts, refreshAgentHealth } from './agents.js';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
@@ -4968,6 +4969,9 @@ export class Market {
 
   async selfInfo(): Promise<PeerInfo> {
     const st = await this.runtime.status();
+    // What this node's agents are doing, refreshed at most once a minute however often gossip asks (agents.ts).
+    await refreshAgentHealth(this.cfg).catch(() => {});
+    const agents = agentAdverts(this.cfg, this.publicUrl);
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
@@ -4987,6 +4991,14 @@ export class Market {
       quorum: this.cfg.verifier?.quorum ?? 2,
       default_price: this.cfg.market.defaultPrice,
       accepts_contributions: this.acceptsContributions(),
+      /**
+       * The A2A agents this node operates.
+       *
+       * A node sells two kinds of thing and gossip carried only one of them: a peer could see every knowledge
+       * file this node holds and had no way to learn it also runs an agent. The advert names the agent and
+       * points at THIS node — the traffic goes to whoever accepted the agent, not through whoever lists it.
+       */
+      ...(agents.length ? { agents } : {}),
     };
   }
 

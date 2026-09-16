@@ -22,37 +22,18 @@
  * spend the node's GPU. The agent enforces its own limits too — neither layer is load-bearing alone.
  */
 import { Router, type Request, type Response } from 'express';
-import type { NodeConfig } from '@ainize/core';
+import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize/core';
 import { verifySamAuth } from './sam.js';
 
-/** One agent, as `config.json` declares it. */
-export interface AgentConfig {
-  /** URL segment and identity: `/agents/<id>`. Lowercase, dashes. */
-  id: string;
-  /** Shown in the operator's list; the card's own `name` is what a workspace displays. */
-  name?: string;
-  /** Where the process listens, e.g. `http://127.0.0.1:4010`. */
-  upstream: string;
-  /** Off by default — an agent that is not ready should not have a public address. */
-  enabled?: boolean;
-  description?: string;
-}
+/**
+ * One agent, as `config.json` declares it.
+ *
+ * The shape lives in `@ainize/core` so the node, the CLI (`ainize agent add`) and the config file cannot drift
+ * apart; this alias keeps the name every call site here already uses.
+ */
+export type AgentConfig = NodeAgentConfig;
 
 export const AGENT_PREFIX = '/agents';
-/**
- * The same surface, under `/api`.
- *
- * A public node is normally behind a reverse proxy, and the proxy in front of this one forwards `/api` (plus the
- * settlement and p2p prefixes) and serves everything else from the static build — so `/agents/<id>` came back as
- * the single-page app, and an A2A client reported "no name in card" while the node was answering perfectly on
- * localhost. Adding a second mount costs one line and removes a whole class of deployment that silently fails;
- * the canonical path stays `/agents/<id>`, and an operator who can edit their proxy should route it.
- *
- * The card advertises whichever prefix the request arrived on, because the only URL a client can use is the one
- * it already reached.
- */
-export const API_AGENT_PREFIX = '/api/a2a';
-export const AGENT_PREFIXES = [AGENT_PREFIX, API_AGENT_PREFIX];
 const CARD_PATHS = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/agent.json'];
 
 const RATE = { windowMs: 60_000, perIp: 20 };
@@ -62,9 +43,9 @@ const UPSTREAM_TIMEOUT_MS = 90_000;
 export const agentIdOk = (id: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
 
 /** The public base URL of one agent — what an operator copies and a workspace is given. */
-export function agentUrl(publicUrl: string | undefined, id: string, prefix: string = AGENT_PREFIX): string {
+export function agentUrl(publicUrl: string | undefined, id: string): string {
   const base = (publicUrl ?? '').replace(/\/+$/, '');
-  return `${base}${prefix}/${id}`;
+  return `${base}${AGENT_PREFIX}/${id}`;
 }
 
 /**
@@ -180,12 +161,61 @@ async function fetchCard(a: AgentConfig): Promise<{ card?: Record<string, unknow
   return { error };
 }
 
+/**
+ * Refresh what this node knows about its own agents, at most once per `maxAgeMs`.
+ *
+ * Gossip runs every few seconds and calls this; the cap is what keeps that from becoming a probe storm against
+ * the agent processes. Failures are not raised — an agent that is down is advertised as unreachable, which is
+ * strictly more useful to a peer than being advertised as absent.
+ */
+export async function refreshAgentHealth(cfg: NodeConfig, maxAgeMs = 60_000): Promise<void> {
+  await Promise.all(listAgents(cfg).map(async (a) => {
+    const known = health.get(a.id);
+    if (known && Date.now() - (known.checked_at ?? 0) < maxAgeMs) return;
+    await fetchCard(a);
+  }));
+}
+
+/** Cap on what one node advertises. A gossip payload is not a catalogue. */
+const MAX_ADVERTS = 20;
+
+/**
+ * What this node tells the network about its agents (`PeerInfo.agents`).
+ *
+ * The URL is this node's own — an agent is served by the node that runs it, and a peer that lists it links
+ * there rather than relaying. That is the whole reason this is an advert and not a proxy: a marketplace can
+ * show an agent it does not host, and the traffic still goes to the operator who accepted it.
+ */
+export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined): AgentAdvert[] {
+  return listAgents(cfg).slice(0, MAX_ADVERTS).map((a) => {
+    const h = health.get(a.id);
+    return {
+      id: a.id,
+      name: h?.card?.name || a.name || a.id,
+      ...(h?.card?.description ?? a.description ? { description: h?.card?.description ?? a.description } : {}),
+      url: agentUrl(publicUrl, a.id),
+      ...(h?.card?.skills?.length ? { skills: h.card.skills.map((s) => s.name).slice(0, 6) } : {}),
+      ...(h?.card?.protocols?.length ? { protocols: h.card.protocols } : {}),
+      ...(h?.card?.extensions?.length ? { extensions: h.card.extensions } : {}),
+      ...(h?.reachable === null || h?.reachable === undefined ? {} : { reachable: h.reachable }),
+    };
+  });
+}
+
 export function listAgents(cfg: NodeConfig): AgentConfig[] {
-  const raw = (cfg as NodeConfig & { agents?: AgentConfig[] }).agents ?? [];
+  const raw = cfg.agents ?? [];
   return raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
 }
 
-export function buildAgents(cfg: NodeConfig): Router {
+/** What the list needs from the rest of the node to show agents it does not itself operate. */
+export interface AgentsDeps {
+  /** The peer table and node registry, as `market.knownNodes()` returns it. */
+  knownNodes?: () => Promise<PeerInfo[]>;
+  /** This node's own address, so its own row is not listed twice. */
+  selfAddress?: string;
+}
+
+export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const r = Router();
   const rateLimited = limiter();
   // express 5 types a wildcard param as string | string[]; an agent id is always one segment
@@ -218,20 +248,71 @@ export function buildAgents(cfg: NodeConfig): Router {
         documentation_url: h?.card?.documentation_url ?? null,
         a2a_url: agentUrl(publicUrl, a.id),
         card_url: `${agentUrl(publicUrl, a.id)}/.well-known/agent-card.json`,
-        // the same agent under `/api`, which reaches the node through a proxy that forwards only that prefix
-        proxy_url: agentUrl(publicUrl, a.id, API_AGENT_PREFIX),
         reachable: h?.reachable ?? null,
         last_checked: h?.checked_at ?? null,
         error: h?.error ?? null,
         calls: c?.total ?? 0,
         last_call_at: c?.last_at ?? null,
+        node: null,
       };
     }));
-    res.json({ agents: out });
+
+    /**
+     * Agents on other nodes, from the peer table (`PeerInfo.agents`).
+     *
+     * This is what makes the page a marketplace rather than a status page for one box: gossip already carries
+     * what every peer holds, and an agent is one more thing a node holds. The URL is the OWNING node's, so a
+     * visitor who clicks talks to the operator who accepted that agent — this node lists it, it does not
+     * relay it, and nothing here is proxied.
+     *
+     * What a peer cannot tell us, we do not invent: `calls` is null rather than 0, because this node has
+     * counted none of them and a zero would read as "nobody uses it".
+     */
+    const self = (deps.selfAddress ?? (cfg as NodeConfig & { identity?: { address?: string } }).identity?.address ?? '').toLowerCase();
+    const seen = new Set(out.map((a) => a.a2a_url));
+    /**
+     * One row per (node, agent), newest advert wins.
+     *
+     * The node registry keeps a node that answers at two endpoints as two rows on purpose — that is how an
+     * operator sees a machine they thought they had moved. An agent list is not the place for it: the same
+     * agent under two addresses reads as two agents, and one of the addresses is stale. Keyed by the node's
+     * ADDRESS, which is its identity, rather than by the endpoint, which is where it happened to answer.
+     */
+    const byAgent = new Map<string, { row: (typeof out)[number]; seen_at: number }>();
+    for (const node of (await deps.knownNodes?.().catch(() => [])) ?? []) {
+      if (!node?.agents?.length || (node.address ?? '').toLowerCase() === self) continue;
+      for (const ad of node.agents.slice(0, 20)) {
+        if (!ad?.id || !ad.url || seen.has(ad.url)) continue;
+        const key = `${(node.address ?? '').toLowerCase()}:${ad.id}`;
+        const prior = byAgent.get(key);
+        const seen_at = node.last_seen ?? 0;
+        if (prior && prior.seen_at >= seen_at) continue;
+        byAgent.set(key, { seen_at, row: {
+          id: ad.id,
+          name: ad.name || ad.id,
+          description: ad.description ?? null,
+          // an advert carries skill NAMES; whoever wants the rest fetches the card at `url`
+          skills: (ad.skills ?? []).map((n) => ({ id: n, name: n, description: undefined, tags: [], examples: [] })),
+          protocols: ad.protocols ?? [],
+          extensions: ad.extensions ?? [],
+          provider: null,
+          documentation_url: null,
+          a2a_url: ad.url,
+          card_url: `${ad.url.replace(/\/+$/, '')}/.well-known/agent-card.json`,
+          reachable: ad.reachable ?? null,
+          last_checked: node.last_seen ?? null,
+          error: null,
+          calls: null,
+          last_call_at: null,
+          node: { address: node.address, name: node.name, endpoint: node.endpoint },
+        } as unknown as (typeof out)[number] });
+      }
+    }
+    res.json({ agents: [...out, ...[...byAgent.values()].map((v) => v.row)] });
   });
 
-  // ── the A2A surface, one prefix per agent, at every mount this node answers on
-  const serveCard = (prefix: string) => async (req: Request, res: Response) => {
+  // ── the A2A surface, one prefix per agent
+  const serveCard = async (req: Request, res: Response) => {
     const id = one(req.params.id);
     const a = find(id);
     if (!a) return res.status(404).json({ error: `no agent "${id}" on this node` });
@@ -242,7 +323,7 @@ export function buildAgents(cfg: NodeConfig): Router {
     if (!card) return res.status(502).json({ error: `agent unreachable: ${error}` });
     const publicUrl = (cfg as NodeConfig & { publicUrl?: string }).publicUrl
       ?? `${req.protocol}://${req.get('host') ?? ''}`;
-    const url = agentUrl(publicUrl, a.id, prefix);
+    const url = agentUrl(publicUrl, a.id);
     // The upstream's own `url` points at localhost; a caller that trusted it would post to its own machine.
     // v1.0 carries the address in `supportedInterfaces` instead, and a card that keeps a stale one there sends
     // a modern client to the same dead address the legacy field used to.
@@ -251,7 +332,7 @@ export function buildAgents(cfg: NodeConfig): Router {
       : {};
     res.json({ ...card, ...interfaces, url });
   };
-  for (const prefix of AGENT_PREFIXES) r.get(`${prefix}/:id{/*path}`, serveCard(prefix));
+  r.get(`${AGENT_PREFIX}/:id{/*path}`, serveCard);
 
   const callAgent = async (req: Request, res: Response) => {
     const id = one(req.params.id);
@@ -297,7 +378,7 @@ export function buildAgents(cfg: NodeConfig): Router {
     res.setHeader('Content-Type', r2.res.headers.get('content-type') ?? 'application/json');
     res.send(Buffer.from(await r2.res.arrayBuffer()));
   };
-  for (const prefix of AGENT_PREFIXES) r.post(`${prefix}/:id`, callAgent);
+  r.post(`${AGENT_PREFIX}/:id`, callAgent);
 
   return r;
 }

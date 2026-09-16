@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentIdOk, agentUrl, summariseCard } from '../src/agents.js';
+import { agentAdverts, agentIdOk, agentUrl, summariseCard } from '../src/agents.js';
 
 const CARD = {
   name: 'News Fitness',
@@ -70,4 +70,43 @@ test('the public URL of an agent is the node prefix plus its id, with no double 
   assert.equal(agentUrl('https://n.example', 'news'), 'https://n.example/agents/news');
   assert.equal(agentIdOk('news-fitness'), true);
   assert.equal(agentIdOk('News'), false);
+});
+
+/**
+ * The advert is what one node tells the network about its agents, and it rides the gossip round that was
+ * happening anyway. Two properties matter more than its contents:
+ *
+ *   1. the URL is the OWNING node's, so a peer that lists the agent links there rather than relaying it, and
+ *   2. it stays small — this payload is exchanged between every pair of nodes every few seconds.
+ */
+const cfgWith = (agents: unknown[]) => ({ agents } as unknown as Parameters<typeof agentAdverts>[0]);
+
+test('an advert points at the node that runs the agent, never at the node that lists it', () => {
+  const [ad] = agentAdverts(cfgWith([{ id: 'news', name: 'News Fitness', upstream: 'http://127.0.0.1:4010' }]), 'https://mine.example');
+  assert.equal(ad.url, 'https://mine.example/agents/news');
+  assert.equal(ad.name, 'News Fitness');
+  assert.equal(ad.id, 'news');
+});
+
+test('a disabled agent is not advertised, and a malformed one never reaches the network', () => {
+  const adverts = agentAdverts(cfgWith([
+    { id: 'off', upstream: 'http://127.0.0.1:1', enabled: false },
+    { id: 'BAD ID', upstream: 'http://127.0.0.1:2' },
+    { id: 'ok', upstream: 'http://127.0.0.1:3' },
+  ]), 'https://mine.example');
+  assert.deepEqual(adverts.map((a) => a.id), ['ok']);
+});
+
+test('the advert carries skill NAMES only — the card at the URL carries the rest', () => {
+  // with no health probe there is no card yet, so the advert is the config's own words and nothing invented
+  const [ad] = agentAdverts(cfgWith([{ id: 'news', upstream: 'http://127.0.0.1:4010', description: 'from config' }]), 'https://mine.example');
+  assert.equal(ad.description, 'from config');
+  assert.equal(ad.skills, undefined, 'absent rather than an empty array: a peer must not read "no skills"');
+  assert.equal(ad.reachable, undefined, 'unprobed is not unreachable');
+  assert.equal(ad.name, 'news', 'a nameless agent is named by its id');
+});
+
+test('a node advertises at most twenty agents — a gossip payload is not a catalogue', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ id: `a${i}`, upstream: `http://127.0.0.1:${4000 + i}` }));
+  assert.equal(agentAdverts(cfgWith(many), 'https://mine.example').length, 20);
 });
