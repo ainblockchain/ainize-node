@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPublicEndpoint, publicEndpoint, publicPeerInfo } from '../src/endpoints.js';
+import { REDACTED, isPublicEndpoint, publicEndpoint, publicPeerInfo, redactPrivateUrls } from '../src/endpoints.js';
 
 test('an address on somebody else’s network is not publishable', () => {
   for (const e of [
@@ -50,4 +50,21 @@ test('the nested copies are masked too — they are the ones that get missed', (
   // the input is not mutated: the node goes on using the real address to reach the peer
   assert.equal(info.endpoint, 'http://192.168.1.41:3402');
   assert.equal(info.agents[0].url, 'http://192.168.1.41:3402/agents/news');
+});
+
+test('the prose leaks too: an event log says the address it could not reach', () => {
+  const line = 'peer http://192.168.1.41:3402 did not answer: fetch failed (ECONNREFUSED)';
+  assert.equal(redactPrivateUrls(line), `peer ${REDACTED} did not answer: fetch failed (ECONNREFUSED)`);
+  // a real address in the same sentence survives: the rule is about whose network it is, not about URLs
+  assert.equal(redactPrivateUrls('learned https://ainize.ai from http://localhost:3410'),
+    `learned https://ainize.ai from ${REDACTED}`);
+});
+
+test('redaction reaches into nested data, which is where the second copy always is', () => {
+  const row = { message: 'peer http://localhost:3410 did not answer', data: { endpoint: 'http://10.0.0.5:3400', n: 3 } };
+  const out = redactPrivateUrls(row);
+  assert.equal(out.message, `peer ${REDACTED} did not answer`);
+  assert.equal(out.data.endpoint, REDACTED);
+  assert.equal(out.data.n, 3, 'everything that is not an address is untouched');
+  assert.equal(row.data.endpoint, 'http://10.0.0.5:3400', 'the input is not mutated');
 });

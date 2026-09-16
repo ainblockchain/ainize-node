@@ -5,7 +5,7 @@
  *  /p2p/*   peer protocol (hello, peers, records, blobs)
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { publicEndpoint, publicPeerInfo } from './endpoints.js';
+import { publicEndpoint, publicPeerInfo, redactPrivateUrls } from './endpoints.js';
 import { once } from 'node:events';
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -259,7 +259,15 @@ export function buildApi(deps: ApiDeps): Router {
       const message = e.message.replace(/taught-[a-z0-9][a-z0-9-]*/g, 'a private draft').replace(/0x[0-9a-fA-F]{6,}…?/g, 'a teaching key').replace(/^lesson queued: .*? \((\d+ correction)/s, 'lesson queued ($1');
       out.push({ ...e, message, data: jobId ? { job_id: jobId } : null });
     }
-    return out;
+    /**
+     * Last: the addresses in the prose (endpoints.ts).
+     *
+     * This log is a node writing about itself — "peer http://192.168.1.41:3402 did not answer" — and it is
+     * public. Masking the structured fields of /api/nodes and leaving these sentences alone publishes the same
+     * addresses in an easier form. Applied over the whole row, message and data alike, because the second copy
+     * is always in the data.
+     */
+    return out.map((e) => redactPrivateUrls(e));
   };
 
   /** Names of contributors the operator hid are dropped from public views ("Taught by a visitor"). */
@@ -1879,15 +1887,18 @@ export function buildApi(deps: ApiDeps): Router {
   }));
   // `applied` is an ORDERED stack now (bottom first), and `stack` says what each layer sits on and whether the
   // journal that would undo it is still there (design §5.4, §8).
-  router.get('/api/runtime', wrap(async () => {
+  router.get('/api/runtime', wrap(async (req) => {
     const stack = await market.stack();
-    return {
+    // Where the model server listens, and the directories it writes to, are this machine's internals. The
+    // operator needs every one of them; a visitor needs to know the runtime is available, which survives here.
+    const reveal = <T,>(v: T): T => (isNodeOwner(req) ? v : redactPrivateUrls(v));
+    return reveal({
       ...(await market.runtime.status(true)), applied: stack.map((l) => l.patch_id), stack, journal_dir: market.runtime.journalDir(),
       patch_dir: market.runtime.patchDir(), patch_dir_source: market.runtime.patchDirSource(),
       queue: market.runtime.queueState(),
       // item 215: `applied` is a store lookup. This is the last time anything actually looked at the table.
       checked: market.runtimeCheck(),
-    };
+    });
   }));
   router.get('/api/runtime/stack', wrap(async () => ({ stack: await market.stack(), journal_dir: market.runtime.journalDir() })));
   /** Item 212 — where a queued apply/remove is, and what the shared model is doing while it waits. */

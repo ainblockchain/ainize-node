@@ -68,3 +68,30 @@ export function publicPeerInfo<T extends { endpoint?: string | null; agents?: { 
   }
   return out as T;
 }
+
+/**
+ * Replace every private address inside free text with a placeholder.
+ *
+ * The event log is prose a node wrote about itself — "peer http://192.168.1.41:3402 did not answer" — and it
+ * is public. Masking the structured fields and leaving the sentences alone publishes the same addresses in a
+ * form that is easier to read, not harder.
+ *
+ * Deliberately conservative: it rewrites only what matches an address on somebody's own network, so a message
+ * naming a real public node still names it. The placeholder says an address was removed rather than deleting
+ * the words around it, because a log line with a hole in it reads as a bug in the log.
+ */
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>,;)\]]+/g;
+export const REDACTED = '<private address>';
+
+export function redactPrivateUrls<T>(value: T): T {
+  if (typeof value === 'string') {
+    return value.replace(URL_IN_TEXT, (u) => (isPublicEndpoint(u) ? u : REDACTED)) as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => redactPrivateUrls(v)) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactPrivateUrls(v);
+    return out as T;
+  }
+  return value;
+}
