@@ -3780,8 +3780,18 @@ export class Market {
       if (!entry || !this.mayUseEntry(entry, opts.caller)) throw new NotFoundError(`patch not found: ${id}`);
       entries.push({ id, entry });
     }
-    const st = await this.runtime.status();
-    if (!st.available) throw unavailable(st.error ?? 'runtime unavailable');
+    // A named model is a claim about what is on the serving side RIGHT NOW, so it is never answered from a cache:
+    // `status()` holds its answer for 30 seconds, and an operator who swapped the served model inside that window
+    // would see their own new model reported as "not served by this node" until the cache aged out.
+    const st = await this.runtime.status(!!opts.model);
+    // A base-only turn writes nothing to the model: it needs the generation API and nothing else. Requiring
+    // `available` here demanded the patch hook too, so a node serving a model it cannot patch — a plain
+    // OpenAI-compatible runtime, an engine without the hook installed — refused "ask the model with nothing of
+    // mine loaded" with `runtime repo not found`, an error about a capability that turn never uses. Loading a
+    // knowledge still needs the hook, and that check stays exactly where it was.
+    if (baseOnly ? !st.model : !st.available) {
+      throw unavailable((baseOnly ? 'serving API unreachable' : st.error) ?? 'runtime unavailable');
+    }
     // §8.6 — what goes on the table, and in what order, comes from the base stacks, not from the order the boxes were
     // ticked: an add-on trained on top of another knowledge answers nonsense without that knowledge underneath it.
     const plan = entries.length ? await this.resolveStack(entries.map((x) => x.id)) : [];
@@ -3806,7 +3816,7 @@ export class Market {
     // the patched model said. Same last question either way (POST /api/chat rejects a pair that disagrees on it).
     const msgsBase = opts.messagesBase ? clamp(opts.messagesBase) : msgs;
     const msgsPatched = opts.messagesPatched ? clamp(opts.messagesPatched) : msgs;
-    if (opts.model && st.model !== opts.model) throw conflict(`requested model ${opts.model} is not served by this node`);
+    if (opts.model && st.model !== opts.model) throw conflict(`requested model ${opts.model} is not served by this node${st.model ? ` (it serves ${st.model})` : ''}`);
     const chatOpts = { maxTokens: opts.maxTokens ?? 200, thinking: !!opts.thinking, signal: opts.signal, expectedModel: opts.model };
     const label = baseOnly ? 'chat:base' : `chat:${ids.join('+')}`;
     // `onEnter` fires the instant the shared lock is ours, before any model call: that is both when the client's
