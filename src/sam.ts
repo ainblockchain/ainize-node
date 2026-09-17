@@ -40,6 +40,8 @@
  * its own agents serve both spellings (`supportedInterfaces` for v1.0 and a top-level `url` for v0.3) and
  * every workspace on the older dialect would otherwise be cut off from the mesh.
  */
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Router, type Request, type Response } from 'express';
 import type { NodeConfig, SamMeshConfig } from '@ainize/core';
 import { signMessage, verifyMessage } from '@ainize/core';
@@ -232,13 +234,43 @@ export function regenerateCard(card: unknown, base: string): { card: Record<stri
       .filter((i) => i && carriable(i.transport ?? i.protocolBinding)).map((i) => ({ ...i, url: base }));
   }
   const caps = (c.capabilities && typeof c.capabilities === 'object' ? { ...(c.capabilities as Record<string, unknown>) } : {});
-  caps.streaming = false;
+  /**
+   * `streaming` is the agent's to declare, and it is left alone.
+   *
+   * SAM's own regeneration turns it off, because a mesh hop that cannot forward a stream must not advertise
+   * one. This hop can: the relay pipes the upstream body through (`call` above). Forcing it false anyway
+   * would tell every client to take the slow path against two agents that report each step they take.
+   */
   c.capabilities = caps;
   delete c.signatures;
   if (!Array.isArray(c.skills)) c.skills = [];
   if (!Array.isArray(c.defaultInputModes)) c.defaultInputModes = [];
   if (!Array.isArray(c.defaultOutputModes)) c.defaultOutputModes = [];
   return { card: c };
+}
+
+/**
+ * Write a relayed body to the client as it arrives.
+ *
+ * Both agents behind this node stream — one reports each stage of a scoring run, the other names each tool
+ * call as it makes it — and a relay that buffers turns that into a silent pause followed by everything at
+ * once. `Readable.fromWeb` is the bridge from fetch's web stream to the node response.
+ */
+export async function pipeRelay(
+  res: Response,
+  out: { status: number; contentType: string; body: ReadableStream<Uint8Array> | null },
+): Promise<void> {
+  res.status(out.status);
+  res.setHeader('Content-Type', out.contentType);
+  // an SSE answer buffered anywhere in the path arrives as one frame, which is not a stream
+  if (out.contentType.includes('text/event-stream')) {
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+  }
+  if (!out.body) { res.end(); return; }
+  await pipeline(Readable.fromWeb(out.body as Parameters<typeof Readable.fromWeb>[0]), res).catch(() => {
+    // the reader went away mid-stream; nothing to report and nothing to clean up
+  });
 }
 
 /**
@@ -281,7 +313,7 @@ export interface MeshRelay {
   /** Fetch a remote agent card and rewrite it to be followed at `base`. */
   card(peer: string, peerUrl: string, service: string, base: string, a2aVersion?: string): Promise<{ card: Record<string, unknown> } | { status: number; error: string }>;
   /** Forward one JSON-RPC body to the peer's agent. */
-  call(peer: string, peerUrl: string, service: string, body: Buffer, headers: Record<string, string>): Promise<{ status: number; contentType: string; body: Buffer } | { error: string }>;
+  call(peer: string, peerUrl: string, service: string, body: Buffer, headers: Record<string, string>): Promise<{ status: number; contentType: string; body: ReadableStream<Uint8Array> | null } | { error: string }>;
   /** Per-IP ceiling. Every call it forwards is spent on somebody else's machine. */
   limited(ip: string): boolean;
   enabled(): boolean;
@@ -378,7 +410,14 @@ export function makeMeshRelay(deps: SamDeps): MeshRelay {
       return {
         status: upstream.status,
         contentType: upstream.headers.get('content-type') ?? 'application/json',
-        body: Buffer.from(await upstream.arrayBuffer()),
+        /**
+         * The body as it arrives, not as a buffer.
+         *
+         * `await upstream.arrayBuffer()` waited for the last byte before writing the first, which turns an
+         * agent that reports each step it takes into one silent pause and then everything at once. Both
+         * agents behind this relay stream; collapsing that here is what made the card say they do not.
+         */
+        body: upstream.body,
       };
     } catch (e) {
       deps.log?.('warn', 'sam', `egress to ${peer}/${service} failed: ${(e as Error).message}`);
@@ -484,9 +523,7 @@ export function buildSam(deps: SamDeps, relay: MeshRelay = makeMeshRelay(deps)):
           error: { code: -32603, message: `agent did not answer: ${out.error}` },
         });
       }
-      res.status(out.status);
-      res.setHeader('Content-Type', out.contentType);
-      res.send(out.body);
+      await pipeRelay(res, out);
     });
   }
 

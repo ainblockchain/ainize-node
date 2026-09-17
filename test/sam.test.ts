@@ -135,10 +135,16 @@ test('every interface URL points back at the mesh path — a kept provider addre
   for (const i of ifaces) assert.ok(!/127\.0\.0\.1/.test(i.url));
 });
 
-test('streaming is advertised off and the provider’s signatures are dropped, since the bytes changed', () => {
+test('the agent’s own streaming flag survives, and its signatures do not', () => {
   const out = regenerateCard(V1_CARD, 'https://a.example/sam/0xabc/a2a/news');
   assert.ok('card' in out);
-  assert.equal((out.card.capabilities as { streaming: boolean }).streaming, false);
+  /**
+   * SAM's own regeneration forces `streaming: false`, because a hop that cannot forward a stream must not
+   * advertise one. This hop pipes the upstream body through (`pipeRelay`), so the flag is the agent's to
+   * declare — and forcing it false told every client to take the slow path against two agents that report
+   * each step they take.
+   */
+  assert.equal((out.card.capabilities as { streaming: boolean }).streaming, true);
   assert.equal('signatures' in out.card, false);
   // the extension list is untouched: what the agent can do does not change by being reached over the mesh
   assert.equal(((out.card.capabilities as { extensions: unknown[] }).extensions).length, 1);

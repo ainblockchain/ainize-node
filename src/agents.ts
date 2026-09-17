@@ -23,7 +23,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize/core';
-import { API_SAM_PREFIX, verifySamAuth, type MeshRelay } from './sam.js';
+import { API_SAM_PREFIX, pipeRelay, verifySamAuth, type MeshRelay } from './sam.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -460,9 +460,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
       }
       const c = calls.get(id) ?? { total: 0, last_at: null };
       calls.set(id, { total: c.total + 1, last_at: Date.now() });
-      res.status(out.status);
-      res.setHeader('Content-Type', out.contentType);
-      return res.send(out.body);
+      return pipeRelay(res, out);
     }
     if (rateLimited(req.ip ?? 'unknown')) {
       return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
@@ -500,9 +498,19 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
     calls.set(a.id, { total: c.total + 1, last_at: Date.now() });
     health.set(a.id, { reachable: true, checked_at: Date.now(), card: health.get(a.id)?.card });
 
-    res.status(r2.res.status);
-    res.setHeader('Content-Type', r2.res.headers.get('content-type') ?? 'application/json');
-    res.send(Buffer.from(await r2.res.arrayBuffer()));
+    /**
+     * Piped, not buffered.
+     *
+     * This is the node's OWN agent, one hop away, and it was the last place the answer was collected in full
+     * before any of it was written. An agent that reports each step it takes — and both agents here do —
+     * arrived as one silent pause and then everything at once, which is what made `streaming` look like a
+     * claim nobody honoured. The same helper serves the mesh path (sam.ts).
+     */
+    return pipeRelay(res, {
+      status: r2.res.status,
+      contentType: r2.res.headers.get('content-type') ?? 'application/json',
+      body: r2.res.body,
+    });
   };
   r.post(`${AGENT_PREFIX}/:id`, callAgent);
 
