@@ -1,48 +1,35 @@
 {
   "_comment": [
-    "The `backends` block of config.json — merge it into your node's config, do not use this file directly.",
-    "",
-    "It is what makes a node serve the LLM API at /v1 and appear on the site's Models page. Without it the node",
-    "has no /v1 surface at all, `/api/models` answers an empty list, and the page says so rather than pretending.",
-    "",
-    "Declared, not probed: the node advertises what an operator configured rather than whatever container happens",
-    "to be running. `upstream` is the model server's own address — internal on every real deployment, and never",
-    "sent to a browser.",
-    "",
-    "`models` is what a caller passes as `model`. It must match what the backend serves under that name; for vLLM",
-    "that is `--served-model-name`.",
-    "",
-    "`concurrency` is how many requests a backend runs at once. The language model's is 1 because it sits behind",
-    "the shared runtime lease; transcription and image run on their own GPUs and set their own.",
-    "",
-    "The three scripts in this directory bring these up: serve-llm.sh, serve-stt.sh, serve-image.sh. Each takes",
-    "MODEL_DIR, SERVED_MODEL_NAME, PORT and GPUS from the environment, and DETACH=1 leaves it running.",
-    "",
-    "AS OF 2026-09-25 the production node has no backends block: it answers every other route and serves",
-    "Qwen3.8-Flash-Next, but publishes no model list. Applying this is a decision for whoever runs it — the site",
-    "renders that state honestly in the meantime."
+    "Example backends block; merge only the services you actually run into config.json.",
+    "Model IDs must match the backend served-model-name. Keep upstream URLs private.",
+    "Serving and training GPUs must be separate. See serve-llm.sh, serve-stt.sh and serve-image.sh."
   ],
-
   "backends": [
     {
       "id": "llm",
       "modality": "chat",
       "upstream": "http://127.0.0.1:8000",
-      "models": ["qwen3.8-flash-next"],
+      "models": [
+        "Qwen3.8-Flash-Next"
+      ],
       "concurrency": 1
     },
     {
       "id": "stt",
       "modality": "transcription",
       "upstream": "http://127.0.0.1:8100",
-      "models": ["qwen3-asr"],
+      "models": [
+        "qwen3-asr"
+      ],
       "concurrency": 4
     },
     {
       "id": "image",
       "modality": "image",
       "upstream": "http://127.0.0.1:8200",
-      "models": ["qwen-image-2512"],
+      "models": [
+        "qwen-image-2512"
+      ],
       "concurrency": 1
     }
   ]
