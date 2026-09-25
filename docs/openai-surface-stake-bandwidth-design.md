@@ -48,11 +48,20 @@ node when many callers are active, and waste it when few are.
 Instead, each waiter carries a virtual finish time:
 
 ```
-vft(request) = max(now, lastVft[address]) + estimatedCost / weight(address)
+start(request)  = max(virtualTime, lastFinish[address])
+finish(request) = start + estimatedCost / weight(address)
 ```
 
-and `pump()` breaks ties within a priority class by lowest `vft`. `weight(address)` is the
-address's deposited sAIN share.
+and `pump()` breaks ties within a priority class by lowest `finish`. `weight(address)` is
+the address's deposited sAIN share.
+
+**`virtualTime` is the queue's own clock, not the wall clock.** It is set to the finish tag
+of whatever was served last, and jumps to the highest tag issued whenever the queue drains.
+Clamping against real time instead looks equivalent and is not: real time advances as fast
+as the slowest caller's virtual clock, so every round resets everybody to the same point and
+the served ratio comes out 1:1 no matter what anyone deposited. The weights stay in the
+arithmetic and stop meaning anything. This document specified the wall-clock version until
+the ratio simulation in `test/stake-fair-queue.test.ts` caught it.
 
 This is a standard weighted-fair-queueing result, and it gives both properties that were
 asked for, with one mechanism:
@@ -65,9 +74,11 @@ asked for, with one mechanism:
   stakers" means, and it needs no active-set tracking, no sliding window, and no
   denominator to recompute. It falls out of the queue discipline.
 
-  `lastVft` is the only state, and it is clamped by `max(now, …)`: an address returning
-  after an idle period starts from the present, so it neither owes a backlog nor arrives
-  holding a credit that would starve everyone else.
+  `lastFinish` is the only scheduling state, and it is clamped by `max(virtualTime, …)`: an
+  address returning after an idle period starts from the queue's present, so it neither owes
+  a backlog nor arrives holding a credit that would starve everyone else. A request that is
+  still outstanding does keep counting against the address that made it — the levelling
+  happens when the queue drains, not merely when time passes.
 
 Details that have to be right:
 
@@ -79,7 +90,7 @@ Details that have to be right:
   numbers are comparable within one queue. It is an estimate; WFQ is robust to estimates
   being wrong by a constant factor, because every caller's estimate is wrong the same way.
 - **Callers with no deposit** keep today's free-try quota buckets unchanged and are given a
-  weight floor — a small fixed weight, not zero. Zero would mean infinite `vft` and
+  weight floor — a small fixed weight, not zero. Zero would mean an infinite finish tag and
   permanent starvation; a floor means they are served when the node is otherwise idle,
   which is what a free tier should be.
 - **STT and image run on their own GPUs** and are genuinely parallel. Each gets its own
@@ -89,14 +100,18 @@ Details that have to be right:
 
 ### Verification
 
-WFQ is simulated against a virtual clock in unit tests: given weights 2:1 and saturating
-demand from both, served counts must converge to 2:1 within a stated tolerance; given an
-address that goes idle and returns, it must reclaim its share within one service interval
-and must not be handed a backlog.
+WFQ is simulated against a virtual clock in unit tests, because the formula being typed
+correctly is not the claim — the ratio is. Given weights 2:1, 3:2:1 and 100:1 under
+saturating demand, served counts must converge on those ratios within a stated tolerance,
+and the 100:1 case must still serve the small stake at all, since starvation is not
+proportionality. A depositor holding 90% of the stake who never asks must take nothing from
+the two who do. An address that goes idle and returns must be level with a brand-new one
+once the queue has drained, while a request still outstanding keeps counting against the
+address that made it.
 
 ## 2. The surface
 
-A new file, `src/openaiSurfaceRouter.ts`, mounted at `/v1`. It does not go into `src/api.ts`,
+A new file, `src/openai-surface.ts`, mounted at `/v1`. It does not go into `src/api.ts`,
 which is already 2,871 lines.
 
 | Route | Backend |
@@ -108,7 +123,7 @@ which is already 2,871 lines.
 | `GET /v1/account` | this address's deposit, current share, recent effective throughput |
 | `POST /v1/auth/nonce`, `POST /v1/auth/token` | sign-in, issuing an API key |
 
-`src/inferenceBackends.ts` holds the registry: `{ id, modality, upstream, models[],
+`src/inference-backends.ts` holds the registry: `{ id, modality, upstream, models[],
 concurrency }` read from `config.json`. Both `/v1/models` and routing are derived from it,
 so a node that runs only the LLM advertises only the LLM rather than failing on a route it
 cannot serve.
