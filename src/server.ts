@@ -91,7 +91,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   let market: Market;
   const events = { onRecord: () => market?.invalidate() };
   const ledger: Ledger = cfg.ledger.kind === 'ain'
-    ? new AinLedger({ providerUrl: cfg.ledger.ain!.providerUrl, eventHandlerUrl: cfg.ledger.ain!.eventHandlerUrl, chainId: cfg.ledger.ain!.chainId }, cfg.identity, events)
+    ? new AinLedger({ providerUrl: cfg.ledger.ain!.providerUrl, eventHandlerUrl: cfg.ledger.ain!.eventHandlerUrl, chainId: cfg.ledger.ain!.chainId, pollMs: cfg.ledger.ain!.pollMs }, cfg.identity, events)
     : new LocalLedger(join(cfg.dataDir, 'ledger.sqlite'), cfg.identity, events, 'local');
   await ledger.init();
 
