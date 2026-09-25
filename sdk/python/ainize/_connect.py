@@ -28,20 +28,25 @@ _DEFAULT_TIMEOUT = 30.0
 def connect(
     node_url: str,
     *,
-    private_key: str | None = None,
     api_key: str | None = None,
+    private_key: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> openai.OpenAI:
-    """Return an `openai.OpenAI` pointed at `node_url`, signing in if it has to.
+    """Return an `openai.OpenAI` pointed at `node_url`.
 
-    Pass `private_key` to sign in and be issued a key, or `api_key` to reuse one you already hold. The returned
-    client is the genuine article: every call, parameter and exception is OpenAI's.
+    Pass `api_key`, which you get from the node's site once you have signed in with your wallet there. This is
+    the ordinary way, and it is the same shape as every other model API.
+
+    `private_key` is the other way, and it is for a program that already holds a wallet — an agent that also
+    sends transactions, say. It signs a login and is issued a key. **Do not put a private key in a source file
+    to use this library**; that key is the whole wallet, and nothing here needs it.
     """
     node_url = node_url.rstrip("/")
     if api_key is None:
         if private_key is None:
             raise ValueError(
-                "connect() needs either private_key (to sign in and be issued one) or api_key (one you already hold)"
+                "connect() needs api_key — get one from the node's site after signing in. "
+                "(private_key is the alternative, for a program that already holds a wallet.)"
             )
         api_key = _sign_in(node_url, private_key, timeout=timeout)
     return openai.OpenAI(base_url=f"{node_url}/v1", api_key=api_key)

@@ -23,6 +23,7 @@ import {
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
 import { walletLoginMessage, deviceAuthMessage, safeLabel, requestOrigin } from './wallet-login.js';
+import { siteSession } from './site-session.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
@@ -176,13 +177,10 @@ export function buildApi(deps: ApiDeps): Router {
    * that could hold one, since the only way to get a session was to sign with the node's key. Saying so here
    * keeps every caller from having to decide what a null subject means.
    */
-  const sessionSubject = (req: Request): { address: string; scheme: string; viaKey: string | null } | null => {
-    const token = sessionToken(req);
-    if (!token) return null;
-    const row = market.store.getSession(token);
-    if (!row) return null;
-    return { address: row.subject ?? market.address.toLowerCase(), scheme: row.scheme ?? 'ain', viaKey: row.via_key ?? null };
-  };
+  const sessionSubject = (req: Request): { address: string; scheme: string; viaKey: string | null } | null =>
+    // One reader, in site-session.ts, because /api/keys needs the same answer. Two ways to prove one identity
+    // is two places for it to be provable wrongly.
+    siteSession(req, market.store, market.address);
   /** Hex sha256, for comparing a secret against a stored hash rather than against the secret itself. */
   const sha256Hex = (v: string): string => createHash('sha256').update(v).digest('hex');
   /** Constant time over two equal-length hex digests — a poll that guesses must learn nothing from how long it took. */

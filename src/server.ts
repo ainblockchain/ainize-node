@@ -29,6 +29,7 @@ import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import { freeTierRouter } from './free-tier-routes.js';
+import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
@@ -221,6 +222,16 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    */
   const modalityGates = new Map<string, ModalityGate>();
 
+  /**
+   * API keys for the `/v1` surface.
+   *
+   * Built outside the backends block because the routes that manage them are about the person, not about what
+   * this node happens to serve: somebody signed in should be able to see and revoke their keys on a node whose
+   * model server is down.
+   */
+  const openaiKeys = new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json'));
+  app.use(openaiApiKeysRoutes({ keys: openaiKeys, store, nodeAddress: cfg.identity.address }));
+
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
@@ -256,7 +267,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     }
     app.use(openaiSurfaceRouter({
       registry: inferenceRegistry!,
-      keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
+      keys: openaiKeys,
       market,
       gates: modalityGates,
       scheduler: stakeQueue,

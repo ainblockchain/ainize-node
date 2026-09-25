@@ -69,6 +69,26 @@ export class OpenaiApiKeyStore {
     return removed;
   }
 
+  /**
+   * Revoke one of THIS address's keys, by the prefix its listing shows.
+   *
+   * Scoped to the owner on purpose. A prefix appears in a list and is therefore not a secret, so treating it as
+   * a capability would let anybody who had seen one revoke somebody else's key. Returns false when this address
+   * has no such key, which is the same answer as "no such key" — and deliberately so: telling the two apart
+   * would confirm that somebody else's key exists.
+   */
+  revokeByPrefixFor(address: string, prefix: string): boolean {
+    const wanted = address.toLowerCase();
+    for (const [hash, record] of this.records) {
+      if (record.address !== wanted) continue;
+      if (hash.slice(0, 8) !== prefix) continue;
+      this.records.delete(hash);
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
   listFor(address: string): OpenaiApiKeySummary[] {
     const wanted = address.toLowerCase();
     return [...this.records.entries()]
