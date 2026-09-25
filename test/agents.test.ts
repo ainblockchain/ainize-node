@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentAdverts, agentIdOk, agentUrl, summariseCard } from '../src/agents.js';
+import { agentAdverts, agentIdOk, agentUrl, summariseCard, currentAgentAdvert } from '../src/agents.js';
 
 const CARD = {
   name: 'News Fitness',
@@ -109,4 +109,13 @@ test('the advert carries skill NAMES only — the card at the URL carries the re
 test('a node advertises at most twenty agents — a gossip payload is not a catalogue', () => {
   const many = Array.from({ length: 40 }, (_, i) => ({ id: `a${i}`, upstream: `http://127.0.0.1:${4000 + i}` }));
   assert.equal(agentAdverts(cfgWith(many), 'https://mine.example').length, 20);
+});
+
+
+test('expired peer advertisements are not current agent services', () => {
+  const now = Date.now();
+  assert.equal(currentAgentAdvert({ last_seen: now - 60_000 }, now), true);
+  assert.equal(currentAgentAdvert({ last_seen: now - 24 * 3600_000 }, now), false);
+  assert.equal(currentAgentAdvert({ last_seen: 0 }, now), false);
+  assert.equal(currentAgentAdvert({}, now), false);
 });

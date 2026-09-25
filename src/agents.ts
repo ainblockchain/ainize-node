@@ -222,6 +222,11 @@ export interface AgentsDeps {
 /** How long an id → peer resolution is reused. The peer table is gossiped; it does not change per request. */
 const REGISTRY_TTL_MS = 30_000;
 
+/** Historical peer advertisements must not remain advertised as live services. */
+export function currentAgentAdvert(node: Pick<PeerInfo, 'last_seen'>, now = Date.now()): boolean {
+  return typeof node.last_seen === 'number' && node.last_seen > 0 && now - node.last_seen < 24 * 3600_000;
+}
+
 export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const r = Router();
   const rateLimited = limiter();
@@ -252,7 +257,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
     const next = new Map<string, { peer: string; node: PeerInfo }>();
     const seenAt = new Map<string, number>();
     for (const node of (await deps.knownNodes?.().catch(() => [])) ?? []) {
-      if (!node?.agents?.length || (node.address ?? '').toLowerCase() === self) continue;
+      if (!node?.agents?.length || !currentAgentAdvert(node) || (node.address ?? '').toLowerCase() === self) continue;
       for (const ad of node.agents) {
         if (!ad?.id || !ad.url) continue;
         const at = node.last_seen ?? 0;
@@ -336,7 +341,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      */
     const byAgent = new Map<string, { row: (typeof out)[number]; seen_at: number }>();
     for (const node of (await deps.knownNodes?.().catch(() => [])) ?? []) {
-      if (!node?.agents?.length || (node.address ?? '').toLowerCase() === self) continue;
+      if (!node?.agents?.length || !currentAgentAdvert(node) || (node.address ?? '').toLowerCase() === self) continue;
       for (const ad of node.agents.slice(0, 20)) {
         if (!ad?.id || !ad.url || seen.has(ad.url)) continue;
         const key = `${(node.address ?? '').toLowerCase()}:${ad.id}`;
