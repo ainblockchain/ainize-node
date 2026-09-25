@@ -1,3 +1,4 @@
+import { NODE_VERSION as VERSION } from './version.js';
 /**
  * HTTP API of a marketplace node (Express 5).
  *  /api/*   public catalog + operator console (cookie session)
@@ -13,7 +14,7 @@ import express, { type Request, type Response, type NextFunction, type Router } 
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  AinLedger, VERSION, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
+  AinLedger, billingImplemented, DATASET_MAX_BYTES_CEILING, PRICE_RE, sha256Hex, ValidationError, X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_TX, X402_HEADER_CURRENCY,
   DATASET_ACCESS_LEVELS, DERIVATION_KINDS, accessOf, effectiveVerifierShare, isDatasetLicense, preStateSha256, readNpzMember,
   sameAddr, verifyMessage, verifyAuth, operatorLoginMessage, LOGIN_NONCE_TTL_MS, type AuthScheme,
   parseStatus,

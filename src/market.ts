@@ -1,3 +1,4 @@
+import { NODE_VERSION as VERSION } from './version.js';
 /**
  * Market service — the node's business logic on top of Ledger + Store + BlobStore + Runtime + P2P:
  * drafts → announce (with conflict pre-check) → verification → listing; x402 trading (both schemes);
@@ -7,7 +8,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  AinLedger, VERSION, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, DISPUTE_MAX_REASON, DISPUTE_MIN_REASON, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
+  AinLedger, buildStamp, canonicalJson, CHALLENGE_COOLDOWN_MS, CHALLENGE_MIN_REASON, DATASET_MAX_BYTES_CEILING, DISPUTE_MAX_REASON, DISPUTE_MIN_REASON, deriveCatalog, effectiveRoyaltyShare, effectiveVerifierShare, hashCanonical, intersectionCount, NETWORK_MIN_ROYALTY_SHARE, royaltyPlan, royaltySplit, sanitizeContributors, sha256Hex, signMessage, teachConfig, validateContributors, validatePrice, verifyMessage, ValidationError,
   decodePayload, decodeRequirements, encodePayload, encodeRequirements, newNonce, accessOf, accessRank, lineageIds, lineageProblems, licenseCompatible, TEACH_SAMPLES_ON_CHAIN,
   X402_HEADER_PAYMENT, X402_HEADER_REQUIRED, X402_HEADER_RESPONSE, ainPaymentDigest, sketchJaccard, transferKeyFor, type X402Required,
   type Attestation, type BenchmarkSpec, type BranchInfo, type CatalogEntry, type Challenge, type Contributor, type Dispute, type DatasetAccess, type Ledger, type LedgerRecord,

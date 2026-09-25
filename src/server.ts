@@ -1,3 +1,4 @@
+import { NODE_VERSION as VERSION } from './version.js';
 /**
  * Assemble and run a marketplace node: ledger + store + blobs + runtime + market + p2p + verifier + HTTP.
  */
@@ -11,7 +12,7 @@ import { buildAgents } from './agents.js';
 import { buildSam, makeMeshRelay } from './sam.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type DepositLedger, type Ledger, type NodeConfig } from '@ainize/core';
+import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type DepositLedger, type Ledger, type NodeConfig } from '@ainize/core';
 import { buildApi, setupTokenPath } from './api.js';
 import { diskReport, humanBytes, sweepTemp } from './disk.js';
 import { BlobStore } from './blobs.js';
