@@ -17,8 +17,14 @@ GPUS=${GPUS:-'"device=5"'}
 # 1.7B in bf16 is ~3.5 GB on an 80 GB card; the rest is KV cache for concurrent transcriptions.
 GPU_FRACTION=${GPU_FRACTION:-0.30}
 
+# DETACH=1 leaves the backend running after this shell exits. Without it the container dies with whatever
+# started the script — including a terminal that closed, or a supervisor that timed the script out.
+DETACH=${DETACH:-0}
+RUN_FLAGS=(--rm --name "$NAME")
+[ "$DETACH" = "1" ] && RUN_FLAGS+=(-d)
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-exec docker run --rm --name "$NAME" \
+exec docker run "${RUN_FLAGS[@]}" \
   --gpus "$GPUS" \
   --shm-size 8g \
   -p "${PORT}:8000" \

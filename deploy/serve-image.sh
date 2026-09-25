@@ -13,8 +13,14 @@ PORT=${PORT:-8200}
 GPUS=${GPUS:-'"device=6"'}
 
 docker build -q -t "$IMAGE" "$HERE/image-sidecar" >/dev/null
+# DETACH=1 leaves the backend running after this shell exits. Without it the container dies with whatever
+# started the script — including a terminal that closed, or a supervisor that timed the script out.
+DETACH=${DETACH:-0}
+RUN_FLAGS=(--rm --name "$NAME")
+[ "$DETACH" = "1" ] && RUN_FLAGS+=(-d)
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-exec docker run --rm --name "$NAME" \
+exec docker run "${RUN_FLAGS[@]}" \
   --gpus "$GPUS" \
   --shm-size 8g \
   -p "${PORT}:8000" \
