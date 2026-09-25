@@ -225,6 +225,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
       keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
       market,
+      scheduler: stakeQueue,
       node: cfg.identity.address,
       nodeName: cfg.name,
       deposits: deposits && cfg.deposits

@@ -252,6 +252,18 @@ export class Runtime {
   /** Number of callers waiting in the in-process queue. */
   private get waiting(): number { return this.waiters.length + (this.active ? 1 : 0); }
 
+  /**
+   * Total estimated cost of everything waiting, in the fair queue's unit.
+   *
+   * The work queued, not the number of requests: ten callers asking for sixteen tokens each and one asking for
+   * two thousand are different queues, and counting requests makes them look the same.
+   */
+  queuedCost(): number {
+    let total = 0;
+    for (const waiter of this.waiters) total += waiter.cost;
+    return total;
+  }
+
   /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
   patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
   /**

@@ -3492,6 +3492,22 @@ export class Market {
   }
   listRuntimeJobs(): RuntimeJob[] { return [...this.jobs.values()].sort((a, b) => b.queued_at - a.queued_at); }
 
+  /** How many callers are waiting for the shared model, including the one holding it. */
+  runtimeQueueLength(): number {
+    return this.runtime.queueState().waiting;
+  }
+
+  /**
+   * Total estimated work queued ahead, in the fair queue's own cost unit (tokens, for chat).
+   *
+   * Used to decide whether a wait can honestly be promised. It counts the WORK, not the requests: ten callers
+   * each asking for sixteen tokens is not the same queue as one asking for two thousand, and a count of requests
+   * would make those look identical.
+   */
+  runtimeQueueDepth(): number {
+    return this.runtime.queuedCost();
+  }
+
   /** Start a queued runtime job and return it immediately (the work continues in the background). */
   startRuntimeJob(kind: 'apply' | 'remove', patchId: string, run: (onEnter: () => void) => Promise<string>): RuntimeJob {
     const id = randomBytes(9).toString('hex');

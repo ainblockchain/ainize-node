@@ -35,6 +35,8 @@ export interface OpenaiSurfaceDeps {
     receivingAddress: string;
     chains: { chain: string; token: string }[];
   };
+  /** The fair queue, when deposits are configured. Absent = no wait bound, because nothing divides the queue. */
+  scheduler?: { activeShareOf(address: string): number };
   /** This node's address, for the sign-in message. */
   node: string;
   nodeName?: string;
@@ -42,6 +44,25 @@ export interface OpenaiSurfaceDeps {
 
 /** Ceiling on a single `/v1` completion. The node serves one request at a time; an unbounded one is a denial of service. */
 export const OPENAI_MAX_TOKENS_CEILING = 2048;
+
+/**
+ * The longest wait this node will promise, in seconds.
+ *
+ * Past it a request is refused rather than queued. Not because the caller's share is too small — under weighted
+ * fair queueing a small share means a longer wait, never a refusal, and an error saying otherwise would be a lie
+ * about the mechanism. It is refused because a node that accepts work it cannot say anything true about the
+ * timing of has turned a queue into a silent drop.
+ */
+export const OPENAI_MAX_PROMISED_WAIT_S = 120;
+
+/**
+ * Roughly how many tokens this node generates per second, used only to turn a queue depth into a wait.
+ *
+ * Deliberately a constant rather than a measurement: the number decides when to refuse, and a measured rate falls
+ * during exactly the overload it is meant to detect, so refusals would avalanche as the node got busier. Wrong by
+ * a constant factor it merely shifts where the bound sits; wrong dynamically it makes the bound unpredictable.
+ */
+export const OPENAI_TOKENS_PER_SECOND = 20;
 
 declare module 'express-serve-static-core' {
   interface Request { openaiCaller?: OpenaiCaller }
@@ -101,7 +122,11 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
         // Number() would round somebody's balance silently, always in the same direction.
         deposited_shares: ledger.depositedShareOf(address).toString(),
         total_deposited_shares: ledger.totalDepositedShares().toString(),
-        share_of_active: ledger.shareFractionOf(address),
+        // From the scheduler when there is one: what a caller wants to know is their share of the people
+        // actually asking, which is what decides their wait. The ledger's fraction is over every depositor who
+        // ever paid, including those who have not called in months.
+        share_of_active: deps.scheduler ? deps.scheduler.activeShareOf(address) : ledger.shareFractionOf(address),
+        share_of_deposited: ledger.shareFractionOf(address),
       });
     });
 
@@ -140,6 +165,30 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     const backend = deps.registry.backendForModel(body.model);
     if (!backend || backend.modality !== 'chat') {
       openaiError(res, 404, 'model_not_found', `this node does not serve a chat model called ${body.model}`);
+      return;
+    }
+
+    /**
+     * Refuse only what the node cannot honestly promise.
+     *
+     * The queue is shared, so the wait is what is already ahead divided by this caller's share of it. A caller
+     * with a large deposit waits through a long queue quickly; one with a small deposit does not, and is told so
+     * in numbers rather than being left to time out. The body names all three things a caller could change —
+     * wait, deposit more, ask for less — because a bare 429 makes a busy node and an unusable one look identical.
+     */
+    const share = deps.scheduler?.activeShareOf(req.openaiCaller!.address) ?? 1;
+    const queued = deps.market.runtimeQueueDepth();
+    const estimatedWaitS = share > 0 ? queued / OPENAI_TOKENS_PER_SECOND / share : Infinity;
+    if (deps.scheduler && estimatedWaitS > OPENAI_MAX_PROMISED_WAIT_S) {
+      res.status(429).json({
+        error: {
+          message: `this node cannot promise to start your request within ${OPENAI_MAX_PROMISED_WAIT_S}s at your current share — wait and retry, deposit more, or ask for fewer tokens`,
+          type: 'rate_limit_error', code: 'queue_too_deep', param: null,
+        },
+        share,
+        position: deps.market.runtimeQueueLength(),
+        retry_after: Math.ceil(Math.min(estimatedWaitS, 3600)),
+      });
       return;
     }
 
