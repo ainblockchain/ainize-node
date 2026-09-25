@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents } from './agents.js';
@@ -22,6 +23,9 @@ import { Store } from './store.js';
 import { Verifier } from './verifier.js';
 import { Drive } from './drive.js';
 import { TeachWorker, type TeachHooks } from './teach.js';
+import { InferenceBackendRegistry } from './inference-backends.js';
+import { OpenaiApiKeyStore } from './openai-api-keys.js';
+import { openaiSurfaceRouter } from './openai-surface.js';
 
 export interface RunningNode {
   cfg: NodeConfig;
@@ -161,6 +165,19 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     baseline = structuredClone(cfg);
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
+
+  // The OpenAI-compatible surface, mounted only when an operator has declared what it serves. A node with no
+  // `backends` block has no `/v1` at all rather than a `/v1` that advertises nothing — the two look the same to a
+  // reader of the config but mean different things to a client, which needs "not offered here" and not "offered,
+  // empty". It is a separate router because `api.ts` is long enough already.
+  if (cfg.backends?.length) {
+    app.use(openaiSurfaceRouter({
+      registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
+      keys: new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json')),
+      node: cfg.identity.address,
+      nodeName: cfg.name,
+    }));
+  }
 
   const samDeps = {
     cfg,
