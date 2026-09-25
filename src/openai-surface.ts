@@ -11,9 +11,14 @@
  * that file, and nothing there needs to know this exists.
  */
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiAuthRoutes } from './openai-auth-routes.js';
+import type { Market } from './market.js';
+import { RuntimeUnavailableError } from './runtime.js';
+import type { ChatStreamChunk } from './chat-stream.js';
 
 /** The caller's proven address, attached by the bearer middleware. */
 export interface OpenaiCaller { address: string }
@@ -21,10 +26,15 @@ export interface OpenaiCaller { address: string }
 export interface OpenaiSurfaceDeps {
   registry: InferenceBackendRegistry;
   keys: OpenaiApiKeyStore;
+  /** Generation goes through the market, so `/v1` takes the same shared lease and queue as everything else. */
+  market: Market;
   /** This node's address, for the sign-in message. */
   node: string;
   nodeName?: string;
 }
+
+/** Ceiling on a single `/v1` completion. The node serves one request at a time; an unbounded one is a denial of service. */
+export const OPENAI_MAX_TOKENS_CEILING = 2048;
 
 declare module 'express-serve-static-core' {
   interface Request { openaiCaller?: OpenaiCaller }
@@ -67,5 +77,111 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     res.json({ object: 'list', data: deps.registry.listModels() });
   });
 
+  router.post('/v1/chat/completions', authed, async (req: Request, res: Response) => {
+    const parsed = openaiChatRequest.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      openaiError(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid request');
+      return;
+    }
+    const body = parsed.data;
+
+    // Routed, never guessed. Answering an unknown model with whatever this node happens to serve would give the
+    // caller a reply from a model they did not ask for, and no way to notice.
+    const backend = deps.registry.backendForModel(body.model);
+    if (!backend || backend.modality !== 'chat') {
+      openaiError(res, 404, 'model_not_found', `this node does not serve a chat model called ${body.model}`);
+      return;
+    }
+
+    const id = `chatcmpl-${randomBytes(16).toString('hex')}`;
+    const created = Math.floor(Date.now() / 1000);
+    const caller = req.openaiCaller!.address;
+    const abort = new AbortController();
+    const onClose = () => { if (!res.writableEnded) abort.abort(); };
+    if (body.stream) res.once('close', onClose);
+
+    /** SSE headers are sent on the first frame, not before: a failure that happens first must still be a JSON error. */
+    const writeFrame = async (frame: string) => {
+      abort.signal.throwIfAborted();
+      if (!res.headersSent) {
+        res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+        res.flushHeaders();
+      }
+      res.write(frame);
+      res.flush?.();
+    };
+
+    try {
+      const outcome = await deps.market.chat({
+        // `patchIds: []` is base mode — the model this node serves, with nothing loaded. The /v1 surface sells
+        // throughput on that model; patches are what /api/chat is for.
+        patchIds: [], mode: 'base',
+        model: body.model,
+        messages: body.messages,
+        maxTokens: body.max_tokens ?? 512,
+        signal: abort.signal,
+        visitor: deps.market.visitorId(`openai:${caller}`),
+        caller: { operator: false, address: caller },
+        onChunk: body.stream
+          ? async (chunk: ChatStreamChunk) => {
+            // Re-stamped with OUR id and created time: the client correlates frames by them, and the upstream's
+            // are meaningless outside this node.
+            await writeFrame(`data: ${JSON.stringify({ ...chunk, id, created, model: body.model })}\n\n`);
+          }
+          : undefined,
+      });
+
+      const answer = outcome.base;
+      if (!answer) {
+        openaiError(res, 502, 'upstream_no_answer', 'the serving model returned no answer', 'api_error');
+        return;
+      }
+
+      if (body.stream) {
+        await writeFrame('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+      res.json({
+        id, object: 'chat.completion', created, model: answer.model || body.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: answer.content }, finish_reason: answer.finish_reason ?? 'stop', logprobs: null }],
+        usage: answer.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      });
+    } catch (error) {
+      if (error instanceof RuntimeUnavailableError) {
+        if (!res.headersSent) openaiError(res, 503, 'backend_unavailable', error.message, 'api_error');
+        else res.end();
+        return;
+      }
+      // Once frames are out the status line is already 200, so the only honest thing left is to say so in-band
+      // and stop. A client that has read half an answer must not be told it was fine.
+      if (res.headersSent) {
+        if (!res.destroyed) res.end(`data: ${JSON.stringify({ error: { message: 'the completion was interrupted', type: 'api_error', code: 'stream_interrupted' } })}\n\n`);
+        return;
+      }
+      openaiError(res, 500, 'internal_error', error instanceof Error ? error.message : 'the completion failed', 'api_error');
+    } finally {
+      res.off('close', onClose);
+    }
+  });
+
   return router;
 }
+
+/**
+ * What `/v1/chat/completions` accepts.
+ *
+ * Deliberately narrower than OpenAI's: a field this node cannot honour is better refused than accepted and
+ * ignored, because silently ignoring `n: 4` bills a caller for one answer they did not ask for and hands them
+ * three that never existed.
+ */
+const openaiChatRequest = z.object({
+  model: z.string().min(1),
+  messages: z.array(z.object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string().min(1).max(32_000),
+  })).min(1, 'messages must contain at least one message').max(64),
+  max_tokens: z.coerce.number().int().min(1).max(OPENAI_MAX_TOKENS_CEILING).optional(),
+  stream: z.boolean().default(false),
+  n: z.literal(1).optional(),
+});

@@ -174,6 +174,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     app.use(openaiSurfaceRouter({
       registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
       keys: new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json')),
+      market,
       node: cfg.identity.address,
       nodeName: cfg.name,
     }));
