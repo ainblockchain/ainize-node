@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "The `deposits` block of config.json — merge it into your node's config, do not use this file directly.",
+    "",
+    "Every address here was read off the live staking app and verified on Base mainnet (chain 8453).",
+    "",
+    "receivingAddress is the operator wallet callers send AIN or sAIN to. Replace it with your own.",
+    "",
+    "vault.address is AI Network's staking contract, NOT an ERC-4626 vault. sAIN has asset() and looks like a",
+    "vault from a distance, but exposes no convertToShares; the conversion is one exchange rate on the staking",
+    "contract, read as AIN per sAIN in 1e18 fixed point. It has NO DEFAULT and the node refuses to start without",
+    "it, because a wrong one misprices every deposit for ever and nothing at runtime would reveal it.",
+    "",
+    "The Base entry watches AIN. Add a second entry with isVaultShare true to also accept sAIN sent directly:",
+    "that token is already in share units and is credited without conversion.",
+    "",
+    "confirmations may be omitted; defaults are 12 on Ethereum and 30 on Base. Raise them if you accept large",
+    "deposits and would rather wait than be reorganised."
+  ],
+
+  "deposits": {
+    "receivingAddress": "0x77547927486Dc69793D460661f4a161D1B9068E3",
+
+    "vault": {
+      "address": "0x52644a566eCc3f09F2800A09eB99b2226839E2Da",
+      "chain": "base"
+    },
+
+    "chains": [
+      {
+        "chain": "base",
+        "rpcUrl": "https://mainnet.base.org",
+        "token": "0xd4423795fd904d9b87554940a95fb7016f172773"
+      },
+      {
+        "chain": "base-sain",
+        "rpcUrl": "https://mainnet.base.org",
+        "token": "0x70e68AF68933D976565B1882D80708244E0C4fe9",
+        "isVaultShare": true
+      }
+    ],
+
+    "pollMs": 30000
+  }
+}

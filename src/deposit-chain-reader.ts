@@ -18,7 +18,19 @@ export const AIN_TOKEN_ETHEREUM = '0x3a810ff7211b40c4fa76205a14efe161615d0385';
 export const AIN_TOKEN_BASE = '0xd4423795fd904d9b87554940a95fb7016f172773';
 
 const TRANSFER_ABI = parseAbi(['event Transfer(address indexed from, address indexed to, uint256 value)']);
-const ERC4626_ABI = parseAbi(['function convertToShares(uint256 assets) view returns (uint256)']);
+/**
+ * AI Network's staking contract, which is NOT ERC-4626.
+ *
+ * sAIN has `asset()` and looks like a vault from a distance, but it exposes no `convertToShares` and no
+ * `totalAssets`; the conversion lives on a separate staking contract as a single exchange rate. Assuming the
+ * standard here would have failed at the first real deposit, with a revert rather than a wrong number — which is
+ * the better of the two ways to be wrong, but still a node that cannot take money.
+ *
+ * `getExchangeRate()` is AIN per sAIN in 1e18 fixed point, so shares = assets * 1e18 / rate. It rises as staking
+ * rewards accrue, which is why a deposit is priced when it is credited rather than in a batch.
+ */
+const AIN_STAKING_ABI = parseAbi(['function getExchangeRate() view returns (uint256)']);
+const RATE_SCALE = 10n ** 18n;
 
 /**
  * How deep a block must be before a transfer in it is credited.
@@ -30,6 +42,11 @@ const ERC4626_ABI = parseAbi(['function convertToShares(uint256 assets) view ret
  */
 export const DEFAULT_CONFIRMATIONS: Record<string, number> = { ethereum: 12, base: 30 };
 
+/** AI Network's staking contract on Base — the authority on what a deposit is worth in sAIN. */
+export const AIN_STAKING_BASE = '0x52644a566eCc3f09F2800A09eB99b2226839E2Da';
+/** sAIN on Base: an ERC-20 whose transfers are already in share units. */
+export const SAIN_TOKEN_BASE = '0x70e68AF68933D976565B1882D80708244E0C4fe9';
+
 export interface DepositChainClients {
   readLogs: DepositLogReader;
   chainHead: (chain: string) => Promise<number>;
@@ -39,8 +56,8 @@ export interface DepositChainClients {
 /**
  * Build the three chain-facing functions the watcher needs.
  *
- * `vault` is the ERC-4626 sAIN vault and the chain it lives on; a deposit arriving on any chain is priced through
- * it, so one vault gives one unit across all of them.
+ * `vault` names the staking contract and the chain it lives on. A deposit arriving on any chain is priced through
+ * that one contract, so deposits on different chains are counted in one unit.
  */
 export function depositChainClients(
   chains: DepositChainConfig[],
@@ -85,12 +102,15 @@ export function depositChainClients(
     },
 
     async sharesFor(_chain, amount) {
-      return vaultClient().readContract({
+      const rate = await vaultClient().readContract({
         address: getAddress(vault.address),
-        abi: ERC4626_ABI,
-        functionName: 'convertToShares',
-        args: [amount],
-      }) as Promise<bigint>;
+        abi: AIN_STAKING_ABI,
+        functionName: 'getExchangeRate',
+      }) as bigint;
+      // A rate of zero would divide by nothing and, worse, a rate read from the wrong contract could silently be
+      // zero-ish. Refuse rather than credit a number nobody can check afterwards.
+      if (rate <= 0n) throw new Error(`the staking contract at ${vault.address} reported an exchange rate of ${rate}`);
+      return (amount * RATE_SCALE) / rate;
     },
   };
 }
@@ -109,7 +129,7 @@ export function assertDepositsConfigured(config: {
 }): void {
   const problems: string[] = [];
   if (!config.receivingAddress) problems.push('deposits.receivingAddress — the address callers send AIN to');
-  if (!config.vault?.address) problems.push('deposits.vault.address — the ERC-4626 sAIN vault');
+  if (!config.vault?.address) problems.push('deposits.vault.address — the AIN staking contract that prices a deposit');
   if (!config.vault?.chain) problems.push('deposits.vault.chain — which chain that vault is on');
   if (!config.chains?.length) problems.push('deposits.chains — at least one chain to watch');
   for (const chain of config.chains ?? []) {

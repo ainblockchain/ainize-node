@@ -177,7 +177,9 @@ The library **never signs a transfer.** It tells you where to send and waits for
 funds stays with the wallet you already trust.
 
 A deposit is not credited the instant it lands. The node waits out its own confirmation depth (12 blocks on
-Ethereum, 30 on Base, by default), so a transaction a block explorer already shows is not yet a share.
+Ethereum, 30 on Base, by default), so a transaction a block explorer already shows is not yet a share. What it
+is worth is set when it is credited, at the staking contract's exchange rate then — not at the rate when you
+sent it.
 `await_deposit` polls the node rather than the chain, because the node is the authority on when it counts.
 
 **There is no withdrawal.** A deposit is a purchase of a permanent share.

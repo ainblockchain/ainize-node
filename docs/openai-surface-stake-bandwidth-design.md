@@ -169,8 +169,8 @@ no daemon, so the CLI that depends on it is unaffected.
 
 - Watches `Transfer` logs to the operator's receiving address on three paths: AIN on
   Ethereum mainnet (`0x3a810ff7211b40c4fa76205a14efe161615d0385`), AIN on Base
-  (`0xd4423795fd904d9b87554940a95fb7016f172773`), and sAIN (the ERC-4626 vault share)
-  itself.
+  (`0xd4423795fd904d9b87554940a95fb7016f172773`), and sAIN itself
+  (`0x70e68AF68933D976565B1882D80708244E0C4fe9`), whose transfers are already in share units.
 
   Base's address is the one AIN uses on every non-Ethereum chain it is deployed to —
   Polygon, BNB Chain, Arbitrum, Optimism and Avalanche all share it. The watcher is
@@ -178,8 +178,9 @@ no daemon, so the CLI that depends on it is unaffected.
   against Base specifically: accepting another chain later is a config entry, not code.
 - Idempotent on `(chain, txHash, logIndex)`; waits a per-chain confirmation depth before
   crediting, so a reorg cannot mint share.
-- Normalises at credit time through the vault's `convertToShares`, recording **sAIN share
-  units**. A direct sAIN deposit is recorded as-is. Deposits on different chains are
+- Normalises at credit time through the staking contract's `getExchangeRate()` — AIN per sAIN in 1e18 fixed
+  point — recording **sAIN share units**. sAIN is *not* ERC-4626: it has `asset()` and looks like a vault, but
+  exposes no `convertToShares`, and the conversion lives on a separate staking contract. A direct sAIN deposit is recorded as-is. Deposits on different chains are
   therefore summed in one comparable unit.
 - Converts received AIN into sAIN by depositing to that chain's vault, using the operator's
   key.
@@ -197,7 +198,7 @@ The token addresses are known and ship as defaults. Two values are not, and are 
 required config with no default, so a misconfigured node fails at startup rather than
 crediting the wrong address:
 
-- the sAIN vault address and its chain,
+- the staking contract address and its chain,
 - the operator's receiving address.
 
 ## 4. The SDKs
