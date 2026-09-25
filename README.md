@@ -49,6 +49,8 @@ operator's revenue. An idle deposit costs the callers who are active nothing —
 [the design](docs/openai-surface-stake-bandwidth-design.md) for why that needs no bookkeeping.
 
 `deploy/serve-stt.sh` and `deploy/serve-image.sh` bring up the two non-LLM backends.
+[Calling the model](docs/calling-the-model.md) is the client-side guide: limits, deposits, and what the node
+does when it is busy.
 
 ## Native inference accounting
 
