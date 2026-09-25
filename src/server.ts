@@ -27,6 +27,8 @@ import { InferenceBackendRegistry } from './inference-backends.js';
 import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
+import { freeTierRouter } from './free-tier-routes.js';
+import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
 import { assertDepositsConfigured, depositChainClients, DEFAULT_CONFIRMATIONS } from './deposit-chain-reader.js';
@@ -210,10 +212,23 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    */
   app.use(publicModelsRouter({ registry: inferenceRegistry, probe: probeBackend }));
 
+  /**
+   * One gate per non-LLM backend, shared by the paid surface and the free tier.
+   *
+   * A gate is the queue in front of a GPU. Built twice, each copy would admit up to the card's concurrency on its
+   * own and the card would see double — so it is built here, once, and handed to both routers.
+   */
+  const modalityGates = new Map<string, ModalityGate>();
+
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
     const surfaceHome = opts.home ?? tmpdir();
+    for (const modality of ['transcription', 'image'] as const) {
+      for (const backend of inferenceRegistry!.backendsFor(modality)) {
+        modalityGates.set(backend.id, new ModalityGate(modality, backend.concurrency, stakeQueue));
+      }
+    }
     if (cfg.deposits) {
       // Refused here, before anything is served, because neither mistake is visible later: a node watching the
       // wrong address simply never sees a transfer, which looks exactly like nobody having deposited yet.
@@ -242,6 +257,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       registry: inferenceRegistry!,
       keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
       market,
+      gates: modalityGates,
       scheduler: stakeQueue,
       node: cfg.identity.address,
       nodeName: cfg.name,
@@ -253,6 +269,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         }
         : undefined,
     }));
+
+    // The visitor's door, beside the program's. Same gates, same hourly allowance as /api/chat — see
+    // free-tier-quota.ts for why the allowance is defined in one place rather than per route.
+    app.use(freeTierRouter({ registry: inferenceRegistry, market, gates: modalityGates }));
   }
 
   const samDeps = {

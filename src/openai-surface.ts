@@ -19,7 +19,7 @@ import { openaiAuthRoutes } from './openai-auth-routes.js';
 import type { Market } from './market.js';
 import type { DepositLedger } from '@ainize/core';
 import { RuntimeUnavailableError } from './runtime.js';
-import { ModalityGate, ModalityGateClosedError } from './modality-gate.js';
+import { ModalityGateClosedError, type ModalityGate } from './modality-gate.js';
 import multer from 'multer';
 import type { ChatStreamChunk } from './chat-stream.js';
 import type { StakeFairQueue } from './stake-fair-queue.js';
@@ -38,6 +38,13 @@ export interface OpenaiSurfaceDeps {
     receivingAddress: string;
     chains: { chain: string; token: string }[];
   };
+  /**
+   * One gate per backend, keyed by backend id, built by the caller.
+   *
+   * A gate IS the queue in front of a GPU, so it has to be the same object everywhere that card is reached. The
+   * free-tier routes take this same map; two gates over one card would each believe they owned it.
+   */
+  gates: Map<string, ModalityGate>;
   /**
    * The fair queue, when deposits are configured. Absent = no wait bound, because nothing divides the queue.
    *
@@ -177,10 +184,6 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
    * the file, and decoding it to schedule it would do the backend's work twice. Bytes are proportional to
    * duration for a given format, which is all a fair queue needs.
    */
-  const transcriptionGates = new Map<string, ModalityGate>();
-  for (const backend of deps.registry.backendsFor('transcription')) {
-    transcriptionGates.set(backend.id, new ModalityGate('transcription', backend.concurrency, deps.scheduler));
-  }
   const uploadAudio = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024, files: 1 } });
 
   router.post('/v1/audio/transcriptions', authed, uploadAudio.single('file'), async (req: Request, res: Response) => {
@@ -194,7 +197,7 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     const file = req.file;
     if (!file) { openaiError(res, 400, 'invalid_request', 'file is required — post the audio as multipart/form-data'); return; }
 
-    const gate = transcriptionGates.get(backend.id)!;
+    const gate = deps.gates.get(backend.id)!;
     try {
       const answer = await gate.run(async () => {
         const form = new FormData();
@@ -232,10 +235,6 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
    * Cost is `steps × n` — what actually occupies the card. A prompt's length says nothing about it: one word at
    * sixty steps is far more work than a paragraph at ten.
    */
-  const imageGates = new Map<string, ModalityGate>();
-  for (const backend of deps.registry.backendsFor('image')) {
-    imageGates.set(backend.id, new ModalityGate('image', backend.concurrency, deps.scheduler));
-  }
 
   router.post('/v1/images/generations', authed, async (req: Request, res: Response) => {
     const parsed = openaiImageRequest.safeParse(req.body ?? {});
@@ -250,7 +249,7 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
       return;
     }
 
-    const gate = imageGates.get(backend.id)!;
+    const gate = deps.gates.get(backend.id)!;
     try {
       const answer = await gate.run(async () => {
         const upstream = await fetch(`${backend.upstream}/v1/images/generations`, {
