@@ -169,6 +169,7 @@ export function buildOpenApi(base: string, version: string) {
     tags: [
       { name: 'Find knowledge', description: 'catalog, detail, same-subject listings (no auth)' },
       { name: 'Live test', description: 'compare the model\'s answer before vs after the knowledge is loaded (trial quota)' },
+      { name: 'Models', description: 'what this node serves over the LLM API, and the free trials of it — the public list, and the transcription and image routes a visitor can press without a key (the chat trial is Live test\'s)' },
       { name: 'Teach', description: 'one pipeline, two doors: a dataset file (uploaded here, or with `ainize teach dataset`) and corrections collected in Live test are both frozen into the same canonical dataset → validated → trained → checked on the live model → a lesson its teacher can keep private or publish as a credited data provider (no sign-in — every request is signed with a teaching key held by the browser or the CLI)' },
       { name: 'Automatic payment & download', description: 'the x402 flow and blob download' },
       { name: 'Register & sell knowledge', description: 'operator: register → announce → verified → sold' },
