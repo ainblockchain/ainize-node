@@ -3492,6 +3492,22 @@ export class Market {
   }
   listRuntimeJobs(): RuntimeJob[] { return [...this.jobs.values()].sort((a, b) => b.queued_at - a.queued_at); }
 
+  /** How many callers are waiting for the shared model, including the one holding it. */
+  runtimeQueueLength(): number {
+    return this.runtime.queueState().waiting;
+  }
+
+  /**
+   * Total estimated work queued ahead, in the fair queue's own cost unit (tokens, for chat).
+   *
+   * Used to decide whether a wait can honestly be promised. It counts the WORK, not the requests: ten callers
+   * each asking for sixteen tokens is not the same queue as one asking for two thousand, and a count of requests
+   * would make those look identical.
+   */
+  runtimeQueueDepth(): number {
+    return this.runtime.queuedCost();
+  }
+
   /** Start a queued runtime job and return it immediately (the work continues in the background). */
   startRuntimeJob(kind: 'apply' | 'remove', patchId: string, run: (onEnter: () => void) => Promise<string>): RuntimeJob {
     const id = randomBytes(9).toString('hex');
@@ -3824,6 +3840,8 @@ export class Market {
     // "queued" turns into "running" and the last moment a give-up costs the visitor nothing.
     let gaveUp = false;
     const onEnter = opts.requestId ? () => { gaveUp = !this.chatQueue.enter(opts.requestId!); } : undefined;
+    // The caller's address and what they asked for are what the fair queue divides the model by. A node with no
+    // deposits has no scheduler and ignores both, so this changes nothing there.
     return this.runtime.exclusive(label, async () => {
       opts.signal?.throwIfAborted();
       if (gaveUp) throw new ChatCancelledError();
@@ -3927,7 +3945,7 @@ export class Market {
         applied, benchmark_hits: hits, dirty,
         history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
-    }, { onEnter });
+    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens });
   }
 
   /**

@@ -107,6 +107,31 @@ export class RuntimeUnavailableError extends Error {
  * Naming the three classes is the whole scheduler: a person waiting on this node goes first, the node's own bake
  * next, verification last.
  */
+/** Injected so `runtime.ts` need not know what a deposit is; see `stake-fair-queue.ts` for why it is not a rate limit. */
+/**
+ * The address a request with no signed-in caller is attributed to.
+ *
+ * One bucket for everybody anonymous, deliberately: separate buckets would let a caller mint as much of the queue
+ * as it liked by making up a new name per request, which is the same attack as having no scheduler at all.
+ */
+export const ANONYMOUS_CALLER = 'anonymous';
+
+/** What one section of work says about itself when it takes the shared model. */
+export interface RuntimeSectionOptions {
+  onEnter?: () => void;
+  priority?: number;
+  /** The depositing address this work is attributed to. Omitted = anonymous, which gets the weight floor. */
+  address?: string;
+  /** Estimated work, for the fair queue. Ratios are all that matter; the unit is the modality's own. */
+  cost?: number;
+}
+
+/** Injected so `runtime.ts` need not know what a deposit is; see `stake-fair-queue.ts` for why it is not a rate limit. */
+export interface RuntimeScheduler {
+  admit(entry: { priority: number; seq: number; address: string; cost: number }): number;
+  take<T extends { priority: number; seq: number; address: string; cost: number }>(entries: T[]): T | null;
+}
+
 export const RUNTIME_PRIORITY = {
   /** Someone is waiting on this node right now: chat, a live test, an operator apply/remove. */
   serving: 0,
@@ -121,7 +146,7 @@ export interface QueuedSection { label: string; priority: number; since: number 
 
 export class Runtime {
   /** Callers waiting for the serialised section, highest priority first (`seq` keeps arrival order inside a class). */
-  private waiters: { priority: number; seq: number; label: string; since: number; start: () => void }[] = [];
+  private waiters: { priority: number; seq: number; label: string; since: number; address: string; cost: number; start: () => void }[] = [];
   private active = false;
   private seq = 0;
   private statusCache: { at: number; value: RuntimeStatus } | null = null;
@@ -129,7 +154,11 @@ export class Runtime {
   private downUntil = 0;
   private downDetail = '';
   static readonly DOWN_MS = 60_000;
-  constructor(private readonly cfg: NonNullable<NodeConfig['runtime']>, private readonly owner = `pid:${process.pid}`) {}
+  /**
+   * `scheduler` divides the queue by what callers deposited. Omitted — which is every node that sells no
+   * throughput — the queue is ordered by priority then arrival, exactly as it always was.
+   */
+  constructor(private readonly cfg: NonNullable<NodeConfig['runtime']>, private readonly owner = `pid:${process.pid}`, private readonly scheduler?: RuntimeScheduler) {}
 
   /** Remember that the model just failed: status() reports it unavailable for DOWN_MS and callers get a friendly 503 instead of the raw upstream error. */
   private markDown(detail: string): RuntimeUnavailableError {
@@ -145,7 +174,7 @@ export class Runtime {
 
   get repo(): string | null { return this.cfg.repo && existsSync(this.cfg.repo) ? this.cfg.repo : null; }
 
-  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void, priority = Runtime.priorityOf(label)): Promise<T> {
+  private serial<T>(fn: () => Promise<T>, label = 'runtime', waitMs?: number, onEnter?: () => void, priority = Runtime.priorityOf(label), address = ANONYMOUS_CALLER, cost = 1): Promise<T> {
     const run = async () => {
       const release = await this.acquireLock(label, waitMs);
       this.busy = { label, since: Date.now() };
@@ -155,19 +184,38 @@ export class Runtime {
       try { return await fn(); } finally { this.lastOp = { label, at: Date.now() }; this.busy = null; release(); }
     };
     return new Promise<T>((resolve, reject) => {
-      this.waiters.push({
-        priority, seq: ++this.seq, label, since: Date.now(),
+      const waiter = {
+        priority, seq: ++this.seq, label, since: Date.now(), address, cost,
         start: () => { run().then(resolve, reject).finally(() => { this.active = false; this.pump(); }); },
-      });
+      };
+      this.waiters.push(waiter);
+      // Admitted the moment it starts waiting, not when it runs: its place in the queue is decided by when it
+      // asked, and a request admitted at service time would have no place to be decided.
+      this.scheduler?.admit(waiter);
       this.pump();
     });
   }
 
-  /** Start the highest-priority waiter when the section is free. Ties are broken by arrival order, so nothing starves inside a class. */
+  /**
+   * Start the next waiter when the section is free.
+   *
+   * Priority decides first and always: a person waiting on this node goes before the node's own bake, which goes
+   * before unpaid verification of a stranger's knowledge. What a scheduler changes is only the order WITHIN a
+   * class — stake buys a place among equals, never a way past what the node considers urgent.
+   *
+   * With no scheduler this is the arrival-order queue it has always been, which is what keeps a node that sells
+   * no throughput behaving exactly as before.
+   */
   private pump(): void {
     if (this.active || !this.waiters.length) return;
-    this.waiters.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
-    const next = this.waiters.shift()!;
+    let next: typeof this.waiters[number];
+    if (this.scheduler) {
+      next = this.scheduler.take(this.waiters) ?? this.waiters[0];
+      this.waiters.splice(this.waiters.indexOf(next), 1);
+    } else {
+      this.waiters.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
+      next = this.waiters.shift()!;
+    }
     this.active = true;
     next.start();
   }
@@ -203,6 +251,18 @@ export class Runtime {
   lastOperation(): { label: string; at: number } | null { return this.lastOp ? { ...this.lastOp } : null; }
   /** Number of callers waiting in the in-process queue. */
   private get waiting(): number { return this.waiters.length + (this.active ? 1 : 0); }
+
+  /**
+   * Total estimated cost of everything waiting, in the fair queue's unit.
+   *
+   * The work queued, not the number of requests: ten callers asking for sixteen tokens each and one asking for
+   * two thousand are different queues, and counting requests makes them look the same.
+   */
+  queuedCost(): number {
+    let total = 0;
+    for (const waiter of this.waiters) total += waiter.cost;
+    return total;
+  }
 
   /** Patch-hook mailbox of the serving instance this node talks to (config `runtime.patchDir`, default <repo>/ple_patch). */
   patchDir(): string | null { return this.cfg.patchDir ?? (this.repo ? join(this.repo, 'ple_patch') : null); }
@@ -259,8 +319,8 @@ export class Runtime {
   }
 
   /** Run `fn` while holding the shared runtime lock (for multi-step operations such as apply → chat → restore). */
-  exclusive<T>(label: string, fn: () => Promise<T>, opts: { onEnter?: () => void; priority?: number } = {}): Promise<T> {
-    return this.serial(fn, label, undefined, opts.onEnter, opts.priority);
+  exclusive<T>(label: string, fn: () => Promise<T>, opts: RuntimeSectionOptions = {}): Promise<T> {
+    return this.serial(fn, label, undefined, opts.onEnter, opts.priority, opts.address, opts.cost);
   }
 
   /**
@@ -268,7 +328,7 @@ export class Runtime {
    * in-process queue AND the cross-process lease instead of joining the 20-minute queue; throws
    * `shared runtime busy (…)` so the caller can requeue with jitter. Never breaks a live lease.
    */
-  async exclusiveTry<T>(label: string, fn: () => Promise<T>, opts: { waitMs?: number; priority?: number } = {}): Promise<T> {
+  async exclusiveTry<T>(label: string, fn: () => Promise<T>, opts: { waitMs?: number; priority?: number; address?: string; cost?: number } = {}): Promise<T> {
     const waitMs = opts.waitMs ?? 2 * 60_000;
     const t0 = Date.now();
     while (this.busy || this.waiters.length > 0) {
@@ -276,7 +336,7 @@ export class Runtime {
       await new Promise((r) => setTimeout(r, 150 + Math.random() * 150));
     }
     const left = Math.max(1000, waitMs - (Date.now() - t0));
-    return this.serial(fn, label, left, undefined, opts.priority);
+    return this.serial(fn, label, left, undefined, opts.priority, opts.address, opts.cost);
   }
 
   /**

@@ -28,6 +28,28 @@ node's identity.
 The explorer UI is a separate build ([ainize-web](https://github.com/ainblockchain/ainize-web)); point
 `webDist` at it to have this process serve it too.
 
+## Calling it like OpenAI, paid for by stake
+
+Set a `backends` block and the node also serves OpenAI's shapes at `/v1` — chat, transcription and image
+generation — beside its own `/api/chat`. A caller installs one package and writes the code they already know:
+
+```python
+import ainize
+
+client = ainize.connect("https://node.example", private_key="0x…")   # returns a real openai.OpenAI
+client.chat.completions.create(model="qwen3.8-flash-next", messages=[{"role": "user", "content": "hello"}])
+client.audio.transcriptions.create(model="qwen3-asr", file=open("note.flac", "rb"))
+client.images.generate(model="qwen-image-2512", prompt="a small blue sailboat")
+```
+
+TypeScript is `@ainize/sdk` with the same contract. What a caller pays with is a deposit, not a per-token
+charge: send AIN or sAIN to the operator, who holds it staked, and your share of the node's throughput is your
+share of what everyone asking at that moment deposited. The principal is not consumed and the yield on it is the
+operator's revenue. An idle deposit costs the callers who are active nothing — see
+[the design](docs/openai-surface-stake-bandwidth-design.md) for why that needs no bookkeeping.
+
+`deploy/serve-stt.sh` and `deploy/serve-image.sh` bring up the two non-LLM backends.
+
 ## Native inference accounting
 
 Opt-in `AINIZE_INFERENCE_RECORDS=true` records completed chat requests in bounded,

@@ -1,0 +1,23 @@
+{
+  "name": "@ainize/sdk",
+  "version": "0.1.0",
+  "description": "Call an Ainize node with ordinary OpenAI code; pay for throughput by staking AIN",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "dependencies": {
+    "openai": "^6.10.0",
+    "viem": "2.56.5"
+  },
+  "repository": { "type": "git", "url": "git+https://github.com/ainblockchain/ainize-node.git" },
+  "homepage": "https://github.com/ainblockchain/ainize"
+}

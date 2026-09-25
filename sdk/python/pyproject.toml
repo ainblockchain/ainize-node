@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ainize"
+version = "0.1.0"
+description = "Call an Ainize node with ordinary OpenAI code; pay for throughput by staking AIN"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "openai>=1.40",
+    "eth-account>=0.13",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/ainblockchain/ainize"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["ainize*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

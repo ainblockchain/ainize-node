@@ -4,13 +4,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents } from './agents.js';
 import { buildSam, makeMeshRelay } from './sam.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
-import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type Ledger, type NodeConfig } from '@ainize/core';
+import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, VERSION, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type DepositLedger, type Ledger, type NodeConfig } from '@ainize/core';
 import { buildApi, setupTokenPath } from './api.js';
 import { diskReport, humanBytes, sweepTemp } from './disk.js';
 import { BlobStore } from './blobs.js';
@@ -22,6 +23,14 @@ import { Store } from './store.js';
 import { Verifier } from './verifier.js';
 import { Drive } from './drive.js';
 import { TeachWorker, type TeachHooks } from './teach.js';
+import { InferenceBackendRegistry } from './inference-backends.js';
+import { OpenaiApiKeyStore } from './openai-api-keys.js';
+import { openaiSurfaceRouter } from './openai-surface.js';
+import { DepositWatcher } from './deposit-watcher.js';
+import { DepositLedgerStore } from './deposit-ledger-store.js';
+import { assertDepositsConfigured, depositChainClients, DEFAULT_CONFIRMATIONS } from './deposit-chain-reader.js';
+import { StakeFairQueue } from './stake-fair-queue.js';
+import { stakeWeightFrom, STAKE_WEIGHT_FLOOR, STAKE_IDLE_FORGET_MS } from './stake-weight-source.js';
 
 export interface RunningNode {
   cfg: NodeConfig;
@@ -32,6 +41,8 @@ export interface RunningNode {
   drive: Drive;
   /** Teach-mode worker (null when disabled with `teachWorker: false`). */
   teach: TeachWorker | null;
+  /** Credited deposits, when this node sells throughput (null when it does not). */
+  deposits: DepositLedger | null;
   server: Server;
   url: string;
   stop(): Promise<void>;
@@ -85,7 +96,23 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const lastStart = Number(store.get('node.started_at') ?? 0);
   const lastStop = Number(store.get('node.stopped_at') ?? 0);
   store.set('node.started_at', String(Date.now()));
-  const runtime = new Runtime(cfg.runtime ?? {});
+  /**
+   * The queue that divides the shared model by what callers deposited.
+   *
+   * Built only when this node accepts deposits. Without it `Runtime` orders its queue by priority then arrival,
+   * exactly as it always has — a node that sells no throughput must not change behaviour because this feature
+   * exists. The ledger is filled in below, once the deposits config has been checked; the weight function closes
+   * over the holder rather than the ledger so the two can be built in either order.
+   */
+  const stakeHolder: { ledger: DepositLedger | null } = { ledger: null };
+  const stakeQueue = cfg.deposits && cfg.backends?.length
+    ? new StakeFairQueue({
+      weightOf: (address) => (stakeHolder.ledger ? stakeWeightFrom(stakeHolder.ledger)(address) : 0),
+      weightFloor: STAKE_WEIGHT_FLOOR,
+      now: () => Date.now(),
+    })
+    : undefined;
+  const runtime = new Runtime(cfg.runtime ?? {}, undefined, stakeQueue);
   const blobs = new BlobStore(store, cfg.dataDir);
 
   let market: Market;
@@ -161,6 +188,55 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     baseline = structuredClone(cfg);
   };
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
+
+  // The OpenAI-compatible surface, mounted only when an operator has declared what it serves. A node with no
+  // `backends` block has no `/v1` at all rather than a `/v1` that advertises nothing — the two look the same to a
+  // reader of the config but mean different things to a client, which needs "not offered here" and not "offered,
+  // empty". It is a separate router because `api.ts` is long enough already.
+  let deposits: DepositLedger | null = null;
+  let depositWatcher: DepositWatcher | null = null;
+  if (cfg.backends?.length) {
+    const surfaceHome = opts.home ?? tmpdir();
+    if (cfg.deposits) {
+      // Refused here, before anything is served, because neither mistake is visible later: a node watching the
+      // wrong address simply never sees a transfer, which looks exactly like nobody having deposited yet.
+      assertDepositsConfigured(cfg.deposits);
+      const chains = cfg.deposits.chains.map((c) => ({
+        chain: c.chain, rpcUrl: c.rpcUrl, token: c.token,
+        confirmations: c.confirmations ?? DEFAULT_CONFIRMATIONS[c.chain] ?? 12,
+        isVaultShare: c.isVaultShare ?? false,
+      }));
+      const store = new DepositLedgerStore(join(surfaceHome, 'deposits.json'));
+      deposits = store.load();
+      stakeHolder.ledger = deposits;
+      depositWatcher = new DepositWatcher({
+        chains,
+        receivingAddress: cfg.deposits.receivingAddress,
+        ledger: deposits,
+        journalFile: join(surfaceHome, 'deposit-journal.json'),
+        log: (message) => market.log('info', 'deposits', message),
+        ...depositChainClients(chains, cfg.deposits.vault),
+      });
+      // Persist after every pass: a credit the node forgets is a caller who paid for a share they do not have.
+      depositWatcher.onCredited = () => store.save(deposits!);
+      depositWatcher.start(cfg.deposits.pollMs ?? 30_000);
+    }
+    app.use(openaiSurfaceRouter({
+      registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
+      keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
+      market,
+      scheduler: stakeQueue,
+      node: cfg.identity.address,
+      nodeName: cfg.name,
+      deposits: deposits && cfg.deposits
+        ? {
+          ledger: deposits,
+          receivingAddress: cfg.deposits.receivingAddress,
+          chains: cfg.deposits.chains.map((c) => ({ chain: c.chain, token: c.token })),
+        }
+        : undefined,
+    }));
+  }
 
   const samDeps = {
     cfg,
@@ -359,12 +435,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   inferenceTimer?.unref();
 
   return {
-    cfg, market, ledger, store, verifier, drive, teach, server, url,
+    cfg, market, ledger, store, verifier, drive, teach, deposits, server, url,
     async stop() {
       // The record of a clean shutdown (item 131): without this line a SIGKILL and a `ainize stop` left byte-identical
       // histories, and the next start could not tell an operator which of the two had happened.
       market.log('info', 'node', 'node stopping (clean shutdown)');
       if (inferenceTimer) clearInterval(inferenceTimer);
+      depositWatcher?.stop();
       try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
       clearInterval(watchdog);
       clearInterval(retention);
