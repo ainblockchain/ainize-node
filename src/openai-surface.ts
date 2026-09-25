@@ -71,6 +71,13 @@ export const OPENAI_MAX_PROMISED_WAIT_S = 120;
  */
 export const OPENAI_TOKENS_PER_SECOND = 20;
 
+/** Diffusion steps assumed when a caller does not say — OpenAI's schema has no field for it. */
+export const OPENAI_IMAGE_DEFAULT_STEPS = 30;
+/** Most images one request may ask for. The card makes them one after another, so this is a wait, not a batch. */
+export const OPENAI_IMAGE_MAX_N = 4;
+/** Most diffusion steps one image may take. Past this the wait stops being something the node can promise. */
+export const OPENAI_IMAGE_MAX_STEPS = 60;
+
 declare module 'express-serve-static-core' {
   interface Request { openaiCaller?: OpenaiCaller }
 }
@@ -215,6 +222,56 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     }
   });
 
+  /**
+   * Text to image.
+   *
+   * The only backend here that is not vLLM, so the node's routing must not assume otherwise: the request is
+   * validated, routed by model like everything else, and passed on as JSON. Its own GPU and its own gate, for
+   * the same reason as audio.
+   *
+   * Cost is `steps × n` — what actually occupies the card. A prompt's length says nothing about it: one word at
+   * sixty steps is far more work than a paragraph at ten.
+   */
+  const imageGates = new Map<string, ModalityGate>();
+  for (const backend of deps.registry.backendsFor('image')) {
+    imageGates.set(backend.id, new ModalityGate('image', backend.concurrency, deps.scheduler));
+  }
+
+  router.post('/v1/images/generations', authed, async (req: Request, res: Response) => {
+    const parsed = openaiImageRequest.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      openaiError(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid request');
+      return;
+    }
+    const body = parsed.data;
+    const backend = deps.registry.backendForModel(body.model);
+    if (!backend || backend.modality !== 'image') {
+      openaiError(res, 404, 'model_not_found', `this node does not serve an image model called ${body.model}`);
+      return;
+    }
+
+    const gate = imageGates.get(backend.id)!;
+    try {
+      const answer = await gate.run(async () => {
+        const upstream = await fetch(`${backend.upstream}/v1/images/generations`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        if (!upstream.ok) throw new RuntimeUnavailableError(`the image backend answered ${upstream.status}`);
+        return upstream.json();
+      }, {
+        address: req.openaiCaller!.address,
+        cost: (body.steps ?? OPENAI_IMAGE_DEFAULT_STEPS) * body.n,
+      });
+      res.json(answer);
+    } catch (error) {
+      if (error instanceof RuntimeUnavailableError || error instanceof ModalityGateClosedError) {
+        openaiError(res, 503, 'backend_unavailable', error.message, 'api_error');
+        return;
+      }
+      openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the image generation failed', 'api_error');
+    }
+  });
+
   router.post('/v1/chat/completions', authed, async (req: Request, res: Response) => {
     const parsed = openaiChatRequest.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -346,4 +403,21 @@ const openaiChatRequest = z.object({
   max_tokens: z.coerce.number().int().min(1).max(OPENAI_MAX_TOKENS_CEILING).optional(),
   stream: z.boolean().default(false),
   n: z.literal(1).optional(),
+});
+
+/**
+ * What `/v1/images/generations` accepts.
+ *
+ * `response_format` is restricted to base64 because this node stores nothing: a URL would either be a lie or a
+ * new lifetime to manage, and OpenAI's own URLs expire in a way callers already have to handle.
+ */
+const openaiImageRequest = z.object({
+  model: z.string().min(1),
+  prompt: z.string().min(1, 'prompt must not be empty').max(4000),
+  n: z.coerce.number().int().min(1).max(OPENAI_IMAGE_MAX_N).default(1),
+  size: z.string().regex(/^\d{3,4}x\d{3,4}$/, 'size must look like 1024x1024').default('1024x1024'),
+  response_format: z.literal('b64_json').default('b64_json'),
+  steps: z.coerce.number().int().min(1).max(OPENAI_IMAGE_MAX_STEPS).optional(),
+  negative_prompt: z.string().max(4000).optional(),
+  seed: z.coerce.number().int().optional(),
 });
