@@ -17,6 +17,7 @@ import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiAuthRoutes } from './openai-auth-routes.js';
 import type { Market } from './market.js';
+import type { DepositLedger } from '@ainize/core';
 import { RuntimeUnavailableError } from './runtime.js';
 import type { ChatStreamChunk } from './chat-stream.js';
 
@@ -28,6 +29,12 @@ export interface OpenaiSurfaceDeps {
   keys: OpenaiApiKeyStore;
   /** Generation goes through the market, so `/v1` takes the same shared lease and queue as everything else. */
   market: Market;
+  /** Deposits, when this node sells throughput. Absent = the account routes are not mounted. */
+  deposits?: {
+    ledger: DepositLedger;
+    receivingAddress: string;
+    chains: { chain: string; token: string }[];
+  };
   /** This node's address, for the sign-in message. */
   node: string;
   nodeName?: string;
@@ -76,6 +83,49 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
   router.get('/v1/models', authed, (_req, res) => {
     res.json({ object: 'list', data: deps.registry.listModels() });
   });
+
+  if (deps.deposits) {
+    const { ledger, receivingAddress, chains } = deps.deposits;
+
+    /**
+     * What this caller bought.
+     *
+     * Always about the caller's own address, never one named in the query: a key is a capability to read one
+     * account, and letting it read any would make the whole ledger public to anyone who ever signed in once.
+     */
+    router.get('/v1/account', authed, (req: Request, res: Response) => {
+      const address = req.openaiCaller!.address;
+      res.json({
+        address,
+        // Decimal string, not a number. A share is an 18-decimal bigint; JSON.stringify throws on one and a
+        // Number() would round somebody's balance silently, always in the same direction.
+        deposited_shares: ledger.depositedShareOf(address).toString(),
+        total_deposited_shares: ledger.totalDepositedShares().toString(),
+        share_of_active: ledger.shareFractionOf(address),
+      });
+    });
+
+    router.get('/v1/account/deposit-address', authed, (_req: Request, res: Response) => {
+      // The chains are part of the answer: sending AIN on a chain this node does not watch is money that arrives
+      // and is never credited, and nothing on-chain would tell the sender that.
+      res.json({ address: receivingAddress, chains });
+    });
+
+    router.get('/v1/account/deposits/:txHash', authed, (req: Request, res: Response) => {
+      const address = req.openaiCaller!.address;
+      const wanted = String(req.params.txHash ?? '').toLowerCase();
+      // Found only if it was this caller's own deposit. A transaction hash is public, so treating it as proof of
+      // anything would let anybody read a stranger's credit by quoting a hash off a block explorer.
+      const found = ledger.snapshot().find((event) => event.txHash === wanted && event.from === address);
+      if (!found) {
+        // Not a 404: a client polling for a transfer that has not been noticed yet needs to tell "not yet" from
+        // "wrong URL", and both would be 404.
+        res.json({ tx_hash: wanted, credited: false, shares: null, chain: null, block_number: null });
+        return;
+      }
+      res.json({ tx_hash: found.txHash, credited: true, shares: found.shares.toString(), chain: found.chain, block_number: found.blockNumber });
+    });
+  }
 
   router.post('/v1/chat/completions', authed, async (req: Request, res: Response) => {
     const parsed = openaiChatRequest.safeParse(req.body ?? {});

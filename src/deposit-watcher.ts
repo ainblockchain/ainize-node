@@ -69,6 +69,13 @@ export class DepositWatcher {
   private readonly scanned = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
   private scanning = false;
+  /**
+   * Called after a pass that credited something, so the ledger can be written down.
+   *
+   * A hook rather than a constructor dependency because the ledger's persistence is the node's business and this
+   * class's business is the chain. It fires once per pass, not once per credit: the ledger is written whole.
+   */
+  onCredited: (() => void) | null = null;
 
   constructor(private readonly deps: DepositWatcherDeps) {
     this.load();
@@ -83,8 +90,17 @@ export class DepositWatcher {
    */
   async scanOnce(): Promise<number> {
     let credited = 0;
-    for (const chain of this.deps.chains) {
-      credited += await this.scanChain(chain);
+    try {
+      for (const chain of this.deps.chains) {
+        credited += await this.scanChain(chain);
+      }
+    } finally {
+      // In a finally: a later chain failing must not throw away the credits an earlier one already made. The
+      // ledger holds them either way, and this is what makes them survive a restart.
+      if (credited > 0) {
+        try { this.onCredited?.(); }
+        catch (error) { this.deps.log?.(`credited ${credited} deposits but could not persist them: ${error instanceof Error ? error.message : String(error)}`); }
+      }
     }
     return credited;
   }
