@@ -27,6 +27,9 @@ import { TeachWorker, type TeachHooks } from './teach.js';
 import { InferenceBackendRegistry } from './inference-backends.js';
 import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
+import { publicModelsRouter, probeBackend } from './public-models-route.js';
+import { freeTierRouter } from './free-tier-routes.js';
+import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
 import { assertDepositsConfigured, depositChainClients, DEFAULT_CONFIRMATIONS } from './deposit-chain-reader.js';
@@ -194,10 +197,39 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // `backends` block has no `/v1` at all rather than a `/v1` that advertises nothing — the two look the same to a
   // reader of the config but mean different things to a client, which needs "not offered here" and not "offered,
   // empty". It is a separate router because `api.ts` is long enough already.
+  /**
+   * One registry, read by both surfaces.
+   *
+   * `/v1` routes by it and `/api/models` lists from it. Two registries built from one config would be two
+   * things to keep in step, and the one that drifted would be the one nobody was looking at.
+   */
+  const inferenceRegistry = cfg.backends?.length
+    ? new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 })))
+    : null;
+
+  /**
+   * Mounted whether or not this node serves anything: an unconfigured node answers an empty list, which a page
+   * can render, rather than a 404 that is indistinguishable from a node too old to have the route.
+   */
+  app.use(publicModelsRouter({ registry: inferenceRegistry, probe: probeBackend }));
+
+  /**
+   * One gate per non-LLM backend, shared by the paid surface and the free tier.
+   *
+   * A gate is the queue in front of a GPU. Built twice, each copy would admit up to the card's concurrency on its
+   * own and the card would see double — so it is built here, once, and handed to both routers.
+   */
+  const modalityGates = new Map<string, ModalityGate>();
+
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
     const surfaceHome = opts.home ?? tmpdir();
+    for (const modality of ['transcription', 'image'] as const) {
+      for (const backend of inferenceRegistry!.backendsFor(modality)) {
+        modalityGates.set(backend.id, new ModalityGate(modality, backend.concurrency, stakeQueue));
+      }
+    }
     if (cfg.deposits) {
       // Refused here, before anything is served, because neither mistake is visible later: a node watching the
       // wrong address simply never sees a transfer, which looks exactly like nobody having deposited yet.
@@ -223,9 +255,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       depositWatcher.start(cfg.deposits.pollMs ?? 30_000);
     }
     app.use(openaiSurfaceRouter({
-      registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
+      registry: inferenceRegistry!,
       keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
       market,
+      gates: modalityGates,
       scheduler: stakeQueue,
       node: cfg.identity.address,
       nodeName: cfg.name,
@@ -237,6 +270,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         }
         : undefined,
     }));
+
+    // The visitor's door, beside the program's. Same gates, same hourly allowance as /api/chat — see
+    // free-tier-quota.ts for why the allowance is defined in one place rather than per route.
+    app.use(freeTierRouter({ registry: inferenceRegistry, market, gates: modalityGates }));
   }
 
   const samDeps = {
