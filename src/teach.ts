@@ -578,7 +578,7 @@ export class TeachWorker {
     }
     if (this.policyCache && Date.now() - this.policyCache.at < 10_000) return this.policyCache.value;
     const c = this.cfg;
-    const tr = await this.trainerState();
+    const tr = { ...await this.trainerState() };
     const queued = this.store.listTeachJobs({ status: ACTIVE_JOB_STATUSES });
     // design §D7: only `backend = 'gradient'` samples may drive a visitor-facing number. On a stub node this list is
     // empty by construction, so `timing` is all-null and `simulated` is true — three-second stub jobs never become an ETA.
@@ -588,6 +588,12 @@ export class TeachWorker {
     const enough = stats.length >= ETA_MIN_SAMPLES;
     const rows = this.rowsPerJob();
     const st = await this.market.runtime.status();
+    // A running training container alone cannot complete a measured lesson. Keep the
+    // offline CLI workflow, but do not advertise immediate readiness in the public UI.
+    if (c.backend !== 'stub' && tr.state === 'ready' && !st.available) {
+      tr.state = 'paused';
+      tr.reason = st.error ?? 'serving runtime is not ready';
+    }
     const queuedRows = queued.reduce((n, j) => n + (j.dataset_rows ?? j.facts.length), 0);
     const value: TeachPolicyView = {
       enabled: c.enabled, publish: c.publish, trainer: tr.state, ...(tr.reason ? { paused_reason: tr.reason } : {}), backend: c.backend,

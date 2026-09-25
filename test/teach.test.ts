@@ -880,3 +880,17 @@ test('the operator lesson list pages from the newest end, and never drops a less
     assert.deepEqual(merged.map((j) => j.created_at), [...merged.map((j) => j.created_at)].sort((a, b) => b - a));
   } finally { db.close(); }
 });
+
+test('public readiness waits for the serving runtime even when the trainer container is running', async () => {
+  runtimeDown = true;
+  N.teach!.invalidatePolicy();
+  try {
+    const policy = await N.teach!.policy();
+    assert.equal(policy.trainer, 'paused');
+    assert.match(policy.paused_reason!, /serving API unreachable/);
+  } finally {
+    runtimeDown = false;
+    N.teach!.invalidatePolicy();
+  }
+  assert.equal((await N.teach!.policy()).trainer, 'ready');
+});
