@@ -45,6 +45,7 @@ export interface BlockedPeerRow { endpoint: string; blocked_at: number; reason: 
 
 /** A CLI's request to be vouched for, and the answer once a person has given one. */
 export interface DeviceGrant {
+  kind: 'cli' | 'node';
   code: string;
   /** the CLI key's address — what the person is being asked to speak for */
   delegate: string;
@@ -254,6 +255,10 @@ export class Store {
       -- person can see every machine that speaks for them and end any of them.
       CREATE TABLE IF NOT EXISTS bindings (delegate TEXT PRIMARY KEY, owner TEXT NOT NULL, label TEXT, created_at REAL NOT NULL, last_seen_at REAL);
       CREATE INDEX IF NOT EXISTS idx_bindings_owner ON bindings(owner);
+      CREATE TABLE IF NOT EXISTS node_links (delegate TEXT PRIMARY KEY, owner TEXT NOT NULL, label TEXT,
+        created_at REAL NOT NULL, last_seen_at REAL, roles TEXT NOT NULL DEFAULT '[]', version TEXT,
+        token_hash TEXT, expires_at REAL NOT NULL, grant_code TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_node_links_owner ON node_links(owner);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, resource TEXT NOT NULL, amount TEXT NOT NULL, pay_to TEXT NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS payments_seen (tx_hash TEXT PRIMARY KEY, patch_id TEXT NOT NULL, ts REAL NOT NULL);
       -- Money moves before a manifest comes back, so the INTENT is written first (item 274): one row per x402
@@ -319,6 +324,7 @@ export class Store {
       const have = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name));
       for (const [name, decl] of Object.entries(defs)) if (!have.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`);
     };
+    add('device_grants', { kind: "TEXT NOT NULL DEFAULT 'cli'" });
     add('teach_jobs', {
       lesson_applied: 'INTEGER NOT NULL DEFAULT 0',
       // teach mode v2: which dataset (and which slice of it) this lesson trained
@@ -617,10 +623,10 @@ export class Store {
   }
 
   // device grants — a CLI asking to be vouched for
-  putDeviceGrant(g: { code: string; delegate: string; label: string | null; pollHash: string; message: string; expires: number; ttlMs: number }) {
+  putDeviceGrant(g: { code: string; delegate: string; label: string | null; pollHash: string; message: string; expires: number; ttlMs: number; kind?: 'cli' | 'node' }) {
     const now = Date.now();
-    this.db.prepare('INSERT INTO device_grants (code, delegate, label, poll_hash, message, expires, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(g.code, g.delegate.toLowerCase(), g.label, g.pollHash, g.message, g.expires, now, now + g.ttlMs);
+    this.db.prepare('INSERT INTO device_grants (code, delegate, label, poll_hash, message, expires, created_at, expires_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(g.code, g.delegate.toLowerCase(), g.label, g.pollHash, g.message, g.expires, now, now + g.ttlMs, g.kind ?? 'cli');
   }
   /** The grant behind a code, live or not — the caller decides what expired means, since it is a different answer to each of them. */
   deviceGrant(code: string): DeviceGrant | null {
@@ -636,6 +642,29 @@ export class Store {
   /** Expired codes are worthless and a person's laptop name is not worth keeping; swept on every new grant. */
   sweepDeviceGrants() {
     this.db.prepare('DELETE FROM device_grants WHERE expires_at < ? AND (claimed_at IS NOT NULL OR approved_at IS NULL)').run(Date.now() - 3600_000);
+  }
+
+  // Node links are inventory credentials, not sessions that can spend for a wallet.
+  putNodeLink(g: DeviceGrant, owner: string) {
+    this.db.prepare(`INSERT INTO node_links (delegate, owner, label, created_at, expires_at, grant_code)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(delegate) DO UPDATE SET owner=excluded.owner,
+      label=excluded.label, token_hash=NULL, last_seen_at=NULL, roles='[]', version=NULL,
+      created_at=excluded.created_at, expires_at=excluded.expires_at, grant_code=excluded.grant_code`)
+      .run(g.delegate.toLowerCase(), owner.toLowerCase(), g.label, Date.now(), g.expires, g.code);
+  }
+  nodeLinksOf(owner: string): { delegate: string; label: string | null; created_at: number; last_seen_at: number | null; roles: string; version: string | null; expires_at: number }[] {
+    return this.db.prepare('SELECT delegate, label, created_at, last_seen_at, roles, version, expires_at FROM node_links WHERE owner=? ORDER BY created_at').all(owner.toLowerCase()) as never;
+  }
+  issueNodeLinkToken(g: DeviceGrant, tokenHash: string): boolean {
+    return this.db.prepare('UPDATE node_links SET token_hash=? WHERE delegate=? AND owner=? AND grant_code=?')
+      .run(tokenHash, g.delegate.toLowerCase(), g.owner!.toLowerCase(), g.code).changes > 0;
+  }
+  heartbeatNodeLink(delegate: string, tokenHash: string, name: string, roles: string[], version: string | null): boolean {
+    return this.db.prepare('UPDATE node_links SET label=?, roles=?, version=?, last_seen_at=? WHERE delegate=? AND token_hash=? AND expires_at>?')
+      .run(name, JSON.stringify(roles), version, Date.now(), delegate.toLowerCase(), tokenHash, Date.now()).changes > 0;
+  }
+  removeNodeLink(delegate: string, owner: string): boolean {
+    return this.db.prepare('DELETE FROM node_links WHERE delegate=? AND owner=?').run(delegate.toLowerCase(), owner.toLowerCase()).changes > 0;
   }
 
   // bindings — this key speaks for this person

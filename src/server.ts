@@ -382,7 +382,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     console.log(`ainize node "${cfg.name}" listening on ${url}${bound !== null && everyInterface ? `  (bound to ${cfg.host}:${bound} — reachable from every interface)` : ''}`);
     console.log(`  identity : ${cfg.identity.address}`);
     console.log(`  ledger   : ${ledger.kind}${cfg.ledger.kind === 'ain' ? ` (${cfg.ledger.ain!.providerUrl})` : ''}   roles: ${cfg.roles.join(',')}   peers: ${cfg.peers.length}`);
-    console.log(`  operator : this node's own key — \`ainize login\` signs in with it, no password`);
+    console.log(`  operator : this node's own key — \`ainize login --node-key\` signs in with it, no password`);
     const others = cfg.operatorAddresses ?? [];
     if (others.length) console.log(`             also ${others.join(', ')}`);
     else if (opts.home) console.log(`             to add another address, from that machine: \`ainize operators add <address>\` with the token in ${setupTokenPath(opts.home)}`);

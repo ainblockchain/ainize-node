@@ -568,19 +568,24 @@ export function buildApi(deps: ApiDeps): Router {
   const DEVICE_TTL_MS = 10 * 60_000;
   const DEVICE_BINDING_MS = 90 * 24 * 3600_000;
   router.post('/api/auth/device', wrap((req) => {
-    // Unauthenticated on purpose: a CLI with nothing but its own key is exactly who this is for. The rate limiter
+    // CLI delegation starts unauthenticated; node links require proof of the node key. The rate limiter
     // is the session throttle, keyed by TCP peer, so a script cannot paper the node with pending grants.
     loginGuard(req);
-    const { delegate, label } = z.object({
+    const { delegate, label, kind } = z.object({
+      kind: z.enum(['cli', 'node']).default('cli'),
       delegate: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
       label: z.string().max(80).optional(),
     }).parse(req.body);
+    if (kind === 'node') {
+      const who = sessionSubject(req);
+      if (!who || !sameAddr(who.viaKey ?? who.address, delegate)) throw new HttpError(403, 'prove possession of the node key before requesting a node link');
+    }
     market.store.sweepDeviceGrants();
     const code = randomBytes(16).toString('base64url');
     const pollSecret = randomBytes(24).toString('base64url');
     const expires = Date.now() + DEVICE_BINDING_MS;
-    const message = deviceAuthMessage({ node: market.address, nodeName: market.cfg.name, delegate, label, expiresAt: expires, code });
-    market.store.putDeviceGrant({ code, delegate, label: label ? safeLabel(label) : null, pollHash: sha256Hex(pollSecret), message, expires, ttlMs: DEVICE_TTL_MS });
+    const message = deviceAuthMessage({ node: market.address, nodeName: market.cfg.name, delegate, label, expiresAt: expires, code, kind });
+    market.store.putDeviceGrant({ code, delegate, label: label ? safeLabel(label) : null, pollHash: sha256Hex(pollSecret), message, expires, ttlMs: DEVICE_TTL_MS, kind });
     market.log('info', 'auth', `${delegate} asked to be authorised${label ? ` as "${safeLabel(label)}"` : ''} — waiting for someone to approve it in a browser`);
     return {
       code, poll_secret: pollSecret, interval_ms: 2000, expires_at: Date.now() + DEVICE_TTL_MS,
@@ -598,7 +603,7 @@ export function buildApi(deps: ApiDeps): Router {
     // `message` is the exact string the wallet will be asked to sign. The page renders it rather than composing
     // its own version, so what a person reads on the page and what they read in MetaMask cannot drift apart.
     return {
-      status: state, delegate: g.delegate, label: g.label, message: g.message, expires: g.expires,
+      status: state, kind: g.kind, delegate: g.delegate, label: g.label, message: g.message, expires: g.expires,
       expires_at: g.expires_at, node: market.address, name: market.cfg.name, owner: g.owner,
     };
   }));
@@ -624,8 +629,9 @@ export function buildApi(deps: ApiDeps): Router {
     // the bytes. Anything else would let a page have a wallet sign one thing and the node record another.
     if (!verifyAuth('eip191', g.message, signature, who.address)) throw new HttpError(401, 'that signature does not come from the address that is signed in');
     market.store.approveDeviceGrant(g.code, who.address);
-    market.store.putBinding(g.delegate, who.address, g.label);
-    market.log('info', 'auth', `${who.address} authorised ${g.delegate}${g.label ? ` ("${g.label}")` : ''} to act as them`);
+    if (g.kind === 'node') market.store.putNodeLink(g, who.address);
+    else market.store.putBinding(g.delegate, who.address, g.label);
+    market.log('info', 'auth', `${who.address} authorised ${g.delegate}${g.label ? ` ("${g.label}")` : ''} ${g.kind === 'node' ? 'as a linked node' : 'to act as them'}`);
     return { ok: true, delegate: g.delegate, owner: who.address, expires: g.expires };
   }));
 
@@ -648,6 +654,11 @@ export function buildApi(deps: ApiDeps): Router {
     // Single-use, and the UPDATE is the thing that decides it: two polls that raced must not both get a session.
     if (!market.store.claimDeviceGrant(g.code)) throw new HttpError(409, 'already_used: that request was already collected');
     const owner = g.owner;
+    if (g.kind === 'node') {
+      const token = randomBytes(32).toString('hex');
+      if (!market.store.issueNodeLinkToken(g, sha256Hex(token))) throw new HttpError(409, 'node link was revoked or replaced');
+      return { status: 'approved', kind: 'node', node_link_token: token, owner, delegate: g.delegate, expires: g.expires };
+    }
     market.store.touchBinding(g.delegate);
     const token = newSession(res, { subject: owner, scheme: 'eip191', viaKey: g.delegate });
     market.log('info', 'auth', `${g.delegate} collected a session as ${owner}`);
@@ -661,35 +672,36 @@ export function buildApi(deps: ApiDeps): Router {
    * morning — so it has to be visible and it has to be revocable, and revoking has to end the sessions the key
    * already collected. A revocation a 30-day cookie outlives is not a revocation.
    */
-  router.get('/api/my/nodes', wrap(async (req) => {
+  router.get('/api/my/nodes', wrap((req) => {
     const who = sessionSubject(req);
-    if (!who) throw new HttpError(401, 'sign in with your wallet to see your nodes');
-    const mine = market.store.bindingsOf(who.address);
-    if (isOwner(who.address) && !mine.some((b) => sameAddr(b.delegate, market.address))) {
-      mine.unshift({ delegate: market.address, owner: who.address, label: market.cfg.name, created_at: 0, last_seen_at: null });
-    }
-    if (!mine.length) return { nodes: [], hub: market.publicUrl };
-    const known = new Map((await market.knownNodes()).map((n) => [n.address.toLowerCase(), n]));
-    const peers = new Map(market.p2p.peers().map((p) => [(p.info?.address ?? '').toLowerCase(), p]));
-    const nodes = mine.map((b) => {
-      const key = b.delegate.toLowerCase();
-      const n = known.get(key);
-      const p = peers.get(key);
-      return {
-        address: b.delegate,
-        name: n?.name ?? b.label ?? null,
-        roles: n?.roles ?? [],
-        ledger: n?.ledger ?? null,
-        version: n?.version ?? null,
-        agents: (n?.agents ?? []).map((a) => ({ id: a.id, name: a.name })),
-        is_this_hub: sameAddr(b.delegate, market.address),
-        seen: p ? p.failures === 0 && p.last_seen > 0 : sameAddr(b.delegate, market.address) ? true : null,
-        last_seen: n?.last_seen ?? p?.last_seen ?? null,
-        connected_at: b.created_at,
-        operable: sameAddr(b.delegate, market.address) ? isOwner(who.address) : false,
-      };
+    if (!who) throw new HttpError(401, 'sign in with any wallet to see your nodes');
+    const nodes = market.store.nodeLinksOf(who.address).map((n) => ({
+      address: n.delegate, name: n.label, roles: JSON.parse(n.roles) as string[], version: n.version,
+      agents: [], ledger: null, is_this_hub: sameAddr(n.delegate, market.address),
+      seen: n.last_seen_at === null ? null : n.expires_at > Date.now() && Date.now() - n.last_seen_at < 180_000,
+      last_seen: n.last_seen_at, connected_at: n.created_at, operable: sameAddr(n.delegate, market.address) && isOwner(who.address),
+      can_unlink: true,
+    }));
+    if (isOwner(who.address) && !nodes.some(n => sameAddr(n.address, market.address))) nodes.unshift({
+      address: market.address, name: market.cfg.name, roles: market.cfg.roles, version: VERSION,
+      agents: [], ledger: null, is_this_hub: true, seen: true, last_seen: Date.now(), connected_at: 0, operable: true, can_unlink: false,
     });
     return { nodes, hub: market.publicUrl };
+  }));
+  router.post('/api/my/nodes/heartbeat', wrap((req) => {
+    const body = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/), name: z.string().min(1).max(80),
+      roles: z.array(z.string().max(30)).max(8).default([]), version: z.string().max(40).nullable().default(null),
+    }).parse(req.body);
+    const token = req.header('authorization')?.replace(/^Bearer /i, '') ?? '';
+    if (!token || !market.store.heartbeatNodeLink(body.address, sha256Hex(token), safeLabel(body.name), body.roles, body.version))
+      throw new HttpError(401, 'node link expired or disconnected; run ainize login again');
+    return { ok: true };
+  }));
+  router.delete('/api/my/nodes/:address', wrap((req) => {
+    const who = sessionSubject(req);
+    if (!who) throw new HttpError(401, 'sign in to disconnect your node');
+    if (!market.store.removeNodeLink(String(req.params.address), who.address)) throw notFound('node link not found');
+    return { ok: true };
   }));
   router.get('/api/auth/bindings', wrap((req) => {
     const who = sessionSubject(req);

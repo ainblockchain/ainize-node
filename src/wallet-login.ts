@@ -39,7 +39,16 @@ export function walletLoginMessage(t: { node: string; nodeName?: string; nonce: 
  * The label is the CLI's own words about itself and is shown in quotes for exactly that reason. It is never a
  * claim the node stands behind, and it is stripped of anything that could forge structure in the message.
  */
-export function deviceAuthMessage(t: { node: string; nodeName?: string; delegate: string; label?: string | null; expiresAt: number; code: string }): string {
+export function deviceAuthMessage(t: { node: string; nodeName?: string; delegate: string; label?: string | null; expiresAt: number; code: string; kind?: 'cli' | 'node' }): string {
+  if (t.kind === 'node') return [
+    'Connect a node to your Ainize account', '',
+    `Website node: ${t.node}`, `Node to connect: ${t.delegate}`,
+    ...(t.label ? [`Name: ${safeLabel(t.label)}`] : []),
+    `Until: ${new Date(t.expiresAt).toISOString()}`, `Request: ${t.code}`, '',
+    'This lists the node in My nodes and lets it report its status.',
+    'It grants no wallet spending or account-operation permission.',
+    'Disconnect it from My nodes at any time.',
+  ].join('\n');
   return [
     'Authorize a command line to act as you',
     '',
