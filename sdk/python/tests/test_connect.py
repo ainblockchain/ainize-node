@@ -25,11 +25,14 @@ def test_an_existing_key_skips_signing(node_url, issued_key):
     assert client.api_key == issued_key
 
 
-def test_neither_key_nor_private_key_is_an_error_naming_both(node_url):
+def test_no_key_at_all_is_an_error_that_names_the_ordinary_way_first(node_url):
     with pytest.raises(ValueError) as raised:
         ainize.connect(node_url)
-    assert "private_key" in str(raised.value)
-    assert "api_key" in str(raised.value)
+    message = str(raised.value)
+    assert "api_key" in message
+    # The wallet route is named too, but second: it is for a program that already holds one.
+    assert "private_key" in message
+    assert message.index("api_key") < message.index("private_key")
 
 
 def test_models_are_listed_through_the_stock_client(node_url, issued_key):
