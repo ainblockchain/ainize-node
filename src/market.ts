@@ -3824,6 +3824,8 @@ export class Market {
     // "queued" turns into "running" and the last moment a give-up costs the visitor nothing.
     let gaveUp = false;
     const onEnter = opts.requestId ? () => { gaveUp = !this.chatQueue.enter(opts.requestId!); } : undefined;
+    // The caller's address and what they asked for are what the fair queue divides the model by. A node with no
+    // deposits has no scheduler and ignores both, so this changes nothing there.
     return this.runtime.exclusive(label, async () => {
       opts.signal?.throwIfAborted();
       if (gaveUp) throw new ChatCancelledError();
@@ -3927,7 +3929,7 @@ export class Market {
         applied, benchmark_hits: hits, dirty,
         history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
-    }, { onEnter });
+    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens });
   }
 
   /**

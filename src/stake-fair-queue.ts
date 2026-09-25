@@ -90,14 +90,14 @@ export class StakeFairQueue {
    * let a request that skipped `admit` jump the whole queue, which is the one bug in this file that would be
    * worth exploiting.
    */
-  take(entries: StakeFairEntry[]): StakeFairEntry | null {
+  take<T extends StakeFairEntry>(entries: T[]): T | null {
     if (entries.length === 0) {
       // The queue has drained. Standard SFQ: virtual time jumps to the last finish tag issued, so whoever asks
       // next starts level with everyone else rather than inheriting a position from the busy period before.
       this.virtualTime = this.maxFinishIssued;
       return null;
     }
-    let best: StakeFairEntry | null = null;
+    let best: T | null = null;
     let bestFinish = Infinity;
     for (const entry of entries) {
       const finish = this.virtualFinish.get(entry) ?? Infinity;

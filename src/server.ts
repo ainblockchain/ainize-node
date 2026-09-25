@@ -29,6 +29,8 @@ import { openaiSurfaceRouter } from './openai-surface.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
 import { assertDepositsConfigured, depositChainClients, DEFAULT_CONFIRMATIONS } from './deposit-chain-reader.js';
+import { StakeFairQueue } from './stake-fair-queue.js';
+import { stakeWeightFrom, STAKE_WEIGHT_FLOOR, STAKE_IDLE_FORGET_MS } from './stake-weight-source.js';
 
 export interface RunningNode {
   cfg: NodeConfig;
@@ -94,7 +96,23 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const lastStart = Number(store.get('node.started_at') ?? 0);
   const lastStop = Number(store.get('node.stopped_at') ?? 0);
   store.set('node.started_at', String(Date.now()));
-  const runtime = new Runtime(cfg.runtime ?? {});
+  /**
+   * The queue that divides the shared model by what callers deposited.
+   *
+   * Built only when this node accepts deposits. Without it `Runtime` orders its queue by priority then arrival,
+   * exactly as it always has — a node that sells no throughput must not change behaviour because this feature
+   * exists. The ledger is filled in below, once the deposits config has been checked; the weight function closes
+   * over the holder rather than the ledger so the two can be built in either order.
+   */
+  const stakeHolder: { ledger: DepositLedger | null } = { ledger: null };
+  const stakeQueue = cfg.deposits && cfg.backends?.length
+    ? new StakeFairQueue({
+      weightOf: (address) => (stakeHolder.ledger ? stakeWeightFrom(stakeHolder.ledger)(address) : 0),
+      weightFloor: STAKE_WEIGHT_FLOOR,
+      now: () => Date.now(),
+    })
+    : undefined;
+  const runtime = new Runtime(cfg.runtime ?? {}, undefined, stakeQueue);
   const blobs = new BlobStore(store, cfg.dataDir);
 
   let market: Market;
@@ -190,6 +208,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       }));
       const store = new DepositLedgerStore(join(surfaceHome, 'deposits.json'));
       deposits = store.load();
+      stakeHolder.ledger = deposits;
       depositWatcher = new DepositWatcher({
         chains,
         receivingAddress: cfg.deposits.receivingAddress,
