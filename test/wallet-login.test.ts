@@ -169,3 +169,28 @@ test('my nodes requires a session and includes the node a wallet operates', asyn
   assert.ok(body.nodes.some(n => n.address === identity.address && n.operable));
   assert.ok(!JSON.stringify(body.nodes).includes('127.0.0.1'), 'private endpoints are not exposed');
 });
+
+
+test('unknown knowledge lookup cannot recurse through a peer back to this node', async () => {
+  const peers = N.market.p2p.peers;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  N.market.p2p.peers = () => [{ endpoint: url }] as ReturnType<typeof peers>;
+  globalThis.fetch = ((input, init) => {
+    if (String(input).includes('/api/patches/missing-loop-check')) {
+      calls++;
+      if (calls > 3) throw new Error('recursive peer lookup');
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const r = await fetch(`${url}/api/patches/missing-loop-check`);
+    assert.equal(r.status, 404);
+    assert.equal(calls, 2, 'one public request and at most one local-only peer lookup');
+    await fetch(`${url}/api/patches/missing-loop-check`);
+    assert.equal(calls, 3, 'the repeated miss is cached');
+  } finally {
+    globalThis.fetch = originalFetch;
+    N.market.p2p.peers = peers;
+  }
+});

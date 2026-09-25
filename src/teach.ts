@@ -2409,7 +2409,7 @@ export class TeachWorker {
 
   private async runProcess(job: TeachJobRow, dir: string, cmd: string, args: string[]): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const c = this.cfg;
-    const state = { facts: job.facts.map((f) => ({ ...f })), progress: { ...((job.progress as unknown as TeachProgress) ?? { step: 0, max_steps: c.trainer.maxSteps, hits: 0, total: job.facts.length }) }, done: null as DoneEvent | null, error: null as string | null };
+    const state = { facts: job.facts.map((f) => ({ ...f })), progress: { ...((job.progress as unknown as TeachProgress) ?? { step: 0, max_steps: (job.training as TeachTrainingSpec | null)?.max_steps ?? c.trainer.maxSteps, hits: 0, total: job.facts.length }) }, done: null as DoneEvent | null, error: null as string | null };
     const startedAt = Date.now();
     // When the timeout fires, WHERE it was spent decides what to change. A run that never left the load phase
     // wants a bigger `trainer.timeoutMs`; one that was on step 14 of 20 wants fewer rows or fewer passes. The

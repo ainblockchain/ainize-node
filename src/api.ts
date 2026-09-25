@@ -1018,10 +1018,13 @@ export function buildApi(deps: ApiDeps): Router {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id)) return miss();
     const cached = lookupCache.get(id);
     const hint = cached && Date.now() - cached.at < 60_000 ? cached.hint : await (async () => {
+      // Cache the miss before I/O: old peers may recursively ask us the same question.
+      if (lookupCache.size >= 1000) lookupCache.delete(lookupCache.keys().next().value!);
+      lookupCache.set(id, { at: Date.now(), hint: null });
       const peers = market.p2p.peers().slice(0, 4);
       const found = (await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.endpoint}/api/patches/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(1500) });
+          const r = await fetch(`${p.endpoint}/api/patches/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(1500), headers: { 'x-ainize-local-lookup': '1' } });
           if (!r.ok) return null;
           const body = (await r.json()) as { anchor?: { name?: string; price?: string; currency?: string } };
           return body?.anchor ? { endpoint: p.endpoint, node: p.info?.name ?? p.endpoint, ledger: p.info?.ledger ?? null, name: body.anchor.name ?? id, price: body.anchor.price ?? null, currency: body.anchor.currency ?? null } : null;
@@ -1042,7 +1045,10 @@ export function buildApi(deps: ApiDeps): Router {
 
   router.get('/api/patches/:id', wrap(async (req) => {
     const e = await market.entry(req.params.id as string);
-    if (!e) throw await unknownPatch(req.params.id as string);
+    if (!e) {
+      if (req.header('x-ainize-local-lookup')) throw notFound('patch not found');
+      throw await unknownPatch(req.params.id as string);
+    }
     if (e.status === 'DRAFT' && !isNodeOwner(req)) throw notFound('patch not found');
     const map = await market.entryMap();
     const visible = relativeVisible(req, e);
