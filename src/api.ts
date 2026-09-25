@@ -663,6 +663,36 @@ export function buildApi(deps: ApiDeps): Router {
    * morning — so it has to be visible and it has to be revocable, and revoking has to end the sessions the key
    * already collected. A revocation a 30-day cookie outlives is not a revocation.
    */
+  router.get('/api/my/nodes', wrap(async (req) => {
+    const who = sessionSubject(req);
+    if (!who) throw new HttpError(401, 'sign in with your wallet to see your nodes');
+    const mine = market.store.bindingsOf(who.address);
+    if (isOwner(who.address) && !mine.some((b) => sameAddr(b.delegate, market.address))) {
+      mine.unshift({ delegate: market.address, owner: who.address, label: market.cfg.name, created_at: 0, last_seen_at: null });
+    }
+    if (!mine.length) return { nodes: [], hub: market.publicUrl };
+    const known = new Map((await market.knownNodes()).map((n) => [n.address.toLowerCase(), n]));
+    const peers = new Map(market.p2p.peers().map((p) => [(p.info?.address ?? '').toLowerCase(), p]));
+    const nodes = mine.map((b) => {
+      const key = b.delegate.toLowerCase();
+      const n = known.get(key);
+      const p = peers.get(key);
+      return {
+        address: b.delegate,
+        name: n?.name ?? b.label ?? null,
+        roles: n?.roles ?? [],
+        ledger: n?.ledger ?? null,
+        version: n?.version ?? null,
+        agents: (n?.agents ?? []).map((a) => ({ id: a.id, name: a.name })),
+        is_this_hub: sameAddr(b.delegate, market.address),
+        seen: p ? p.failures === 0 && p.last_seen > 0 : sameAddr(b.delegate, market.address) ? true : null,
+        last_seen: n?.last_seen ?? p?.last_seen ?? null,
+        connected_at: b.created_at,
+        operable: sameAddr(b.delegate, market.address) ? isOwner(who.address) : false,
+      };
+    });
+    return { nodes, hub: market.publicUrl };
+  }));
   router.get('/api/auth/bindings', wrap((req) => {
     const who = sessionSubject(req);
     if (!who) throw new HttpError(401, 'sign in with your wallet to see what acts as you');

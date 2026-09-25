@@ -157,3 +157,15 @@ test('nothing anywhere still offers a password', async () => {
   const spec = JSON.stringify(docs.openapi);
   assert.ok(!/"password"/.test(spec), 'no request body anywhere takes a password field');
 });
+
+
+test('my nodes requires a session and includes the node a wallet operates', async () => {
+  assert.equal((await fetch(`${url}/api/my/nodes`)).status, 401);
+  const ch = await challenge('eip191');
+  const login = await post('/api/auth/wallet', { address: HUMAN.address, nonce: ch.nonce, signature: personalSign(ch.message, HUMAN.privateKey) });
+  const r = await fetch(`${url}/api/my/nodes`, { headers: { authorization: `Bearer ${login.body.token}` } });
+  assert.equal(r.status, 200);
+  const body = await r.json() as { nodes: { address: string; operable: boolean }[] };
+  assert.ok(body.nodes.some(n => n.address === identity.address && n.operable));
+  assert.ok(!JSON.stringify(body.nodes).includes('127.0.0.1'), 'private endpoints are not exposed');
+});
