@@ -13,13 +13,30 @@ npm install @ainize/sdk     # TypeScript
 ```python
 import ainize
 
-client = ainize.connect("https://node.example", private_key="0x…")
+# Any EVM private key works. It signs a login, never a transfer — see below.
+client = ainize.connect(
+    "http://127.0.0.1:24800",
+    private_key="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+)
 ```
 
 ```ts
 import { connectAinize } from '@ainize/sdk';
 
-const client = await connectAinize('https://node.example', { privateKey: '0x…' });
+const client = await connectAinize('http://127.0.0.1:24800', {
+  privateKey: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+});
+```
+
+The URL is whatever your node listens on; the key above is a throwaway used to produce every output in this
+document. **Do not reuse it for anything that holds value** — it is published here, so anybody can sign as that
+address. Generate your own with `python -c "import secrets; print('0x'+secrets.token_hex(32))"`.
+
+Ask the node what it serves before assuming a model id:
+
+```python
+>>> [m.id for m in client.models.list().data]
+['qwen2.5-7b-instruct', 'qwen3-asr', 'qwen-image-2512']
 ```
 
 `connect()` returns a **real `openai.OpenAI`** (or `OpenAI` in TypeScript). Every method, parameter and exception
@@ -37,18 +54,42 @@ The key does not expire. It is revoked, not refreshed, so do not build a refresh
 ## Chat
 
 ```python
-out = client.chat.completions.create(
-    model="qwen3.8-flash-next",
-    messages=[{"role": "user", "content": "hello"}],
-)
-print(out.choices[0].message.content)
+>>> out = client.chat.completions.create(
+...     model="qwen2.5-7b-instruct",
+...     messages=[{"role": "user", "content": "In one sentence: what is a GPU good at?"}],
+...     max_tokens=60,
+... )
+>>> out.choices[0].message.content.strip()
+'A GPU is good at performing parallel processing tasks, such as rendering graphics and handling complex mathematical operations for machine learning models.'
+>>> out.usage.total_tokens
+65
 ```
 
-Streaming is the ordinary OpenAI stream:
+Streaming is the ordinary OpenAI stream, and every frame you receive has a choice in it — the documented
+`chunk.choices[0]` loop is safe:
 
 ```python
-for chunk in client.chat.completions.create(model="qwen3.8-flash-next", messages=[…], stream=True):
+stream = client.chat.completions.create(
+    model="qwen2.5-7b-instruct",
+    messages=[{"role": "user", "content": "count to three"}],
+    stream=True,
+)
+for chunk in stream:
     print(chunk.choices[0].delta.content or "", end="")
+```
+
+Ask for token counts with OpenAI's own opt-in, and the usage frame arrives last, with `choices` empty:
+
+```python
+stream = client.chat.completions.create(
+    model="qwen2.5-7b-instruct",
+    messages=[{"role": "user", "content": "hello"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.usage:
+        print(chunk.usage.total_tokens)
 ```
 
 ### Limits, and why they are refusals rather than silent truncation
@@ -67,9 +108,12 @@ is likewise a 400 before any GPU time is spent.
 ## Speech to text
 
 ```python
-with open("note.flac", "rb") as f:
-    print(client.audio.transcriptions.create(model="qwen3-asr", file=f).text)
+>>> with open("speech.flac", "rb") as f:
+...     client.audio.transcriptions.create(model="qwen3-asr", file=f).text
+'Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.'
 ```
+
+WAV, FLAC and the other formats `soundfile` reads all work.
 
 Whatever else you send — `language`, `prompt`, `temperature`, `response_format` — is passed to the backend
 unchanged. The node is not the authority on what the model accepts.
@@ -77,8 +121,16 @@ unchanged. The node is not the authority on what the model accepts.
 ## Images
 
 ```python
-out = client.images.generate(model="qwen-image-2512", prompt="a small blue sailboat", size="512x512")
-png = base64.b64decode(out.data[0].b64_json)
+>>> import base64
+>>> out = client.images.generate(
+...     model="qwen-image-2512",
+...     prompt="a single red maple leaf on white paper",
+...     size="512x512",
+... )
+>>> png = base64.b64decode(out.data[0].b64_json)
+>>> len(png)
+365247
+>>> open("leaf.png", "wb").write(png)
 ```
 
 | Field | Limit |
@@ -106,8 +158,16 @@ Three consequences worth understanding before you size a deposit:
   anything. If ten arrive, it falls. What a deposit buys is a ratio, not a rate.
 
 ```python
-ainize.deposit_address("https://node.example")   # where to send, and which chains are watched
-ainize.await_deposit(url, tx_hash, api_key=client.api_key)
+ainize.deposit_address("http://127.0.0.1:24800")   # where to send, and which chains are watched
+ainize.await_deposit("http://127.0.0.1:24800", tx_hash, api_key=client.api_key)
+```
+
+(These two answer only on a node whose operator configured `deposits`; a node without them has no deposit
+routes at all, rather than routes that return nothing.)
+
+```json
+{"address": "0x00000000000000000000000000000000000000ff",
+ "chains": [{"chain": "base", "token": "0xd4423795fd904d9b87554940a95fb7016f172773"}]}
 ```
 
 Send only on a chain the node watches — that call tells you which. AIN sent on any other chain arrives and is
@@ -126,15 +186,18 @@ Ethereum, 30 on Base, by default), so a transaction a block explorer already sho
 
 ```python
 import httpx
-httpx.get(f"{url}/v1/account", headers={"authorization": f"Bearer {client.api_key}"}).json()
+httpx.get("http://127.0.0.1:24800/v1/account",
+          headers={"authorization": f"Bearer {client.api_key}"}).json()
 ```
+
+Real output from a node where this address deposited one share and somebody else deposited three:
 
 ```json
 {
-  "address": "0x…",
+  "address": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
   "deposited_shares": "1000000000000000000",
   "total_deposited_shares": "4000000000000000000",
-  "share_of_active": 0.25,
+  "share_of_active": 1,
   "share_of_deposited": 0.25
 }
 ```
@@ -142,9 +205,12 @@ httpx.get(f"{url}/v1/account", headers={"authorization": f"Bearer {client.api_ke
 Amounts are **decimal strings**, not numbers: a share is an 18-decimal integer and a JSON number would round it.
 Parse with `int()` / `BigInt()`, never with a float.
 
-`share_of_active` is your share among the addresses currently asking — the number that decides your wait.
-`share_of_deposited` is your share of every deposit ever made, including people who have not called in months.
-The first is usually the larger, and is the one that matters.
+The two fractions differ here, and the difference is the whole point. `share_of_deposited` is 0.25 — a quarter of
+every deposit ever made. `share_of_active` is **1**, because the address holding the other three quarters is not
+calling right now, and an address that is not calling has nothing in the queue and no claim on it.
+
+`share_of_active` is the number that decides your wait. It moves as other people start and stop, which is what
+it means for a deposit to buy a ratio rather than a rate.
 
 ## Errors
 
@@ -189,7 +255,7 @@ anyone crowd out image work with audio, and a long completion does not delay a v
 
 ## Which models
 
-Ask the node rather than assuming:
+Ask the node rather than assuming — the ids above are this node's, not a fixed catalogue:
 
 ```python
 [m.id for m in client.models.list().data]
@@ -201,9 +267,14 @@ a transcription call against it is a clean 404 rather than a confusing failure.
 ## Running the backends (operators)
 
 ```bash
-DETACH=1 ./deploy/serve-stt.sh     # Qwen3-ASR on GPU 5, port 8100
-DETACH=1 ./deploy/serve-image.sh   # Qwen-Image on GPU 6, port 8200
+DETACH=1 ./deploy/serve-llm.sh     # a language model, port 8000
+DETACH=1 ./deploy/serve-stt.sh     # Qwen3-ASR, port 8100
+DETACH=1 ./deploy/serve-image.sh   # Qwen-Image, port 8200
 ```
+
+Each script takes `MODEL_DIR`, `SERVED_MODEL_NAME`, `PORT` and `GPUS` from the environment, so one node can
+serve whichever models its cards have room for. The `SERVED_MODEL_NAME` you set is the id callers pass as
+`model`, and the one that must appear in `backends`.
 
 Then declare them in `config.json` under `backends`, and the deposit settings under `deposits`. The vault address
 and receiving address are required with no default: getting either wrong credits share for money you do not hold,

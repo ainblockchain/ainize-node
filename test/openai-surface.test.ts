@@ -58,6 +58,13 @@ function startUpstream(): Promise<Server> {
       })}\n\n`;
       res.write(frame({ role: 'assistant', content: 'po' }, null));
       res.write(frame({ content: 'ng' }, 'stop'));
+      // vLLM's last frame when asked for usage — which the node always asks for, for its own accounting.
+      // `choices` is empty, exactly as OpenAI sends it, and forwarding it to a caller who did not ask breaks
+      // the documented `chunk.choices[0]` loop. The stub sends it so the tests see what really arrives.
+      res.write(`data: ${JSON.stringify({
+        id: 'cmpl-upstream', object: 'chat.completion.chunk', created: 1, model: 'qwen3.8-flash-next',
+        choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      })}\n\n`);
       res.end('data: [DONE]\n\n');
     });
   });
@@ -128,6 +135,39 @@ test('a stream is chunk frames and ends with [DONE]', async () => {
   assert.ok(text.includes('"object":"chat.completion.chunk"'), 'frames must name themselves as chunks');
   assert.ok(text.includes('chatcmpl-'), 'every frame carries the completion id the client correlates on');
   assert.ok(text.trimEnd().endsWith('data: [DONE]'), 'a stream without [DONE] hangs the client iterator');
+});
+
+test('a stream carries no frame the caller did not ask for', async () => {
+  // OpenAI emits a final usage frame with `choices: []` only when the request set
+  // stream_options.include_usage. The node asks its upstream for usage unconditionally, for its own accounting,
+  // and forwarding that frame breaks every client written from OpenAI's docs: the documented loop is
+  // `chunk.choices[0].delta`, which raises IndexError on an empty list.
+  const res = await post('/v1/chat/completions', {
+    model: 'qwen3.8-flash-next', messages: [{ role: 'user', content: 'ping' }], stream: true,
+  }, authed());
+  const frames = (await res.text()).split('\n\n')
+    .map((block) => block.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+    .filter((data): data is string => !!data && data !== '[DONE]')
+    .map((data) => JSON.parse(data) as { choices: unknown[]; usage?: unknown });
+  assert.ok(frames.length > 0, 'the stream must contain frames');
+  for (const frame of frames) {
+    assert.ok(frame.choices.length > 0, 'every frame a caller sees must have a choice to read');
+  }
+});
+
+test('asking for usage gets the usage frame, in OpenAI\'s place and shape', async () => {
+  const res = await post('/v1/chat/completions', {
+    model: 'qwen3.8-flash-next', messages: [{ role: 'user', content: 'ping' }], stream: true,
+    stream_options: { include_usage: true },
+  }, authed());
+  const frames = (await res.text()).split('\n\n')
+    .map((block) => block.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+    .filter((data): data is string => !!data && data !== '[DONE]')
+    .map((data) => JSON.parse(data) as { choices: unknown[]; usage?: { total_tokens?: number } });
+  const usageFrame = frames.find((f) => f.choices.length === 0);
+  assert.ok(usageFrame, 'a caller that asked for usage must get the frame');
+  assert.equal(typeof usageFrame.usage?.total_tokens, 'number');
+  assert.equal(frames.indexOf(usageFrame), frames.length - 1, 'and it comes last, as OpenAI sends it');
 });
 
 test('no key is 401 in OpenAI error shape', async () => {

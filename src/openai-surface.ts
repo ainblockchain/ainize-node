@@ -314,6 +314,13 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
 
     const id = `chatcmpl-${randomBytes(16).toString('hex')}`;
     const created = Math.floor(Date.now() / 1000);
+    /**
+     * Held back until the stream ends, and sent only if the caller asked for it.
+     *
+     * A field rather than a `let`: TypeScript's control-flow analysis does not follow assignments made inside
+     * the onChunk closure, so a local would be narrowed to its initial `null` and the later read rejected.
+     */
+    const held: { usageFrame: ChatStreamChunk | null } = { usageFrame: null };
     const caller = req.openaiCaller!.address;
     const abort = new AbortController();
     const onClose = () => { if (!res.writableEnded) abort.abort(); };
@@ -343,6 +350,20 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
         caller: { operator: false, address: caller },
         onChunk: body.stream
           ? async (chunk: ChatStreamChunk) => {
+            /**
+             * A frame with no choices is the usage frame. The node asks its upstream for usage on every stream,
+             * for its own accounting — but OpenAI sends that frame only when the request set
+             * `stream_options.include_usage`, and a client written from OpenAI's documentation loops over
+             * `chunk.choices[0].delta`. Forwarding it unasked raises IndexError in Python and a TypeError in
+             * JavaScript, at the very end of a stream that otherwise worked.
+             *
+             * So it is held back here and emitted after the loop, only if the caller asked. Suppressing it
+             * rather than synthesising a choice keeps the wire exactly OpenAI's in both cases.
+             */
+            if (!chunk.choices?.length) {
+              held.usageFrame = chunk;
+              return;
+            }
             // Re-stamped with OUR id and created time: the client correlates frames by them, and the upstream's
             // are meaningless outside this node.
             await writeFrame(`data: ${JSON.stringify({ ...chunk, id, created, model: body.model })}\n\n`);
@@ -357,6 +378,9 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
       }
 
       if (body.stream) {
+        if (body.stream_options?.include_usage && held.usageFrame) {
+          await writeFrame(`data: ${JSON.stringify({ ...held.usageFrame, id, created, model: body.model })}\n\n`);
+        }
         await writeFrame('data: [DONE]\n\n');
         res.end();
         return;
@@ -402,6 +426,8 @@ const openaiChatRequest = z.object({
   })).min(1, 'messages must contain at least one message').max(64),
   max_tokens: z.coerce.number().int().min(1).max(OPENAI_MAX_TOKENS_CEILING).optional(),
   stream: z.boolean().default(false),
+  /** OpenAI's opt-in for the final usage frame. Without it that frame is not sent — see the streaming handler. */
+  stream_options: z.object({ include_usage: z.boolean().default(false) }).optional(),
   n: z.literal(1).optional(),
 });
 
