@@ -1,3 +1,4 @@
+import { saleAvailability } from './sale-availability.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
  * HTTP API of a marketplace node (Express 5).
@@ -272,7 +273,8 @@ export function buildApi(deps: ApiDeps): Router {
   };
 
   /** Names of contributors the operator hid are dropped from public views ("Taught by a visitor"). */
-  const redactContributors = <T extends CatalogEntry>(e: T): T => {
+  const redactContributors = <T extends CatalogEntry>(entry: T): T => {
+    const e = saleAvailability(entry, market.address, (sha) => market.blobs.has(sha));
     const hidden = deps.teach?.hiddenContributors();
     if (!hidden?.size || !e.anchor.contributors?.length) return e;
     return { ...e, anchor: { ...e.anchor, contributors: e.anchor.contributors.map((c) => (hidden.has(c.address.toLowerCase()) || (c.signer && hidden.has(c.signer.toLowerCase())) ? { ...c, name: undefined } : c)) } };
@@ -1180,6 +1182,7 @@ export function buildApi(deps: ApiDeps): Router {
     const card = (e: CatalogEntry, extra: Record<string, unknown>) => ({
       id: e.anchor.id, name: e.anchor.name, author: e.anchor.author, author_name: e.anchor.author_name ?? null, status: e.status,
       price: e.anchor.price, currency: e.anchor.currency, rows: e.anchor.rows, topic_path: e.anchor.topic_path,
+      body_available: saleAvailability(e, market.address, (sha) => market.blobs.has(sha)).body_available,
       requires: (e.anchor.base?.stack ?? []).map((b) => ({ id: b.patch_id, name: map.get(b.patch_id)?.anchor.name ?? b.patch_id })),
       ...extra,
     });
@@ -2680,6 +2683,7 @@ export function buildApi(deps: ApiDeps): Router {
     if (e.open_challenge || e.status === 'CHALLENGED') throw new HttpError(423, challengedMessage(e));
     if (!e.quorum_ok) throw new HttpError(423, `patch not listed yet (verification ${e.passed}/${e.quorum})`);
     if (!e.sellable) throw new HttpError(423, challengedMessage(e));
+    if (!market.blobs.has(e.anchor.patch_sha256)) throw new HttpError(503, 'seller file unavailable; no payment accepted');
     const resource = `/x402/patch/${id}`;
     const header = req.header(X402_HEADER_PAYMENT);
     /*

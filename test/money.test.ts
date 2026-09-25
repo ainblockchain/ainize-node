@@ -8,7 +8,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, defaultConfig, type NodeConfig } from '@ainize/core';
@@ -68,6 +68,27 @@ test('277 a knowledge priced 0 is handed over with no 402, no nonce, no signatur
   // the paid one is unchanged: still a 402 with a quote
   const p = await fetch(`${A.url}/x402/patch/${PAID_ID}`);
   assert.equal(p.status, 402);
+});
+
+test('missing seller file blocks both a quote and a payment before settlement', async () => {
+  const blob = A.market.blobs.get(paidSha)!;
+  const hidden = blob.path + '.offline';
+  renameSync(blob.path, hidden);
+  try {
+    for (const headers of [{}, { 'x-payment': 'garbage' }]) {
+      const r = await fetch(`${A.url}/x402/patch/${PAID_ID}`, { headers });
+      assert.equal(r.status, 503);
+      assert.match(await r.text(), /file unavailable/);
+      assert.equal(r.headers.get('x-payment-required'), null);
+    }
+    const detail = await (await fetch(`${A.url}/api/patches/${PAID_ID}`)).json() as { body_available: boolean; sellable: boolean; quorum_ok: boolean };
+    assert.equal(detail.body_available, false);
+    assert.equal(detail.sellable, false);
+    assert.equal(detail.quorum_ok, true, 'historical verification remains valid');
+  } finally {
+    renameSync(hidden, blob.path);
+    A.market.store.putBlob(blob);
+  }
 });
 
 test('277 the free body is fetchable by a stranger with no purchase, and the paid one is not', async () => {
