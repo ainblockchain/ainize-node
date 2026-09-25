@@ -26,6 +26,7 @@ import { TeachWorker, type TeachHooks } from './teach.js';
 import { InferenceBackendRegistry } from './inference-backends.js';
 import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
+import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
 import { assertDepositsConfigured, depositChainClients, DEFAULT_CONFIRMATIONS } from './deposit-chain-reader.js';
@@ -193,6 +194,22 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // `backends` block has no `/v1` at all rather than a `/v1` that advertises nothing — the two look the same to a
   // reader of the config but mean different things to a client, which needs "not offered here" and not "offered,
   // empty". It is a separate router because `api.ts` is long enough already.
+  /**
+   * One registry, read by both surfaces.
+   *
+   * `/v1` routes by it and `/api/models` lists from it. Two registries built from one config would be two
+   * things to keep in step, and the one that drifted would be the one nobody was looking at.
+   */
+  const inferenceRegistry = cfg.backends?.length
+    ? new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 })))
+    : null;
+
+  /**
+   * Mounted whether or not this node serves anything: an unconfigured node answers an empty list, which a page
+   * can render, rather than a 404 that is indistinguishable from a node too old to have the route.
+   */
+  app.use(publicModelsRouter({ registry: inferenceRegistry, probe: probeBackend }));
+
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
@@ -222,7 +239,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       depositWatcher.start(cfg.deposits.pollMs ?? 30_000);
     }
     app.use(openaiSurfaceRouter({
-      registry: new InferenceBackendRegistry(cfg.backends.map((b) => ({ ...b, concurrency: b.concurrency ?? 1 }))),
+      registry: inferenceRegistry!,
       keys: new OpenaiApiKeyStore(join(surfaceHome, 'openai-keys.json')),
       market,
       scheduler: stakeQueue,
