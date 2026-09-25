@@ -30,6 +30,7 @@ import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
+import { readSiteAssertionSecret } from './site-assertion.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
@@ -230,7 +231,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * model server is down.
    */
   const openaiKeys = new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json'));
-  app.use(openaiApiKeysRoutes({ keys: openaiKeys, store, nodeAddress: cfg.identity.address }));
+  app.use(openaiApiKeysRoutes({ keys: openaiKeys, store, nodeAddress: cfg.identity.address, siteAssertionSecret: readSiteAssertionSecret(opts.home) }));
 
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
