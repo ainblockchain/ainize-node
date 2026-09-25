@@ -19,7 +19,10 @@ import { openaiAuthRoutes } from './openai-auth-routes.js';
 import type { Market } from './market.js';
 import type { DepositLedger } from '@ainize/core';
 import { RuntimeUnavailableError } from './runtime.js';
+import { ModalityGate, ModalityGateClosedError } from './modality-gate.js';
+import multer from 'multer';
 import type { ChatStreamChunk } from './chat-stream.js';
+import type { StakeFairQueue } from './stake-fair-queue.js';
 
 /** The caller's proven address, attached by the bearer middleware. */
 export interface OpenaiCaller { address: string }
@@ -35,8 +38,12 @@ export interface OpenaiSurfaceDeps {
     receivingAddress: string;
     chains: { chain: string; token: string }[];
   };
-  /** The fair queue, when deposits are configured. Absent = no wait bound, because nothing divides the queue. */
-  scheduler?: { activeShareOf(address: string): number };
+  /**
+   * The fair queue, when deposits are configured. Absent = no wait bound, because nothing divides the queue.
+   *
+   * The non-LLM modalities order their own gates with it too, so a deposit buys a share of whatever is scarce.
+   */
+  scheduler?: StakeFairQueue;
   /** This node's address, for the sign-in message. */
   node: string;
   nodeName?: string;
@@ -151,6 +158,62 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
       res.json({ tx_hash: found.txHash, credited: true, shares: found.shares.toString(), chain: found.chain, block_number: found.blockNumber });
     });
   }
+
+  /**
+   * Speech to text.
+   *
+   * A passthrough, because vLLM already serves Qwen3-ASR on exactly this endpoint: what the node adds is the
+   * key check, the routing and the share of the queue. It does NOT take the language model's lease — audio runs
+   * on its own GPU, and making it wait for a completion on a different card would be a queue for nothing.
+   *
+   * Cost is the audio's size, as a stand-in for its duration: the node cannot know the duration without decoding
+   * the file, and decoding it to schedule it would do the backend's work twice. Bytes are proportional to
+   * duration for a given format, which is all a fair queue needs.
+   */
+  const transcriptionGates = new Map<string, ModalityGate>();
+  for (const backend of deps.registry.backendsFor('transcription')) {
+    transcriptionGates.set(backend.id, new ModalityGate('transcription', backend.concurrency, deps.scheduler));
+  }
+  const uploadAudio = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024, files: 1 } });
+
+  router.post('/v1/audio/transcriptions', authed, uploadAudio.single('file'), async (req: Request, res: Response) => {
+    const model = String((req.body as Record<string, unknown> | undefined)?.model ?? '');
+    if (!model) { openaiError(res, 400, 'invalid_request', 'model is required'); return; }
+    const backend = deps.registry.backendForModel(model);
+    if (!backend || backend.modality !== 'transcription') {
+      openaiError(res, 404, 'model_not_found', `this node does not serve a transcription model called ${model}`);
+      return;
+    }
+    const file = req.file;
+    if (!file) { openaiError(res, 400, 'invalid_request', 'file is required — post the audio as multipart/form-data'); return; }
+
+    const gate = transcriptionGates.get(backend.id)!;
+    try {
+      const answer = await gate.run(async () => {
+        const form = new FormData();
+        form.set('model', model);
+        form.set('file', new Blob([new Uint8Array(file.buffer)], { type: file.mimetype || 'application/octet-stream' }), file.originalname || 'audio');
+        // Whatever else the caller sent — language, prompt, temperature, response_format — travels unchanged.
+        // The node is not the authority on what this backend accepts, and dropping a field silently would answer
+        // a different question from the one that was asked.
+        for (const [key, value] of Object.entries((req.body ?? {}) as Record<string, unknown>)) {
+          if (key !== 'model' && typeof value === 'string') form.set(key, value);
+        }
+        const upstream = await fetch(`${backend.upstream}/v1/audio/transcriptions`, { method: 'POST', body: form });
+        if (!upstream.ok) {
+          throw new RuntimeUnavailableError(`the transcription backend answered ${upstream.status}`);
+        }
+        return upstream.json();
+      }, { address: req.openaiCaller!.address, cost: Math.max(1, Math.round(file.size / 1024)) });
+      res.json(answer);
+    } catch (error) {
+      if (error instanceof RuntimeUnavailableError || error instanceof ModalityGateClosedError) {
+        openaiError(res, 503, 'backend_unavailable', error.message, 'api_error');
+        return;
+      }
+      openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the transcription failed', 'api_error');
+    }
+  });
 
   router.post('/v1/chat/completions', authed, async (req: Request, res: Response) => {
     const parsed = openaiChatRequest.safeParse(req.body ?? {});
