@@ -91,6 +91,9 @@ export async function prepareHostedAgentRuntimeContext(dir: string): Promise<str
     dependencies: {
       '@a2a-js/sdk': own.dependencies?.['@a2a-js/sdk'] ?? '^1.2.1',
       express: own.dependencies?.express ?? '^5.2.1',
+      // PDFs an agent opens (hostedAgentPdf.ts): text extraction, and page rendering for scans.
+      unpdf: own.dependencies?.unpdf ?? '^1.8.1',
+      '@napi-rs/canvas': own.dependencies?.['@napi-rs/canvas'] ?? '^1.0.9',
     },
   }, null, 2));
   writeFileSync(join(dir, 'Dockerfile'), [

@@ -11,6 +11,7 @@
  * (`kind: "file"`, `file: { uri | bytes, name, mimeType }`) — the compat layer converts, but tests and direct callers
  * may hand either.
  */
+import { hostedAgentReadPdf, isHostedAgentPdf } from './hostedAgentPdf.js';
 import type { HostedAgentAttachment, HostedAgentCtx, HostedAgentTool } from './hostedAgentRuntimeTypes.js';
 
 /** How much of a text attachment the model is given. The rest is cut, and the model is told so. */
@@ -83,7 +84,7 @@ const isTextLike = (mime: string) => /^text\/|[/+](json|xml|csv|yaml|javascript|
 export function hostedAgentReadAttachmentTool(files: HostedAgentAttachment[]): HostedAgentTool {
   return {
     name: 'read_attachment',
-    description: 'Open one of the files attached to this message: text comes back as text, and a picture is shown to you so you can look at it. Only call it when the answer needs the file.',
+    description: 'Open one of the files attached to this message: text and PDFs come back as text (a scanned PDF as page pictures), and a picture is shown to you so you can look at it. Only call it when the answer needs the file.',
     parameters: {
       type: 'object',
       properties: { number: { type: 'integer', description: 'The file number from the attached-files list (1 = first).' } },
@@ -113,6 +114,15 @@ export function hostedAgentReadAttachmentTool(files: HostedAgentAttachment[]): H
         const text = bytes.toString('utf8');
         const cut = text.length > HOSTED_AGENT_ATTACHMENT_TEXT_CHARS;
         return { name: f.name, mimeType: mime, bytes: bytes.length, text: cut ? text.slice(0, HOSTED_AGENT_ATTACHMENT_TEXT_CHARS) : text, ...(cut ? { truncated: true } : {}) };
+      }
+      // A PDF is read (hostedAgentPdf.ts): its text, or its first pages as pictures when it is a scan.
+      if (isHostedAgentPdf(mime, f.name)) {
+        try {
+          const pdf = await hostedAgentReadPdf(bytes);
+          return { name: f.name, mimeType: mime, bytes: bytes.length, pages: pdf.pages, text: pdf.text, note: pdf.note, ...(pdf.truncated ? { truncated: true } : {}), ...(pdf.images.length ? { images: pdf.images } : {}) };
+        } catch (e) {
+          return { error: `${f.name}: ${e instanceof Error ? e.message : String(e)}` };
+        }
       }
       // A picture goes to the model as a picture (the tools loop shows it in the next message); the result the model
       // reads here only says so. A multimodal model looks at it; a text-only one is refused by its backend, which

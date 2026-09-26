@@ -146,13 +146,15 @@ Prompt and tools agents read everything aindrive sends, not only the first text 
 
 - **text parts** — the question and a current-folder snapshot in words;
 - **file parts** — handoff links (`/api/h/<id>?k=…`), opened with `read_attachment` only when the model asks.
-  Pictures are shown to the model (it must be multimodal, e.g. Qwen3.8-Flash-Next); files up to 32 MB;
+  Pictures are shown to the model (it must be multimodal, e.g. Qwen3.8-Flash-Next); PDFs are read as text, and a
+  scanned PDF's first 3 pages are shown as pictures (`unpdf` + `@napi-rs/canvas`); files up to 32 MB;
   404 / 410 / 503 / 429 are reported as "not found", "expired or revoked — ask for a fresh handoff",
   "the sender's device is offline", "rate-limited";
 - **`ai.aindrive/folder-context`** data part — the folder's direct children, shown to the model as data that is
   NOT a read grant;
 - **`ai.aindrive/handoff-mcp`** data part — an MCP server (streamable HTTP, `/mcp/h/<grant>`) over the granted
-  files, offered for that turn only as `list_files` and `read_file({ id })`. Its `Authorization` header is sent
+  files, offered for that turn only as `list_files` and `read_file({ id })`. A `read_file` answer that carries an
+  `image` or a `resource` blob (picture or PDF) is shown or read, not dropped. Its `Authorization` header is sent
   to that server and nowhere else: not to the model, not to logs, not to conversation memory. Expired grants are
   refused before any request.
 
