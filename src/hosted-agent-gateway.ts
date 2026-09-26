@@ -93,13 +93,20 @@ const HOSTED_AGENT_EGRESS_DROPPED_HEADERS = new Set(['host', 'connection', 'cont
 interface HostedAgentEgressAnswer { status: number; headers: Record<string, string>; body: Buffer; finalUrl: string }
 
 /** One request, following redirects itself so each hop is checked. */
-export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHosts: string[]): Promise<HostedAgentEgressAnswer> {
+/**
+ * Who is fetching, when the agent's code does not say. A host that hands out capability links (aindrive's file
+ * handoff logs every open) can then tell which agent opened one, rather than a blank user agent from Node.
+ */
+export const hostedAgentUserAgent = (agentId: string) => `ainize-agent/${agentId} (+https://ainize.ai/agents/${agentId})`;
+
+export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHosts: string[], agentId?: string): Promise<HostedAgentEgressAnswer> {
   let url: URL;
   try { url = new URL(req.url); } catch { throw new HostedAgentEgressRefusal(`not a URL: ${req.url}`); }
   let method = (req.method ?? 'GET').toUpperCase();
   let body = req.bodyBase64 ? Buffer.from(req.bodyBase64, 'base64') : undefined;
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers ?? {})) if (!HOSTED_AGENT_EGRESS_DROPPED_HEADERS.has(k.toLowerCase())) headers[k] = v;
+  if (agentId && !Object.keys(headers).some((k) => k.toLowerCase() === 'user-agent')) headers['user-agent'] = hostedAgentUserAgent(agentId);
 
   for (let hop = 0; hop <= HOSTED_AGENT_EGRESS_MAX_REDIRECTS; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HostedAgentEgressRefusal(`only http and https are allowed, not ${url.protocol}`);
@@ -243,7 +250,7 @@ export class HostedAgentGateway {
     let ask: HostedAgentEgressRequest;
     try { ask = JSON.parse((await readBody(req)).toString('utf8')) as HostedAgentEgressRequest; } catch { ask = { url: '' }; }
     try {
-      const answer = await hostedAgentEgress(ask, spec.allowedHosts);
+      const answer = await hostedAgentEgress(ask, spec.allowedHosts, spec.id);
       const headers: Record<string, string> = { 'x-egress-final-url': answer.finalUrl };
       for (const [k, v] of Object.entries(answer.headers)) if (!['transfer-encoding', 'connection', 'content-length', 'content-encoding'].includes(k)) headers[k] = v;
       res.writeHead(answer.status, headers);
