@@ -13,8 +13,9 @@
 import { randomUUID } from 'node:crypto';
 import { AgentEvent, type AgentExecutor, type ExecutionEventBus, type RequestContext } from '@a2a-js/sdk/server';
 import { hostedAgentA2uiPart } from './hostedAgentA2ui.js';
+import { hostedAgentAttachmentHistoryNote, hostedAgentAttachmentNote, hostedAgentAttachmentsOf, hostedAgentReadAttachmentTool } from './hostedAgentAttachments.js';
 import { createHostedAgentCtx, type HostedAgentCtxOptions } from './hostedAgentContext.js';
-import type { HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
+import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
 
 /** v1.0 Role enum: 0 unspecified, 1 user, 2 agent. */
 const HOSTED_AGENT_ROLE_AGENT = 2;
@@ -59,9 +60,12 @@ export class HostedAgentHistory {
 
 const systemMessages = (prompt: string): HostedAgentChatMessage[] => (prompt.trim() ? [{ role: 'system', content: prompt }] : []);
 
+/** The user's words as the model reads them: the message, plus what is attached (never the links). */
+const userContentOf = (ctx: HostedAgentCtx) => ctx.input.text + hostedAgentAttachmentNote(ctx.input.files);
+
 async function promptTurn(ctx: HostedAgentCtx): Promise<HostedAgentReply> {
   const choice = await ctx.llm.chat({
-    messages: [...systemMessages(ctx.spec.systemPrompt), ...ctx.input.history, { role: 'user', content: ctx.input.text }],
+    messages: [...systemMessages(ctx.spec.systemPrompt), ...ctx.input.history, { role: 'user', content: userContentOf(ctx) }],
   });
   return choice.message.content ?? '';
 }
@@ -114,7 +118,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
   };
 
   const conversation = (system: string): HostedAgentChatMessage[] =>
-    [...systemMessages(system), ...ctx.input.history, { role: 'user', content: ctx.input.text }];
+    [...systemMessages(system), ...ctx.input.history, { role: 'user', content: userContentOf(ctx) }];
 
   if (!hostedAgentNativeToolsRefused) {
     const offered = tools.map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.parameters ?? { type: 'object', properties: {} } } }));
@@ -173,21 +177,26 @@ export class HostedAgentExecutor implements AgentExecutor {
 
   constructor(private readonly o: HostedAgentExecutorOptions) {}
 
-  async turn(text: string, contextId: string): Promise<{ text: string; parts: unknown[] }> {
-    const ctx = createHostedAgentCtx(this.o, { text, contextId, history: this.history.get(contextId) });
+  async turn(text: string, contextId: string, files: HostedAgentAttachment[] = []): Promise<{ text: string; parts: unknown[] }> {
+    const ctx = createHostedAgentCtx(this.o, { text, contextId, history: this.history.get(contextId), files });
     const { mode } = this.o.spec;
+    // Attachments come with a way to open them: prompt and tools agents get `read_attachment` beside their own.
+    const attachmentTools = files.length ? [hostedAgentReadAttachmentTool(files)] : [];
     let reply: HostedAgentReply;
-    if (mode === 'prompt') reply = await promptTurn(ctx);
-    else if (mode === 'tools') {
+    if (mode === 'prompt') {
+      reply = attachmentTools.length ? await hostedAgentToolsTurn(ctx, { tools: attachmentTools }) : await promptTurn(ctx);
+    } else if (mode === 'tools') {
       if (!this.o.module?.tools?.length) throw new Error('this agent is in tools mode but its code exports no tools');
-      reply = await hostedAgentToolsTurn(ctx, this.o.module);
+      reply = await hostedAgentToolsTurn(ctx, { ...this.o.module, tools: [...this.o.module.tools, ...attachmentTools] });
     } else {
       if (typeof this.o.module?.execute !== 'function') throw new Error('this agent is in handler mode but its code exports no execute()');
       reply = await this.o.module.execute(text, ctx);
     }
     const shaped = typeof reply === 'string' ? { text: reply } : (reply ?? {});
     const answer = typeof shaped.text === 'string' ? shaped.text : '';
-    this.history.append(contextId, [{ role: 'user', content: text }, { role: 'assistant', content: answer }]);
+    // Remembered with the attachment note, so "and the second file?" next turn still means something — the link
+    // itself is not kept: it expires in minutes, and the next message carries fresh ones if the sender wants.
+    this.history.append(contextId, [{ role: 'user', content: text + hostedAgentAttachmentHistoryNote(files) }, { role: 'assistant', content: answer }]);
     return { text: answer, parts: [...(shaped.parts ?? []), ...(shaped.ui ?? []).map(hostedAgentA2uiPart)] };
   }
 
@@ -196,9 +205,10 @@ export class HostedAgentExecutor implements AgentExecutor {
     let text: string;
     let parts: unknown[] = [];
     const input = hostedAgentTextOf(requestContext.userMessage);
+    const files = hostedAgentAttachmentsOf(requestContext.userMessage);
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
-      ({ text, parts } = await this.turn(input, contextId));
+      ({ text, parts } = await this.turn(input, contextId, files));
     } catch (e) {
       // Reported as a failure in words. An empty reply would read as the agent choosing silence.
       text = `This agent could not answer: ${e instanceof Error ? e.message : String(e)}`;

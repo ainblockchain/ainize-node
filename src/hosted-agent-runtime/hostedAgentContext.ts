@@ -8,7 +8,7 @@
  */
 import { hostedAgentUiHelpers } from './hostedAgentA2ui.js';
 import type {
-  HostedAgentChatMessage, HostedAgentCtx, HostedAgentGatewayAccess, HostedAgentLlmChoice, HostedAgentLlmRequest, HostedAgentRuntimeSpec,
+  HostedAgentCtx, HostedAgentGatewayAccess, HostedAgentInput, HostedAgentLlmChoice, HostedAgentLlmRequest, HostedAgentRuntimeSpec,
 } from './hostedAgentRuntimeTypes.js';
 
 /** What a model call may take. A tools loop is at most a handful of these per turn. */
@@ -94,7 +94,7 @@ export interface HostedAgentCtxOptions {
   log: (...args: unknown[]) => void;
 }
 
-export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: { text: string; contextId: string; history: HostedAgentChatMessage[] }): HostedAgentCtx {
+export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgentInput): HostedAgentCtx {
   return {
     input,
     spec: o.spec,
