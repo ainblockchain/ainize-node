@@ -9,6 +9,10 @@
 # 내려면 공개 주소에 배포 트리거를 열어야 한다. 나가는 요청 하나(`git ls-remote`)면 같은 일을
 # 할 수 있는데 그 대가는 크다. 웹훅으로 바꾸고 싶으면 이 스크립트가 그대로 핸들러가 된다.
 #
+# BACKOFF. A failure here repeats: if GitHub refuses us or a commit cannot build, it will still be true in two
+# minutes. So each failure doubles the wait for THAT repository (deploy/backoff.sh), up to an hour, and any success
+# clears it. "main has not moved" is a success — GitHub answered.
+#
 # WHAT IT COMPARES. 리모트 main 의 sha 와 **지금 서빙 중인 것의 sha**(`build-info.json`)다.
 # "마지막으로 배포한 sha" 를 따로 적어 두지 않는 이유는 그 파일이 진실과 갈라질 수 있기
 # 때문이다 — 사람이 손으로 배포하거나 롤백하면 메모만 남고 사이트는 다른 것을 서빙한다.
@@ -45,6 +49,9 @@ flock -n 9 || { echo "$(date -Is) another run holds the lock; skipping"; exit 0;
 
 log() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
+# shellcheck source=deploy/backoff.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backoff.sh"
+
 # 서빙 중인 것을 읽는다. 없으면 빈 값 — 첫 배포로 친다.
 serving_field() {  # $1=build-info.json  $2=field
   node -e 'try{const i=require(process.argv[1]);process.stdout.write(String(i[process.argv[2]]??""))}catch{process.stdout.write("")}' "$1" "$2" 2>/dev/null
@@ -53,9 +60,19 @@ serving_field() {  # $1=build-info.json  $2=field
 deploy_one() {  # $1=이름  $2=git URL  $3=레포 안의 배포 스크립트 경로  $4=서빙 build-info
   local name="$1" url="$2" script_path="$3" info="$4"
 
+  if [ "$FORCE" = false ] && state="$(backoff_active "$name")"; then
+    set -- $state
+    log "$name: $1 failure(s) so far, waiting $(backoff_mins "$2") more min"
+    return 0
+  fi
+
   local remote
   remote="$(git ls-remote "$url" refs/heads/main 2>/dev/null | cut -f1)"
-  if [ -z "$remote" ]; then log "$name: origin/main 을 못 읽었다 — 건너뜀"; return 0; fi
+  if [ -z "$remote" ]; then
+    set -- $(backoff_bump "$name")
+    log "$name: origin/main 을 못 읽었다 ($1 회 연속) — $(backoff_mins "$2") 분 뒤 다시"
+    return 1
+  fi
 
   local serving_sha serving_ref serving_dirty
   serving_sha="$(serving_field "$info" sha)"
@@ -71,6 +88,8 @@ deploy_one() {  # $1=이름  $2=git URL  $3=레포 안의 배포 스크립트 �
     fi
   fi
 
+  backoff_clear "$name"
+
   if [ "$serving_sha" = "$remote" ] && [ "$FORCE" = false ]; then
     log "$name: 그대로 (${remote:0:12})"; return 0
   fi
@@ -81,25 +100,38 @@ deploy_one() {  # $1=이름  $2=git URL  $3=레포 안의 배포 스크립트 �
   # **배포 스크립트도 main 에서 가져온다.** 로컬 체크아웃을 쓰면 그 체크아웃이 뒤처져 있거나
   # 다른 사람의 미커밋 작업을 들고 있을 때 배포가 그것에 좌우된다 — 실제로 노드 쪽이 그래서
   # `No such file or directory` 로 죽었다. 배포하는 것과 배포에 쓰는 도구가 같은 커밋이어야 한다.
-  local checkout; checkout="$(mktemp -d)"
-  if ! git clone --quiet --depth 1 --branch main "$url" "$checkout" 2>/dev/null; then
-    log "$name: main 을 클론하지 못했다 — 건너뜀"; rm -rf "$checkout"; return 1
-  fi
-  if [ ! -f "$checkout/$script_path" ]; then
-    log "$name: main 에 $script_path 가 없다 — 건너뜀"; rm -rf "$checkout"; return 1
+  # A deploy is rare, so cloning for it is fine — but if this repository IS the one the bootstrap already keeps
+  # fetched, reuse that checkout rather than pulling the same commit down a second time.
+  local checkout clone_made=false
+  if [ -n "${AINIZE_TOOL_CHECKOUT:-}" ] && [ -f "$AINIZE_TOOL_CHECKOUT/$script_path" ] \
+     && [ "$(git -C "$AINIZE_TOOL_CHECKOUT" rev-parse HEAD 2>/dev/null)" = "$remote" ]; then
+    checkout="$AINIZE_TOOL_CHECKOUT"
+  else
+    checkout="$(mktemp -d)"; clone_made=true
+    if ! git clone --quiet --depth 1 --branch main "$url" "$checkout" 2>/dev/null; then
+      set -- $(backoff_bump "$name")
+      log "$name: main 을 클론하지 못했다 ($1 회 연속) — $(backoff_mins "$2") 분 뒤 다시"
+      rm -rf "$checkout"; return 1
+    fi
+    if [ ! -f "$checkout/$script_path" ]; then
+      log "$name: main 에 $script_path 가 없다 — 건너뜀"; rm -rf "$checkout"; return 1
+    fi
   fi
 
   if timeout 1800 bash "$checkout/$script_path" main; then
     local now; now="$(serving_field "$info" sha)"
-    if [ "$now" = "$remote" ]; then log "$name: 배포됨 ${now:0:12}"
+    if [ "$now" = "$remote" ]; then log "$name: 배포됨 ${now:0:12}"; backoff_clear "$name"
     else log "$name: 스크립트는 성공했는데 서빙본이 ${now:0:12} 다 — 확인 필요"; fi
   else
-    # 배포 스크립트가 스스로 롤백한다. 여기서는 그 사실만 남긴다 — 다음 타이머가 또 시도한다.
-    log "$name: 배포 실패 (스크립트가 롤백했다)"
-    rm -rf "$checkout"
+    # 배포 스크립트가 스스로 롤백한다. 여기서는 그 사실만 남긴다 — 이 커밋이 빌드되지 않는 것이라면
+    # 2 분마다 같은 빌드를 반복하는 것은 GPU 와 GitHub 만 쓰는 일이므로, 간격을 두고 다시 시도한다.
+    set -- $(backoff_bump "$name")
+    log "$name: 배포 실패 (스크립트가 롤백했다, $1 회 연속) — $(backoff_mins "$2") 분 뒤 다시"
+    [ "$clone_made" = true ] && rm -rf "$checkout"
     return 1
   fi
-  rm -rf "$checkout"
+  [ "$clone_made" = true ] && rm -rf "$checkout"
+  return 0
 }
 
 status=0

@@ -5,10 +5,19 @@ After=network-online.target
 [Service]
 Type=oneshot
 Environment=PATH=/home/comcom/.local/node/bin:/home/comcom/.local/bin:/usr/local/bin:/usr/bin:/bin
-# 스크립트도 main 에서 가져와 돌린다. 체크아웃에 있는 사본을 부르면 그 체크아웃이 뒤처져
-# 있거나(실제로 그랬다 — 유닛이 `No such file or directory` 로 203/EXEC) 남의 미커밋 작업을
-# 들고 있을 때 자동화가 거기 좌우된다. 이렇게 두면 auto-deploy.sh 자체도 main 을 따라간다.
-ExecStart=/bin/bash -c 'd=$$(mktemp -d); trap "rm -rf $$d" EXIT; git clone -q --depth 1 -b main https://github.com/ainblockchain/ainize-node.git "$$d" && exec bash "$$d/deploy/auto-deploy.sh"'
+Environment=AINIZE_TOOL_CHECKOUT=/mnt/newdata/ainize-autodeploy/ainize-node
+# 배포에 쓰는 스크립트는 여전히 main 에서 온다 — 로컬 체크아웃의 사본을 부르면 그것이 뒤처져
+# 있거나(실제로 유닛이 `No such file or directory` 로 203/EXEC 했다) 남의 미커밋 작업을 들고
+# 있을 때 자동화가 거기 좌우된다.
+#
+# 다만 그 이유로 2분마다 리포를 통째로 clone 하고 있었다: 측정하니 회당 3.5MB 전송 / 16MB
+# 체크아웃, 하루 720회 — 40바이트짜리 질문(ref 두 개)에 2.5GB 익명 git 트래픽이다. GitHub 의
+# abuse 감지가 잡으려는 모양 그 자체이고, 막히면 배포가 조용히 멈춘다. 그래서 체크아웃을 한 번만
+# 만들고 이후에는 fetch 한다(변화 없을 때 0.7초, 전송 사실상 0). bootstrap 이 그 일을 한 뒤
+# 그 체크아웃의 auto-deploy.sh 를 exec 한다.
+ExecStart=/bin/bash -c 'B="$${AINIZE_TOOL_CHECKOUT}/deploy/auto-deploy-bootstrap.sh"; \
+  [ -f "$$B" ] || git clone -q --depth 1 -b main git@github.com:ainblockchain/ainize-node.git "$${AINIZE_TOOL_CHECKOUT}"; \
+  exec bash "$$B"'
 TimeoutStartSec=3600
 
 [Install]
