@@ -17,11 +17,12 @@ import {
   sameAddr,
 } from '@ainize/core';
 import { agentAdverts, refreshAgentHealth, type HostedAgentsDeps } from './agents.js';
+import { peerModelAdvertsOf, peerModelsServing } from './peer-models.js';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
-import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
+import { Runtime, RUNTIME_PRIORITY, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import type { ChatStreamChunk } from './chat-stream.js';
 import type { InferenceRecords, InferenceReceipt } from './inference-records.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
@@ -3948,7 +3949,10 @@ export class Market {
         applied, benchmark_hits: hits, dirty,
         history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
-    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens });
+    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens,
+      // Nobody paid for this turn (no key, not the operator), so it yields to work somebody did pay for. This is
+      // the whole protection the free tier has now that its hourly count is gone; see RUNTIME_PRIORITY.freeServing.
+      priority: opts.caller?.operator || opts.caller?.address ? RUNTIME_PRIORITY.serving : RUNTIME_PRIORITY.freeServing });
   }
 
   /**
@@ -4993,6 +4997,7 @@ export class Market {
     // What this node's agents are doing, refreshed at most once a minute however often gossip asks (agents.ts).
     await refreshAgentHealth(this.cfg).catch(() => {});
     const agents = agentAdverts(this.cfg, this.publicUrl, this.hostedAgents ?? undefined);
+    const peerBackends = peerModelAdvertsOf(this.cfg.backends, peerModelsServing(this.cfg));
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
@@ -5020,7 +5025,12 @@ export class Market {
        * points at THIS node — the traffic goes to whoever accepted the agent, not through whoever lists it.
        */
       ...(agents.length ? { agents } : {}),
-    };
+      /**
+       * The speech and image models this node runs for peers (peer-models.ts) — kind and ids only, never the
+       * upstream address. Not part of core's PeerInfo yet: an older peer stores it with the hello and ignores it.
+       */
+      ...(peerBackends.length ? { backends: peerBackends } : {}),
+    } as PeerInfo;
   }
 
   /** Two endpoints must be the same box before one is allowed to hide the other. */

@@ -18,7 +18,19 @@ export const HOSTED_AGENT_CARD_PATHS = ['/.well-known/agent-card.json', '/.well-
  * The card. `url` is whatever the runtime was told; the node rewrites it to the public `/agents/<id>` address on
  * the way out (agents.ts), exactly as it does for an upstream agent.
  */
+/** Audio a transcription backend takes — what a browser recorder, a phone and a desktop tool usually produce. */
+export const HOSTED_AGENT_AUDIO_INPUT_MODES = ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'];
+
+/** The MIME types an agent takes and gives: text always, audio and images when its owner turned them on. */
+export function hostedAgentModesOf(spec: HostedAgentRuntimeSpec): { input: string[]; output: string[] } {
+  return {
+    input: ['text/plain', ...(spec.media?.transcription ? HOSTED_AGENT_AUDIO_INPUT_MODES : [])],
+    output: ['text/plain', ...(spec.media?.image ? ['image/png'] : [])],
+  };
+}
+
 export function hostedAgentCard(spec: HostedAgentRuntimeSpec, url: string) {
+  const modes = hostedAgentModesOf(spec);
   // Two-part protocol versions: "1.0.0" is compared literally against the "1.0" a client asks for and refused.
   const iface = (protocolVersion: string) => ({ url, protocolBinding: 'JSONRPC', protocolVersion, tenant: '' });
   const skills = spec.skills.length
@@ -38,19 +50,20 @@ export function hostedAgentCard(spec: HostedAgentRuntimeSpec, url: string) {
     },
     securitySchemes: {},
     securityRequirements: [],
-    defaultInputModes: ['text/plain'],
-    defaultOutputModes: ['text/plain'],
+    defaultInputModes: modes.input,
+    defaultOutputModes: modes.output,
     skills: skills.map((s) => ({
       id: s.id,
       name: s.name,
       description: s.description ?? '',
       tags: [],
       examples: s.examples ?? [],
-      inputModes: ['text/plain'],
-      outputModes: ['text/plain'],
+      inputModes: modes.input,
+      outputModes: modes.output,
     })),
     // Not part of the protocol; read by the node and the web to place the agent under its model.
-    metadata: { ainize: { model: spec.model, mode: spec.mode } },
+    // `media` only when something is on, so the card of an agent that uses none is exactly what it always was.
+    metadata: { ainize: { model: spec.model, mode: spec.mode, ...(spec.media?.transcription || spec.media?.image ? { media: { transcription: !!spec.media.transcription, image: !!spec.media.image } } : {}) } },
   };
 }
 

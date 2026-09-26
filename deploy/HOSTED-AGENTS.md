@@ -14,6 +14,32 @@ There are two kinds, and they need different things from the host:
 Without `agentHost.docker`, code modes answer `501 docker_unavailable` and the web form disables them; prompt agents
 keep working.
 
+### Speech and images (optional, per agent)
+
+An agent's owner can turn on `media.transcription` and `media.image` (web form, or `PUT /api/hosted-agents/<id>`
+with `"media": {"transcription": true, "image": true}`). The model does not have to be on this node: a node with
+no backend of that modality uses a **peer** that serves one (models over p2p, below). The API refuses to turn one on
+only when neither this node nor any peer in reach serves it.
+
+### Models over p2p
+
+A node gossips the speech and image models in its `backends` (kind and model ids — never the upstream URL), and
+serves them to peers at `POST /p2p/models/{transcription|image}`. The caller signs `p2p-model:<provider>/<modality>:<ts>`
+with its node key (`x-ainize-auth`, 5-minute window); the provider queues the call in the same per-GPU gate as `/v1`,
+charged to the calling node's address, at most 60 calls a minute per node. `GET /api/network/models` lists this
+node's models and each fresh peer's. To keep your models to yourself: `"peerModels": { "serve": false }` in
+`config.json` — the node then stops advertising and refuses peer calls.
+
+- **transcription** — audio attached to a message (`audio/*`, inline or as a link from an `allowedHosts` host) is
+  transcribed before the model sees the turn; the model reads the transcript. Inline audio is limited by the
+  200 KB A2A request cap, so voice notes usually arrive as links.
+- **image** — the model gets a built-in `generate_image` tool; the picture comes back as a `image/png` file part of
+  the reply (A2A v0.3 `kind: "file"`, v1.0 `raw` part). Steps are capped at 30 per call.
+
+Both go through the agent gateway — to this node's first backend of the modality, queued in the same per-GPU gate as
+`/v1` and the free tier and attributed to the agent's owner, or else to the freshest peer that serves it. The card advertises `audio/*` input and `image/png` output only
+when they are on; an agent that uses neither has the same card as before.
+
 ## 1. Update the node
 
 Hosted agents shipped in `a205c88` without a version bump, so `/api/info` keeps reporting `0.4.2` — check for

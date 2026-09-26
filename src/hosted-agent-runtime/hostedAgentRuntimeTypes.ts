@@ -9,6 +9,16 @@
 
 export type HostedAgentMode = 'prompt' | 'tools' | 'handler';
 
+/**
+ * The node's other models an agent may use besides its chat model — each off unless the owner turns it on, and
+ * each only on a node that serves one. Speech-to-text reads the voice notes a caller attaches; image generation
+ * is a tool the model can call, and its picture comes back as a file part of the reply.
+ */
+export interface HostedAgentMedia {
+  transcription: boolean;
+  image: boolean;
+}
+
 /** What the runtime needs to know about an agent. The node's stored spec is a superset (owner, files, …). */
 export interface HostedAgentRuntimeSpec {
   id: string;
@@ -20,6 +30,8 @@ export interface HostedAgentRuntimeSpec {
   a2ui: boolean;
   skills: { id: string; name: string; description?: string; examples?: string[] }[];
   version: number;
+  /** Absent on specs stored before media existed — read it as all off. */
+  media?: HostedAgentMedia;
 }
 
 /** One OpenAI-shaped chat message, as the model backend takes it. */
@@ -88,11 +100,39 @@ export interface HostedAgentCtx {
     baseUrl: string;
     model: string;
   };
+  /**
+   * The node's speech and image models, through the gateway. A method is present only when the spec turned it
+   * on — the gateway refuses the call otherwise, so code that calls one anyway learns nothing it could not see.
+   */
+  media: {
+    transcribe?(audio: HostedAgentAudioInput): Promise<string>;
+    generateImage?(request: HostedAgentImageRequest): Promise<HostedAgentGeneratedImage>;
+  };
   /** Fetch through the node's egress gateway. Only `allowedHosts` answer; private addresses never do. */
   fetch(url: string | URL, init?: RequestInit): Promise<Response>;
   secret(name: string): string | undefined;
   ui: HostedAgentUiHelpers;
   log(...args: unknown[]): void;
+}
+
+export interface HostedAgentAudioInput {
+  bytesBase64: string;
+  name: string;
+  mimeType: string;
+  language?: string;
+}
+
+export interface HostedAgentImageRequest {
+  prompt: string;
+  /** `WIDTHxHEIGHT`, e.g. `1024x1024`. The backend's default when absent. */
+  size?: string;
+  steps?: number;
+  negativePrompt?: string;
+}
+
+export interface HostedAgentGeneratedImage {
+  bytesBase64: string;
+  mimeType: string;
 }
 
 /** What a turn returns. A bare string is `{ text }`. */
