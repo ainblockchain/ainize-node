@@ -9,6 +9,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents } from './agents.js';
+import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-store.js';
+import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
+import { HostedAgentGateway } from './hosted-agent-gateway.js';
+import { HostedAgentHost } from './hosted-agent-host.js';
+import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
+import { hostedAgentRoutes } from './hosted-agent-routes.js';
+import { siteSession } from './site-session.js';
 import { buildSam, makeMeshRelay } from './sam.js';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
@@ -63,6 +70,23 @@ export interface StartOptions {
   teachWorker?: boolean;
   /** Process hooks for the teach worker (tests fake `spawn`/`exec`). */
   teachHooks?: TeachHooks;
+}
+
+/** `config.json` `agentHost` — optional; defaults run prompt agents only. */
+export interface HostedAgentHostConfig {
+  perOwner?: number;
+  total?: number;
+  docker?: {
+    enabled?: boolean;
+    runtime?: string;
+    memory?: string;
+    cpus?: number;
+    pidsLimit?: number;
+    network?: string;
+    buildTimeoutMs?: number;
+    idleStopMs?: number;
+    maxRunning?: number;
+  };
 }
 
 /** How long raw event rows are kept (lineage design §5.6) when `events.retentionDays` is not set (item 128). */
@@ -212,7 +236,70 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * Mounted whether or not this node serves anything: an unconfigured node answers an empty list, which a page
    * can render, rather than a 404 that is indistinguishable from a node too old to have the route.
    */
-  app.use(publicModelsRouter({ registry: inferenceRegistry, probe: probeBackend }));
+  /**
+   * Agents this node RUNS (docs/superpowers/specs/2026-09-26-hosted-agents-design.md). Built before the models
+   * router so a model's page can count the agents built on it, and before the agent surface so `/agents/<id>`
+   * resolves them. Code agents need `agentHost.docker.enabled`; prompt agents need nothing but a chat backend.
+   */
+  const agentHostCfg = (cfg as NodeConfig & { agentHost?: HostedAgentHostConfig }).agentHost ?? {};
+  const hostedHome = cfg.dataDir;
+  const hostedStore = new HostedAgentStore(join(hostedHome, 'hosted-agents.json'), {
+    perOwner: agentHostCfg.perOwner ?? HOSTED_AGENT_DEFAULT_LIMITS.perOwner,
+    total: agentHostCfg.total ?? HOSTED_AGENT_DEFAULT_LIMITS.total,
+  });
+  const hostedSecrets = new HostedAgentSecretStore(join(hostedHome, 'hosted-agent-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  const hostedGateway = new HostedAgentGateway({
+    registry: () => inferenceRegistry,
+    spec: (id) => hostedStore.get(id),
+    log: (message) => market.log('info', 'agents', message),
+  });
+  const dockerCfg = agentHostCfg.docker;
+  if (dockerCfg?.enabled && !dockerCfg.runtime) {
+    market.log('warn', 'agents', 'agentHost.docker.runtime is not set: agent code runs under runc, which shares the host kernel — set "runsc" (gVisor) for code from strangers');
+  }
+  const hostedHost = new HostedAgentHost({
+    gateway: hostedGateway,
+    secrets: hostedSecrets,
+    docker: dockerCfg?.enabled ? new HostedAgentDocker({
+      runtime: dockerCfg.runtime,
+      memory: dockerCfg.memory ?? HOSTED_AGENT_DOCKER_DEFAULTS.memory,
+      cpus: dockerCfg.cpus ?? HOSTED_AGENT_DOCKER_DEFAULTS.cpus,
+      pidsLimit: dockerCfg.pidsLimit ?? HOSTED_AGENT_DOCKER_DEFAULTS.pidsLimit,
+      network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
+      buildTimeoutMs: dockerCfg.buildTimeoutMs ?? HOSTED_AGENT_DOCKER_DEFAULTS.buildTimeoutMs,
+      workDir: join(cfg.dataDir, 'hosted-agents'),
+      runtimeImage: 'ainize/hosted-agent-runtime',
+    }) : null,
+    idleStopMs: dockerCfg?.idleStopMs ?? 600_000,
+    maxRunning: dockerCfg?.maxRunning ?? 20,
+    log: (level, message) => market.log(level, 'agents', message),
+  });
+  await hostedHost.start(hostedStore.list());
+  const hostedAgents = { host: hostedHost, store: hostedStore };
+  market.hostedAgents = hostedAgents;
+
+  app.use(publicModelsRouter({
+    registry: inferenceRegistry,
+    probe: probeBackend,
+    // Agents here and on peers, counted the way `/api/agents?model=` lists them.
+    agentCount: async (model) => {
+      const own = hostedStore.list().filter((s) => s.model === model).length;
+      const peers = (await market.knownNodes().catch(() => []))
+        .filter((n) => (n.address ?? '').toLowerCase() !== cfg.identity.address.toLowerCase())
+        .flatMap((n) => (n.agents ?? []) as { model?: string }[])
+        .filter((a) => a.model === model).length;
+      return own + peers;
+    },
+  }));
+  app.use(hostedAgentRoutes({
+    store: hostedStore,
+    secrets: hostedSecrets,
+    host: hostedHost,
+    registry: () => inferenceRegistry,
+    sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
+    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id),
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+  }));
 
   /**
    * One gate per non-LLM backend, shared by the paid surface and the free tier.
@@ -304,6 +391,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // signature and the rate limit cannot drift apart between the two doors.
   const mesh = makeMeshRelay(samDeps);
   app.use(buildAgents(cfg, {
+    hosted: hostedAgents,
     knownNodes: () => market.knownNodes(),
     selfAddress: cfg.identity.address,
     relay: mesh,
@@ -498,6 +586,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(uploadSweep);
       clearInterval(driveSync);
       market.payouts.stop();
+      await hostedHost.stop().catch(() => {});
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
       await market.inferenceRecords?.flush().catch(() => market.log('warn', 'inference', 'Inference batch flush failed during shutdown'));
