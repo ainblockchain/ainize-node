@@ -5,7 +5,8 @@
  * the token in its path (`/t/<token>/…`) so that a stock OpenAI client given `…/t/<token>/v1` as its base URL
  * works unmodified. The gateway, not the agent, decides:
  *
- *   • which model answers — always the spec's, whatever the request says;
+ *   • which model answers — always the spec's, whatever the request says. A spec may name another node's model
+ *     (`id@0x<node>`, peer-models.ts): its chat is then relayed to that node over p2p, streamed as it comes;
  *   • whether speech and image models answer at all — only for an agent whose spec turned them on. This node's
  *     own backend when it has one, through the same per-GPU gate the paid and free surfaces queue in; otherwise
  *     a peer that serves the modality, called over p2p with this node's key (peer-models.ts);
@@ -25,7 +26,7 @@ import { randomBytes } from 'node:crypto';
 import type { InferenceBackend, InferenceBackendRegistry } from './inference-backends.js';
 import type { ModalityGate } from './modality-gate.js';
 import { hostedAgentMediaOf, type HostedAgentSpec } from './hosted-agent-types.js';
-import { PeerModelCallError, type PeerModelModality, type PeerModelTarget } from './peer-models.js';
+import { PeerModelCallError, parseNodeModelRef, type PeerModelModality, type PeerModelTarget } from './peer-models.js';
 
 const HOSTED_AGENT_EGRESS_MAX_BYTES = 5 * 1024 * 1024;
 /**
@@ -176,6 +177,15 @@ export interface HostedAgentGatewayDeps {
     target(modality: PeerModelModality): PeerModelTarget | null;
     call(target: PeerModelTarget, modality: PeerModelModality, body: unknown): Promise<unknown>;
   };
+  /**
+   * Chat models on other nodes, for an agent whose spec names one (`id@0x<node>`) — or a bare id this node does not
+   * serve. `self` is this node's address: a ref naming it is answered here. Absent → local chat only.
+   */
+  peerChat?: {
+    self: string;
+    target(model: string, node: string | null): PeerModelTarget | null;
+    fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
+  };
   spec: (agentId: string) => HostedAgentSpec | null;
   log: (message: string) => void;
 }
@@ -256,18 +266,33 @@ export class HostedAgentGateway {
     }
   }
 
-  /** The agent's model, and only it. Streaming is passed through as the backend sends it. */
+  /**
+   * The agent's model, and only it: this node's backend, or the peer the spec's ref names. Streaming is passed
+   * through as the backend (or the peer) sends it.
+   */
   private async llm(req: IncomingMessage, res: ServerResponse, spec: HostedAgentSpec): Promise<void> {
-    const backend = this.deps.registry()?.backendForModel(spec.model);
-    if (!backend) return sendJson(res, 503, { error: { message: `this node no longer serves ${spec.model}`, code: 'model_not_served' } });
+    const { model, node } = parseNodeModelRef(spec.model);
+    const here = !node || node === this.deps.peerChat?.self.toLowerCase();
+    const backend = here ? this.deps.registry()?.backendForModel(model) : undefined;
+    const peer = backend ? null : this.deps.peerChat?.target(model, here ? null : node) ?? null;
+    if (!backend && !peer) return sendJson(res, 503, { error: { message: `no node in reach serves ${spec.model} right now`, code: 'model_not_served' } });
     let body: Record<string, unknown>;
     try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as Record<string, unknown>; } catch { return sendJson(res, 400, { error: { message: 'body is not JSON' } }); }
-    const upstream = await fetch(`${backend.upstream.replace(/\/+$/, '')}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...body, model: spec.model }),
-      signal: AbortSignal.timeout(HOSTED_AGENT_LLM_TIMEOUT_MS),
-    });
+    let upstream: Response;
+    if (backend) {
+      upstream = await fetch(`${backend.upstream.replace(/\/+$/, '')}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...body, model }),
+        signal: AbortSignal.timeout(HOSTED_AGENT_LLM_TIMEOUT_MS),
+      });
+    } else {
+      try {
+        upstream = await this.deps.peerChat!.fetch(peer!, { ...body, model });
+      } catch (e) {
+        return sendJson(res, 502, { error: { message: `${peer!.name ?? peer!.address} did not answer: ${e instanceof Error ? e.message : String(e)}`, code: 'peer_failed' } });
+      }
+    }
     res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
     if (!upstream.body) { res.end(); return; }
     for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
