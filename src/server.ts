@@ -35,6 +35,10 @@ import { InferenceBackendRegistry } from './inference-backends.js';
 import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
+import {
+  callPeerModel, networkModelsRouter, peerModelRoutes, peerModelsServing, peerModelTargets,
+  type PeerModelModality, type PeerModelPeerRow, type PeerModelTarget,
+} from './peer-models.js';
 import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { readSiteAssertionSecret } from './site-assertion.js';
@@ -249,8 +253,20 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     total: agentHostCfg.total ?? HOSTED_AGENT_DEFAULT_LIMITS.total,
   });
   const hostedSecrets = new HostedAgentSecretStore(join(hostedHome, 'hosted-agent-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  /**
+   * Models on other nodes (peer-models.ts): what the peer table says each fresh peer serves, and a signed call to
+   * it. Read on every use — gossip updates the table every few seconds and a peer can come and go between turns.
+   */
+  const peerModelRows = () => store.listPeers().map((p) => ({ address: p.address, endpoint: p.endpoint, info: p.info as PeerModelPeerRow['info'], last_seen: p.last_seen }));
+  const peerModels = {
+    target: (modality: PeerModelModality) => peerModelTargets(peerModelRows(), modality, cfg.identity.address)[0] ?? null,
+    call: (target: PeerModelTarget, modality: PeerModelModality, body: unknown) => callPeerModel(cfg.identity, target, modality, body),
+  };
   const hostedGateway = new HostedAgentGateway({
     registry: () => inferenceRegistry,
+    peerModels,
+    // Read on each call: the gates are filled further down, once the backends block has been walked.
+    gates: (backendId) => modalityGates.get(backendId),
     spec: (id) => hostedStore.get(id),
     log: (message) => market.log('info', 'agents', message),
   });
@@ -300,7 +316,18 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    peerServes: (modality) => !!peerModels.target(modality),
   }));
+
+  // Models over p2p: this node's speech and image models for peers that sign for them, and the network-wide list.
+  app.use(peerModelRoutes({
+    registry: () => inferenceRegistry,
+    gates: (backendId) => modalityGates.get(backendId),
+    self: cfg.identity.address,
+    serving: () => peerModelsServing(cfg),
+    log: (message) => market.log('info', 'p2p', message),
+  }));
+  app.use(networkModelsRouter({ registry: () => inferenceRegistry, peers: peerModelRows, self: { address: cfg.identity.address, name: cfg.name ?? null } }));
 
   /**
    * One gate per non-LLM backend, shared by the paid surface and the free tier.

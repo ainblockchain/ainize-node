@@ -6,6 +6,9 @@
  * works unmodified. The gateway, not the agent, decides:
  *
  *   • which model answers — always the spec's, whatever the request says;
+ *   • whether speech and image models answer at all — only for an agent whose spec turned them on. This node's
+ *     own backend when it has one, through the same per-GPU gate the paid and free surfaces queue in; otherwise
+ *     a peer that serves the modality, called over p2p with this node's key (peer-models.ts);
  *   • which hosts answer — the spec's `allowedHosts`, and never a private, loopback, link-local or otherwise
  *     non-public address. The check runs in the socket's own DNS lookup, so the address that is checked is the
  *     address that is connected to (a name that resolves public for the check and private for the connection —
@@ -19,14 +22,20 @@ import { request as httpsRequest } from 'node:https';
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { BlockList, isIP, type AddressInfo, type LookupFunction } from 'node:net';
 import { randomBytes } from 'node:crypto';
-import type { InferenceBackendRegistry } from './inference-backends.js';
-import type { HostedAgentSpec } from './hosted-agent-types.js';
+import type { InferenceBackend, InferenceBackendRegistry } from './inference-backends.js';
+import type { ModalityGate } from './modality-gate.js';
+import { hostedAgentMediaOf, type HostedAgentSpec } from './hosted-agent-types.js';
+import { PeerModelCallError, type PeerModelModality, type PeerModelTarget } from './peer-models.js';
 
 const HOSTED_AGENT_EGRESS_MAX_BYTES = 5 * 1024 * 1024;
 const HOSTED_AGENT_EGRESS_TIMEOUT_MS = 30_000;
 const HOSTED_AGENT_EGRESS_MAX_REDIRECTS = 5;
 const HOSTED_AGENT_GATEWAY_MAX_BODY = 6 * 1024 * 1024;
 const HOSTED_AGENT_LLM_TIMEOUT_MS = 120_000;
+/** A diffusion model at full steps takes tens of seconds; a long voice note, about as long. */
+const HOSTED_AGENT_MEDIA_TIMEOUT_MS = 180_000;
+/** Kept low: an agent turn waits on this, and the paid surface is where many steps are bought. */
+const HOSTED_AGENT_IMAGE_MAX_STEPS = 30;
 
 /** Everything that is not the public internet. */
 const hostedAgentNonPublic = (() => {
@@ -150,6 +159,13 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
 
 export interface HostedAgentGatewayDeps {
   registry: () => InferenceBackendRegistry | null;
+  /** The per-backend queues server.ts builds for the `/v1` surface and the free tier. Absent → no queueing. */
+  gates?: (backendId: string) => ModalityGate | undefined;
+  /** Models on other nodes, for a modality this node has no backend of its own for. Absent → local only. */
+  peerModels?: {
+    target(modality: PeerModelModality): PeerModelTarget | null;
+    call(target: PeerModelTarget, modality: PeerModelModality, body: unknown): Promise<unknown>;
+  };
   spec: (agentId: string) => HostedAgentSpec | null;
   log: (message: string) => void;
 }
@@ -221,6 +237,8 @@ export class HostedAgentGateway {
       if (req.method === 'POST' && path === '/v1/chat/completions') return await this.llm(req, res, spec);
       if (req.method === 'GET' && path === '/v1/models') return sendJson(res, 200, { object: 'list', data: [{ id: spec.model, object: 'model', owned_by: 'ainize' }] });
       if (req.method === 'POST' && path === '/egress') return await this.egress(req, res, spec);
+      if (req.method === 'POST' && path === '/v1/audio/transcriptions') return await this.transcribe(req, res, spec);
+      if (req.method === 'POST' && path === '/v1/images/generations') return await this.image(req, res, spec);
       sendJson(res, 404, { error: { message: 'not found' } });
     } catch (e) {
       if (!res.headersSent) sendJson(res, 502, { error: { message: e instanceof Error ? e.message : String(e) } });
@@ -244,6 +262,107 @@ export class HostedAgentGateway {
     if (!upstream.body) { res.end(); return; }
     for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
     res.end();
+  }
+
+  /**
+   * Where a medium this agent may use runs, or the refusal already sent: this node's first backend of the
+   * modality when it has one — an agent names what it wants done, not which model does it — and otherwise the
+   * freshest peer that advertised one.
+   */
+  private mediaRoute(res: ServerResponse, spec: HostedAgentSpec, modality: PeerModelModality):
+    { local: InferenceBackend; peer?: undefined } | { local?: undefined; peer: PeerModelTarget } | null {
+    if (!hostedAgentMediaOf(spec)[modality]) {
+      sendJson(res, 403, { error: { message: `${modality} is not turned on for this agent`, code: 'media_not_enabled' } });
+      return null;
+    }
+    const local = this.deps.registry()?.backendsFor(modality)[0];
+    if (local) return { local };
+    const peer = this.deps.peerModels?.target(modality);
+    if (peer) return { peer };
+    sendJson(res, 503, { error: { message: `no node in reach serves a ${modality} model right now`, code: 'model_not_served' } });
+    return null;
+  }
+
+  /** Through the backend's gate when there is one, attributed to the agent's owner — the queue is per address. */
+  private queued<T>(backend: InferenceBackend, spec: HostedAgentSpec, cost: number, fn: () => Promise<T>): Promise<T> {
+    const gate = this.deps.gates?.(backend.id);
+    return gate ? gate.run(fn, { address: spec.owner, cost: Math.max(1, cost) }) : fn();
+  }
+
+  /** A peer's answer, or its refusal passed on with the peer named — an agent's owner debugging this needs both. */
+  private async viaPeer(res: ServerResponse, spec: HostedAgentSpec, target: PeerModelTarget, modality: PeerModelModality, body: unknown): Promise<void> {
+    try {
+      const answer = await this.deps.peerModels!.call(target, modality, body);
+      this.deps.log(`agent ${spec.id} ${modality} served by peer ${target.name ?? target.address}`);
+      sendJson(res, 200, answer);
+    } catch (e) {
+      const status = e instanceof PeerModelCallError && e.status >= 400 && e.status < 600 ? e.status : 502;
+      sendJson(res, status === 401 || status === 403 ? 502 : status, { error: { message: e instanceof Error ? e.message : String(e), code: 'peer_failed' } });
+    }
+  }
+
+  /**
+   * Speech to text. JSON in (`bytesBase64`, `name`, `mimeType`, optional `language`) rather than multipart: the
+   * runtime already holds the audio as base64 from the A2A part or the handoff link, and a peer takes the same
+   * JSON, so the body goes on unchanged whichever node runs it.
+   */
+  private async transcribe(req: IncomingMessage, res: ServerResponse, spec: HostedAgentSpec): Promise<void> {
+    const route = this.mediaRoute(res, spec, 'transcription');
+    if (!route) return;
+    let ask: { bytesBase64?: unknown; name?: unknown; mimeType?: unknown; language?: unknown };
+    try { ask = JSON.parse((await readBody(req)).toString('utf8') || '{}') as typeof ask; } catch { return sendJson(res, 400, { error: { message: 'body is not JSON' } }); }
+    if (typeof ask.bytesBase64 !== 'string' || !ask.bytesBase64) return sendJson(res, 400, { error: { message: 'bytesBase64 is required' } });
+    const clean = {
+      bytesBase64: ask.bytesBase64,
+      name: typeof ask.name === 'string' ? ask.name : 'audio',
+      mimeType: typeof ask.mimeType === 'string' ? ask.mimeType : 'application/octet-stream',
+      ...(typeof ask.language === 'string' && ask.language ? { language: ask.language } : {}),
+    };
+    if (route.peer) return this.viaPeer(res, spec, route.peer, 'transcription', clean);
+    const backend = route.local;
+    const audio = Buffer.from(clean.bytesBase64, 'base64');
+    const answer = await this.queued(backend, spec, Math.round(audio.length / 1024), async () => {
+      const form = new FormData();
+      form.set('model', backend.models[0]!);
+      form.set('file', new Blob([new Uint8Array(audio)], { type: clean.mimeType }), clean.name);
+      if (clean.language) form.set('language', clean.language);
+      const upstream = await fetch(`${backend.upstream.replace(/\/+$/, '')}/v1/audio/transcriptions`, { method: 'POST', body: form, signal: AbortSignal.timeout(HOSTED_AGENT_MEDIA_TIMEOUT_MS) });
+      const body = await upstream.json().catch(() => null) as { text?: unknown } | null;
+      if (!upstream.ok || typeof body?.text !== 'string') throw new Error(`the transcription backend answered ${upstream.status}`);
+      return { text: body.text };
+    });
+    sendJson(res, 200, answer);
+  }
+
+  /** Text to image, one picture, base64 — the same shape the `/v1` surface answers, from here or from a peer. */
+  private async image(req: IncomingMessage, res: ServerResponse, spec: HostedAgentSpec): Promise<void> {
+    const route = this.mediaRoute(res, spec, 'image');
+    if (!route) return;
+    let ask: { prompt?: unknown; size?: unknown; steps?: unknown; negative_prompt?: unknown };
+    try { ask = JSON.parse((await readBody(req)).toString('utf8') || '{}') as typeof ask; } catch { return sendJson(res, 400, { error: { message: 'body is not JSON' } }); }
+    if (typeof ask.prompt !== 'string' || !ask.prompt.trim()) return sendJson(res, 400, { error: { message: 'prompt is required' } });
+    if (ask.size !== undefined && (typeof ask.size !== 'string' || !/^\d{3,4}x\d{3,4}$/.test(ask.size))) return sendJson(res, 400, { error: { message: 'size must look like 1024x1024' } });
+    const steps = typeof ask.steps === 'number' && Number.isInteger(ask.steps) ? Math.min(Math.max(ask.steps, 1), HOSTED_AGENT_IMAGE_MAX_STEPS) : undefined;
+    const clean = {
+      prompt: ask.prompt.slice(0, 4000),
+      ...(typeof ask.size === 'string' ? { size: ask.size } : {}),
+      ...(steps ? { steps } : {}),
+      ...(typeof ask.negative_prompt === 'string' ? { negative_prompt: ask.negative_prompt.slice(0, 4000) } : {}),
+    };
+    if (route.peer) return this.viaPeer(res, spec, route.peer, 'image', clean);
+    const backend = route.local;
+    const answer = await this.queued(backend, spec, steps ?? HOSTED_AGENT_IMAGE_MAX_STEPS, async () => {
+      const upstream = await fetch(`${backend.upstream.replace(/\/+$/, '')}/v1/images/generations`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: backend.models[0]!, n: 1, response_format: 'b64_json', ...clean }),
+        signal: AbortSignal.timeout(HOSTED_AGENT_MEDIA_TIMEOUT_MS),
+      });
+      const out = await upstream.json().catch(() => null) as { data?: { b64_json?: unknown }[] } | null;
+      const b64 = out?.data?.[0]?.b64_json;
+      if (!upstream.ok || typeof b64 !== 'string') throw new Error(`the image backend answered ${upstream.status}`);
+      return { data: [{ b64_json: b64 }] };
+    });
+    sendJson(res, 200, answer);
   }
 
   private async egress(req: IncomingMessage, res: ServerResponse, spec: HostedAgentSpec): Promise<void> {

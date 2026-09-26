@@ -11,7 +11,7 @@ import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
-import { hostedAgentSpecInput, hostedAgentUsesCode, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
+import { hostedAgentMediaOf, hostedAgentSpecInput, hostedAgentUsesCode, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface HostedAgentRoutesDeps {
   store: HostedAgentStore;
@@ -24,6 +24,8 @@ export interface HostedAgentRoutesDeps {
   reserved: (id: string) => boolean;
   /** This node's public base URL, for the addresses returned on create. */
   publicBase: (req: Request) => string;
+  /** Whether a peer currently serves a modality (peer-models.ts). Absent → only this node's backends count. */
+  peerServes?: (modality: 'transcription' | 'image') => boolean;
 }
 
 const refuse = (res: Response, status: number, code: string, message: string) => {
@@ -60,6 +62,14 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const backend = deps.registry()?.backendForModel(parsed.data.model);
     if (!backend) { refuse(res, 400, 'model_not_served', `this node does not serve ${parsed.data.model}`); return null; }
     if (backend.modality !== 'chat') { refuse(res, 400, 'invalid_request', `${parsed.data.model} is a ${backend.modality} model; an agent is built on a chat model`); return null; }
+    // Turning a medium on is a promise the card will make to callers, so it is refused when neither this node nor
+    // any peer in reach can keep it. A peer that goes away later is the gateway's to report, turn by turn.
+    for (const modality of ['transcription', 'image'] as const) {
+      if (parsed.data.media[modality] && !deps.registry()?.backendsFor(modality).length && !deps.peerServes?.(modality)) {
+        refuse(res, 400, 'model_not_served', `no ${modality} model is served by this node or a peer in reach, so media.${modality} cannot be turned on`);
+        return null;
+      }
+    }
     if (hostedAgentUsesCode(parsed.data.mode) && !deps.host.dockerEnabled) {
       refuse(res, 501, 'docker_unavailable', 'this node does not run agent code (Docker is not enabled); prompt agents still work');
       return null;
@@ -78,7 +88,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
       ...(full ? {
         systemPrompt: spec.systemPrompt, files: spec.files, a2ui: spec.a2ui, allowedHosts: spec.allowedHosts,
-        secretNames: spec.secretNames, skills: spec.skills,
+        secretNames: spec.secretNames, skills: spec.skills, media: hostedAgentMediaOf(spec),
         secrets: spec.secretNames.map((name) => ({ name, set: set.has(name) })),
       } : {}),
     };

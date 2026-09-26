@@ -15,6 +15,7 @@ import { AgentEvent, type AgentExecutor, type ExecutionEventBus, type RequestCon
 import { hostedAgentA2uiPart } from './hostedAgentA2ui.js';
 import { hostedAgentAttachmentHistoryNote, hostedAgentAttachmentNote, hostedAgentAttachmentsOf, hostedAgentReadAttachmentTool } from './hostedAgentAttachments.js';
 import { createHostedAgentCtx, type HostedAgentCtxOptions } from './hostedAgentContext.js';
+import { hostedAgentGenerateImageTool, hostedAgentTranscribeAudio } from './hostedAgentMedia.js';
 import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
 
 /** v1.0 Role enum: 0 unspecified, 1 user, 2 agent. */
@@ -104,6 +105,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
   const tools = mod.tools ?? [];
   const byName = new Map(tools.map((t) => [t.name, t]));
   const ui: Record<string, unknown>[] = [];
+  const parts: unknown[] = [];
 
   const runTool = async (call: ToolCall): Promise<string> => {
     const tool = byName.get(call.name);
@@ -111,10 +113,16 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
     try {
       if (!tool) throw new Error(`no tool named ${call.name}`);
       result = await tool.run(call.args, ctx);
-      // A tool may hand back a surface to show; it is collected for the reply and the model sees only the data.
+      // A tool may hand back a surface to show, or parts to attach (a generated picture): both are collected for
+      // the reply, and the model sees only the rest — never megabytes of base64 it has no use for.
       if (result && typeof result === 'object' && Array.isArray((result as { ui?: unknown }).ui)) {
         ui.push(...((result as { ui: Record<string, unknown>[] }).ui));
         const { ui: _drop, ...rest } = result as Record<string, unknown>;
+        result = rest;
+      }
+      if (result && typeof result === 'object' && Array.isArray((result as { parts?: unknown }).parts)) {
+        parts.push(...((result as { parts: unknown[] }).parts));
+        const { parts: _drop, ...rest } = result as Record<string, unknown>;
         result = rest;
       }
     } catch (e) {
@@ -133,7 +141,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
       for (let round = 0; round < HOSTED_AGENT_TOOL_ROUNDS; round++) {
         const choice = await ctx.llm.chat({ messages, tools: offered });
         const calls = choice.message.tool_calls ?? [];
-        if (!calls.length) return { text: modelText(choice.message.content), ui };
+        if (!calls.length) return { text: modelText(choice.message.content), ui, parts };
         messages.push({ role: 'assistant', content: choice.message.content ?? null, tool_calls: calls });
         for (const call of calls) {
           let args: Record<string, unknown> = {};
@@ -141,7 +149,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
           messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: await runTool({ name: call.function.name, args, id: call.id }) });
         }
       }
-      return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui };
+      return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui, parts };
     } catch (e) {
       if (!hostedAgentNativeToolsUnsupported(e instanceof Error ? e.message : String(e))) throw e;
       hostedAgentNativeToolsRefused = true;
@@ -162,13 +170,13 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
     if (!parsed || typeof parsed.tool !== 'string') {
       // `{"answer": 5555}` is an answer too; only a reply that is not the protocol at all is passed through raw.
       const answer = parsed && 'answer' in parsed ? parsed.answer : undefined;
-      return { text: answer === undefined ? raw : typeof answer === 'string' ? answer : JSON.stringify(answer), ui };
+      return { text: answer === undefined ? raw : typeof answer === 'string' ? answer : JSON.stringify(answer), ui, parts };
     }
     messages.push({ role: 'assistant', content: raw });
     const args = parsed.arguments && typeof parsed.arguments === 'object' ? parsed.arguments as Record<string, unknown> : {};
     messages.push({ role: 'user', content: `TOOL RESULT (${parsed.tool}): ${await runTool({ name: parsed.tool, args, id: `json-${round}` })}` });
   }
-  return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui };
+  return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui, parts };
 }
 
 /** Tests reset the process-wide memory of a refusing backend. */
@@ -184,16 +192,25 @@ export class HostedAgentExecutor implements AgentExecutor {
   constructor(private readonly o: HostedAgentExecutorOptions) {}
 
   async turn(text: string, contextId: string, files: HostedAgentAttachment[] = []): Promise<{ text: string; parts: unknown[] }> {
-    const ctx = createHostedAgentCtx(this.o, { text, contextId, history: this.history.get(contextId), files });
+    const history = this.history.get(contextId);
+    let ctx = createHostedAgentCtx(this.o, { text, contextId, history, files });
+    // Voice notes become words before the model sees the turn (hostedAgentMedia.ts says why).
+    const heard = await hostedAgentTranscribeAudio(ctx, files);
+    const said = heard.transcript ? (text ? `${text}\n\n${heard.transcript}` : heard.transcript) : text;
+    if (heard.transcript) ctx = createHostedAgentCtx(this.o, { text: said, contextId, history, files: heard.rest });
     const { mode } = this.o.spec;
-    // Attachments come with a way to open them: prompt and tools agents get `read_attachment` beside their own.
-    const attachmentTools = files.length ? [hostedAgentReadAttachmentTool(files)] : [];
+    // Built-in tools beside the agent's own: `read_attachment` when something is attached, `generate_image` when
+    // the owner turned pictures on.
+    const builtinTools = [
+      ...(heard.rest.length ? [hostedAgentReadAttachmentTool(heard.rest)] : []),
+      ...(ctx.media.generateImage ? [hostedAgentGenerateImageTool()] : []),
+    ];
     let reply: HostedAgentReply;
     if (mode === 'prompt') {
-      reply = attachmentTools.length ? await hostedAgentToolsTurn(ctx, { tools: attachmentTools }) : await promptTurn(ctx);
+      reply = builtinTools.length ? await hostedAgentToolsTurn(ctx, { tools: builtinTools }) : await promptTurn(ctx);
     } else if (mode === 'tools') {
       if (!this.o.module?.tools?.length) throw new Error('this agent is in tools mode but its code exports no tools');
-      reply = await hostedAgentToolsTurn(ctx, { ...this.o.module, tools: [...this.o.module.tools, ...attachmentTools] });
+      reply = await hostedAgentToolsTurn(ctx, { ...this.o.module, tools: [...this.o.module.tools, ...builtinTools] });
     } else {
       if (typeof this.o.module?.execute !== 'function') throw new Error('this agent is in handler mode but its code exports no execute()');
       reply = await this.o.module.execute(text, ctx);
@@ -202,7 +219,8 @@ export class HostedAgentExecutor implements AgentExecutor {
     const answer = typeof shaped.text === 'string' ? shaped.text : '';
     // Remembered with the attachment note, so "and the second file?" next turn still means something — the link
     // itself is not kept: it expires in minutes, and the next message carries fresh ones if the sender wants.
-    this.history.append(contextId, [{ role: 'user', content: text + hostedAgentAttachmentHistoryNote(files) }, { role: 'assistant', content: answer }]);
+    // The transcript is kept (it is what was said); the audio, like any attachment, is only named.
+    this.history.append(contextId, [{ role: 'user', content: said + hostedAgentAttachmentHistoryNote(files) }, { role: 'assistant', content: answer }]);
     return { text: answer, parts: [...(shaped.parts ?? []), ...(shaped.ui ?? []).map(hostedAgentA2uiPart)] };
   }
 

@@ -3,4 +3,7 @@
 # this is worth a Dockerfile and a comment instead of a line in a runbook.
 ARG BASE=vllm/vllm-openai:latest
 FROM ${BASE}
-RUN pip install --no-cache-dir librosa soundfile
+#
+# `av` (PyAV) is the second half: vLLM reads WAV through soundfile and hands everything else — WebM and Ogg from a
+# browser recorder, M4A from a phone, MP3 — to PyAV. Without it those fail with the same "unsupported audio file".
+RUN pip install --no-cache-dir librosa soundfile av
