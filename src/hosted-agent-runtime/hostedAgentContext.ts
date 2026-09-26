@@ -8,11 +8,14 @@
  */
 import { hostedAgentUiHelpers } from './hostedAgentA2ui.js';
 import type {
-  HostedAgentCtx, HostedAgentGatewayAccess, HostedAgentInput, HostedAgentLlmChoice, HostedAgentLlmRequest, HostedAgentRuntimeSpec,
+  HostedAgentAudioInput, HostedAgentCtx, HostedAgentGatewayAccess, HostedAgentGeneratedImage, HostedAgentImageRequest, HostedAgentInput,
+  HostedAgentLlmChoice, HostedAgentLlmRequest, HostedAgentRuntimeSpec,
 } from './hostedAgentRuntimeTypes.js';
 
 /** What a model call may take. A tools loop is at most a handful of these per turn. */
 const HOSTED_AGENT_LLM_TIMEOUT_MS = 90_000;
+/** Speech and image calls wait in a GPU queue first; the gateway's own limit is 180 s. */
+const HOSTED_AGENT_MEDIA_CALL_TIMEOUT_MS = 200_000;
 
 export const hostedAgentLlmBaseUrl = (gateway: HostedAgentGatewayAccess) =>
   `${gateway.url.replace(/\/+$/, '')}/t/${gateway.token}/v1`;
@@ -34,6 +37,34 @@ export async function hostedAgentLlmChat(gateway: HostedAgentGatewayAccess, mode
   const choice = body?.choices?.[0];
   if (!choice?.message) throw new Error('model returned no choice');
   return choice;
+}
+
+async function hostedAgentMediaPost<T>(gateway: HostedAgentGatewayAccess, path: string, body: unknown, what: string): Promise<T> {
+  const res = await directFetch(`${hostedAgentLlmBaseUrl(gateway)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(HOSTED_AGENT_MEDIA_CALL_TIMEOUT_MS),
+  });
+  const out = await res.json().catch(() => null) as (T & { error?: { message?: string } }) | null;
+  if (!res.ok || !out) throw new Error(`${what} failed (${res.status}): ${out?.error?.message ?? 'no detail'}`);
+  return out;
+}
+
+export async function hostedAgentTranscribe(gateway: HostedAgentGatewayAccess, audio: HostedAgentAudioInput): Promise<string> {
+  const out = await hostedAgentMediaPost<{ text?: unknown }>(gateway, '/audio/transcriptions', audio, 'transcription');
+  if (typeof out.text !== 'string') throw new Error('transcription returned no text');
+  return out.text;
+}
+
+export async function hostedAgentGenerateImage(gateway: HostedAgentGatewayAccess, request: HostedAgentImageRequest): Promise<HostedAgentGeneratedImage> {
+  const out = await hostedAgentMediaPost<{ data?: { b64_json?: unknown }[] }>(gateway, '/images/generations', {
+    prompt: request.prompt, size: request.size, steps: request.steps, negative_prompt: request.negativePrompt,
+  }, 'image generation');
+  const b64 = out.data?.[0]?.b64_json;
+  if (typeof b64 !== 'string') throw new Error('image generation returned no image');
+  // The sidecar encodes PNG; say so by sniffing rather than assuming, so a JPEG backend is labelled right too.
+  return { bytesBase64: b64, mimeType: b64.startsWith('/9j/') ? 'image/jpeg' : 'image/png' };
 }
 
 /**
@@ -102,6 +133,10 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
       chat: (request) => hostedAgentLlmChat(o.gateway, o.spec.model, request),
       baseUrl: hostedAgentLlmBaseUrl(o.gateway),
       model: o.spec.model,
+    },
+    media: {
+      ...(o.spec.media?.transcription ? { transcribe: (audio: HostedAgentAudioInput) => hostedAgentTranscribe(o.gateway, audio) } : {}),
+      ...(o.spec.media?.image ? { generateImage: (request: HostedAgentImageRequest) => hostedAgentGenerateImage(o.gateway, request) } : {}),
     },
     fetch: (url, init) => hostedAgentEgressFetch(o.gateway, url, init),
     secret: (name) => o.secrets[name],

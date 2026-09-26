@@ -6,7 +6,7 @@
  * Design: docs/superpowers/specs/2026-09-26-hosted-agents-design.md.
  */
 import { z } from 'zod';
-import type { HostedAgentMode, HostedAgentRuntimeSpec } from './hosted-agent-runtime/hostedAgentRuntimeTypes.js';
+import type { HostedAgentMedia, HostedAgentMode, HostedAgentRuntimeSpec } from './hosted-agent-runtime/hostedAgentRuntimeTypes.js';
 
 export type { HostedAgentMode };
 
@@ -47,6 +47,11 @@ export const hostedAgentSpecInput = z.object({
   a2ui: z.boolean().default(false),
   allowedHosts: z.array(hostPattern).max(32).default([]),
   secretNames: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/, 'a secret name is UPPER_SNAKE_CASE')).max(16).default([]),
+  // Optional so a caller that predates it (an older web, a script) keeps working: an absent block is all off.
+  media: z.object({
+    transcription: z.boolean().default(false),
+    image: z.boolean().default(false),
+  }).default({ transcription: false, image: false }),
   skills: z.array(z.object({
     id: z.string().trim().min(1).max(64),
     name: z.string().trim().min(1).max(80),
@@ -74,7 +79,13 @@ export type HostedAgentSpecInput = z.infer<typeof hostedAgentSpecInput>;
 /** The part of a spec the runtime sees — no files, no owner, no allowlist (the gateway holds that). */
 export const hostedAgentRuntimeSpecOf = (s: HostedAgentSpec): HostedAgentRuntimeSpec => ({
   id: s.id, name: s.name, description: s.description, model: s.model, systemPrompt: s.systemPrompt,
-  mode: s.mode, a2ui: s.a2ui, skills: s.skills, version: s.version,
+  mode: s.mode, a2ui: s.a2ui, skills: s.skills, version: s.version, media: hostedAgentMediaOf(s),
+});
+
+/** A stored spec's media, with the absent block of an older spec read as all off. */
+export const hostedAgentMediaOf = (s: { media?: Partial<HostedAgentMedia> }): HostedAgentMedia => ({
+  transcription: s.media?.transcription === true,
+  image: s.media?.image === true,
 });
 
 /** Build status of an agent's code. Prompt agents are always `ready`. */
