@@ -38,7 +38,7 @@ import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import {
-  callPeerModel, networkModelsRouter, peerModelRefs, peerModelRoutes, peerModelsServing, peerModelTargetById, peerModelTargets, relayPeerChat,
+  callPeerModel, fetchPeerChat, networkModelsRouter, peerModelRefs, peerModelRoutes, peerModelsServing, peerModelTargetById, peerModelTargets, relayPeerChat,
   type PeerModelModality, type PeerModelPeerRow, type PeerModelTarget,
 } from './peer-models.js';
 import { freeTierRouter } from './free-tier-routes.js';
@@ -288,6 +288,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     peerModels,
     // Read on each call: the gates are filled further down, once the backends block has been walked.
     gates: (backendId) => modalityGates.get(backendId),
+    peerChat: {
+      self: cfg.identity.address,
+      target: (model, node) => peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node),
+      fetch: (target, body) => fetchPeerChat(cfg.identity, target, body),
+    },
     spec: (id) => hostedStore.get(id),
     log: (message) => market.log('info', 'agents', message),
   });
@@ -338,6 +343,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
+    peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
   }));
 
   // Models over p2p: this node's speech and image models for peers that sign for them, and the network-wide list.

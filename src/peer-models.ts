@@ -209,12 +209,7 @@ export async function relayPeerChat(
 ): Promise<void> {
   let upstream: Response;
   try {
-    upstream = await fetchImpl(`${target.endpoint}/p2p/models/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-ainize-auth': peerModelAuthHeader(identity, target.address, 'chat') },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(PEER_MODEL_CHAT_TIMEOUT_MS),
-    });
+    upstream = await fetchPeerChat(identity, target, body, fetchImpl);
   } catch (e) {
     res.status(502).json({ error: { message: `${target.name ?? target.address} did not answer: ${e instanceof Error ? e.message : String(e)}`, type: 'api_error', code: 'peer_failed', param: null } });
     return;
@@ -226,6 +221,21 @@ export async function relayPeerChat(
   if (!upstream.body) { res.end(); return; }
   for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
   res.end();
+}
+
+/**
+ * One signed chat request to the peer, its response unread — the caller pipes the body (streamed or not). Throws
+ * only when the peer cannot be reached; a refusal is a response like any other.
+ */
+export function fetchPeerChat(
+  identity: { address: string; privateKey: string }, target: PeerModelTarget, body: unknown, fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  return fetchImpl(`${target.endpoint}/p2p/models/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-ainize-auth': peerModelAuthHeader(identity, target.address, 'chat') },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(PEER_MODEL_CHAT_TIMEOUT_MS),
+  });
 }
 
 export class PeerModelCallError extends Error {

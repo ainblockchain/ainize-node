@@ -11,6 +11,7 @@ import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
+import { parseNodeModelRef } from './peer-models.js';
 import { hostedAgentMediaOf, hostedAgentSpecInput, hostedAgentUsesCode, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface HostedAgentRoutesDeps {
@@ -26,6 +27,11 @@ export interface HostedAgentRoutesDeps {
   publicBase: (req: Request) => string;
   /** Whether a peer currently serves a modality (peer-models.ts). Absent → only this node's backends count. */
   peerServes?: (modality: 'transcription' | 'image') => boolean;
+  /**
+   * Chat models on other nodes an agent may be built on: `self` is this node's address, `serves` whether a fresh
+   * peer advertises the model (the named node, for an `id@0x<node>` ref). Absent → only this node's models.
+   */
+  peerChat?: { self: string; serves: (model: string, node: string | null) => boolean };
 }
 
 const refuse = (res: Response, status: number, code: string, message: string) => {
@@ -59,9 +65,13 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
       return null;
     }
-    const backend = deps.registry()?.backendForModel(parsed.data.model);
-    if (!backend) { refuse(res, 400, 'model_not_served', `this node does not serve ${parsed.data.model}`); return null; }
-    if (backend.modality !== 'chat') { refuse(res, 400, 'invalid_request', `${parsed.data.model} is a ${backend.modality} model; an agent is built on a chat model`); return null; }
+    // This node's model, or — for a ref naming another node (`id@0x<node>`) or an id only peers serve — a peer's,
+    // relayed over p2p by the gateway. A 262k-context model on a GPU node is worth more than an 8k one here.
+    const { model, node } = parseNodeModelRef(parsed.data.model);
+    const here = !node || node === deps.peerChat?.self.toLowerCase();
+    const backend = here ? deps.registry()?.backendForModel(model) : undefined;
+    if (!backend && !deps.peerChat?.serves(model, here ? null : node)) { refuse(res, 400, 'model_not_served', `neither this node nor a peer in reach serves ${parsed.data.model}`); return null; }
+    if (backend && backend.modality !== 'chat') { refuse(res, 400, 'invalid_request', `${parsed.data.model} is a ${backend.modality} model; an agent is built on a chat model`); return null; }
     // Turning a medium on is a promise the card will make to callers, so it is refused when neither this node nor
     // any peer in reach can keep it. A peer that goes away later is the gateway's to report, turn by turn.
     for (const modality of ['transcription', 'image'] as const) {
