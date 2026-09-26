@@ -17,12 +17,18 @@ import { z } from 'zod';
 import type { OpenaiApiKeyStore } from './openai-api-keys.js';
 import type { Store } from './store.js';
 import { siteSession } from './site-session.js';
+import { siteSubject } from './site-assertion.js';
 
 export interface OpenaiApiKeysRoutesDeps {
   keys: OpenaiApiKeyStore;
   store: Store;
   /** This node's own address — what a session predating subjects resolves to. */
   nodeAddress: string;
+  /**
+   * The secret shared with the site in front of this node (site-assertion.ts), or null. With it, a Google account
+   * the site signed in can hold keys of its own, under `google:<sub>`. Without it, only a node session can.
+   */
+  siteAssertionSecret?: string | null;
 }
 
 function refuse(res: Response, status: number, code: string, message: string): void {
@@ -39,12 +45,13 @@ export function openaiApiKeysRoutes(deps: OpenaiApiKeysRoutesDeps): Router {
 
   /** Every route here is about the caller's own keys. There is no route that takes an address. */
   const mine = (req: Request, res: Response): string | null => {
+    // A wallet session wins when both are present: it is the stronger proof, and it is the one a deposit is tied to.
     const session = siteSession(req, deps.store, deps.nodeAddress);
-    if (!session) {
-      refuse(res, 401, 'not_signed_in', 'sign in on this node to manage API keys — anonymous callers use the free tier');
-      return null;
-    }
-    return session.address.toLowerCase();
+    if (session) return session.address.toLowerCase();
+    const vouched = siteSubject(req, deps.siteAssertionSecret ?? null);
+    if (vouched) return vouched;
+    refuse(res, 401, 'not_signed_in', 'sign in on this node to manage API keys — anonymous callers use the free tier');
+    return null;
   };
 
   router.get('/api/keys', (req, res) => {
