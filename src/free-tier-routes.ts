@@ -25,6 +25,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { ModalityGate } from './modality-gate.js';
+import { parseNodeModelRef, type PeerModelTarget } from './peer-models.js';
 import { ModalityGateClosedError } from './modality-gate.js';
 import { RuntimeUnavailableError, RUNTIME_PRIORITY } from './runtime.js';
 
@@ -45,7 +46,23 @@ export interface FreeTierDeps {
   registry: InferenceBackendRegistry | null;
   /** The same gates the `/v1` routes use, keyed by backend id. */
   gates: Map<string, ModalityGate>;
+  /** Other nodes' models (peer-models.ts), for a model addressed `id@0x<node>` or one this node does not serve. */
+  peerModels?: {
+    target(kind: 'chat' | 'transcription' | 'image', model: string, node: string | null): PeerModelTarget | null;
+    relayChat(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
+    call(target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown): Promise<unknown>;
+  };
+  /** This node's address — a ref naming it is answered here. */
+  self?: string;
 }
+
+/** What a free chat with another node's model may ask for: a try, not a workload. */
+const FREE_PEER_CHAT_MAX_TOKENS = 512;
+const freePeerChatRequest = z.object({
+  model: z.string().min(1),
+  messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().min(1).max(4000) })).min(1).max(24),
+  max_tokens: z.coerce.number().int().min(1).max(FREE_PEER_CHAT_MAX_TOKENS).default(FREE_PEER_CHAT_MAX_TOKENS),
+});
 
 function freeTierError(res: Response, status: number, code: string, message: string, type = 'invalid_request_error'): void {
   res.status(status).json({ error: { message, type, code, param: null } });
@@ -70,14 +87,21 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
    * Validation happens before the allowance is touched throughout: a caller told "that model does not exist" or
    * "n is too large" has not used a try, because nothing was generated for them.
    */
-  const resolve = (res: Response, model: string, modality: 'transcription' | 'image') => {
+  const resolve = (res: Response, ref: string, modality: 'transcription' | 'image') => {
+    const { model, node } = parseNodeModelRef(ref);
+    const here = !node || node === deps.self?.toLowerCase();
+    const own = here ? deps.registry?.backendForModel(model) : null;
+    if (!own || own.modality !== modality) {
+      const peer = deps.peerModels?.target(modality, model, here ? null : node) ?? null;
+      if (peer) return { peer, model } as const;
+    }
     if (!deps.registry) {
       freeTierError(res, 503, 'backend_unavailable', 'this node serves no models over the API', 'api_error');
       return null;
     }
-    const backend = deps.registry.backendForModel(model);
+    const backend = own;
     if (!backend || backend.modality !== modality) {
-      freeTierError(res, 404, 'model_not_found', `this node does not serve a ${modality} model called ${model}`);
+      freeTierError(res, 404, 'model_not_found', `no node in reach serves a ${modality} model called ${ref}`);
       return null;
     }
     const gate = deps.gates.get(backend.id);
@@ -85,7 +109,7 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
       freeTierError(res, 503, 'backend_unavailable', `the ${modality} backend is not accepting work`, 'api_error');
       return null;
     }
-    return { backend, gate };
+    return { backend, gate, peer: null, model } as const;
   };
 
   const failed = (res: Response, error: unknown): void => {
@@ -103,11 +127,19 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
     if (!found) return;
     const file = req.file;
     if (!file) { freeTierError(res, 400, 'invalid_request', 'file is required — post the audio as multipart/form-data'); return; }
+    if (found.peer) {
+      try {
+        res.json(await deps.peerModels!.call(found.peer, 'transcription', {
+          model: found.model, bytesBase64: file.buffer.toString('base64'), name: file.originalname || 'audio', mimeType: file.mimetype || 'application/octet-stream',
+        }));
+      } catch (error) { failed(res, error); }
+      return;
+    }
 
     try {
       const answer = await found.gate.run(async () => {
         const form = new FormData();
-        form.set('model', model);
+        form.set('model', found.model);
         form.set('file', new Blob([new Uint8Array(file.buffer)], { type: file.mimetype || 'application/octet-stream' }), file.originalname || 'audio');
         const upstream = await fetch(`${found.backend.upstream}/v1/audio/transcriptions`, { method: 'POST', body: form });
         if (!upstream.ok) throw new RuntimeUnavailableError(`the transcription backend answered ${upstream.status}`);
@@ -132,12 +164,18 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
       return;
     }
     const body = parsed.data;
+    if (found.peer) {
+      try {
+        res.json(await deps.peerModels!.call(found.peer, 'image', { model: found.model, prompt: body.prompt, size: body.size, steps: body.steps, ...(body.seed !== undefined ? { seed: body.seed } : {}) }));
+      } catch (error) { failed(res, error); }
+      return;
+    }
 
     try {
       const answer = await found.gate.run(async () => {
         const upstream = await fetch(`${found.backend.upstream}/v1/images/generations`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...body, response_format: 'b64_json' }),
+          body: JSON.stringify({ ...body, model: found.model, response_format: 'b64_json' }),
         });
         if (!upstream.ok) throw new RuntimeUnavailableError(`the image backend answered ${upstream.status}`);
         return upstream.json() as Promise<Record<string, unknown>>;
@@ -146,6 +184,27 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
     } catch (error) {
       failed(res, error);
     }
+  });
+
+  /**
+   * `/api/peer-chat` — a free try of a chat model another node serves.
+   *
+   * This node's own model has `/api/chat` (the runtime, knowledge, the live test); a peer's model has only its chat
+   * completion, so it gets a plain door: a few messages, a capped answer, never streamed. Refused for a model this
+   * node serves, so the two routes cannot drift into answering the same question differently.
+   */
+  router.post('/api/peer-chat', async (req: Request, res: Response) => {
+    const parsed = freePeerChatRequest.safeParse(req.body ?? {});
+    if (!parsed.success) { freeTierError(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid request'); return; }
+    const { model, node } = parseNodeModelRef(parsed.data.model);
+    const here = !node || node === deps.self?.toLowerCase();
+    if (here && deps.registry?.backendForModel(model)?.modality === 'chat') {
+      freeTierError(res, 400, 'invalid_request', `${model} is this node's own model — try it through /api/chat`);
+      return;
+    }
+    const peer = deps.peerModels?.target('chat', model, here ? null : node) ?? null;
+    if (!peer) { freeTierError(res, 404, 'model_not_found', `no node in reach serves a chat model called ${parsed.data.model}`); return; }
+    await deps.peerModels!.relayChat(peer, { model, messages: parsed.data.messages, max_tokens: parsed.data.max_tokens, stream: false }, res);
   });
 
   return router;

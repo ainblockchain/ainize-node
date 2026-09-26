@@ -38,7 +38,7 @@ import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import {
-  callPeerModel, networkModelsRouter, peerChatModels, peerChatTarget, peerModelRoutes, peerModelsServing, peerModelTargets, relayPeerChat,
+  callPeerModel, networkModelsRouter, peerModelRefs, peerModelRoutes, peerModelsServing, peerModelTargetById, peerModelTargets, relayPeerChat,
   type PeerModelModality, type PeerModelPeerRow, type PeerModelTarget,
 } from './peer-models.js';
 import { freeTierRouter } from './free-tier-routes.js';
@@ -273,6 +273,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     target: (modality: PeerModelModality) => peerModelTargets(peerModelRows(), modality, cfg.identity.address)[0] ?? null,
     call: (target: PeerModelTarget, modality: PeerModelModality, body: unknown) => callPeerModel(cfg.identity, target, modality, body),
   };
+  /** The same door to other nodes' models for `/v1` and the free tier: addressed by id or `id@0x<node>`. */
+  const peerModelAccess = {
+    target: (kind: 'chat' | 'transcription' | 'image', model: string, node: string | null) => peerModelTargetById(peerModelRows(), kind, model, cfg.identity.address, node),
+    relayChat: (target: PeerModelTarget, body: unknown, res: import('express').Response) => relayPeerChat(cfg.identity, target, body, res),
+    call: (target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
+    models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
+  };
   const hostedGateway = new HostedAgentGateway({
     registry: () => inferenceRegistry,
     peerModels,
@@ -405,11 +412,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       scheduler: stakeQueue,
       node: cfg.identity.address,
       nodeName: cfg.name,
-      peerChat: {
-        target: (model) => peerChatTarget(peerModelRows(), model, cfg.identity.address),
-        relay: (target, body, res) => relayPeerChat(cfg.identity, target, body, res),
-        models: () => peerChatModels(peerModelRows(), cfg.identity.address),
-      },
+      peerModels: peerModelAccess,
       deposits: deposits && cfg.deposits
         ? {
           ledger: deposits,
@@ -421,7 +424,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
     // The visitor's door, beside the program's: the same gates, entered in the unpaid class so a signed-out press
     // uses whatever the paying callers are not using.
-    app.use(freeTierRouter({ registry: inferenceRegistry, gates: modalityGates }));
+    app.use(freeTierRouter({ registry: inferenceRegistry, gates: modalityGates, peerModels: peerModelAccess, self: cfg.identity.address }));
   }
 
   // After the deposits block: the page needs the ledger and the staking contract it built.

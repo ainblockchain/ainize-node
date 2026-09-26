@@ -20,7 +20,7 @@ import type { Market } from './market.js';
 import type { DepositLedger } from '@ainize/core';
 import { RuntimeUnavailableError } from './runtime.js';
 import { ModalityGateClosedError, type ModalityGate } from './modality-gate.js';
-import type { PeerModelTarget } from './peer-models.js';
+import { parseNodeModelRef, type PeerModelTarget } from './peer-models.js';
 import multer from 'multer';
 import type { ChatStreamChunk } from './chat-stream.js';
 import type { StakeFairQueue } from './stake-fair-queue.js';
@@ -54,11 +54,16 @@ export interface OpenaiSurfaceDeps {
   scheduler?: StakeFairQueue;
   /** This node's address, for the sign-in message. */
   node: string;
-  /** Chat models on other nodes, by id (peer-models.ts). Absent → only this node's models answer. */
-  peerChat?: {
-    target(model: string): PeerModelTarget | null;
-    relay(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
-    models(): { id: string; node: string }[];
+  /**
+   * Models on other nodes (peer-models.ts). A model is addressed `id` or `id@0x<node address>`; see
+   * `parseNodeModelRef`. Absent → only this node's models answer.
+   */
+  peerModels?: {
+    target(kind: 'chat' | 'transcription' | 'image', model: string, node: string | null): PeerModelTarget | null;
+    relayChat(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
+    call(target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown): Promise<unknown>;
+    /** every model fresh peers advertise, as refs */
+    models(): { ref: string; node: string }[];
   };
   nodeName?: string;
 }
@@ -139,11 +144,24 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
 
   const authed = requireOpenaiKey(deps.keys);
 
+  /**
+   * Where a model ref is served: this node's backend (a bare id it serves, or a ref naming this node), else the peer
+   * the ref names — or, for a bare id, the freshest peer that advertised it.
+   */
+  const routeModelRef = (ref: string, kind: 'chat' | 'transcription' | 'image') => {
+    const { model, node } = parseNodeModelRef(ref);
+    const here = !node || node === deps.node.toLowerCase();
+    const backend = here ? deps.registry.backendForModel(model) : null;
+    const local = backend && backend.modality === kind ? backend : null;
+    const peer = local ? null : deps.peerModels?.target(kind, model, here ? null : node) ?? null;
+    return { model, local, peer };
+  };
+
   router.get('/v1/models', authed, (_req, res) => {
-    // This node's models, then what peers serve by id — a client that lists models can call every one of them.
+    // This node's models by id, then every peer's as `id@0x<node>` — each entry names exactly one model on exactly
+    // one node, so a client that lists models can call every one of them and knows who answers.
     const own = deps.registry.listModels();
-    const peers = (deps.peerChat?.models() ?? []).filter((m) => !own.some((o) => o.id === m.id))
-      .map((m) => ({ id: m.id, object: 'model' as const, owned_by: m.node }));
+    const peers = (deps.peerModels?.models() ?? []).map((m) => ({ id: m.ref, object: 'model' as const, owned_by: m.node }));
     res.json({ object: 'list', data: [...own, ...peers] });
   });
 
@@ -208,15 +226,30 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
   const uploadAudio = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024, files: 1 } });
 
   router.post('/v1/audio/transcriptions', authed, uploadAudio.single('file'), async (req: Request, res: Response) => {
-    const model = String((req.body as Record<string, unknown> | undefined)?.model ?? '');
-    if (!model) { openaiError(res, 400, 'invalid_request', 'model is required'); return; }
-    const backend = deps.registry.backendForModel(model);
-    if (!backend || backend.modality !== 'transcription') {
-      openaiError(res, 404, 'model_not_found', `this node does not serve a transcription model called ${model}`);
+    const ref = String((req.body as Record<string, unknown> | undefined)?.model ?? '');
+    if (!ref) { openaiError(res, 400, 'invalid_request', 'model is required'); return; }
+    const where = routeModelRef(ref, 'transcription');
+    const file = req.file;
+    if (!where.local && !where.peer) {
+      openaiError(res, 404, 'model_not_found', `no node in reach serves a transcription model called ${ref}`);
       return;
     }
-    const file = req.file;
     if (!file) { openaiError(res, 400, 'invalid_request', 'file is required — post the audio as multipart/form-data'); return; }
+    if (where.peer) {
+      const language = (req.body as Record<string, unknown>).language;
+      try {
+        const out = await deps.peerModels!.call(where.peer, 'transcription', {
+          model: where.model, bytesBase64: file.buffer.toString('base64'), name: file.originalname || 'audio',
+          mimeType: file.mimetype || 'application/octet-stream', ...(typeof language === 'string' && language ? { language } : {}),
+        }) as { text?: unknown };
+        res.json({ text: typeof out.text === 'string' ? out.text : '' });
+      } catch (error) {
+        openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the transcription failed', 'api_error');
+      }
+      return;
+    }
+    const backend = where.local!;
+    const model = where.model;
 
     const gate = deps.gates.get(backend.id)!;
     try {
@@ -264,11 +297,30 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
       return;
     }
     const body = parsed.data;
-    const backend = deps.registry.backendForModel(body.model);
-    if (!backend || backend.modality !== 'image') {
-      openaiError(res, 404, 'model_not_found', `this node does not serve an image model called ${body.model}`);
+    const where = routeModelRef(body.model, 'image');
+    if (where.peer) {
+      // One picture per peer call (the peer route draws one); `n` is honoured by asking n times, one after another.
+      try {
+        const data: unknown[] = [];
+        for (let i = 0; i < body.n; i++) {
+          const out = await deps.peerModels!.call(where.peer, 'image', {
+            model: where.model, prompt: body.prompt, size: body.size,
+            ...(body.steps ? { steps: body.steps } : {}), ...(body.negative_prompt ? { negative_prompt: body.negative_prompt } : {}),
+          }) as { data?: unknown[] };
+          data.push(...(out.data ?? []));
+        }
+        res.json({ created: Math.floor(Date.now() / 1000), data });
+      } catch (error) {
+        openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the image generation failed', 'api_error');
+      }
       return;
     }
+    const backend = where.local;
+    if (!backend) {
+      openaiError(res, 404, 'model_not_found', `no node in reach serves an image model called ${body.model}`);
+      return;
+    }
+    body.model = where.model;
 
     const gate = deps.gates.get(backend.id)!;
     try {
@@ -302,15 +354,19 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
 
     // Routed, never guessed. Answering an unknown model with whatever this node happens to serve would give the
     // caller a reply from a model they did not ask for, and no way to notice.
-    const backend = deps.registry.backendForModel(body.model);
-    if (!backend || backend.modality !== 'chat') {
-      // Not served here: a peer that advertised this exact model id answers instead (peer-models.ts), streamed
-      // through. The caller's key and share stay on this node; the peer queues the call as this node.
-      const peer = !backend ? deps.peerChat?.target(body.model) : null;
-      if (peer) { await deps.peerChat!.relay(peer, req.body, res); return; }
-      openaiError(res, 404, 'model_not_found', `this node does not serve a chat model called ${body.model}`);
+    const where = routeModelRef(body.model, 'chat');
+    if (where.peer) {
+      // On another node: streamed through from it. The caller's key and share stay here; the peer queues the call
+      // as this node.
+      await deps.peerModels!.relayChat(where.peer, { ...(req.body as Record<string, unknown>), model: where.model }, res);
       return;
     }
+    const backend = where.local;
+    if (!backend) {
+      openaiError(res, 404, 'model_not_found', `no node in reach serves a chat model called ${body.model}`);
+      return;
+    }
+    body.model = where.model;
 
     /**
      * Refuse only what the node cannot honestly promise.

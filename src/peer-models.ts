@@ -135,15 +135,35 @@ export function verifyPeerModelAuth(header: string | undefined, self: string, mo
   return verifyMessage(peerModelPurpose(self, modality, ts), sig, address) ? address.toLowerCase() : null;
 }
 
-/** The freshest peer that advertised this exact chat model id. This node itself is never in it. */
-export function peerChatTarget(peers: PeerModelPeerRow[], model: string, self: string, now = Date.now()): PeerModelTarget | null {
+/**
+ * A model on a particular node: `Qwen3.8-27B@0x951e…2b93`.
+ *
+ * Nodes join the network with their own models, and two of them can serve the same id — ainize.ai's Qwen3.8-Flash-Next
+ * and a GPU box's, with a different context window. The id alone cannot tell them apart, so a caller who cares names
+ * the node by its ADDRESS (an operator can rename a node; it cannot change its key). A bare id keeps its old meaning:
+ * this node's model when it has one, else the freshest peer's.
+ */
+export function parseNodeModelRef(ref: string): { model: string; node: string | null } {
+  const m = /^(.+)@(0x[0-9a-fA-F]{40})$/.exec(ref);
+  return m ? { model: m[1]!, node: m[2]!.toLowerCase() } : { model: ref, node: null };
+}
+export const nodeModelRef = (model: string, node: string): string => `${model}@${node.toLowerCase()}`;
+
+/**
+ * The peer that serves `model` of `modality`: the named node when `node` is given, else the freshest that
+ * advertised it. Never this node itself — a ref naming this node is answered locally before this is asked.
+ */
+export function peerModelTargetById(
+  peers: PeerModelPeerRow[], modality: PeerModelKind, model: string, self: string, node: string | null = null, now = Date.now(),
+): PeerModelTarget | null {
   let best: PeerModelTarget | null = null;
   for (const p of peers) {
     const address = (p.address ?? p.info?.address ?? '').toLowerCase();
     if (!address || address === self.toLowerCase() || !p.endpoint) continue;
+    if (node && address !== node) continue;
     const lastSeen = p.last_seen ?? 0;
     if (now - lastSeen > PEER_MODEL_FRESH_MS) continue;
-    if (!peerModelAdvertsFromInfo(p.info).some((a) => a.modality === 'chat' && a.models.includes(model))) continue;
+    if (!peerModelAdvertsFromInfo(p.info).some((a) => a.modality === modality && a.models.includes(model))) continue;
     if (!best || lastSeen > best.lastSeen) {
       best = { address, endpoint: p.endpoint.replace(/\/+$/, ''), name: typeof p.info?.name === 'string' ? p.info.name : null, model, lastSeen };
     }
@@ -151,7 +171,24 @@ export function peerChatTarget(peers: PeerModelPeerRow[], model: string, self: s
   return best;
 }
 
-/** Every chat model id fresh peers advertise, with who serves it — for `/v1/models`. */
+/** The freshest peer that advertised this exact chat model id. This node itself is never in it. */
+export const peerChatTarget = (peers: PeerModelPeerRow[], model: string, self: string, now = Date.now()): PeerModelTarget | null =>
+  peerModelTargetById(peers, 'chat', model, self, null, now);
+
+/** Every model fresh peers advertise, as `id@0x<node>` refs with the serving node's name — for `/v1/models`. */
+export function peerModelRefs(peers: PeerModelPeerRow[], self: string, now = Date.now()): { ref: string; node: string }[] {
+  const out: { ref: string; node: string }[] = [];
+  for (const p of peers) {
+    const address = (p.address ?? p.info?.address ?? '').toLowerCase();
+    if (!address || address === self.toLowerCase() || now - (p.last_seen ?? 0) > PEER_MODEL_FRESH_MS) continue;
+    const name = typeof p.info?.name === 'string' ? p.info.name : address;
+    for (const a of peerModelAdvertsFromInfo(p.info)) for (const id of a.models) out.push({ ref: nodeModelRef(id, address), node: name });
+  }
+  // A node known under two endpoints is one node: its refs are listed once.
+  return out.filter((r, i) => out.findIndex((x) => x.ref === r.ref) === i);
+}
+
+/** Every chat model id fresh peers advertise, with who serves it. */
 export function peerChatModels(peers: PeerModelPeerRow[], self: string, now = Date.now()): { id: string; node: string }[] {
   const out = new Map<string, string>();
   for (const p of peers) {
@@ -243,16 +280,24 @@ export function networkModelsRouter(deps: {
   const router = Router();
   router.get('/api/network/models', (_req: ExpressRequest, res: ExpressResponse) => {
     const node = { address: deps.self.address.toLowerCase(), name: deps.self.name };
-    const data: { id: string; modality: InferenceModality; node: { address: string; name: string | null }; local: boolean }[] = [];
+    const data: { id: string; ref: string; modality: InferenceModality; node: { address: string; name: string | null }; local: boolean }[] = [];
     for (const modality of ['chat', 'transcription', 'image'] as const) {
-      for (const b of deps.registry()?.backendsFor(modality) ?? []) for (const id of b.models) data.push({ id, modality, node, local: true });
+      for (const b of deps.registry()?.backendsFor(modality) ?? []) for (const id of b.models) data.push({ id, ref: nodeModelRef(id, node.address), modality, node, local: true });
     }
     const now = Date.now();
+    // One entry per (node, kind, id): a peer known under two endpoints (the configured one and one learned from
+    // another peer) is still one node, and its models are listed once.
+    const seen = new Set(data.map((d) => `${d.node.address}|${d.modality}|${d.id}`));
     for (const p of deps.peers()) {
       const address = (p.address ?? p.info?.address ?? '').toLowerCase();
       if (!address || address === node.address || now - (p.last_seen ?? 0) > PEER_MODEL_FRESH_MS) continue;
       for (const a of peerModelAdvertsFromInfo(p.info)) {
-        for (const id of a.models) data.push({ id, modality: a.modality, node: { address, name: typeof p.info?.name === 'string' ? p.info.name : null }, local: false });
+        for (const id of a.models) {
+          const k = `${address}|${a.modality}|${id}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          data.push({ id, ref: nodeModelRef(id, address), modality: a.modality, node: { address, name: typeof p.info?.name === 'string' ? p.info.name : null }, local: false });
+        }
       }
     }
     res.json({ object: 'list', data });
@@ -277,9 +322,12 @@ export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
     const caller = verifyPeerModelAuth(req.header('x-ainize-auth'), deps.self, modality);
     if (!caller) return peerModelError(res, 401, 'bad_signature', `sign p2p-model:${deps.self.toLowerCase()}/${modality}:<ts> with your node key in x-ainize-auth`);
     if (limited(caller)) return peerModelError(res, 429, 'rate_limited', `more than ${PEER_MODEL_CALLS_PER_MINUTE} calls a minute from ${caller}`);
-    const backend = deps.registry()?.backendsFor(modality)[0];
-    if (!backend) return peerModelError(res, 404, 'model_not_served', `this node serves no ${modality} model`);
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // A caller that names a model gets that model or a refusal — never a different one of the same kind.
+    const wanted = typeof body.model === 'string' && body.model ? body.model : null;
+    const backends = deps.registry()?.backendsFor(modality) ?? [];
+    const backend = wanted ? backends.find((b) => b.models.includes(wanted)) : backends[0];
+    if (!backend) return peerModelError(res, 404, 'model_not_served', wanted ? `this node does not serve a ${modality} model called ${wanted}` : `this node serves no ${modality} model`);
     const gate = deps.gates(backend.id);
     const upstreamBase = backend.upstream.replace(/\/+$/, '');
     try {
