@@ -1,8 +1,8 @@
 /**
  * `/api/transcribe` and `/api/image` — the visitor's door to the two models that had none.
  *
- * `/api/chat` already lets somebody signed out reach the language model on an hourly allowance. These are its
- * two siblings, and they exist because the alternative was worse: a browser playground built on `/v1` would mean
+ * `/api/chat` already lets somebody signed out reach the language model. These are its two siblings, and they
+ * exist because the alternative was worse: a browser playground built on `/v1` would mean
  * the site holding one API key on behalf of every visitor, with everybody's usage indistinguishable from
  * everybody else's and one revocation taking the page down for all of them.
  *
@@ -14,6 +14,11 @@
  *
  * The gates are passed in rather than constructed here. They are the queue in front of a GPU, and two gates over
  * one card would each believe they owned it.
+ *
+ * **What limits the free tier is the queue, not a count.** These routes hold no hourly allowance; they enter the
+ * gate in the `freeServing` class, behind everything a paying caller asked for. The per-request ceilings below
+ * (one image, twenty steps, ten megabytes) stay, because they bound what ONE press can occupy — which ordering
+ * cannot do, since the slot is not taken back mid-generation.
  */
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
@@ -21,9 +26,7 @@ import { z } from 'zod';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { ModalityGate } from './modality-gate.js';
 import { ModalityGateClosedError } from './modality-gate.js';
-import { RuntimeUnavailableError } from './runtime.js';
-import type { Market } from './market.js';
-import { freeTierBuckets, takeFreeTierTry, refundFreeTierTry, freeTierRemaining } from './free-tier-quota.js';
+import { RuntimeUnavailableError, RUNTIME_PRIORITY } from './runtime.js';
 
 /**
  * One image per press, and fewer steps than `/v1` allows.
@@ -40,7 +43,6 @@ export const FREE_AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 export interface FreeTierDeps {
   /** Null when this node has no `backends` block; every route then answers 503. */
   registry: InferenceBackendRegistry | null;
-  market: Market;
   /** The same gates the `/v1` routes use, keyed by backend id. */
   gates: Map<string, ModalityGate>;
 }
@@ -102,10 +104,6 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
     const file = req.file;
     if (!file) { freeTierError(res, 400, 'invalid_request', 'file is required — post the audio as multipart/form-data'); return; }
 
-    const buckets = freeTierBuckets(deps.market, req, res);
-    const refused = takeFreeTierTry(deps.market, buckets);
-    if (refused) { res.status(refused.status).json(refused.body); return; }
-
     try {
       const answer = await found.gate.run(async () => {
         const form = new FormData();
@@ -114,10 +112,9 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
         const upstream = await fetch(`${found.backend.upstream}/v1/audio/transcriptions`, { method: 'POST', body: form });
         if (!upstream.ok) throw new RuntimeUnavailableError(`the transcription backend answered ${upstream.status}`);
         return upstream.json() as Promise<Record<string, unknown>>;
-      }, { address: 'free-tier', cost: Math.max(1, Math.round(file.size / 1024)) });
-      res.json({ ...answer, remaining_free_tries: freeTierRemaining(deps.market, buckets) });
+      }, { address: 'free-tier', cost: Math.max(1, Math.round(file.size / 1024)), priority: RUNTIME_PRIORITY.freeServing });
+      res.json(answer);
     } catch (error) {
-      refundFreeTierTry(deps.market, buckets);   // the visitor got nothing
       failed(res, error);
     }
   });
@@ -136,10 +133,6 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
     }
     const body = parsed.data;
 
-    const buckets = freeTierBuckets(deps.market, req, res);
-    const refused = takeFreeTierTry(deps.market, buckets);
-    if (refused) { res.status(refused.status).json(refused.body); return; }
-
     try {
       const answer = await found.gate.run(async () => {
         const upstream = await fetch(`${found.backend.upstream}/v1/images/generations`, {
@@ -148,10 +141,9 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
         });
         if (!upstream.ok) throw new RuntimeUnavailableError(`the image backend answered ${upstream.status}`);
         return upstream.json() as Promise<Record<string, unknown>>;
-      }, { address: 'free-tier', cost: body.steps * body.n });
-      res.json({ ...answer, remaining_free_tries: freeTierRemaining(deps.market, buckets) });
+      }, { address: 'free-tier', cost: body.steps * body.n, priority: RUNTIME_PRIORITY.freeServing });
+      res.json(answer);
     } catch (error) {
-      refundFreeTierTry(deps.market, buckets);
       failed(res, error);
     }
   });

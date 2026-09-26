@@ -11,6 +11,7 @@
  * modality, so a large deposit cannot let one caller crowd out image requests with audio ones.
  */
 import { StakeFairQueue, type StakeFairEntry } from './stake-fair-queue.js';
+import { RUNTIME_PRIORITY } from './runtime.js';
 
 interface GateWaiter extends StakeFairEntry {
   start: () => void;
@@ -48,11 +49,16 @@ export class ModalityGate {
 
   get waiting(): number { return this.waiters.length + this.running; }
 
-  async run<T>(fn: () => Promise<T>, opts: { address: string; cost: number }): Promise<T> {
+  /**
+   * `priority` is the `RUNTIME_PRIORITY` class, exactly as on the shared model — the queue was already sorted by it
+   * (`StakeFairQueue.take` compares the class before any stake) and every waiter was pinned to 0, so a paid caller
+   * and a signed-out visitor were indistinguishable here. Omitted still means `serving`.
+   */
+  async run<T>(fn: () => Promise<T>, opts: { address: string; cost: number; priority?: number }): Promise<T> {
     if (this.closed) throw new ModalityGateClosedError(this.modality);
     return new Promise<T>((resolve, reject) => {
       const waiter: GateWaiter = {
-        priority: 0, seq: ++this.seq, address: opts.address, cost: opts.cost,
+        priority: opts.priority ?? RUNTIME_PRIORITY.serving, seq: ++this.seq, address: opts.address, cost: opts.cost,
         start: () => {
           this.running++;
           void fn().then(resolve, reject).finally(() => { this.running--; this.pump(); });
@@ -67,10 +73,20 @@ export class ModalityGate {
 
   private pump(): void {
     while (!this.closed && this.running < this.concurrency && this.waiters.length) {
-      const next = this.scheduler?.take(this.waiters) ?? this.waiters[0];
+      // Without a scheduler — every node that sells no throughput — the class is the only ordering there is, so it
+      // has to be applied here. `take()` already compares it before any stake, and taking `waiters[0]` instead
+      // silently ignored it: on those nodes a paid call and a visitor's press were served in arrival order.
+      const next = this.scheduler?.take(this.waiters) ?? ModalityGate.firstByClass(this.waiters);
       this.waiters.splice(this.waiters.indexOf(next), 1);
       next.start();
     }
+  }
+
+  /** Lowest priority class first, arrival order inside a class — the same rule the shared model's queue uses. */
+  private static firstByClass(waiters: GateWaiter[]): GateWaiter {
+    let best = waiters[0];
+    for (const w of waiters) if (w.priority < best.priority || (w.priority === best.priority && w.seq < best.seq)) best = w;
+    return best;
   }
 
   /** Stop accepting work and fail whatever is still queued, so a shutdown does not leave callers hanging. */

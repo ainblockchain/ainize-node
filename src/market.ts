@@ -22,7 +22,7 @@ import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
 import { P2P } from './p2p.js';
-import { Runtime, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
+import { Runtime, RUNTIME_PRIORITY, type ChatMessage, type ChatResult, type VerifyOutcome } from './runtime.js';
 import type { ChatStreamChunk } from './chat-stream.js';
 import type { InferenceRecords, InferenceReceipt } from './inference-records.js';
 import { ChatCancelledError, ChatQueue } from './chat-queue.js';
@@ -3949,7 +3949,10 @@ export class Market {
         applied, benchmark_hits: hits, dirty,
         history: { base: msgsBase.length, patched: msgsPatched.length, split: JSON.stringify(msgsBase) !== JSON.stringify(msgsPatched) },
       };
-    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens });
+    }, { onEnter, address: opts.caller?.address ?? undefined, cost: chatOpts.maxTokens,
+      // Nobody paid for this turn (no key, not the operator), so it yields to work somebody did pay for. This is
+      // the whole protection the free tier has now that its hourly count is gone; see RUNTIME_PRIORITY.freeServing.
+      priority: opts.caller?.operator || opts.caller?.address ? RUNTIME_PRIORITY.serving : RUNTIME_PRIORITY.freeServing });
   }
 
   /**

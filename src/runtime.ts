@@ -135,6 +135,21 @@ export interface RuntimeScheduler {
 export const RUNTIME_PRIORITY = {
   /** Someone is waiting on this node right now: chat, a live test, an operator apply/remove. */
   serving: 0,
+  /**
+   * The same thing, but nobody paid for it: the signed-out visitor's chat, transcription, image.
+   *
+   * This class is what replaced the free tier's hourly counter. A count said "twenty an hour" whether the node was
+   * saturated or asleep, so the visitor was refused on an idle machine — the one moment the capacity was free — and
+   * the counter still did not stop twenty browsers from arriving at once. Ordering says the true thing instead:
+   * unpaid work takes the whole node when nothing paid wants it, and steps behind paid work the moment some
+   * arrives. Free bandwidth is therefore whatever is left over, which is all of it on an idle node and none of it
+   * under load, and no hour has to be guessed in advance.
+   *
+   * It sits above `teach` deliberately: a person watching a browser is still a person waiting, and the node's own
+   * bake is not. Requests are not preempted mid-flight, so "steps behind" means paid work waits out at most the one
+   * unpaid request already running — bounded by that request, not by the queue behind it.
+   */
+  freeServing: 2,
   /** This node's own bake — a lesson with a progress bar on someone's screen. */
   teach: 5,
   /** Unpaid work on a stranger's knowledge: it yields to everything above. */
