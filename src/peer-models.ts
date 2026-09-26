@@ -17,17 +17,21 @@
  *   • CONSUME — `findPeerModel` picks a peer that advertised the modality recently, and `callPeerModel` makes the
  *     signed call. The hosted-agent gateway uses these when the node has no backend of its own for a modality.
  *
- * Chat is deliberately not here: a hosted agent's chat model is its identity (the spec names it, the node serves
- * it), and routing it elsewhere would change who answers. Speech and pictures are tools; who runs them is not.
+ * Chat travels too, but only by NAME: a `/v1/chat/completions` for a model this node does not serve goes to a peer
+ * that advertised that exact model id (`POST /p2p/models/chat`, streamed through). A model this node serves is never
+ * sent elsewhere, and a hosted agent's own model stays local — the spec names it and the node that runs it answers.
  */
 import { Router, type Request as ExpressRequest, type Response as ExpressResponse } from 'express';
 import { signMessage, verifyMessage } from '@ainize/core';
 import type { InferenceBackendRegistry, InferenceModality } from './inference-backends.js';
-import { ModalityGateClosedError, type ModalityGate } from './modality-gate.js';
+import { ModalityGate, ModalityGateClosedError } from './modality-gate.js';
 
-/** The modalities one node may run for another. */
+/** The modalities a hosted agent may borrow from another node (by kind: any model of it will do). */
 export type PeerModelModality = Exclude<InferenceModality, 'chat'>;
 export const PEER_MODEL_MODALITIES: readonly PeerModelModality[] = ['transcription', 'image'];
+/** Everything one node may run for another; chat is routed by model id, the others by kind. */
+export type PeerModelKind = InferenceModality;
+const PEER_MODEL_KINDS: readonly PeerModelKind[] = ['chat', 'transcription', 'image'];
 
 /** What a node gossips about one backend: what kind of model and which ids — never where it listens. */
 export interface PeerModelAdvert {
@@ -49,6 +53,10 @@ const PEER_MODEL_CALLS_PER_MINUTE = 60;
 /** Diffusion steps a peer may ask for; the same ceiling the hosted-agent gateway applies to its own agents. */
 const PEER_MODEL_IMAGE_MAX_STEPS = 30;
 const PEER_MODEL_TIMEOUT_MS = 180_000;
+/** A long completion streams for minutes; the relay must not cut it off first. */
+const PEER_MODEL_CHAT_TIMEOUT_MS = 10 * 60_000;
+/** Chat calls one node may make to another per minute — higher than media: a conversation is many short calls. */
+const PEER_MODEL_CHAT_CALLS_PER_MINUTE = 240;
 
 /**
  * Whether this node runs its speech and image models for peers. On unless the operator writes
@@ -61,7 +69,7 @@ export const peerModelsServing = (cfg: unknown): boolean =>
 export function peerModelAdvertsOf(backends: { modality: InferenceModality; models: string[] }[] | undefined, serving: boolean): PeerModelAdvert[] {
   if (!serving || !backends?.length) return [];
   return backends
-    .filter((b) => PEER_MODEL_MODALITIES.includes(b.modality as PeerModelModality))
+    .filter((b) => PEER_MODEL_KINDS.includes(b.modality))
     .slice(0, PEER_MODEL_MAX_ADVERTS)
     .map((b) => ({ modality: b.modality, models: b.models.slice(0, 8) }));
 }
@@ -111,20 +119,76 @@ export function peerModelTargets(peers: PeerModelPeerRow[], modality: PeerModelM
   return out.sort((a, b) => b.lastSeen - a.lastSeen);
 }
 
-export const peerModelPurpose = (provider: string, modality: PeerModelModality, ts: number) => `p2p-model:${provider.toLowerCase()}/${modality}:${ts}`;
+export const peerModelPurpose = (provider: string, modality: PeerModelKind, ts: number) => `p2p-model:${provider.toLowerCase()}/${modality}:${ts}`;
 
 /** The caller's header: `<address>:<ts>:<signature>` over the purpose — the shape every signed node call uses. */
-export function peerModelAuthHeader(identity: { address: string; privateKey: string }, provider: string, modality: PeerModelModality, now = Date.now()): string {
+export function peerModelAuthHeader(identity: { address: string; privateKey: string }, provider: string, modality: PeerModelKind, now = Date.now()): string {
   return `${identity.address}:${now}:${signMessage(peerModelPurpose(provider, modality, now), identity.privateKey)}`;
 }
 
 /** The provider's check. The calling node's address, or null. */
-export function verifyPeerModelAuth(header: string | undefined, self: string, modality: PeerModelModality, now = Date.now()): string | null {
+export function verifyPeerModelAuth(header: string | undefined, self: string, modality: PeerModelKind, now = Date.now()): string | null {
   if (!header) return null;
   const [address, tsStr, sig] = header.split(':');
   const ts = Number(tsStr);
   if (!address || !sig || !Number.isFinite(ts) || Math.abs(now - ts) > PEER_MODEL_MAX_SKEW_MS) return null;
   return verifyMessage(peerModelPurpose(self, modality, ts), sig, address) ? address.toLowerCase() : null;
+}
+
+/** The freshest peer that advertised this exact chat model id. This node itself is never in it. */
+export function peerChatTarget(peers: PeerModelPeerRow[], model: string, self: string, now = Date.now()): PeerModelTarget | null {
+  let best: PeerModelTarget | null = null;
+  for (const p of peers) {
+    const address = (p.address ?? p.info?.address ?? '').toLowerCase();
+    if (!address || address === self.toLowerCase() || !p.endpoint) continue;
+    const lastSeen = p.last_seen ?? 0;
+    if (now - lastSeen > PEER_MODEL_FRESH_MS) continue;
+    if (!peerModelAdvertsFromInfo(p.info).some((a) => a.modality === 'chat' && a.models.includes(model))) continue;
+    if (!best || lastSeen > best.lastSeen) {
+      best = { address, endpoint: p.endpoint.replace(/\/+$/, ''), name: typeof p.info?.name === 'string' ? p.info.name : null, model, lastSeen };
+    }
+  }
+  return best;
+}
+
+/** Every chat model id fresh peers advertise, with who serves it — for `/v1/models`. */
+export function peerChatModels(peers: PeerModelPeerRow[], self: string, now = Date.now()): { id: string; node: string }[] {
+  const out = new Map<string, string>();
+  for (const p of peers) {
+    const address = (p.address ?? p.info?.address ?? '').toLowerCase();
+    if (!address || address === self.toLowerCase() || now - (p.last_seen ?? 0) > PEER_MODEL_FRESH_MS) continue;
+    for (const a of peerModelAdvertsFromInfo(p.info)) if (a.modality === 'chat') for (const id of a.models) if (!out.has(id)) out.set(id, typeof p.info?.name === 'string' ? p.info.name : address);
+  }
+  return [...out].map(([id, node]) => ({ id, node }));
+}
+
+/**
+ * Send one OpenAI chat request to the peer and pass its answer through as it arrives — status, content type and
+ * body, streamed or not. Nothing is buffered: a streamed completion from another node reads like one from here.
+ */
+export async function relayPeerChat(
+  identity: { address: string; privateKey: string }, target: PeerModelTarget, body: unknown, res: ExpressResponse,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  let upstream: Response;
+  try {
+    upstream = await fetchImpl(`${target.endpoint}/p2p/models/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-ainize-auth': peerModelAuthHeader(identity, target.address, 'chat') },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(PEER_MODEL_CHAT_TIMEOUT_MS),
+    });
+  } catch (e) {
+    res.status(502).json({ error: { message: `${target.name ?? target.address} did not answer: ${e instanceof Error ? e.message : String(e)}`, type: 'api_error', code: 'peer_failed', param: null } });
+    return;
+  }
+  res.status(upstream.status);
+  res.setHeader('content-type', upstream.headers.get('content-type') ?? 'application/json');
+  // Which node answered, for the caller who wonders why a model they never saw on this node's list replied.
+  res.setHeader('x-ainize-served-by', target.address);
+  if (!upstream.body) { res.end(); return; }
+  for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
+  res.end();
 }
 
 export class PeerModelCallError extends Error {
@@ -270,5 +334,47 @@ export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
 
   router.post('/p2p/models/transcription', handle('transcription'));
   router.post('/p2p/models/image', handle('image'));
+
+  /**
+   * Chat for a peer, by model id. The request is OpenAI's, passed on with the model pinned; the answer — JSON or an
+   * SSE stream — goes back as the backend sends it. One queue per backend, sized by its `concurrency`, holds the
+   * slot until the last byte is written, so a peer's long stream counts against the card for as long as it runs.
+   */
+  const chatGates = new Map<string, ModalityGate>();
+  const chatCalls = new Map<string, number[]>();
+  router.post('/p2p/models/chat', async (req: ExpressRequest, res: ExpressResponse) => {
+    if (!deps.serving()) return peerModelError(res, 404, 'not_serving', 'this node does not serve its models to peers');
+    const caller = verifyPeerModelAuth(req.header('x-ainize-auth'), deps.self, 'chat');
+    if (!caller) return peerModelError(res, 401, 'bad_signature', `sign p2p-model:${deps.self.toLowerCase()}/chat:<ts> with your node key in x-ainize-auth`);
+    const now = Date.now();
+    const hits = (chatCalls.get(caller) ?? []).filter((t) => now - t < 60_000);
+    hits.push(now);
+    chatCalls.set(caller, hits);
+    if (hits.length > PEER_MODEL_CHAT_CALLS_PER_MINUTE) return peerModelError(res, 429, 'rate_limited', `more than ${PEER_MODEL_CHAT_CALLS_PER_MINUTE} chat calls a minute from ${caller}`);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const model = typeof body.model === 'string' ? body.model : '';
+    const backend = deps.registry()?.backendsFor('chat').find((b) => b.models.includes(model));
+    if (!backend) return peerModelError(res, 404, 'model_not_found', `this node does not serve a chat model called ${model || '(none)'}`);
+    let gate = deps.gates(backend.id) ?? chatGates.get(backend.id);
+    if (!gate) { gate = new ModalityGate('chat', backend.concurrency); chatGates.set(backend.id, gate); }
+    const cost = typeof body.max_tokens === 'number' ? Math.max(1, body.max_tokens) : 1024;
+    try {
+      await gate.run(async () => {
+        const upstream = await fetch(`${backend.upstream.replace(/\/+$/, '')}/v1/chat/completions`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, model }),
+          signal: AbortSignal.timeout(PEER_MODEL_CHAT_TIMEOUT_MS),
+        });
+        res.status(upstream.status);
+        res.setHeader('content-type', upstream.headers.get('content-type') ?? 'application/json');
+        if (upstream.body) for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
+        res.end();
+      }, { address: caller, cost });
+      deps.log(`served chat ${model} to peer ${caller}`);
+    } catch (e) {
+      if (res.headersSent) { res.end(); return; }
+      if (e instanceof ModalityGateClosedError) return peerModelError(res, 503, 'backend_unavailable', e.message);
+      peerModelError(res, 502, 'upstream_failed', e instanceof Error ? e.message : String(e));
+    }
+  });
   return router;
 }

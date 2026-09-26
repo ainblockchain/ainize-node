@@ -20,6 +20,7 @@ import type { Market } from './market.js';
 import type { DepositLedger } from '@ainize/core';
 import { RuntimeUnavailableError } from './runtime.js';
 import { ModalityGateClosedError, type ModalityGate } from './modality-gate.js';
+import type { PeerModelTarget } from './peer-models.js';
 import multer from 'multer';
 import type { ChatStreamChunk } from './chat-stream.js';
 import type { StakeFairQueue } from './stake-fair-queue.js';
@@ -53,6 +54,12 @@ export interface OpenaiSurfaceDeps {
   scheduler?: StakeFairQueue;
   /** This node's address, for the sign-in message. */
   node: string;
+  /** Chat models on other nodes, by id (peer-models.ts). Absent → only this node's models answer. */
+  peerChat?: {
+    target(model: string): PeerModelTarget | null;
+    relay(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
+    models(): { id: string; node: string }[];
+  };
   nodeName?: string;
 }
 
@@ -133,7 +140,11 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
   const authed = requireOpenaiKey(deps.keys);
 
   router.get('/v1/models', authed, (_req, res) => {
-    res.json({ object: 'list', data: deps.registry.listModels() });
+    // This node's models, then what peers serve by id — a client that lists models can call every one of them.
+    const own = deps.registry.listModels();
+    const peers = (deps.peerChat?.models() ?? []).filter((m) => !own.some((o) => o.id === m.id))
+      .map((m) => ({ id: m.id, object: 'model' as const, owned_by: m.node }));
+    res.json({ object: 'list', data: [...own, ...peers] });
   });
 
   if (deps.deposits) {
@@ -293,6 +304,10 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     // caller a reply from a model they did not ask for, and no way to notice.
     const backend = deps.registry.backendForModel(body.model);
     if (!backend || backend.modality !== 'chat') {
+      // Not served here: a peer that advertised this exact model id answers instead (peer-models.ts), streamed
+      // through. The caller's key and share stay on this node; the peer queues the call as this node.
+      const peer = !backend ? deps.peerChat?.target(body.model) : null;
+      if (peer) { await deps.peerChat!.relay(peer, req.body, res); return; }
       openaiError(res, 404, 'model_not_found', `this node does not serve a chat model called ${body.model}`);
       return;
     }
