@@ -14,12 +14,13 @@ import express from 'express';
 import { createIdentity } from '@ainize/core';
 import { InferenceBackendRegistry } from '../src/inference-backends.js';
 import { ModalityGate } from '../src/modality-gate.js';
+import { freeTierRouter } from '../src/free-tier-routes.js';
 import { HostedAgentGateway } from '../src/hosted-agent-gateway.js';
 import { hostedAgentSpecInput, type HostedAgentSpec } from '../src/hosted-agent-types.js';
 import { HostedAgentExecutor } from '../src/hosted-agent-runtime/hostedAgentExecutor.js';
 import {
   callPeerModel, networkModelsRouter, peerModelAdvertsFromInfo, peerModelAdvertsOf, peerModelAuthHeader, peerModelRoutes,
-  peerChatModels, peerChatTarget, peerModelsServing, peerModelTargets, relayPeerChat, verifyPeerModelAuth, type PeerModelPeerRow,
+  nodeModelRef, parseNodeModelRef, peerChatModels, peerChatTarget, peerModelRefs, peerModelsServing, peerModelTargetById, peerModelTargets, relayPeerChat, verifyPeerModelAuth, type PeerModelPeerRow,
 } from '../src/peer-models.js';
 
 const A = createIdentity();
@@ -192,7 +193,8 @@ test('/api/network/models lists this node\'s models and each fresh peer\'s, name
   const app = express();
   app.use(networkModelsRouter({
     registry: () => new InferenceBackendRegistry([{ id: 'llm', modality: 'chat', upstream: 'http://x', models: [MODEL], concurrency: 1 }]),
-    peers: () => [peerRow('http://gpu-box'), peerRow('http://stale', { address: '0x' + 'f'.repeat(40), last_seen: 0 })],
+    // the GPU box twice — configured and learned endpoints — must still list its models once
+    peers: () => [peerRow('http://gpu-box'), peerRow('http://192.168.1.141:3480'), peerRow('http://stale', { address: '0x' + 'f'.repeat(40), last_seen: 0 })],
     self: { address: A.address, name: 'main' },
   }));
   const server = createServer(app);
@@ -277,4 +279,78 @@ test('chat for a model only a peer serves goes to that peer, JSON or streamed, a
     await new Promise<void>((r) => pServer.close(() => r()));
     await new Promise<void>((r) => chatBackend.close(() => r()));
   }
+});
+
+// ───────────────────────────────── a model is (node, id): `id@0x<node>`
+
+test('a ref names a model on a node; a bare id keeps its meaning', () => {
+  const addr = '0x951E1767f18C4317479BB460950b281A3e122b93';
+  assert.deepEqual(parseNodeModelRef(`Qwen3.8-27B@${addr}`), { model: 'Qwen3.8-27B', node: addr.toLowerCase() });
+  assert.deepEqual(parseNodeModelRef('Qwen3.8-27B'), { model: 'Qwen3.8-27B', node: null });
+  assert.deepEqual(parseNodeModelRef('weird@name'), { model: 'weird@name', node: null }, 'only a full address counts as a node');
+  assert.equal(nodeModelRef('m', addr), `m@${addr.toLowerCase()}`);
+});
+
+test('two nodes serving the same id stay two models: a ref picks one, a bare id the freshest', () => {
+  const now = Date.now();
+  const C = '0x' + 'c'.repeat(40);
+  const rows: PeerModelPeerRow[] = [
+    { address: B.address, endpoint: 'http://b', last_seen: now - 60_000, info: { name: 'b', backends: [{ modality: 'chat', models: ['Same'] }] } },
+    { address: C, endpoint: 'http://c', last_seen: now - 1_000, info: { name: 'c', backends: [{ modality: 'chat', models: ['Same'] }] } },
+  ];
+  assert.equal(peerModelTargetById(rows, 'chat', 'Same', A.address, null, now)!.endpoint, 'http://c');
+  assert.equal(peerModelTargetById(rows, 'chat', 'Same', A.address, B.address.toLowerCase(), now)!.endpoint, 'http://b');
+  assert.equal(peerModelTargetById(rows, 'transcription', 'Same', A.address, null, now), null, 'the kind has to match too');
+  assert.deepEqual(peerModelRefs(rows, A.address, now).map((r) => r.ref).sort(), [`Same@${B.address.toLowerCase()}`, `Same@${C}`].sort());
+});
+
+test('a provider asked for a model it does not have refuses rather than answering with another of that kind', async () => {
+  const b = await startNodeB();
+  try {
+    const target = { ...peerModelTargets([peerRow(b.url)], 'image', A.address)[0]!, model: 'not-here' };
+    await assert.rejects(callPeerModel(A, target, 'image', { model: 'not-here', prompt: 'x' }), /does not serve a image model called not-here/);
+    const ok = await callPeerModel(A, target, 'image', { model: 'img-1', prompt: 'x' }) as { model: string };
+    assert.equal(ok.model, 'img-1');
+  } finally { await b.close(); }
+});
+
+test('the free tier reaches a peer\'s model by ref, and /api/peer-chat never answers for this node\'s own model', async () => {
+  const called: { kind: string; body: Record<string, unknown> }[] = [];
+  const target = { address: B.address.toLowerCase(), endpoint: 'http://b', name: 'b', model: 'x', lastSeen: Date.now() };
+  const app = express();
+  app.use(express.json());
+  app.use(freeTierRouter({
+    registry: new InferenceBackendRegistry([{ id: 'llm', modality: 'chat', upstream: 'http://x', models: ['Own-Chat'], concurrency: 1 }]),
+    gates: new Map(),
+    self: A.address,
+    peerModels: {
+      target: (kind, model, node) => (model === 'Peer-Model' && (!node || node === B.address.toLowerCase()) ? { ...target, model } : null),
+      call: async (_t, kind, body) => { called.push({ kind, body: body as Record<string, unknown> }); return kind === 'transcription' ? { text: 'from B' } : { data: [{ b64_json: 'AA' }] }; },
+      relayChat: async (_t, body, res) => { called.push({ kind: 'chat', body: body as Record<string, unknown> }); res.json({ choices: [{ message: { content: 'hi from B' } }] }); },
+    },
+  }));
+  const server = createServer(app);
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const form = new FormData();
+    form.set('model', `Peer-Model@${B.address}`);
+    form.set('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }), 'a.wav');
+    const stt = await fetch(`${base}/api/transcribe`, { method: 'POST', body: form });
+    assert.deepEqual(await stt.json(), { text: 'from B' });
+    assert.equal(called.at(-1)!.body.model, 'Peer-Model', 'the peer is asked for the bare id');
+
+    const img = await fetch(`${base}/api/image`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'Peer-Model', prompt: 'x' }) });
+    assert.equal(img.status, 200);
+
+    const chat = await fetch(`${base}/api/peer-chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'Peer-Model', messages: [{ role: 'user', content: 'hi' }] }) });
+    assert.equal(((await chat.json()) as { choices: { message: { content: string } }[] }).choices[0]!.message.content, 'hi from B');
+    assert.equal(called.at(-1)!.body.max_tokens, 512, 'a free try is capped');
+    assert.equal(called.at(-1)!.body.stream, false);
+
+    const own = await fetch(`${base}/api/peer-chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'Own-Chat', messages: [{ role: 'user', content: 'hi' }] }) });
+    assert.equal(own.status, 400, "this node's own model goes through /api/chat");
+    const nowhere = await fetch(`${base}/api/peer-chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'Nope', messages: [{ role: 'user', content: 'hi' }] }) });
+    assert.equal(nowhere.status, 404);
+  } finally { await new Promise<void>((r) => server.close(() => r())); }
 });
