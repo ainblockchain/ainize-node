@@ -27,14 +27,18 @@
  * `ctx.fetch`, so the MCP host must be in the agent's `allowedHosts` — aindrive's is `aindrive.ainetwork.ai`.
  */
 import { HOSTED_AGENT_ATTACHMENT_TEXT_CHARS, hostedAgentLinkProblem } from './hostedAgentAttachments.js';
+import { hostedAgentReadPdf, isHostedAgentPdf } from './hostedAgentPdf.js';
 import type { HostedAgentCtx, HostedAgentTool } from './hostedAgentRuntimeTypes.js';
 
 export const AINDRIVE_FOLDER_CONTEXT_TYPE = 'ai.aindrive/folder-context';
 export const AINDRIVE_HANDOFF_MCP_TYPE = 'ai.aindrive/handoff-mcp';
 /** How many folder entries the model is shown; the producer sends at most 200. */
 const AINDRIVE_FOLDER_NOTE_MAX_ENTRIES = 200;
-/** An MCP answer is small (a listing, or ≤ 1 MiB of text); a little headroom for JSON and SSE framing. */
-const AINDRIVE_MCP_MAX_BYTES = 2 * 1024 * 1024;
+/**
+ * An MCP answer: a listing, ≤ 1 MiB of text — or, when the server sends one, a picture or a PDF as base64 content.
+ * Room for a phone photo and its framing.
+ */
+const AINDRIVE_MCP_MAX_BYTES = 40 * 1024 * 1024;
 const AINDRIVE_MCP_PROTOCOL_VERSION = '2025-06-18';
 
 export interface AindriveFolderEntry { name: string; path: string; isDir: boolean; size: number | null; mime: string | null }
@@ -176,7 +180,12 @@ class AindriveMcpClient {
     return answer.result;
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+  /**
+   * A tool's answer as the model can take it: its text, plus pictures to look at. MCP content is text, `image`
+   * (base64 + mimeType) or an embedded `resource` (text, or a base64 blob) — an image or a PDF is not thrown away
+   * because it is not text: a picture is shown, a PDF is read (hostedAgentPdf.ts).
+   */
+  async callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; images: string[] }> {
     if (this.server.expiresAt !== null && this.server.expiresAt <= Date.now()) {
       throw new Error('access to these aindrive files has expired; ask the sender for a fresh handoff');
     }
@@ -185,10 +194,28 @@ class AindriveMcpClient {
       await this.rpc('notifications/initialized', {}, true).catch(() => undefined);
       this.initialized = true;
     }
-    const result = await this.rpc('tools/call', { name, arguments: args }) as { content?: { type?: string; text?: string }[]; isError?: boolean } | null;
-    const text = (result?.content ?? []).filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text!).join('\n');
+    type McpContent = { type?: string; text?: string; data?: string; mimeType?: string; resource?: { uri?: string; mimeType?: string; text?: string; blob?: string } };
+    const result = await this.rpc('tools/call', { name, arguments: args }) as { content?: McpContent[]; isError?: boolean } | null;
+    const texts: string[] = [];
+    const images: string[] = [];
+    for (const c of result?.content ?? []) {
+      if (c?.type === 'text' && typeof c.text === 'string') { texts.push(c.text); continue; }
+      const blob = c?.type === 'image' ? c.data : c?.type === 'resource' ? c.resource?.blob : undefined;
+      const mime = (c?.type === 'image' ? c.mimeType : c?.resource?.mimeType) ?? '';
+      if (c?.type === 'resource' && typeof c.resource?.text === 'string') { texts.push(c.resource.text); continue; }
+      if (typeof blob !== 'string' || !blob) continue;
+      if (/^image\//i.test(mime)) { images.push(`data:${mime};base64,${blob}`); continue; }
+      if (isHostedAgentPdf(mime, c?.resource?.uri ?? '')) {
+        const pdf = await hostedAgentReadPdf(Buffer.from(blob, 'base64'));
+        texts.push(`${pdf.note}${pdf.text ? `\n${pdf.text}` : ''}`);
+        images.push(...pdf.images);
+        continue;
+      }
+      texts.push(`(a ${mime || 'binary'} file this agent cannot read)`);
+    }
+    const text = texts.join('\n');
     if (result?.isError) throw new Error(text || `${name} failed`);
-    return text;
+    return { text, images };
   }
 }
 
@@ -210,23 +237,27 @@ export function aindriveHandoffMcpTools(servers: AindriveHandoffMcpServer[], ctx
         description: 'List the files the user granted for this turn through aindrive (ids, names, types, sizes). Call before read_file.',
         parameters: { type: 'object', properties: {} },
         async run() {
-          try { const listing = await client.callTool('list_files', {}); ctx.log('aindrive list_files'); return listing || '(no files granted)'; } catch (e) { return fail(e); }
+          try { const listing = await client.callTool('list_files', {}); ctx.log('aindrive list_files'); return listing.text || '(no files granted)'; } catch (e) { return fail(e); }
         },
       });
     }
     if (offers('read_file')) {
       tools.push({
         name: `read_file${suffix}`,
-        description: 'Read one granted aindrive file as text (up to 1 MiB) by the id list_files returned. Only when the answer needs its contents.',
+        description: 'Read one granted aindrive file by the id list_files returned: text comes back as text; a picture, or a PDF, when the server sends one, is shown to you or read. Only when the answer needs its contents.',
         parameters: { type: 'object', properties: { id: { type: 'string', description: 'A file id from list_files.' } }, required: ['id'] },
         async run(args) {
           const id = typeof args.id === 'string' ? args.id : typeof args.id === 'number' ? String(args.id) : '';
           if (!id) return { error: 'id is required — call list_files first' };
           try {
-            const text = await client.callTool('read_file', { id });
-            ctx.log(`aindrive read_file (${text.length} chars)`);
+            const { text, images } = await client.callTool('read_file', { id });
+            ctx.log(`aindrive read_file (${text.length} chars, ${images.length} picture(s))`);
             const cut = text.length > HOSTED_AGENT_ATTACHMENT_TEXT_CHARS;
-            return { id, text: cut ? text.slice(0, HOSTED_AGENT_ATTACHMENT_TEXT_CHARS) : text, ...(cut ? { truncated: true } : {}) };
+            // `images` is collected by the tools loop and shown in the next message; the model reads the rest.
+            return {
+              id, text: cut ? text.slice(0, HOSTED_AGENT_ATTACHMENT_TEXT_CHARS) : text, ...(cut ? { truncated: true } : {}),
+              ...(images.length ? { images, note: 'The picture(s) are shown to you in the next message.' } : {}),
+            };
           } catch (e) { return fail(e); }
         },
       });
