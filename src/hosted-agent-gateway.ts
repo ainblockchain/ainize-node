@@ -28,9 +28,15 @@ import { hostedAgentMediaOf, type HostedAgentSpec } from './hosted-agent-types.j
 import { PeerModelCallError, type PeerModelModality, type PeerModelTarget } from './peer-models.js';
 
 const HOSTED_AGENT_EGRESS_MAX_BYTES = 5 * 1024 * 1024;
+/**
+ * The most one egress call may ask for with `maxBytes`: a phone photo or a few minutes of voice. The default stays
+ * small because most egress is an API answer; an attachment read raises it for that one call.
+ */
+export const HOSTED_AGENT_EGRESS_ATTACHMENT_MAX_BYTES = 32 * 1024 * 1024;
 const HOSTED_AGENT_EGRESS_TIMEOUT_MS = 30_000;
 const HOSTED_AGENT_EGRESS_MAX_REDIRECTS = 5;
-const HOSTED_AGENT_GATEWAY_MAX_BODY = 6 * 1024 * 1024;
+/** A chat request carrying a photo, or a transcription carrying a voice note, both as base64. */
+const HOSTED_AGENT_GATEWAY_MAX_BODY = 48 * 1024 * 1024;
 const HOSTED_AGENT_LLM_TIMEOUT_MS = 120_000;
 /** A diffusion model at full steps takes tens of seconds; a long voice note, about as long. */
 const HOSTED_AGENT_MEDIA_TIMEOUT_MS = 180_000;
@@ -94,6 +100,8 @@ export interface HostedAgentEgressRequest {
   method?: string;
   headers?: Record<string, string>;
   bodyBase64?: string;
+  /** Raise the response ceiling for this call, up to HOSTED_AGENT_EGRESS_ATTACHMENT_MAX_BYTES. */
+  maxBytes?: number;
 }
 
 /** Hop-by-hop and identity headers an agent may not set on the way out. */
@@ -111,6 +119,8 @@ export const hostedAgentUserAgent = (agentId: string) => `ainize-agent/${agentId
 export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHosts: string[], agentId?: string): Promise<HostedAgentEgressAnswer> {
   let url: URL;
   try { url = new URL(req.url); } catch { throw new HostedAgentEgressRefusal(`not a URL: ${req.url}`); }
+  const maxBytes = typeof req.maxBytes === 'number' && req.maxBytes > 0
+    ? Math.min(req.maxBytes, HOSTED_AGENT_EGRESS_ATTACHMENT_MAX_BYTES) : HOSTED_AGENT_EGRESS_MAX_BYTES;
   let method = (req.method ?? 'GET').toUpperCase();
   let body = req.bodyBase64 ? Buffer.from(req.bodyBase64, 'base64') : undefined;
   const headers: Record<string, string> = {};
@@ -131,7 +141,7 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
         let size = 0;
         res.on('data', (c: Buffer) => {
           size += c.length;
-          if (size > HOSTED_AGENT_EGRESS_MAX_BYTES) { res.destroy(new HostedAgentEgressRefusal(`response is larger than ${HOSTED_AGENT_EGRESS_MAX_BYTES} bytes`)); return; }
+          if (size > maxBytes) { res.destroy(new HostedAgentEgressRefusal(`response is larger than ${maxBytes} bytes`)); return; }
           chunks.push(c);
         });
         res.on('error', reject);

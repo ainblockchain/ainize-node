@@ -16,6 +16,10 @@ import { hostedAgentA2uiPart } from './hostedAgentA2ui.js';
 import { hostedAgentAttachmentHistoryNote, hostedAgentAttachmentNote, hostedAgentAttachmentsOf, hostedAgentReadAttachmentTool } from './hostedAgentAttachments.js';
 import { createHostedAgentCtx, type HostedAgentCtxOptions } from './hostedAgentContext.js';
 import { hostedAgentGenerateImageTool, hostedAgentTranscribeAudio } from './hostedAgentMedia.js';
+import {
+  aindriveContextNote, aindriveFolderContextOf, aindriveHandoffMcpServersOf, aindriveHandoffMcpTools,
+  type AindriveFolderContext, type AindriveHandoffMcpServer,
+} from './hostedAgentAindriveHandoff.js';
 import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
 
 /** v1.0 Role enum: 0 unspecified, 1 user, 2 agent. */
@@ -65,7 +69,7 @@ const systemMessages = (prompt: string): HostedAgentChatMessage[] => (prompt.tri
  * A model's answer as the caller shows it. Qwen3 leaves the blank lines of an empty think block in front of the
  * answer ("\n\n안녕하세요…"); a chat bubble renders them as a gap above the first line.
  */
-const modelText = (content: string | null | undefined) => (content ?? '').trim();
+const modelText = (content: HostedAgentChatMessage['content'] | undefined) => (typeof content === 'string' ? content : '').trim();
 
 /** The user's words as the model reads them: the message, plus what is attached (never the links). */
 const userContentOf = (ctx: HostedAgentCtx) => ctx.input.text + hostedAgentAttachmentNote(ctx.input.files);
@@ -106,6 +110,8 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
   const byName = new Map(tools.map((t) => [t.name, t]));
   const ui: Record<string, unknown>[] = [];
   const parts: unknown[] = [];
+  /** Pictures tools opened this round (read_attachment of a photo): shown to the model in the next message. */
+  let seen: string[] = [];
 
   const runTool = async (call: ToolCall): Promise<string> => {
     const tool = byName.get(call.name);
@@ -125,10 +131,27 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
         const { parts: _drop, ...rest } = result as Record<string, unknown>;
         result = rest;
       }
+      // …and pictures to look at: a tool message is text only, so they follow as a user message the model sees.
+      if (result && typeof result === 'object' && Array.isArray((result as { images?: unknown }).images)) {
+        seen.push(...((result as { images: unknown[] }).images.filter((u): u is string => typeof u === 'string')));
+        const { images: _drop, ...rest } = result as Record<string, unknown>;
+        result = rest;
+      }
     } catch (e) {
       result = { error: e instanceof Error ? e.message : String(e) };
     }
     return typeof result === 'string' ? result : JSON.stringify(result ?? null);
+  };
+
+  /** The pictures opened since the last model call, as the message that shows them — then forgotten. */
+  const showSeen = (): HostedAgentChatMessage[] => {
+    if (!seen.length) return [];
+    const shown: HostedAgentChatMessage = {
+      role: 'user',
+      content: [{ type: 'text', text: 'The attached picture(s) you opened:' }, ...seen.map((url) => ({ type: 'image_url' as const, image_url: { url } }))],
+    };
+    seen = [];
+    return [shown];
   };
 
   const conversation = (system: string): HostedAgentChatMessage[] =>
@@ -148,6 +171,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
           try { args = call.function.arguments ? JSON.parse(call.function.arguments) as Record<string, unknown> : {}; } catch { /* the tool sees {} and can say so */ }
           messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: await runTool({ name: call.function.name, args, id: call.id }) });
         }
+        messages.push(...showSeen());
       }
       return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui, parts };
     } catch (e) {
@@ -164,7 +188,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
   const messages = conversation(protocol.trim());
   for (let round = 0; round < HOSTED_AGENT_TOOL_ROUNDS; round++) {
     const choice = await ctx.llm.chat({ messages, temperature: 0 });
-    const raw = (choice.message.content ?? '').trim();
+    const raw = modelText(choice.message.content);
     let parsed: HostedAgentJsonToolReply | null = null;
     try { parsed = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) as HostedAgentJsonToolReply; } catch { parsed = null; }
     if (!parsed || typeof parsed.tool !== 'string') {
@@ -175,6 +199,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
     messages.push({ role: 'assistant', content: raw });
     const args = parsed.arguments && typeof parsed.arguments === 'object' ? parsed.arguments as Record<string, unknown> : {};
     messages.push({ role: 'user', content: `TOOL RESULT (${parsed.tool}): ${await runTool({ name: parsed.tool, args, id: `json-${round}` })}` });
+    messages.push(...showSeen());
   }
   return { text: `Stopped after ${HOSTED_AGENT_TOOL_ROUNDS} tool rounds without a final answer.`, ui, parts };
 }
@@ -191,19 +216,26 @@ export class HostedAgentExecutor implements AgentExecutor {
 
   constructor(private readonly o: HostedAgentExecutorOptions) {}
 
-  async turn(text: string, contextId: string, files: HostedAgentAttachment[] = []): Promise<{ text: string; parts: unknown[] }> {
+  async turn(
+    text: string, contextId: string, files: HostedAgentAttachment[] = [],
+    aindrive: { folder: AindriveFolderContext | null; servers: AindriveHandoffMcpServer[] } = { folder: null, servers: [] },
+  ): Promise<{ text: string; parts: unknown[] }> {
     const history = this.history.get(contextId);
     let ctx = createHostedAgentCtx(this.o, { text, contextId, history, files });
     // Voice notes become words before the model sees the turn (hostedAgentMedia.ts says why).
     const heard = await hostedAgentTranscribeAudio(ctx, files);
     const said = heard.transcript ? (text ? `${text}\n\n${heard.transcript}` : heard.transcript) : text;
-    if (heard.transcript) ctx = createHostedAgentCtx(this.o, { text: said, contextId, history, files: heard.rest });
+    // What aindrive sent beside the words: the folder as data and this turn's file grant (hostedAgentAindriveHandoff.ts).
+    // The model reads both; memory keeps only what was said — a grant is this turn's, and the next turn brings its own.
+    const shown = said + aindriveContextNote(aindrive.folder, aindrive.servers);
+    if (shown !== text || heard.transcript) ctx = createHostedAgentCtx(this.o, { text: shown, contextId, history, files: heard.rest });
     const { mode } = this.o.spec;
     // Built-in tools beside the agent's own: `read_attachment` when something is attached, `generate_image` when
-    // the owner turned pictures on.
+    // the owner turned pictures on, and aindrive's `list_files` / `read_file` when this turn carries a grant.
     const builtinTools = [
       ...(heard.rest.length ? [hostedAgentReadAttachmentTool(heard.rest)] : []),
       ...(ctx.media.generateImage ? [hostedAgentGenerateImageTool()] : []),
+      ...aindriveHandoffMcpTools(aindrive.servers, ctx),
     ];
     let reply: HostedAgentReply;
     if (mode === 'prompt') {
@@ -230,9 +262,10 @@ export class HostedAgentExecutor implements AgentExecutor {
     let parts: unknown[] = [];
     const input = hostedAgentTextOf(requestContext.userMessage);
     const files = hostedAgentAttachmentsOf(requestContext.userMessage);
+    const aindrive = { folder: aindriveFolderContextOf(requestContext.userMessage), servers: aindriveHandoffMcpServersOf(requestContext.userMessage) };
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
-      ({ text, parts } = await this.turn(input, contextId, files));
+      ({ text, parts } = await this.turn(input, contextId, files, aindrive));
     } catch (e) {
       // Reported as a failure in words. An empty reply would read as the agent choosing silence.
       text = `This agent could not answer: ${e instanceof Error ? e.message : String(e)}`;

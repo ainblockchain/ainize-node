@@ -8,7 +8,7 @@
  */
 import { hostedAgentUiHelpers } from './hostedAgentA2ui.js';
 import type {
-  HostedAgentAudioInput, HostedAgentCtx, HostedAgentGatewayAccess, HostedAgentGeneratedImage, HostedAgentImageRequest, HostedAgentInput,
+  HostedAgentAudioInput, HostedAgentCtx, HostedAgentFetchInit, HostedAgentGatewayAccess, HostedAgentGeneratedImage, HostedAgentImageRequest, HostedAgentInput,
   HostedAgentLlmChoice, HostedAgentLlmRequest, HostedAgentRuntimeSpec,
 } from './hostedAgentRuntimeTypes.js';
 
@@ -74,7 +74,7 @@ export async function hostedAgentGenerateImage(gateway: HostedAgentGatewayAccess
  * gateway sees the URL it is being asked for and can check it — including after every redirect, which it follows
  * itself. The answer comes back raw with the upstream status and headers.
  */
-export async function hostedAgentEgressFetch(gateway: HostedAgentGatewayAccess, input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+export async function hostedAgentEgressFetch(gateway: HostedAgentGatewayAccess, input: string | URL | Request, init: HostedAgentFetchInit = {}): Promise<Response> {
   const req = input instanceof Request ? input : null;
   const url = req ? req.url : String(input);
   const method = (init.method ?? req?.method ?? 'GET').toUpperCase();
@@ -89,7 +89,7 @@ export async function hostedAgentEgressFetch(gateway: HostedAgentGatewayAccess, 
   const res = await directFetch(hostedAgentEgressUrl(gateway), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, method, headers, bodyBase64 }),
+    body: JSON.stringify({ url, method, headers, bodyBase64, ...(init.maxBytes ? { maxBytes: init.maxBytes } : {}) }),
     signal: init.signal ?? AbortSignal.timeout(45_000),
   });
   // Present only when the gateway could not fetch at all: '1' refused by policy, '0' failed. Either way the caller

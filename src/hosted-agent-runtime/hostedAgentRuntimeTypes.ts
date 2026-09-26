@@ -34,10 +34,16 @@ export interface HostedAgentRuntimeSpec {
   media?: HostedAgentMedia;
 }
 
+/** A piece of a multimodal user message: text, or an image as a URL (a `data:` URL for bytes the agent holds). */
+export type HostedAgentContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 /** One OpenAI-shaped chat message, as the model backend takes it. */
 export interface HostedAgentChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  /** Parts only on a user message that carries an image the model should look at. */
+  content: string | HostedAgentContentPart[] | null;
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
   name?: string;
@@ -108,8 +114,11 @@ export interface HostedAgentCtx {
     transcribe?(audio: HostedAgentAudioInput): Promise<string>;
     generateImage?(request: HostedAgentImageRequest): Promise<HostedAgentGeneratedImage>;
   };
-  /** Fetch through the node's egress gateway. Only `allowedHosts` answer; private addresses never do. */
-  fetch(url: string | URL, init?: RequestInit): Promise<Response>;
+  /**
+   * Fetch through the node's egress gateway. Only `allowedHosts` answer; private addresses never do. `maxBytes`
+   * raises the response ceiling for one call (a photo or a voice note), up to the gateway's attachment limit.
+   */
+  fetch(url: string | URL, init?: HostedAgentFetchInit): Promise<Response>;
   secret(name: string): string | undefined;
   ui: HostedAgentUiHelpers;
   log(...args: unknown[]): void;
@@ -134,6 +143,8 @@ export interface HostedAgentGeneratedImage {
   bytesBase64: string;
   mimeType: string;
 }
+
+export type HostedAgentFetchInit = RequestInit & { maxBytes?: number };
 
 /** What a turn returns. A bare string is `{ text }`. */
 export type HostedAgentReply = string | { text?: string; parts?: unknown[]; ui?: HostedAgentUiMessage[] };

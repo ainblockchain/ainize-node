@@ -210,6 +210,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use(compression());
   app.use(cookieParser());
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
+  // Models over p2p carry media as base64 — a voice note an agent opened (up to 32 MB) is ~43 MB of JSON — so their
+  // routes parse before the 5 MB default does. express.json skips a body already parsed.
+  app.use('/p2p/models', express.json({ limit: '48mb' }));
   app.use(express.json({ limit: '5mb', verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use((req, res, next) => {
     res.setHeader('access-control-allow-origin', req.headers.origin ?? '*');
