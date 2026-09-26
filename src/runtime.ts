@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '@ainize/core';
 import { guardAnswer, type GuardResult } from './degenerate.js';
 import { consumeChatStream, type ChatStreamChunk } from './chat-stream.js';
-import { claimSharedLease, leaseLiveness } from './shared-lease.js';
+import { claimSharedLease, leaseLiveness, reclaimDeadSharedLease } from './shared-lease.js';
 import type { ThroughputMeter } from './throughput-meter.js';
 
 export interface VerifyOutcome {
@@ -331,6 +331,12 @@ export class Runtime {
       const release = claimSharedLease(dir, { owner: this.owner, label, since: Date.now(), instance_id: this.lockIdentity });
       if (release) return release;
       const holder = this.lockHolder();
+      // A holder that died with the lease (a restart mid-request) would otherwise block the model until a human
+      // removed the directory; one that is provably dead is taken back here and the claim retried at once.
+      if (holder?.liveness === 'dead' && reclaimDeadSharedLease(dir)) {
+        console.error(`[runtime] took back the shared runtime lease from dead ${holder.owner} (${holder.label}, held since ${new Date(holder.since).toISOString()})`);
+        continue;
+      }
       if (Date.now() - t0 > waitMs) throw new Error(`shared runtime busy (${holder?.owner ?? 'unknown'}: ${holder?.label ?? 'unreadable lease'}) — verify the holder before recovering an orphaned lease`);
       await new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 250));
     }
