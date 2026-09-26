@@ -153,7 +153,8 @@ before(async () => {
       res.end(JSON.stringify({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'add', arguments: '{"a":2,"b":3}' } }] } }] }));
       return;
     }
-    const answer = toolResult ? `sum is ${toolResult.content}` : `[${body.model}] sys=${sys} | you said: ${lastUser} | turns=${body.messages.length}`;
+    // Leading blank lines, as Qwen3 leaves them after an empty think block — the runtime trims them.
+    const answer = toolResult ? `sum is ${toolResult.content}` : `\n\n[${body.model}] sys=${sys} | you said: ${lastUser} | turns=${body.messages.length}`;
     res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: answer } }] }));
   });
   await new Promise<void>((r) => backend.listen(0, '127.0.0.1', () => r()));
@@ -244,7 +245,7 @@ test('handler mode: execute decides the reply, with A2UI, secrets and the model 
       },
     });
     const out = await ex.turn('one two three', 'c');
-    assert.match(out.text, /^3 words; key=k; \[Test-Chat-1\]/);
+    assert.match(out.text, /^3 words; key=k; \s*\[Test-Chat-1\]/, 'ctx.llm.chat hands handler code the model\'s text as is');
     assert.equal(out.parts.length, 3, 'createSurface, updateComponents, updateDataModel');
     assert.equal((out.parts[0] as { mediaType: string }).mediaType, 'application/json+a2ui');
   } finally { await gateway.close(); }
