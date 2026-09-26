@@ -72,10 +72,27 @@ export interface HostedAgentRuntimeAppOptions extends HostedAgentExecutorOptions
   cardUrl: string;
 }
 
+/**
+ * The SDK's handler, told apart by method: `message/stream` marks its message id for the length of the call, so
+ * the executor streams that turn and leaves every `message/send` turn exactly as it was.
+ */
+class HostedAgentRequestHandler extends DefaultRequestHandler {
+  constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>) {
+    super(card as never, new InMemoryTaskStore(), executor);
+  }
+
+  override async *sendMessageStream(...args: Parameters<DefaultRequestHandler['sendMessageStream']>): ReturnType<DefaultRequestHandler['sendMessageStream']> {
+    const id = (args[0]?.message as { messageId?: string } | undefined)?.messageId;
+    if (id) this.streaming.add(id);
+    try { yield* super.sendMessageStream(...args); } finally { if (id) this.streaming.delete(id); }
+  }
+}
+
 export function createHostedAgentRuntimeRouter(o: HostedAgentRuntimeAppOptions): Router {
   const card = hostedAgentCard(o.spec, o.cardUrl);
-  const executor = new HostedAgentExecutor(o);
-  const requestHandler = new DefaultRequestHandler(card as never, new InMemoryTaskStore(), executor);
+  const streaming = new Set<string>();
+  const executor = new HostedAgentExecutor({ ...o, isStreaming: (id) => streaming.has(id) });
+  const requestHandler = new HostedAgentRequestHandler(card, executor, streaming);
   const router = Router();
   router.get('/health', (_req, res) => { res.json({ ok: true, id: o.spec.id, version: o.spec.version }); });
   for (const path of HOSTED_AGENT_CARD_PATHS) {
