@@ -83,7 +83,7 @@ export function aindriveFolderContextOf(message: unknown): AindriveFolderContext
     recursive: folder.recursive === true,
     depth: num(folder.depth),
     totalEntries: num(folder.totalEntries),
-    truncated: folder.truncated === true,
+    truncated: folder.truncated === true || (Array.isArray(folder.listingErrors) && folder.listingErrors.length > 0),
     entries: entries.filter((e) => e && typeof e === 'object' && str(e.name)).slice(0, AINDRIVE_FOLDER_NOTE_MAX_ENTRIES).map((e) => ({
       name: String(e.name), path: str(e.path) ?? '', isDir: e.isDir === true, size: num(e.size), mime: str(e.mime),
     })),
@@ -121,7 +121,7 @@ export function aindriveHandoffMcpServersOf(message: unknown): AindriveHandoffMc
 export function aindriveContextNote(folder: AindriveFolderContext | null, servers: AindriveHandoffMcpServer[]): string {
   const blocks: string[] = [];
   if (folder) {
-    const lines = folder.entries.map((e) => `- ${e.isDir ? '[dir] ' : ''}${e.name}${e.isDir ? '' : ` (${e.mime ?? 'unknown type'}${e.size !== null ? `, ${e.size} bytes` : ''})`}`);
+    const lines = folder.entries.map((e) => `- ${e.isDir ? '[dir] ' : ''}${folder.recursive ? e.path || e.name : e.name}${e.isDir ? '' : ` (${e.mime ?? 'unknown type'}${e.size !== null ? `, ${e.size} bytes` : ''})`}`);
     const count = folder.totalEntries ?? folder.entries.length;
     const reach = folder.recursive ? `its contents including subfolders${folder.depth ? ` (${folder.depth} level${folder.depth === 1 ? '' : 's'} deep)` : ''}` : 'its direct children';
     blocks.push(`[Current aindrive folder "${folder.name || folder.path}" (${folder.path || '/'}) — a snapshot of ${reach}, ${count} entr${count === 1 ? 'y' : 'ies'}${folder.truncated ? ', truncated' : ''}. `

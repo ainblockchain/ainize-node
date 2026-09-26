@@ -199,3 +199,15 @@ test('an offline device, a revoked link and a too-big file are said in words the
   assert.match(hostedAgentLinkProblem(410, 'a.txt'), /expired or was revoked[\s\S]*fresh handoff/);
   assert.match(hostedAgentLinkProblem(404, 'a.txt'), /not found/);
 });
+
+test('recursive folder context preserves relative paths and incomplete listing status', () => {
+  const message = { parts: [{ kind: 'data', metadata: { type: AINDRIVE_FOLDER_CONTEXT_TYPE }, data: { folder: {
+    name: 'Root', path: '', recursive: true, totalEntries: 2, truncated: false, listingErrors: ['offline'], entries: [
+      { name: 'report.pdf', path: 'work/report.pdf', isDir: false },
+      { name: 'report.pdf', path: 'family/report.pdf', isDir: false },
+    ],
+  } } }] };
+  const note = aindriveContextNote(aindriveFolderContextOf(message), []);
+  assert.match(note, /work\/report.pdf/); assert.match(note, /family\/report.pdf/);
+  assert.match(note, /truncated/); assert.match(note, /including subfolders/);
+});
