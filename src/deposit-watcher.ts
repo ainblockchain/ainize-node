@@ -44,6 +44,13 @@ export interface DepositChainConfig {
   confirmations: number;
   /** True when `token` is the sAIN vault share itself — already in share units, so no conversion. */
   isVaultShare: boolean;
+  /**
+   * Where to start when nothing has been scanned yet. Without it the scan starts at block 0: a node switched on
+   * today reads years of a chain that cannot hold a deposit to it, and on a public RPC never gets through.
+   */
+  startBlock?: number;
+  /** Most blocks per `getLogs`. Public RPCs refuse wide ranges (mainnet.base.org: 2,000 yes, 5,000 no). */
+  maxBlocksPerScan?: number;
 }
 
 export type DepositLogReader = (chain: string, fromBlock: number, toBlock: number) => Promise<DepositTransferLog[]>;
@@ -64,9 +71,13 @@ export interface DepositWatcherDeps {
 
 /** How many blocks one pass reads at most, so a node that was down for a week does not ask for a week in one call. */
 export const DEPOSIT_SCAN_MAX_BLOCKS = 5_000;
+/** The narrowest range a failing `getLogs` is retried at before the pass gives up. */
+export const DEPOSIT_SCAN_MIN_BLOCKS = 100;
 
 export class DepositWatcher {
   private readonly scanned = new Map<string, number>();
+  /** Per chain, the range the RPC last accepted — halved on refusal, so a narrow RPC is learnt once, not per pass. */
+  private readonly span = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
   private scanning = false;
   /**
@@ -110,10 +121,26 @@ export class DepositWatcher {
     const safeHead = head - chain.confirmations;
     const from = this.lastScannedBlock(chain.chain) + 1;
     if (safeHead < from) return 0;                       // nothing is deep enough yet
-    const to = Math.min(safeHead, from + DEPOSIT_SCAN_MAX_BLOCKS - 1);
+
+    // A refused range is retried narrower, down to DEPOSIT_SCAN_MIN_BLOCKS; below that the error is real and
+    // is raised as before. The width that worked is kept for the next pass.
+    let span = this.span.get(chain.chain) ?? Math.min(chain.maxBlocksPerScan ?? DEPOSIT_SCAN_MAX_BLOCKS, DEPOSIT_SCAN_MAX_BLOCKS);
+    let to: number;
+    let logs: DepositTransferLog[];
+    for (;;) {
+      to = Math.min(safeHead, from + span - 1);
+      try {
+        logs = await this.deps.readLogs(chain.chain, from, to);
+        break;
+      } catch (error) {
+        if (span <= DEPOSIT_SCAN_MIN_BLOCKS) throw error;
+        span = Math.max(DEPOSIT_SCAN_MIN_BLOCKS, Math.floor(span / 2));
+        this.deps.log?.(`${chain.chain}: the RPC refused a ${to - from + 1}-block range; retrying ${span} blocks at a time`);
+      }
+    }
+    this.span.set(chain.chain, span);
 
     const receiver = this.deps.receivingAddress.toLowerCase();
-    const logs = await this.deps.readLogs(chain.chain, from, to);
 
     let credited = 0;
     for (const log of logs) {
@@ -137,9 +164,10 @@ export class DepositWatcher {
     return credited;
   }
 
-  /** The last block whose deposits are fully credited on this chain; 0 when nothing has been scanned. */
+  /** The last block whose deposits are fully credited on this chain; `startBlock - 1` (or 0) before any scan. */
   lastScannedBlock(chain: string): number {
-    return this.scanned.get(chain) ?? 0;
+    const start = this.deps.chains.find((c) => c.chain === chain)?.startBlock;
+    return this.scanned.get(chain) ?? (start && start > 0 ? start - 1 : 0);
   }
 
   start(intervalMs: number): void {

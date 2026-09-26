@@ -138,6 +138,18 @@ export class StakeFairQueue {
    * one, so forgetting changes no decision. Without it, a public node accumulates a map entry per address that
    * ever called, for as long as it runs.
    */
+  /**
+   * The weight of everyone else asking — what a caller's own weight is divided against. Floored like
+   * `activeShareOf`, so a crowd of callers with no deposit still counts as a crowd.
+   */
+  activeWeightExcept(address: string): number {
+    let total = 0;
+    for (const seen of this.lastVirtualFinish.keys()) {
+      if (seen !== address) total += Math.max(this.opts.weightOf(seen), this.opts.weightFloor);
+    }
+    return total;
+  }
+
   forgetIdle(idleMs: number): number {
     const cutoff = this.opts.now() - idleMs;
     let dropped = 0;

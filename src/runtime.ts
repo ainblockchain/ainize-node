@@ -11,6 +11,7 @@ import type { BenchmarkSpec, NodeConfig, RuntimeStatus, SamplingOptions } from '
 import { guardAnswer, type GuardResult } from './degenerate.js';
 import { consumeChatStream, type ChatStreamChunk } from './chat-stream.js';
 import { claimSharedLease, leaseLiveness } from './shared-lease.js';
+import type { ThroughputMeter } from './throughput-meter.js';
 
 export interface VerifyOutcome {
   passed: boolean;
@@ -167,6 +168,8 @@ export class Runtime {
   private statusCache: { at: number; value: RuntimeStatus } | null = null;
   /** Until when the model is reported unavailable after a failed generation (a vLLM engine crash keeps /v1/models answering while it restarts). */
   private downUntil = 0;
+  /** Where every successful chat reports its speed (throughput-meter.ts). Set by server.ts. */
+  meter: ThroughputMeter | null = null;
   private downDetail = '';
   static readonly DOWN_MS = 60_000;
   /**
@@ -416,8 +419,10 @@ export class Runtime {
     this.downUntil = 0;
     const lastUser = [...messages].reverse().find((x) => x.role === 'user')?.content ?? '';
     const g = guardAnswer(m?.content ?? '', c?.finish_reason ?? null, lastUser, !!sampling && sampling.guard !== false);
+    const latencyMs = Date.now() - t0;
+    this.meter?.record(model, Number(j.usage?.completion_tokens ?? 0), latencyMs);
     return {
-      content: g.text, reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: Date.now() - t0, model,
+      content: g.text, reasoning: m?.reasoning_content ?? m?.reasoning ?? null, usage: j.usage, latency_ms: latencyMs, model,
       finish_reason: c?.finish_reason ?? null, ...Runtime.guardFields(g),
     };
   }
