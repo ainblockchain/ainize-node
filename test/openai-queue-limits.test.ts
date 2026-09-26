@@ -123,8 +123,10 @@ test('a queue too deep to promise is 429 queue_too_deep, naming what to change',
 
   const refused = responses.filter((r) => r.status === 429);
   assert.ok(refused.length > 0, 'a node that cannot promise a wait must say so rather than queue forever');
-  const body = await refused[0].json() as { error: { code: string }; share: number; position: number; retry_after: number };
+  const body = await refused[0].json() as { error: { code: string; message: string }; share: number; position: number; retry_after: number; billing_url: string };
   assert.equal(body.error.code, 'queue_too_deep');
+  assert.match(body.billing_url, /^http:\/\/[^/]+\/billing\?model=/, 'the refusal says where a deposit is made, for this model');
+  assert.ok(body.error.message.includes(body.billing_url), 'and says it in the message a client prints');
   assert.equal(typeof body.share, 'number', 'the caller has to know their own share to decide whether to deposit');
   assert.equal(typeof body.position, 'number');
   assert.ok(body.retry_after > 0, 'and how long to wait before asking again');
