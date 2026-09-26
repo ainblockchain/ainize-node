@@ -37,6 +37,7 @@
 | 런타임 base | `127.0.0.1:8000` | 도커 `flashnext` | `docker run` · `restart unless-stopped` |
 | 런타임 튜닝본 | `127.0.0.1:8001` | 도커 `flashnext-after` | 같음 · PLE 패치를 적용해 둔 쪽 |
 | 에이전트 | `:9200` · `:4010` | 호스트 프로세스 | 노드가 `/agents/<id>`로 프록시 |
+| 모델로 만든 에이전트 (hosted) | `/agents/<id>` | prompt: 노드 프로세스 안 · 코드: 도커 `ainize-hosted-<id>` | 노드가 직접 실행 ([3.4](#34-모델로-만든-에이전트-hosted-agents)) |
 
 > **finance-demo는 두 런타임을 같이 쓴다.**
 > `/mnt/newdata/qwen3.8/web/server.py`가 `BEFORE_API=:8000`(원본) / `AFTER_API=:8001`(학습본)을
@@ -150,6 +151,93 @@ curl -s https://ainize.ai/api/agents | python3 -m json.tool | head
 
 판별법: `docker inspect <컨테이너>`의 바인드에서 `:/ple_patch`로 끝나는 호스트 경로를 읽어 그대로 `runtime.patchDir`에 넣는다.
 
+
+### 3.4 모델로 만든 에이전트 (hosted agents)
+
+ainize-node main `a205c88`부터 노드가 에이전트를 **직접 실행**한다. 웹의 `/models/<id>` → *Create agent based on
+this model*이 이것을 쓴다. 일반 절차는 `deploy/HOSTED-AGENTS.md`, 설계는
+`docs/superpowers/specs/2026-09-26-hosted-agents-design.md`. 여기는 이 기계에서 걸리는 것만.
+
+이 절(3.4–3.6)의 **[로컬 확인]** 은 개발 서버에서 main(`49144ac`)을 새로 clone해 CLI로 띄운 노드에 그대로 돌려 본
+것이다 — 이 기계에서 돌린 것은 아니다.
+
+**어느 노드를 올려야 하나.** ainize.ai에서 에이전트를 만들면 요청은 웹의 `AINIZE_NODE_URL`이 가리키는 노드로 간다.
+그 노드가 새 코드여야 한다 — `:3402`(node-075cf9)가 아닐 수 있다. **[미검증]**
+
+```bash
+grep AINIZE_NODE_URL ~/.config/systemd/user/ainize-web.service   # 이 노드를 올린다
+curl -s <그 노드>/api/hosted-agents                                # 404면 아직 옛 코드, {"agents":[]}면 새 코드
+```
+
+버전 번호로는 구별이 안 된다. 이번 변경은 버전을 올리지 않아 `/api/info`가 계속 `0.4.2`다.
+
+**노드 코드 올리기 — CLI로 뜨는 노드.** `ainize start -d`는 CLI가 품은 `@ainize/node`를 실행한다. CLI는
+`@ainize/node ^0.3.1`(= 0.3.x만)에 묶여 있고, hosted agents가 든 `@ainize/node`는 아직 npm에 없다. 길은 둘.
+
+1. **정식** — `@ainize/node`를 버전업(0.5.0)해 배포하고, ainize-cli의 의존성을 `^0.5.0`으로 올려 배포한 뒤
+   `npm install -g ainize`. 사람 손이 필요한 릴리스라 이 문서 밖의 일이다.
+2. **소스에서, 임시로** — ainize-cli를 소스로 설치해 둔 경우(`npm install -g .`는 클론을 심볼릭 링크로 건다)
+   그 클론 안의 `@ainize/node`만 새 빌드로 바꾼다. 교체 전 클론의 `@ainize/node`는 0.3.2였고, 교체 후 CLI 노드가
+   `/api/hosted-agents`에 답했다 **[로컬 확인]**. 이 기계의 CLI가 정말 클론 링크인지는 첫 줄로 확인한다 **[미검증]**.
+
+```bash
+ls -l "$(npm root -g)/ainize"                        # 클론을 가리키는 링크여야 이 방법이 통한다
+cd <ainize-node 클론> && git pull --ff-only origin main && npm ci && npm run build && npm pack
+cd <ainize-cli 클론> && npm install --no-save <ainize-node 클론>/ainize-node-*.tgz
+ainize stop && ainize start -d
+curl -s localhost:3402/api/hosted-agents              # {"agents":[]}
+```
+
+`--no-save`라 다음 `npm ci`가 되돌린다 — 1번이 나오면 그쪽으로 옮길 것.
+
+**새로 생기는 파일** — `~/.ainize/hosted-agents.json`, `hosted-agent-secrets.json`, `hosted-agent-secrets.key`.
+**`.key`를 잃으면 저장된 secret을 못 푼다.** `~/.ainize` 백업에 들어가는지 확인한다.
+
+**여기까지면** prompt 에이전트(모델 + 시스템 프롬프트)는 동작한다. 모델은 `backends`에 있는 chat 모델만 쓸 수 있다.
+
+### 3.5 코드 에이전트 켜기 (선택)
+
+tools · handler 모드는 에이전트마다 도커 컨테이너를 띄운다. 끄면 웹에서 해당 탭이 비활성화되고 prompt만 된다.
+
+```json
+"agentHost": { "docker": { "enabled": true, "runtime": "runsc" } }
+```
+
+- **도커 권한** — 노드 사용자가 `sudo` 없이 `docker ps`를 돌려야 한다. teach 워커가 이미 `docker exec`를 쓰니
+  대개 되어 있다. **[미검증]**
+- **`runtime: "runsc"`(gVisor)** — 지갑 로그인만 하면 누구나 코드를 올릴 수 있고 그 코드가 이 기계에서 돈다.
+  runc는 호스트 커널을 공유해서, 커널 취약점 하나로 노드 키·지갑·다른 에이전트의 secret이 새어 나간다.
+  gVisor는 **같은 컨테이너**를 사용자 공간 커널 위에서 돌린다(설치: `deploy/HOSTED-AGENTS.md` 2절).
+  이 기계에는 PLE 컨테이너가 `seccomp=unconfined`로 떠 있다 — 그 컨테이너와 같은 호스트라는 점도 감안할 것.
+  비워 두면 runc로 돌고 로그에 경고가 남는다.
+- **첫 빌드는 인터넷이 필요하다** — 런타임 이미지를 `node:24-slim`과 npm에서 만든다. 에이전트 컨테이너 자신은
+  `--internal` 네트워크라 밖으로 못 나가고, 모델과 허용된 공개 호스트는 노드 gateway를 거친다.
+- 로그의 `agentHost: unknown config key`는 `@ainize/core`가 새 키를 모르는 것이다. 동작에는 영향 없다.
+
+### 3.6 news-review를 hosted로 옮기기
+
+news-review는 지금 이 노드의 `agents[]`(`:4010` 프로세스)다. hosted 에이전트는 **같은 노드의 config 에이전트와
+같은 id를 쓸 수 없다**(409). id를 바꾸면 워크스페이스가 옛 주소를 붙든 채 남으니([6.3](#63-에이전트가-주소를-옮기면-워크스페이스가-404를-가리킨-채-남는다)) id는 유지한다.
+그래서 짧은 공백을 감수하는 순서가 된다. 3.5가 켜져 있어야 한다(handler 모드).
+
+```bash
+# 1) 옛 등록을 빼고 재기동 — 여기서부터 news-review가 잠깐 안 답한다
+#    rm은 확인을 묻는다. 터미널이 아닌 곳(스크립트)에서는 --yes 없이 거절된다
+ainize agent rm news-review --yes && ainize stop && ainize start -d
+# 2) hosted로 올린다 — 토큰은 ainize.ai 지갑 로그인 세션의 ainize_session 쿠키 값. 그 지갑이 주인이 된다
+cd <ainize 클론>/news-agent && git pull --ff-only origin main
+AINIZE_SESSION=<토큰> node hosted/deploy.mjs https://ainize.ai --model Qwen3.8-Flash-Next
+# 3) 빌드(보통 1분 안) 후 확인되면 옛 프로세스를 끈다
+curl -s https://ainize.ai/api/hosted-agents/news-review/logs -H "authorization: Bearer <토큰>" | tail
+# :4010 news-agent 프로세스 종료
+```
+
+등록이 남아 있으면 2)가 `409: the id "news-review" is taken`으로 멈추고, 1) 뒤에는 `created news-review v1`, 빌드 후
+`ready`, A2A 호출에 점수와 A2UI 파트 3개가 온다 **[로컬 확인]** (모델 qwen2.5-7b-instruct).
+
+웹의 `AINIZE_NODE_URL`이 `:3402`가 아닌 다른 노드라면 공백 없이 된다 — 그 노드에 먼저 hosted로 올리고(그 노드의
+자기 에이전트가 `/agents/news-review`를 이긴다), 확인한 뒤 1)을 한다.
+
 ---
 
 ## 4. 런타임 (vLLM)
@@ -224,6 +312,19 @@ curl -s -X POST https://ainize.ai/agents/donga-desk \
 ```
 
 6번이 `{"error":{"code":-32001,"message":"Task not found: nope"}}`를 돌려주면 A2A 경로가 살아 있는 것이다.
+
+hosted agents를 올렸다면 둘을 더 본다.
+
+```bash
+# 7. hosted — 노드가 새 코드인가 (404면 옛 코드)
+curl -s -o /dev/null -w '%{http_code}\n' https://ainize.ai/api/hosted-agents
+
+# 8. hosted — 모델 상세가 에이전트 수를 주는가
+curl -s https://ainize.ai/api/models/Qwen3.8-Flash-Next      # {"id":…,"available":true,"agents":N}
+```
+
+그리고 브라우저로 한 번: `/models/<id>`에서 prompt 에이전트를 만들고 Live test가 답하는지, 코드 에이전트를 켰다면
+handler 템플릿 그대로 만들어 점수 카드(A2UI)가 그려지는지.
 **브라우저로 그 주소를 열면 404가 맞다** — POST 전용이다. 사람에게 줄 주소는 카드 쪽(`…/.well-known/agent-card.json`)이다.
 
 ---
@@ -267,6 +368,19 @@ AIN Teams는 초대 시점의 `a2aUrl`을 저장하는데 그것을 바꾸는 AP
 
 config에 `publicUrl`이 멀쩡히 있는데도 첫 줄이 `node-075cf9 null (pid …)`이고,
 안내 문구도 `ainize patch ls --node null`로 나온다. 동작에는 영향이 없어 보이지만 안내가 거짓이다.
+
+### 6.5 CLI가 `@ainize/node` 0.3.x에 묶여 있다
+
+ainize-cli(npm 0.4.0, main 0.4.1)의 의존성이 `@ainize/node ^0.3.1`이라 `npm install -g ainize`로는 0.4.x 노드가
+안 깔린다(클론에서 `npm ci`하면 0.3.2 **[로컬 확인]**). hosted agents를 CLI 노드에 정식으로 올리려면 `@ainize/node` 버전업·배포 → CLI 의존성 갱신·배포가 필요하다
+([3.4](#34-모델로-만든-에이전트-hosted-agents)).
+
+### 6.6 hosted prompt 에이전트는 thinking을 끄지 않는다
+
+런타임은 모델을 부를 때 `chat_template_kwargs`를 보내지 않는다. [4.3](#43-qwen3는-기본이-thinking-모델이다)대로
+Qwen3가 기본으로 생각부터 하니, 8k 서버에서는 답이 느리거나 길이 한도에 걸릴 수 있다. **[미검증]** — 운영 모델로
+돌려 보지 못했다(개발 서버는 qwen2.5-7b). 문제가 보이면 gateway가 기본값으로 `enable_thinking: false`를
+넣도록 고친다.
 
 ---
 

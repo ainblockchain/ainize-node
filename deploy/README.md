@@ -1,5 +1,8 @@
 # deploy/
 
+Hosted agents (A2A agents a node runs on its own models, including code in Docker): see
+[HOSTED-AGENTS.md](HOSTED-AGENTS.md).
+
 ## Local AIN blockchain (`ain` ledger mode)
 
 ```
