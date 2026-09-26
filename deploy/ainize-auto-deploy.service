@@ -4,6 +4,12 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# 레포 체크아웃은 스크립트만 준다 — 배포 스크립트는 리모트에서 스스로 클론한다.
-ExecStart=/mnt/newdata/ainize/ainize-node/deploy/auto-deploy.sh
+Environment=PATH=/home/comcom/.local/node/bin:/home/comcom/.local/bin:/usr/local/bin:/usr/bin:/bin
+# 스크립트도 main 에서 가져와 돌린다. 체크아웃에 있는 사본을 부르면 그 체크아웃이 뒤처져
+# 있거나(실제로 그랬다 — 유닛이 `No such file or directory` 로 203/EXEC) 남의 미커밋 작업을
+# 들고 있을 때 자동화가 거기 좌우된다. 이렇게 두면 auto-deploy.sh 자체도 main 을 따라간다.
+ExecStart=/bin/bash -c 'd=$$(mktemp -d); trap "rm -rf $$d" EXIT; git clone -q --depth 1 -b main https://github.com/ainblockchain/ainize-node.git "$$d" && exec bash "$$d/deploy/auto-deploy.sh"'
 TimeoutStartSec=3600
+
+[Install]
+WantedBy=default.target
