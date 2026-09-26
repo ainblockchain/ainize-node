@@ -100,8 +100,11 @@ export interface HostedAgentCtx {
   input: HostedAgentInput;
   spec: HostedAgentRuntimeSpec;
   llm: {
-    /** The agent's own model. The model name is fixed by the spec; the gateway enforces it too. */
-    chat(request: HostedAgentLlmRequest): Promise<HostedAgentLlmChoice>;
+    /**
+     * The agent's own model. The model name is fixed by the spec; the gateway enforces it too. `onDelta`, when
+     * given, streams the answer: each piece of text as the model writes it (the returned choice is still whole).
+     */
+    chat(request: HostedAgentLlmRequest, opts?: { onDelta?: (text: string) => void }): Promise<HostedAgentLlmChoice>;
     /** OpenAI-compatible base URL (`…/v1`) with the agent's token in the path, for libraries that want one. */
     baseUrl: string;
     model: string;

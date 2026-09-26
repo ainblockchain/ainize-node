@@ -68,6 +68,66 @@ export async function hostedAgentGenerateImage(gateway: HostedAgentGatewayAccess
 }
 
 /**
+ * The same call, streamed: text reaches `onDelta` as the model writes it, tool calls are assembled from their
+ * pieces, and the whole choice is returned at the end — so a caller that streams and one that does not see the
+ * same result. Reasoning deltas (a thinking model's) are not text for the reader and are dropped.
+ */
+export async function hostedAgentLlmChatStream(
+  gateway: HostedAgentGatewayAccess, model: string, request: HostedAgentLlmRequest, onDelta: (text: string) => void,
+): Promise<HostedAgentLlmChoice> {
+  const res = await directFetch(`${hostedAgentLlmBaseUrl(gateway)}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'text/event-stream' },
+    body: JSON.stringify({ ...request, model, stream: true }),
+    signal: AbortSignal.timeout(HOSTED_AGENT_LLM_TIMEOUT_MS),
+  });
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+    throw new Error(`model call failed (${res.status}): ${body?.error?.message ?? 'no detail'}`);
+  }
+  // A backend that ignores `stream` answers with one JSON body: take it whole, and hand its text on in one piece.
+  if (!/text\/event-stream/i.test(res.headers.get('content-type') ?? '')) {
+    const body = await res.json().catch(() => null) as { choices?: HostedAgentLlmChoice[] } | null;
+    const choice = body?.choices?.[0];
+    if (!choice?.message) throw new Error('model returned no choice');
+    if (typeof choice.message.content === 'string' && choice.message.content) onDelta(choice.message.content);
+    return choice;
+  }
+  let content = '';
+  let finish: string | null = null;
+  const calls: { id: string; type: 'function'; function: { name: string; arguments: string } }[] = [];
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const take = (line: string) => {
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let chunk: { choices?: { delta?: { content?: string | null; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string | null }[]; error?: { message?: string } };
+    try { chunk = JSON.parse(data); } catch { return; }
+    if (chunk.error) throw new Error(`model call failed: ${chunk.error.message ?? 'stream error'}`);
+    const c = chunk.choices?.[0];
+    if (!c) return;
+    if (typeof c.delta?.content === 'string' && c.delta.content) { content += c.delta.content; onDelta(c.delta.content); }
+    for (const t of c.delta?.tool_calls ?? []) {
+      const i = t.index ?? calls.length;
+      calls[i] ??= { id: t.id ?? `call_${i}`, type: 'function', function: { name: '', arguments: '' } };
+      if (t.id) calls[i]!.id = t.id;
+      if (t.function?.name) calls[i]!.function.name += t.function.name;
+      if (t.function?.arguments) calls[i]!.function.arguments += t.function.arguments;
+    }
+    if (c.finish_reason) finish = c.finish_reason;
+  };
+  for await (const piece of res.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(piece, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) { take(buffer.slice(0, nl).trim()); buffer = buffer.slice(nl + 1); }
+  }
+  take(buffer.trim());
+  const toolCalls = calls.filter(Boolean);
+  return { message: { role: 'assistant', content: content || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, finish_reason: finish };
+}
+
+/**
  * Fetch through the gateway's egress door.
  *
  * The request travels as JSON (url, method, headers, base64 body) rather than as an HTTP proxy CONNECT, so the
@@ -130,7 +190,9 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
     input,
     spec: o.spec,
     llm: {
-      chat: (request) => hostedAgentLlmChat(o.gateway, o.spec.model, request),
+      chat: (request, opts) => (opts?.onDelta
+        ? hostedAgentLlmChatStream(o.gateway, o.spec.model, request, opts.onDelta)
+        : hostedAgentLlmChat(o.gateway, o.spec.model, request)),
       baseUrl: hostedAgentLlmBaseUrl(o.gateway),
       model: o.spec.model,
     },

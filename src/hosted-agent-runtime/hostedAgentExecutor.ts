@@ -74,10 +74,30 @@ const modelText = (content: HostedAgentChatMessage['content'] | undefined) => (t
 /** The user's words as the model reads them: the message, plus what is attached (never the links). */
 const userContentOf = (ctx: HostedAgentCtx) => ctx.input.text + hostedAgentAttachmentNote(ctx.input.files);
 
-async function promptTurn(ctx: HostedAgentCtx): Promise<HostedAgentReply> {
+/**
+ * What a streaming caller is told while a turn runs: pieces of the answer as the model writes them, and a line
+ * whenever the agent does something that takes time (opening a file, drawing). Absent → nothing streams.
+ */
+export interface HostedAgentTurnHooks {
+  onDelta?: (text: string) => void;
+  onProgress?: (text: string) => void;
+}
+
+const streamOpts = (hooks?: HostedAgentTurnHooks) => (hooks?.onDelta ? { onDelta: hooks.onDelta } : undefined);
+
+/** A tool call as the person watching reads it. */
+export function hostedAgentToolProgress(name: string, args: Record<string, unknown>): string {
+  if (name === 'read_attachment') return `Opening attached file ${String(args.number ?? '')}…`.replace(' …', '…');
+  if (name.startsWith('list_files')) return 'Listing the shared files…';
+  if (name.startsWith('read_file')) return 'Reading a shared file…';
+  if (name === 'generate_image') return 'Drawing a picture…';
+  return `Running ${name}…`;
+}
+
+async function promptTurn(ctx: HostedAgentCtx, hooks?: HostedAgentTurnHooks): Promise<HostedAgentReply> {
   const choice = await ctx.llm.chat({
     messages: [...systemMessages(ctx.spec.systemPrompt), ...ctx.input.history, { role: 'user', content: userContentOf(ctx) }],
-  });
+  }, streamOpts(hooks));
   return modelText(choice.message.content);
 }
 
@@ -105,7 +125,7 @@ type HostedAgentJsonToolReply = { tool?: unknown; arguments?: unknown; answer?: 
  * lets a model recover from a bad argument. An unknown tool name is answered the same way. Running out of rounds
  * is reported, not papered over with whatever the last message said.
  */
-export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgentModule): Promise<HostedAgentReply> {
+export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgentModule, hooks?: HostedAgentTurnHooks): Promise<HostedAgentReply> {
   const tools = mod.tools ?? [];
   const byName = new Map(tools.map((t) => [t.name, t]));
   const ui: Record<string, unknown>[] = [];
@@ -118,6 +138,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
     let result: unknown;
     try {
       if (!tool) throw new Error(`no tool named ${call.name}`);
+      hooks?.onProgress?.(hostedAgentToolProgress(call.name, call.args));
       result = await tool.run(call.args, ctx);
       // A tool may hand back a surface to show, or parts to attach (a generated picture): both are collected for
       // the reply, and the model sees only the rest — never megabytes of base64 it has no use for.
@@ -162,7 +183,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
     const messages = conversation(ctx.spec.systemPrompt);
     try {
       for (let round = 0; round < HOSTED_AGENT_TOOL_ROUNDS; round++) {
-        const choice = await ctx.llm.chat({ messages, tools: offered });
+        const choice = await ctx.llm.chat({ messages, tools: offered }, streamOpts(hooks));
         const calls = choice.message.tool_calls ?? [];
         if (!calls.length) return { text: modelText(choice.message.content), ui, parts };
         messages.push({ role: 'assistant', content: choice.message.content ?? null, tool_calls: calls });
@@ -209,7 +230,20 @@ export const resetHostedAgentNativeToolsRefusedForTest = () => { hostedAgentNati
 
 export interface HostedAgentExecutorOptions extends HostedAgentCtxOptions {
   module: HostedAgentModule | null;
+  /**
+   * Whether the caller asked for a stream (`message/stream`) for this message id — set by the runtime's request
+   * handler (hostedAgentRuntimeApp.ts). A streamed turn is a task that sends the answer as it is written; any other
+   * turn stays the one message it always was, so `message/send` callers see no change.
+   */
+  isStreaming?: (messageId: string) => boolean;
 }
+
+/** v1.0 TaskState values (the SDK's enum), named here so the runtime stays free of the SDK's type imports. */
+const HOSTED_AGENT_TASK_WORKING = 2;
+const HOSTED_AGENT_TASK_COMPLETED = 3;
+const HOSTED_AGENT_TASK_FAILED = 4;
+/** The one artifact a streamed answer is written into, chunk by chunk. */
+const HOSTED_AGENT_ANSWER_ARTIFACT = 'answer';
 
 export class HostedAgentExecutor implements AgentExecutor {
   private readonly history = new HostedAgentHistory();
@@ -219,9 +253,11 @@ export class HostedAgentExecutor implements AgentExecutor {
   async turn(
     text: string, contextId: string, files: HostedAgentAttachment[] = [],
     aindrive: { folder: AindriveFolderContext | null; servers: AindriveHandoffMcpServer[] } = { folder: null, servers: [] },
+    hooks?: HostedAgentTurnHooks,
   ): Promise<{ text: string; parts: unknown[] }> {
     const history = this.history.get(contextId);
     let ctx = createHostedAgentCtx(this.o, { text, contextId, history, files });
+    if (ctx.media.transcribe && files.some((f) => /^audio\//i.test(f.mimeType))) hooks?.onProgress?.('Transcribing the voice message…');
     // Voice notes become words before the model sees the turn (hostedAgentMedia.ts says why).
     const heard = await hostedAgentTranscribeAudio(ctx, files);
     const said = heard.transcript ? (text ? `${text}\n\n${heard.transcript}` : heard.transcript) : text;
@@ -239,10 +275,10 @@ export class HostedAgentExecutor implements AgentExecutor {
     ];
     let reply: HostedAgentReply;
     if (mode === 'prompt') {
-      reply = builtinTools.length ? await hostedAgentToolsTurn(ctx, { tools: builtinTools }) : await promptTurn(ctx);
+      reply = builtinTools.length ? await hostedAgentToolsTurn(ctx, { tools: builtinTools }, hooks) : await promptTurn(ctx, hooks);
     } else if (mode === 'tools') {
       if (!this.o.module?.tools?.length) throw new Error('this agent is in tools mode but its code exports no tools');
-      reply = await hostedAgentToolsTurn(ctx, { ...this.o.module, tools: [...this.o.module.tools, ...builtinTools] });
+      reply = await hostedAgentToolsTurn(ctx, { ...this.o.module, tools: [...this.o.module.tools, ...builtinTools] }, hooks);
     } else {
       if (typeof this.o.module?.execute !== 'function') throw new Error('this agent is in handler mode but its code exports no execute()');
       reply = await this.o.module.execute(text, ctx);
@@ -257,6 +293,8 @@ export class HostedAgentExecutor implements AgentExecutor {
   }
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
+    const messageId = (requestContext.userMessage as { messageId?: string }).messageId ?? '';
+    if (this.o.isStreaming?.(messageId)) return this.executeStreaming(requestContext, eventBus);
     const { contextId, taskId } = requestContext;
     let text: string;
     let parts: unknown[] = [];
@@ -282,5 +320,55 @@ export class HostedAgentExecutor implements AgentExecutor {
     eventBus.finished();
   }
 
-  async cancelTask(): Promise<void> { /* one message per turn: nothing runs long enough to cancel */ }
+  /**
+   * A streamed turn: a task first (the SDK's first-event rule), then the answer written into one artifact as the
+   * model produces it, a working status whenever the agent does something slow (a file, a picture), and a final
+   * completed status carrying the whole answer and its parts — so a client that only reads the final event still
+   * gets everything, and one that reads the stream sees it arrive.
+   */
+  private async executeStreaming(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
+    const { contextId, taskId } = requestContext;
+    const now = () => new Date().toISOString();
+    const agentMessage = (parts: unknown[]) => ({
+      messageId: randomUUID(), contextId, taskId, role: HOSTED_AGENT_ROLE_AGENT, parts, metadata: undefined, extensions: [], referenceTaskIds: [],
+    });
+    const status = (state: number, parts?: unknown[]) => AgentEvent.statusUpdate({
+      taskId, contextId, status: { state, message: parts ? agentMessage(parts) : undefined, timestamp: now() }, metadata: undefined,
+    } as unknown as Parameters<typeof AgentEvent.statusUpdate>[0]);
+    eventBus.publish(AgentEvent.task({
+      id: taskId, contextId, status: { state: HOSTED_AGENT_TASK_WORKING, message: undefined, timestamp: now() },
+      artifacts: [], history: [requestContext.userMessage], metadata: undefined,
+    } as unknown as Parameters<typeof AgentEvent.task>[0]));
+
+    let started = false;
+    let pending = '';
+    const hooks: HostedAgentTurnHooks = {
+      onDelta: (piece) => {
+        // Qwen3 leads with blank lines (an empty think block); the reader should not watch a gap appear.
+        pending += piece;
+        if (!started) { pending = pending.replace(/^\s+/, ''); if (!pending) return; }
+        eventBus.publish(AgentEvent.artifactUpdate({
+          taskId, contextId, append: started, lastChunk: false, metadata: undefined,
+          artifact: { artifactId: HOSTED_AGENT_ANSWER_ARTIFACT, name: 'answer', description: '', parts: [hostedAgentTextPart(pending)], metadata: undefined, extensions: [] },
+        } as unknown as Parameters<typeof AgentEvent.artifactUpdate>[0]));
+        started = true;
+        pending = '';
+      },
+      onProgress: (line) => eventBus.publish(status(HOSTED_AGENT_TASK_WORKING, [hostedAgentTextPart(line)])),
+    };
+    const input = hostedAgentTextOf(requestContext.userMessage);
+    const files = hostedAgentAttachmentsOf(requestContext.userMessage);
+    const aindrive = { folder: aindriveFolderContextOf(requestContext.userMessage), servers: aindriveHandoffMcpServersOf(requestContext.userMessage) };
+    try {
+      if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
+      const { text, parts } = await this.turn(input, contextId, files, aindrive, hooks);
+      eventBus.publish(status(HOSTED_AGENT_TASK_COMPLETED, [hostedAgentTextPart(text), ...parts]));
+    } catch (e) {
+      this.o.log('turn failed', e instanceof Error ? e.stack ?? e.message : e);
+      eventBus.publish(status(HOSTED_AGENT_TASK_FAILED, [hostedAgentTextPart(`This agent could not answer: ${e instanceof Error ? e.message : String(e)}`)]));
+    }
+    eventBus.finished();
+  }
+
+  async cancelTask(): Promise<void> { /* a turn runs to its end; nothing long-lived to cancel */ }
 }
