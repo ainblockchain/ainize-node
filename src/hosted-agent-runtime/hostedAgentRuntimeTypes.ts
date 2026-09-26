@@ -58,9 +58,28 @@ export interface HostedAgentUiHelpers {
   bind(path: string): { path: string };
 }
 
+/**
+ * A file the caller attached. Usually a LINK (`uri`) the agent may fetch through `ctx.fetch` — aindrive sends
+ * short-lived, revocable, logged links rather than bytes — sometimes the bytes themselves.
+ */
+export interface HostedAgentAttachment {
+  uri?: string;
+  bytesBase64?: string;
+  name: string;
+  mimeType: string;
+}
+
+export interface HostedAgentInput {
+  text: string;
+  contextId: string;
+  history: HostedAgentChatMessage[];
+  /** Files attached to this message, not yet opened. Prompt and tools agents read them with `read_attachment`. */
+  files: HostedAgentAttachment[];
+}
+
 /** What an agent's code is handed on every turn. Identical in and out of Docker. */
 export interface HostedAgentCtx {
-  input: { text: string; contextId: string; history: HostedAgentChatMessage[] };
+  input: HostedAgentInput;
   spec: HostedAgentRuntimeSpec;
   llm: {
     /** The agent's own model. The model name is fixed by the spec; the gateway enforces it too. */
