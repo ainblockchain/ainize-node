@@ -15,6 +15,34 @@ import type { HostedAgentAttachment, HostedAgentCtx, HostedAgentTool } from './h
 
 /** How much of a text attachment the model is given. The rest is cut, and the model is told so. */
 export const HOSTED_AGENT_ATTACHMENT_TEXT_CHARS = 20_000;
+/** The largest attachment an agent opens — a phone photo or a few minutes of voice. The gateway enforces it too. */
+export const HOSTED_AGENT_ATTACHMENT_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * What a link's refusal means, in words the model can pass on.
+ *
+ * aindrive's handoff server answers 404 for a link it never issued, 410 for one expired or revoked, 503/504 when
+ * the owner's device — which streams the bytes — is offline, and 429 when it is being asked too fast. "The link
+ * answered 503" says none of that; the person on the other end needs to know whether to reopen the app, send a
+ * fresh link, or wait.
+ */
+export function hostedAgentLinkProblem(status: number, name: string): string {
+  if (status === 404) return `${name}: the link was not found — it may have been revoked; ask the sender for a fresh handoff`;
+  if (status === 410) return `${name}: the link has expired or was revoked by the sender; ask for a fresh handoff`;
+  if (status === 503 || status === 504) return `${name}: the sender's device is offline or unreachable, so the file cannot be read right now — ask them to open aindrive (with the drive connected) and send it again`;
+  if (status === 429) return `${name}: the file server is rate-limiting requests; try again in a minute`;
+  if (status === 401 || status === 403) return `${name}: access to this file was refused; ask the sender to share it again`;
+  return `${name}: the link answered ${status}`;
+}
+
+/** A fetch that failed before any answer — size, policy or network — in the same plain terms. */
+export function hostedAgentFetchProblem(error: unknown, name: string): string {
+  const why = error instanceof Error ? error.message : String(error);
+  if (/larger than/.test(why)) return `${name}: the file is larger than ${Math.round(HOSTED_AGENT_ATTACHMENT_MAX_BYTES / 1024 / 1024)} MB, which is more than this agent can open`;
+  return `could not open ${name}: ${why}`;
+}
+
+const isImage = (mime: string) => /^image\/(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(mime);
 const HOSTED_AGENT_ATTACHMENT_MAX = 20;
 
 export function hostedAgentAttachmentsOf(message: unknown): HostedAgentAttachment[] {
@@ -55,7 +83,7 @@ const isTextLike = (mime: string) => /^text\/|[/+](json|xml|csv|yaml|javascript|
 export function hostedAgentReadAttachmentTool(files: HostedAgentAttachment[]): HostedAgentTool {
   return {
     name: 'read_attachment',
-    description: 'Open one of the files attached to this message and return its contents (text files) or a description (other files). Only call it when the answer needs the file.',
+    description: 'Open one of the files attached to this message: text comes back as text, and a picture is shown to you so you can look at it. Only call it when the answer needs the file.',
     parameters: {
       type: 'object',
       properties: { number: { type: 'integer', description: 'The file number from the attached-files list (1 = first).' } },
@@ -72,13 +100,11 @@ export function hostedAgentReadAttachmentTool(files: HostedAgentAttachment[]): H
       } else {
         let res: Response;
         try {
-          res = await ctx.fetch(f.uri!);
+          res = await ctx.fetch(f.uri!, { maxBytes: HOSTED_AGENT_ATTACHMENT_MAX_BYTES });
         } catch (e) {
-          return { error: `could not open ${f.name}: ${e instanceof Error ? e.message : String(e)}` };
+          return { error: hostedAgentFetchProblem(e, f.name) };
         }
-        // A handoff link answers 410 once it has expired or been revoked; the sender decided that, say so plainly.
-        if (res.status === 410) return { error: `${f.name}: the link has expired or was revoked by the sender` };
-        if (!res.ok) return { error: `${f.name}: the link answered ${res.status}` };
+        if (!res.ok) return { error: hostedAgentLinkProblem(res.status, f.name) };
         mime = res.headers.get('content-type')?.split(';')[0] || mime;
         bytes = Buffer.from(await res.arrayBuffer());
       }
@@ -88,7 +114,13 @@ export function hostedAgentReadAttachmentTool(files: HostedAgentAttachment[]): H
         const cut = text.length > HOSTED_AGENT_ATTACHMENT_TEXT_CHARS;
         return { name: f.name, mimeType: mime, bytes: bytes.length, text: cut ? text.slice(0, HOSTED_AGENT_ATTACHMENT_TEXT_CHARS) : text, ...(cut ? { truncated: true } : {}) };
       }
-      return { name: f.name, mimeType: mime, bytes: bytes.length, note: 'This is not a text file, and this model reads text only: describe it from its name, type and size.' };
+      // A picture goes to the model as a picture (the tools loop shows it in the next message); the result the model
+      // reads here only says so. A multimodal model looks at it; a text-only one is refused by its backend, which
+      // the loop reports like any other failed call.
+      if (isImage(mime)) {
+        return { name: f.name, mimeType: mime, bytes: bytes.length, note: 'The picture is shown to you in the next message — look at it to answer.', images: [`data:${mime};base64,${bytes.toString('base64')}`] };
+      }
+      return { name: f.name, mimeType: mime, bytes: bytes.length, note: 'This file is neither text nor a picture: describe it from its name, type and size.' };
     },
   };
 }

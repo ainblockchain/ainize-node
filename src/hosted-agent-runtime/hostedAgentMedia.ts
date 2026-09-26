@@ -11,6 +11,7 @@
  *
  * Self-contained like the rest of this directory: it runs in the node process and in a container.
  */
+import { HOSTED_AGENT_ATTACHMENT_MAX_BYTES, hostedAgentFetchProblem, hostedAgentLinkProblem } from './hostedAgentAttachments.js';
 import type {
   HostedAgentAttachment, HostedAgentCtx, HostedAgentGeneratedImage, HostedAgentTool,
 } from './hostedAgentRuntimeTypes.js';
@@ -20,9 +21,10 @@ const isAudio = (mime: string) => /^audio\//i.test(mime) || /^video\/(webm|mp4|o
 /** The bytes of one attachment: inline, or fetched through the egress door like `read_attachment` does. */
 async function hostedAgentAttachmentBytes(ctx: HostedAgentCtx, f: HostedAgentAttachment): Promise<{ bytes: Buffer; mimeType: string }> {
   if (f.bytesBase64 !== undefined) return { bytes: Buffer.from(f.bytesBase64, 'base64'), mimeType: f.mimeType };
-  const res = await ctx.fetch(f.uri!);
-  if (res.status === 410) throw new Error('the link has expired or was revoked by the sender');
-  if (!res.ok) throw new Error(`the link answered ${res.status}`);
+  let res: Response;
+  try { res = await ctx.fetch(f.uri!, { maxBytes: HOSTED_AGENT_ATTACHMENT_MAX_BYTES }); }
+  catch (e) { throw new Error(hostedAgentFetchProblem(e, f.name)); }
+  if (!res.ok) throw new Error(hostedAgentLinkProblem(res.status, f.name));
   return { bytes: Buffer.from(await res.arrayBuffer()), mimeType: res.headers.get('content-type')?.split(';')[0] || f.mimeType };
 }
 

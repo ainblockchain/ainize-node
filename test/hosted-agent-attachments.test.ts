@@ -110,7 +110,7 @@ test('a prompt agent opens a link when the model asks, and answers from it', asy
 test('an expired or revoked link is reported to the model as the sender\'s decision', async () => {
   const tool = hostedAgentReadAttachmentTool([{ uri: `${linkBase}/api/h/gone?k=s`, name: 'x.md', mimeType: 'text/markdown' }]);
   const ctx = { fetch: (u: string) => fetch(u), log: () => {} } as unknown as HostedAgentCtx;
-  assert.deepEqual(await tool.run({ number: 1 }, ctx), { error: 'x.md: the link has expired or was revoked by the sender' });
+  assert.deepEqual(await tool.run({ number: 1 }, ctx), { error: 'x.md: the link has expired or was revoked by the sender; ask for a fresh handoff' });
   assert.match(String((await tool.run({ number: 9 }, ctx) as { error: string }).error), /no attachment number 9/);
 });
 
@@ -121,7 +121,8 @@ test('non-text files come back as what they are; inline text is read without any
     { bytesBase64: Buffer.from([0xff, 0xd8, 0xff]).toString('base64'), name: 'p.jpg', mimeType: 'image/jpeg' },
   ]);
   assert.deepEqual(await tool.run({ number: 1 }, ctx), { name: 'a.txt', mimeType: 'text/plain', bytes: 11, text: 'hello there' });
-  const img = await tool.run({ number: 2 }, ctx) as { bytes: number; note: string };
+  const img = await tool.run({ number: 2 }, ctx) as { bytes: number; note: string; images: string[] };
   assert.equal(img.bytes, 3);
-  assert.match(img.note, /reads text only/);
+  assert.match(img.note, /shown to you in the next message/);
+  assert.deepEqual(img.images, [`data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff]).toString('base64')}`], 'a picture is handed on to be looked at');
 });

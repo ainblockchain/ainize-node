@@ -138,3 +138,22 @@ registration is removed. So:
 | code agents only | remove `agentHost.docker`, restart, `docker ps -aq --filter label=ainize.hosted-agent \| xargs -r docker rm -f` |
 | the node | check out `3bff8fc` (main before hosted agents), `npm ci && npm run build`, restart; older builds ignore the `hosted-agent*` files |
 | web | ainize-web `deploy/README.md`, Rollback |
+
+### Files from aindrive (receiver contract)
+
+Prompt and tools agents read everything aindrive sends, not only the first text part
+(`src/hosted-agent-runtime/hostedAgentAindriveHandoff.ts`):
+
+- **text parts** — the question and a current-folder snapshot in words;
+- **file parts** — handoff links (`/api/h/<id>?k=…`), opened with `read_attachment` only when the model asks.
+  Pictures are shown to the model (it must be multimodal, e.g. Qwen3.8-Flash-Next); files up to 32 MB;
+  404 / 410 / 503 / 429 are reported as "not found", "expired or revoked — ask for a fresh handoff",
+  "the sender's device is offline", "rate-limited";
+- **`ai.aindrive/folder-context`** data part — the folder's direct children, shown to the model as data that is
+  NOT a read grant;
+- **`ai.aindrive/handoff-mcp`** data part — an MCP server (streamable HTTP, `/mcp/h/<grant>`) over the granted
+  files, offered for that turn only as `list_files` and `read_file({ id })`. Its `Authorization` header is sent
+  to that server and nowhere else: not to the model, not to logs, not to conversation memory. Expired grants are
+  refused before any request.
+
+The agent's `allowedHosts` must include aindrive's host (`aindrive.ainetwork.ai`) for links and the MCP server.
