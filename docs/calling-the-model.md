@@ -214,6 +214,22 @@ calling right now, and an address that is not calling has nothing in the queue a
 `share_of_active` is the number that decides your wait. It moves as other people start and stop, which is what
 it means for a deposit to buy a ratio rather than a rate.
 
+### In tokens per second, before and after a deposit
+
+`GET /api/throughput?model=<id>&amount=<n>&token=sAIN|AIN` turns that ratio into a speed, with no key: the
+model's **measured** rate `R` (completion tokens over wall time of recent calls; 20 tok/s marked `measured: false`
+until anything was measured), and `R · w / (w + others)` for the free tier, for you (when signed in with a
+wallet), and for you after depositing `amount` — AIN converted at the staking contract's current rate. It is what
+the web's `/billing` page draws. "Active" means asked within the last 30 minutes.
+
+```json
+{ "rate": { "tok_s": 190.6, "measured": true, "samples": 3, "window_s": 1800 },
+  "free_tier": { "expected_tok_s": 190.625, "busy_expected_tok_s": 0, "idle": true },
+  "quote": { "token": "sAIN", "amount": "10", "sain": 10, "expected_tok_s": 190.625, "busy_expected_tok_s": 173.295, "multiplier": 1 } }
+```
+
+`GET /api/throughput/deposits/<txHash>` says whether your transfer has been credited yet (signed-in wallet only).
+
 ## Errors
 
 Every error is in OpenAI's shape, so your client raises its own typed exception rather than a bare HTTP failure.

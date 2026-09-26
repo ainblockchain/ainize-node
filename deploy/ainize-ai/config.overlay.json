@@ -1,0 +1,24 @@
+{
+  "deposits": {
+    "receivingAddress": "0x77547927486Dc69793D460661f4a161D1B9068E3",
+    "vault": { "address": "0x52644a566eCc3f09F2800A09eB99b2226839E2Da", "chain": "base" },
+    "chains": [
+      {
+        "chain": "base",
+        "rpcUrl": "https://mainnet.base.org",
+        "token": "0xd4423795fd904d9b87554940a95fb7016f172773",
+        "startBlock": 51806800,
+        "maxBlocksPerScan": 2000
+      },
+      {
+        "chain": "base-sain",
+        "rpcUrl": "https://mainnet.base.org",
+        "token": "0x70e68AF68933D976565B1882D80708244E0C4fe9",
+        "isVaultShare": true,
+        "startBlock": 51806800,
+        "maxBlocksPerScan": 2000
+      }
+    ],
+    "pollMs": 30000
+  }
+}

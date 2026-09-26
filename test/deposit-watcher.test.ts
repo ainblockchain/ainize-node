@@ -157,3 +157,57 @@ test('one chain failing does not lose the other chain progress', async () => {
 });
 
 process.on('exit', () => rmSync(tmp, { recursive: true, force: true }));
+
+test('startBlock: a fresh watcher begins there, not at block 0', async () => {
+  const asked: [number, number][] = [];
+  const ledger = new DepositLedger();
+  const watcher = new DepositWatcher({
+    chains: [{ ...BASE, startBlock: 51_000_000 }],
+    receivingAddress: RECEIVER, ledger,
+    sharesFor: async (_c, a) => a,
+    readLogs: async (_c, from, to) => { asked.push([from, to]); return []; },
+    chainHead: async () => 51_000_100,
+    journalFile: journal(),
+  });
+  assert.equal(watcher.lastScannedBlock('base'), 50_999_999);
+  await watcher.scanOnce();
+  assert.deepEqual(asked, [[51_000_000, 51_000_097]]);
+});
+
+test('an RPC that refuses wide ranges is retried narrower, and the width that worked is kept', async () => {
+  const asked: number[] = [];
+  const ledger = new DepositLedger();
+  const watcher = new DepositWatcher({
+    chains: [{ ...BASE, startBlock: 1 }],
+    receivingAddress: RECEIVER, ledger,
+    sharesFor: async (_c, a) => a,
+    // mainnet.base.org's behaviour: 2,000 blocks fine, 5,000 refused
+    readLogs: async (_c, from, to) => {
+      asked.push(to - from + 1);
+      if (to - from + 1 > 2_000) throw new Error('RPC Request failed.');
+      return from <= 10 && 10 <= to ? [transfer()] : [];
+    },
+    chainHead: async () => 100_000,
+    journalFile: journal(),
+  });
+  await watcher.scanOnce();
+  assert.deepEqual(asked, [5_000, 2_500, 1_250]);
+  assert.equal(ledger.depositedShareOf('0xdep'), 100n, 'the deposit in the narrowed range is credited');
+  asked.length = 0;
+  await watcher.scanOnce();
+  assert.deepEqual(asked, [1_250], 'the next pass starts at the width that worked');
+});
+
+test('a range that fails even at the narrowest width still raises, and the journal does not move', async () => {
+  const ledger = new DepositLedger();
+  const watcher = new DepositWatcher({
+    chains: [{ ...BASE, startBlock: 1 }],
+    receivingAddress: RECEIVER, ledger,
+    sharesFor: async (_c, a) => a,
+    readLogs: async () => { throw new Error('RPC down'); },
+    chainHead: async () => 100_000,
+    journalFile: journal(),
+  });
+  await assert.rejects(watcher.scanOnce(), /RPC down/);
+  assert.equal(watcher.lastScannedBlock('base'), 0);
+});

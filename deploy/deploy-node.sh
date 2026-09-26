@@ -18,6 +18,11 @@
 # WHAT IT IS NOT. The node's DATA and CONFIG live in `AINIZE_HOME` (identity, ledger, registered agents), not
 # in the release — a deploy never touches them. That separation is the reason a bad release can be rolled
 # back by moving one symlink.
+#
+# THE ONE EXCEPTION: `deploy/ainize-ai/config.overlay.json`. Config that is decided in review (where deposits
+# are received, which chains are watched) ships with the code: each top-level key there replaces that key in
+# `$AINIZE_HOME/config.json`, nothing else is touched, and the previous file is kept beside it and restored
+# together with the previous release when a deploy fails. See deploy/ainize-ai/README.md.
 set -euo pipefail
 
 ARG="${1:-main}"
@@ -72,6 +77,36 @@ node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ref:proces
 
 PREVIOUS="$(readlink -f "$SERVE" 2>/dev/null || true)"
 
+# Config that ships with the code (see the header). Applied before the restart that reads it. A backup is made
+# only when something changes — a redeploy of the same overlay must not replace the pre-overlay copy with one
+# that already has it.
+OVERLAY="$DEST/deploy/ainize-ai/config.overlay.json"
+CONFIG="$NODE_HOME/config.json"
+CONFIG_BACKUP=""
+if [ -f "$OVERLAY" ] && [ -f "$CONFIG" ]; then
+  CHANGED="$(node -e '
+    const fs = require("fs");
+    const [overlayPath, configPath, backupPath] = process.argv.slice(1);
+    const overlay = JSON.parse(fs.readFileSync(overlayPath, "utf8"));
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const changed = Object.keys(overlay).filter((k) => JSON.stringify(config[k]) !== JSON.stringify(overlay[k]));
+    if (changed.length) {
+      fs.copyFileSync(configPath, backupPath);
+      for (const k of changed) config[k] = overlay[k];
+      const tmp = configPath + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: fs.statSync(configPath).mode });
+      fs.renameSync(tmp, configPath);
+    }
+    process.stdout.write(changed.join(","));
+  ' "$OVERLAY" "$CONFIG" "$CONFIG.before-$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}")"
+  if [ -n "$CHANGED" ]; then
+    CONFIG_BACKUP="$(ls -1t "$CONFIG".before-* | head -1)"
+    say "config: applied $CHANGED from deploy/ainize-ai/config.overlay.json (previous kept as ${CONFIG_BACKUP##*/})"
+  else
+    say "config: overlay already applied"
+  fi
+fi
+
 # Waiting for a node to come up is not an error — it is what starting looks like. Poll quietly and say the
 # outcome once; a `curl -S` here printed "Connection refused" on every healthy deploy, and that line is
 # indistinguishable from the deploy that really failed.
@@ -93,6 +128,9 @@ wait_ready() {
 rollback() {
   trap - ERR
   echo "Deployment failed; restoring $PREVIOUS" >&2
+  if [ -n "$CONFIG_BACKUP" ] && [ -f "$CONFIG_BACKUP" ]; then
+    cp -p "$CONFIG_BACKUP" "$CONFIG" && echo "restored $CONFIG from before this deploy" >&2
+  fi
   if [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ]; then
     ln -sfn "$PREVIOUS" "$SERVE.new"
     mv -Tf "$SERVE.new" "$SERVE"

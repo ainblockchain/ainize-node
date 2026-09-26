@@ -15,6 +15,8 @@ import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
+import { ThroughputMeter } from './throughput-meter.js';
+import { throughputRoutes } from './throughput-routes.js';
 import { siteSession } from './site-session.js';
 import { buildSam, makeMeshRelay } from './sam.js';
 import compression from 'compression';
@@ -143,6 +145,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     })
     : undefined;
   const runtime = new Runtime(cfg.runtime ?? {}, undefined, stakeQueue);
+  /** Every chat's measured speed, for the "now N tok/s → deposit X → M tok/s" page (throughput-routes.ts). */
+  const throughputMeter = new ThroughputMeter();
+  runtime.meter = throughputMeter;
+  /**
+   * The fair queue's "active" set is everyone it has seen; without this sweep that is everyone since start-up, and
+   * a caller's share of "the people asking" was divided by people who stopped asking hours ago.
+   */
+  const stakeIdleSweep = stakeQueue ? setInterval(() => stakeQueue.forgetIdle(STAKE_IDLE_FORGET_MS), 5 * 60_000) : null;
+  stakeIdleSweep?.unref();
   const blobs = new BlobStore(store, cfg.dataDir);
 
   let market: Market;
@@ -333,11 +344,17 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       // Refused here, before anything is served, because neither mistake is visible later: a node watching the
       // wrong address simply never sees a transfer, which looks exactly like nobody having deposited yet.
       assertDepositsConfigured(cfg.deposits);
-      const chains = cfg.deposits.chains.map((c) => ({
-        chain: c.chain, rpcUrl: c.rpcUrl, token: c.token,
-        confirmations: c.confirmations ?? DEFAULT_CONFIRMATIONS[c.chain] ?? 12,
-        isVaultShare: c.isVaultShare ?? false,
-      }));
+      const chains = cfg.deposits.chains.map((c) => {
+        // Not in @ainize/core's type yet (a node-side scan setting): read as optional extras.
+        const extra = c as typeof c & { startBlock?: number; maxBlocksPerScan?: number };
+        return {
+          chain: c.chain, rpcUrl: c.rpcUrl, token: c.token,
+          confirmations: c.confirmations ?? DEFAULT_CONFIRMATIONS[c.chain.split('-')[0]!] ?? 12,
+          isVaultShare: c.isVaultShare ?? false,
+          ...(typeof extra.startBlock === 'number' ? { startBlock: extra.startBlock } : {}),
+          ...(typeof extra.maxBlocksPerScan === 'number' ? { maxBlocksPerScan: extra.maxBlocksPerScan } : {}),
+        };
+      });
       const store = new DepositLedgerStore(join(surfaceHome, 'deposits.json'));
       deposits = store.load();
       stakeHolder.ledger = deposits;
@@ -374,6 +391,23 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // free-tier-quota.ts for why the allowance is defined in one place rather than per route.
     app.use(freeTierRouter({ registry: inferenceRegistry, market, gates: modalityGates }));
   }
+
+  // After the deposits block: the page needs the ledger and the staking contract it built.
+  const throughputChains = cfg.deposits?.chains.map((c) => ({
+    chain: c.chain, rpcUrl: c.rpcUrl, token: c.token,
+    confirmations: c.confirmations ?? DEFAULT_CONFIRMATIONS[c.chain] ?? 12, isVaultShare: c.isVaultShare ?? false,
+  }));
+  const throughputClients = cfg.deposits && throughputChains ? depositChainClients(throughputChains, cfg.deposits.vault) : null;
+  app.use(throughputRoutes({
+    registry: () => inferenceRegistry,
+    meter: throughputMeter,
+    scheduler: stakeQueue,
+    weightFloor: STAKE_WEIGHT_FLOOR,
+    ledger: () => deposits,
+    deposits: cfg.deposits,
+    sharesPerAin: throughputClients ? () => throughputClients.sharesFor(cfg.deposits!.vault.chain, 10n ** 18n) : undefined,
+    sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
+  }));
 
   const samDeps = {
     cfg,
@@ -588,6 +622,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(driveSync);
       market.payouts.stop();
       await hostedHost.stop().catch(() => {});
+      if (stakeIdleSweep) clearInterval(stakeIdleSweep);
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
       await new Promise<void>((res) => server.close(() => res()));
       await market.inferenceRecords?.flush().catch(() => market.log('warn', 'inference', 'Inference batch flush failed during shutdown'));
