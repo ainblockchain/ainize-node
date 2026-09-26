@@ -41,6 +41,8 @@ export interface PublicModelsDeps {
   /** Null when this node has no `backends` block — it then serves no models over the API at all. */
   registry: InferenceBackendRegistry | null;
   probe: (upstream: string) => Promise<boolean>;
+  /** How many agents — hosted here or advertised by peers — are built on a model. Absent: the count is omitted. */
+  agentCount?: (model: string) => Promise<number>;
 }
 
 export function publicModelsRouter(deps: PublicModelsDeps): Router {
@@ -71,6 +73,20 @@ export function publicModelsRouter(deps: PublicModelsDeps): Router {
       }
     }
     res.json({ object: 'list', data });
+  });
+
+  /**
+   * One model, for its own page. Ids may contain slashes (`org/model`), so the path is a wildcard and not a
+   * parameter. 404 when this node does not serve it — the page says so rather than drawing a model that is not here.
+   */
+  router.get('/api/models/*modelId', async (req, res) => {
+    const raw = (req.params as { modelId?: string | string[] }).modelId;
+    const id = Array.isArray(raw) ? raw.join('/') : raw ?? '';
+    const backend = deps.registry?.backendForModel(id);
+    if (!backend) { res.status(404).json({ error: { code: 'model_not_served', message: `this node does not serve ${id}` } }); return; }
+    const available = await availability(backend.upstream);
+    const agents = deps.agentCount ? await deps.agentCount(id).catch(() => null) : null;
+    res.json({ id, modality: backend.modality, available, ...(agents === null ? {} : { agents }) });
   });
 
   return router;

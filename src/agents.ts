@@ -24,6 +24,9 @@
 import { Router, type Request, type Response } from 'express';
 import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize/core';
 import { API_SAM_PREFIX, pipeRelay, verifySamAuth, type MeshRelay } from './sam.js';
+import type { HostedAgentHost } from './hosted-agent-host.js';
+import type { HostedAgentStore } from './hosted-agent-store.js';
+import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -186,8 +189,21 @@ const MAX_ADVERTS = 20;
  * there rather than relaying. That is the whole reason this is an advert and not a proxy: a marketplace can
  * show an agent it does not host, and the traffic still goes to the operator who accepted it.
  */
-export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined): AgentAdvert[] {
-  return listAgents(cfg).slice(0, MAX_ADVERTS).map((a) => {
+/**
+ * An advert as this node sends it: the core shape plus what places an agent under its model. Peers on an older
+ * build ignore the extra fields; peers on this one list the agent on the model's page.
+ */
+export type AgentAdvertWithModel = AgentAdvert & { model?: string; owner?: string; kind?: AgentKind };
+export type AgentKind = 'upstream' | 'prompt' | 'tools' | 'handler';
+
+/** A config agent may name the model it is built on (`agents[].model`); the core type predates the field. */
+const configAgentModel = (a: AgentConfig): string | undefined => {
+  const m = (a as AgentConfig & { model?: unknown }).model;
+  return typeof m === 'string' && m ? m : undefined;
+};
+
+export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hosted?: HostedAgentsDeps): AgentAdvertWithModel[] {
+  const own: AgentAdvertWithModel[] = listAgents(cfg).map((a) => {
     const h = health.get(a.id);
     return {
       id: a.id,
@@ -198,8 +214,24 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined): Ag
       ...(h?.card?.protocols?.length ? { protocols: h.card.protocols } : {}),
       ...(h?.card?.extensions?.length ? { extensions: h.card.extensions } : {}),
       ...(h?.reachable === null || h?.reachable === undefined ? {} : { reachable: h.reachable }),
+      ...(configAgentModel(a) ? { model: configAgentModel(a) } : {}),
+      kind: 'upstream' as const,
     };
   });
+  const hostedAds: AgentAdvertWithModel[] = (hosted?.store.list() ?? []).map((spec) => ({
+    id: spec.id,
+    name: spec.name,
+    ...(spec.description ? { description: spec.description } : {}),
+    url: agentUrl(publicUrl, spec.id),
+    skills: (spec.skills.length ? spec.skills.map((s) => s.name) : [spec.name]).slice(0, 6),
+    protocols: ['1.0', '0.3'],
+    ...(spec.a2ui ? { extensions: [HOSTED_AGENT_A2UI_EXTENSION_URI] } : {}),
+    reachable: hosted?.host.status(spec.id)?.status === 'ready',
+    model: spec.model,
+    owner: spec.owner,
+    kind: spec.mode,
+  }));
+  return [...own, ...hostedAds].slice(0, MAX_ADVERTS);
 }
 
 export function listAgents(cfg: NodeConfig): AgentConfig[] {
@@ -207,8 +239,15 @@ export function listAgents(cfg: NodeConfig): AgentConfig[] {
   return raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
 }
 
+/** Agents this node RUNS (hosted-agent-host.ts), beside the ones it proxies from `config.agents`. */
+export interface HostedAgentsDeps {
+  host: HostedAgentHost;
+  store: HostedAgentStore;
+}
+
 /** What the list needs from the rest of the node to show — and serve — agents it does not itself operate. */
 export interface AgentsDeps {
+  hosted?: HostedAgentsDeps;
   /** The peer table and node registry, as `market.knownNodes()` returns it. */
   knownNodes?: () => Promise<PeerInfo[]>;
   /** This node's own address, so its own row is not listed twice. */
@@ -272,7 +311,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   };
   /** The remote agent behind an id, ready to call — or null when this node has no such registration. */
   const remote = async (id: string) => {
-    if (find(id) || !deps.relay) return null;
+    if (find(id) || deps.hosted?.host.has(id) || !deps.relay) return null;
     const hit = (await registered()).get(id);
     if (!hit) return null;
     const peerUrl = deps.relay.resolve(hit.peer);
@@ -313,8 +352,47 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         calls: c?.total ?? 0,
         last_call_at: c?.last_at ?? null,
         node: null,
+        model: configAgentModel(a) ?? null,
+        kind: 'upstream' as AgentKind,
+        owner: null as string | null,
+        status: null as string | null,
       };
     }));
+
+    /**
+     * Agents this node runs. Their row is written from the spec, not from a probe: asking a stopped container for
+     * its card would start it, and a list render must not wake twenty agents. `reachable` is the build status —
+     * a ready agent answers (starting on demand), a failed one does not.
+     */
+    for (const spec of deps.hosted?.store.list() ?? []) {
+      const st = deps.hosted!.host.status(spec.id);
+      const c = calls.get(spec.id);
+      const url = agentUrl(publicUrl, spec.id);
+      out.push({
+        id: spec.id,
+        name: spec.name,
+        description: spec.description || null,
+        skills: (spec.skills.length ? spec.skills : [{ id: 'chat', name: spec.name, description: spec.description }])
+          .map((s) => ({ id: s.id, name: s.name, description: s.description, tags: [], examples: (s as { examples?: string[] }).examples ?? [] })),
+        protocols: ['1.0', '0.3'],
+        extensions: spec.a2ui ? [HOSTED_AGENT_A2UI_EXTENSION_URI] : [],
+        provider: null,
+        documentation_url: null,
+        a2a_url: url,
+        card_url: `${url}/.well-known/agent-card.json`,
+        call_url: url,
+        reachable: st ? st.liveVersion !== null : false,
+        last_checked: null,
+        error: st?.error ?? null,
+        calls: c?.total ?? 0,
+        last_call_at: c?.last_at ?? null,
+        node: null,
+        model: spec.model,
+        kind: spec.mode,
+        owner: spec.owner,
+        status: st?.status ?? 'failed',
+      } as (typeof out)[number]);
+    }
 
     /**
      * Agents on other nodes, from the peer table (`PeerInfo.agents`).
@@ -398,16 +476,48 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
            * hop is anyone else's business.
            */
           node: { address: node.address, name: node.name },
+          model: (ad as AgentAdvertWithModel).model ?? null,
+          kind: (ad as AgentAdvertWithModel).kind ?? 'upstream',
+          owner: (ad as AgentAdvertWithModel).owner ?? null,
+          status: null,
         } as unknown as (typeof out)[number] });
       }
     }
-    res.json({ agents: [...out, ...[...byAgent.values()].map((v) => v.row)] });
+    const all = [...out, ...[...byAgent.values()].map((v) => v.row)];
+    // `?model=` — the agents built on one model, for that model's page.
+    const model = typeof req.query.model === 'string' ? req.query.model : null;
+    res.json({ agents: model ? all.filter((a) => a.model === model) : all });
   });
+
+  /**
+   * A hosted agent as an AgentConfig: the same shape the proxy code below already serves, with the upstream the
+   * host resolved — starting the container when it was stopped. Answers 503 itself when the agent cannot run.
+   */
+  const hostedTarget = async (id: string, res: Response): Promise<AgentConfig | null | 'answered'> => {
+    const hosted = deps.hosted;
+    if (!hosted?.host.has(id)) return null;
+    try {
+      const upstream = await hosted.host.resolve(id);
+      if (upstream) return { id, upstream, name: hosted.store.get(id)?.name } as AgentConfig;
+      const st = hosted.host.status(id);
+      res.status(503).json({ error: `agent "${id}" is not ready: ${st?.error ?? st?.status ?? 'unknown'}` });
+    } catch (e) {
+      res.status(503).json({ error: `agent "${id}" could not start: ${(e as Error).message}` });
+    }
+    return 'answered';
+  };
 
   // ── the A2A surface, one prefix per agent
   const serveCard = async (req: Request, res: Response) => {
     const id = one(req.params.id);
-    const a = find(id);
+    let a = find(id);
+    if (!a && deps.hosted?.host.has(id)) {
+      const tailPath = `/${(req.params as { path?: string[] }).path?.join('/') ?? ''}`.replace(/\/+$/, '') || '/';
+      if (!CARD_PATHS.includes(tailPath)) return res.status(404).json({ error: 'not found' });
+      const t = await hostedTarget(id, res);
+      if (t === 'answered') return;
+      a = t ?? undefined;
+    }
     const tail = `/${(req.params as { path?: string[] }).path?.join('/') ?? ''}`.replace(/\/+$/, '') || '/';
     if (!a) {
       // Registered from the peer table: the card is the peer's, rewritten so it is followed back here. A
@@ -439,7 +549,17 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
 
   const callAgent = async (req: Request, res: Response) => {
     const id = one(req.params.id);
-    const a = find(id);
+    let a = find(id);
+    if (!a && deps.hosted?.host.has(id)) {
+      // Rate-limited BEFORE resolving: resolving may start a container, and that must not be free to trigger.
+      if (rateLimited(req.ip ?? 'unknown')) {
+        return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
+      }
+      const t = await hostedTarget(id, res);
+      if (t === 'answered') return;
+      a = t ?? undefined;
+      if (a) return forward(req, res, a);
+    }
     if (!a) {
       const via = await remote(id);
       if (!via) return res.status(404).json({ error: `no agent "${id}" on this node` });
@@ -470,6 +590,11 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
     if (rateLimited(req.ip ?? 'unknown')) {
       return res.status(429).json({ jsonrpc: '2.0', id: null, error: { code: -32029, message: 'rate limit' } });
     }
+    return forward(req, res, a);
+  };
+
+  /** Forward one JSON-RPC call to an agent's upstream — a config agent's process, or a hosted agent's runtime. */
+  const forward = async (req: Request, res: Response, a: AgentConfig) => {
     const raw = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
     if (raw.length > MAX_BODY_BYTES) {
       return res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'request body too large' } });

@@ -16,7 +16,7 @@ import {
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
   sameAddr,
 } from '@ainize/core';
-import { agentAdverts, refreshAgentHealth } from './agents.js';
+import { agentAdverts, refreshAgentHealth, type HostedAgentsDeps } from './agents.js';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
 import { questionKey } from './teach-dataset.js';
@@ -571,6 +571,8 @@ interface PaymentSubject {
 }
 
 export class Market {
+  /** Agents this node runs (hosted-agent-host.ts), set by server.ts once the host is up; advertised on gossip. */
+  hostedAgents: HostedAgentsDeps | null = null;
   inferenceRecords?: InferenceRecords;
   /**
    * This PROCESS's id, minted at start-up and carried in `PeerInfo.instance` (item 139). Two endpoints answering for
@@ -4990,7 +4992,7 @@ export class Market {
     const st = await this.runtime.status();
     // What this node's agents are doing, refreshed at most once a minute however often gossip asks (agents.ts).
     await refreshAgentHealth(this.cfg).catch(() => {});
-    const agents = agentAdverts(this.cfg, this.publicUrl);
+    const agents = agentAdverts(this.cfg, this.publicUrl, this.hostedAgents ?? undefined);
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,
       ledger: this.ledger.kind, chain_id: this.cfg.ledger.ain?.chainId, model: st.model ?? undefined, branches: await this.mySubscriptions(),
