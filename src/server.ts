@@ -19,7 +19,7 @@ import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
 import { siteSession } from './site-session.js';
 import { buildSam, makeMeshRelay } from './sam.js';
-import compression from 'compression';
+import { sseAwareCompression } from './sse-aware-compression.js';
 import cookieParser from 'cookie-parser';
 import { AinLedger, DEFAULT_EVENTS_RETENTION_DAYS, LocalLedger, loadConfig, mergeConfigChanges, saveConfig, validateConfig, type DepositLedger, type Ledger, type NodeConfig } from '@ainize/core';
 import { buildApi, setupTokenPath } from './api.js';
@@ -207,7 +207,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // who reaches their own node by IP. Put it on the reverse proxy that terminates TLS.
     next();
   });
-  app.use(compression());
+  app.use(sseAwareCompression());
   app.use(cookieParser());
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
   // Models over p2p carry media as base64 — a voice note an agent opened (up to 32 MB) is ~43 MB of JSON — so their
