@@ -370,9 +370,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         : undefined,
     }));
 
-    // The visitor's door, beside the program's. Same gates, same hourly allowance as /api/chat — see
-    // free-tier-quota.ts for why the allowance is defined in one place rather than per route.
-    app.use(freeTierRouter({ registry: inferenceRegistry, market, gates: modalityGates }));
+    // The visitor's door, beside the program's: the same gates, entered in the unpaid class so a signed-out press
+    // uses whatever the paying callers are not using.
+    app.use(freeTierRouter({ registry: inferenceRegistry, gates: modalityGates }));
   }
 
   const samDeps = {

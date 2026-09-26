@@ -1,9 +1,12 @@
 /**
  * The visitor's door to the two models that had none.
  *
- * `/api/chat` already lets a signed-out visitor reach the language model on an hourly allowance. Transcription
- * and image generation had no equivalent, so a browser playground for them would have meant the site holding one
- * key on behalf of every visitor — with everybody's usage indistinguishable from everybody else's.
+ * `/api/chat` already lets a signed-out visitor reach the language model. Transcription and image generation had
+ * no equivalent, so a browser playground for them would have meant the site holding one key on behalf of every
+ * visitor — with everybody's usage indistinguishable from everybody else's.
+ *
+ * There is no hourly count here any more: the free tier is bounded by where it sits in the queue (see
+ * `runtime-stake-order.test.ts`) and by the per-request caps below, not by a number of presses.
  *
  * These are NOT `/v1` with the authentication removed. `/v1` is what a program calls with a key and a deposit
  * behind it; this is the door somebody presses once to see whether it works. Separate routes mean the free tier
@@ -61,7 +64,7 @@ function stub(port: number, handler: (req: import('node:http').IncomingMessage, 
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
-/** A cookie jar, because the allowance is keyed to the browser and a fresh jar is a fresh visitor. */
+/** A cookie jar, so a visitor is one browser across requests — sessions still ride on cookies. */
 class Visitor {
   private cookie = '';
   async post(path: string, body: unknown, form?: FormData) {
@@ -140,11 +143,11 @@ test('the free image route caps harder than /v1 does', async () => {
   assert.equal((await visitor.image({ steps: OPENAI_IMAGE_MAX_STEPS })).status, 400, 'steps allowed on /v1 are refused here');
 });
 
-test('a refusal over the caps does not spend a try', async () => {
+test('a refusal over the caps leaves the visitor free to ask again', async () => {
   const visitor = new Visitor();
   await visitor.image({ n: 99 });
   const res = await visitor.image();
-  assert.equal(res.status, 200, 'the visitor was told no before any GPU was touched; that is not a try');
+  assert.equal(res.status, 200, 'the visitor was told no before any GPU was touched');
 });
 
 test('an unknown model is 404, not routed to whatever this node has', async () => {
@@ -169,28 +172,35 @@ test('a request with no file is 400, not a transcription of nothing', async () =
   assert.equal(res.status, 400);
 });
 
-test('a backend that is down is 503, and gives the try back', async () => {
+test('a backend that is down is 503, and does not hold the visitor against it', async () => {
   imageDown = true;
   try {
     const visitor = new Visitor();
     const failed = await visitor.image();
     assert.equal(failed.status, 503);
     imageDown = false;
-    assert.equal((await visitor.image()).status, 200, 'the visitor got nothing, so nothing was spent');
+    assert.equal((await visitor.image()).status, 200, 'the visitor got nothing, and may ask again');
   } finally { imageDown = false; }
 });
 
-test('the three modalities share one allowance, so switching does not reset it', async () => {
+test('a visitor is not cut off by a press count, on any of the three doors', async () => {
+  /**
+   * This is the free tier's whole promise now: full bandwidth when the node has it to give. The hourly counter that
+   * used to sit here refused the 21st press on a machine that was doing nothing — and never actually protected the
+   * model, because twenty browsers arriving together each measured their own untouched allowance. What protects it
+   * is the queue: unpaid work runs behind anything paid (`runtime-stake-order.test.ts` pins that ordering).
+   */
   const visitor = new Visitor();
-  let exhausted: Response | null = null;
-  // Spend the hourly allowance on chat, then ask for an image from the same browser.
-  for (let i = 0; i < 40 && !exhausted; i++) {
+  for (let i = 0; i < 40; i++) {
     const res = await visitor.chat();
-    if (res.status === 429) exhausted = res;
+    assert.equal(res.status, 200, `chat press ${i + 1} was refused; the free tier no longer counts presses`);
   }
-  assert.ok(exhausted, 'the chat allowance should run out within 40 tries');
-  const res = await visitor.image();
-  assert.equal(res.status, 429, 'switching modality must not hand out a second allowance');
-  const body = await res.json() as { quota_reset?: number };
-  assert.ok(body.quota_reset, 'a visitor is told when it refills, not only that it is gone');
+  assert.equal((await visitor.image()).status, 200, 'and the other doors are not counting either');
+  assert.equal((await visitor.transcribe()).status, 200);
+});
+
+test('nothing in a free answer promises a remaining count', async () => {
+  // The page used to render `remaining_free_tries`; there is no such number, and a stale one would be a lie.
+  const body = await (await new Visitor().image()).json() as Record<string, unknown>;
+  assert.ok(!('remaining_free_tries' in body), 'a count that no longer exists must not be reported');
 });

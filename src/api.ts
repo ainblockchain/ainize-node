@@ -79,34 +79,18 @@ const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) 
 const SESSION_COOKIE = 'ainize_session';
 
 /**
- * Finding 59 — the free live-test budget was one bucket keyed on `ip:<addr>`, presented to the visitor as a personal
- * allowance ("Free trial 12/20 left this hour"). Behind one office, campus or carrier NAT, twenty tries were
- * everyone's twenty: on a publicly reachable node the counter can be at zero before a visitor has asked anything,
- * and the page blames them for consumption they cannot see or control.
+ * There is no hourly free-request counter any more, and the two buckets it was split across are gone with it.
  *
- * There are two budgets now. The PERSONAL one is keyed on this browser (a long-lived cookie this route sets, or the
- * teaching key when the request carries one), and it is the number the page shows. The NETWORK one is still the IP,
- * with a much larger cap, and it is what actually protects one shared model from one address — when it is the one
- * that ran out the visitor is told so, in those words, instead of being told they used tries they never had.
- */
-const TRY_COOKIE = 'ngram_try';
-const TRY_COOKIE_MAX_AGE_MS = 400 * 86_400_000;
-const CHAT_TRIES_PER_HOUR = 20;
-/** How many personal budgets one address may spend in an hour before the address itself is the limit. */
-const CHAT_TRIES_PER_NETWORK_HOUR = CHAT_TRIES_PER_HOUR * 5;
-/**
- * The per-browser id. Opaque, http-only, and never an identity — only a quota bucket.
+ * The counter began as protection for one shared model, and it was never that: twenty browsers arriving together
+ * each measured their own untouched allowance and all twenty passed, so the model was protected by the queue in
+ * front of it and by nothing else. What the number did reliably do was refuse a visitor on a node that was sitting
+ * idle, and blame them for tries spent by everybody else behind the same office NAT.
  *
- * It is minted for NEXT time but returns null on the request that mints it: a caller that does not keep cookies (a
- * script, curl, the CLI) would otherwise be handed a fresh personal budget on every request. Without a cookie the
- * caller falls back to the address bucket, which is what they shared before this existed.
+ * So the limit is now the queue's ordering: unpaid work runs in `RUNTIME_PRIORITY.freeServing`, which takes the
+ * whole node when nothing paid is waiting and stands aside as soon as something is. The two places that still hold
+ * an hourly count are a different thing and stay — knowledge requests (a write, not model time) and the teach
+ * pre-flight (a signed-in caller driving many model calls from one HTTP request).
  */
-function browserId(req: Request, res: Response): string | null {
-  const seen = req.cookies?.[TRY_COOKIE] as string | undefined;
-  if (typeof seen === 'string' && /^[0-9a-f]{32}$/.test(seen)) return seen;
-  if (!res.headersSent) res.cookie(TRY_COOKIE, randomBytes(16).toString('hex'), { httpOnly: true, sameSite: 'lax', maxAge: TRY_COOKIE_MAX_AGE_MS, path: '/' });
-  return null;
-}
 
 /**
  * The TCP peer, not `req.ip`: with `server.trustProxy` on, `req.ip` is whatever X-Forwarded-For says, so it can be
@@ -2102,34 +2086,7 @@ export function buildApi(deps: ApiDeps): Router {
      * wrong" report all look a turn up by the same visitor id, and they see only the request, not the cookie.
      */
     const visitor = market.visitorId(operator ? `operator:${market.address}` : `ip:${req.ip}`);
-    /**
-     * Finding 59 — two buckets: this BROWSER (or its teaching key), which is the allowance the page reports, and
-     * this ADDRESS, which is the shared-model protection. Both are checked before anything is sent and both are
-     * spent afterwards, so neither can be escaped by clearing a cookie or by sharing an office router.
-     */
-    const browser = browserId(req, res);
-    const network = operator ? null : market.visitorId(`ip:${req.ip}`);
-    const mine = operator ? null : caller ? market.visitorId(`key:${caller.toLowerCase()}`) : browser ? market.visitorId(`try:${browser}`) : network;
-    /** When the personal bucket IS the address bucket, its refusal is about the address — say so in those words. */
-    const mineIsShared = mine === network;
-    // check (without consuming) first; a failed/hung request must not burn a free try
-    // the machine-readable code matters: without it the browser cannot tell this HOURLY budget from the DAILY lesson
-    // limit, and told the visitor to "come back tomorrow" for a quota that refills within the hour. `quota_reset` says
-    // WHEN the hour is up, so the page can count down instead of guessing.
-    if (mine && market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, true) < 0) {
-      throw new HttpError(429, mineIsShared
-        ? `quota_chat_network: this address has used all ${CHAT_TRIES_PER_HOUR} free live tests for this hour — everyone sharing it shares them`
-        : 'quota_chat: free live-test quota exhausted for this hour — buy the patch or run your own node',
-      { quota_reset: market.chatQuotaResetsAt(mine), quota_scope: mineIsShared ? 'network' : 'you', ...(mineIsShared ? { quota_limit: CHAT_TRIES_PER_HOUR } : {}) });
-    }
-    if (network && !mineIsShared && market.chatQuota(network, CHAT_TRIES_PER_NETWORK_HOUR, 3600_000, true) < 0) {
-      if (mine) market.refundChatQuota(mine);   // the caller's own try was reserved a line ago and is not being spent
-      throw new HttpError(429, `quota_chat_network: this network has used all ${CHAT_TRIES_PER_NETWORK_HOUR} free live tests for this hour — everyone sharing this address shares them`, { quota_reset: market.chatQuotaResetsAt(network), quota_scope: 'network', quota_limit: CHAT_TRIES_PER_NETWORK_HOUR });
-    }
     // private drafts (taught lessons) are testable only by their owner (signed x-ainize-auth) or the operator
-    // The tries are already taken. A request that fails or hangs gets them back, which is what "a failed request
-    // must not burn a free try" always meant — it just used to be implemented by not taking them at all, so
-    // concurrent callers each measured an untouched counter and every one of them passed.
     let out;
     const abort = new AbortController();
     const disconnect = () => { if (!res.writableEnded) abort.abort(); };
@@ -2153,8 +2110,6 @@ export function buildApi(deps: ApiDeps): Router {
         } : undefined,
         requestId: body.request_id, messagesBase: body.messages_base, messagesPatched: body.messages_patched, patchIds: body.patch_ids ?? [body.patch_id!], visitor, caller: { operator, address: caller } });
     } catch (e) {
-      if (mine) market.refundChatQuota(mine);
-      if (network && !mineIsShared) market.refundChatQuota(network);
       res.off('close', disconnect);
       if (res.headersSent) {
         if (!res.destroyed) res.end(`event: error\ndata: ${JSON.stringify({ error: { message: 'Chat stream interrupted', type: 'stream_error' } })}\n\n`);
@@ -2162,15 +2117,16 @@ export function buildApi(deps: ApiDeps): Router {
       }
       throw e;
     }
-    const remaining = mine ? market.chatQuota(mine, CHAT_TRIES_PER_HOUR, 3600_000, false) : Infinity;
+    // Kept, always null: the page reads both fields, and "no number" is now the truth rather than a missing key.
+    const quota = { remaining_quota: null, quota_limit: null };
     if (body.stream) {
       try {
-        await writeStream(`event: ainize.result\ndata: ${JSON.stringify({ ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR })}\n\n`);
+        await writeStream(`event: ainize.result\ndata: ${JSON.stringify({ ...out, ...quota })}\n\n`);
         res.end('data: [DONE]\n\n');
       } finally { res.off('close', disconnect); }
       return;
     }
-    return { ...out, remaining_quota: Number.isFinite(remaining) ? remaining : null, quota_limit: operator ? null : CHAT_TRIES_PER_HOUR };
+    return { ...out, ...quota };
   }));
   /**
    * D3 — "is my request still queued?". Public, free (no quota), and answers about the caller's own request only:
