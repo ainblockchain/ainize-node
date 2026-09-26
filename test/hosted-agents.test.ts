@@ -17,7 +17,7 @@ import express from 'express';
 import type { NodeConfig } from '@ainize/core';
 import { buildAgents } from '../src/agents.js';
 import { InferenceBackendRegistry } from '../src/inference-backends.js';
-import { HostedAgentGateway, hostedAgentAddressIsPublic, hostedAgentHostAllowed, hostedAgentEgress } from '../src/hosted-agent-gateway.js';
+import { HostedAgentGateway, hostedAgentAddressIsPublic, hostedAgentHostAllowed, hostedAgentEgress, hostedAgentUserAgent } from '../src/hosted-agent-gateway.js';
 import { HostedAgentHost } from '../src/hosted-agent-host.js';
 import { HostedAgentSecretStore } from '../src/hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, HostedAgentStore } from '../src/hosted-agent-store.js';
@@ -53,6 +53,10 @@ test('an allowlist matches names, one-level-or-deeper wildcards and *, and nothi
 
 test('egress refuses a name that resolves to loopback, even when every host is allowed', async () => {
   await assert.rejects(hostedAgentEgress({ url: 'http://localhost:9/' }, ['*']), /non-public/);
+});
+
+test('egress names the agent in User-Agent unless its code set one', () => {
+  assert.equal(hostedAgentUserAgent('aindrive-cloud'), 'ainize-agent/aindrive-cloud (+https://ainize.ai/agents/aindrive-cloud)');
 });
 
 test('egress refuses IP literals, other schemes and hosts off the list', async () => {
