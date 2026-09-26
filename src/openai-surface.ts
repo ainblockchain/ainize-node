@@ -89,6 +89,16 @@ declare module 'express-serve-static-core' {
   interface Request { openaiCaller?: OpenaiCaller }
 }
 
+/**
+ * Where to deposit for more of this model, on the host the caller used. Behind ainize-web the node sees the web
+ * app's `x-forwarded-host`, so the link is the public site's page rather than the node's loopback address.
+ */
+export function openaiBillingUrl(req: Request, model: string): string {
+  const proto = req.header('x-forwarded-proto')?.split(',')[0]?.trim() || req.protocol;
+  const host = req.header('x-forwarded-host')?.split(',')[0]?.trim() || req.get('host') || 'localhost';
+  return `${proto}://${host}/billing?model=${encodeURIComponent(model)}`;
+}
+
 /** An error body in the shape OpenAI's clients raise as a typed exception rather than a bare HTTP failure. */
 export function openaiError(res: Response, status: number, code: string, message: string, type = 'invalid_request_error'): void {
   res.status(status).json({ error: { message, type, code, param: null } });
@@ -299,11 +309,15 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
     const queued = deps.market.runtimeQueueDepth();
     const estimatedWaitS = share > 0 ? queued / OPENAI_TOKENS_PER_SECOND / share : Infinity;
     if (deps.scheduler && estimatedWaitS > OPENAI_MAX_PROMISED_WAIT_S) {
+      // The one moment a developer reads about deposits is the error that stopped their program, so the error
+      // says where to make one — the page that quotes this model's speed for an amount, on the host they called.
+      const billingUrl = openaiBillingUrl(req, body.model);
       res.status(429).json({
         error: {
-          message: `this node cannot promise to start your request within ${OPENAI_MAX_PROMISED_WAIT_S}s at your current share — wait and retry, deposit more, or ask for fewer tokens`,
+          message: `this node cannot promise to start your request within ${OPENAI_MAX_PROMISED_WAIT_S}s at your current share — wait and retry, deposit sAIN to be served first when busy (${billingUrl}), or ask for fewer tokens`,
           type: 'rate_limit_error', code: 'queue_too_deep', param: null,
         },
+        billing_url: billingUrl,
         share,
         position: deps.market.runtimeQueueLength(),
         retry_after: Math.ceil(Math.min(estimatedWaitS, 3600)),
