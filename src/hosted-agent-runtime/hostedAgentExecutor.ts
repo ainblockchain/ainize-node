@@ -60,6 +60,12 @@ export class HostedAgentHistory {
 
 const systemMessages = (prompt: string): HostedAgentChatMessage[] => (prompt.trim() ? [{ role: 'system', content: prompt }] : []);
 
+/**
+ * A model's answer as the caller shows it. Qwen3 leaves the blank lines of an empty think block in front of the
+ * answer ("\n\n안녕하세요…"); a chat bubble renders them as a gap above the first line.
+ */
+const modelText = (content: string | null | undefined) => (content ?? '').trim();
+
 /** The user's words as the model reads them: the message, plus what is attached (never the links). */
 const userContentOf = (ctx: HostedAgentCtx) => ctx.input.text + hostedAgentAttachmentNote(ctx.input.files);
 
@@ -67,7 +73,7 @@ async function promptTurn(ctx: HostedAgentCtx): Promise<HostedAgentReply> {
   const choice = await ctx.llm.chat({
     messages: [...systemMessages(ctx.spec.systemPrompt), ...ctx.input.history, { role: 'user', content: userContentOf(ctx) }],
   });
-  return choice.message.content ?? '';
+  return modelText(choice.message.content);
 }
 
 /**
@@ -127,7 +133,7 @@ export async function hostedAgentToolsTurn(ctx: HostedAgentCtx, mod: HostedAgent
       for (let round = 0; round < HOSTED_AGENT_TOOL_ROUNDS; round++) {
         const choice = await ctx.llm.chat({ messages, tools: offered });
         const calls = choice.message.tool_calls ?? [];
-        if (!calls.length) return { text: choice.message.content ?? '', ui };
+        if (!calls.length) return { text: modelText(choice.message.content), ui };
         messages.push({ role: 'assistant', content: choice.message.content ?? null, tool_calls: calls });
         for (const call of calls) {
           let args: Record<string, unknown> = {};
