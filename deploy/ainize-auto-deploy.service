@@ -1,0 +1,9 @@
+[Unit]
+Description=Deploy ainize web and node when main moves
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 레포 체크아웃은 스크립트만 준다 — 배포 스크립트는 리모트에서 스스로 클론한다.
+ExecStart=/mnt/newdata/ainize/ainize-node/deploy/auto-deploy.sh
+TimeoutStartSec=3600
