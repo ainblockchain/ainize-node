@@ -19,7 +19,7 @@ import { hostedAgentSpecInput, type HostedAgentSpec } from '../src/hosted-agent-
 import { HostedAgentExecutor } from '../src/hosted-agent-runtime/hostedAgentExecutor.js';
 import {
   callPeerModel, networkModelsRouter, peerModelAdvertsFromInfo, peerModelAdvertsOf, peerModelAuthHeader, peerModelRoutes,
-  peerModelsServing, peerModelTargets, verifyPeerModelAuth, type PeerModelPeerRow,
+  peerChatModels, peerChatTarget, peerModelsServing, peerModelTargets, relayPeerChat, verifyPeerModelAuth, type PeerModelPeerRow,
 } from '../src/peer-models.js';
 
 const A = createIdentity();
@@ -82,13 +82,13 @@ const peerRow = (endpoint: string, over: Partial<PeerModelPeerRow> = {}): PeerMo
 
 // ───────────────────────────────── adverts and lookup
 
-test('a node advertises its speech and image models by kind and id — never the upstream, never chat', () => {
+test('a node advertises its models by kind and id — chat included, never the upstream URL', () => {
   const adverts = peerModelAdvertsOf([
     { modality: 'chat', models: ['big-llm'] },
     { modality: 'transcription', models: ['asr-1'] },
     { modality: 'image', models: ['img-1'] },
   ], true);
-  assert.deepEqual(adverts, [{ modality: 'transcription', models: ['asr-1'] }, { modality: 'image', models: ['img-1'] }]);
+  assert.deepEqual(adverts, [{ modality: 'chat', models: ['big-llm'] }, { modality: 'transcription', models: ['asr-1'] }, { modality: 'image', models: ['img-1'] }]);
   assert.ok(!JSON.stringify(adverts).includes('http'), 'no URL leaves the node');
   assert.deepEqual(peerModelAdvertsOf([{ modality: 'image', models: ['img-1'] }], false), [], 'an operator who opted out advertises nothing');
   assert.equal(peerModelsServing({}), true);
@@ -206,4 +206,75 @@ test('/api/network/models lists this node\'s models and each fresh peer\'s, name
     ]);
     assert.ok(!JSON.stringify(body).includes('http://'), 'no endpoint or upstream is published');
   } finally { await new Promise<void>((r) => server.close(() => r())); }
+});
+
+// ───────────────────────────────── chat by model id, streamed through
+
+test('chat for a model only a peer serves goes to that peer, JSON or streamed, and an unknown id is refused', async () => {
+  const chatHits: { model: string; stream: boolean }[] = [];
+  const chatBackend = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; stream?: boolean };
+    chatHits.push({ model: body.model, stream: !!body.stream });
+    if (body.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const w of ['hel', 'lo']) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: w } }] })}\n\n`);
+      res.end('data: [DONE]\n\n');
+      return;
+    }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: `hi from ${body.model}` } }] }));
+  });
+  await new Promise<void>((r) => chatBackend.listen(0, '127.0.0.1', () => r()));
+  const chatUrl = `http://127.0.0.1:${(chatBackend.address() as AddressInfo).port}`;
+  const registry = new InferenceBackendRegistry([{ id: 'vlm', modality: 'chat', upstream: chatUrl, models: ['Big-VLM'], concurrency: 2 }]);
+  const provider = express();
+  provider.use(express.json());
+  provider.use(peerModelRoutes({ registry: () => registry, gates: () => undefined, self: B.address, serving: () => true, log: () => {} }));
+  const pServer = createServer(provider);
+  await new Promise<void>((r) => pServer.listen(0, '127.0.0.1', () => r()));
+  const bUrl = `http://127.0.0.1:${(pServer.address() as AddressInfo).port}`;
+
+  const peers: PeerModelPeerRow[] = [{
+    address: B.address, endpoint: bUrl, last_seen: Date.now(),
+    info: { name: 'gpu-box', backends: peerModelAdvertsOf([{ modality: 'chat', models: ['Big-VLM'] }, { modality: 'image', models: ['img-1'] }], true) },
+  }];
+  assert.equal(peerChatTarget(peers, 'Big-VLM', A.address)?.endpoint, bUrl);
+  assert.equal(peerChatTarget(peers, 'Other', A.address), null, 'routed by exact id, never to "some chat model"');
+  assert.equal(peerChatTarget(peers, 'Big-VLM', B.address), null, 'a node never routes to itself');
+  assert.deepEqual(peerChatModels(peers, A.address), [{ id: 'Big-VLM', node: 'gpu-box' }]);
+
+  // node A: a tiny /v1 stand-in that relays exactly as openai-surface does
+  const consumer = express();
+  consumer.use(express.json());
+  consumer.post('/v1/chat/completions', async (req, res) => {
+    const t = peerChatTarget(peers, String(req.body.model), A.address);
+    if (!t) { res.status(404).json({ error: { code: 'model_not_found' } }); return; }
+    await relayPeerChat(A, t, req.body, res);
+  });
+  const cServer = createServer(consumer);
+  await new Promise<void>((r) => cServer.listen(0, '127.0.0.1', () => r()));
+  const aUrl = `http://127.0.0.1:${(cServer.address() as AddressInfo).port}`;
+  try {
+    const post = (b: unknown) => fetch(`${aUrl}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+    const plain = await post({ model: 'Big-VLM', messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(plain.status, 200);
+    assert.equal(plain.headers.get('x-ainize-served-by'), B.address.toLowerCase());
+    assert.equal(((await plain.json()) as { choices: { message: { content: string } }[] }).choices[0]!.message.content, 'hi from Big-VLM');
+
+    const streamed = await post({ model: 'Big-VLM', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    assert.match(streamed.headers.get('content-type') ?? '', /text\/event-stream/);
+    const text = await streamed.text();
+    assert.ok(text.includes('"hel"') && text.includes('"lo"') && text.trim().endsWith('data: [DONE]'), 'the SSE stream arrives whole, frame by frame');
+    assert.deepEqual(chatHits.map((h) => h.stream), [false, true]);
+
+    assert.equal((await post({ model: 'Other', messages: [{ role: 'user', content: 'x' }] })).status, 404);
+    const unsigned = await fetch(`${bUrl}/p2p/models/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'Big-VLM', messages: [] }) });
+    assert.equal(unsigned.status, 401, 'the provider serves only a signed node');
+  } finally {
+    await new Promise<void>((r) => cServer.close(() => r()));
+    await new Promise<void>((r) => pServer.close(() => r()));
+    await new Promise<void>((r) => chatBackend.close(() => r()));
+  }
 });

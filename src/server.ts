@@ -38,7 +38,7 @@ import { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { openaiSurfaceRouter } from './openai-surface.js';
 import { publicModelsRouter, probeBackend } from './public-models-route.js';
 import {
-  callPeerModel, networkModelsRouter, peerModelRoutes, peerModelsServing, peerModelTargets,
+  callPeerModel, networkModelsRouter, peerChatModels, peerChatTarget, peerModelRoutes, peerModelsServing, peerModelTargets, relayPeerChat,
   type PeerModelModality, type PeerModelPeerRow, type PeerModelTarget,
 } from './peer-models.js';
 import { freeTierRouter } from './free-tier-routes.js';
@@ -405,6 +405,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       scheduler: stakeQueue,
       node: cfg.identity.address,
       nodeName: cfg.name,
+      peerChat: {
+        target: (model) => peerChatTarget(peerModelRows(), model, cfg.identity.address),
+        relay: (target, body, res) => relayPeerChat(cfg.identity, target, body, res),
+        models: () => peerChatModels(peerModelRows(), cfg.identity.address),
+      },
       deposits: deposits && cfg.deposits
         ? {
           ledger: deposits,
