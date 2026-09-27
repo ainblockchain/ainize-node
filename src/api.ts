@@ -23,7 +23,7 @@ import {
 } from '@ainize/core';
 import { verifyAuthHeader } from './p2p.js';
 import { walletLoginMessage, deviceAuthMessage, safeLabel, requestOrigin } from './wallet-login.js';
-import { siteSession } from './site-session.js';
+import { siteSession, ssoSession } from './site-session.js';
 import { TeachAuth } from './teach-auth.js';
 import { challengedMessage, ConflictError, MarketError, MAX_CHAT_PATCHES, NotFoundError, TREE_MAX_DEPTH, type Market, type MarketEntry } from './market.js';
 import { publishedRows } from './dataset-blobs.js';
@@ -237,6 +237,9 @@ export function buildApi(deps: ApiDeps): Router {
     };
     for (const e of events) {
       if (e.kind === 'patch' && /^draft /.test(e.message)) continue;
+      // AIN SSO lines name accounts, linked Google principals and organizations: the operator's audit trail, not
+      // something a visitor reads (sso.ts).
+      if (e.kind === 'sso') continue;
       if (e.kind !== 'teach') { out.push(stripVisitor(e)); continue; }
       const jobId = (e.data as { job_id?: string } | null)?.job_id;
       // (the second replace covers rows written before this redaction, whose message embedded the job name = the prompt)
@@ -311,12 +314,20 @@ export function buildApi(deps: ApiDeps): Router {
   router.get('/api/auth/me', wrap((req) => {
     const who = sessionSubject(req);
     const owner = isNodeOwner(req);
+    /**
+     * An AIN SSO session is reported apart, in `sso`, and leaves `signedIn`/`subject` exactly as they were: those
+     * two mean "an address is here", and an SSO account is not an address (sso.ts). A page that predates `sso`
+     * therefore sees nobody signed in, which is the safe way for it to be wrong.
+     */
+    const sso = who ? null : ssoSession(req, market.store);
+    const ident = sso ? market.store.ssoIdentity(sso.iss, sso.sub) : null;
     return {
       signedIn: !!who, subject: who?.address ?? null, scheme: who?.scheme ?? null, via_key: who?.viaKey ?? null, isOwner: owner,
       scope: [...(who ? ['self'] : []), ...(owner ? ['owner'] : [])],
       address: market.address, name: market.cfg.name, roles: market.cfg.roles,
       canEnroll: mayClaim(req) || owner,
       operators: owner ? owners().map((o) => o.address) : undefined,
+      sso: sso ? { principal: sso.principal, sub: sso.sub, name: ident?.name ?? null, email: ident?.email ?? null, orgs: sso.orgs, activeOrg: sso.org } : null,
     };
   }));
   /**

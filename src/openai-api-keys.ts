@@ -18,7 +18,25 @@ export interface OpenaiApiKeyRecord {
   address: string;
   issuedAt: number;
   label: string | null;
+  /**
+   * The AIN SSO organization this key was made for, or absent/null for a personal key (docs/ain-sso.md).
+   *
+   * Only a session made through AIN SSO can make an organization key, and only for an organization its ID token
+   * named. Suspension in that organization disables the key, offboarding deletes it; personal keys are never
+   * touched by either. Absent on every key written before this field existed — they are personal, as they were.
+   */
+  orgId?: string | null;
+  /**
+   * Set while the key is switched off (organization suspension); `reason` says who and why. Such a record is also
+   * stored under `disabled:<hash>` rather than `<hash>`, so a build from before this field — which would ignore
+   * it — cannot find the key at all: rolling the node back never switches a suspended key back on.
+   */
+  disabled?: { at: number; reason: string } | null;
 }
+
+/** The map key a switched-off record is stored under (see `disabled`). */
+const DISABLED = 'disabled:';
+const realHash = (mapKey: string) => (mapKey.startsWith(DISABLED) ? mapKey.slice(DISABLED.length) : mapKey);
 
 /** What `listFor` shows: enough to tell two keys apart and revoke one, never enough to use it. */
 export interface OpenaiApiKeySummary {
@@ -26,6 +44,10 @@ export interface OpenaiApiKeySummary {
   prefix: string;
   issuedAt: number;
   label: string | null;
+  /** the organization the key belongs to; null = personal */
+  org_id: string | null;
+  /** switched off by an organization suspension */
+  disabled: boolean;
 }
 
 const OPENAI_API_KEY_PREFIX = 'ainize-sk-';
@@ -36,6 +58,11 @@ export function hashOpenaiApiKey(key: string): string {
 
 export class OpenaiApiKeyStore {
   private records = new Map<string, OpenaiApiKeyRecord>();
+  /**
+   * Asked at USE time for an organization key: may `owner` still act for `orgId`? Set by the node when AIN SSO
+   * state exists (sso.ts), so a key whose organization access ended stops working even if disabling it failed.
+   */
+  orgGate: ((owner: string, orgId: string) => boolean) | null = null;
 
   constructor(private readonly file: string) {
     if (!existsSync(file)) return;
@@ -50,9 +77,10 @@ export class OpenaiApiKeyStore {
     }
   }
 
-  issue(address: string, label: string | null = null): string {
+  issue(address: string, label: string | null = null, orgId: string | null = null): string {
     const key = `${OPENAI_API_KEY_PREFIX}${randomBytes(24).toString('base64url')}`;
-    this.records.set(hashOpenaiApiKey(key), { address: address.toLowerCase(), issuedAt: Date.now(), label });
+    // `orgId` is written only when there is one, so a personal key stays byte-for-byte what it always was.
+    this.records.set(hashOpenaiApiKey(key), { address: address.toLowerCase(), issuedAt: Date.now(), label, ...(orgId ? { orgId } : {}) });
     this.persist();
     return key;
   }
@@ -60,7 +88,59 @@ export class OpenaiApiKeyStore {
   /** The address this key speaks for, or null. Checked shape-first so a foreign key costs no hash. */
   addressForKey(key: string): string | null {
     if (!key.startsWith(OPENAI_API_KEY_PREFIX)) return null;
-    return this.records.get(hashOpenaiApiKey(key))?.address ?? null;
+    // A switched-off key lives under `disabled:<hash>`, so this lookup never finds it.
+    const record = this.records.get(hashOpenaiApiKey(key));
+    if (!record || record.disabled) return null;
+    if (record.orgId && this.orgGate && !this.orgGate(record.address, record.orgId)) return null;
+    return record.address;
+  }
+
+  /**
+   * Switch off, switch back on, or delete every key `owner` holds for one organization — what AIN SSO suspension,
+   * reactivation and offboarding do (sso.ts). Personal keys (no `orgId`) are never matched. `enable` only clears a
+   * `disabled` this same mechanism set; a deleted key stays deleted. Written once, and before the caller answers.
+   */
+  setOrgKeys(owner: string, orgId: string, action: 'disable' | 'enable' | 'revoke', reason: string): number {
+    const wanted = owner.toLowerCase();
+    const next = new Map(this.records);
+    let changed = 0;
+    for (const [mapKey, record] of this.records) {
+      if (record.address !== wanted || !record.orgId || record.orgId !== orgId) continue;
+      const hash = realHash(mapKey);
+      if (action === 'revoke') { next.delete(mapKey); changed++; continue; }
+      if (action === 'disable' && !mapKey.startsWith(DISABLED)) {
+        next.delete(mapKey);
+        next.set(`${DISABLED}${hash}`, { ...record, disabled: { at: Date.now(), reason } });
+        changed++;
+      }
+      if (action === 'enable' && mapKey.startsWith(DISABLED)) {
+        const { disabled: _off, ...rest } = record;
+        next.delete(mapKey);
+        next.set(hash, rest);
+        changed++;
+      }
+    }
+    // Written first and swapped in after: if the disk refuses, nothing changed — not "disabled until restart".
+    if (changed) this.commit(next);
+    return changed;
+  }
+
+  /** Delete every organization key `owner` holds, whichever organization — for a principal that stops being this person's. */
+  revokeAllOrgKeys(owner: string): number {
+    const wanted = owner.toLowerCase();
+    const next = new Map(this.records);
+    let changed = 0;
+    for (const [mapKey, record] of this.records) if (record.address === wanted && record.orgId) { next.delete(mapKey); changed++; }
+    if (changed) this.commit(next);
+    return changed;
+  }
+
+  /** How many keys an owner holds at all (usable or not). */
+  countFor(owner: string): number {
+    const wanted = owner.toLowerCase();
+    let n = 0;
+    for (const record of this.records.values()) if (record.address === wanted) n++;
+    return n;
   }
 
   revoke(key: string): boolean {
@@ -79,10 +159,10 @@ export class OpenaiApiKeyStore {
    */
   revokeByPrefixFor(address: string, prefix: string): boolean {
     const wanted = address.toLowerCase();
-    for (const [hash, record] of this.records) {
+    for (const [mapKey, record] of this.records) {
       if (record.address !== wanted) continue;
-      if (hash.slice(0, 8) !== prefix) continue;
-      this.records.delete(hash);
+      if (realHash(mapKey).slice(0, 8) !== prefix) continue;
+      this.records.delete(mapKey);
       this.persist();
       return true;
     }
@@ -93,15 +173,23 @@ export class OpenaiApiKeyStore {
     const wanted = address.toLowerCase();
     return [...this.records.entries()]
       .filter(([, record]) => record.address === wanted)
-      .map(([hash, record]) => ({ prefix: hash.slice(0, 8), issuedAt: record.issuedAt, label: record.label }));
+      .map(([mapKey, record]) => ({
+        prefix: realHash(mapKey).slice(0, 8), issuedAt: record.issuedAt, label: record.label, org_id: record.orgId ?? null, disabled: mapKey.startsWith(DISABLED),
+      }));
+  }
+
+  /** Persist `next`, then make it the live set. */
+  private commit(next: Map<string, OpenaiApiKeyRecord>): void {
+    this.persist(next);
+    this.records = next;
   }
 
   /** Written to a temp file and renamed, so a crash mid-write cannot leave a half-parsed store behind. */
-  private persist(): void {
+  private persist(records: Map<string, OpenaiApiKeyRecord> = this.records): void {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.${process.pid}.tmp`;
     try {
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.records)), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(records)), { mode: 0o600 });
       renameSync(tmp, this.file);
     } catch (error) {
       try { unlinkSync(tmp); } catch { /* the temp file may never have been created */ }

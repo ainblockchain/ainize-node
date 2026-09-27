@@ -9,9 +9,11 @@
  * read-only: sessions are still created and destroyed in one place.
  */
 import type { Request } from 'express';
-import type { Store } from './store.js';
+import type { SsoSessionFields, Store } from './store.js';
 
 export const SITE_SESSION_COOKIE = 'ainize_session';
+/** The `scheme` of a session made through AIN SSO (sso.ts). */
+export const SSO_SESSION_SCHEME = 'sso';
 
 export interface SiteSession {
   address: string;
@@ -40,5 +42,26 @@ export function siteSession(req: Request, store: Store, nodeAddress: string): Si
   if (!token) return null;
   const row = store.getSession(token);
   if (!row) return null;
+  // A session made through AIN SSO is not an address and proves no wallet: every reader of this function treats
+  // `address` as one (ownership, hosted agents, deposits), so it does not see such a session at all. The two
+  // places an SSO session means something ask for it by name (`ssoSession`).
+  if (row.scheme === SSO_SESSION_SCHEME) return null;
   return { address: row.subject ?? nodeAddress.toLowerCase(), scheme: row.scheme ?? 'ain', viaKey: row.via_key ?? null };
+}
+
+export interface SsoSiteSession extends SsoSessionFields {
+  /** who this session acts as here: `sso:<sub>`, or the legacy `google:<sub>` principal the account is linked to */
+  principal: string;
+}
+
+/**
+ * The AIN SSO session on this request, or null. Read only where an SSO session is meant to count: `/api/auth/me`
+ * (so the site can say who is signed in) and `/api/keys` (the one thing it grants, as a Google session did).
+ */
+export function ssoSession(req: Request, store: Store): SsoSiteSession | null {
+  const token = siteSessionToken(req);
+  if (!token) return null;
+  const row = store.getSession(token);
+  if (!row || row.scheme !== SSO_SESSION_SCHEME || !row.sso || !row.subject) return null;
+  return { ...row.sso, principal: row.subject };
 }
