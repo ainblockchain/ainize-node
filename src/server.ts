@@ -44,6 +44,9 @@ import {
 import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { readSiteAssertionSecret } from './site-assertion.js';
+import { SiteCallVerifier } from './site-call.js';
+import { readSsoConfig, SsoService, type JwksSource } from './sso.js';
+import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
 import { DepositLedgerStore } from './deposit-ledger-store.js';
@@ -77,6 +80,10 @@ export interface StartOptions {
   teachWorker?: boolean;
   /** Process hooks for the teach worker (tests fake `spawn`/`exec`). */
   teachHooks?: TeachHooks;
+  /** AIN SSO settings; default `process.env` (AIN_SSO_ISSUER, AIN_SSO_CLIENT_ID, AIN_SSO_ADAPTER_URL — docs/ain-sso.md). */
+  ssoEnv?: NodeJS.ProcessEnv;
+  /** Tests: AIN SSO's signing keys, instead of fetching `{issuer}/oidc/jwks`. */
+  ssoJwks?: JwksSource;
 }
 
 /** `config.json` `agentHost` — optional; defaults run prompt agents only. */
@@ -209,6 +216,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   });
   app.use(sseAwareCompression());
   app.use(cookieParser());
+  // AIN SSO (docs/ain-sso.md). Off unless AIN_SSO_ISSUER and AIN_SSO_CLIENT_ID are set; stored SSO state (a
+  // suspension) is enforced either way. The adapter's request JWT signs the exact body bytes, so its path gets
+  // them raw, ahead of the JSON parser below.
+  const ssoConfig = readSsoConfig(opts.ssoEnv ?? process.env);
+  if (ssoConfig) app.use(SSO_ADAPTER_MOUNT, ...ssoRawBodyParser());
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
   // Models over p2p carry media as base64 — a voice note an agent opened (up to 32 MB) is ~43 MB of JSON — so their
   // routes parse before the 5 MB default does. express.json skips a body already parsed.
@@ -235,6 +247,29 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     saveConfig(onDisk ? mergeConfigChanges(onDisk, baseline, cfg) : cfg, opts.home);
     baseline = structuredClone(cfg);
   };
+  /**
+   * API keys for the `/v1` surface.
+   *
+   * Built outside the backends block because the routes that manage them are about the person, not about what
+   * this node happens to serve: somebody signed in should be able to see and revoke their keys on a node whose
+   * model server is down. Built this early because AIN SSO revokes organization keys.
+   */
+  const openaiKeys = new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json'));
+  const siteAssertionSecret = readSiteAssertionSecret(opts.home);
+  const sso = new SsoService({
+    store, keys: openaiKeys, config: ssoConfig, jwks: opts.ssoJwks,
+    log: (level, message, data) => market.log(level, 'sso', message, null, data),
+  });
+  openaiKeys.orgGate = (owner, orgId) => sso.orgKeyUsable(owner, orgId);
+  app.use(ssoRoutes({
+    sso,
+    siteCalls: siteAssertionSecret ? new SiteCallVerifier(siteAssertionSecret) : null,
+    log: (message, err) => market.log('warn', 'sso', `${message}: ${(err as Error)?.message ?? String(err)}`),
+  }));
+  if (ssoConfig) {
+    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}`);
+  }
+
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
 
   // The OpenAI-compatible surface, mounted only when an operator has declared what it serves. A node with no
@@ -364,15 +399,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    */
   const modalityGates = new Map<string, ModalityGate>();
 
-  /**
-   * API keys for the `/v1` surface.
-   *
-   * Built outside the backends block because the routes that manage them are about the person, not about what
-   * this node happens to serve: somebody signed in should be able to see and revoke their keys on a node whose
-   * model server is down.
-   */
-  const openaiKeys = new OpenaiApiKeyStore(join(opts.home ?? tmpdir(), 'openai-keys.json'));
-  app.use(openaiApiKeysRoutes({ keys: openaiKeys, store, nodeAddress: cfg.identity.address, siteAssertionSecret: readSiteAssertionSecret(opts.home) }));
+  app.use(openaiApiKeysRoutes({ keys: openaiKeys, store, nodeAddress: cfg.identity.address, siteAssertionSecret, sso }));
 
   let deposits: DepositLedger | null = null;
   let depositWatcher: DepositWatcher | null = null;
