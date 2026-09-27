@@ -62,6 +62,27 @@ export interface DeviceGrant {
   claimed_at: number | null;
 }
 
+/** What a session made through AIN SSO remembers about the OIDC login it came from. */
+export interface SsoSessionFields {
+  iss: string;
+  sub: string;
+  /** OIDC session ID — what a back-channel logout names */
+  sid: string | null;
+  /** organizations the ID token named (scope `org`) */
+  orgs: { id: string; slug: string; name: string }[];
+  /** the organization selected at sign-in, when it is one of `orgs` */
+  org: string | null;
+}
+export interface SsoIdentityRow {
+  issuer: string; subject: string; principal: string; link_proof: string; linked_at: number;
+  name: string | null; email: string | null; sessions_not_before: number | null;
+}
+export interface SsoMembershipRow {
+  issuer: string; subject: string; org_id: string; org_slug: string | null; org_name: string | null;
+  status: 'active' | 'suspended' | 'deprovisioned'; app_role: string | null; groups: string[]; legacy_user_id: string | null;
+  applied_version: number; applied_at: number;
+}
+
 /** This key speaks for this person, until they say otherwise. */
 export interface Binding { delegate: string; owner: string; label: string | null; created_at: number; last_seen_at: number | null; }
 /** One recorded promise to build on a knowledge (item 312): the key that asked, when, and the child that kept it. */
@@ -400,6 +421,55 @@ export class Store {
     // Item 345: a download token used to be a bearer ticket — one purchase, unlimited redistribution for 24 hours,
     // recorded nowhere. Redemptions are counted per token so the seller can see (and cap) what one sale served.
     add('tokens', { redemptions: 'INTEGER NOT NULL DEFAULT 0', last_used: 'REAL', patch_id: 'TEXT' });
+    /*
+     * AIN SSO (docs/ain-sso.md). Additive only: a database written before this opens unchanged, and an older build
+     * reading a database written after it ignores these tables and columns — which is what a rollback needs.
+     *
+     * `sso_identities` is the link from a verified OIDC (issuer, subject) to the principal a session acts as on this
+     * node: `sso:<sub>` for an account first seen through AIN SSO, or a pre-SSO principal (`google:<sub>`, the owner
+     * of API keys made through the site's Google sign-in) proven to belong to the same person. The primary key is
+     * the concurrency guard for first logins; the unique principal index means one legacy principal can belong to
+     * at most one AIN account. Never keyed or matched by email — emails are reassigned.
+     *
+     * `sso_memberships` is what the provisioning adapter last applied per (account, organization): the status that
+     * every sign-in path checks, and the version that orders adapter requests. It is never deleted, so a suspension
+     * outlives every rollback switch (turning SSO off on the site or on this node included).
+     */
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sso_identities (issuer TEXT NOT NULL, subject TEXT NOT NULL, principal TEXT NOT NULL,
+        link_proof TEXT NOT NULL, linked_at REAL NOT NULL, name TEXT, email TEXT, sessions_not_before REAL,
+        PRIMARY KEY (issuer, subject));
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_identities_principal ON sso_identities(principal);
+      CREATE TABLE IF NOT EXISTS sso_link_history (id INTEGER PRIMARY KEY AUTOINCREMENT, issuer TEXT NOT NULL, subject TEXT NOT NULL,
+        principal TEXT NOT NULL, link_proof TEXT NOT NULL, linked_at REAL NOT NULL, unlinked_at REAL NOT NULL, reason TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS sso_memberships (issuer TEXT NOT NULL, subject TEXT NOT NULL, org_id TEXT NOT NULL,
+        org_slug TEXT, org_name TEXT, status TEXT NOT NULL, app_role TEXT, groups TEXT NOT NULL DEFAULT '[]', legacy_user_id TEXT,
+        applied_version INTEGER NOT NULL, applied_at REAL NOT NULL, PRIMARY KEY (issuer, subject, org_id));
+    `);
+    /**
+     * A session made through AIN SSO remembers which OIDC session (`sso_sid`) and account (`sso_sub`) it came from,
+     * so a back-channel logout or a suspension can find exactly the sessions it must end, and which organizations
+     * the ID token named, so an API key made in it can be scoped to one of them.
+     */
+    add('sessions', { sso_iss: 'TEXT', sso_sub: 'TEXT', sso_sid: 'TEXT', sso_orgs: 'TEXT', sso_org: 'TEXT' });
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_sso_sub ON sessions(sso_sub);
+      CREATE INDEX IF NOT EXISTS idx_sessions_sso_sid ON sessions(sso_sid);`);
+  }
+
+  /**
+   * Run `fn` in one SQLite transaction. `node:sqlite` is synchronous, so nothing else in this process can run in
+   * between; `BEGIN IMMEDIATE` also holds the write lock against another process on the same file.
+   */
+  transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const out = fn();
+      this.db.exec('COMMIT');
+      return out;
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* the failed statement may already have ended it */ }
+      throw error;
+    }
   }
 
   private closed = false;
@@ -572,10 +642,12 @@ export class Store {
   }
 
   // sessions
-  putSession(token: string, ttlMs: number, who?: { subject: string; scheme: string; viaKey?: string | null }) {
+  putSession(token: string, ttlMs: number, who?: { subject: string; scheme: string; viaKey?: string | null; sso?: SsoSessionFields | null }) {
     const now = Date.now();
-    this.db.prepare('INSERT INTO sessions (token, created_at, expires_at, subject, scheme, via_key) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(token, now, now + ttlMs, who?.subject?.toLowerCase() ?? null, who?.scheme ?? null, who?.viaKey?.toLowerCase() ?? null);
+    const sso = who?.sso ?? null;
+    this.db.prepare('INSERT INTO sessions (token, created_at, expires_at, subject, scheme, via_key, sso_iss, sso_sub, sso_sid, sso_orgs, sso_org) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(token, now, now + ttlMs, who?.subject?.toLowerCase() ?? null, who?.scheme ?? null, who?.viaKey?.toLowerCase() ?? null,
+        sso?.iss ?? null, sso?.sub ?? null, sso?.sid ?? null, sso ? JSON.stringify(sso.orgs) : null, sso?.org ?? null);
   }
   /**
    * Who is behind this token, or null if it is not a live session.
@@ -584,10 +656,15 @@ export class Store {
    * than being handed a guess. Every current caller treats it as the node's own key, because that is the only
    * identity that could hold a session then.
    */
-  getSession(token: string): { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number } | null {
-    const r = this.db.prepare('SELECT subject, scheme, via_key, expires_at FROM sessions WHERE token = ?').get(token) as
-      { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number } | undefined;
-    return r && r.expires_at > Date.now() ? r : null;
+  getSession(token: string): { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number; sso: SsoSessionFields | null } | null {
+    const r = this.db.prepare('SELECT subject, scheme, via_key, expires_at, sso_iss, sso_sub, sso_sid, sso_orgs, sso_org FROM sessions WHERE token = ?').get(token) as
+      { subject: string | null; scheme: string | null; via_key: string | null; expires_at: number;
+        sso_iss: string | null; sso_sub: string | null; sso_sid: string | null; sso_orgs: string | null; sso_org: string | null } | undefined;
+    if (!r || r.expires_at <= Date.now()) return null;
+    let orgs: SsoSessionFields['orgs'] = [];
+    try { orgs = r.sso_orgs ? JSON.parse(r.sso_orgs) as SsoSessionFields['orgs'] : []; } catch { orgs = []; }
+    const sso = r.sso_iss && r.sso_sub ? { iss: r.sso_iss, sub: r.sso_sub, sid: r.sso_sid, orgs, org: r.sso_org } : null;
+    return { subject: r.subject, scheme: r.scheme, via_key: r.via_key, expires_at: r.expires_at, sso };
   }
   /** Every live session for one address — what a "signed in on 3 devices" list reads, and what revoking clears. */
   sessionsOf(subject: string): { token: string; scheme: string | null; created_at: number; expires_at: number }[] {
@@ -690,6 +767,64 @@ export class Store {
   }
   /** Sign every operator session out — what a password change must do, or a stolen cookie outlives it (item 121). */
   deleteAllSessions(): number { return this.db.prepare('DELETE FROM sessions').run().changes as number; }
+
+  // AIN SSO (docs/ain-sso.md) — plain data access; the rules live in sso.ts
+  ssoIdentity(issuer: string, subject: string): SsoIdentityRow | null {
+    return (this.db.prepare('SELECT * FROM sso_identities WHERE issuer = ? AND subject = ?').get(issuer, subject) as SsoIdentityRow | undefined) ?? null;
+  }
+  ssoIdentityByPrincipal(principal: string): SsoIdentityRow | null {
+    return (this.db.prepare('SELECT * FROM sso_identities WHERE principal = ?').get(principal.toLowerCase()) as SsoIdentityRow | undefined) ?? null;
+  }
+  /** Insert-if-absent; the primary key decides a race between two first logins, and the caller re-reads. */
+  insertSsoIdentity(row: { issuer: string; subject: string; principal: string; linkProof: string; name?: string | null; email?: string | null }): void {
+    this.db.prepare(`INSERT INTO sso_identities (issuer, subject, principal, link_proof, linked_at, name, email) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(issuer, subject) DO NOTHING`).run(row.issuer, row.subject, row.principal.toLowerCase(), row.linkProof, Date.now(), row.name ?? null, row.email ?? null);
+  }
+  /** Re-point an identity to another principal, keeping the previous link in `sso_link_history`. */
+  relinkSsoIdentity(issuer: string, subject: string, principal: string, linkProof: string, reason: string): void {
+    const cur = this.ssoIdentity(issuer, subject);
+    if (!cur) throw new Error('no such identity');
+    this.db.prepare('INSERT INTO sso_link_history (issuer, subject, principal, link_proof, linked_at, unlinked_at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(issuer, subject, cur.principal, cur.link_proof, cur.linked_at, Date.now(), reason);
+    this.db.prepare('UPDATE sso_identities SET principal = ?, link_proof = ?, linked_at = ? WHERE issuer = ? AND subject = ?')
+      .run(principal.toLowerCase(), linkProof, Date.now(), issuer, subject);
+  }
+  ssoLinkHistory(issuer: string, subject: string): { principal: string; link_proof: string; linked_at: number; unlinked_at: number; reason: string }[] {
+    return this.db.prepare('SELECT principal, link_proof, linked_at, unlinked_at, reason FROM sso_link_history WHERE issuer = ? AND subject = ? ORDER BY id')
+      .all(issuer, subject) as { principal: string; link_proof: string; linked_at: number; unlinked_at: number; reason: string }[];
+  }
+  updateSsoProfile(issuer: string, subject: string, profile: { name?: string | null; email?: string | null }): void {
+    this.db.prepare('UPDATE sso_identities SET name = COALESCE(?, name), email = COALESCE(?, email) WHERE issuer = ? AND subject = ?')
+      .run(profile.name ?? null, profile.email ?? null, issuer, subject);
+  }
+  /** Sessions and legacy cookies issued before this instant are dead (a logout for the whole account). */
+  setSsoSessionsNotBefore(issuer: string, subject: string, at: number): void {
+    this.db.prepare('UPDATE sso_identities SET sessions_not_before = ? WHERE issuer = ? AND subject = ?').run(at, issuer, subject);
+  }
+  ssoMembership(issuer: string, subject: string, orgId: string): SsoMembershipRow | null {
+    const r = this.db.prepare('SELECT * FROM sso_memberships WHERE issuer = ? AND subject = ? AND org_id = ?').get(issuer, subject, orgId) as
+      (Omit<SsoMembershipRow, 'groups'> & { groups: string }) | undefined;
+    return r ? { ...r, groups: JSON.parse(r.groups) as string[] } : null;
+  }
+  ssoMemberships(issuer: string, subject: string): SsoMembershipRow[] {
+    return (this.db.prepare('SELECT * FROM sso_memberships WHERE issuer = ? AND subject = ? ORDER BY org_id').all(issuer, subject) as
+      (Omit<SsoMembershipRow, 'groups'> & { groups: string })[]).map((r) => ({ ...r, groups: JSON.parse(r.groups) as string[] }));
+  }
+  putSsoMembership(m: Omit<SsoMembershipRow, 'applied_at'>): void {
+    this.db.prepare(`INSERT INTO sso_memberships (issuer, subject, org_id, org_slug, org_name, status, app_role, groups, legacy_user_id, applied_version, applied_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(issuer, subject, org_id) DO UPDATE SET org_slug = excluded.org_slug, org_name = excluded.org_name, status = excluded.status,
+        app_role = excluded.app_role, groups = excluded.groups, legacy_user_id = excluded.legacy_user_id,
+        applied_version = excluded.applied_version, applied_at = excluded.applied_at`)
+      .run(m.issuer, m.subject, m.org_id, m.org_slug, m.org_name, m.status, m.app_role, JSON.stringify(m.groups), m.legacy_user_id, m.applied_version, Date.now());
+  }
+  /** End every session made through AIN SSO for one account, or only those of one OIDC session. Returns how many. */
+  deleteSsoSessions(issuer: string, subject: string | null, sid: string | null): number {
+    if (sid && subject) return this.db.prepare('DELETE FROM sessions WHERE sso_iss = ? AND sso_sub = ? AND sso_sid = ?').run(issuer, subject, sid).changes as number;
+    if (sid) return this.db.prepare('DELETE FROM sessions WHERE sso_iss = ? AND sso_sid = ?').run(issuer, sid).changes as number;
+    if (subject) return this.db.prepare('DELETE FROM sessions WHERE sso_iss = ? AND sso_sub = ?').run(issuer, subject).changes as number;
+    return 0;
+  }
 
   // x402 nonces + replay protection
   putNonce(nonce: string, resource: string, amount: string, payTo: string, ttlMs: number) {
