@@ -410,6 +410,28 @@ test('the registry: scopes, sign-in, organizations, search, pages and the contra
   } finally { await h.close(); }
 });
 
+test('the feed never names a private or unlisted agent to anyone but its owner; an org agent only to members; a public→private change is told to everyone who saw it', async () => {
+  const h = await harness();
+  const events = async (who: Parameters<typeof headersFor>[0] | null) => {
+    const r = await fetch(`${h.base}/api/shared-agents/events`, who ? { headers: headersFor(who) } : {});
+    return (await r.json() as AgentEventPage).events.map((e) => `${e.type}:${e.resourceId.split('#')[1]}`);
+  };
+  const send = (who: Parameters<typeof headersFor>[0], method: string, path: string, body?: Record<string, unknown>) =>
+    fetch(`${h.base}${path}`, { method, headers: headersFor(who), ...(body ? { body: JSON.stringify({ model: MODEL, ...body }) } : {}) });
+  try {
+    assert.equal((await send({ address: ALICE }, 'POST', '/api/hosted-agents', { id: 'pub', name: 'P' })).status, 201);
+    assert.equal((await send({ address: ALICE }, 'POST', '/api/hosted-agents', { id: 'priv', name: 'S', visibility: 'private' })).status, 201);
+    assert.equal((await send({ address: ALICE }, 'POST', '/api/hosted-agents', { id: 'unl', name: 'U', visibility: 'unlisted' })).status, 201);
+    assert.deepEqual(await events(null), ['agent.published:pub'], 'anonymous learns only about the public agent');
+    assert.deepEqual(await events({ address: BOB }), ['agent.published:pub'], 'another wallet learns nothing more');
+    assert.deepEqual(await events({ address: ALICE }), ['agent.published:pub', 'agent.published:priv', 'agent.published:unl'], 'the owner sees all of hers');
+    assert.equal((await send({ address: ALICE }, 'PUT', '/api/hosted-agents/pub', { id: 'pub', name: 'P', visibility: 'private' })).status, 200);
+    assert.deepEqual(await events(null), ['agent.published:pub', 'agent.unpublished:pub'], 'whoever saw it public is told it went away');
+    assert.equal((await send({ address: ALICE }, 'DELETE', '/api/hosted-agents/priv')).status, 200);
+    assert.deepEqual((await events(null)).filter((e) => e.endsWith(':priv')), [], 'deleting a private agent tells nobody else');
+  } finally { await h.close(); }
+});
+
 test('the feed over HTTP: create, update, visibility withdrawn, delete — and a cursor that pages it', async () => {
   const h = await harness();
   const events = async (query = '') => {

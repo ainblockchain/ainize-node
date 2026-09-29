@@ -195,34 +195,58 @@ const EVENT_CURSOR = /^ev_(\d{1,15})$/;
  * newer than it holds (events.ts `applyEvents`); when its cursor predates what is still held — or names a sequence
  * this process never issued, after a restart — `gap` tells it to re-list rather than trust the page.
  */
+/**
+ * Who may learn that an event happened. A snapshot at append time (the spec may be gone by the time the feed
+ * is read): the feed must not reveal a private or unlisted agent's id to anyone but its owner, nor an org
+ * agent's to non-members. For an update, the audience is the WIDER of before/after, so whoever saw the agent
+ * as public also learns that it was unpublished.
+ */
+export interface AgentEventAudience { visibility: HostedAgentVisibility; owner: string; orgId?: string | null }
+export const widerAudience = (a: AgentEventAudience, b: AgentEventAudience): AgentEventAudience => {
+  const rank: Record<HostedAgentVisibility, number> = { public: 3, org: 2, unlisted: 1, private: 0 };
+  return rank[a.visibility] >= rank[b.visibility] ? a : b;
+};
+export const audienceOf = (spec: HostedAgentSpec): AgentEventAudience => ({ visibility: hostedAgentVisibilityOf(spec), owner: spec.owner, orgId: spec.orgId ?? null });
+
 export class SharedAgentEvents {
   private readonly events: AgentEvent[] = [];
+  private readonly audiences = new Map<string, AgentEventAudience>();
   private seq = 0;
   /** The sequence number of the last event evicted from the buffer. */
   private dropped = 0;
 
   constructor(private readonly max = SHARED_AGENT_EVENTS_MAX) {}
 
-  append(e: { type: AgentEventType; registryIssuer: string; agentId: string; version: number; releaseId?: string }, now = Date.now()): AgentEvent {
+  append(e: { type: AgentEventType; registryIssuer: string; agentId: string; version: number; releaseId?: string; audience?: AgentEventAudience }, now = Date.now()): AgentEvent {
     const seq = ++this.seq;
     const event: AgentEvent = {
       kind: 'agent', type: e.type, eventId: `evt_${seq}`, resourceId: `${e.registryIssuer.replace(/\/+$/, '')}#${e.agentId}`,
       version: e.version, occurredAt: new Date(now).toISOString(), ...(e.releaseId ? { releaseId: e.releaseId } : {}),
     };
     this.events.push(event);
-    while (this.events.length > this.max) { this.events.shift(); this.dropped += 1; }
+    // No audience given (proxied agents, tests): public.
+    this.audiences.set(event.eventId, e.audience ?? { visibility: 'public', owner: '' });
+    while (this.events.length > this.max) { const gone = this.events.shift()!; this.audiences.delete(gone.eventId); this.dropped += 1; }
     return event;
   }
 
+  /** May `caller` see this event at all. Mirrors `listsHostedAgentFor` on the audience snapshot. */
+  visibleTo(event: AgentEvent, caller: AgentCaller | null): boolean {
+    const a = this.audiences.get(event.eventId);
+    if (!a || a.visibility === 'public') return true;
+    if (caller && a.owner === caller.subject) return true;
+    return a.visibility === 'org' && !!caller && !!a.orgId && caller.orgMember(a.orgId);
+  }
+
   /** Events after `cursor` (all held events when absent). Null when the cursor is not one this feed issues. */
-  page(cursor: string | null | undefined): AgentEventPage | null {
+  page(cursor: string | null | undefined, caller: AgentCaller | null = null): AgentEventPage | null {
     let after = 0;
     if (cursor) {
       const m = EVENT_CURSOR.exec(cursor);
       if (!m) return null;
       after = Number(m[1]);
     }
-    const events = after > this.seq ? [] : this.events.filter((e) => Number(e.eventId.slice(4)) > after);
+    const events = after > this.seq ? [] : this.events.filter((e) => Number(e.eventId.slice(4)) > after && this.visibleTo(e, caller));
     // A cursor older than the buffer, or ahead of anything this process issued (a restart): what the consumer
     // holds cannot be brought up to date by events alone.
     const gap = !!cursor && (after > this.seq || after < this.dropped);
@@ -435,7 +459,7 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
   }));
 
   router.get('/api/shared-agents/events', guarded((req, res) => {
-    const page = deps.events.page(one(req.query.cursor));
+    const page = deps.events.page(one(req.query.cursor), deps.caller(req));
     if (!page) return invalid(res, 'cursor is not one this node issued');
     res.json(page);
   }));

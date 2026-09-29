@@ -13,7 +13,7 @@ import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
 import { parseNodeModelRef } from './peer-models.js';
 import { hostedAgentMediaOf, hostedAgentSpecInput, hostedAgentUsesCode, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
-import { canSeeHostedAgent, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type SharedAgentEvents } from './shared-agents.js';
+import { canSeeHostedAgent, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type SharedAgentEvents, audienceOf, widerAudience } from './shared-agents.js';
 
 export interface HostedAgentRoutesDeps {
   store: HostedAgentStore;
@@ -166,7 +166,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     try {
       const spec = deps.store.create(input, who.subject, deps.reserved);
       deps.host.apply(spec);
-      deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}` });
+      deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
       res.status(201).json({ agent: view(req, spec, false), a2a_url: view(req, spec, false).a2a_url, card_url: view(req, spec, false).card_url });
     } catch (e) {
       if (e instanceof HostedAgentIdTakenError) return refuse(res, 409, 'id_taken', e.message);
@@ -190,7 +190,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (input.id !== prior.id) return refuse(res, 400, 'invalid_request', 'an agent\'s id cannot change — it is its public address');
     const spec = deps.store.update(prior.id, input);
     deps.host.apply(spec);
-    deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}` });
+    deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });
     res.json({ agent: view(req, spec, true) });
   });
 
@@ -201,7 +201,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     deps.secrets.dropAgent(spec.id);
     await deps.host.remove(spec.id);
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
-    deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: spec.id, version: spec.version + 1 });
+    deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: spec.id, version: spec.version + 1, audience: audienceOf(spec) });
     res.json({ deleted: spec.id });
   });
 
