@@ -131,6 +131,32 @@ registration is removed. So:
 2. Check it in its Live test.
 3. Remove the old registration where it lives (`ainize agent rm <id>`, restart that node) and stop the old process.
 
+## 5. Sharing: who sees which agent (an organization's list)
+
+Every agent the node lists — hosted, linked (`/api/linked-agents`) or a `config.json` agent — has a **visibility**:
+`public` (listed to everyone, advertised to peers), `org` (listed to members of one AIN SSO organization), `private`
+(the owner's alone) or `unlisted` (answers by id, listed to nobody). Visibility is about *listing*: the A2A address
+`/agents/<id>` answers to anyone who holds it either way. Only `public` agents reach `/api/agents` and gossip.
+
+- **`/api/shared-agents?scope=shared_with_org`** is the organization's list — what AIN Teams imports. It needs an AIN
+  SSO session of a member, or an **organization API key** (`POST /api/keys {"org_id": …}` by a member, sent as
+  `Authorization: Bearer ainize-sk-…`). Give AIN Teams one such key (`AINIZE_API_KEY`) and it reads, and registers
+  into, that organization's list with no browser session.
+- **Owners** set `visibility`/`orgId` when they create or change an agent, for an organization they belong to.
+- **You, the operator**, may put *any* hosted or linked agent into *any* organization's list, or take it out:
+
+  ```
+  curl -X PUT <public url>/api/shared-agents/<id>/visibility -H 'content-type: application/json' \
+       -b "ainize_session=<your session>" -d '{"visibility":"org","orgId":"<org id>"}'
+  ```
+
+  Ownership does not change; the change is a new release and appears in `/api/shared-agents/events`.
+- **`config.json` agents** take the same two fields in the file — `agents[].visibility`, `agents[].orgId` — and a
+  restart; the route refuses them and names the field, so the file stays the operator's record.
+
+Check: `curl -s '<public url>/api/shared-agents?scope=public'` no longer lists an agent you moved to `org`;
+`curl -s -H 'Authorization: Bearer <org key>' '<public url>/api/shared-agents?scope=shared_with_org'` does.
+
 ## Rollback
 
 | what | how |

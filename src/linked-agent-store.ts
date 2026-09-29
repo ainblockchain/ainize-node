@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
+import { HOSTED_AGENT_VISIBILITIES, type HostedAgentVisibility } from './hosted-agent-types.js';
 
 export interface LinkedAgent {
   /** 1–40 lower-case letters, digits and hyphens: the public address is `/agents/<id>`, so it never changes. */
@@ -25,6 +26,10 @@ export interface LinkedAgent {
   upstream: string;
   /** The principal that registered it: a lower-case wallet address, or an AIN SSO principal (`sso:<sub>`). */
   owner: string;
+  /** Who may see and list it — the same four values a hosted agent has (hosted-agent-types.ts). Absent → `public`. */
+  visibility?: HostedAgentVisibility;
+  /** The organization an `org`-visible agent is shared with (an AIN SSO org id). Null otherwise. */
+  orgId?: string | null;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -41,8 +46,16 @@ export const linkedAgentInput = z.object({
   name: z.string().trim().max(80).default(''),
   description: z.string().trim().max(500).default(''),
   upstream: z.string().trim().url('upstream is the agent\'s http(s) address').refine((u) => /^https?:\/\//i.test(u), 'upstream must be http or https'),
+  // Optional so a caller that predates it keeps working: an absent value is `public`, what every agent was.
+  visibility: z.enum(HOSTED_AGENT_VISIBILITIES).default('public'),
+  orgId: z.string().trim().min(1).max(256).regex(/^[^\s/\\]+$/, 'an org id is one token without whitespace or slashes').nullable().default(null),
+}).superRefine((v, ctx) => {
+  if (v.visibility === 'org' && !v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'org visibility names the organization (orgId)' });
+  if (v.visibility !== 'org' && v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId goes with visibility "org"' });
 });
 export type LinkedAgentInput = z.infer<typeof linkedAgentInput>;
+/** What `setSharing` changes: the two fields that say who sees the agent, and nothing about where it runs. */
+export interface AgentSharing { visibility: HostedAgentVisibility; orgId: string | null }
 
 export interface LinkedAgentStoreLimits {
   perOwner: number;
@@ -98,6 +111,16 @@ export class LinkedAgentStore {
     const prior = this.agents.get(id);
     if (!prior) throw new Error(`no linked agent "${id}"`);
     const agent: LinkedAgent = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
+    this.agents.set(id, agent);
+    this.save();
+    return agent;
+  }
+
+  /** Change who sees the agent — the operator's or the owner's call (shared-agents.ts). Bumps the version like any change. */
+  setSharing(id: string, sharing: AgentSharing, now = Date.now()): LinkedAgent {
+    const prior = this.agents.get(id);
+    if (!prior) throw new Error(`no linked agent "${id}"`);
+    const agent: LinkedAgent = { ...prior, visibility: sharing.visibility, orgId: sharing.visibility === 'org' ? sharing.orgId : null, version: prior.version + 1, updatedAt: now };
     this.agents.set(id, agent);
     this.save();
     return agent;

@@ -43,8 +43,8 @@ export function siteSession(req: Request, store: Store, nodeAddress: string): Si
   const row = store.getSession(token);
   if (!row) return null;
   // A session made through AIN SSO is not an address and proves no wallet: every reader of this function treats
-  // `address` as one (ownership, hosted agents, deposits), so it does not see such a session at all. The two
-  // places an SSO session means something ask for it by name (`ssoSession`).
+  // `address` as one (ownership, deposits), so it does not see such a session at all. The places an SSO session
+  // means something ask for it by name (`ssoSession`).
   if (row.scheme === SSO_SESSION_SCHEME) return null;
   return { address: row.subject ?? nodeAddress.toLowerCase(), scheme: row.scheme ?? 'ain', viaKey: row.via_key ?? null };
 }
@@ -56,7 +56,8 @@ export interface SsoSiteSession extends SsoSessionFields {
 
 /**
  * The AIN SSO session on this request, or null. Read only where an SSO session is meant to count: `/api/auth/me`
- * (so the site can say who is signed in) and `/api/keys` (the one thing it grants, as a Google session did).
+ * (so the site can say who is signed in), `/api/keys` (what it grants, as a Google session did) and the agents an
+ * SSO account makes and shares with its organization (shared-agents.ts `agentCallerOf`).
  */
 export function ssoSession(req: Request, store: Store): SsoSiteSession | null {
   const token = siteSessionToken(req);

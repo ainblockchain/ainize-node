@@ -171,7 +171,9 @@ test('register over HTTP → catalogue row with owner → card and calls at /age
     assert.match(JSON.stringify(await call.json()), /you asked: hello/);
 
     // ownership
-    assert.equal((await fetch(`${base}/api/linked-agents/coffee`, { headers: as(BOB) })).status, 403);
+    const asBob = await fetch(`${base}/api/linked-agents/coffee`, { headers: as(BOB) });
+    assert.equal(asBob.status, 200, 'a public agent is readable by id to anyone');
+    assert.equal('upstream' in ((await asBob.json()) as { agent: Record<string, unknown> }).agent, false, 'but only the owner is told where it runs');
     const detail = (await (await fetch(`${base}/api/linked-agents/coffee`, { headers: as(ALICE) })).json()) as { agent: { upstream: string } };
     assert.equal(detail.agent.upstream, agent.url, 'the owner sees the upstream; the catalogue never shows it');
     assert.equal((await fetch(`${base}/api/linked-agents/coffee`, { method: 'PUT', headers: as(BOB), body: JSON.stringify({ ...body, name: 'Stolen' }) })).status, 403);
