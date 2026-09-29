@@ -81,3 +81,9 @@ benchmark, five-GPU-node deployment or public release.
 
 `deploy/` has the compose file and the host requirements (docker group, trainer GPUs disjoint from the
 serving GPUs). `docs/` is the design record. `e2e/` drives a real node in a browser.
+
+### Pin a public chat model to a peer
+
+Set `AINIZE_PREFERRED_CHAT_PEERS` to a JSON map from a bare model ID to a peer node address, for example `{"Qwen3.8-Flash-Next":"0x...40-hex-digits..."}`. A pinned bare model uses that peer even when a local backend advertises the same name. If the peer is unavailable, the request fails instead of falling back to a different local context window. Explicit `model@node` references still select the named node.
+
+The pin applies to `/v1/chat/completions` and base-mode `/api/chat` playground requests without patches. The playground preserves its `base.content` response field. Tool messages, schemas and caller token budgets reach the peer unchanged through `/v1`; the provider enforces the total input-plus-output context window.

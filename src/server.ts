@@ -1,3 +1,4 @@
+import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
  * Assemble and run a marketplace node: ledger + store + blobs + runtime + market + p2p + verifier + HTTP.
@@ -274,6 +275,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}`);
   }
 
+  const pinnedChatPeers = preferredChatPeers(process.env.AINIZE_PREFERRED_CHAT_PEERS);
+  app.use(preferredChatPlayground({ routes: pinnedChatPeers, peers: () => peerModelAccess, fetch: (peer, body) => fetchPeerChat(cfg.identity, peer, body) }));
   app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
 
   // The OpenAI-compatible surface, mounted only when an operator has declared what it serves. A node with no
@@ -504,6 +507,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       depositWatcher.start(cfg.deposits.pollMs ?? 30_000);
     }
     app.use(openaiSurfaceRouter({
+      preferredChatPeers: pinnedChatPeers,
       registry: inferenceRegistry!,
       keys: openaiKeys,
       market,
