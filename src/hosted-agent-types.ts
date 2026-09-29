@@ -21,6 +21,8 @@ export interface HostedAgentSpec extends HostedAgentRuntimeSpec {
   visibility?: HostedAgentVisibility;
   /** The organization an `org`-visible agent is shared with (an AIN SSO org id). Null otherwise. */
   orgId?: string | null;
+  /** Who made the last change, when it was not a create: the owner or a member of the organization. */
+  updatedBy?: string;
   createdAt: number;
   updatedAt: number;
 }

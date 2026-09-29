@@ -143,6 +143,11 @@ Every agent the node lists — hosted, linked (`/api/linked-agents`) or a `confi
   `Authorization: Bearer ainize-sk-…`). Give AIN Teams one such key (`AINIZE_API_KEY`) and it reads, and registers
   into, that organization's list with no browser session.
 - **Owners** set `visibility`/`orgId` when they create or change an agent, for an organization they belong to.
+- **Members manage `org` hosted agents.** A member of the organization a hosted agent is shared with (an AIN SSO
+  member, or that organization's API key) may read its whole spec, change its prompt and code, set its secrets and
+  read its logs — `GET /api/hosted-agents?manageable=1` lists what a caller may manage, with `can_delete`. Removing it
+  and changing its `visibility`/`orgId` stay the owner's; each change records `updated_by`. An agent the caller
+  cannot see answers 404, one they see but may not change 403.
 - **You, the operator**, may put *any* hosted or linked agent into *any* organization's list, or take it out:
 
   ```
