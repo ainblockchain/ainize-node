@@ -8,16 +8,18 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import express from 'express';
-import { buildAgents } from './agents.js';
+import { buildAgents, probeUpstreamCard } from './agents.js';
 import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-store.js';
 import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
+import { LinkedAgentStore } from './linked-agent-store.js';
+import { linkedAgentRoutes } from './linked-agent-routes.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
-import { siteSession } from './site-session.js';
+import { siteSession, ssoSession } from './site-session.js';
 import { buildSam, makeMeshRelay } from './sam.js';
 import { sseAwareCompression } from './sse-aware-compression.js';
 import cookieParser from 'cookie-parser';
@@ -303,6 +305,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   });
   const hostedSecrets = new HostedAgentSecretStore(join(hostedHome, 'hosted-agent-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
   /**
+   * Agents people registered by URL (linked-agent-store.ts; design in docs/superpowers/specs/2026-09-29-linked-agents-design.md).
+   * Listed and proxied like config agents, owned like hosted ones. The three id namespaces reserve each other below.
+   */
+  const linkedStore = new LinkedAgentStore(join(hostedHome, 'linked-agents.json'));
+  /**
    * Models on other nodes (peer-models.ts): what the peer table says each fresh peer serves, and a signed call to
    * it. Read on every use — gossip updates the table every few seconds and a peer can come and go between turns.
    */
@@ -355,6 +362,22 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   await hostedHost.start(hostedStore.list());
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
+  market.linkedAgents = linkedStore;
+  app.use(linkedAgentRoutes({
+    store: linkedStore,
+    // A wallet session or an AIN SSO one: a URL is not a node resource, so the principal that `/api/keys` accepts is
+    // enough here (docs/ain-sso.md §1). A suspended SSO account is refused the way `/api/keys` refuses it.
+    sessionPrincipal: (req) => {
+      const wallet = siteSession(req, store, cfg.identity.address);
+      if (wallet) return wallet.address.toLowerCase();
+      const viaSso = ssoSession(req, store);
+      if (viaSso && !sso.isBlocked(viaSso.iss, viaSso.sub)) return viaSso.principal;
+      return null;
+    },
+    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    probe: probeUpstreamCard,
+  }));
 
   app.use(publicModelsRouter({
     registry: inferenceRegistry,
@@ -375,7 +398,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     host: hostedHost,
     registry: () => inferenceRegistry,
     sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
-    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id),
+    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
     peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
@@ -498,6 +521,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const mesh = makeMeshRelay(samDeps);
   app.use(buildAgents(cfg, {
     hosted: hostedAgents,
+    linked: linkedStore,
     knownNodes: () => market.knownNodes(),
     selfAddress: cfg.identity.address,
     relay: mesh,

@@ -16,7 +16,7 @@ import {
   type RetireRecord, type SubscriptionRecord, type SupersedeRecord, type PriceRecord, type PayoutRecord, type SubscriptionTerms, PRICE_RE,
   sameAddr,
 } from '@ainize/core';
-import { agentAdverts, refreshAgentHealth, type HostedAgentsDeps } from './agents.js';
+import { agentAdverts, refreshAgentHealth, type HostedAgentsDeps, type LinkedAgentSource } from './agents.js';
 import { peerModelAdvertsOf, peerModelsServing } from './peer-models.js';
 import { BlobStore } from './blobs.js';
 import { DatasetBlobStore } from './dataset-blobs.js';
@@ -574,6 +574,8 @@ interface PaymentSubject {
 export class Market {
   /** Agents this node runs (hosted-agent-host.ts), set by server.ts once the host is up; advertised on gossip. */
   hostedAgents: HostedAgentsDeps | null = null;
+  /** Agents people registered by URL (linked-agent-store.ts), set by server.ts; advertised beside the config agents. */
+  linkedAgents: LinkedAgentSource | null = null;
   inferenceRecords?: InferenceRecords;
   /**
    * This PROCESS's id, minted at start-up and carried in `PeerInfo.instance` (item 139). Two endpoints answering for
@@ -4995,8 +4997,8 @@ export class Market {
   async selfInfo(): Promise<PeerInfo> {
     const st = await this.runtime.status();
     // What this node's agents are doing, refreshed at most once a minute however often gossip asks (agents.ts).
-    await refreshAgentHealth(this.cfg).catch(() => {});
-    const agents = agentAdverts(this.cfg, this.publicUrl, this.hostedAgents ?? undefined);
+    await refreshAgentHealth(this.cfg, 60_000, this.linkedAgents ?? undefined).catch(() => {});
+    const agents = agentAdverts(this.cfg, this.publicUrl, this.hostedAgents ?? undefined, this.linkedAgents ?? undefined);
     const peerBackends = peerModelAdvertsOf(this.cfg.backends, peerModelsServing(this.cfg));
     return {
       address: this.address, public_key: this.cfg.identity.publicKey, name: this.cfg.name, endpoint: this.publicUrl, roles: this.cfg.roles,

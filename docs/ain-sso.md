@@ -37,6 +37,11 @@ or node link (those need an eip191 signature anyway), manage hosted agents or cl
 `/api/auth/me` reports it in a separate `sso` field and leaves `signedIn`/`subject` meaning "an
 address is here".
 
+One more thing it can do, since 2026-09-29: register **linked agents** (`/api/linked-agents`,
+`docs/superpowers/specs/2026-09-29-linked-agents-design.md`). A linked agent is an external A2A URL the
+node lists and proxies — not a node resource the way a hosted agent is — and its owner is the same
+principal string that owns API keys. Hosted agents stay wallet-only.
+
 ## 2. Organizations
 
 ainize has no organizations, roles or groups of its own. An AIN organization appears in one place:
