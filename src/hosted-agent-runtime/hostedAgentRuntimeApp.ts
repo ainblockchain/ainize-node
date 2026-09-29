@@ -121,10 +121,33 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
     return result;
   }
 
+  /**
+   * The streamed twin of the rule above: a retried `message/stream` replays the finished task (or the reply
+   * message) as its single event, so the client sees the same answer it would have seen, and nothing runs twice.
+   */
   override async *sendMessageStream(...args: Parameters<DefaultRequestHandler['sendMessageStream']>): ReturnType<DefaultRequestHandler['sendMessageStream']> {
+    const key = this.dedupeKey(args[0]?.message);
+    const prior = key ? this.remembered(key) : undefined;
+    if (prior !== undefined) { yield prior as never; return; }
     const id = (args[0]?.message as { messageId?: string } | undefined)?.messageId;
     if (id) this.streaming.add(id);
-    try { yield* super.sendMessageStream(...args); } finally { if (id) this.streaming.delete(id); }
+    let taskId: string | undefined;
+    let lastMessage: unknown;
+    try {
+      for await (const event of super.sendMessageStream(...args)) {
+        const e = event as { kind?: string; id?: string; taskId?: string };
+        if (e.kind === 'task' && e.id) taskId = e.id;
+        else if (e.kind === 'status-update' && e.taskId) taskId = e.taskId;
+        else if (e.kind === 'message') lastMessage = event;
+        yield event;
+      }
+    } finally { if (id) this.streaming.delete(id); }
+    if (!key) return;
+    let final: unknown = lastMessage;
+    if (taskId) {
+      try { final = await (this as unknown as { getTask: (p: { id: string }) => Promise<unknown> }).getTask({ id: taskId }); } catch { final = lastMessage; }
+    }
+    if (final !== undefined) this.remember(key, final);
   }
 }
 

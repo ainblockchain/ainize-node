@@ -115,6 +115,26 @@ test('message/stream: slow steps are reported while they run (opening a file)', 
   } finally { await agent.close(); }
 });
 
+test('message/stream retried with the same messageId replays the finished task; the model runs once', async () => {
+  resetHostedAgentNativeToolsRefusedForTest();
+  const agent = await startAgent();
+  try {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'message/stream', params: { message: { kind: 'message', role: 'user', messageId: 'm-retry-stream', contextId: 'ctx-retry', parts: [{ kind: 'text', text: 'hi' }] } } });
+    const before = streamedRequests.length;
+    const first = frames(await (await fetch(agent.base, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' }, body })).text());
+    const taskId = first[0]!.id as string;
+    assert.equal(streamedRequests.length, before + 1, 'one model call');
+    const again = frames(await (await fetch(agent.base, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' }, body })).text());
+    assert.equal(streamedRequests.length, before + 1, 'the retry did not call the model again');
+    assert.equal(again.length, 1, 'one event: the finished task');
+    const replay = again[0] as { kind: string; id: string; status: { state: string }; artifacts: { parts: { text: string }[] }[] };
+    assert.equal(replay.kind, 'task');
+    assert.equal(replay.id, taskId, 'the very same task');
+    assert.equal(replay.status.state, 'completed');
+    assert.equal(replay.artifacts.map((a) => a.parts.map((p) => p.text).join('')).join(''), 'Hello there, friend.', 'with the whole answer');
+  } finally { await agent.close(); }
+});
+
 test('message/send is unchanged: one message, the model not asked to stream', async () => {
   resetHostedAgentNativeToolsRefusedForTest();
   const agent = await startAgent();
