@@ -131,27 +131,37 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
     if (prior !== undefined) { yield prior as never; return; }
     const id = (args[0]?.message as { messageId?: string } | undefined)?.messageId;
     if (id) this.streaming.add(id);
-    // Assemble the finished task from the stream itself (first event: the task; artifact-update: the answer;
-    // last status-update: the final state), so the replay does not depend on what the task store kept.
+    // The SDK's internal stream events are `{ payload: { $case: 'task' | 'artifactUpdate' | 'statusUpdate', value } }`
+    // with text parts as `{ content: { $case: 'text', value } }`. The finished task is assembled from them (first event:
+    // the task; artifactUpdate: the answer; statusUpdate: the state) so the replay does not depend on the task store.
+    type Ev = { payload?: { $case?: string; value?: Record<string, unknown> } };
     let task: Record<string, unknown> | undefined;
-    let lastMessage: unknown;
     const answer: string[] = [];
     let finalStatus: unknown;
+    const assembled = (): unknown => task && ({ payload: { $case: 'task', value: {
+      ...task, ...(finalStatus ? { status: finalStatus } : {}),
+      artifacts: answer.length ? [{ artifactId: 'answer', name: 'answer', description: '', parts: [{ content: { $case: 'text', value: answer.join('') } }] }] : (task.artifacts ?? []),
+    } } });
     try {
       for await (const event of super.sendMessageStream(...args)) {
-        const e = event as { kind?: string; artifact?: { parts?: { kind?: string; text?: string }[] }; status?: unknown };
-        if (e.kind === 'task') task = { ...(event as Record<string, unknown>) };
-        else if (e.kind === 'artifact-update') for (const p of e.artifact?.parts ?? []) if (p.kind === 'text' && typeof p.text === 'string') answer.push(p.text);
-        else if (e.kind === 'status-update') finalStatus = e.status;
-        else if (e.kind === 'message') lastMessage = event;
+        const p = (event as Ev).payload;
+        const v = p?.value ?? {};
+        if (p?.$case === 'task') task = { ...v };
+        else if (p?.$case === 'artifactUpdate') {
+          for (const part of ((v.artifact as { parts?: { content?: { $case?: string; value?: unknown } }[] } | undefined)?.parts ?? [])) {
+            if (part.content?.$case === 'text' && typeof part.content.value === 'string') answer.push(part.content.value);
+          }
+        }
+        else if (p?.$case === 'statusUpdate') finalStatus = v.status;
+        // The consumer may stop reading right after the final event, so the replay is stored BEFORE that event
+        // is handed over; the code after the loop only runs for streams that end without a final flag.
+        if (key && p?.$case === 'statusUpdate' && (v as { final?: boolean }).final) { const done = assembled(); if (done) this.remember(key, done); }
         yield event;
       }
     } finally { if (id) this.streaming.delete(id); }
     if (!key) return;
-    const final: unknown = task
-      ? { ...task, ...(finalStatus ? { status: finalStatus } : {}), artifacts: answer.length ? [{ artifactId: 'answer', parts: [{ kind: 'text', text: answer.join('') }] }] : (task.artifacts ?? []) }
-      : lastMessage;
-    if (final !== undefined) this.remember(key, final);
+    const done = assembled();
+    if (done && this.remembered(key) === undefined) this.remember(key, done);
   }
 }
 
