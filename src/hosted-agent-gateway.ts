@@ -60,7 +60,19 @@ const hostedAgentNonPublic = (() => {
 })();
 
 /** Is this address on the public internet? IPv4-mapped and NAT64 IPv6 are judged by the IPv4 inside them. */
+/**
+ * Local integration runs only: `AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1` lets an agent reach loopback/private
+ * addresses (an aindrive on 127.0.0.1). Refused under NODE_ENV=production, and logged once, so it cannot slip
+ * into a deployment quietly. Never set this on a node that serves other people's agents.
+ */
+const unsafePrivateEgress = (() => {
+  const on = process.env.AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS === '1' && process.env.NODE_ENV !== 'production';
+  if (on) console.warn('[hosted-agent-gateway] AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1: agents may reach private addresses (local integration only)');
+  return on;
+})();
+
 export function hostedAgentAddressIsPublic(address: string): boolean {
+  if (unsafePrivateEgress && isIP(address)) return true;
   const family = isIP(address);
   if (family === 4) return !hostedAgentNonPublic.check(address, 'ipv4');
   if (family !== 6) return false;

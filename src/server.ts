@@ -451,7 +451,6 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       || (cfg.operatorAddresses ?? []).some((o) => o.toLowerCase() === a)
       || store.owners().some((o) => o.address.toLowerCase() === a);
   };
-  const agentEvents = new SharedAgentEvents();
   app.use(linkedAgentRoutes({
     store: linkedStore,
     // A wallet session, an AIN SSO session or an organization API key — the same answer the hosted-agent routes
