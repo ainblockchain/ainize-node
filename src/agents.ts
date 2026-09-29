@@ -29,6 +29,7 @@ import type { HostedAgentStore } from './hosted-agent-store.js';
 import type { LinkedAgentStore } from './linked-agent-store.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
 import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
+import type { ProxiedAgentSummary } from './shared-agents.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -222,13 +223,27 @@ export type AgentAdvertWithModel = AgentAdvert & { model?: string; owner?: strin
 export type AgentKind = 'upstream' | 'prompt' | 'tools' | 'handler';
 
 /** A config agent may name the model it is built on (`agents[].model`); the core type predates the field. */
+/**
+ * Sharing a config agent declares in config.json — `agents[].visibility` and `agents[].orgId`, the same two fields
+ * a hosted or linked agent has. Not in the core type (like `model`), read through a cast; absent means `public`,
+ * what every config agent was. The operator edits the file and restarts: there is no HTTP route for a config
+ * agent's sharing, because the file is the operator's record and a route would let it drift from it.
+ */
+const configAgentSharing = (a: AgentConfig): { visibility?: 'public' | 'org' | 'private' | 'unlisted'; orgId?: string | null } => {
+  const raw = a as AgentConfig & { visibility?: unknown; orgId?: unknown };
+  const visibility = raw.visibility === 'public' || raw.visibility === 'org' || raw.visibility === 'private' || raw.visibility === 'unlisted' ? raw.visibility : undefined;
+  const orgId = typeof raw.orgId === 'string' && raw.orgId ? raw.orgId : undefined;
+  return { ...(visibility ? { visibility } : {}), ...(visibility === 'org' && orgId ? { orgId } : {}) };
+};
+
 const configAgentModel = (a: AgentConfig): string | undefined => {
   const m = (a as AgentConfig & { model?: unknown }).model;
   return typeof m === 'string' && m ? m : undefined;
 };
 
 export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hosted?: HostedAgentsDeps, linked?: LinkedAgentSource): AgentAdvertWithModel[] {
-  const own: AgentAdvertWithModel[] = listAgents(cfg, linked).map((a) => {
+  // Only `public` agents leave this node — proxied or hosted: an `org` or `private` agent is somebody's, and gossip has no reader.
+  const own: AgentAdvertWithModel[] = listAgents(cfg, linked).filter(publiclyListed).map((a) => {
     const h = health.get(a.id);
     return {
       id: a.id,
@@ -267,18 +282,6 @@ const publiclyListed = (spec: { visibility?: 'public' | 'org' | 'private' | 'unl
 /** The node's own start, as the "updated at" of a config agent — its definition has no timestamp of its own. */
 const CONFIG_AGENTS_SINCE = Date.now();
 
-/** What the shared registry (shared-agents.ts) needs of a proxied agent: the card summary when one has been fetched. */
-export interface ProxiedAgentSummary {
-  id: string; name: string; description?: string;
-  skills: { id: string; name: string; description?: string; examples?: string[] }[];
-  extensions: string[]; reachable: boolean | null; updatedAt: number;
-  /** Set for a linked agent (the account that registered it); absent for the operator's config agents. */
-  owner?: string;
-  visibility?: 'public' | 'org' | 'private' | 'unlisted';
-  orgId?: string | null;
-  /** A linked agent's version counter; a config agent has none. */
-  version?: number;
-}
 
 /**
  * The proxied agents — config and linked — as the shared registry lists them: the card summary when one has been
@@ -311,13 +314,14 @@ export function proxiedAgentSummaries(cfg: NodeConfig, linked?: LinkedAgentSourc
  */
 export function listAgents(cfg: NodeConfig, linked?: LinkedAgentSource): ProxiedAgent[] {
   const raw = cfg.agents ?? [];
-  const own: ProxiedAgent[] = raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
+  const own: ProxiedAgent[] = raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false)
+    .map((a) => ({ ...a, ...configAgentSharing(a) }));
   const taken = new Set(own.map((a) => a.id));
   // A config agent wins a contested id: the operator typed it on this machine, and `reserved` in the routes should
   // have refused the linked one anyway — this is the belt to that suspenders.
   const linkedRows: ProxiedAgent[] = (linked?.list() ?? [])
     .filter((a) => agentIdOk(a.id) && !taken.has(a.id))
-    .map((a) => ({ id: a.id, upstream: a.upstream, name: a.name, description: a.description, owner: a.owner, version: a.version, updatedAt: a.updatedAt }));
+    .map((a) => ({ id: a.id, upstream: a.upstream, name: a.name, description: a.description, owner: a.owner, visibility: a.visibility ?? 'public', orgId: a.orgId ?? null, version: a.version, updatedAt: a.updatedAt }));
   return [...own, ...linkedRows];
 }
 
@@ -410,7 +414,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   r.get('/api/agents', async (req: Request, res: Response) => {
     const publicUrl = (cfg as NodeConfig & { publicUrl?: string }).publicUrl
       ?? `${req.protocol}://${req.get('host') ?? ''}`;
-    const out = await Promise.all(listAgents(cfg, deps.linked).map(async (a) => {
+    const out = await Promise.all(listAgents(cfg, deps.linked).filter(publiclyListed).map(async (a) => {
       const known = health.get(a.id);
       // only probe when we have no recent answer — the list should not cost a round trip per agent per render
       if (!known || Date.now() - (known.checked_at ?? 0) > 30_000) await fetchCard(a);

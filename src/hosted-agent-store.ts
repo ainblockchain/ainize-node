@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { HostedAgentSpec, HostedAgentSpecInput } from './hosted-agent-types.js';
+import type { HostedAgentSpec, HostedAgentSpecInput, HostedAgentVisibility } from './hosted-agent-types.js';
 
 export interface HostedAgentStoreLimits {
   perOwner: number;
@@ -58,6 +58,16 @@ export class HostedAgentStore {
     const prior = this.specs.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
     const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
+    this.specs.set(id, spec);
+    this.save();
+    return spec;
+  }
+
+  /** Change who sees the agent without touching what it runs — the operator's or the owner's call (shared-agents.ts). */
+  setSharing(id: string, sharing: { visibility: HostedAgentVisibility; orgId: string | null }, now = Date.now()): HostedAgentSpec {
+    const prior = this.specs.get(id);
+    if (!prior) throw new Error(`no hosted agent "${id}"`);
+    const spec: HostedAgentSpec = { ...prior, visibility: sharing.visibility, orgId: sharing.visibility === 'org' ? sharing.orgId : null, version: prior.version + 1, updatedAt: now };
     this.specs.set(id, spec);
     this.save();
     return spec;

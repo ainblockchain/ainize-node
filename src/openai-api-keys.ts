@@ -96,12 +96,21 @@ export class OpenaiApiKeyStore {
 
   /** The address this key speaks for, or null. Checked shape-first so a foreign key costs no hash. */
   addressForKey(key: string): string | null {
+    return this.recordForKey(key)?.address ?? null;
+  }
+
+  /**
+   * Who a key speaks for and for which organization, or null: the address, and the `orgId` an organization key
+   * was issued for (null for a personal key). The shared agent registry reads the pair to let a product act for
+   * an organization with a key instead of a browser session (shared-agents.ts `apiKeyCaller`).
+   */
+  recordForKey(key: string): { address: string; orgId: string | null } | null {
     if (!key.startsWith(OPENAI_API_KEY_PREFIX)) return null;
     // A switched-off key lives under `disabled:<hash>`, so this lookup never finds it.
     const record = this.records.get(hashOpenaiApiKey(key));
     if (!record || record.disabled) return null;
     if (record.orgId && this.orgGate && !this.orgGate(record.address, record.orgId)) return null;
-    return record.address;
+    return { address: record.address, orgId: record.orgId ?? null };
   }
 
   /**

@@ -368,17 +368,26 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
   market.linkedAgents = linkedStore;
+  // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
+  // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
+  // signature guards).
+  const agentCaller = (req: Request) => agentCallerOf(req, { store, nodeAddress: cfg.identity.address, keys: openaiKeys });
+  /** The node's operator on this request: the node key, a config `operatorAddresses` entry, or a granted owner (api.ts). */
+  const isOperatorRequest = (req: Request): boolean => {
+    const who = siteSession(req, store, cfg.identity.address);
+    if (!who) return false;
+    const a = who.address.toLowerCase();
+    return a === cfg.identity.address.toLowerCase()
+      || (cfg.operatorAddresses ?? []).some((o) => o.toLowerCase() === a)
+      || store.owners().some((o) => o.address.toLowerCase() === a);
+  };
+  const agentEvents = new SharedAgentEvents();
   app.use(linkedAgentRoutes({
     store: linkedStore,
-    // A wallet session or an AIN SSO one: a URL is not a node resource, so the principal that `/api/keys` accepts is
-    // enough here (docs/ain-sso.md §1). A suspended SSO account is refused the way `/api/keys` refuses it.
-    sessionPrincipal: (req) => {
-      const wallet = siteSession(req, store, cfg.identity.address);
-      if (wallet) return wallet.address.toLowerCase();
-      const viaSso = ssoSession(req, store);
-      if (viaSso && !sso.isBlocked(viaSso.iss, viaSso.sub)) return viaSso.principal;
-      return null;
-    },
+    // A wallet session, an AIN SSO session or an organization API key — the same answer the hosted-agent routes
+    // and the shared registry give, so the three cannot disagree about who is asking.
+    caller: agentCaller,
+    events: agentEvents,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     probe: probeUpstreamCard,
@@ -397,11 +406,6 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return own + peers;
     },
   }));
-  // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
-  // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
-  // signature guards).
-  const agentCaller = (req: Request) => agentCallerOf(req, { store, nodeAddress: cfg.identity.address });
-  const agentEvents = new SharedAgentEvents();
   app.use(hostedAgentRoutes({
     store: hostedStore,
     secrets: hostedSecrets,
@@ -424,6 +428,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     ssoIssuer: () => ssoConfig?.issuer ?? null,
     selfAddress: cfg.identity.address,
     events: agentEvents,
+    linked: linkedStore,
+    isOperator: isOperatorRequest,
   }));
 
   // Models over p2p: this node's speech and image models for peers that sign for them, and the network-wide list.

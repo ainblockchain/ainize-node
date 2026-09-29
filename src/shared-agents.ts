@@ -12,11 +12,14 @@
  * this registry cannot disagree about who sees what.
  */
 import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
 import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
+import type { LinkedAgentStore } from './linked-agent-store.js';
+import type { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
 import { hostedAgentModesOf } from './hosted-agent-runtime/hostedAgentRuntimeApp.js';
-import { hostedAgentMediaOf, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentVisibility } from './hosted-agent-types.js';
+import { HOSTED_AGENT_VISIBILITIES, hostedAgentMediaOf, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentVisibility } from './hosted-agent-types.js';
 import { siteSession, ssoSession } from './site-session.js';
 import type { SsoSessionFields, Store } from './store.js';
 
@@ -124,10 +127,30 @@ export interface AgentCaller {
   sso: Pick<SsoSessionFields, 'iss' | 'sub' | 'org'> & { orgs: string[] } | null;
   /** May this caller act for `orgId`. */
   orgMember: (orgId: string) => boolean;
+  /**
+   * The organization an API key was issued for, when the caller IS an API key (`apiKeyCaller`): the one org it
+   * speaks for, the way `sso.org` is the one an SSO session selected. Null for a personal key and for sessions.
+   */
+  keyOrg?: string | null;
 }
 
 /** A wallet session: an address owns what it made and belongs to no organization. */
 export const walletCaller = (address: string): AgentCaller => ({ subject: address.toLowerCase(), kind: 'wallet', sso: null, orgMember: () => false });
+
+/** A bare principal (`sso:<sub>`, `google:<sub>`) with no session behind it: owns what it made, belongs to nothing here. */
+export const principalCaller = (subject: string): AgentCaller =>
+  /^0x/i.test(subject) ? walletCaller(subject) : { subject, kind: 'principal', sso: null, orgMember: () => false };
+
+/**
+ * An Ainize API key as the caller (`Authorization: Bearer ainize-sk-…`): it speaks for the account that issued it
+ * and, when it is an organization key (`POST /api/keys {org_id}` by an SSO member), for that one organization —
+ * the way a product with no browser session (AIN Teams, a cron) lists and registers an organization's agents.
+ * Membership was checked when the key was issued and is re-checked on every use by the key store's `orgGate`.
+ */
+export const apiKeyCaller = (record: { address: string; orgId: string | null }): AgentCaller => {
+  const base = principalCaller(record.address);
+  return { ...base, keyOrg: record.orgId, orgMember: (orgId) => !!record.orgId && orgId === record.orgId };
+};
 
 /**
  * An AIN SSO session's membership of `orgId`: what the provisioning adapter last applied (`sso_memberships`) when it
@@ -145,39 +168,60 @@ export function ssoCaller(store: Pick<Store, 'ssoMembership'>, s: { principal: s
   return { subject: s.principal.toLowerCase(), kind: 'principal', sso, orgMember: (orgId) => ssoOrgMember(store, sso, orgId) };
 }
 
-/** Who is signed in on this request — the site's wallet session, or an AIN SSO session — or null. */
-export function agentCallerOf(req: Request, deps: { store: Store; nodeAddress: string }): AgentCaller | null {
+/**
+ * Who is signed in on this request — the site's wallet session, an AIN SSO session, or an Ainize API key sent as
+ * `Authorization: Bearer` — or null. A key is looked at only when no session matched: a site session token is
+ * also a bearer, and `siteSession` reads it first.
+ */
+export function agentCallerOf(req: Request, deps: { store: Store; nodeAddress: string; keys?: Pick<OpenaiApiKeyStore, 'recordForKey'> }): AgentCaller | null {
   const wallet = siteSession(req, deps.store, deps.nodeAddress);
   if (wallet) return walletCaller(wallet.address);
   const sso = ssoSession(req, deps.store);
-  return sso ? ssoCaller(deps.store, sso) : null;
+  if (sso) return ssoCaller(deps.store, sso);
+  const auth = req.header('authorization') ?? '';
+  const token = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
+  const record = token && deps.keys ? deps.keys.recordForKey(token) : null;
+  return record ? apiKeyCaller(record) : null;
 }
+
+/** Who a caller is, as an agent's `owner` field spells it (hosted-agent-store / linked-agent-store lower-case wallets). */
+export const callerPrincipal = (caller: AgentCaller): string => caller.subject;
 
 // ------------------------------------------------------------------------------------------------ visibility
 
-const owns = (spec: HostedAgentSpec, caller: AgentCaller | null) => !!caller && spec.owner === caller.subject;
-const orgVisible = (spec: HostedAgentSpec, caller: AgentCaller | null) => !!caller && !!spec.orgId && caller.orgMember(spec.orgId);
+/**
+ * What every kind of agent this node lists has in common for the question "who sees it": an owner (the operator
+ * for a config agent), a visibility and, for `org`, the organization. Hosted specs, linked agents and the config
+ * summaries all fit; the rules below are written once against this shape so no two lists can disagree.
+ */
+export interface Shareable { owner: string; visibility?: HostedAgentVisibility | null; orgId?: string | null }
+
+const owns = (spec: Shareable, caller: AgentCaller | null) => !!caller && spec.owner === caller.subject;
+const orgVisible = (spec: Shareable, caller: AgentCaller | null) => !!caller && !!spec.orgId && caller.orgMember(spec.orgId);
 
 /** May `caller` read the agent by id: its owner, anyone for `public` and `unlisted`, a member for `org`. */
-export function canSeeHostedAgent(spec: HostedAgentSpec, caller: AgentCaller | null): boolean {
+export function canSeeAgent(spec: Shareable, caller: AgentCaller | null): boolean {
   const v = hostedAgentVisibilityOf(spec);
   return owns(spec, caller) || v === 'public' || v === 'unlisted' || (v === 'org' && orgVisible(spec, caller));
 }
+export const canSeeHostedAgent = canSeeAgent;
 
 /** Is the agent LISTED to `caller`: `unlisted` is the owner's alone in a list, however reachable by id. */
-export function listsHostedAgentFor(spec: HostedAgentSpec, caller: AgentCaller | null): boolean {
+export function listsAgentFor(spec: Shareable, caller: AgentCaller | null): boolean {
   const v = hostedAgentVisibilityOf(spec);
   return owns(spec, caller) || v === 'public' || (v === 'org' && orgVisible(spec, caller));
 }
+export const listsHostedAgentFor = listsAgentFor;
 
 /** Listed to anyone at all — what the marketplace (`/api/agents`) and gossip advertise. */
-export const hostedAgentIsPublic = (spec: HostedAgentSpec) => hostedAgentVisibilityOf(spec) === 'public';
+export const agentIsPublic = (spec: { visibility?: HostedAgentVisibility | null }) => hostedAgentVisibilityOf(spec) === 'public';
+export const hostedAgentIsPublic = agentIsPublic;
 
 /** `public` and `org` agents are published somewhere; `private` and `unlisted` are not. */
 const published = (v: HostedAgentVisibility) => v === 'public' || v === 'org';
 
 /** What an update was, as the change feed tells it. */
-export function hostedAgentChangeType(prior: HostedAgentSpec, next: HostedAgentSpec): AgentEventType {
+export function hostedAgentChangeType(prior: { visibility?: HostedAgentVisibility | null }, next: { visibility?: HostedAgentVisibility | null }): AgentEventType {
   const was = published(hostedAgentVisibilityOf(prior));
   const is = published(hostedAgentVisibilityOf(next));
   if (was && !is) return 'agent.unpublished';
@@ -206,7 +250,7 @@ export const widerAudience = (a: AgentEventAudience, b: AgentEventAudience): Age
   const rank: Record<HostedAgentVisibility, number> = { public: 3, org: 2, unlisted: 1, private: 0 };
   return rank[a.visibility] >= rank[b.visibility] ? a : b;
 };
-export const audienceOf = (spec: HostedAgentSpec): AgentEventAudience => ({ visibility: hostedAgentVisibilityOf(spec), owner: spec.owner, orgId: spec.orgId ?? null });
+export const audienceOf = (spec: Shareable): AgentEventAudience => ({ visibility: hostedAgentVisibilityOf(spec), owner: spec.owner, orgId: spec.orgId ?? null });
 
 export class SharedAgentEvents {
   private readonly events: AgentEvent[] = [];
@@ -268,7 +312,18 @@ export interface ProxiedAgentSummary {
   /** Null until the card has been fetched once. */
   reachable: boolean | null;
   updatedAt: number;
+  /** A linked agent's registering account; absent for the operator's config agents. */
+  owner?: string;
+  /** Sharing, as hosted agents have it; absent → `public`. A config agent may declare these in config.json. */
+  visibility?: HostedAgentVisibility | null;
+  orgId?: string | null;
+  /** A linked agent's version counter (`releaseId: linked-v<n>`); absent for a config agent (`upstream`). */
+  version?: number;
 }
+
+/** A proxied agent as the visibility rules read it: the operator owns what config.json declares. */
+export const proxiedShareable = (a: ProxiedAgentSummary, operator: string): Shareable =>
+  ({ owner: a.owner ?? operator.toLowerCase(), visibility: a.visibility ?? 'public', orgId: a.orgId ?? null });
 
 const trimSlash = (u: string) => u.replace(/\/+$/, '');
 const agentUrls = (issuer: string, id: string) => {
@@ -314,15 +369,21 @@ export function hostedAgentRef(spec: HostedAgentSpec, o: {
   };
 }
 
-/** A proxied agent is the operator's, and public: `config.agents` has no owner or visibility of its own. */
-export function proxiedAgentRef(a: ProxiedAgentSummary, o: { registryIssuer: string; operator: string }): AgentRef {
+/**
+ * A proxied agent's ref. A config agent is the operator's and, unless config.json says otherwise, public; a linked
+ * agent is its registering account's, with the sharing it was registered with (`releaseId: linked-v<n>`).
+ */
+export function proxiedAgentRef(a: ProxiedAgentSummary, o: { registryIssuer: string; operator: string; orgIssuer?: string }): AgentRef {
+  const share = proxiedShareable(a, o.operator);
+  const visibility = hostedAgentVisibilityOf(share);
   return {
     contract: CONTRACT_VERSION,
     registryIssuer: trimSlash(o.registryIssuer),
     agentId: a.id,
-    releaseId: 'upstream',
-    ownerRef: { kind: 'wallet', issuer: trimSlash(o.registryIssuer), subject: o.operator.toLowerCase() },
-    visibility: 'public',
+    releaseId: a.version !== undefined ? `linked-v${a.version}` : 'upstream',
+    ownerRef: hostedAgentOwnerRef(share.owner, o.registryIssuer),
+    visibility,
+    ...(visibility === 'org' && share.orgId ? { orgRef: { kind: 'org' as const, issuer: trimSlash(o.orgIssuer ?? o.registryIssuer), subject: share.orgId } } : {}),
     ...agentUrls(o.registryIssuer, a.id),
     supportedProtocolVersions: SHARED_AGENT_PROTOCOL_VERSIONS,
     skills: (a.skills.length ? a.skills : [{ id: 'chat', name: a.name }]).slice(0, 32),
@@ -350,9 +411,17 @@ export interface SharedAgentRoutesDeps {
   registryIssuer: (req: Request) => string;
   /** The AIN SSO issuer that mints org ids; null when SSO is not configured (the node then stands in). */
   ssoIssuer: () => string | null;
-  /** The node's own address: the owner of every proxied agent. */
+  /** The node's own address: the owner of every config agent. */
   selfAddress: string;
   events: SharedAgentEvents;
+  /** Linked agents, for `PUT /api/shared-agents/{id}/visibility`; a node without the store answers 404 for them. */
+  linked?: Pick<LinkedAgentStore, 'get' | 'setSharing'>;
+  /**
+   * Does this request come from the node's operator (api.ts owners: the node key, `operatorAddresses`, granted
+   * owners)? An operator may change any agent's sharing, and may share with an organization they are no member of —
+   * that is how the operator puts the agents already on the node into an organization's list.
+   */
+  isOperator?: (req: Request) => boolean;
   /** Per-IP ceiling on these routes, per minute. */
   rateLimit?: { windowMs: number; max: number };
 }
@@ -398,12 +467,17 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
 
   const hostedItem = (req: Request, spec: HostedAgentSpec, caller: AgentCaller | null): AgentListItem => {
     const ref = hostedAgentRef(spec, { registryIssuer: deps.registryIssuer(req), status: deps.host.status(spec.id), orgIssuer: deps.ssoIssuer() ?? deps.registryIssuer(req) });
-    return { ref, canInvoke: ref.status === 'active' && canSeeHostedAgent(spec, caller) };
+    return { ref, canInvoke: ref.status === 'active' && canSeeAgent(spec, caller) };
   };
-  const proxiedItem = (req: Request, a: ProxiedAgentSummary): AgentListItem => {
-    const ref = proxiedAgentRef(a, { registryIssuer: deps.registryIssuer(req), operator: deps.selfAddress });
-    return { ref, canInvoke: ref.status === 'active' };
+  const proxiedItem = (req: Request, a: ProxiedAgentSummary, caller: AgentCaller | null): AgentListItem => {
+    const ref = proxiedAgentRef(a, { registryIssuer: deps.registryIssuer(req), operator: deps.selfAddress, orgIssuer: deps.ssoIssuer() ?? deps.registryIssuer(req) });
+    return { ref, canInvoke: ref.status === 'active' && canSeeAgent(proxiedShareable(a, deps.selfAddress), caller) };
   };
+  /** Every agent the node lists, each with the sharing view the rules read, so the scopes below are one filter each. */
+  const everything = (req: Request, caller: AgentCaller | null): { share: Shareable; item: () => AgentListItem }[] => [
+    ...deps.store.list().map((s) => ({ share: s as Shareable, item: () => hostedItem(req, s, caller) })),
+    ...deps.proxied().map((a) => ({ share: proxiedShareable(a, deps.selfAddress), item: () => proxiedItem(req, a, caller) })),
+  ];
 
   router.get('/api/shared-agents', guarded((req, res) => {
     const scope = one(req.query.scope);
@@ -421,27 +495,28 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
 
     const caller = deps.caller(req);
     if (!caller && scope !== 'public') return refuse(res, 'auth_required', 'sign in to list the agents shared with you');
-    if (scope === 'shared_with_org' && !caller?.sso) return refuse(res, 'forbidden', 'organization listings need an AIN SSO session');
-    const orgScope = scope === 'shared_with_org' ? (org ?? caller!.sso!.org ?? null) : (org ?? null);
+    if (scope === 'shared_with_org' && !caller?.sso && !caller?.keyOrg) return refuse(res, 'forbidden', 'organization listings need an AIN SSO session or an organization API key');
+    const orgScope = scope === 'shared_with_org' ? (org ?? caller!.sso?.org ?? caller!.keyOrg ?? null) : (org ?? null);
     if (scope === 'shared_with_org' && !orgScope) return invalid(res, 'name the organization (?org=) — the session selected none');
     if (orgScope && !caller?.orgMember(orgScope)) return refuse(res, 'forbidden', 'you are not a member of that organization');
 
-    const self = caller?.kind === 'wallet' && caller.subject === deps.selfAddress.toLowerCase();
-    let items: AgentListItem[];
+    const all = everything(req, caller);
+    let picked: typeof all;
     switch (scope as AgentListScope) {
       case 'public':
-        items = [...deps.store.list().filter(hostedAgentIsPublic).map((s) => hostedItem(req, s, caller)), ...deps.proxied().map((a) => proxiedItem(req, a))];
+        picked = all.filter((e) => agentIsPublic(e.share));
         break;
       case 'mine':
-        items = [...deps.store.listByOwner(caller!.subject).map((s) => hostedItem(req, s, caller)), ...(self ? deps.proxied().map((a) => proxiedItem(req, a)) : [])];
+        picked = all.filter((e) => e.share.owner === caller!.subject);
         break;
       case 'shared_with_me':
-        items = deps.store.list().filter((s) => s.owner !== caller!.subject && hostedAgentVisibilityOf(s) === 'org' && listsHostedAgentFor(s, caller)).map((s) => hostedItem(req, s, caller));
+        picked = all.filter((e) => e.share.owner !== caller!.subject && hostedAgentVisibilityOf(e.share) === 'org' && listsAgentFor(e.share, caller));
         break;
       case 'shared_with_org':
-        items = deps.store.list().filter((s) => hostedAgentVisibilityOf(s) === 'org' && s.orgId === orgScope).map((s) => hostedItem(req, s, caller));
+        picked = all.filter((e) => hostedAgentVisibilityOf(e.share) === 'org' && e.share.orgId === orgScope);
         break;
     }
+    let items = picked.map((e) => e.item());
     if (orgScope) items = items.filter((i) => i.ref.orgRef?.subject === orgScope);
     if (q) {
       const needle = q.toLowerCase();
@@ -456,6 +531,62 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
       items: page,
     };
     res.json(body);
+  }));
+
+  /**
+   * Change who sees an agent — `{visibility, orgId?}` — without touching what it runs or where it points. The
+   * owner may do it (sharing with an organization they belong to); the node's operator may do it to ANY hosted or
+   * linked agent, for any organization: that is how the agents already on a node become an organization's list.
+   * A config agent's sharing lives in config.json and is refused here with the field to edit.
+   */
+  const sharingInput = z.object({
+    visibility: z.enum(HOSTED_AGENT_VISIBILITIES),
+    orgId: z.string().trim().min(1).max(256).regex(/^[^\s/\\]+$/, 'an org id is one token without whitespace or slashes').nullable().default(null),
+  }).superRefine((v, ctx) => {
+    if (v.visibility === 'org' && !v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'org visibility names the organization (orgId)' });
+    if (v.visibility !== 'org' && v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId goes with visibility "org"' });
+  });
+  router.put('/api/shared-agents/:id/visibility', guarded((req, res) => {
+    const caller = deps.caller(req);
+    if (!caller) return refuse(res, 'auth_required', 'sign in to change who sees an agent');
+    const parsed = sharingInput.safeParse(req.body ?? {});
+    if (!parsed.success) { const i = parsed.error.issues[0]; return invalid(res, `${i?.path.join('.') || 'body'}: ${i?.message ?? 'invalid'}`); }
+    const sharing = { visibility: parsed.data.visibility, orgId: parsed.data.visibility === 'org' ? parsed.data.orgId : null };
+    const id = String(req.params.id);
+    const operator = deps.isOperator?.(req) ?? false;
+
+    // A config agent's sharing is the file's: named to the operator, 404 to anyone else (they may not learn it exists).
+    if (deps.proxied().some((a) => a.id === id && a.version === undefined)) {
+      if (!operator) return refuse(res, 'resource_deleted', `no agent "${id}" on this node`);
+      return invalid(res, `"${id}" is a config agent: set agents[].visibility and agents[].orgId in config.json and restart the node`);
+    }
+    const hosted = deps.store.get(id);
+    const linked = hosted ? null : deps.linked?.get(id) ?? null;
+    const target: Shareable | null = hosted ?? linked;
+    if (!target || (!operator && !canSeeAgent(target, caller))) return refuse(res, 'resource_deleted', `no agent "${id}" on this node`);
+    if (!operator && target.owner !== caller.subject) return refuse(res, 'forbidden', 'only the agent\'s owner or the node\'s operator may change who sees it');
+    if (!operator && sharing.orgId && !caller.orgMember(sharing.orgId)) {
+      return refuse(res, 'forbidden', caller.kind === 'wallet'
+        ? 'sharing with an organization needs an AIN SSO session or an organization API key; a wallet belongs to none'
+        : `you are not a member of ${sharing.orgId}`);
+    }
+
+    const issuer = trimSlash(deps.registryIssuer(req));
+    const orgIssuer = deps.ssoIssuer() ?? issuer;
+    if (hosted) {
+      const next = deps.store.setSharing(id, sharing);
+      deps.events.append({ type: hostedAgentChangeType(hosted, next), registryIssuer: issuer, agentId: id, version: next.version, releaseId: `v${next.version}`, audience: widerAudience(audienceOf(hosted), audienceOf(next)) });
+      return res.json({ agent: hostedAgentRef(next, { registryIssuer: issuer, status: deps.host.status(id), orgIssuer }) });
+    }
+    const prior = linked!;
+    const next = deps.linked!.setSharing(id, sharing);
+    deps.events.append({ type: hostedAgentChangeType(prior, next), registryIssuer: issuer, agentId: id, version: next.version, releaseId: `linked-v${next.version}`, audience: widerAudience(audienceOf(prior), audienceOf(next)) });
+    const summary = deps.proxied().find((a) => a.id === id);
+    const ref = proxiedAgentRef(summary
+      ? { ...summary, owner: next.owner, visibility: next.visibility, orgId: next.orgId ?? null, version: next.version, updatedAt: next.updatedAt }
+      : { id, name: next.name, description: next.description || undefined, skills: [], extensions: [], reachable: null, updatedAt: next.updatedAt, owner: next.owner, visibility: next.visibility, orgId: next.orgId ?? null, version: next.version },
+      { registryIssuer: issuer, operator: deps.selfAddress, orgIssuer });
+    res.json({ agent: ref });
   }));
 
   router.get('/api/shared-agents/events', guarded((req, res) => {
