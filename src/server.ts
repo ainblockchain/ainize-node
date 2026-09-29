@@ -18,7 +18,9 @@ import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
-import { agentCallerOf, SharedAgentEvents, sharedAgentRoutes } from './shared-agents.js';
+import { agentCallerOf, orgViewerOf, resolveOrganization, SharedAgentEvents, sharedAgentRoutes, withOrganizations, type AgentCaller, type OrgAudit } from './shared-agents.js';
+import { OrganizationStore, type OrgViewer } from './organization-store.js';
+import { organizationRoutes, type OrgAgentRow } from './organization-routes.js';
 import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
@@ -315,6 +317,24 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    */
   const linkedStore = new LinkedAgentStore(join(hostedHome, 'linked-agents.json'));
   /**
+   * Organizations (organization-store.ts; docs/superpowers/specs/2026-09-29-organizations-design.md): a team's page,
+   * members and roles, invites, audit. They decide who is what in an agent's `orgId` (shared-agents.ts
+   * `withOrganizations`). `AINIZE_ORG_SEED="comcom=ComCom:comcom.ai,acme=Acme:acme.com"` creates organizations at
+   * boot that do not exist yet (id=name:domain[+domain]); the people on that domain then walk in at `domainRole`.
+   */
+  const orgStore = new OrganizationStore(join(hostedHome, 'organizations.json'));
+  for (const entry of (process.env.AINIZE_ORG_SEED ?? '').split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = entry.match(/^([a-z0-9][a-z0-9-]{0,39})=([^:]+)(?::(.+))?$/);
+    if (!m || orgStore.get(m[1])) continue;
+    const domains = (m[3] ?? '').split('+').map((d) => d.trim().toLowerCase()).filter(Boolean);
+    try {
+      orgStore.seed(m[1], m[2].trim(), domains, cfg.identity.address.toLowerCase());
+      market.log('info', 'orgs', `seeded organization "${m[1]}" (${domains.join(', ') || 'no domains'})`);
+    } catch (e) {
+      market.log('warn', 'orgs', `AINIZE_ORG_SEED "${entry}" ignored: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  /**
    * Models on other nodes (peer-models.ts): what the peer table says each fresh peer serves, and a signed call to
    * it. Read on every use — gossip updates the table every few seconds and a peer can come and go between turns.
    */
@@ -371,7 +391,40 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
   // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
   // signature guards).
-  const agentCaller = (req: Request) => agentCallerOf(req, { store, nodeAddress: cfg.identity.address, keys: openaiKeys });
+  // Roles in an agent's organization come from the ainize organizations (explicit member > email domain > linked AIN
+  // SSO org); an org id no ainize organization claims keeps the SSO claim / org API key answer (shared-agents.ts).
+  const identityOf = (caller: AgentCaller) => (caller.sso ? store.ssoIdentity(caller.sso.iss, caller.sso.sub) : null);
+  const agentCaller = (req: Request) => {
+    const caller = agentCallerOf(req, { store, nodeAddress: cfg.identity.address, keys: openaiKeys });
+    return caller ? withOrganizations(caller, orgStore, identityOf(caller)) : null;
+  };
+  /**
+   * Who is asking, as the organization pages see it: a wallet or an AIN SSO session, never an API key (a key lists
+   * and registers agents; it does not run an organization). AIN SSO organizations count while the account is active in them.
+   */
+  const orgViewer = (req: Request): OrgViewer | null => {
+    const caller = agentCallerOf(req, { store, nodeAddress: cfg.identity.address });
+    return caller ? orgViewerOf(caller, identityOf(caller)) : null;
+  };
+  /** An agent change, in the audit log of each ainize organization it touches. */
+  const orgAudit: OrgAudit = (orgIds, actor, action, agentId, detail = null) => {
+    const seen = new Set<string>();
+    for (const id of orgIds) {
+      const org = id ? resolveOrganization(orgStore, id) : null;
+      if (!org || seen.has(org.id)) continue;
+      seen.add(org.id);
+      orgStore.note(org.id, actor, action, agentId, detail);
+    }
+  };
+  /** The agents shared with an organization: hosted and linked, by #40's `visibility: org` + `orgId`. */
+  const sharedWith = (org: { id: string; ssoOrgIds: string[] }) => (a: { visibility?: string | null; orgId?: string | null }) =>
+    a.visibility === 'org' && !!a.orgId && (a.orgId === org.id || org.ssoOrgIds.includes(a.orgId));
+  const orgAgents = {
+    listByOrg: (org: { id: string; ssoOrgIds: string[] }): OrgAgentRow[] => [
+      ...hostedStore.list().filter(sharedWith(org)).map((a) => ({ id: a.id, name: a.name, description: a.description, owner: a.owner, kind: 'hosted' as const, visibility: hostedAgentVisibilityOf(a), orgId: a.orgId ?? null, version: a.version, createdAt: a.createdAt, updatedAt: a.updatedAt })),
+      ...linkedStore.list().filter(sharedWith(org)).map((a) => ({ id: a.id, name: a.name, description: a.description, owner: a.owner, kind: 'linked' as const, visibility: hostedAgentVisibilityOf(a), orgId: a.orgId ?? null, version: a.version, createdAt: a.createdAt, updatedAt: a.updatedAt })),
+    ],
+  };
   /** The node's operator on this request: the node key, a config `operatorAddresses` entry, or a granted owner (api.ts). */
   const isOperatorRequest = (req: Request): boolean => {
     const who = siteSession(req, store, cfg.identity.address);
@@ -388,6 +441,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // and the shared registry give, so the three cannot disagree about who is asking.
     caller: agentCaller,
     events: agentEvents,
+    orgAudit,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     probe: probeUpstreamCard,
@@ -413,6 +467,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     registry: () => inferenceRegistry,
     caller: agentCaller,
     events: agentEvents,
+    orgAudit,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
@@ -430,6 +485,16 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     events: agentEvents,
     linked: linkedStore,
     isOperator: isOperatorRequest,
+    orgAudit,
+  }));
+  app.use(organizationRoutes({
+    orgs: orgStore,
+    agents: orgAgents,
+    viewer: orgViewer,
+    // ainize organization ids never contain `_` (organization-store.ts ORG_ID), so none can shadow an AIN SSO `org_…` id
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    keys: openaiKeys,
+    sso: () => ({ configured: !!ssoConfig, issuer: ssoConfig?.issuer ?? null }),
   }));
 
   // Models over p2p: this node's speech and image models for peers that sign for them, and the network-wide list.
@@ -551,6 +616,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use(buildAgents(cfg, {
     hosted: hostedAgents,
     linked: linkedStore,
+    // `/api/agents?org=` — the organization's list, to its members (any role)
+    orgScope: (req, orgId) => {
+      const caller = agentCaller(req);
+      if (!caller?.orgMember(orgId)) return null;
+      const org = resolveOrganization(orgStore, orgId);
+      return org ? sharedWith(org) : (a) => a.visibility === 'org' && a.orgId === orgId;
+    },
     knownNodes: () => market.knownNodes(),
     selfAddress: cfg.identity.address,
     relay: mesh,

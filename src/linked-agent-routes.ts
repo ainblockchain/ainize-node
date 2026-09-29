@@ -19,7 +19,7 @@ import {
 } from './linked-agent-store.js';
 import { agentUrl, summariseCard, type CardSummary } from './agents.js';
 import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
-import { audienceOf, canSeeAgent, hostedAgentChangeType, listsAgentFor, principalCaller, widerAudience, type AgentCaller, type SharedAgentEvents } from './shared-agents.js';
+import { audienceOf, canAdministerAgent, canSeeAgent, canShareInto, hostedAgentChangeType, listsAgentFor, principalCaller, widerAudience, type AgentCaller, type OrgAudit, type SharedAgentEvents } from './shared-agents.js';
 
 export interface LinkedAgentRoutesDeps {
   store: LinkedAgentStore;
@@ -33,6 +33,8 @@ export interface LinkedAgentRoutesDeps {
   sessionPrincipal?: (req: Request) => string | null;
   /** The change feed of the shared registry, told of every register, change and removal. Absent → no feed. */
   events?: SharedAgentEvents;
+  /** The audit log of the organization an agent is shared with (server.ts → organization-store.ts). Absent → none. */
+  orgAudit?: OrgAudit;
   /** This node's public base URL as the registry names it (`registryIssuer`); defaults to `publicBase`. */
   registryIssuer?: (req: Request) => string;
   /** Ids a linked agent may not take — config agents and hosted agents. */
@@ -82,6 +84,19 @@ export function linkedAgentRoutes(deps: LinkedAgentRoutesDeps): Router {
 
   const notFound = (res: Response, id: unknown) => refuse(res, 404, 'not_found', `no linked agent "${id}" on this node`);
 
+  /**
+   * The agent, if the caller may remove it: whoever registered it, or an admin of the organization it is shared
+   * with. Changing where it points stays the registrant's (`owned`): a member is not told its upstream.
+   */
+  const administered = (req: Request, res: Response): { agent: LinkedAgent; who: AgentCaller } | null => {
+    const who = signedIn(req, res);
+    if (!who) return null;
+    const agent = deps.store.get(String(req.params.id));
+    if (!agent || !canSeeAgent(agent, who)) { notFound(res, req.params.id); return null; }
+    if (!canAdministerAgent(agent, who)) { refuse(res, 403, 'not_owner', 'only the account that registered this agent or an admin of its organization can do this'); return null; }
+    return { agent, who };
+  };
+
   /** The agent, if the caller registered it. Answers the refusal itself otherwise — 404, never 403, for one they may not see. */
   const owned = (req: Request, res: Response): LinkedAgent | null => {
     const who = signedIn(req, res);
@@ -104,10 +119,12 @@ export function linkedAgentRoutes(deps: LinkedAgentRoutesDeps): Router {
       refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
       return null;
     }
-    if (parsed.data.visibility === 'org' && !who.orgMember(parsed.data.orgId!)) {
-      refuse(res, 400, 'invalid_request', who.kind === 'wallet'
-        ? 'orgId: sharing with an organization needs an AIN SSO session or an organization API key; a wallet belongs to none'
-        : `orgId: you are not a member of ${parsed.data.orgId}`);
+    if (parsed.data.visibility === 'org' && !canShareInto(who, parsed.data.orgId!)) {
+      refuse(res, 400, 'invalid_request', !who.orgMember(parsed.data.orgId!)
+        ? (who.kind === 'wallet'
+          ? 'orgId: sharing with an organization needs an AIN SSO session or an organization API key; a wallet belongs to none unless an organization adds it as a member'
+          : `orgId: you are not a member of ${parsed.data.orgId}`)
+        : `orgId: sharing into ${parsed.data.orgId} needs the contributor role there`);
       return null;
     }
     return parsed.data;
@@ -172,6 +189,7 @@ export function linkedAgentRoutes(deps: LinkedAgentRoutesDeps): Router {
     try {
       const agent = deps.store.create(resolved.input, who.subject, deps.reserved);
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: agent.id, version: agent.version, releaseId: `linked-v${agent.version}`, audience: audienceOf(agent) });
+      deps.orgAudit?.([agent.orgId], who.subject, 'agent.create', agent.id, { kind: 'linked', visibility: hostedAgentVisibilityOf(agent) });
       res.status(201).json({ agent: view(req, agent, resolved.probe) });
     } catch (e) {
       if (e instanceof LinkedAgentIdTakenError) return refuse(res, 409, 'id_taken', e.message);
@@ -198,14 +216,18 @@ export function linkedAgentRoutes(deps: LinkedAgentRoutesDeps): Router {
     const resolved = await resolve(req, res, input);
     if (!resolved) return;
     const agent = deps.store.update(prior.id, resolved.input);
+    const sharingChanged = hostedAgentVisibilityOf(prior) !== hostedAgentVisibilityOf(agent) || (prior.orgId ?? null) !== (agent.orgId ?? null);
+    deps.orgAudit?.([prior.orgId, agent.orgId], who.subject, sharingChanged ? 'agent.sharing' : 'agent.update', agent.id, { kind: 'linked', version: agent.version });
     deps.events?.append({ type: hostedAgentChangeType(prior, agent), registryIssuer: issuer(req), agentId: agent.id, version: agent.version, releaseId: `linked-v${agent.version}`, audience: widerAudience(audienceOf(prior), audienceOf(agent)) });
     res.json({ agent: { ...view(req, agent, resolved.probe), upstream: agent.upstream } });
   });
 
   router.delete('/api/linked-agents/:id', (req, res) => {
-    const agent = owned(req, res);
-    if (!agent) return;
+    const hit = administered(req, res);
+    if (!hit) return;
+    const { agent, who } = hit;
     deps.store.delete(agent.id);
+    deps.orgAudit?.([agent.orgId], who.subject, 'agent.delete', agent.id, { kind: 'linked' });
     // One past the last version: the feed's version is strictly increasing per resource, and the delete comes after.
     deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: agent.id, version: agent.version + 1, audience: audienceOf(agent) });
     res.json({ deleted: agent.id });
