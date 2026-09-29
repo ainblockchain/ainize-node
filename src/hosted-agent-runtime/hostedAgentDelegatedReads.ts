@@ -268,6 +268,8 @@ export function hostedAgentDelegatedReadTools(
   const byKey = new Map(readable.map((r) => [hostedAgentFileKey(r), r]));
   const listing = () => readable.map((r) => ({
     fileKey: hostedAgentFileKey(r), name: r.displayName, kind: r.kind, mimeType: r.mimeType ?? undefined, size: r.size ?? undefined,
+    // The revision names the exact bytes; a source citation that carries it can be re-checked later (contract TaskRef.sources).
+    revision: r.revision ?? undefined,
     availability: r.availability, ...(r.path ? {} : { note: 'no path: cannot be read here' }),
   }));
   return [
