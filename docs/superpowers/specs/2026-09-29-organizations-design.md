@@ -65,8 +65,8 @@ The address `/agents/<id>` still answers — an importing workspace calls it fro
 the agent enforces its own A2A security scheme, as every agent in the catalogue does. Private means *not listed*,
 not *not reachable*; the design doc for linked agents said the same of the catalogue as a whole.
 
-**`?org=<id>`** on `GET /api/agents` narrows the list to that organization's agents (hosted and peer agents have no
-organization and are left out) — what AIN Teams and ainmem ask for when `AINIZE_ORG` is set. The row carries `org`
+**`?org=<id>`** on `GET /api/agents` narrows the list to that organization's agents (peer agents have no organization
+and are left out; hosted agents are in when they were created under it — see the addendum below) — what AIN Teams and ainmem ask for when `AINIZE_ORG` is set. The row carries `org`
 so a client can check the scope itself against a node that predates the parameter.
 
 **Billing** (`/api/orgs/:id/billing`, admin): the API keys members made for the organization's `ssoOrgIds`
@@ -99,5 +99,22 @@ requests, 2000 audit entries per organization, README 20 000 characters.
 
 - Per-key spend metering and cap enforcement (billing shows what the node counts and says what it does not).
 - Email delivery of invite links — the node has no mailer; the admin copies the link.
-- Organization-owned hosted agents: hosted agents stay wallet-owned (`docs/ain-sso.md` §1); an organization can
-  link one by URL like any other agent.
+- ~~Organization-owned hosted agents~~ — done the same day, see the addendum below.
+
+## Addendum (2026-09-29): hosted agents under an organization
+
+Hosted agents (`/api/hosted-agents`) now follow the linked-agent rules above:
+
+- **Who may create:** a wallet session or an unblocked AIN SSO / Google session (`docs/ain-sso.md` §1); the owner is
+  that principal. The reason is AinCode at `ainize.ai/code`, where people who signed in with AIN SSO edit their own
+  agents and their organization's.
+- **Organization fields:** a spec may carry `org`, `visibility` (`public` | `private`) and `group`. Creating under an
+  organization needs `contributor`. A `write` member may read the full spec (code included), change, remove, set
+  secrets of, and read the logs of any of the organization's hosted agents.
+- **Edits that omit `org`:** a `PUT` without `org` keeps the agent where it is, so an edit form written before
+  organizations cannot move an organization's agent out by accident. Leaving is an explicit `org: null`.
+- **Listing:** `GET /api/hosted-agents?manageable=1` returns the caller's own agents plus every agent of an
+  organization where they can write. `?org=<id>` lists one organization's, members only. The public list, the
+  catalogue (`/api/agents`, `?org=`) and gossip hide private ones exactly as they hide private linked agents.
+- **The organization's page:** its page, billing, security and the "delete refused while agents remain" rule count
+  hosted agents as well as linked ones.

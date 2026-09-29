@@ -33,14 +33,22 @@ own signature, and the node key and `operatorAddresses` are the recovery path.
 An SSO session is a row in `sessions` with `scheme = 'sso'` and `sso_iss/sso_sub/sso_sid`. It stands
 for exactly what a Google session stood for: **a name and API keys**. `siteSession()` does not show it
 to any other reader, so it cannot own the node, spend the node wallet, change payouts, approve a CLI
-or node link (those need an eip191 signature anyway), manage hosted agents or claim deposits.
+or node link (those need an eip191 signature anyway) or claim deposits.
 `/api/auth/me` reports it in a separate `sso` field and leaves `signedIn`/`subject` meaning "an
 address is here".
 
 One more thing it can do, since 2026-09-29: register **linked agents** (`/api/linked-agents`,
 `docs/superpowers/specs/2026-09-29-linked-agents-design.md`). A linked agent is an external A2A URL the
 node lists and proxies — not a node resource the way a hosted agent is — and its owner is the same
-principal string that owns API keys. Hosted agents stay wallet-only.
+principal string that owns API keys.
+
+And since 2026-09-29 (later the same day): create and manage **hosted agents** (`/api/hosted-agents`) —
+the agents this node runs. The owner is the same principal string (`sso:<sub>`, `google:<sub>`,
+case-sensitive; a wallet address stays lower-cased), the per-account limit is the store's (5), and a
+suspended account is refused like everywhere else. The reason: people who sign in with AIN SSO — and
+editors built on it such as AinCode at `/code` — create and edit agents without a wallet. What an SSO
+session still cannot do is anything that spends or owns the node (above). Under an organization, a
+hosted agent follows the linked-agent rules of §2.
 
 ## 2. Organizations
 

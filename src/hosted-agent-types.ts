@@ -15,8 +15,18 @@ export interface HostedAgentSpec extends HostedAgentRuntimeSpec {
   files: Record<string, string>;
   allowedHosts: string[];
   secretNames: string[];
-  /** Lower-case EVM address of whoever created it. Only they may change it. */
+  /**
+   * The principal that created it: a lower-case wallet address, or an AIN SSO / Google principal (`sso:<sub>`,
+   * `google:<sub>`) — the same string that owns API keys and linked agents. The owner may change it; so may a
+   * `write` member of the organization it is under.
+   */
   owner: string;
+  /** The organization it was created under (organization-store.ts), or null for a personal agent. */
+  org: string | null;
+  /** `private` = listed only to the organization's members (and not gossiped); a personal agent is always public. */
+  visibility: 'public' | 'private';
+  /** A resource group of the organization that narrows who sees a private agent; null = every member. */
+  group: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -58,6 +68,10 @@ export const hostedAgentSpecInput = z.object({
     description: z.string().trim().max(300).optional(),
     examples: z.array(z.string().max(300)).max(4).optional(),
   })).max(8).default([]),
+  /** create under an organization (the caller must be at least a `contributor` there); omitted = personal */
+  org: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'an organization id is 1–40 lower-case letters, digits and hyphens').nullable().default(null),
+  visibility: z.enum(['public', 'private']).default('public'),
+  group: z.string().trim().min(1).max(40).nullable().default(null),
 }).superRefine((v, ctx) => {
   if (hostedAgentUsesCode(v.mode)) {
     if (typeof v.files['index.mjs'] !== 'string' || !v.files['index.mjs'].trim()) {

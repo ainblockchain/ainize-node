@@ -238,7 +238,8 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
       kind: 'upstream' as const,
     };
   });
-  const hostedAds: AgentAdvertWithModel[] = (hosted?.store.list() ?? []).map((spec) => ({
+  // the same rule for an agent this node runs under an organization: private ones are not gossiped
+  const hostedAds: AgentAdvertWithModel[] = (hosted?.store.list() ?? []).filter((spec) => spec.visibility !== 'private').map((spec) => ({
     id: spec.id,
     name: spec.name,
     ...(spec.description ? { description: spec.description } : {}),
@@ -249,6 +250,7 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
     reachable: hosted?.host.status(spec.id)?.status === 'ready',
     model: spec.model,
     owner: spec.owner,
+    ...(spec.org ? { org: spec.org } : {}),
     kind: spec.mode,
   }));
   return [...own, ...hostedAds].slice(0, MAX_ADVERTS);
@@ -280,7 +282,7 @@ export function agentCallStats(id: string): { total: number; last_at: number | n
  * Who may see a catalogue row. Everything is public except a private organization agent, which the organization
  * decides about (organization-store.ts `canSeeOrgAgent`); a node without organizations shows everything.
  */
-export type CatalogVisibility = (req: Request, agent: ProxiedAgent) => boolean;
+export type CatalogVisibility = (req: Request, agent: Pick<ProxiedAgent, 'org' | 'visibility' | 'group' | 'owner'>) => boolean;
 
 /** Agents this node RUNS (hosted-agent-host.ts), beside the ones it proxies from `config.agents`. */
 export interface HostedAgentsDeps {
@@ -422,8 +424,12 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      * its card would start it, and a list render must not wake twenty agents. `reachable` is the build status —
      * a ready agent answers (starting on demand), a failed one does not.
      */
-    // an organization scope lists organization agents only — hosted agents and peers' agents have no organization
-    for (const spec of orgFilter ? [] : deps.hosted?.store.list() ?? []) {
+    // an organization scope lists that organization's agents only — peers' agents have no organization here, and
+    // an agent this node runs is in one when it was created under it; private ones as the organization allows
+    const hostedVisible = (deps.hosted?.store.list() ?? [])
+      .filter((spec) => !orgFilter || spec.org === orgFilter)
+      .filter((spec) => spec.visibility !== 'private' || (deps.canSee?.(req, spec) ?? false));
+    for (const spec of hostedVisible) {
       const st = deps.hosted!.host.status(spec.id);
       const c = calls.get(spec.id);
       const url = agentUrl(publicUrl, spec.id);
@@ -449,8 +455,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         model: spec.model,
         kind: spec.mode,
         owner: spec.owner,
-        org: null,
-        visibility: 'public',
+        org: spec.org,
+        visibility: spec.visibility,
         status: st?.status ?? 'failed',
       } as (typeof out)[number]);
     }

@@ -179,7 +179,7 @@ test('create with media over HTTP, then draw and listen over A2A v0.3 — the pi
   app.use(express.json({ verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use(hostedAgentRoutes({
     store, secrets, host, registry: () => reg(),
-    sessionAddress: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
+    sessionPrincipal: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
     reserved: () => false,
     publicBase: () => 'https://node.example',
   }));

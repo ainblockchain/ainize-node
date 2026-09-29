@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { HostedAgentSpec, HostedAgentSpecInput } from './hosted-agent-types.js';
+import { normalisePrincipal } from './organization-store.js';
 
 export interface HostedAgentStoreLimits {
   perOwner: number;
@@ -25,7 +26,8 @@ export class HostedAgentStore {
   constructor(private readonly file: string, private readonly limits: HostedAgentStoreLimits = HOSTED_AGENT_DEFAULT_LIMITS) {
     if (existsSync(file)) {
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as { agents?: HostedAgentSpec[] };
-      for (const s of parsed.agents ?? []) if (s?.id) this.specs.set(s.id, s);
+      // specs written before organizations existed are personal and public — exactly what they were
+      for (const s of parsed.agents ?? []) if (s?.id) this.specs.set(s.id, { ...s, org: s.org ?? null, visibility: s.visibility ?? 'public', group: s.group ?? null });
     }
   }
 
@@ -37,17 +39,23 @@ export class HostedAgentStore {
     return this.specs.get(id) ?? null;
   }
 
+  /** A wallet address compares case-insensitively; an SSO principal is case-sensitive (organization-store.ts `normalisePrincipal`, which also folds a `0X` prefix). */
   listByOwner(owner: string): HostedAgentSpec[] {
-    return this.list().filter((s) => s.owner === owner.toLowerCase());
+    const who = normalisePrincipal(owner);
+    return this.list().filter((s) => s.owner === who);
+  }
+
+  listByOrg(org: string): HostedAgentSpec[] {
+    return this.list().filter((s) => s.org === org);
   }
 
   /** `reserved` is every id already spoken for elsewhere (config agents), which a hosted agent must not shadow. */
   create(input: HostedAgentSpecInput, owner: string, reserved: (id: string) => boolean = () => false, now = Date.now()): HostedAgentSpec {
-    const who = owner.toLowerCase();
+    const who = normalisePrincipal(owner);
     if (this.specs.has(input.id) || reserved(input.id)) throw new HostedAgentIdTakenError(`the id "${input.id}" is taken`);
-    if (this.listByOwner(who).length >= this.limits.perOwner) throw new HostedAgentLimitError(`an address may run ${this.limits.perOwner} agents on this node`);
+    if (this.listByOwner(who).length >= this.limits.perOwner) throw new HostedAgentLimitError(`one account may run ${this.limits.perOwner} agents on this node`);
     if (this.specs.size >= this.limits.total) throw new HostedAgentLimitError(`this node runs its maximum of ${this.limits.total} agents`);
-    const spec: HostedAgentSpec = { ...input, owner: who, version: 1, createdAt: now, updatedAt: now };
+    const spec: HostedAgentSpec = { ...withOrgFields(input), owner: who, version: 1, createdAt: now, updatedAt: now };
     this.specs.set(spec.id, spec);
     this.save();
     return spec;
@@ -57,7 +65,7 @@ export class HostedAgentStore {
   update(id: string, input: HostedAgentSpecInput, now = Date.now()): HostedAgentSpec {
     const prior = this.specs.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
-    const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
+    const spec: HostedAgentSpec = { ...withOrgFields(input), id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
     this.specs.set(id, spec);
     this.save();
     return spec;
@@ -76,3 +84,8 @@ export class HostedAgentStore {
     renameSync(tmp, this.file);
   }
 }
+
+/** A personal agent has nobody to be private FROM — the catalogue is public — so `private` and `group` need an organization. */
+const withOrgFields = (input: HostedAgentSpecInput) => ({
+  ...input, org: input.org ?? null, visibility: input.org ? input.visibility : ('public' as const), group: input.org ? input.group ?? null : null,
+});

@@ -288,7 +288,7 @@ test('create over HTTP, list under the model, call over A2A (v0.3 and v1.0), and
   app.use(express.json({ verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use(hostedAgentRoutes({
     store, secrets, host, registry,
-    sessionAddress: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
+    sessionPrincipal: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
     reserved: (id) => id === 'proxied',
     publicBase: () => 'https://node.example',
   }));

@@ -13,7 +13,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { agentCallStats, agentUrl } from './agents.js';
-import type { LinkedAgent, LinkedAgentStore } from './linked-agent-store.js';
+import type { LinkedAgent } from './linked-agent-store.js';
 import type { OpenaiApiKeySummary } from './openai-api-keys.js';
 import {
   canSeeOrgAgent, emailDomain, membership, normalisePrincipal, OrgDomainNotYoursError, OrgDomainTakenError, OrgIdTakenError, OrgLastAdminError,
@@ -21,9 +21,13 @@ import {
   type Organization, type OrganizationStore, type OrgRole, type OrgViewer,
 } from './organization-store.js';
 
+/** What an organization's pages need of one of its agents — a linked agent, or a hosted one without its code. */
+export type OrgAgentRow = Pick<LinkedAgent, 'id' | 'name' | 'description' | 'owner' | 'org' | 'visibility' | 'group' | 'version' | 'createdAt' | 'updatedAt'>;
+
 export interface OrganizationRoutesDeps {
   orgs: OrganizationStore;
-  agents: Pick<LinkedAgentStore, 'listByOrg' | 'list'>;
+  /** The organization's agents — linked ones and the ones this node runs under it (server.ts joins the two stores). */
+  agents: { listByOrg(org: string): OrgAgentRow[]; list(): OrgAgentRow[] };
   /** Who is signed in, as an organization sees it — or null. */
   viewer: (req: Request) => OrgViewer | null;
   /** Ids an organization may not take — the site's `/org/*` pages are in the store; this adds anything else. */
@@ -90,7 +94,7 @@ export function organizationRoutes(deps: OrganizationRoutesDeps): Router {
 
   // ---------------------------------------------------------------------------------------------- views
 
-  const agentView = (req: Request, a: LinkedAgent) => {
+  const agentView = (req: Request, a: OrgAgentRow) => {
     const base = agentUrl(deps.publicBase(req), a.id);
     const stats = agentCallStats(a.id);
     return {

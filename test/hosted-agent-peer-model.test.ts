@@ -140,7 +140,7 @@ test('the API lets an agent be built on a peer\'s model, and refuses a node that
   app.use(express.json());
   app.use(hostedAgentRoutes({
     store, secrets, host, registry: localRegistry,
-    sessionAddress: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
+    sessionPrincipal: (req) => req.header('x-test-address')?.toLowerCase() ?? null,
     reserved: () => false, publicBase: () => 'https://node.example',
     peerChat: { self: A.address, serves: (model, node) => !!peerChat.target(model, node) },
   }));

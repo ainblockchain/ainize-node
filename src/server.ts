@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import express from 'express';
 import { buildAgents, probeUpstreamCard } from './agents.js';
 import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-store.js';
+import type { HostedAgentSpec } from './hosted-agent-types.js';
 import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
@@ -396,26 +397,38 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
   market.linkedAgents = linkedStore;
+  /**
+   * A wallet session or an AIN SSO one — the principal that `/api/keys` accepts (docs/ain-sso.md §1). Owns linked
+   * agents and, since 2026-09-29, hosted agents. A suspended SSO account is refused the way `/api/keys` refuses it.
+   */
+  const agentPrincipal = (req: express.Request): string | null => {
+    const wallet = siteSession(req, store, cfg.identity.address);
+    if (wallet) return wallet.address.toLowerCase();
+    const viaSso = ssoSession(req, store);
+    if (viaSso && !sso.isBlocked(viaSso.iss, viaSso.sub)) return viaSso.principal;
+    return null;
+  };
   app.use(linkedAgentRoutes({
     store: linkedStore,
-    // A wallet session or an AIN SSO one: a URL is not a node resource, so the principal that `/api/keys` accepts is
-    // enough here (docs/ain-sso.md §1). A suspended SSO account is refused the way `/api/keys` refuses it.
-    sessionPrincipal: (req) => {
-      const wallet = siteSession(req, store, cfg.identity.address);
-      if (wallet) return wallet.address.toLowerCase();
-      const viaSso = ssoSession(req, store);
-      if (viaSso && !sso.isBlocked(viaSso.iss, viaSso.sub)) return viaSso.principal;
-      return null;
-    },
+    sessionPrincipal: agentPrincipal,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     probe: probeUpstreamCard,
     orgs: orgStore,
     viewer: orgViewer,
   }));
+  // An organization's agents are the ones linked under it and the ones this node runs under it — one list for its
+  // page, its billing and security tabs, and the "delete refused while agents remain" rule.
+  const orgAgentRow = (s: HostedAgentSpec) => ({
+    id: s.id, name: s.name, description: s.description, owner: s.owner, org: s.org, visibility: s.visibility, group: s.group,
+    version: s.version, createdAt: s.createdAt, updatedAt: s.updatedAt,
+  });
   app.use(organizationRoutes({
     orgs: orgStore,
-    agents: linkedStore,
+    agents: {
+      list: () => [...linkedStore.list(), ...hostedStore.list().map(orgAgentRow)],
+      listByOrg: (org) => [...linkedStore.listByOrg(org), ...hostedStore.listByOrg(org).map(orgAgentRow)],
+    },
     viewer: orgViewer,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     keys: openaiKeys,
@@ -440,7 +453,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     secrets: hostedSecrets,
     host: hostedHost,
     registry: () => inferenceRegistry,
-    sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
+    sessionPrincipal: agentPrincipal,
+    orgs: orgStore,
+    viewer: orgViewer,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
