@@ -8,7 +8,7 @@ test('pinned bare models and playground retain long inputs and tools; missing pe
  const peer='0x'+'2'.repeat(40),seen:any[]=[];let available=true;
  const peers={target:(_k:any,_m:any,node:any)=>available&&node===peer?{model:'qwen',address:peer,endpoint:'http://peer'}:null,relayChat:async(_t:any,b:any,res:any)=>{seen.push(b);res.json({ok:true});},models:()=>[]};
  const app=express();app.use(express.json({limit:'25mb'}));
- app.use(preferredChatPlayground({routes:{qwen:peer},peers:()=>peers,fetch:async(_p:any,b:any)=>{seen.push(b);return Response.json({choices:[{message:{content:'answer'},finish_reason:'stop'}]});}} as any));
+ app.use(preferredChatPlayground({routes:{qwen:peer},peers:()=>peers,fetch:async(_p:any,b:any)=>{seen.push(b);if(b.stream) return new Response('data: '+JSON.stringify({id:'test',object:'chat.completion.chunk',created:1,model:'qwen',choices:[{index:0,delta:{content:'answer'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});return Response.json({choices:[{message:{content:'answer'},finish_reason:'stop'}]});}} as any));
  app.use(openaiSurfaceRouter({node:'0x'+'1'.repeat(40),preferredChatPeers:{qwen:peer},keys:{addressForKey:()=> 'caller'},registry:{backendForModel:()=>({modality:'chat'}),listModels:()=>[]},gates:new Map(),market:{chat:()=>{throw Error('local must not run')}},peerModels:peers} as any));
  app.post('/api/chat',(_req,res)=>res.json({legacy:true}));
  const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));
@@ -19,9 +19,11 @@ test('pinned bare models and playground retain long inputs and tools; missing pe
  assert.equal((await post('/v1/chat/completions',body)).status,200);assert.deepEqual(seen[0],body);
  const playground=await post('/api/chat',{...body,model:undefined,mode:'base',patch_ids:[]});assert.equal(playground.status,200);assert.equal((await playground.json()).base.content,'answer');assert.equal(seen[1].messages[0].content.length,100000);assert.deepEqual(seen[1].tools,body.tools);
  assert.deepEqual(await (await post('/api/chat',{mode:'patched',patch_ids:['p']})).json(),{legacy:true});
+ const streamed=await post('/api/chat',{mode:'base',patch_ids:[],stream:true,messages:[{role:'user',content:'hi'}]});
+ const frames=await streamed.text();assert.match(frames,/event: ainize.result/);assert.match(frames,/"content":"answer"/);assert.match(frames,/data: \[DONE\]/);
  available=false;
  assert.equal((await post('/v1/chat/completions',{model:'qwen',messages:[{role:'user',content:'hi'}]})).status,404);
  assert.equal((await post('/api/chat',{mode:'base',patch_ids:[],messages:[{role:'user',content:'hi'}]})).status,503);
- assert.equal(seen.length,2);
+ assert.equal(seen.length,3);
  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });
