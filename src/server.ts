@@ -17,6 +17,8 @@ import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
+import { canSeeOrgAgent, membership, OrganizationStore, type OrgViewer } from './organization-store.js';
+import { organizationRoutes } from './organization-routes.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
 import { siteSession, ssoSession } from './site-session.js';
@@ -310,6 +312,34 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    */
   const linkedStore = new LinkedAgentStore(join(hostedHome, 'linked-agents.json'));
   /**
+   * Organizations (organization-store.ts): a team's page, members and roles, and the agents registered under it.
+   * `AINIZE_ORG_SEED="comcom=ComCom:comcom.ai,acme=Acme:acme.com"` creates organizations at boot that do not exist
+   * yet (id=name:domain[+domain]); the seeded organization has no members until someone on that domain signs in,
+   * who then holds `domainRole` (`write`) — an operator seeds it so the company's page exists before its people do.
+   */
+  const orgStore = new OrganizationStore(join(hostedHome, 'organizations.json'));
+  for (const entry of (process.env.AINIZE_ORG_SEED ?? '').split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = entry.match(/^([a-z0-9][a-z0-9-]{0,39})=([^:]+)(?::(.+))?$/);
+    if (!m || orgStore.get(m[1])) continue;
+    const domains = (m[3] ?? '').split('+').map((d) => d.trim().toLowerCase()).filter(Boolean);
+    try {
+      // the seed claims its domains on the operator's authority: the viewer is the node itself with an email on each domain in turn
+      orgStore.seed(m[1], m[2].trim(), domains, cfg.identity.address.toLowerCase());
+      market.log('info', 'orgs', `seeded organization "${m[1]}" (${domains.join(', ') || 'no domains'})`);
+    } catch (e) {
+      market.log('warn', 'orgs', `AINIZE_ORG_SEED "${entry}" ignored: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  /** Who is asking, as an organization sees it: a wallet session (no email), or an AIN SSO session with the email the issuer vouched for. */
+  const orgViewer = (req: express.Request): OrgViewer | null => {
+    const wallet = siteSession(req, store, cfg.identity.address);
+    if (wallet) return { principal: wallet.address.toLowerCase(), email: null, name: null, ssoOrgIds: [] };
+    const viaSso = ssoSession(req, store);
+    if (!viaSso || sso.isBlocked(viaSso.iss, viaSso.sub)) return null;
+    const ident = store.ssoIdentity(viaSso.iss, viaSso.sub);
+    return { principal: viaSso.principal, email: ident?.email ?? null, name: ident?.name ?? null, ssoOrgIds: viaSso.orgs.map((o) => o.id) };
+  };
+  /**
    * Models on other nodes (peer-models.ts): what the peer table says each fresh peer serves, and a signed call to
    * it. Read on every use — gossip updates the table every few seconds and a peer can come and go between turns.
    */
@@ -377,6 +407,16 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     probe: probeUpstreamCard,
+    orgs: orgStore,
+    viewer: orgViewer,
+  }));
+  app.use(organizationRoutes({
+    orgs: orgStore,
+    agents: linkedStore,
+    viewer: orgViewer,
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    keys: openaiKeys,
+    sso: () => ({ configured: !!ssoConfig, issuer: ssoConfig?.issuer ?? null }),
   }));
 
   app.use(publicModelsRouter({
@@ -522,6 +562,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use(buildAgents(cfg, {
     hosted: hostedAgents,
     linked: linkedStore,
+    // a private organization agent is listed to the organization's members only
+    canSee: (req, a) => {
+      const org = a.org ? orgStore.get(a.org) : null;
+      if (!org) return false;
+      const viewer = orgViewer(req);
+      return canSeeOrgAgent(org, { visibility: a.visibility ?? 'public', group: a.group ?? null, owner: a.owner ?? '' }, viewer, membership(org, viewer)?.role ?? null);
+    },
     knownNodes: () => market.knownNodes(),
     selfAddress: cfg.identity.address,
     relay: mesh,

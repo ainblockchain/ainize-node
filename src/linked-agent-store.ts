@@ -25,6 +25,12 @@ export interface LinkedAgent {
   upstream: string;
   /** The principal that registered it: a lower-case wallet address, or an AIN SSO principal (`sso:<sub>`). */
   owner: string;
+  /** The organization it was registered under (organization-store.ts), or null for a personal agent. */
+  org: string | null;
+  /** `private` = listed only to the organization's members (and hidden from gossip); a personal agent is always public. */
+  visibility: 'public' | 'private';
+  /** A resource group of the organization that narrows who sees a private agent; null = every member. */
+  group: string | null;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -41,6 +47,10 @@ export const linkedAgentInput = z.object({
   name: z.string().trim().max(80).default(''),
   description: z.string().trim().max(500).default(''),
   upstream: z.string().trim().url('upstream is the agent\'s http(s) address').refine((u) => /^https?:\/\//i.test(u), 'upstream must be http or https'),
+  /** register under an organization (the caller must be at least a `contributor` there); omitted = personal */
+  org: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'an organization id is 1–40 lower-case letters, digits and hyphens').nullable().default(null),
+  visibility: z.enum(['public', 'private']).default('public'),
+  group: z.string().trim().min(1).max(40).nullable().default(null),
 });
 export type LinkedAgentInput = z.infer<typeof linkedAgentInput>;
 
@@ -60,7 +70,8 @@ export class LinkedAgentStore {
   constructor(private readonly file: string, private readonly limits: LinkedAgentStoreLimits = LINKED_AGENT_DEFAULT_LIMITS) {
     if (existsSync(file)) {
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as { agents?: LinkedAgent[] };
-      for (const a of parsed.agents ?? []) if (a?.id) this.agents.set(a.id, a);
+      // rows written before organizations existed are personal and public — exactly what they were
+      for (const a of parsed.agents ?? []) if (a?.id) this.agents.set(a.id, { ...a, org: a.org ?? null, visibility: a.visibility ?? 'public', group: a.group ?? null });
     }
   }
 
@@ -81,13 +92,18 @@ export class LinkedAgentStore {
     return this.list().filter((a) => a.owner === who);
   }
 
+  listByOrg(org: string): LinkedAgent[] {
+    return this.list().filter((a) => a.org === org);
+  }
+
   /** `reserved` is every id spoken for elsewhere (config agents, hosted agents), which a linked agent must not shadow. */
   create(input: LinkedAgentInput & { name: string }, owner: string, reserved: (id: string) => boolean = () => false, now = Date.now()): LinkedAgent {
     const who = normaliseOwner(owner);
     if (this.agents.has(input.id) || reserved(input.id)) throw new LinkedAgentIdTakenError(`the id "${input.id}" is taken`);
     if (this.listByOwner(who).length >= this.limits.perOwner) throw new LinkedAgentLimitError(`one account may link ${this.limits.perOwner} agents on this node`);
     if (this.agents.size >= this.limits.total) throw new LinkedAgentLimitError(`this node lists its maximum of ${this.limits.total} linked agents`);
-    const agent: LinkedAgent = { ...input, owner: who, version: 1, createdAt: now, updatedAt: now };
+    // a personal agent has nobody to be private FROM — the catalogue is public — so `private` needs an organization
+    const agent: LinkedAgent = { ...withOrgFields(input), owner: who, version: 1, createdAt: now, updatedAt: now };
     this.agents.set(agent.id, agent);
     this.save();
     return agent;
@@ -97,7 +113,7 @@ export class LinkedAgentStore {
   update(id: string, input: LinkedAgentInput & { name: string }, now = Date.now()): LinkedAgent {
     const prior = this.agents.get(id);
     if (!prior) throw new Error(`no linked agent "${id}"`);
-    const agent: LinkedAgent = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
+    const agent: LinkedAgent = { ...withOrgFields(input), id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
     this.agents.set(id, agent);
     this.save();
     return agent;
@@ -116,6 +132,10 @@ export class LinkedAgentStore {
     renameSync(tmp, this.file);
   }
 }
+
+const withOrgFields = (input: LinkedAgentInput & { name: string }) => ({
+  ...input, org: input.org ?? null, visibility: input.org ? input.visibility : ('public' as const), group: input.org ? input.group ?? null : null,
+});
 
 /**
  * A wallet address compares case-insensitively; an SSO principal (`sso:<sub>`) is case-sensitive, because an OIDC

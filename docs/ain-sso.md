@@ -44,17 +44,31 @@ principal string that owns API keys. Hosted agents stay wallet-only.
 
 ## 2. Organizations
 
-ainize has no organizations, roles or groups of its own. An AIN organization appears in one place:
+Since 2026-09-29 ainize has organizations of its own (`/api/orgs`,
+`docs/superpowers/specs/2026-09-29-organizations-design.md`): a team's page, members with roles
+(`read` < `contributor` < `write` < `admin`), invites, join requests, resource groups, an audit log, and
+the agents registered under it. AIN SSO is what admits people to one:
+
+- **The sign-in's email domain.** An organization holds domains (`comcom.ai`); a session whose
+  vouched email is on one is a member at the organization's `domainRole`. A domain can be claimed
+  only by someone whose own email is on it.
+- **An AIN organization the ID token named.** An organization may link AIN SSO organization ids
+  (`ssoOrgIds`); their members are members here at `domainRole`, and API keys made for them count
+  as the organization's on its billing page.
+
+Neither grants anything on the node beyond the organization: node ownership is never derived from
+SSO (inventory §6.5 — a future operator grant must require a signature-proven linked address).
+`appRole` and `groups` from the adapter are stored and reported back on `GET` but grant nothing.
+
+What was here before still holds for API keys:
 
 - **API keys made in an SSO session carry `orgId`** — the organization chosen when the key is made
   (`POST /api/keys {org_id}`), defaulting to the organization selected at sign-in (`active_org`) or
   the only one the ID token named. `org_id: null` makes a personal key. Only organizations the ID
   token named are accepted; wallet and Google-vouched callers make personal keys only.
 
-That is the whole organization-owned surface, so it is what suspension switches off. `appRole` and
-`groups` from the adapter are stored and reported back on `GET` but grant nothing: node ownership is
-never derived from SSO (inventory §6.5 — a future operator grant must require a signature-proven
-linked address).
+That is what suspension switches off. A suspended SSO account is also refused every organization
+route (`orgViewer` in server.ts returns null for it).
 
 ## 3. Provisioning adapter (protocol v1)
 
