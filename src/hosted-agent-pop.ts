@@ -9,10 +9,11 @@
  * listed over HTTP. The public half is written into the spec (it is public) so the card and the registry can show
  * it without the secret store.
  */
-import { generateHostedAgentPopKey, type HostedAgentPopJwk } from './hosted-agent-runtime/hostedAgentPop.js';
+import { generateHostedAgentPopKey, hostedAgentPopSigner, type HostedAgentPopJwk } from './hosted-agent-runtime/hostedAgentPop.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
 import type { HostedAgentSpec } from './hosted-agent-types.js';
+import { audienceOf, type SharedAgentEvents } from './shared-agents.js';
 
 /** Reserved: outside the pattern owners may name, so no route reads, sets or clears it. */
 export const HOSTED_AGENT_POP_SECRET_NAME = '__POP_KEY__';
@@ -24,15 +25,30 @@ export function issueHostedAgentPopKey(store: HostedAgentStore, secrets: HostedA
   return store.setPopJwk(spec.id, publicJwk) ?? spec;
 }
 
+/** Where a boot-time rotation is announced: the registry's event feed, under the address the refs are minted under. */
+export interface HostedAgentPopKeyAnnouncer {
+  events: Pick<SharedAgentEvents, 'append'>;
+  registryIssuer: string;
+}
+
 /**
- * Every stored agent holds a usable key after this: one is issued to an agent that has none, and to one whose
- * public half is on the spec but whose private half is gone (a secret store restored without its key). A
- * rotation is a new release (the store bumps the version), so a product holding the old JWK re-reads the card.
+ * Every stored agent holds a usable key after this: one is issued to an agent that has none, to one whose public
+ * half is on the spec but whose private half is gone (a secret store restored without its key), and to one whose
+ * private half does not match the advertised `kid` (a spec file and a secret store restored from different
+ * backups — the card would promise a key the runtime cannot sign with, and every read would fail at the origin as
+ * "not valid here"). A rotation is a new release (the store bumps the version), so a product holding the old JWK
+ * re-reads the card; with `announce` it is also an `agent.updated` event on the feed, as a rotation over HTTP
+ * would be.
  */
-export function ensureHostedAgentPopKeys(store: HostedAgentStore, secrets: HostedAgentSecretStore): HostedAgentSpec[] {
+export function ensureHostedAgentPopKeys(store: HostedAgentStore, secrets: HostedAgentSecretStore, announce?: HostedAgentPopKeyAnnouncer): HostedAgentSpec[] {
   for (const spec of store.list()) {
-    const held = secrets.names(spec.id).includes(HOSTED_AGENT_POP_SECRET_NAME);
-    if (!spec.popJwk || !held) issueHostedAgentPopKey(store, secrets, spec);
+    const held = hostedAgentPopSigner(hostedAgentPopPrivateKeyOf(secrets, spec.id));
+    if (spec.popJwk && held && held.publicJwk.kid === spec.popJwk.kid) continue;
+    const before = spec.version;
+    const after = issueHostedAgentPopKey(store, secrets, spec);
+    if (after.version !== before) {
+      announce?.events.append({ type: 'agent.updated', registryIssuer: announce.registryIssuer, agentId: after.id, version: after.version, releaseId: `v${after.version}`, audience: audienceOf(after) });
+    }
   }
   return store.list();
 }

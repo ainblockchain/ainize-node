@@ -22,7 +22,7 @@ import {
 } from './hostedAgentAindriveHandoff.js';
 import {
   hostedAgentDelegatedGrantOf, hostedAgentDelegatedReadable, hostedAgentDelegatedReadTools, hostedAgentDelegationHistoryNote, hostedAgentDelegationNote,
-  type HostedAgentDelegatedGrant,
+  hostedAgentMessageWithoutCredentials, type HostedAgentDelegatedGrant,
 } from './hostedAgentDelegatedReads.js';
 import { hostedAgentPopSigner, type HostedAgentPopSigner } from './hostedAgentPop.js';
 import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
@@ -369,9 +369,11 @@ export class HostedAgentExecutor implements AgentExecutor {
     const status = (state: number, parts?: unknown[]) => AgentEvent.statusUpdate({
       taskId, contextId, status: { state, message: parts ? agentMessage(parts) : undefined, timestamp: now() }, metadata: undefined,
     } as unknown as Parameters<typeof AgentEvent.statusUpdate>[0]);
+    // The task is read back (the stream, `tasks/get`), so its history keeps the message without its credentials:
+    // the delegation token and the handoff headers were for this runtime's requests, not for whoever asks later.
     eventBus.publish(AgentEvent.task({
       id: taskId, contextId, status: { state: HOSTED_AGENT_TASK_WORKING, message: undefined, timestamp: now() },
-      artifacts: [], history: [requestContext.userMessage], metadata: undefined,
+      artifacts: [], history: [hostedAgentMessageWithoutCredentials(requestContext.userMessage)], metadata: undefined,
     } as unknown as Parameters<typeof AgentEvent.task>[0]));
 
     let started = false;

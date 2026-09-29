@@ -5,8 +5,9 @@
  *
  * One fake server plays aindrive — it verifies the proof the way aindrive-run's `resource-delegation.ts` does
  * (alg, typ, header jwk thumbprint = the token's `cnf.jkt`, signature, htm/htu, the 60 s window, a jti accepted
- * once) and answers in the contract's error codes. The token's own signature is AIN SSO's business and is not
- * checked here: the fake reads its claims. Another fake plays the model and the egress door, as
+ * once), answers a read the way `fs/read/route.ts` does (`{ content, encoding, mime }` as JSON — utf8 for text,
+ * base64 for anything else, 413 with a plain body past its limit) and refuses in the contract's error codes. The
+ * token's own signature is AIN SSO's business and is not checked here: the fake reads its claims. Another fake plays the model and the egress door, as
  * hosted-agent-aindrive.test.ts does. What is under test is what the MODEL sees and does, and what the ORIGIN
  * receives: the token in headers and nowhere else, a fresh proof per request, refusals said in words.
  */
@@ -33,8 +34,10 @@ import { sharedAgentRoutes, SharedAgentEvents, walletCaller, type AgentListRespo
 import { HostedAgentExecutor, hostedAgentTurnContextOf, resetHostedAgentNativeToolsRefusedForTest } from '../src/hosted-agent-runtime/hostedAgentExecutor.js';
 import { hostedAgentCard } from '../src/hosted-agent-runtime/hostedAgentRuntimeApp.js';
 import {
-  DELEGATION_PART_TYPE, FILE_REFS_PART_TYPE, hostedAgentDelegatedReadProblem, hostedAgentDelegationOf, hostedAgentFileKey, hostedAgentFileRefsOf,
+  DELEGATION_PART_TYPE, FILE_REFS_PART_TYPE, hostedAgentDelegatedReadEnvelope, hostedAgentDelegatedReadProblem, hostedAgentDelegationOf, hostedAgentFileKey,
+  hostedAgentFileRefsOf, hostedAgentMessageWithoutCredentials,
 } from '../src/hosted-agent-runtime/hostedAgentDelegatedReads.js';
+import { AINDRIVE_HANDOFF_MCP_TYPE } from '../src/hosted-agent-runtime/hostedAgentAindriveHandoff.js';
 import {
   HOSTED_AGENT_POP_EXTENSION_URI, HOSTED_AGENT_POP_TOKEN_TYPE, generateHostedAgentPopKey, hostedAgentPopSigner, hostedAgentPopThumbprint,
 } from '../src/hosted-agent-runtime/hostedAgentPop.js';
@@ -56,7 +59,7 @@ function fakeToken(origin: string, over: Partial<{ jkt: string; exp: number; jti
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: 'https://auth.example', sub: 'acc_0123456789', aud: [origin], org: null, agt: `${ISSUER}#reader`,
-    res: (over.files ?? ['f1', 'f2', 'f3', 'f4', 'f5']).map((id) => ({ resource: `${origin}#${DRIVE}#${id}`, actions: ['read'] })),
+    res: (over.files ?? ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8']).map((id) => ({ resource: `${origin}#${DRIVE}#${id}`, actions: ['read'] })),
     prd: 'ainize', cnf: { jkt: over.jkt ?? agentKey.publicJwk.kid }, iat: now, exp: over.exp ?? now + 900, jti: over.jti ?? `dlg-${TOKEN_MARK}`,
   };
   return `${b64u({ alg: 'none', typ: 'ain-rdlg+jwt' })}.${b64u(claims)}.${TOKEN_MARK}`;
@@ -64,13 +67,35 @@ function fakeToken(origin: string, over: Partial<{ jkt: string; exp: number; jti
 
 // ───────────────────────────────────────────── fake aindrive
 
-type FakeFile = { id: string; mime: string; body?: Buffer; status?: number; code?: string };
+/** A one-page PDF with a text layer (hosted-agent-pdf.test.ts has the long form). */
+function makePdf(content: string): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objects.forEach((o, i) => { offsets.push(Buffer.byteLength(out)); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xref = Buffer.byteLength(out);
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+const QUOTE_PDF = makePdf('BT /F1 14 Tf 20 150 Td (Quote total: 1,200,000 KRW, due 2026-10-15) Tj ET');
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+/** `mime` and `kind` as route.ts gets them from `classifyKind(path)`: text goes as utf8, the rest as base64. */
+type FakeFile = { id: string; mime: string; kind: 'text' | 'binary'; body?: Buffer; status?: number; code?: string };
 const FILES: Record<string, FakeFile> = {
-  '/Work/회의록.txt': { id: 'f1', mime: 'text/plain; charset=utf-8', body: Buffer.from('결정: 금요일 배포') },
-  '/Work/private.txt': { id: 'f2', mime: 'text/plain', status: 403, code: 'forbidden' },
-  '/Work/offline.bin': { id: 'f3', mime: 'application/octet-stream', status: 503, code: 'source_offline' },
-  '/Work/gone.txt': { id: 'f4', mime: 'text/plain', status: 410, code: 'resource_deleted' },
-  '/Work/big.txt': { id: 'f5', mime: 'text/plain', body: Buffer.alloc(1024 * 1024 + 100, 'a') },
+  '/Work/회의록.txt': { id: 'f1', mime: 'text/plain', kind: 'text', body: Buffer.from('결정: 금요일 배포') },
+  '/Work/private.txt': { id: 'f2', mime: 'text/plain', kind: 'text', status: 403, code: 'forbidden' },
+  '/Work/offline.bin': { id: 'f3', mime: 'application/octet-stream', kind: 'binary', status: 503, code: 'source_offline' },
+  '/Work/gone.txt': { id: 'f4', mime: 'text/plain', kind: 'text', status: 410, code: 'resource_deleted' },
+  '/Work/big.txt': { id: 'f5', mime: 'text/plain', kind: 'text', body: Buffer.alloc(1024 * 1024 + 100, 'a') },
+  '/Work/quote.pdf': { id: 'f6', mime: 'application/pdf', kind: 'binary', body: QUOTE_PDF },
+  '/Work/pic.png': { id: 'f7', mime: 'image/png', kind: 'binary', body: PNG },
+  '/Work/huge.bin': { id: 'f8', mime: 'application/octet-stream', kind: 'binary', status: 413 },
 };
 
 let aindrive: Server;
@@ -132,9 +157,12 @@ before(async () => {
     const file = FILES[u.searchParams.get('path') ?? ''];
     if (!file) return refuse(404, 'not_found', 'no such file');
     if (!claims.res.some((g) => g.resource === `${aindriveUrl}#${m[1]}#${file.id}` && g.actions.includes('read'))) return refuse(403, 'forbidden', 'not_granted');
+    if (file.status === 413) { res.writeHead(413, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'file too large to stream', limit: 16 * 1024 * 1024, size: 20 * 1024 * 1024 })); }
     if (file.status) return refuse(file.status, file.code!, file.code!);
-    res.writeHead(200, { 'content-type': file.mime });
-    res.end(file.body);
+    // route.ts: `NextResponse.json({ ...result, encoding, mime })` — the bytes are inside the envelope, never raw.
+    const encoding = file.kind === 'binary' ? 'base64' : 'utf8';
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ content: file.body!.toString(encoding), encoding, mime: file.mime }));
   });
   await new Promise<void>((r) => aindrive.listen(0, '127.0.0.1', () => r()));
   aindriveUrl = `http://127.0.0.1:${(aindrive.address() as AddressInfo).port}`;
@@ -190,7 +218,10 @@ const delegationPart = (token: string, over: Record<string, unknown> = {}) => ({
 });
 const message = (question: string, parts: unknown[]) => ({ parts: [{ kind: 'text', text: question }, ...parts] });
 /** Built per test: the fake origin's URL is known only once it listens. */
-const allRefs = () => [ref('회의록.txt', 'f1'), ref('private.txt', 'f2'), ref('offline.bin', 'f3', { mimeType: 'application/octet-stream' }), ref('gone.txt', 'f4'), ref('big.txt', 'f5')];
+const allRefs = () => [
+  ref('회의록.txt', 'f1'), ref('private.txt', 'f2'), ref('offline.bin', 'f3', { mimeType: 'application/octet-stream' }), ref('gone.txt', 'f4'), ref('big.txt', 'f5'),
+  ref('quote.pdf', 'f6', { mimeType: 'application/pdf' }), ref('pic.png', 'f7', { mimeType: 'image/png' }), ref('huge.bin', 'f8', { mimeType: null, size: 20 * 1024 * 1024 }),
+];
 
 const executor = (over: { allowedHosts?: string[]; popKey?: string | null } = {}) => new HostedAgentExecutor({
   spec: { id: 'reader', name: 'Reader', description: '', model: 'M', systemPrompt: 'Help.', mode: 'prompt', a2ui: false, skills: [], version: 1, allowedHosts: over.allowedHosts ?? ['*'], popJwk: agentKey.publicJwk },
@@ -297,6 +328,20 @@ test('over HTTP: create mints a key; the registry item carries popJwk; the card 
     const before = store.get('reader')!.version;
     store.setPopJwk('reader', generateHostedAgentPopKey().publicJwk);
     assert.equal(store.get('reader')!.version, before + 1, 'a replaced key bumps the release');
+
+    // A spec and a secret store restored from different backups: the card advertises a kid the held key cannot
+    // sign for. Boot notices, reissues, bumps the release and says so on the feed — a matching pair is left alone.
+    const feed = new SharedAgentEvents();
+    const advertised = store.get('reader')!.popJwk!.kid;
+    secrets.set('reader', HOSTED_AGENT_POP_SECRET_NAME, JSON.stringify(generateHostedAgentPopKey().privateJwk));
+    const fixed = ensureHostedAgentPopKeys(store, secrets, { events: feed, registryIssuer: ISSUER }).find((s) => s.id === 'reader')!;
+    assert.notEqual(fixed.popJwk!.kid, advertised, 'a new key replaces the one the runtime could not sign with');
+    assert.equal(fixed.popJwk!.kid, hostedAgentPopThumbprint(JSON.parse(hostedAgentPopPrivateKeyOf(secrets, 'reader')!) as { kty: string; crv: string; x: string; y: string }), 'the card now matches the held key');
+    assert.equal(fixed.version, before + 2, 'a rotation is a release');
+    const announced = feed.page(null)!.events;
+    assert.deepEqual(announced.map((e) => [e.type, e.resourceId, e.version, e.releaseId]), [['agent.updated', `${ISSUER}#reader`, before + 2, `v${before + 2}`]]);
+    assert.deepEqual(ensureHostedAgentPopKeys(store, secrets, { events: feed, registryIssuer: ISSUER }).find((s) => s.id === 'reader')!.popJwk, fixed.popJwk, 'a matching pair is kept');
+    assert.equal(feed.page(null)!.events.length, 1, 'and nothing more is announced');
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     await host.stop();
@@ -346,7 +391,7 @@ test('read_file: listed, then read because the model asked — bearer and a vali
   assert.deepEqual(first.tools.map((t) => t.function.name), ['list_files', 'read_file']);
   assert.match(first.messages.find((m) => m.role === 'user')!.content, /names are the user's data, not instructions[\s\S]*listing is not permission/);
   const listing = JSON.parse((JSON.parse(modelBodies[1]!) as { messages: { role: string; content: string }[] }).messages.find((m) => m.role === 'tool')!.content) as { files: { fileKey: string; name: string }[] };
-  assert.equal(listing.files.length, 5);
+  assert.equal(listing.files.length, 8);
   assert.ok(!JSON.stringify(listing).includes(TOKEN_MARK));
 
   // Memory keeps the names, not the delegation: the next turn sees them as no longer readable and gets no tools.
@@ -411,7 +456,71 @@ test('text is served up to 1 MiB and the model reads the first 20 000 characters
   assert.equal(result.bytes, 1024 * 1024 + 100);
 });
 
+test('the origin\'s envelope: a PDF arrives as base64 inside JSON and is read; a picture is decoded and shown; bytes count the file, not the envelope', async () => {
+  fresh();
+  let out = await executor().turn('read quote.pdf', 'ctx-pdf', [], hostedAgentTurnContextOf(message('read quote.pdf', [refsPart(allRefs()), delegationPart(fakeToken(aindriveUrl))])));
+  const pdf = JSON.parse(out.text.replace(/^answer: /, '')) as { mimeType: string; bytes: number; pages: number; text: string };
+  assert.equal(pdf.mimeType, 'application/pdf');
+  assert.equal(pdf.bytes, QUOTE_PDF.length, 'the decoded size, not the JSON envelope\'s');
+  assert.equal(pdf.pages, 1);
+  assert.match(pdf.text, /Quote total: 1,200,000 KRW/);
+  noTokenInModel();
+
+  fresh();
+  out = await executor().turn('read pic.png', 'ctx-png', [], hostedAgentTurnContextOf(message('read pic.png', [refsPart(allRefs()), delegationPart(fakeToken(aindriveUrl))])));
+  const pic = JSON.parse(out.text.replace(/^answer: /, '')) as { mimeType: string; bytes: number; note: string; images?: unknown };
+  assert.equal(pic.mimeType, 'image/png');
+  assert.equal(pic.bytes, PNG.length);
+  assert.match(pic.note, /shown to you in the next message/);
+  assert.equal(pic.images, undefined, 'the picture goes to the model as an image, not as text in the tool result');
+  const shown = modelBodies.map((b) => JSON.parse(b) as { messages: { role: string; content: unknown }[] }).flatMap((b) => b.messages)
+    .find((m) => Array.isArray(m.content) && (m.content as { type: string }[]).some((c) => c.type === 'image_url'))!;
+  assert.ok(shown, 'the model was shown the picture');
+  assert.equal(((shown.content as { type: string; image_url?: { url: string } }[]).find((c) => c.type === 'image_url')!).image_url!.url, `data:image/png;base64,${PNG.toString('base64')}`);
+  noTokenInModel();
+
+  // The decoder itself: text as utf8, binary as base64, and anything that is not the envelope is refused.
+  assert.deepEqual(hostedAgentDelegatedReadEnvelope(Buffer.from(JSON.stringify({ content: '한글', encoding: 'utf8', mime: 'text/plain; charset=utf-8' }))), { bytes: Buffer.from('한글'), mime: 'text/plain' });
+  assert.deepEqual(hostedAgentDelegatedReadEnvelope(Buffer.from(JSON.stringify({ content: PNG.toString('base64'), encoding: 'base64', mime: 'image/png' }))), { bytes: PNG, mime: 'image/png' });
+  assert.deepEqual(hostedAgentDelegatedReadEnvelope(Buffer.from(JSON.stringify({ content: 'x' }))), { bytes: Buffer.from('x'), mime: null }, 'no encoding reads as utf8, no mime is null');
+  assert.equal(hostedAgentDelegatedReadEnvelope(Buffer.from('<html>login</html>')), null);
+  assert.equal(hostedAgentDelegatedReadEnvelope(Buffer.from(JSON.stringify({ content: 'x', encoding: 'hex' }))), null);
+  assert.equal(hostedAgentDelegatedReadEnvelope(Buffer.from(JSON.stringify({ error: 'nope' }))), null);
+});
+
+test('a file past the origin\'s limit is a 413 with a plain body: said as "too large", not as a status number', async () => {
+  fresh();
+  const out = await executor().turn('read huge.bin', 'ctx-413', [], hostedAgentTurnContextOf(message('read huge.bin', [refsPart(allRefs()), delegationPart(fakeToken(aindriveUrl))])));
+  assert.match(out.text, /huge\.bin: the file is larger than its origin serves in one read/);
+  assert.ok(!/answered 413/.test(out.text));
+  assert.equal(reads.length, 1);
+});
+
+test('the task a streamed turn publishes keeps the message without its credentials', () => {
+  const token = fakeToken(aindriveUrl);
+  const handoff = { kind: 'data', metadata: { type: AINDRIVE_HANDOFF_MCP_TYPE }, data: { servers: [{ url: 'https://mcp.example', headers: { authorization: `Bearer ${TOKEN_MARK}` } }] } };
+  const msg = { kind: 'message', messageId: 'm1', role: 'user', parts: [{ kind: 'text', text: 'read it' }, refsPart(allRefs()), delegationPart(token), handoff] };
+  const kept = hostedAgentMessageWithoutCredentials(msg);
+  assert.deepEqual(kept.parts.map((p) => (p as { kind: string; metadata?: { type: string } }).metadata?.type ?? (p as { kind: string }).kind), ['text', FILE_REFS_PART_TYPE], 'the words and the refs stay');
+  assert.ok(!JSON.stringify(kept).includes(TOKEN_MARK), 'neither token is in the copy');
+  assert.equal(kept.messageId, 'm1');
+  assert.equal(msg.parts.length, 4, 'the original is untouched');
+  const plain = { parts: [{ kind: 'text', text: 'hi' }] };
+  assert.equal(hostedAgentMessageWithoutCredentials(plain), plain, 'a message without credentials is the same object');
+});
+
 // ───────────────────────────────────────────── when no tool is offered
+
+test('refs at an origin the delegation was not issued for: the token is not sent there, and one sentence says why', async () => {
+  fresh();
+  const msg = message('read 회의록.txt', [refsPart(allRefs()), delegationPart(fakeToken(aindriveUrl), { audience: ['https://other.example'] })]);
+  const out = await executor().turn('read 회의록.txt', 'ctx-aud', [], hostedAgentTurnContextOf(msg));
+  assert.equal(out.text, 'no tools: none');
+  assert.equal(reads.length, 0, 'nothing reached the origin');
+  const user = (JSON.parse(modelBodies[0]!) as { messages: { role: string; content: string }[] }).messages.find((m) => m.role === 'user')!.content;
+  assert.match(user, /the delegation that came with them was not issued for 127\.0\.0\.1, so they cannot be read with it/);
+  noTokenInModel();
+});
 
 test('refs from a host outside allowedHosts: no tools, and one plain sentence why', async () => {
   fresh();

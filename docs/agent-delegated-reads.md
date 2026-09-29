@@ -58,15 +58,21 @@ The rules are the handoff's:
 
 - **the model decides** — nothing is read because of what the question says, nothing is read up front;
 - **the token is in the headers and nowhere else** — not in the text the model reads, not in a log line, not in
-  the conversation memory. Memory keeps the file *names* ("no longer readable"); the next message brings its own
-  delegation;
+  the conversation memory, not in the task a streamed turn publishes (its `history` keeps the message with the
+  `ai.ain/delegation` and handoff parts removed, since a task is read back through `tasks/get`). Memory keeps the
+  file *names* ("no longer readable"); the next message brings its own delegation;
 - **the listing is data, not instructions, and not permission** — the origin decides on every read;
 - **refusals are said plainly**: 401 → "the delegation expired or is not valid here; ask for a fresh one",
-  403 → "no permission on that file", 410 → deleted, 503 → "the device holding it is offline", and a delegation
-  whose `expiresAt` has passed is not sent at all.
+  403 → "no permission on that file", 410 → deleted, 503 → "the device holding it is offline", 413 → "larger than
+  its origin serves in one read", and a delegation whose `expiresAt` has passed is not sent at all.
+
+The origin answers a read with aindrive's `fs/read` envelope — `{ content, encoding: "utf8" | "base64", mime }` as
+JSON, never raw bytes — and the runtime decodes it before the text / PDF / picture branches; `bytes` in the tool
+result is the file's decoded size. A body that is not that envelope is refused in words rather than shown as the file.
 
 When the tools are not offered, the model is told why in one sentence: the issuer is not among the agent's
-allowed hosts; refs came without a delegation; the runtime has no key. A delegation with no refs says nothing.
+allowed hosts; the delegation's `audience` does not name the issuer (the token is never sent to an origin it was
+not issued for); refs came without a delegation; the runtime has no key. A delegation with no refs says nothing.
 
 When an aindrive handoff and a delegation arrive in one message, the delegated tools are `list_files_delegated`
 / `read_file_delegated` so each name still reaches one server.

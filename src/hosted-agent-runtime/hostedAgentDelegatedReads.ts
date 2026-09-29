@@ -14,8 +14,11 @@
  *
  * Only when both are present does the turn get `list_files` / `read_file(fileKey)`. `read_file` is
  * `GET {issuer}/api/drives/{driveId}/fs/read?path=…` with `Authorization: Bearer <token>` and `X-AIN-PoP` signed
- * by the agent's key, a fresh jti per request. The rules are aindrive's receiver contract's
- * (hostedAgentAindriveHandoff.ts):
+ * by the agent's key, a fresh jti per request. aindrive answers that route with a JSON envelope, never raw bytes
+ * (aindrive-run `app/api/drives/[driveId]/fs/read/route.ts`): `{ content, encoding: "utf8" | "base64", mime }`,
+ * text as utf8, anything else as base64, and 413 past its 16 MiB limit. The bytes are decoded here, then read
+ * as the attachment tool reads them: text as text, a PDF read, a picture shown. The rules are aindrive's receiver
+ * contract's (hostedAgentAindriveHandoff.ts):
  *
  *   • the model decides — nothing is read because of what the question says, nothing is read up front;
  *   • the token is in the request headers and nowhere else: not in the text the model reads, not in a log line,
@@ -29,7 +32,7 @@
  * tool is offered and the model is told why in one sentence, rather than offered a tool that only fails.
  */
 import { HOSTED_AGENT_ATTACHMENT_MAX_BYTES, HOSTED_AGENT_ATTACHMENT_TEXT_CHARS, hostedAgentFetchProblem } from './hostedAgentAttachments.js';
-import { hostedAgentDataPartsOf } from './hostedAgentAindriveHandoff.js';
+import { AINDRIVE_HANDOFF_MCP_TYPE, hostedAgentDataPartsOf } from './hostedAgentAindriveHandoff.js';
 import { HOSTED_AGENT_POP_HEADER, hostedAgentHostAllowed, type HostedAgentPopSigner } from './hostedAgentPop.js';
 import { hostedAgentReadPdf, isHostedAgentPdf } from './hostedAgentPdf.js';
 import type { HostedAgentCtx, HostedAgentTool } from './hostedAgentRuntimeTypes.js';
@@ -124,6 +127,25 @@ export function hostedAgentDelegationOf(message: unknown): HostedAgentDelegation
 
 export const hostedAgentDelegatedGrantOf = (message: unknown): HostedAgentDelegatedGrant => ({ refs: hostedAgentFileRefsOf(message), delegation: hostedAgentDelegationOf(message) });
 
+/** The data parts that carry a credential: a delegation token, an aindrive handoff's headers. */
+const CREDENTIAL_PART_TYPES: ReadonlySet<string> = new Set([DELEGATION_PART_TYPE, AINDRIVE_HANDOFF_MCP_TYPE]);
+
+/**
+ * The user's message as a task may keep it: the same message without the parts that hold a credential. A task
+ * is read back — in `message/stream` events, through `tasks/get` by anyone holding the task id — so what it
+ * records must not hand the token on. The file refs and the folder listing stay: they are the user's data, not
+ * a secret.
+ */
+export function hostedAgentMessageWithoutCredentials<T>(message: T): T {
+  const parts = (message as { parts?: unknown[] } | undefined)?.parts;
+  if (!Array.isArray(parts)) return message;
+  const kept = parts.filter((p) => {
+    const type = (p as { metadata?: { type?: unknown } } | undefined)?.metadata?.type;
+    return !(typeof type === 'string' && CREDENTIAL_PART_TYPES.has(type));
+  });
+  return kept.length === parts.length ? message : { ...(message as object), parts: kept } as T;
+}
+
 // ------------------------------------------------------------------------------------------------ what can be read
 
 /**
@@ -148,13 +170,18 @@ export function hostedAgentDelegatedReadable(grant: HostedAgentDelegatedGrant, a
     return { readable: [], reasons };
   }
   const blocked = new Set<string>();
+  const notAudience = new Set<string>();
   const readable: HostedAgentFileRef[] = [];
   for (const ref of grant.refs) {
     const host = hostOf(ref.issuer);
     if (!host || !hostedAgentHostAllowed(host, allowedHosts)) { blocked.add(host ?? ref.issuer); continue; }
+    // The token was issued for the origins in `audience`; it is never sent anywhere else, even a host the agent may
+    // reach (htu/cnf binding would make it useless there anyway — this just keeps it from leaving at all).
+    if (!grant.delegation.audience.includes(ref.issuer)) { notAudience.add(host); continue; }
     readable.push(ref);
   }
   for (const host of blocked) reasons.push(`Files at ${host} were referenced with a delegation, but ${host} is not among the hosts this agent may reach, so they cannot be read.`);
+  for (const host of notAudience) reasons.push(`Files at ${host} were referenced, but the delegation that came with them was not issued for ${host}, so they cannot be read with it.`);
   return { readable, reasons };
 }
 
@@ -198,12 +225,29 @@ export function hostedAgentDelegatedReadProblem(status: number, name: string): s
   if (status === 404) return `${name}: the file was not found at its path; it may have been moved or deleted`;
   if (status === 503 || status === 504) return `${name}: the device holding it is offline, so the file cannot be read right now — ask its owner to connect the drive and try again`;
   if (status === 429) return `${name}: the file server is rate-limiting requests; try again in a minute`;
+  if (status === 413) return `${name}: the file is larger than its origin serves in one read, so it cannot be opened here; ask for a smaller file or an excerpt`;
   return `${name}: the file server answered ${status}`;
 }
 
 const isTextLike = (mime: string) => /^text\/|[/+](json|xml|csv|yaml|javascript|markdown)\b|^application\/(json|xml|x-yaml|sql)/i.test(mime);
 const isImage = (mime: string) => /^image\/(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(mime);
 const guessMime = (name: string) => (/\.(txt|md|markdown|csv|json|xml|ya?ml|log|js|mjs|ts|py|sql|html?)$/i.test(name) ? (/\.(json)$/i.test(name) ? 'application/json' : 'text/plain') : /\.pdf$/i.test(name) ? 'application/pdf' : /\.(png|jpe?g|webp|gif)$/i.test(name) ? `image/${name.split('.').pop()!.toLowerCase().replace('jpg', 'jpeg')}` : 'application/octet-stream');
+
+/**
+ * What aindrive's `fs/read` answers with a 200: `{ content, encoding, mime }` (route.ts). Decoded to the file's
+ * bytes and its type; null when the body is not that envelope — a proxy page, an HTML login screen — so the model
+ * is told the origin answered in a shape this agent does not read, rather than shown the page as the file.
+ */
+export function hostedAgentDelegatedReadEnvelope(body: Buffer): { bytes: Buffer; mime: string | null } | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body.toString('utf8')); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const { content, encoding, mime } = parsed as { content?: unknown; encoding?: unknown; mime?: unknown };
+  if (typeof content !== 'string') return null;
+  if (encoding !== undefined && encoding !== 'utf8' && encoding !== 'base64') return null;
+  const bytes = encoding === 'base64' ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+  return { bytes, mime: typeof mime === 'string' && mime ? mime.split(';')[0]!.trim().toLowerCase() : null };
+}
 
 /** The read URL for one ref, and the `htu` the proof is bound to (the same URL without its query). */
 export function hostedAgentDelegatedReadUrl(ref: HostedAgentFileRef): { url: string; htu: string } {
@@ -250,15 +294,18 @@ export function hostedAgentDelegatedReadTools(
         try {
           // The token and the proof live in these headers and nowhere else.
           res = await ctx.fetch(url, {
-            headers: { authorization: `Bearer ${delegation.token}`, [HOSTED_AGENT_POP_HEADER]: signer.sign('GET', htu), accept: '*/*' },
+            headers: { authorization: `Bearer ${delegation.token}`, [HOSTED_AGENT_POP_HEADER]: signer.sign('GET', htu), accept: 'application/json' },
             maxBytes: HOSTED_AGENT_ATTACHMENT_MAX_BYTES,
           });
         } catch (e) {
           return { error: hostedAgentFetchProblem(e, name) };
         }
         if (!res.ok) { ctx.log(`delegated read_file ${name}: ${res.status}`); return { error: hostedAgentDelegatedReadProblem(res.status, name) }; }
-        const mime = res.headers.get('content-type')?.split(';')[0]?.trim() || ref.mimeType || guessMime(name);
-        const bytes = Buffer.from(await res.arrayBuffer());
+        // The body is the envelope, not the file: the bytes are inside it, and so is the type the origin saw.
+        const envelope = hostedAgentDelegatedReadEnvelope(Buffer.from(await res.arrayBuffer()));
+        if (!envelope) { ctx.log(`delegated read_file ${name}: not the fs/read envelope`); return { error: `${name}: the file server answered in a shape this agent does not read, so the file could not be opened` }; }
+        const { bytes } = envelope;
+        const mime = (envelope.mime && envelope.mime !== 'application/octet-stream' ? envelope.mime : null) ?? ref.mimeType ?? guessMime(name);
         ctx.log(`delegated read_file ${name} (${mime}, ${bytes.length} bytes)`);
         const base = { fileKey: key, name, mimeType: mime, bytes: bytes.length };
         if (isTextLike(mime)) {

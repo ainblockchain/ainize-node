@@ -394,9 +394,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     maxRunning: dockerCfg?.maxRunning ?? 20,
     log: (level, message) => market.log(level, 'agents', message),
   });
+  // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
+  // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
+  // signature guards).
+  const agentCaller = (req: Request) => agentCallerOf(req, { store, nodeAddress: cfg.identity.address });
+  const agentEvents = new SharedAgentEvents();
   // Every agent holds a proof-of-possession key before its runtime starts (hosted-agent-pop.ts): one stored before
-  // keys existed gets its key here.
-  await hostedHost.start(ensureHostedAgentPopKeys(hostedStore, hostedSecrets));
+  // keys existed gets its key here; one whose key no longer matches its card gets a new release, announced on the feed.
+  await hostedHost.start(ensureHostedAgentPopKeys(hostedStore, hostedSecrets, { events: agentEvents, registryIssuer: market.publicUrl }));
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
   market.linkedAgents = linkedStore;
