@@ -42,7 +42,11 @@ export interface HostedAgentPopKeyAnnouncer {
  */
 export function ensureHostedAgentPopKeys(store: HostedAgentStore, secrets: HostedAgentSecretStore, announce?: HostedAgentPopKeyAnnouncer): HostedAgentSpec[] {
   for (const spec of store.list()) {
-    const held = hostedAgentPopSigner(hostedAgentPopPrivateKeyOf(secrets, spec.id));
+    // A secret store that cannot reveal this agent's key (a key file restored from another backup, a corrupt row)
+    // must not keep the whole node from starting: the agent gets a fresh key and a new release, announced below.
+    let stored: string | undefined;
+    try { stored = hostedAgentPopPrivateKeyOf(secrets, spec.id); } catch { stored = undefined; }
+    const held = hostedAgentPopSigner(stored);
     if (spec.popJwk && held && held.publicJwk.kid === spec.popJwk.kid) continue;
     const before = spec.version;
     const after = issueHostedAgentPopKey(store, secrets, spec);

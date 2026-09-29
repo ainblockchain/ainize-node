@@ -59,20 +59,28 @@ const hostedAgentNonPublic = (() => {
   return b;
 })();
 
-/** Is this address on the public internet? IPv4-mapped and NAT64 IPv6 are judged by the IPv4 inside them. */
 /**
- * Local integration runs only: `AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1` lets an agent reach loopback/private
- * addresses (an aindrive on 127.0.0.1). Refused under NODE_ENV=production, and logged once, so it cannot slip
- * into a deployment quietly. Never set this on a node that serves other people's agents.
+ * Local integration runs only: `AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1` lets an agent's EGRESS reach loopback and
+ * RFC 1918 addresses (an aindrive on 127.0.0.1) and name them as IP literals. It changes nothing else: not the
+ * linked-agent upstream check, not link-local/metadata/multicast ranges. Refused under NODE_ENV=production and
+ * logged once, so it cannot slip into a deployment quietly. Never set this on a node that serves other people.
  */
 const unsafePrivateEgress = (() => {
   const on = process.env.AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS === '1' && process.env.NODE_ENV !== 'production';
-  if (on) console.warn('[hosted-agent-gateway] AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1: agents may reach private addresses (local integration only)');
+  if (on) console.warn('[hosted-agent-gateway] AINIZE_UNSAFE_ALLOW_PRIVATE_EGRESS=1: agent egress may reach loopback/RFC1918 addresses (local integration only)');
   return on;
 })();
+const localEgressAllowed = (() => {
+  const b = new BlockList();
+  b.addSubnet('127.0.0.0', 8, 'ipv4'); b.addSubnet('10.0.0.0', 8, 'ipv4'); b.addSubnet('172.16.0.0', 12, 'ipv4'); b.addSubnet('192.168.0.0', 16, 'ipv4');
+  b.addAddress('::1', 'ipv6');
+  return (address: string) => unsafePrivateEgress && (isIP(address) === 4 ? b.check(address, 'ipv4') : isIP(address) === 6 && b.check(address.toLowerCase(), 'ipv6'));
+})();
+/** What the egress path accepts: public, or (under the local switch) loopback/RFC1918. Other callers keep the strict check. */
+const egressAddressAllowed = (address: string) => hostedAgentAddressIsPublic(address) || localEgressAllowed(address);
 
+/** Is this address on the public internet? IPv4-mapped and NAT64 IPv6 are judged by the IPv4 inside them. */
 export function hostedAgentAddressIsPublic(address: string): boolean {
-  if (unsafePrivateEgress && isIP(address)) return true;
   const family = isIP(address);
   if (family === 4) return !hostedAgentNonPublic.check(address, 'ipv4');
   if (family !== 6) return false;
@@ -93,7 +101,7 @@ const hostedAgentPublicLookup: LookupFunction = (hostname, options, callback) =>
   dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
     if (err) return (callback as (e: Error | null, a: string, f: number) => void)(err, '', 0);
     const list = addresses as unknown as LookupAddress[];
-    const bad = list.find((a) => !hostedAgentAddressIsPublic(a.address));
+    const bad = list.find((a) => !egressAddressAllowed(a.address));
     if (bad || !list.length) {
       return (callback as (e: Error | null, a: string, f: number) => void)(new HostedAgentEgressRefusal(`${hostname} resolves to a non-public address`), '', 0);
     }
@@ -138,7 +146,7 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HostedAgentEgressRefusal(`only http and https are allowed, not ${url.protocol}`);
     if (url.username || url.password) throw new HostedAgentEgressRefusal('credentials in the URL are not allowed; use a header');
     const host = url.hostname.replace(/^\[|\]$/g, '');
-    if (isIP(host) && !unsafePrivateEgress) throw new HostedAgentEgressRefusal(`${host} is an address; allowed hosts are names`);
+    if (isIP(host) && !localEgressAllowed(host)) throw new HostedAgentEgressRefusal(`${host} is an address; allowed hosts are names`);
     if (!hostedAgentHostAllowed(host, allowedHosts)) throw new HostedAgentEgressRefusal(`${host} is not in this agent's allowed hosts`);
 
     const answer = await new Promise<HostedAgentEgressAnswer>((resolve, reject) => {
