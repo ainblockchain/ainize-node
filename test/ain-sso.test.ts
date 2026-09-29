@@ -212,6 +212,17 @@ test('a verified ID token becomes a session keyed by sid; /api/auth/me reports i
   assert.deepEqual((who.sso as { principal: string }).principal, `sso:${sub}`);
 });
 
+test('an SSO session outranks a Google account the site also vouches for: /api/auth/me and the agent routes act as the SSO principal', async () => {
+  const sub = acc('overgoogle');
+  const r = await signIn(sub);
+  const headers = { ...cookie(r.body.token!), ...vouched('google:9191') };
+  const who = await (await fetch(`${url}/api/auth/me`, { headers })).json() as { sso: { principal: string } | null; site: unknown };
+  assert.equal(who.sso?.principal, `sso:${sub}`);
+  assert.equal(who.site, null);
+  const list = await fetch(`${url}/api/hosted-agents?manageable=1`, { headers });
+  assert.equal(list.status, 200);
+});
+
 test('an SSO session is invisible to every route that reads a wallet session', async () => {
   const { body } = await signIn(acc('nowallet'));
   // Hosted agents, owner routes and device approval all read siteSession(), which does not show an SSO session.

@@ -50,7 +50,7 @@ import {
 } from './peer-models.js';
 import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
-import { readSiteAssertionSecret } from './site-assertion.js';
+import { readSiteAssertionSecret, siteSubject } from './site-assertion.js';
 import { SiteCallVerifier } from './site-call.js';
 import { readSsoConfig, SsoService, type JwksSource } from './sso.js';
 import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
@@ -268,6 +268,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     log: (level, message, data) => market.log(level, 'sso', message, null, data),
   });
   openaiKeys.orgGate = (owner, orgId) => sso.orgKeyUsable(owner, orgId);
+  /**
+   * A Google account the site vouches for (site-assertion.ts), for the routes that act as a person: `/api/auth/me`
+   * and the agent routes. Same header and secret `/api/keys` already trusts, refused while AIN SSO has the principal
+   * suspended — the rule `/api/keys` applies too.
+   */
+  const vouchedGoogle = (req: Request): string | null => {
+    const v = siteSubject(req, siteAssertionSecret);
+    return v && !sso.principalState(v).blocked ? v : null;
+  };
   app.use(ssoRoutes({
     sso,
     siteCalls: siteAssertionSecret ? new SiteCallVerifier(siteAssertionSecret) : null,
@@ -279,7 +288,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
   const pinnedChatPeers = preferredChatPeers(process.env.AINIZE_PREFERRED_CHAT_PEERS);
   app.use(preferredChatPlayground({ routes: pinnedChatPeers, peers: () => peerModelAccess, fetch: (peer, body) => fetchPeerChat(cfg.identity, peer, body) }));
-  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home }));
+  app.use(buildApi({ market, verifier, drive, teach: teach ?? undefined, saveConfig: persistConfig, home: opts.home, siteSubject: vouchedGoogle }));
 
   // The OpenAI-compatible surface, mounted only when an operator has declared what it serves. A node with no
   // `backends` block has no `/v1` at all rather than a `/v1` that advertises nothing — the two look the same to a
@@ -395,7 +404,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // SSO org); an org id no ainize organization claims keeps the SSO claim / org API key answer (shared-agents.ts).
   const identityOf = (caller: AgentCaller) => (caller.sso ? store.ssoIdentity(caller.sso.iss, caller.sso.sub) : null);
   const agentCaller = (req: Request) => {
-    const caller = agentCallerOf(req, { store, nodeAddress: cfg.identity.address, keys: openaiKeys });
+    const caller = agentCallerOf(req, { store, nodeAddress: cfg.identity.address, keys: openaiKeys, siteSubject: vouchedGoogle });
     return caller ? withOrganizations(caller, orgStore, identityOf(caller)) : null;
   };
   /**

@@ -142,6 +142,10 @@ Every agent the node lists — hosted, linked (`/api/linked-agents`) or a `confi
   SSO session of a member, or an **organization API key** (`POST /api/keys {"org_id": …}` by a member, sent as
   `Authorization: Bearer ainize-sk-…`). Give AIN Teams one such key (`AINIZE_API_KEY`) and it reads, and registers
   into, that organization's list with no browser session.
+- **Who can own one.** A wallet session, an AIN SSO session, or a Google account ainize.ai signed in — the site vouches
+  for it with the signed `x-ainize-site-subject` header (`src/site-assertion.ts`, the secret in
+  `<AINIZE_HOME>/site-assertion.secret`), and it owns agents as `google:<sub>`. It belongs to no AIN SSO organization;
+  an ainize organization can still add it as an explicit member. `/api/auth/me` reports it under `site`.
 - **What `orgId` names.** An ainize organization (`/api/orgs`, docs/superpowers/specs/2026-09-29-organizations-design.md)
   or an AIN SSO org id (`org_…`). An AIN SSO org id that an ainize organization links (`ssoOrgIds`) belongs to that
   organization: its members, roles and audit log apply. One no ainize organization links keeps the plain rule —
