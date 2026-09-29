@@ -10,6 +10,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { HostedAgentHost } from './hosted-agent-host.js';
+import { issueHostedAgentPopKey } from './hosted-agent-pop.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
@@ -196,7 +197,8 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const input = parse(req, res, who);
     if (!input) return;
     try {
-      const spec = deps.store.create(input, who.subject, deps.reserved);
+      // The agent's PoP key is minted with it (hosted-agent-pop.ts), before the runtime that will sign with it starts.
+      const spec = issueHostedAgentPopKey(deps.store, deps.secrets, deps.store.create(input, who.subject, deps.reserved));
       deps.host.apply(spec);
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
       deps.orgAudit?.([spec.orgId], who.subject, 'agent.create', spec.id, { kind: 'hosted', visibility: hostedAgentVisibilityOf(spec) });

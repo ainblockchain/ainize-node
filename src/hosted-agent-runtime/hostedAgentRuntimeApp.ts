@@ -9,6 +9,7 @@ import express, { Router } from 'express';
 import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server';
 import { UserBuilder, agentCardHandler, jsonRpcHandler } from '@a2a-js/sdk/server/express';
 import { hostedAgentA2uiExtension } from './hostedAgentA2ui.js';
+import { hostedAgentPopExtension } from './hostedAgentPop.js';
 import { HostedAgentExecutor, type HostedAgentExecutorOptions } from './hostedAgentExecutor.js';
 import type { HostedAgentRuntimeSpec } from './hostedAgentRuntimeTypes.js';
 
@@ -46,7 +47,8 @@ export function hostedAgentCard(spec: HostedAgentRuntimeSpec, url: string) {
       // the stream carries one event — but a card that says `false` gets every such call refused with -32004.
       streaming: true,
       pushNotifications: false,
-      extensions: spec.a2ui ? [hostedAgentA2uiExtension()] : [],
+      // The PoP key, when the node issued one: a product that holds a delegation for this agent binds it to this key.
+      extensions: [...(spec.a2ui ? [hostedAgentA2uiExtension()] : []), ...(spec.popJwk ? [hostedAgentPopExtension(spec.popJwk)] : [])],
     },
     securitySchemes: {},
     securityRequirements: [],

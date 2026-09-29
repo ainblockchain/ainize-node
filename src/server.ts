@@ -12,6 +12,7 @@ import express, { type Request } from 'express';
 import { buildAgents, probeUpstreamCard, proxiedAgentSummaries } from './agents.js';
 import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-store.js';
 import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
+import { ensureHostedAgentPopKeys } from './hosted-agent-pop.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
@@ -393,7 +394,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     maxRunning: dockerCfg?.maxRunning ?? 20,
     log: (level, message) => market.log(level, 'agents', message),
   });
-  await hostedHost.start(hostedStore.list());
+  // Every agent holds a proof-of-possession key before its runtime starts (hosted-agent-pop.ts): one stored before
+  // keys existed gets its key here.
+  await hostedHost.start(ensureHostedAgentPopKeys(hostedStore, hostedSecrets));
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
   market.linkedAgents = linkedStore;

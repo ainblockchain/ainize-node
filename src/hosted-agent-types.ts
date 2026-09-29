@@ -6,7 +6,7 @@
  * Design: docs/superpowers/specs/2026-09-26-hosted-agents-design.md.
  */
 import { z } from 'zod';
-import type { HostedAgentMedia, HostedAgentMode, HostedAgentRuntimeSpec } from './hosted-agent-runtime/hostedAgentRuntimeTypes.js';
+import type { HostedAgentMedia, HostedAgentMode, HostedAgentPopJwk, HostedAgentRuntimeSpec } from './hosted-agent-runtime/hostedAgentRuntimeTypes.js';
 
 export type { HostedAgentMode };
 
@@ -23,6 +23,11 @@ export interface HostedAgentSpec extends HostedAgentRuntimeSpec {
   orgId?: string | null;
   /** Who made the last change, when it was not a create: the owner or a member of the organization. */
   updatedBy?: string;
+  /**
+   * The public half of the agent's proof-of-possession key (hosted-agent-pop.ts); the private half is in the
+   * secret store. Absent until the node issues one (at create, or at boot for an older spec).
+   */
+  popJwk?: HostedAgentPopJwk;
   createdAt: number;
   updatedAt: number;
 }
@@ -98,10 +103,15 @@ export const hostedAgentSpecInput = z.object({
 
 export type HostedAgentSpecInput = z.infer<typeof hostedAgentSpecInput>;
 
-/** The part of a spec the runtime sees — no files, no owner, no allowlist (the gateway holds that). */
+/**
+ * The part of a spec the runtime sees — no files, no owner, no secrets. The allowlist is the gateway's to enforce;
+ * the runtime reads a copy so it can say when a referred file's host is out of reach. The public PoP JWK is
+ * public; the private half reaches the runtime beside the secrets, never through the spec.
+ */
 export const hostedAgentRuntimeSpecOf = (s: HostedAgentSpec): HostedAgentRuntimeSpec => ({
   id: s.id, name: s.name, description: s.description, model: s.model, systemPrompt: s.systemPrompt,
   mode: s.mode, a2ui: s.a2ui, skills: s.skills, version: s.version, media: hostedAgentMediaOf(s),
+  allowedHosts: s.allowedHosts, ...(s.popJwk ? { popJwk: s.popJwk } : {}),
 });
 
 /** A stored spec's media, with the absent block of an older spec read as all off. */

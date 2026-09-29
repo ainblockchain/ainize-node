@@ -20,6 +20,11 @@ import {
   aindriveContextNote, aindriveFolderContextOf, aindriveHandoffMcpServersOf, aindriveHandoffMcpTools,
   type AindriveFolderContext, type AindriveHandoffMcpServer,
 } from './hostedAgentAindriveHandoff.js';
+import {
+  hostedAgentDelegatedGrantOf, hostedAgentDelegatedReadable, hostedAgentDelegatedReadTools, hostedAgentDelegationHistoryNote, hostedAgentDelegationNote,
+  type HostedAgentDelegatedGrant,
+} from './hostedAgentDelegatedReads.js';
+import { hostedAgentPopSigner, type HostedAgentPopSigner } from './hostedAgentPop.js';
 import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
 
 /** v1.0 Role enum: 0 unspecified, 1 user, 2 agent. */
@@ -231,6 +236,11 @@ export const resetHostedAgentNativeToolsRefusedForTest = () => { hostedAgentNati
 export interface HostedAgentExecutorOptions extends HostedAgentCtxOptions {
   module: HostedAgentModule | null;
   /**
+   * The private JWK (JSON) of this agent's proof-of-possession key, when the node issued one. It signs `X-AIN-PoP`
+   * for delegated reads (hostedAgentDelegatedReads.ts) and is reachable through no `ctx` door.
+   */
+  popKey?: string;
+  /**
    * Whether the caller asked for a stream (`message/stream`) for this message id — set by the runtime's request
    * handler (hostedAgentRuntimeApp.ts). A streamed turn is a task that sends the answer as it is written; any other
    * turn stays the one message it always was, so `message/send` callers see no change.
@@ -245,14 +255,31 @@ const HOSTED_AGENT_TASK_FAILED = 4;
 /** The one artifact a streamed answer is written into, chunk by chunk. */
 const HOSTED_AGENT_ANSWER_ARTIFACT = 'answer';
 
+/**
+ * What a message carries beside its words and attachments: aindrive's folder snapshot and handoff grant
+ * (hostedAgentAindriveHandoff.ts), and the file refs + delegation any product may attach (hostedAgentDelegatedReads.ts).
+ */
+export interface HostedAgentTurnContext {
+  folder: AindriveFolderContext | null;
+  servers: AindriveHandoffMcpServer[];
+  delegated?: HostedAgentDelegatedGrant;
+}
+
+export const hostedAgentTurnContextOf = (message: unknown): HostedAgentTurnContext => ({
+  folder: aindriveFolderContextOf(message), servers: aindriveHandoffMcpServersOf(message), delegated: hostedAgentDelegatedGrantOf(message),
+});
+
 export class HostedAgentExecutor implements AgentExecutor {
   private readonly history = new HostedAgentHistory();
+  private readonly pop: HostedAgentPopSigner | null;
 
-  constructor(private readonly o: HostedAgentExecutorOptions) {}
+  constructor(private readonly o: HostedAgentExecutorOptions) {
+    this.pop = hostedAgentPopSigner(o.popKey);
+  }
 
   async turn(
     text: string, contextId: string, files: HostedAgentAttachment[] = [],
-    aindrive: { folder: AindriveFolderContext | null; servers: AindriveHandoffMcpServer[] } = { folder: null, servers: [] },
+    aindrive: HostedAgentTurnContext = { folder: null, servers: [] },
     hooks?: HostedAgentTurnHooks,
   ): Promise<{ text: string; parts: unknown[] }> {
     const history = this.history.get(contextId);
@@ -261,17 +288,24 @@ export class HostedAgentExecutor implements AgentExecutor {
     // Voice notes become words before the model sees the turn (hostedAgentMedia.ts says why).
     const heard = await hostedAgentTranscribeAudio(ctx, files);
     const said = heard.transcript ? (text ? `${text}\n\n${heard.transcript}` : heard.transcript) : text;
+    // Files referred to with a delegation (hostedAgentDelegatedReads.ts): which of them this runtime may read at
+    // all — the issuer must be in the agent's allowed hosts and the runtime must hold its PoP key — and the rest
+    // said in words. The token is in the grant object only; nothing below puts it in text.
+    const delegated = aindrive.delegated ?? { refs: [], delegation: null };
+    const readable = hostedAgentDelegatedReadable(delegated, this.o.spec.allowedHosts ?? [], this.pop);
     // What aindrive sent beside the words: the folder as data and this turn's file grant (hostedAgentAindriveHandoff.ts).
     // The model reads both; memory keeps only what was said — a grant is this turn's, and the next turn brings its own.
-    const shown = said + aindriveContextNote(aindrive.folder, aindrive.servers);
+    const shown = said + aindriveContextNote(aindrive.folder, aindrive.servers) + hostedAgentDelegationNote(delegated, readable);
     if (shown !== text || heard.transcript) ctx = createHostedAgentCtx(this.o, { text: shown, contextId, history, files: heard.rest });
     const { mode } = this.o.spec;
     // Built-in tools beside the agent's own: `read_attachment` when something is attached, `generate_image` when
-    // the owner turned pictures on, and aindrive's `list_files` / `read_file` when this turn carries a grant.
+    // the owner turned pictures on, aindrive's `list_files` / `read_file` when this turn carries a grant, and the
+    // delegated `list_files` / `read_file` when it carries refs and a delegation (suffixed when both are there).
     const builtinTools = [
       ...(heard.rest.length ? [hostedAgentReadAttachmentTool(heard.rest)] : []),
       ...(ctx.media.generateImage ? [hostedAgentGenerateImageTool()] : []),
       ...aindriveHandoffMcpTools(aindrive.servers, ctx),
+      ...hostedAgentDelegatedReadTools(delegated, readable.readable, this.pop, ctx, { suffix: aindrive.servers.length ? '_delegated' : '' }),
     ];
     let reply: HostedAgentReply;
     if (mode === 'prompt') {
@@ -288,7 +322,7 @@ export class HostedAgentExecutor implements AgentExecutor {
     // Remembered with the attachment note, so "and the second file?" next turn still means something — the link
     // itself is not kept: it expires in minutes, and the next message carries fresh ones if the sender wants.
     // The transcript is kept (it is what was said); the audio, like any attachment, is only named.
-    this.history.append(contextId, [{ role: 'user', content: said + hostedAgentAttachmentHistoryNote(files) }, { role: 'assistant', content: answer }]);
+    this.history.append(contextId, [{ role: 'user', content: said + hostedAgentAttachmentHistoryNote(files) + hostedAgentDelegationHistoryNote(delegated.refs) }, { role: 'assistant', content: answer }]);
     return { text: answer, parts: [...(shaped.parts ?? []), ...(shaped.ui ?? []).map(hostedAgentA2uiPart)] };
   }
 
@@ -300,7 +334,7 @@ export class HostedAgentExecutor implements AgentExecutor {
     let parts: unknown[] = [];
     const input = hostedAgentTextOf(requestContext.userMessage);
     const files = hostedAgentAttachmentsOf(requestContext.userMessage);
-    const aindrive = { folder: aindriveFolderContextOf(requestContext.userMessage), servers: aindriveHandoffMcpServersOf(requestContext.userMessage) };
+    const aindrive = hostedAgentTurnContextOf(requestContext.userMessage);
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
       ({ text, parts } = await this.turn(input, contextId, files, aindrive));
@@ -358,7 +392,7 @@ export class HostedAgentExecutor implements AgentExecutor {
     };
     const input = hostedAgentTextOf(requestContext.userMessage);
     const files = hostedAgentAttachmentsOf(requestContext.userMessage);
-    const aindrive = { folder: aindriveFolderContextOf(requestContext.userMessage), servers: aindriveHandoffMcpServersOf(requestContext.userMessage) };
+    const aindrive = hostedAgentTurnContextOf(requestContext.userMessage);
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
       const { text, parts } = await this.turn(input, contextId, files, aindrive, hooks);

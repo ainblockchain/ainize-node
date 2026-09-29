@@ -32,7 +32,20 @@ export interface HostedAgentRuntimeSpec {
   version: number;
   /** Absent on specs stored before media existed — read it as all off. */
   media?: HostedAgentMedia;
+  /**
+   * The public half of this agent's proof-of-possession key (hostedAgentPop.ts), advertised in the card. Absent
+   * on an agent the node has not issued one to. The private half never travels in a spec.
+   */
+  popJwk?: HostedAgentPopJwk;
+  /**
+   * The hosts the agent may reach, as the gateway enforces them — carried here so the runtime can tell the model
+   * that a referred file's origin is out of reach instead of offering a tool that only fails. Absent → none.
+   */
+  allowedHosts?: string[];
 }
+
+/** An ES256 public key as a JWK; `kid` is its RFC 7638 thumbprint. */
+export interface HostedAgentPopJwk { kty: 'EC'; crv: 'P-256'; x: string; y: string; kid: string }
 
 /** A piece of a multimodal user message: text, or an image as a URL (a `data:` URL for bytes the agent holds). */
 export type HostedAgentContentPart =

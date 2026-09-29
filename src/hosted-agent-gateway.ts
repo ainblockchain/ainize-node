@@ -26,6 +26,7 @@ import { randomBytes } from 'node:crypto';
 import type { InferenceBackend, InferenceBackendRegistry } from './inference-backends.js';
 import type { ModalityGate } from './modality-gate.js';
 import { hostedAgentMediaOf, type HostedAgentSpec } from './hosted-agent-types.js';
+import { hostedAgentHostAllowed } from './hosted-agent-runtime/hostedAgentPop.js';
 import { PeerModelCallError, parseNodeModelRef, type PeerModelModality, type PeerModelTarget } from './peer-models.js';
 
 const HOSTED_AGENT_EGRESS_MAX_BYTES = 5 * 1024 * 1024;
@@ -70,15 +71,8 @@ export function hostedAgentAddressIsPublic(address: string): boolean {
   return !hostedAgentNonPublic.check(lower, 'ipv6');
 }
 
-/** Does a host match an allowlist of names, `*.suffix` wildcards and `*`? */
-export function hostedAgentHostAllowed(host: string, allowed: string[]): boolean {
-  const h = host.toLowerCase().replace(/\.$/, '');
-  return allowed.some((pattern) => {
-    if (pattern === '*') return true;
-    if (pattern.startsWith('*.')) return h.endsWith(pattern.slice(1)) && h.length > pattern.length - 1;
-    return h === pattern;
-  });
-}
+/** Does a host match an allowlist of names, `*.suffix` wildcards and `*`? One matcher, shared with the runtime. */
+export { hostedAgentHostAllowed };
 
 class HostedAgentEgressRefusal extends Error {}
 
