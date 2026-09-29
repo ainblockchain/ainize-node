@@ -66,6 +66,7 @@ export interface OpenaiSurfaceDeps {
     models(): { ref: string; node: string }[];
   };
   nodeName?: string;
+  preferredChatPeers?: Record<string, string>;
 }
 
 /** Ceiling on a single `/v1` completion. The node serves one request at a time; an unbounded one is a denial of service. */
@@ -150,6 +151,8 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
    */
   const routeModelRef = (ref: string, kind: 'chat' | 'transcription' | 'image') => {
     const { model, node } = parseNodeModelRef(ref);
+    const pinned = !node && kind === 'chat' ? deps.preferredChatPeers?.[model] : undefined;
+    if (pinned) return { model, local: null, peer: deps.peerModels?.target(kind, model, pinned) ?? null };
     const here = !node || node === deps.node.toLowerCase();
     const backend = here ? deps.registry.backendForModel(model) : null;
     const local = backend && backend.modality === kind ? backend : null;
@@ -160,7 +163,7 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
   router.get('/v1/models', authed, (_req, res) => {
     // This node's models by id, then every peer's as `id@0x<node>` — each entry names exactly one model on exactly
     // one node, so a client that lists models can call every one of them and knows who answers.
-    const own = deps.registry.listModels();
+    const own = deps.registry.listModels().map(m => deps.preferredChatPeers?.[m.id] ? { ...m, owned_by: deps.preferredChatPeers[m.id] } : m);
     const peers = (deps.peerModels?.models() ?? []).map((m) => ({ id: m.ref, object: 'model' as const, owned_by: m.node }));
     res.json({ object: 'list', data: [...own, ...peers] });
   });
