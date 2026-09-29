@@ -54,10 +54,11 @@ export class HostedAgentStore {
   }
 
   /** The id cannot change: it is the agent's public address, and callers hold it. */
-  update(id: string, input: HostedAgentSpecInput, now = Date.now()): HostedAgentSpec {
+  /** `by` is who made the change (the owner, or a member of the organization it is shared with). */
+  update(id: string, input: HostedAgentSpecInput, by?: string, now = Date.now()): HostedAgentSpec {
     const prior = this.specs.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
-    const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now };
+    const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now, ...(by ? { updatedBy: by.toLowerCase() } : {}) };
     this.specs.set(id, spec);
     this.save();
     return spec;

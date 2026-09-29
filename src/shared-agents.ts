@@ -206,6 +206,16 @@ export function canSeeAgent(spec: Shareable, caller: AgentCaller | null): boolea
 }
 export const canSeeHostedAgent = canSeeAgent;
 
+/**
+ * May `caller` change the agent (its code, prompt, secrets) and read its logs: its owner, or — for one shared with an
+ * organization — a member of that organization (an AIN SSO member, or that organization's API key, the same callers
+ * `orgMember` admits for registering org agents). Removing it and changing who sees it stay the owner's.
+ */
+export function canManageAgent(spec: Shareable, caller: AgentCaller | null): boolean {
+  return owns(spec, caller) || (hostedAgentVisibilityOf(spec) === 'org' && orgVisible(spec, caller));
+}
+export const canManageHostedAgent = canManageAgent;
+
 /** Is the agent LISTED to `caller`: `unlisted` is the owner's alone in a list, however reachable by id. */
 export function listsAgentFor(spec: Shareable, caller: AgentCaller | null): boolean {
   const v = hostedAgentVisibilityOf(spec);

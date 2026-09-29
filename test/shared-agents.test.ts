@@ -305,20 +305,84 @@ test('visibility over HTTP: who is listed what, unlisted answers by id, private 
     assert.equal((await api(NOBODY, '/api/hosted-agents/team')).status, 404);
     const seenByMember = await api(P2, '/api/hosted-agents/team');
     assert.equal(seenByMember.status, 200);
-    assert.equal('systemPrompt' in seenByMember.body.agent, false);
+    assert.equal('systemPrompt' in seenByMember.body.agent, true, 'a member of the organization it is shared with manages it');
     assert.equal('systemPrompt' in (await api(P1, '/api/hosted-agents/team')).body.agent, true, 'the owner sees the whole spec');
     assert.equal((await api(NOBODY, '/api/hosted-agents/nothing')).status, 404);
 
-    // changing and removing stay the owner's
-    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'org', orgId: 'org_comcom' }) })).status, 403);
+    // an org member may change it, not remove it or move it; anyone else may do neither
+    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'org', orgId: 'org_comcom' }) })).status, 200);
+    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'public' }) })).status, 403);
+    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'DELETE' })).status, 403);
+    assert.equal((await api({ address: BOB }, '/api/hosted-agents/pub', { method: 'PUT', body: spec('pub') })).status, 403);
     assert.equal((await api({ address: BOB }, '/api/hosted-agents/pub', { method: 'DELETE' })).status, 403);
-    assert.equal((await api({ address: BOB }, '/api/hosted-agents/hidden/logs')).status, 403);
+    assert.equal((await api({ address: BOB }, '/api/hosted-agents/hidden/logs')).status, 404, 'a private id is not confirmed to exist');
     const v2 = await api({ address: ALICE }, '/api/hosted-agents/hidden', { method: 'PUT', body: spec('hidden', { visibility: 'public' }) });
     assert.equal(v2.status, 200);
     assert.equal(v2.body.agent.version, 2);
     assert.equal(v2.body.agent.visibility, 'public');
     assert.equal(h.store.get('hidden')?.visibility, 'public', 'persisted');
     assert.deepEqual(ids(await api(NOBODY, '/api/hosted-agents')), ['hidden', 'pub']);
+  } finally { await h.close(); }
+});
+
+test('organization members manage an org agent: manageable listing, full spec, edits, secrets and logs; only the owner removes or moves it', async () => {
+  const h = await harness();
+  const api = async (who: Who, path: string, init: { method?: string; body?: unknown } = {}) => {
+    const r = await fetch(`${h.base}${path}`, { method: init.method ?? 'GET', headers: headersFor(who), ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}) });
+    return { status: r.status, body: await r.json() as Record<string, any> };
+  };
+  const spec = (id: string, over: Record<string, unknown> = {}) => ({ id, name: `Agent ${id}`, model: MODEL, systemPrompt: 'v1', ...over });
+  const ids = (r: { body: Record<string, any> }) => (r.body.agents as { id: string }[]).map((a) => a.id).sort();
+  try {
+    assert.equal((await api(P1, '/api/hosted-agents', { method: 'POST', body: spec('team', { visibility: 'org', orgId: 'org_comcom', secretNames: ['TOKEN'] }) })).status, 201);
+    assert.equal((await api(P1, '/api/hosted-agents', { method: 'POST', body: spec('mine', { visibility: 'private' }) })).status, 201);
+    assert.equal((await api(P3, '/api/hosted-agents', { method: 'POST', body: spec('elsewhere', { visibility: 'org', orgId: 'org_other' }) })).status, 201);
+    assert.equal((await api({ address: ALICE }, '/api/hosted-agents', { method: 'POST', body: spec('wallet') })).status, 201);
+
+    // manageable = own + shared with an organization the caller belongs to
+    assert.equal((await api(NOBODY, '/api/hosted-agents?manageable=1')).status, 401);
+    assert.deepEqual(ids(await api(P1, '/api/hosted-agents?manageable=1')), ['mine', 'team']);
+    const p2 = await api(P2, '/api/hosted-agents?manageable=1');
+    assert.deepEqual(ids(p2), ['elsewhere', 'team'], 'member of both organizations, owner of nothing');
+    const row = (p2.body.agents as Record<string, any>[]).find((a) => a.id === 'team')!;
+    assert.equal(row.can_manage, true);
+    assert.equal(row.can_delete, false);
+    assert.equal(row.owner, 'sso:p1');
+    assert.equal(row.org_id, 'org_comcom');
+    assert.equal('systemPrompt' in row, false, 'a listing row, not the spec');
+    assert.deepEqual(ids(await api(P3, '/api/hosted-agents?manageable=1')), ['elsewhere']);
+    assert.deepEqual(ids(await api({ address: ALICE }, '/api/hosted-agents?manageable=1')), ['wallet'], 'a wallet manages its own only');
+    assert.equal((await api(P1, '/api/hosted-agents?manageable=1')).body.agents.find((a: Record<string, any>) => a.id === 'mine').can_delete, true);
+
+    // a member reads the whole spec, edits it, sets its secrets and reads its logs
+    const full = await api(P2, '/api/hosted-agents/team');
+    assert.equal(full.body.agent.systemPrompt, 'v1');
+    const edited = await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'org', orgId: 'org_comcom', secretNames: ['TOKEN'], systemPrompt: 'v2' }) });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.agent.systemPrompt, 'v2');
+    assert.equal(edited.body.agent.owner, 'sso:p1', 'the owner does not change hands');
+    assert.equal(edited.body.agent.updated_by, 'sso:p2');
+    assert.equal(h.store.get('team')?.updatedBy, 'sso:p2');
+    assert.equal((await api(P2, '/api/hosted-agents/team/secrets/TOKEN', { method: 'PUT', body: { value: 's3cret' } })).status, 200);
+    assert.equal((await api(P2, '/api/hosted-agents/team/logs')).status, 200);
+
+    // …but neither moves it nor removes it
+    const moved = await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'org', orgId: 'org_other' }) });
+    assert.equal(moved.status, 403, 'even to another organization the member belongs to');
+    assert.match(moved.body.error.message, /visibility or organization/);
+    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'private' }) })).status, 403);
+    assert.equal((await api(P2, '/api/hosted-agents/team', { method: 'DELETE' })).status, 403);
+
+    // outsiders: hidden is 404, never 403
+    for (const path of ['/api/hosted-agents/team', '/api/hosted-agents/team/logs']) assert.equal((await api(P3, path)).status, 404, path);
+    assert.equal((await api(P3, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'org', orgId: 'org_comcom' }) })).status, 404);
+    assert.equal((await api(P3, '/api/hosted-agents/team/secrets/TOKEN', { method: 'PUT', body: { value: 'x' } })).status, 404);
+    assert.equal((await api(P2, '/api/hosted-agents/mine', { method: 'PUT', body: spec('mine', { visibility: 'private' }) })).status, 404, 'a private agent is its owner\'s alone');
+
+    // the owner still moves and removes it
+    assert.equal((await api(P1, '/api/hosted-agents/team', { method: 'PUT', body: spec('team', { visibility: 'private' }) })).status, 200);
+    assert.equal((await api(P2, '/api/hosted-agents/team')).status, 404, 'no longer shared: no longer the member\'s');
+    assert.equal((await api(P1, '/api/hosted-agents/team', { method: 'DELETE' })).status, 200);
   } finally { await h.close(); }
 });
 

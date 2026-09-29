@@ -2,7 +2,9 @@
  * `/api/hosted-agents` — create, read, change and remove agents this node runs.
  *
  * Anyone signed in may create (the product decision: "Create agent based on this model" is for visitors, not
- * operators); only the creator may change or remove. Limits are the store's. Errors are `{ error: { code,
+ * operators). The creator may change or remove it; when it is shared with an organization (`visibility: 'org'`),
+ * that organization's members may also read its code, change it, set its secrets and read its logs — but only the
+ * creator may remove it or change who sees it. Limits are the store's. Errors are `{ error: { code,
  * message } }`, the codes being what the web page switches on.
  */
 import { Router, type Request, type Response } from 'express';
@@ -13,7 +15,7 @@ import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
 import { parseNodeModelRef } from './peer-models.js';
 import { hostedAgentMediaOf, hostedAgentSpecInput, hostedAgentUsesCode, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
-import { canSeeHostedAgent, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type SharedAgentEvents, audienceOf, widerAudience } from './shared-agents.js';
+import { canManageHostedAgent, canSeeHostedAgent, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type SharedAgentEvents, audienceOf, widerAudience } from './shared-agents.js';
 
 export interface HostedAgentRoutesDeps {
   store: HostedAgentStore;
@@ -74,6 +76,19 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
   };
 
   /**
+   * The spec, if the caller may manage it: its owner, or a member of the organization it is shared with. An agent
+   * the caller cannot even see is 404 (a private id must not be confirmed); one they see but may not change is 403.
+   */
+  const managed = (req: Request, res: Response): { spec: HostedAgentSpec; who: AgentCaller } | null => {
+    const who = signedIn(req, res);
+    if (!who) return null;
+    const spec = deps.store.get(String(req.params.id));
+    if (!spec || !canSeeHostedAgent(spec, who)) { notFound(res, req.params.id); return null; }
+    if (!canManageHostedAgent(spec, who)) { refuse(res, 403, 'not_owner', 'only the agent\'s creator or a member of the organization it is shared with can do this'); return null; }
+    return { spec, who };
+  };
+
+  /**
    * The spec, if the caller may read it: its owner, anyone for a public or unlisted one, a member for an org one.
    * Anything else is 404, never 403 — a private id must not be confirmed to exist by the refusal.
    */
@@ -81,7 +96,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const who = callerOf(req);
     const spec = deps.store.get(String(req.params.id));
     if (!spec || !canSeeHostedAgent(spec, who)) { notFound(res, req.params.id); return null; }
-    return { spec, owner: !!who && spec.owner === who.subject };
+    return { spec, owner: !!who && canManageHostedAgent(spec, who) };
   };
 
   /** Validate a body into a spec input; answers 400/501 itself. */
@@ -122,14 +137,15 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     return parsed.data;
   };
 
-  const view = (req: Request, spec: HostedAgentSpec, full: boolean) => {
+  const view = (req: Request, spec: HostedAgentSpec, full: boolean, who: AgentCaller | null = null) => {
     const base = `${deps.publicBase(req).replace(/\/+$/, '')}/agents/${spec.id}`;
     const st = deps.host.status(spec.id);
     const set = new Set(deps.secrets.names(spec.id));
     return {
       id: spec.id, name: spec.name, description: spec.description, model: spec.model, mode: spec.mode,
       owner: spec.owner, version: spec.version, created_at: spec.createdAt, updated_at: spec.updatedAt,
-      visibility: hostedAgentVisibilityOf(spec), org_id: spec.orgId ?? null,
+      visibility: hostedAgentVisibilityOf(spec), org_id: spec.orgId ?? null, updated_by: spec.updatedBy ?? spec.owner,
+      ...(who ? { can_manage: canManageHostedAgent(spec, who), can_delete: spec.owner === who.subject } : {}),
       status: st?.status ?? 'failed', error: st?.error ?? null, live_version: st?.liveVersion ?? null,
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
       ...(full ? {
@@ -151,7 +167,15 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (req.query.mine) {
       const who = signedIn(req, res);
       if (!who) return;
-      res.json({ agents: deps.store.listByOwner(who.subject).map((s) => view(req, s, false)) });
+      res.json({ agents: deps.store.listByOwner(who.subject).map((s) => view(req, s, false, who)) });
+      return;
+    }
+    // What a sync client (AinCode) works on: the caller's own agents and those shared with an organization they
+    // belong to. Same rows as `mine`, with `can_manage` / `can_delete` saying what the caller may do.
+    if (req.query.manageable) {
+      const who = signedIn(req, res);
+      if (!who) return;
+      res.json({ agents: deps.store.list().filter((s) => canManageHostedAgent(s, who)).map((s) => view(req, s, false, who)) });
       return;
     }
     const who = callerOf(req);
@@ -175,23 +199,31 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     }
   });
 
-  /** The owner sees the whole spec; anyone else it is visible to sees what a listing shows (no prompt, no code). */
+  /**
+   * Those who may manage it (its owner, members of the organization it is shared with) see the whole spec; anyone
+   * else it is visible to sees what a listing shows (no prompt, no code).
+   */
   router.get('/api/hosted-agents/:id', (req, res) => {
     const hit = visible(req, res);
-    if (hit) res.json({ agent: view(req, hit.spec, hit.owner) });
+    if (hit) res.json({ agent: view(req, hit.spec, hit.owner, callerOf(req)) });
   });
 
   router.put('/api/hosted-agents/:id', (req, res) => {
-    const prior = owned(req, res);
-    if (!prior) return;
-    const who = callerOf(req)!;
+    const hit = managed(req, res);
+    if (!hit) return;
+    const { spec: prior, who } = hit;
     const input = parse(req, res, who);
     if (!input) return;
     if (input.id !== prior.id) return refuse(res, 400, 'invalid_request', 'an agent\'s id cannot change — it is its public address');
-    const spec = deps.store.update(prior.id, input);
+    // Who sees it is the creator's call alone: a member edits what the agent does, not where it is shared.
+    if (prior.owner !== who.subject
+      && (input.visibility !== hostedAgentVisibilityOf(prior) || (input.orgId ?? null) !== (prior.orgId ?? null))) {
+      return refuse(res, 403, 'not_owner', 'only the agent\'s creator can change its visibility or organization');
+    }
+    const spec = deps.store.update(prior.id, input, who.subject);
     deps.host.apply(spec);
     deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });
-    res.json({ agent: view(req, spec, true) });
+    res.json({ agent: view(req, spec, true, who) });
   });
 
   router.delete('/api/hosted-agents/:id', async (req, res) => {
@@ -207,7 +239,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
 
   /** Write-only: set with `{ value }`, clear with `{ value: null }`. There is no route that reads a value back. */
   router.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
-    const spec = owned(req, res);
+    const spec = managed(req, res)?.spec;
     if (!spec) return;
     const name = String(req.params.name);
     if (!spec.secretNames.includes(name)) return refuse(res, 400, 'invalid_request', `${name} is not one of this agent's secret names`);
@@ -220,7 +252,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
   });
 
   router.get('/api/hosted-agents/:id/logs', async (req, res) => {
-    const spec = owned(req, res);
+    const spec = managed(req, res)?.spec;
     if (!spec) return;
     res.json({ lines: await deps.host.logs(spec.id) });
   });
