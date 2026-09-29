@@ -399,11 +399,116 @@ test('connecting a legacy session in the app links it, and reports conflicts ins
   const taken = await signIn(acc('connect2'), { link: { principal: 'google:4040401', method: 'legacy_session' } });
   assert.equal(taken.status, 409);
   assert.equal(taken.body.error, 'legacy_conflict');
-  // AIN SSO later saying something else about it is an administrator's problem, not a silent re-point.
+  // AIN SSO later saying something else about it is an administrator's problem, never a silent re-point: the link
+  // the app proved stays, the rest of the state applies (localUserId shows the administrator which one holds).
   const r = await put(desired(sub, 1, { legacyUserId: 'google:4040499' }));
-  assert.equal(r.status, 409);
-  // …while saying nothing (the app's report did not arrive) keeps the link the app proved.
+  assert.equal(r.status, 200);
+  assert.equal(r.body.localUserId, 'google:4040401');
+  assert.equal(N.store.ssoIdentityByPrincipal('google:4040499'), null);
+  // …and saying nothing (the app's report did not arrive) keeps it too.
   assert.equal((await put(desired(sub, 2, { legacyUserId: null }))).body.localUserId, 'google:4040401');
+});
+
+// The mapping comes with every state AIN SSO sends, whatever the status (provisioning/desired.ts). A mapping the node
+// cannot apply to an account that already exists here must never hold back what comes with it (protocol §4.3-4.4).
+const suspendedState = { status: 'suspended' as const, appRole: null, groups: [] };
+
+test('an account that exists here is suspended even when its legacyUserId is one this node cannot link', async () => {
+  const sub = acc('unlinkable');
+  await put(desired(sub, 1));
+  const s = await signIn(sub);
+  const orgKey = await createKey(cookie(s.body.token!), { label: 'work' });
+  assert.equal(orgKey.body.org_id, ORG.id);
+  // An administrator imported a mapping whose id is not google:<sub> (a wallet address, say).
+  const legacyUserId = '0x00000000000000000000000000000000000000aa';
+  const active = await put(desired(sub, 2, { legacyUserId }));
+  assert.equal(active.status, 200, 'the account exists: an unlinkable mapping is logged, not a 409');
+  assert.equal(active.body.localUserId, `sso:${sub}`);
+  const r = await put(desired(sub, 3, { ...suspendedState, legacyUserId }));
+  assert.deepEqual(r.body, { appliedVersion: 3, localUserId: `sso:${sub}`, status: 'suspended' });
+  assert.equal(N.store.getSession(s.body.token!), null, 'the SSO session ended');
+  assert.equal(await keyWorks(orgKey.body.api_key!), false, 'the organization key is off');
+  assert.equal((await signIn(sub)).status, 403, 'signing in again is refused');
+  const off = await put(desired(sub, 4, { status: 'deprovisioned', appRole: null, groups: [], legacyUserId }));
+  assert.equal(off.status, 200, 'and offboarding applies too');
+});
+
+test('a legacy mapping that contradicts the link the app proved does not hold back the suspension', async () => {
+  const sub = acc('proof_vs_map');
+  const proven = 'google:5151501';
+  const s = await signIn(sub, { link: { principal: proven, method: 'legacy_session' } });
+  assert.equal(s.body.principal, proven);
+  const orgKey = await createKey(cookie(s.body.token!), { label: 'work' });
+  // AIN SSO links another Google user of the same person (an app-attest the app's report lost to) and pushes it.
+  const other = 'google:5151599';
+  assert.equal((await put(desired(sub, 1, { legacyUserId: other }))).body.localUserId, proven);
+  const r = await put(desired(sub, 2, { ...suspendedState, legacyUserId: other }));
+  assert.equal(r.status, 200);
+  assert.equal(N.store.getSession(s.body.token!), null, 'the SSO session ended');
+  assert.equal(await keyWorks(orgKey.body.api_key!), false, 'the organization key is off');
+  assert.equal((await principal(proven)).blocked, true, 'the legacy Google path is refused too');
+  assert.equal((await createKey(vouched(proven), {})).status, 403);
+  assert.equal(N.store.ssoIdentity(I.issuer, sub)?.principal, proven, 'the link the app proved is untouched');
+});
+
+test('a legacy mapping taken by another account does not hold back the suspension of an empty account', async () => {
+  const taken = 'google:5252501';
+  await put(desired(acc('taken_owner'), 1, { legacyUserId: taken }));
+  const sub = acc('taken_other');
+  const s = await signIn(sub); // an sso:<sub> that holds nothing yet, with a session
+  const r = await put(desired(sub, 1, { ...suspendedState, legacyUserId: taken }));
+  assert.equal(r.status, 200);
+  assert.equal(r.body.localUserId, `sso:${sub}`);
+  assert.equal(N.store.getSession(s.body.token!), null, 'the SSO session ended');
+  assert.equal((await signIn(sub)).status, 403);
+  assert.equal(N.store.ssoIdentityByPrincipal(taken)?.subject, acc('taken_owner'), 'never re-pointed');
+  // An account that does not exist here yet is still refused, as protocol §4.4 says.
+  assert.equal((await put(desired(acc('taken_new'), 1, { legacyUserId: taken }))).body.error, 'legacy_conflict');
+});
+
+test('rolling back a wrong legacy link revokes every key the person made through it, and only those', async () => {
+  const legacy = 'google:7272701'; // Alice's pre-SSO ainize account
+  const aliceKey = await createKey(vouched(legacy), { label: 'alice laptop' });
+  const bob = acc('wrong_link_bob');
+  await put(desired(bob, 1, { legacyUserId: legacy })); // the wrong mapping
+  const s = await signIn(bob);
+  assert.equal(s.body.principal, legacy);
+  const bobPersonal = await createKey(cookie(s.body.token!), { label: 'bob', org_id: null });
+  const bobOrg = await createKey(cookie(s.body.token!), { label: 'bob work' });
+  assert.equal(bobPersonal.status, 200);
+  assert.ok(await keyWorks(bobPersonal.body.api_key!));
+  const r = await put(desired(bob, 2, { legacyUserId: null })); // rolled back at AIN SSO
+  assert.equal(r.body.localUserId, `sso:${bob}`);
+  assert.equal(N.store.getSession(s.body.token!), null);
+  assert.equal(await keyWorks(bobPersonal.body.api_key!), false, 'the personal key Bob made on Alice\'s account is revoked');
+  assert.equal(await keyWorks(bobOrg.body.api_key!), false, 'and so is his organization key');
+  assert.equal(await keyWorks(aliceKey.body.api_key!), true, 'Alice keeps the key she made herself');
+  const left = await (await fetch(`${url}/api/keys`, { headers: vouched(legacy) })).json() as { keys: { label: string }[] };
+  assert.deepEqual(left.keys.map((k) => k.label), ['alice laptop']);
+});
+
+test('an automatic sign-in does not take the "connect your existing account" question away', async () => {
+  const legacy = 'google:8383801';
+  const old = await createKey(vouched(legacy), { label: 'old laptop' });
+  const sub = acc('auto_then_button');
+  // ainize.ai is open to any AIN account, so AIN SSO never provisions this person here. The first visit is the
+  // automatic sign-in, which never asks (allowConnect: false), and makes an empty sso:<sub>.
+  const auto = await signIn(sub, { orgs: [], activeOrg: null, allowConnect: false });
+  assert.equal(auto.body.principal, `sso:${sub}`);
+  // The person presses "Continue with AIN": the account still holds nothing, so the question comes back…
+  const ask = await signIn(sub, { orgs: [], activeOrg: null, allowConnect: true });
+  assert.equal(ask.body.status, 'needs_link');
+  // …and connecting links the old account, keys and all.
+  const linked = await signIn(sub, { orgs: [], activeOrg: null, link: { principal: legacy, method: 'legacy_session' } });
+  assert.equal(linked.body.principal, legacy);
+  const listed = await (await fetch(`${url}/api/keys`, { headers: cookie(linked.body.token!) })).json() as { keys: { label: string }[] };
+  assert.deepEqual(listed.keys.map((k) => k.label), ['old laptop']);
+  assert.ok(await keyWorks(old.body.api_key!));
+  // An account that holds keys of its own is never asked again.
+  const busy = acc('auto_busy');
+  const b = await signIn(busy, { orgs: [], activeOrg: null });
+  await createKey(cookie(b.body.token!), { label: 'mine' });
+  assert.equal((await signIn(busy, { orgs: [], activeOrg: null, allowConnect: true })).body.status, 'ok');
 });
 
 // ------------------------------------------------------------------------------------------------ status on every path

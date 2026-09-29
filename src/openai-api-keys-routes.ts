@@ -113,7 +113,9 @@ export function openaiApiKeysRoutes(deps: OpenaiApiKeysRoutesDeps): Router {
       refuse(res, 400, 'org_needs_sso', 'organization keys are made in a session signed in with AIN SSO');
       return;
     }
-    const apiKey = deps.keys.issue(who.owner, parsed.data.label ?? null, orgId);
+    // A key made in an SSO session remembers which AIN account made it: if that account's link to a legacy
+    // principal is rolled back, the keys it made there go with the link (sso.ts, protocol §4.4).
+    const apiKey = deps.keys.issue(who.owner, parsed.data.label ?? null, orgId, who.sso ? { iss: who.sso.iss, sub: who.sso.sub } : null);
     const created = deps.keys.listFor(who.owner).find((k) => k.label === (parsed.data.label ?? null) && k.org_id === orgId);
     res.json({
       // The only time this value exists outside the caller's own hands. The page says so; so does this comment,

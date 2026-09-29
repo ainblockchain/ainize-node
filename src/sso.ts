@@ -17,7 +17,8 @@
  * ORGANIZATIONS. ainize has no organizations of its own. An AIN organization appears in exactly one place: the
  * `orgId` of an API key made in an SSO session for an organization the ID token named. That is the whole
  * org-owned surface, so it is the whole of what suspension switches off (and offboarding deletes). Personal keys —
- * every key made without an organization, including every pre-SSO key — are never touched.
+ * every key made without an organization, including every pre-SSO key — are never touched by either. (A rolled-back
+ * legacy mapping is different: what the person made on the legacy principal through the link goes with it.)
  *
  * Token checks below are the ones `@ain-sso/sdk` makes (adapter request JWT, back-channel logout token), written
  * again here with `jose` because that SDK is not published; see docs/ain-sso.md "Provenance".
@@ -307,6 +308,11 @@ export class SsoService {
     return !m || m.status === 'active';
   }
 
+  /** An account that is still its own fresh `sso:<sub>` and holds no key: linking it to a legacy principal loses nothing. */
+  private holdsNothing(ident: SsoIdentityRow, sub: string): boolean {
+    return ident.principal === ssoPrincipal(sub) && this.deps.keys.countFor(ident.principal) === 0;
+  }
+
   // --- sign-in: the site verified an ID token and asks for a session ---------------------------------------------
 
   /**
@@ -341,13 +347,17 @@ export class SsoService {
       } else if (link && ident.principal !== link) {
         // Already known here. Only an account that holds nothing yet may become the legacy one: two key sets are
         // never merged silently, and a link the adapter or an earlier proof made is never re-pointed from here.
-        const empty = ident.principal === ssoPrincipal(input.sub) && this.deps.keys.countFor(ident.principal) === 0;
-        if (!empty) throw new SsoError('already_linked', 409, 'This AIN account already has its own account here.', false);
+        if (!this.holdsNothing(ident, input.sub)) throw new SsoError('already_linked', 409, 'This AIN account already has its own account here.', false);
         if (store.ssoIdentityByPrincipal(link)) throw new SsoError('legacy_conflict', 409, 'That account is already linked to another AIN account.', false);
         store.relinkSsoIdentity(cfg.issuer, input.sub, link, `app_proof:${input.link!.method}`, 'connected_legacy_account');
         store.deleteSsoSessions(cfg.issuer, input.sub, null);
         ident = store.ssoIdentity(cfg.issuer, input.sub)!;
         linked = link;
+      } else if (!link && input.allowConnect && this.holdsNothing(ident, input.sub)) {
+        // Known here, but still the empty `sso:<sub>` an automatic sign-in (which never asks) or the adapter made.
+        // Such an account can still become the legacy one (above), so the person who presses the button is asked
+        // again; otherwise the first automatic sign-in would have taken the question away for good.
+        return { status: 'needs_link' } as const;
       }
       store.updateSsoProfile(cfg.issuer, input.sub, { name: input.name, email: input.email });
       const orgs = input.orgs.slice(0, 50).map((o) => ({ id: String(o.id).slice(0, 200), slug: String(o.slug).slice(0, 200), name: String(o.name).slice(0, 200) }));
@@ -420,55 +430,69 @@ export class SsoService {
   /**
    * Linking rules of protocol §4.4, ainize flavour. Every refusal is decided BEFORE anything changes, because API
    * keys live in a file the SQLite rollback cannot undo.
+   *
+   * Only an account that does not exist here yet is ever refused (`legacy_user_not_found`, `legacy_conflict`), as
+   * §4.4 says. Once it exists, a `legacyUserId` this node cannot link — not `google:<sub>`, taken by another account,
+   * or contradicting the link the app proved — is logged and left unapplied, and the state is applied all the same:
+   * AIN SSO sends the mapping with EVERY state, so refusing it here would refuse the suspension and the offboarding
+   * that come with it (§4.3), on every retry, for as long as the mapping stands.
    */
   private resolveForState(issuer: string, state: DesiredUserState): SsoIdentityRow {
     const store = this.deps.store;
     const keys = this.deps.keys;
     const sub = state.sub;
     const legacy = state.legacyUserId === null ? null : legacyPrincipal(state.legacyUserId);
-    if (state.legacyUserId !== null && !legacy) {
-      throw new SsoError('legacy_user_not_found', 409, 'ainize links only google:<sub> legacy users; a wallet address is proven by its own signature.', false);
-    }
     const ident = store.ssoIdentity(issuer, sub);
     if (!ident) {
+      if (state.legacyUserId !== null && !legacy) {
+        throw new SsoError('legacy_user_not_found', 409, 'ainize links only google:<sub> legacy users; a wallet address is proven by its own signature.', false);
+      }
       if (legacy && store.ssoIdentityByPrincipal(legacy)) throw new SsoError('legacy_conflict', 409, 'The legacy user is linked to another account.', false);
       store.insertSsoIdentity({ issuer, subject: sub, principal: legacy ?? ssoPrincipal(sub), linkProof: legacy ? 'legacy_mapping' : 'provisioning', name: state.profile.name, email: state.profile.email });
       if (legacy) this.deps.log('info', `ain-sso: ${legacy} linked to AIN account ${sub} (verified legacy mapping)`, { actor: 'ain-sso', sub, principal: legacy });
       return store.ssoIdentity(issuer, sub)!;
     }
 
-    // Plan.
+    // Plan. A mapping that now names anything else — nothing, another Google user, or something unlinkable — ends
+    // the link it made.
     const rollBack = ident.link_proof === 'legacy_mapping' && ident.principal !== legacy;
     const principalAfter = rollBack ? ssoPrincipal(sub) : ident.principal;
     const proofAfter = rollBack ? 'provisioning' : ident.link_proof;
     let linkNew = false;
-    if (legacy && principalAfter !== legacy) {
-      const other = store.ssoIdentityByPrincipal(legacy);
-      if (principalAfter === ssoPrincipal(sub) && keys.countFor(principalAfter) === 0) {
+    let notApplied: string | null = null;
+    if (state.legacyUserId !== null && !legacy) {
+      notApplied = 'ainize links only google:<sub> legacy users';
+    } else if (legacy && principalAfter !== legacy) {
+      if (proofAfter.startsWith('app_proof')) {
+        notApplied = `the account was linked in the app to ${principalAfter}`;
+      } else if (principalAfter === ssoPrincipal(sub) && keys.countFor(principalAfter) === 0) {
         // The account exists here but holds nothing: treat it as not existing yet (protocol §4.4), so a mapping that
         // arrives after the first login still links. Nothing is lost by it.
-        if (other) throw new SsoError('legacy_conflict', 409, 'The legacy user is linked to another account.', false);
-        linkNew = true;
-      } else if (proofAfter.startsWith('app_proof')) {
-        throw new SsoError('legacy_conflict', 409, 'This account was linked in the app to another legacy user.', false);
+        if (store.ssoIdentityByPrincipal(legacy)) notApplied = 'the legacy user is linked to another AIN account';
+        else linkNew = true;
+      } else {
+        notApplied = `the account already holds its own keys here as ${principalAfter}; merging must be explicit`;
       }
     }
 
     // Execute.
     if (rollBack) {
       // The mapping was rolled back or replaced at AIN SSO: that legacy principal is no longer this person here.
-      // Organization keys made through SSO while linked go with it; its personal keys stay with the legacy principal.
-      keys.revokeAllOrgKeys(ident.principal);
+      // What they obtained on it through the link goes with it (§4.4): its organization keys, and every key made in
+      // an SSO session of this account. The legacy principal keeps the personal keys it made itself.
+      const revoked = keys.revokeObtainedThrough(ident.principal, { iss: issuer, sub });
       store.relinkSsoIdentity(issuer, sub, ssoPrincipal(sub), 'provisioning', legacy ? 'legacy_mapping_replaced' : 'legacy_mapping_rolled_back');
       store.deleteSsoSessions(issuer, sub, null);
-      this.deps.log('warn', `ain-sso: ${ident.principal} is no longer linked to AIN account ${sub} (mapping rolled back)`, { actor: 'ain-sso', sub, principal: ident.principal });
+      this.deps.log('warn', `ain-sso: ${ident.principal} is no longer linked to AIN account ${sub} (mapping rolled back)${revoked ? `, ${revoked} key(s) made through the link revoked` : ''}`,
+        { actor: 'ain-sso', sub, principal: ident.principal, keysRevoked: revoked });
     }
     if (linkNew) {
       store.relinkSsoIdentity(issuer, sub, legacy!, 'legacy_mapping', 'legacy_mapping_applied');
       store.deleteSsoSessions(issuer, sub, null);
       this.deps.log('info', `ain-sso: ${legacy} linked to AIN account ${sub} (verified legacy mapping)`, { actor: 'ain-sso', sub, principal: legacy });
-    } else if (legacy && principalAfter !== legacy && !proofAfter.startsWith('app_proof')) {
-      this.deps.log('warn', `ain-sso: legacy mapping ${legacy} not applied — AIN account ${sub} already holds its own keys here as ${principalAfter}; merging must be explicit`, { actor: 'ain-sso', sub, principal: principalAfter, legacy });
+    } else if (notApplied) {
+      // Not the legacy id itself: it may be a wallet address, and the reason says enough for an administrator.
+      this.deps.log('warn', `ain-sso: legacy mapping for AIN account ${sub} not applied — ${notApplied}; the rest of the state is`, { actor: 'ain-sso', sub, principal: principalAfter });
     }
     return store.ssoIdentity(issuer, sub)!;
   }

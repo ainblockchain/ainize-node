@@ -87,19 +87,28 @@ working even if disabling it had failed.
 
 **Legacy linking** (protocol §4.4, ADR-0004):
 
-- `legacyUserId` is `google:<sub>` (what the importer exports from `openai-keys.json`). Any other
-  shape → `409 legacy_user_not_found`. Linked to another account → `409 legacy_conflict`, never
-  re-pointed.
+- `legacyUserId` is `google:<sub>` (what the importer exports from `openai-keys.json`). For an
+  account that does not exist here yet (protocol §4.4): any other shape → `409
+  legacy_user_not_found`; linked to another account → `409 legacy_conflict`, never re-pointed.
+- **An account that already exists here is never refused over its mapping.** AIN SSO sends
+  `legacyUserId` with every state, whatever the status, so a 409 would also refuse the suspension or
+  offboarding that comes with it — on every retry. A mapping the node cannot apply (not
+  `google:<sub>`, taken by another account, contradicting the link the app proved, or an account that
+  holds keys of its own) is logged (`legacy mapping … not applied`) and the rest of the state is
+  applied; `localUserId` in the answer shows the administrator which principal the account holds.
 - Linked when the account has no principal here yet — or has one that holds nothing (an `sso:<sub>`
   with no keys), so a mapping that arrives after the first login still links. An account that already
   holds keys of its own keeps them; merging two key sets must be explicit (logged, not applied).
 - A link made from `legacyUserId` that a later state drops or changes (rolled back at AIN SSO) is
-  undone: the account returns to `sso:<sub>`, its SSO sessions end, organization keys made while
-  linked are deleted, and the legacy principal keeps its own personal keys. `sso_link_history` keeps
-  every previous link.
+  undone: the account returns to `sso:<sub>`, its SSO sessions end, and what the person obtained on
+  the legacy principal through the link is deleted — its organization keys, and every key an SSO
+  session of that account made there (keys record the AIN account that made them, `via`). The legacy
+  principal keeps the personal keys it made itself. (Keys made before `via` existed cannot be told
+  apart: a personal key made through a wrong link before this change stays until its owner deletes
+  it.) `sso_link_history` keeps every previous link.
 - A link the app proved (`app_proof:legacy_session`) is authoritative here: a later state with
-  `legacyUserId: null` (the report did not reach AIN SSO) keeps it; a *different* legacy user is a
-  `409 legacy_conflict` for an administrator.
+  `legacyUserId: null` (the report did not reach AIN SSO) keeps it, and so does a *different* legacy
+  user (logged for an administrator, never re-pointed).
 
 Adapter errors use the protocol body `{error, message, retryable}`; unexpected failures are
 `500 adapter_error` without internals. Every applied change is written to the node's event log with
@@ -112,7 +121,9 @@ kind `sso` and actor `ain-sso`; those lines are hidden from the public `/api/eve
 replaces}`. The node refuses another issuer, a suspended account (`403 account_suspended`), and link
 conflicts (`409`); otherwise it resolves the principal and creates a session (14 days, ADR-0005's
 absolute SSO lifetime) keyed by `sid`. With no link yet and `allowConnect` it creates nothing and
-answers `needs_link`, so the site can offer "connect your existing account".
+answers `needs_link`, so the site can offer "connect your existing account". It answers the same for
+an account it already knows that is still an empty `sso:<sub>` (no keys) — typically made by an
+automatic sign-in, which never asks — so the button can still connect the old account.
 
 `POST /api/auth/sso/principal {principal}` — the site asks before honouring a legacy Google session:
 `{linked, blocked, notBefore}`. **Mounted whenever the node shares a secret with the site, even with
@@ -160,7 +171,8 @@ when AIN SSO is live. Nothing in `deploy/ainize-ai/config.overlay.json` turns it
 
 - `sso_identities`, `sso_link_history`, `sso_memberships` — new tables.
 - `sessions` gains `sso_iss, sso_sub, sso_sid, sso_orgs, sso_org` (+ indexes on `sso_sub`, `sso_sid`).
-- `openai-keys.json` records may carry `orgId` and `disabled`; personal keys are written exactly as
+- `openai-keys.json` records may carry `orgId`, `disabled` and `via` (`{iss, sub}` of the AIN
+  account whose session made the key); keys made outside an SSO session are written exactly as
   before. A switched-off key is stored under `disabled:<hash>` instead of `<hash>`, so a build from
   before this change cannot find it: rolling the node back never revives a suspended key. (It would
   show in that build's key list with the prefix `disabled`, and its owner could delete it.)
