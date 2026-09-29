@@ -20,7 +20,8 @@ node's identity.
 | | |
 |---|---|
 | `/api/*` | the node API — catalogue, chat, teach, peers, operator routes |
-| `/api/agents` · `/agents/{id}` | the agent catalogue and each agent's A2A address — config agents, agents the node runs, agents people [linked by URL](docs/superpowers/specs/2026-09-29-linked-agents-design.md), peers' agents |
+| `/api/agents` · `/agents/{id}` | the agent catalogue and each agent's A2A address — config agents, agents the node runs, agents people [linked by URL](docs/superpowers/specs/2026-09-29-linked-agents-design.md), peers' agents. `?org=` is one organization's list, for its members |
+| `/api/orgs` | [organizations](docs/superpowers/specs/2026-09-29-organizations-design.md): a team's page and README, members by AIN SSO email domain, linked AIN org or invite, with roles that decide what they may do with the agents shared with it (`visibility: org`, `orgId`), resource groups, audit log, billing and security tabs. `AINIZE_ORG_SEED="comcom=ComCom:comcom.ai"` seeds one at boot |
 | `/api/openapi.json` | OpenAPI 3.1, generated from the routes themselves |
 | `/docs` | the reference, served by the node |
 | `/x402/patch/{id}` | paid download: 402, pay, fetch |

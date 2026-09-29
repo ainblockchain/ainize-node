@@ -134,7 +134,7 @@ registration is removed. So:
 ## 5. Sharing: who sees which agent (an organization's list)
 
 Every agent the node lists — hosted, linked (`/api/linked-agents`) or a `config.json` agent — has a **visibility**:
-`public` (listed to everyone, advertised to peers), `org` (listed to members of one AIN SSO organization), `private`
+`public` (listed to everyone, advertised to peers), `org` (listed to members of one organization), `private`
 (the owner's alone) or `unlisted` (answers by id, listed to nobody). Visibility is about *listing*: the A2A address
 `/agents/<id>` answers to anyone who holds it either way. Only `public` agents reach `/api/agents` and gossip.
 
@@ -142,12 +142,26 @@ Every agent the node lists — hosted, linked (`/api/linked-agents`) or a `confi
   SSO session of a member, or an **organization API key** (`POST /api/keys {"org_id": …}` by a member, sent as
   `Authorization: Bearer ainize-sk-…`). Give AIN Teams one such key (`AINIZE_API_KEY`) and it reads, and registers
   into, that organization's list with no browser session.
-- **Owners** set `visibility`/`orgId` when they create or change an agent, for an organization they belong to.
-- **Members manage `org` hosted agents.** A member of the organization a hosted agent is shared with (an AIN SSO
-  member, or that organization's API key) may read its whole spec, change its prompt and code, set its secrets and
-  read its logs — `GET /api/hosted-agents?manageable=1` lists what a caller may manage, with `can_delete`. Removing it
-  and changing its `visibility`/`orgId` stay the owner's; each change records `updated_by`. An agent the caller
-  cannot see answers 404, one they see but may not change 403.
+- **What `orgId` names.** An ainize organization (`/api/orgs`, docs/superpowers/specs/2026-09-29-organizations-design.md)
+  or an AIN SSO org id (`org_…`). An AIN SSO org id that an ainize organization links (`ssoOrgIds`) belongs to that
+  organization: its members, roles and audit log apply. One no ainize organization links keeps the plain rule —
+  an AIN SSO member of it, or its organization API key, counts as `write`.
+- **Roles decide what a member may do** (`read` < `contributor` < `write` < `admin`):
+
+  | | owner | admin | write | contributor | read |
+  |---|---|---|---|---|---|
+  | see it (listed, by id, `/api/agents?org=`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | share an agent into the organization | — | ✓ | ✓ | ✓ | — |
+  | hosted: whole spec, change prompt/code, secrets, logs | ✓ | ✓ | ✓ | — | — |
+  | linked: change where it points (upstream) | ✓ | — | — | — | — |
+  | remove it, change its `visibility`/`orgId` | ✓ | ✓ | — | — | — |
+
+  An organization API key is `write` in the organization its AIN org id belongs to. `GET /api/hosted-agents?manageable=1`
+  lists what a caller may change, with `can_manage` / `can_delete`; each change records `updated_by` and lands in the
+  organization's audit log (`agent.create`, `agent.update`, `agent.sharing`, `agent.secret` — the name only,
+  `agent.delete`). An agent the caller cannot see answers 404, one they see but may not change 403.
+- **`/api/shared-agents?scope=shared_with_org&org=<id>`** matches `orgId` exactly (contract 1.0: `orgRef.subject` is the
+  `orgId`), so an AIN Teams workspace keeps using the AIN SSO org id it always did.
 - **You, the operator**, may put *any* hosted or linked agent into *any* organization's list, or take it out:
 
   ```

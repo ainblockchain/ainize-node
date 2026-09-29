@@ -15,7 +15,7 @@ import { HOSTED_AGENT_SECRET_MAX_BYTES } from './hosted-agent-secrets.js';
 import { HostedAgentIdTakenError, HostedAgentLimitError, type HostedAgentStore } from './hosted-agent-store.js';
 import { parseNodeModelRef } from './peer-models.js';
 import { hostedAgentMediaOf, hostedAgentSpecInput, hostedAgentUsesCode, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
-import { canManageHostedAgent, canSeeHostedAgent, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type SharedAgentEvents, audienceOf, widerAudience } from './shared-agents.js';
+import { canAdministerAgent, canManageHostedAgent, canSeeHostedAgent, canShareInto, hostedAgentChangeType, listsHostedAgentFor, walletCaller, type AgentCaller, type OrgAudit, type SharedAgentEvents, audienceOf, widerAudience } from './shared-agents.js';
 
 export interface HostedAgentRoutesDeps {
   store: HostedAgentStore;
@@ -31,6 +31,8 @@ export interface HostedAgentRoutesDeps {
   sessionAddress?: (req: Request) => string | null;
   /** The change feed of the shared registry, told of every create, update and delete. Absent → no feed. */
   events?: SharedAgentEvents;
+  /** The audit log of the organization an agent is shared with (server.ts → organization-store.ts). Absent → none. */
+  orgAudit?: OrgAudit;
   /** Ids a hosted agent may not take — the config agents this node already proxies. */
   reserved: (id: string) => boolean;
   /** This node's public base URL, for the addresses returned on create. */
@@ -65,14 +67,17 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
 
   const notFound = (res: Response, id: unknown) => refuse(res, 404, 'not_found', `no hosted agent "${id}" on this node`);
 
-  /** The spec, if the caller owns it. Answers the refusal itself otherwise. */
-  const owned = (req: Request, res: Response): HostedAgentSpec | null => {
+  /**
+   * The spec, if the caller may remove it: its owner, or an admin of the organization it is shared with. An agent
+   * the caller cannot see is 404; one they see but may not remove is 403. Answers the refusal itself.
+   */
+  const administered = (req: Request, res: Response): { spec: HostedAgentSpec; who: AgentCaller } | null => {
     const who = signedIn(req, res);
     if (!who) return null;
     const spec = deps.store.get(String(req.params.id));
-    if (!spec) { notFound(res, req.params.id); return null; }
-    if (spec.owner !== who.subject) { refuse(res, 403, 'not_owner', 'only the agent\'s creator can do this'); return null; }
-    return spec;
+    if (!spec || !canSeeHostedAgent(spec, who)) { notFound(res, req.params.id); return null; }
+    if (!canAdministerAgent(spec, who)) { refuse(res, 403, 'not_owner', 'only the agent\'s creator or an admin of its organization can do this'); return null; }
+    return { spec, who };
   };
 
   /**
@@ -84,7 +89,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (!who) return null;
     const spec = deps.store.get(String(req.params.id));
     if (!spec || !canSeeHostedAgent(spec, who)) { notFound(res, req.params.id); return null; }
-    if (!canManageHostedAgent(spec, who)) { refuse(res, 403, 'not_owner', 'only the agent\'s creator or a member of the organization it is shared with can do this'); return null; }
+    if (!canManageHostedAgent(spec, who)) { refuse(res, 403, 'not_owner', 'only the agent\'s creator or a write member of the organization it is shared with can do this'); return null; }
     return { spec, who };
   };
 
@@ -107,12 +112,15 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
       return null;
     }
-    // Sharing with an organization is the owner's to do only for an organization they belong to: an AIN SSO
-    // account's memberships (sso_memberships, or the ID token's orgs). A wallet belongs to none.
-    if (parsed.data.visibility === 'org' && !who.orgMember(parsed.data.orgId!)) {
-      refuse(res, 400, 'invalid_request', who.kind === 'wallet'
-        ? 'orgId: sharing with an organization needs an AIN SSO session that belongs to it; a wallet belongs to none'
-        : `orgId: you are not a member of ${parsed.data.orgId}`);
+    // Sharing with an organization takes the contributor role there (shared-agents.ts `canShareInto`): an ainize
+    // organization's member row, email domain or linked AIN SSO org; without one, an AIN SSO member of it. A
+    // wallet belongs to an organization only through an explicit member row.
+    if (parsed.data.visibility === 'org' && !canShareInto(who, parsed.data.orgId!)) {
+      refuse(res, 400, 'invalid_request', !who.orgMember(parsed.data.orgId!)
+        ? (who.kind === 'wallet'
+          ? 'orgId: sharing with an organization needs an AIN SSO session that belongs to it; a wallet belongs to none unless an organization adds it as a member'
+          : `orgId: you are not a member of ${parsed.data.orgId}`)
+        : `orgId: sharing into ${parsed.data.orgId} needs the contributor role there`);
       return null;
     }
     // This node's model, or — for a ref naming another node (`id@0x<node>`) or an id only peers serve — a peer's,
@@ -145,7 +153,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       id: spec.id, name: spec.name, description: spec.description, model: spec.model, mode: spec.mode,
       owner: spec.owner, version: spec.version, created_at: spec.createdAt, updated_at: spec.updatedAt,
       visibility: hostedAgentVisibilityOf(spec), org_id: spec.orgId ?? null, updated_by: spec.updatedBy ?? spec.owner,
-      ...(who ? { can_manage: canManageHostedAgent(spec, who), can_delete: spec.owner === who.subject } : {}),
+      ...(who ? { can_manage: canManageHostedAgent(spec, who), can_delete: canAdministerAgent(spec, who) } : {}),
       status: st?.status ?? 'failed', error: st?.error ?? null, live_version: st?.liveVersion ?? null,
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
       ...(full ? {
@@ -191,6 +199,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       const spec = deps.store.create(input, who.subject, deps.reserved);
       deps.host.apply(spec);
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+      deps.orgAudit?.([spec.orgId], who.subject, 'agent.create', spec.id, { kind: 'hosted', visibility: hostedAgentVisibilityOf(spec) });
       res.status(201).json({ agent: view(req, spec, false), a2a_url: view(req, spec, false).a2a_url, card_url: view(req, spec, false).card_url });
     } catch (e) {
       if (e instanceof HostedAgentIdTakenError) return refuse(res, 409, 'id_taken', e.message);
@@ -215,21 +224,25 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const input = parse(req, res, who);
     if (!input) return;
     if (input.id !== prior.id) return refuse(res, 400, 'invalid_request', 'an agent\'s id cannot change — it is its public address');
-    // Who sees it is the creator's call alone: a member edits what the agent does, not where it is shared.
-    if (prior.owner !== who.subject
-      && (input.visibility !== hostedAgentVisibilityOf(prior) || (input.orgId ?? null) !== (prior.orgId ?? null))) {
-      return refuse(res, 403, 'not_owner', 'only the agent\'s creator can change its visibility or organization');
+    // Who sees it is the creator's call, or an organization admin's: a write member edits what the agent does, not where it is shared.
+    const sharingChanged = input.visibility !== hostedAgentVisibilityOf(prior) || (input.orgId ?? null) !== (prior.orgId ?? null);
+    if (sharingChanged && !canAdministerAgent(prior, who)) {
+      return refuse(res, 403, 'not_owner', 'only the agent\'s creator or an admin of its organization can change its visibility or organization');
     }
     const spec = deps.store.update(prior.id, input, who.subject);
     deps.host.apply(spec);
+    deps.orgAudit?.([prior.orgId, spec.orgId], who.subject, sharingChanged ? 'agent.sharing' : 'agent.update', spec.id,
+      { kind: 'hosted', version: spec.version, ...(sharingChanged ? { from: { visibility: hostedAgentVisibilityOf(prior), orgId: prior.orgId ?? null }, to: { visibility: hostedAgentVisibilityOf(spec), orgId: spec.orgId ?? null } } : {}) });
     deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });
     res.json({ agent: view(req, spec, true, who) });
   });
 
   router.delete('/api/hosted-agents/:id', async (req, res) => {
-    const spec = owned(req, res);
-    if (!spec) return;
+    const hit = administered(req, res);
+    if (!hit) return;
+    const { spec, who } = hit;
     deps.store.delete(spec.id);
+    deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
     deps.secrets.dropAgent(spec.id);
     await deps.host.remove(spec.id);
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
@@ -239,14 +252,16 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
 
   /** Write-only: set with `{ value }`, clear with `{ value: null }`. There is no route that reads a value back. */
   router.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
-    const spec = managed(req, res)?.spec;
-    if (!spec) return;
+    const hit = managed(req, res);
+    if (!hit) return;
+    const { spec, who } = hit;
     const name = String(req.params.name);
     if (!spec.secretNames.includes(name)) return refuse(res, 400, 'invalid_request', `${name} is not one of this agent's secret names`);
     const value = (req.body as { value?: unknown } | undefined)?.value;
     if (value === null) deps.secrets.clear(spec.id, name);
     else if (typeof value === 'string' && Buffer.byteLength(value) <= HOSTED_AGENT_SECRET_MAX_BYTES) deps.secrets.set(spec.id, name, value);
     else return refuse(res, 400, 'invalid_request', `value must be a string of at most ${HOSTED_AGENT_SECRET_MAX_BYTES} bytes, or null`);
+    deps.orgAudit?.([spec.orgId], who.subject, 'agent.secret', spec.id, { name, set: value !== null });
     await deps.host.restart(spec.id);
     res.json({ name, set: value !== null });
   });

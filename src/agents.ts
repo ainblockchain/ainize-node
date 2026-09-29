@@ -325,6 +325,11 @@ export function listAgents(cfg: NodeConfig, linked?: LinkedAgentSource): Proxied
   return [...own, ...linkedRows];
 }
 
+/** How often each agent has been called through this node — what an organization's billing page counts. */
+export function agentCallStats(id: string): { total: number; last_at: number | null } {
+  return calls.get(id) ?? { total: 0, last_at: null };
+}
+
 /** Agents this node RUNS (hosted-agent-host.ts), beside the ones it proxies from `config.agents`. */
 export interface HostedAgentsDeps {
   host: HostedAgentHost;
@@ -332,7 +337,16 @@ export interface HostedAgentsDeps {
 }
 
 /** What the list needs from the rest of the node to show — and serve — agents it does not itself operate. */
+/**
+ * `/api/agents?org=<id>`: which agents belong to that organization's list, for this request — or null when the
+ * caller may not see it (not a member). server.ts resolves the id through the ainize organizations (shared-agents.ts
+ * `resolveOrganization`), so an AIN SSO org id and the ainize organization that links it name the same list.
+ */
+export type AgentOrgScope = (req: Request, orgId: string) => ((a: { visibility?: 'public' | 'org' | 'private' | 'unlisted' | null; orgId?: string | null }) => boolean) | null;
+
 export interface AgentsDeps {
+  /** `?org=` on `/api/agents` (see `AgentOrgScope`). Absent → `?org=` lists nothing. */
+  orgScope?: AgentOrgScope;
   hosted?: HostedAgentsDeps;
   /** Agents people registered by URL (linked-agent-store.ts). Listed and proxied exactly like config agents. */
   linked?: LinkedAgentSource;
@@ -414,7 +428,16 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   r.get('/api/agents', async (req: Request, res: Response) => {
     const publicUrl = (cfg as NodeConfig & { publicUrl?: string }).publicUrl
       ?? `${req.protocol}://${req.get('host') ?? ''}`;
-    const out = await Promise.all(listAgents(cfg, deps.linked).filter(publiclyListed).map(async (a) => {
+    /**
+     * `?org=<id>` lists one organization's agents — those shared with it (`visibility: org`) — to its members, the
+     * way a workspace scoped to the organization (AIN Teams / ainmem `AINIZE_ORG`) asks. Anyone else gets an empty
+     * list. Without it the catalogue is the public agents, here and on peers, as it always was.
+     */
+    const orgParam = typeof req.query.org === 'string' && req.query.org ? req.query.org : null;
+    const orgMatch = orgParam ? deps.orgScope?.(req, orgParam) ?? null : null;
+    const listed = (a: { visibility?: 'public' | 'org' | 'private' | 'unlisted' | null; orgId?: string | null }) =>
+      (orgParam ? !!orgMatch && orgMatch(a) : publiclyListed(a as { visibility?: 'public' | 'org' | 'private' | 'unlisted' }));
+    const out = await Promise.all(listAgents(cfg, deps.linked).filter(listed).map(async (a) => {
       const known = health.get(a.id);
       // only probe when we have no recent answer — the list should not cost a round trip per agent per render
       if (!known || Date.now() - (known.checked_at ?? 0) > 30_000) await fetchCard(a);
@@ -443,6 +466,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         model: configAgentModel(a) ?? null,
         kind: 'upstream' as AgentKind,
         owner: (a.owner ?? null) as string | null,
+        visibility: hostedAgentVisibilityOf(a),
+        org_id: (a.orgId ?? null) as string | null,
         status: null as string | null,
       };
     }));
@@ -452,7 +477,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      * its card would start it, and a list render must not wake twenty agents. `reachable` is the build status —
      * a ready agent answers (starting on demand), a failed one does not.
      */
-    for (const spec of (deps.hosted?.store.list() ?? []).filter(publiclyListed)) {
+    for (const spec of (deps.hosted?.store.list() ?? []).filter(listed)) {
       const st = deps.hosted!.host.status(spec.id);
       const c = calls.get(spec.id);
       const url = agentUrl(publicUrl, spec.id);
@@ -478,6 +503,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         model: spec.model,
         kind: spec.mode,
         owner: spec.owner,
+        visibility: hostedAgentVisibilityOf(spec),
+        org_id: spec.orgId ?? null,
         status: st?.status ?? 'failed',
       } as (typeof out)[number]);
     }
@@ -506,7 +533,8 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      * ADDRESS, which is its identity, rather than by the endpoint, which is where it happened to answer.
      */
     const byAgent = new Map<string, { row: (typeof out)[number]; seen_at: number }>();
-    for (const node of (await deps.knownNodes?.().catch(() => [])) ?? []) {
+    // an organization's list is this node's: peers' agents belong to no organization here
+    for (const node of orgParam ? [] : (await deps.knownNodes?.().catch(() => [])) ?? []) {
       if (!node?.agents?.length || !currentAgentAdvert(node) || (node.address ?? '').toLowerCase() === self) continue;
       for (const ad of node.agents.slice(0, 20)) {
         if (!ad?.id || !ad.url || seen.has(ad.url)) continue;

@@ -17,6 +17,7 @@ import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
 import type { LinkedAgentStore } from './linked-agent-store.js';
 import type { OpenaiApiKeyStore } from './openai-api-keys.js';
+import { membership, roleAtLeast, type Organization, type OrgRole, type OrgViewer } from './organization-store.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
 import { hostedAgentModesOf } from './hosted-agent-runtime/hostedAgentRuntimeApp.js';
 import { HOSTED_AGENT_VISIBILITIES, hostedAgentMediaOf, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentVisibility } from './hosted-agent-types.js';
@@ -125,8 +126,15 @@ export interface AgentCaller {
   kind: 'wallet' | 'principal';
   /** What the ID token said, for an AIN SSO session. Null for a wallet session. */
   sso: Pick<SsoSessionFields, 'iss' | 'sub' | 'org'> & { orgs: string[] } | null;
-  /** May this caller act for `orgId`. */
+  /** May this caller act for `orgId` at all — `orgRole(orgId) !== null`. */
   orgMember: (orgId: string) => boolean;
+  /**
+   * What this caller is in `orgId`: read < contributor < write < admin, or null for none. Seeing an organization's
+   * agents takes any role, sharing an agent into it `contributor`, changing its agents `write`, and removing one of
+   * them or changing who sees it `admin` (or being its owner). Without an ainize organization behind `orgId`
+   * (`withOrganizations`), an AIN SSO member of it and its organization API key are `write` — what #40/#41 let them do.
+   */
+  orgRole?: (orgId: string) => OrgRole | null;
   /**
    * The organization an API key was issued for, when the caller IS an API key (`apiKeyCaller`): the one org it
    * speaks for, the way `sso.org` is the one an SSO session selected. Null for a personal key and for sessions.
@@ -135,11 +143,11 @@ export interface AgentCaller {
 }
 
 /** A wallet session: an address owns what it made and belongs to no organization. */
-export const walletCaller = (address: string): AgentCaller => ({ subject: address.toLowerCase(), kind: 'wallet', sso: null, orgMember: () => false });
+export const walletCaller = (address: string): AgentCaller => ({ subject: address.toLowerCase(), kind: 'wallet', sso: null, orgMember: () => false, orgRole: () => null });
 
 /** A bare principal (`sso:<sub>`, `google:<sub>`) with no session behind it: owns what it made, belongs to nothing here. */
 export const principalCaller = (subject: string): AgentCaller =>
-  /^0x/i.test(subject) ? walletCaller(subject) : { subject, kind: 'principal', sso: null, orgMember: () => false };
+  /^0x/i.test(subject) ? walletCaller(subject) : { subject: subject.toLowerCase(), kind: 'principal', sso: null, orgMember: () => false, orgRole: () => null };
 
 /**
  * An Ainize API key as the caller (`Authorization: Bearer ainize-sk-…`): it speaks for the account that issued it
@@ -149,7 +157,8 @@ export const principalCaller = (subject: string): AgentCaller =>
  */
 export const apiKeyCaller = (record: { address: string; orgId: string | null }): AgentCaller => {
   const base = principalCaller(record.address);
-  return { ...base, keyOrg: record.orgId, orgMember: (orgId) => !!record.orgId && orgId === record.orgId };
+  const speaksFor = (orgId: string) => !!record.orgId && orgId === record.orgId;
+  return { ...base, keyOrg: record.orgId, orgMember: speaksFor, orgRole: (orgId) => (speaksFor(orgId) ? 'write' : null) };
 };
 
 /**
@@ -165,7 +174,64 @@ export function ssoOrgMember(store: Pick<Store, 'ssoMembership'>, sso: { iss: st
 
 export function ssoCaller(store: Pick<Store, 'ssoMembership'>, s: { principal: string } & SsoSessionFields): AgentCaller {
   const sso = { iss: s.iss, sub: s.sub, org: s.org, orgs: s.orgs.map((o) => o.id) };
-  return { subject: s.principal.toLowerCase(), kind: 'principal', sso, orgMember: (orgId) => ssoOrgMember(store, sso, orgId) };
+  const member = (orgId: string) => ssoOrgMember(store, sso, orgId);
+  return { subject: s.principal.toLowerCase(), kind: 'principal', sso, orgMember: member, orgRole: (orgId) => (member(orgId) ? 'write' : null) };
+}
+
+// ------------------------------------------------------------------------------------------------ organizations
+
+/** `caller`'s role in `orgId`; a caller built without `orgRole` is `write` wherever `orgMember` admits it (#40/#41). */
+export const orgRoleOf = (caller: AgentCaller, orgId: string): OrgRole | null =>
+  (caller.orgRole ? caller.orgRole(orgId) : caller.orgMember(orgId) ? 'write' : null);
+
+/**
+ * Record an agent change in the audit log of each organization it touches (the one it left and the one it joined).
+ * A no-op for an `orgId` no ainize organization claims — server.ts resolves it.
+ */
+export type OrgAudit = (orgIds: (string | null | undefined)[], actor: string, action: string, agentId: string, detail?: Record<string, unknown> | null) => void;
+
+/** Where ainize organizations are looked up (organization-store.ts). */
+export interface OrgDirectory { get(id: string): Organization | null; list(): Organization[] }
+
+/**
+ * The ainize organization an agent's `orgId` names: the organization with that id, or — for an `orgId` written as
+ * an AIN SSO organization id (`org_…`, what #40 stored and what AIN Teams sends) — the one that lists it in
+ * `ssoOrgIds`. Null when neither exists; the caller's own claim then decides (`withOrganizations`).
+ */
+export function resolveOrganization(orgs: OrgDirectory, orgId: string): Organization | null {
+  return orgs.get(orgId) ?? orgs.list().find((o) => o.ssoOrgIds.includes(orgId)) ?? null;
+}
+
+/**
+ * The caller as an organization sees it (organization-store.ts `membership`). AIN SSO organizations count only
+ * while the caller is still an active member of them (`orgMember` reads `sso_memberships` first), so a suspended
+ * account does not walk back in through its old ID token.
+ */
+export function orgViewerOf(caller: AgentCaller, identity?: { email?: string | null; name?: string | null } | null): OrgViewer {
+  return {
+    principal: caller.subject,
+    email: identity?.email ?? null,
+    name: identity?.name ?? null,
+    ssoOrgIds: caller.sso ? caller.sso.orgs.filter((id) => caller.orgMember(id)) : [],
+  };
+}
+
+/**
+ * `caller` with its organization roles read from the ainize organizations: an `orgId` that resolves to one gives
+ * that organization's role (explicit member row > email domain > linked AIN SSO organization); an organization API
+ * key is `write` in the organization its AIN org id belongs to. An `orgId` no ainize organization claims keeps the
+ * caller's own answer (an AIN SSO member or that org's API key: `write`), as before organizations existed.
+ */
+export function withOrganizations(caller: AgentCaller, orgs: OrgDirectory, identity?: { email?: string | null; name?: string | null } | null): AgentCaller {
+  const viewer = orgViewerOf(caller, identity);
+  const isKey = caller.keyOrg !== undefined;
+  const orgRole = (orgId: string): OrgRole | null => {
+    const org = resolveOrganization(orgs, orgId);
+    if (!org) return orgRoleOf(caller, orgId);
+    if (isKey) return caller.keyOrg && (caller.keyOrg === org.id || org.ssoOrgIds.includes(caller.keyOrg)) ? 'write' : null;
+    return membership(org, viewer)?.role ?? null;
+  };
+  return { ...caller, orgRole, orgMember: (orgId) => orgRole(orgId) !== null };
 }
 
 /**
@@ -198,6 +264,8 @@ export interface Shareable { owner: string; visibility?: HostedAgentVisibility |
 
 const owns = (spec: Shareable, caller: AgentCaller | null) => !!caller && spec.owner === caller.subject;
 const orgVisible = (spec: Shareable, caller: AgentCaller | null) => !!caller && !!spec.orgId && caller.orgMember(spec.orgId);
+const orgRoleFor = (spec: Shareable, caller: AgentCaller | null): OrgRole | null =>
+  caller && spec.orgId && hostedAgentVisibilityOf(spec) === 'org' ? orgRoleOf(caller, spec.orgId) : null;
 
 /** May `caller` read the agent by id: its owner, anyone for `public` and `unlisted`, a member for `org`. */
 export function canSeeAgent(spec: Shareable, caller: AgentCaller | null): boolean {
@@ -208,12 +276,20 @@ export const canSeeHostedAgent = canSeeAgent;
 
 /**
  * May `caller` change the agent (its code, prompt, secrets) and read its logs: its owner, or — for one shared with an
- * organization — a member of that organization (an AIN SSO member, or that organization's API key, the same callers
- * `orgMember` admits for registering org agents). Removing it and changing who sees it stay the owner's.
+ * organization — a `write` member of that organization (without an ainize organization behind the id: an AIN SSO
+ * member, or that organization's API key). Removing it and changing who sees it: `canAdministerAgent`.
  */
 export function canManageAgent(spec: Shareable, caller: AgentCaller | null): boolean {
-  return owns(spec, caller) || (hostedAgentVisibilityOf(spec) === 'org' && orgVisible(spec, caller));
+  return owns(spec, caller) || roleAtLeast(orgRoleFor(spec, caller), 'write');
 }
+
+/** May `caller` remove the agent or change its visibility/orgId: its owner, or an `admin` of the organization it is shared with. */
+export function canAdministerAgent(spec: Shareable, caller: AgentCaller | null): boolean {
+  return owns(spec, caller) || roleAtLeast(orgRoleFor(spec, caller), 'admin');
+}
+
+/** May `caller` put an agent into `orgId` (register it there, or move one there): `contributor` or above. */
+export const canShareInto = (caller: AgentCaller | null, orgId: string): boolean => !!caller && roleAtLeast(orgRoleOf(caller, orgId), 'contributor');
 export const canManageHostedAgent = canManageAgent;
 
 /** Is the agent LISTED to `caller`: `unlisted` is the owner's alone in a list, however reachable by id. */
@@ -432,6 +508,8 @@ export interface SharedAgentRoutesDeps {
    * that is how the operator puts the agents already on the node into an organization's list.
    */
   isOperator?: (req: Request) => boolean;
+  /** Writes an agent change into the audit log of the organization `orgId` resolves to (server.ts: organization-store.ts `note`). */
+  orgAudit?: OrgAudit;
   /** Per-IP ceiling on these routes, per minute. */
   rateLimit?: { windowMs: number; max: number };
 }
@@ -574,12 +652,14 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
     const linked = hosted ? null : deps.linked?.get(id) ?? null;
     const target: Shareable | null = hosted ?? linked;
     if (!target || (!operator && !canSeeAgent(target, caller))) return refuse(res, 'resource_deleted', `no agent "${id}" on this node`);
-    if (!operator && target.owner !== caller.subject) return refuse(res, 'forbidden', 'only the agent\'s owner or the node\'s operator may change who sees it');
-    if (!operator && sharing.orgId && !caller.orgMember(sharing.orgId)) {
-      return refuse(res, 'forbidden', caller.kind === 'wallet'
-        ? 'sharing with an organization needs an AIN SSO session or an organization API key; a wallet belongs to none'
-        : `you are not a member of ${sharing.orgId}`);
+    if (!operator && !canAdministerAgent(target, caller)) return refuse(res, 'forbidden', 'only the agent\'s owner, an admin of its organization or the node\'s operator may change who sees it');
+    if (!operator && sharing.orgId && !canShareInto(caller, sharing.orgId)) {
+      return refuse(res, 'forbidden', caller.kind === 'wallet' && !caller.orgMember(sharing.orgId)
+        ? 'sharing with an organization needs an AIN SSO session or an organization API key; a wallet belongs to none unless an organization adds it as a member'
+        : `sharing into ${sharing.orgId} needs the contributor role there`);
     }
+    deps.orgAudit?.([target.orgId, sharing.orgId], caller.subject, 'agent.sharing', id,
+      { from: { visibility: hostedAgentVisibilityOf(target), orgId: target.orgId ?? null }, to: sharing, operator });
 
     const issuer = trimSlash(deps.registryIssuer(req));
     const orgIssuer = deps.ssoIssuer() ?? issuer;
