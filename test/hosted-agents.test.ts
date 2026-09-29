@@ -336,6 +336,15 @@ test('create over HTTP, list under the model, call over A2A (v0.3 and v1.0), and
     const second = await call('again', first.result!.contextId);
     assert.match(second.result!.parts[0]!.text!, /turns=4$/, 'the conversation is remembered per context');
 
+    // a retry — same contextId and messageId — is the same logical request: the answer comes back, no new turn
+    const retryBody = { jsonrpc: '2.0', id: 9, method: 'message/send', params: { message: { kind: 'message', role: 'user', messageId: 'm-retry', contextId: first.result!.contextId, parts: [{ kind: 'text', text: 'retry me' }] } } };
+    const r1 = await (await fetch(`${base}/agents/helper`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(retryBody) })).json() as { result: { messageId: string; parts: { text?: string }[] } };
+    const r2 = await (await fetch(`${base}/agents/helper`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(retryBody) })).json() as { result: { messageId: string; parts: { text?: string }[] } };
+    assert.equal(r2.result.messageId, r1.result.messageId, 'the retry gets the very same reply');
+    assert.match(r1.result.parts[0]!.text!, /turns=6$/);
+    const afterRetry = await call('and now?', first.result!.contextId);
+    assert.match(afterRetry.result!.parts[0]!.text!, /turns=8$/, 'the retried turn was counted once');
+
     // message/stream — what most workspaces send first; one turn, one event, over SSE
     const streamed = await fetch(`${base}/agents/helper`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify({
       jsonrpc: '2.0', id: 3, method: 'message/stream',

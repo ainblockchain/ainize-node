@@ -78,9 +78,47 @@ export interface HostedAgentRuntimeAppOptions extends HostedAgentExecutorOptions
  * The SDK's handler, told apart by method: `message/stream` marks its message id for the length of the call, so
  * the executor streams that turn and leaves every `message/send` turn exactly as it was.
  */
+/** How long a `messageId` is remembered so a client's retry gets the same answer instead of a second turn. */
+const HOSTED_AGENT_MESSAGE_DEDUPE_MS = 10 * 60_000;
+const HOSTED_AGENT_MESSAGE_DEDUPE_MAX = 1000;
+
 class HostedAgentRequestHandler extends DefaultRequestHandler {
+  /** `<contextId>#<messageId>` → the reply already given. A retry (same id, same context) is the SAME logical request. */
+  private readonly answered = new Map<string, { at: number; result: unknown }>();
+
   constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>) {
     super(card as never, new InMemoryTaskStore(), executor);
+  }
+
+  private dedupeKey(message: unknown): string | null {
+    const m = message as { messageId?: unknown; contextId?: unknown } | undefined;
+    if (!m || typeof m.messageId !== 'string' || !m.messageId) return null;
+    return `${typeof m.contextId === 'string' ? m.contextId : ''}#${m.messageId}`;
+  }
+
+  private remembered(key: string): unknown | undefined {
+    const hit = this.answered.get(key);
+    if (!hit) return undefined;
+    if (Date.now() - hit.at > HOSTED_AGENT_MESSAGE_DEDUPE_MS) { this.answered.delete(key); return undefined; }
+    return hit.result;
+  }
+
+  private remember(key: string, result: unknown): void {
+    this.answered.set(key, { at: Date.now(), result });
+    while (this.answered.size > HOSTED_AGENT_MESSAGE_DEDUPE_MAX) { const oldest = this.answered.keys().next().value; if (oldest === undefined) break; this.answered.delete(oldest); }
+  }
+
+  /**
+   * Plan §7 "task 재시도: 논리 작업 1건에 결과·청구 최대 1회": a `message/send` whose (contextId, messageId) was already
+   * answered within ten minutes returns that answer — no second model turn, no second file read, no second charge.
+   */
+  override async sendMessage(...args: Parameters<DefaultRequestHandler['sendMessage']>): ReturnType<DefaultRequestHandler['sendMessage']> {
+    const key = this.dedupeKey(args[0]?.message);
+    const prior = key ? this.remembered(key) : undefined;
+    if (prior !== undefined) return prior as Awaited<ReturnType<DefaultRequestHandler['sendMessage']>>;
+    const result = await super.sendMessage(...args);
+    if (key) this.remember(key, result);
+    return result;
   }
 
   override async *sendMessageStream(...args: Parameters<DefaultRequestHandler['sendMessageStream']>): ReturnType<DefaultRequestHandler['sendMessageStream']> {
