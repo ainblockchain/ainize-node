@@ -355,7 +355,9 @@ test('create over HTTP, list under the model, call over A2A (v0.3 and v1.0), and
     assert.match(JSON.stringify(v1Body.result), /you said: v1 hello/);
 
     // ownership
-    assert.equal((await fetch(`${base}/api/hosted-agents/helper`, { headers: as(BOB) })).status, 403);
+    const seenByBob = await fetch(`${base}/api/hosted-agents/helper`, { headers: as(BOB) });
+    assert.equal(seenByBob.status, 200, 'a public agent is readable by anyone with its id');
+    assert.equal('systemPrompt' in ((await seenByBob.json()) as { agent: Record<string, unknown> }).agent, false, 'but only the owner sees the prompt and code');
     const upd = await fetch(`${base}/api/hosted-agents/helper`, { method: 'PUT', headers: as(ALICE), body: JSON.stringify({ ...body, systemPrompt: 'Be very brief.' }) });
     assert.equal(upd.status, 200);
     assert.match((await call('x')).result!.parts[0]!.text!, /sys=Be very brief\./, 'an update is live on the next call');

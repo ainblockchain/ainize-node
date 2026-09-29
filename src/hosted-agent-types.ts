@@ -15,11 +15,26 @@ export interface HostedAgentSpec extends HostedAgentRuntimeSpec {
   files: Record<string, string>;
   allowedHosts: string[];
   secretNames: string[];
-  /** Lower-case EVM address of whoever created it. Only they may change it. */
+  /** Lower-case EVM address — or SSO principal (`sso:<sub>`, `google:<sub>`) — of whoever created it. Only they may change it. */
   owner: string;
+  /** Who may see and list it (shared-agents.ts). Absent on specs stored before visibility existed — read as `public`. */
+  visibility?: HostedAgentVisibility;
+  /** The organization an `org`-visible agent is shared with (an AIN SSO org id). Null otherwise. */
+  orgId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * Who sees a hosted agent. `public` is listed to everyone; `org` is listed to members of `orgId`; `private` is the
+ * owner's alone; `unlisted` appears in no listing but answers to anyone who holds the id (the A2A address stays
+ * public either way — an id is an address, and visibility is about listing, not about the wire).
+ */
+export const HOSTED_AGENT_VISIBILITIES = ['public', 'org', 'private', 'unlisted'] as const;
+export type HostedAgentVisibility = (typeof HOSTED_AGENT_VISIBILITIES)[number];
+
+/** A stored spec's visibility, with the absent field of an older spec read as `public` (what every agent was). */
+export const hostedAgentVisibilityOf = (s: { visibility?: HostedAgentVisibility | null }): HostedAgentVisibility => s.visibility ?? 'public';
 
 export const HOSTED_AGENT_MAX_FILES_BYTES = 1_000_000;
 export const hostedAgentUsesCode = (mode: HostedAgentMode) => mode !== 'prompt';
@@ -58,7 +73,12 @@ export const hostedAgentSpecInput = z.object({
     description: z.string().trim().max(300).optional(),
     examples: z.array(z.string().max(300)).max(4).optional(),
   })).max(8).default([]),
+  // Optional so a caller that predates it keeps working: an absent value is `public`, what every agent was.
+  visibility: z.enum(HOSTED_AGENT_VISIBILITIES).default('public'),
+  orgId: z.string().trim().min(1).max(256).regex(/^[^\s/\\]+$/, 'an org id is one token without whitespace or slashes').nullable().default(null),
 }).superRefine((v, ctx) => {
+  if (v.visibility === 'org' && !v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'org visibility names the organization (orgId)' });
+  if (v.visibility !== 'org' && v.orgId) ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId goes with visibility "org"' });
   if (hostedAgentUsesCode(v.mode)) {
     if (typeof v.files['index.mjs'] !== 'string' || !v.files['index.mjs'].trim()) {
       ctx.addIssue({ code: 'custom', path: ['files'], message: `${v.mode} mode needs code in files["index.mjs"]` });

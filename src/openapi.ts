@@ -5,6 +5,31 @@
 export function buildOpenApi(base: string, version: string) {
   const ok = (description: string, schema: unknown = { type: 'object' }) => ({ 200: { description, content: { 'application/json': { schema } } } });
   const S = {
+    OwnerRef: { type: 'object', required: ['kind', 'issuer', 'subject'], description: 'Who owns or acts (ain-integration contract 1.0): `kind` says which namespace `subject` lives in.', properties: {
+      kind: { type: 'string', enum: ['account', 'org', 'wallet', 'principal'] }, issuer: { type: 'string', format: 'uri' }, subject: { type: 'string' }, displayName: { type: 'string' } } },
+    AgentRef: { type: 'object', description: 'One agent in the cross-product registry shape (ain-integration contract 1.0). Identity is `registryIssuer + agentId`; a change to the definition is a new `releaseId`.',
+      required: ['contract', 'registryIssuer', 'agentId', 'releaseId', 'ownerRef', 'visibility', 'agentCardUrl', 'endpoint', 'supportedProtocolVersions', 'skills', 'inputModes', 'outputModes', 'uiCapabilities', 'status', 'displayName', 'updatedAt'], properties: {
+      contract: { type: 'string', const: '1.0' }, registryIssuer: { type: 'string', format: 'uri', description: 'this node\'s public URL' }, agentId: { type: 'string' },
+      releaseId: { type: 'string', description: '`v<version>` for an agent this node runs; `upstream` for one it proxies' }, ownerRef: { $ref: '#/components/schemas/OwnerRef' },
+      visibility: { type: 'string', enum: ['public', 'org', 'private', 'unlisted'] }, orgRef: { $ref: '#/components/schemas/OwnerRef' },
+      agentCardUrl: { type: 'string', format: 'uri' }, endpoint: { type: 'string', format: 'uri', description: 'A2A JSON-RPC endpoint' },
+      supportedProtocolVersions: { type: 'array', items: { type: 'string' } },
+      skills: { type: 'array', items: { type: 'object', required: ['id', 'name'], properties: { id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, examples: { type: 'array', items: { type: 'string' } } } } },
+      inputModes: { type: 'array', items: { type: 'string' } }, outputModes: { type: 'array', items: { type: 'string' } },
+      uiCapabilities: { type: 'array', items: { type: 'string', enum: ['streaming', 'cancel', 'image_in', 'image_out', 'audio_in', 'audio_out', 'ainui', 'a2ui_basic', 'file_refs_out'] } },
+      status: { type: 'string', enum: ['active', 'disabled', 'stopped', 'deleted'], description: '`active` = ready to call; `disabled` = building; `stopped` = failed or unreachable' },
+      displayName: { type: 'string' }, description: { type: 'string' }, updatedAt: { type: 'string', format: 'date-time' } } },
+    AgentListResponse: { type: 'object', required: ['contract', 'asOf', 'nextCursor', 'items'], properties: {
+      contract: { type: 'string', const: '1.0' }, asOf: { type: 'string', format: 'date-time', description: 'when permissions were evaluated for this page' }, nextCursor: { type: 'string', nullable: true },
+      items: { type: 'array', items: { type: 'object', required: ['ref', 'canInvoke'], properties: { ref: { $ref: '#/components/schemas/AgentRef' }, canInvoke: { type: 'boolean' } } } } } },
+    AgentEventPage: { type: 'object', required: ['contract', 'events', 'nextCursor', 'gap'], description: 'A page of agent changes after `cursor`. `gap: true` means this node no longer holds events that old (or was restarted): re-list.', properties: {
+      contract: { type: 'string', const: '1.0' }, nextCursor: { type: 'string' }, gap: { type: 'boolean' },
+      events: { type: 'array', items: { type: 'object', required: ['kind', 'type', 'eventId', 'resourceId', 'version', 'occurredAt'], properties: {
+        kind: { type: 'string', const: 'agent' }, type: { type: 'string', enum: ['agent.published', 'agent.updated', 'agent.unpublished', 'agent.disabled', 'agent.moved', 'agent.deleted', 'agent.revoked'] },
+        eventId: { type: 'string' }, resourceId: { type: 'string', description: '`<registryIssuer>#<agentId>`' }, version: { type: 'integer', description: 'strictly increasing per agent' },
+        occurredAt: { type: 'string', format: 'date-time' }, releaseId: { type: 'string' } } } } } },
+    ContractError: { type: 'object', required: ['error'], description: 'Error body of the shared registry routes (ain-integration contract 1.0): auth_required 401, forbidden 403, agent_stopped 409, rate_limited 429, temporary_failure 503.', properties: {
+      error: { type: 'object', required: ['code', 'message', 'retryable'], properties: { code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' }, retryAfterSeconds: { type: 'integer' }, actionUrl: { type: 'string' }, detail: { type: 'string' } } } } },
     Anchor: { type: 'object', description: 'Public description of a knowledge item (patch). Immutable once recorded on the ledger.', properties: {
       id: { type: 'string', example: 'krx-all-2761' }, name: { type: 'string' }, description: { type: 'string' }, author: { type: 'string', description: 'AIN address (identity of the selling node)' },
       model: { type: 'object', properties: { id_M: { type: 'string', example: 'Qwen3.8-Flash-Next' }, row_dim: { type: 'integer' } } },
@@ -174,7 +199,7 @@ export function buildOpenApi(base: string, version: string) {
       { name: 'Automatic payment & download', description: 'the x402 flow and blob download' },
       { name: 'Register & sell knowledge', description: 'operator: register → announce → verified → sold' },
       { name: 'Public record', description: 'ledger, provenance graph, network' },
-      { name: 'Agents', description: 'the A2A agents this node lists and serves at `/agents/{id}`: the operator\'s config agents, agents the node runs, agents people linked by URL, and peers\' agents — one catalogue, which AIN Teams imports from' },
+      { name: 'Agents', description: 'the A2A agents this node lists and serves at `/agents/{id}`: the operator\'s config agents, agents the node runs, agents people linked by URL, and peers\' agents — one catalogue, which AIN Teams imports from; `/api/shared-agents` is the same catalogue in the ain-integration contract 1.0 shape' },
       { name: 'Operator', description: 'wallet, settings, purchases, branches, peers, chain, drive' },
       { name: 'P2P', description: 'node-to-node protocol' },
     ],
@@ -183,6 +208,19 @@ export function buildOpenApi(base: string, version: string) {
       schemas: S,
     },
     paths: {
+      '/api/shared-agents': { get: { tags: ['Agents'], summary: 'Agents this node runs or proxies, in the cross-product registry shape (contract 1.0)', security: [],
+        description: 'The same list every product reads from every origin. `public` needs no sign-in; `mine` and `shared_with_me` need a wallet or AIN SSO session; `shared_with_org` needs an AIN SSO session and lists what is shared with that organization. Sorted by `updatedAt` descending, then id.',
+        parameters: [
+          { name: 'scope', in: 'query', required: true, schema: { type: 'string', enum: ['mine', 'shared_with_me', 'shared_with_org', 'public'] } },
+          { name: 'q', in: 'query', schema: { type: 'string', maxLength: 200 }, description: 'case-insensitive substring over name and description' },
+          { name: 'org', in: 'query', schema: { type: 'string' }, description: 'restrict to this organization; the caller must be a member' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'the `nextCursor` of the previous page' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } } ],
+        responses: { ...ok('a page of agents', { $ref: '#/components/schemas/AgentListResponse' }), 400: { description: 'malformed query' }, 401: { description: 'auth_required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ContractError' } } } }, 403: { description: 'forbidden (not a member, or no SSO session for an organization listing)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ContractError' } } } }, 429: { description: 'rate_limited' }, 503: { description: 'temporary_failure' } } } },
+      '/api/shared-agents/events': { get: { tags: ['Agents'], summary: 'Changes to the shared agent registry since a cursor (contract 1.0)', security: [],
+        description: 'An in-memory feed of the last 1000 changes: `agent.published` on create, `agent.updated` on change, `agent.unpublished` when visibility leaves public/org, `agent.deleted` on delete. Apply an event only when its `version` is newer than what you hold; on `gap: true`, re-list.',
+        parameters: [{ name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'the `nextCursor` of the previous page; absent = everything held' }],
+        responses: { ...ok('a page of events', { $ref: '#/components/schemas/AgentEventPage' }), 400: { description: 'malformed cursor' }, 429: { description: 'rate_limited' } } } },
       '/api/models': { get: { tags: ['Models'], summary: 'Configured models and current backend availability', security: [], responses: ok('model list', { type: 'object', properties: { object: { const: 'list' }, data: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, modality: { enum: ['chat', 'transcription', 'image'] }, available: { type: 'boolean' } } } } } }) } },
       '/api/transcribe': { post: { tags: ['Models'], summary: 'Free transcription trial on a configured audio backend', security: [], description: 'Multipart audio upload, at most 10 MiB. No request count applies; unpaid work is queued behind paying callers on the same backend. Requires a configured transcription backend.', requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['model', 'file'], properties: { model: { type: 'string' }, file: { type: 'string', format: 'binary' } } } } } }, responses: { ...ok('transcription'), 400: { description: 'invalid request' }, 404: { description: 'model not configured' }, 503: { description: 'backend unavailable' } } } },
       '/api/image': { post: { tags: ['Models'], summary: 'Free image-generation trial on a configured image backend', security: [], description: 'No request count applies; unpaid work is queued behind paying callers on the same backend. At most one image and 20 steps; requires a configured image backend.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['model', 'prompt'], properties: { model: { type: 'string' }, prompt: { type: 'string' }, n: { type: 'integer', const: 1 }, steps: { type: 'integer', minimum: 1, maximum: 20, default: 12 } } } } } }, responses: { ...ok('image data'), 400: { description: 'invalid request' }, 404: { description: 'model not configured' }, 503: { description: 'backend unavailable' } } } },

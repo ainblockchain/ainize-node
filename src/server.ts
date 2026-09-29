@@ -8,8 +8,8 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import express from 'express';
-import { buildAgents, probeUpstreamCard } from './agents.js';
+import express, { type Request } from 'express';
+import { buildAgents, probeUpstreamCard, proxiedAgentSummaries } from './agents.js';
 import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-store.js';
 import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
@@ -18,6 +18,8 @@ import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
+import { agentCallerOf, SharedAgentEvents, sharedAgentRoutes } from './shared-agents.js';
+import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
 import { siteSession, ssoSession } from './site-session.js';
@@ -387,7 +389,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     probe: probeBackend,
     // Agents here and on peers, counted the way `/api/agents?model=` lists them.
     agentCount: async (model) => {
-      const own = hostedStore.list().filter((s) => s.model === model).length;
+      const own = hostedStore.list().filter((s) => s.model === model && hostedAgentVisibilityOf(s) === 'public').length;
       const peers = (await market.knownNodes().catch(() => []))
         .filter((n) => (n.address ?? '').toLowerCase() !== cfg.identity.address.toLowerCase())
         .flatMap((n) => (n.agents ?? []) as { model?: string }[])
@@ -395,16 +397,33 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return own + peers;
     },
   }));
+  // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
+  // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
+  // signature guards).
+  const agentCaller = (req: Request) => agentCallerOf(req, { store, nodeAddress: cfg.identity.address });
+  const agentEvents = new SharedAgentEvents();
   app.use(hostedAgentRoutes({
     store: hostedStore,
     secrets: hostedSecrets,
     host: hostedHost,
     registry: () => inferenceRegistry,
-    sessionAddress: (req) => siteSession(req, store, cfg.identity.address)?.address.toLowerCase() ?? null,
+    caller: agentCaller,
+    events: agentEvents,
     reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
     peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
+  }));
+  // The cross-product agent registry (ain-integration contract "1.0"): the same agents, in the shape every product reads.
+  app.use(sharedAgentRoutes({
+    store: hostedStore,
+    host: hostedHost,
+    proxied: () => proxiedAgentSummaries(cfg, linkedStore),
+    caller: agentCaller,
+    registryIssuer: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    ssoIssuer: () => ssoConfig?.issuer ?? null,
+    selfAddress: cfg.identity.address,
+    events: agentEvents,
   }));
 
   // Models over p2p: this node's speech and image models for peers that sign for them, and the network-wide list.

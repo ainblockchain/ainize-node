@@ -28,6 +28,7 @@ import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
 import type { LinkedAgentStore } from './linked-agent-store.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
+import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
 
 /**
  * One agent, as `config.json` declares it.
@@ -41,7 +42,14 @@ export type AgentConfig = NodeAgentConfig;
  * A config agent, or a linked one wearing the same shape. `owner` is set only for linked agents (linked-agent-store.ts):
  * the operator's config agents belong to the node, a linked agent to the account that registered it.
  */
-export type ProxiedAgent = AgentConfig & { owner?: string };
+export type ProxiedAgent = AgentConfig & {
+  owner?: string;
+  /** Linked agents carry the sharing fields hosted agents have (hosted-agent-types.ts); config agents may declare them in config.json. */
+  visibility?: 'public' | 'org' | 'private' | 'unlisted';
+  orgId?: string | null;
+  version?: number;
+  updatedAt?: number;
+};
 
 /** Where linked agents come from — the store, or anything that lists like it. */
 export type LinkedAgentSource = Pick<LinkedAgentStore, 'list'>;
@@ -236,7 +244,8 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
       kind: 'upstream' as const,
     };
   });
-  const hostedAds: AgentAdvertWithModel[] = (hosted?.store.list() ?? []).map((spec) => ({
+  // Only `public` agents leave this node: an `org` or `private` agent is somebody's, and gossip has no reader.
+  const hostedAds: AgentAdvertWithModel[] = (hosted?.store.list() ?? []).filter(publiclyListed).map((spec) => ({
     id: spec.id,
     name: spec.name,
     ...(spec.description ? { description: spec.description } : {}),
@@ -252,6 +261,49 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
   return [...own, ...hostedAds].slice(0, MAX_ADVERTS);
 }
 
+/** A hosted agent the marketplace and gossip may show: visibility `public` (shared-agents.ts decides the rest). */
+const publiclyListed = (spec: { visibility?: 'public' | 'org' | 'private' | 'unlisted' }) => hostedAgentVisibilityOf(spec) === 'public';
+
+/** The node's own start, as the "updated at" of a config agent — its definition has no timestamp of its own. */
+const CONFIG_AGENTS_SINCE = Date.now();
+
+/** What the shared registry (shared-agents.ts) needs of a proxied agent: the card summary when one has been fetched. */
+export interface ProxiedAgentSummary {
+  id: string; name: string; description?: string;
+  skills: { id: string; name: string; description?: string; examples?: string[] }[];
+  extensions: string[]; reachable: boolean | null; updatedAt: number;
+  /** Set for a linked agent (the account that registered it); absent for the operator's config agents. */
+  owner?: string;
+  visibility?: 'public' | 'org' | 'private' | 'unlisted';
+  orgId?: string | null;
+  /** A linked agent's version counter; a config agent has none. */
+  version?: number;
+}
+
+/**
+ * The proxied agents — config and linked — as the shared registry lists them: the card summary when one has been
+ * fetched, the declaration otherwise. Nothing is probed here — a list render must not cost a round trip per agent.
+ */
+export function proxiedAgentSummaries(cfg: NodeConfig, linked?: LinkedAgentSource): ProxiedAgentSummary[] {
+  return listAgents(cfg, linked).map((a) => {
+    const h = health.get(a.id);
+    const description = h?.card?.description ?? a.description;
+    return {
+      id: a.id,
+      name: h?.card?.name || a.name || a.id,
+      ...(description ? { description } : {}),
+      skills: (h?.card?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.description ? { description: s.description } : {}), ...(s.examples.length ? { examples: s.examples } : {}) })),
+      extensions: h?.card?.extensions ?? [],
+      reachable: h?.reachable ?? null,
+      updatedAt: h?.checked_at ?? a.updatedAt ?? CONFIG_AGENTS_SINCE,
+      ...(a.owner ? { owner: a.owner } : {}),
+      ...(a.visibility ? { visibility: a.visibility } : {}),
+      ...(a.orgId !== undefined ? { orgId: a.orgId } : {}),
+      ...(a.version !== undefined ? { version: a.version } : {}),
+    };
+  });
+}
+
 /**
  * Every agent this node PROXIES: the operator's config agents, then the linked agents people registered. One list
  * because everything downstream — health, the card, the JSON-RPC forward, the gossip advert — treats them alike;
@@ -265,7 +317,7 @@ export function listAgents(cfg: NodeConfig, linked?: LinkedAgentSource): Proxied
   // have refused the linked one anyway — this is the belt to that suspenders.
   const linkedRows: ProxiedAgent[] = (linked?.list() ?? [])
     .filter((a) => agentIdOk(a.id) && !taken.has(a.id))
-    .map((a) => ({ id: a.id, upstream: a.upstream, name: a.name, description: a.description, owner: a.owner }));
+    .map((a) => ({ id: a.id, upstream: a.upstream, name: a.name, description: a.description, owner: a.owner, version: a.version, updatedAt: a.updatedAt }));
   return [...own, ...linkedRows];
 }
 
@@ -396,7 +448,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
      * its card would start it, and a list render must not wake twenty agents. `reachable` is the build status —
      * a ready agent answers (starting on demand), a failed one does not.
      */
-    for (const spec of deps.hosted?.store.list() ?? []) {
+    for (const spec of (deps.hosted?.store.list() ?? []).filter(publiclyListed)) {
       const st = deps.hosted!.host.status(spec.id);
       const c = calls.get(spec.id);
       const url = agentUrl(publicUrl, spec.id);
