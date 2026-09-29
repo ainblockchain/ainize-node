@@ -89,6 +89,29 @@ test('organization keys: disable, enable and revoke touch only that owner\'s key
   assert.deepEqual(listed.map((k) => [k.label, k.org_id, k.disabled]), [['p', null, false]]);
 });
 
+test('a rolled-back link takes the keys made through it: organization keys, and keys that AIN account\'s sessions made', () => {
+  const file = join(tmp, 'via.json');
+  const keys = new OpenaiApiKeyStore(file);
+  const via = { iss: 'https://i', sub: 'acc_bob' };
+  const own = keys.issue('google:1', 'alice');
+  const bobPersonal = keys.issue('google:1', 'bob', null, via);
+  const bobOrg = keys.issue('google:1', 'bob work', 'org_a', via);
+  const oldOrg = keys.issue('google:1', 'from before via', 'org_b');
+  const otherAccount = keys.issue('google:1', 'carol', null, { iss: 'https://i', sub: 'acc_carol' });
+  const otherIssuer = keys.issue('google:1', 'elsewhere', null, { iss: 'https://j', sub: 'acc_bob' });
+  const bobsOwn = keys.issue('sso:acc_bob', 'bob own', null, via);
+  keys.setOrgKeys('google:1', 'org_a', 'disable', 'test'); // switched off is still revoked
+  assert.deepEqual((JSON.parse(readFileSync(file, 'utf8')) as Record<string, { via?: unknown }>)[createHash('sha256').update(bobPersonal).digest('hex')]?.via, via, 'persisted');
+  const reloaded = new OpenaiApiKeyStore(file); // what the node reads after a restart
+  assert.equal(reloaded.revokeObtainedThrough('google:1', via), 3);
+  for (const k of [bobPersonal, bobOrg, oldOrg]) assert.equal(reloaded.addressForKey(k), null);
+  assert.equal(reloaded.addressForKey(own), 'google:1');
+  assert.equal(reloaded.addressForKey(otherAccount), 'google:1');
+  assert.equal(reloaded.addressForKey(otherIssuer), 'google:1');
+  assert.equal(reloaded.addressForKey(bobsOwn), 'sso:acc_bob', 'another principal\'s keys are not this one\'s');
+  assert.equal(new OpenaiApiKeyStore(file).listFor('google:1').length, 3, 'and it is on disk');
+});
+
 test('a key file that cannot be written leaves the keys exactly as they were', () => {
   const dir = join(tmp, 'ro');
   mkdirSync(dir);

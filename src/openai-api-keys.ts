@@ -32,6 +32,12 @@ export interface OpenaiApiKeyRecord {
    * it — cannot find the key at all: rolling the node back never switches a suspended key back on.
    */
   disabled?: { at: number; reason: string } | null;
+  /**
+   * The AIN SSO account whose session made this key (docs/ain-sso.md), absent for a key made any other way. It is
+   * what tells, when a legacy mapping is rolled back at AIN SSO, the keys a person made on the legacy principal
+   * THROUGH the link (revoked with it) from the ones the legacy principal made itself (kept).
+   */
+  via?: { iss: string; sub: string } | null;
 }
 
 /** The map key a switched-off record is stored under (see `disabled`). */
@@ -77,10 +83,13 @@ export class OpenaiApiKeyStore {
     }
   }
 
-  issue(address: string, label: string | null = null, orgId: string | null = null): string {
+  issue(address: string, label: string | null = null, orgId: string | null = null, via: { iss: string; sub: string } | null = null): string {
     const key = `${OPENAI_API_KEY_PREFIX}${randomBytes(24).toString('base64url')}`;
-    // `orgId` is written only when there is one, so a personal key stays byte-for-byte what it always was.
-    this.records.set(hashOpenaiApiKey(key), { address: address.toLowerCase(), issuedAt: Date.now(), label, ...(orgId ? { orgId } : {}) });
+    // `orgId` and `via` are written only when there is one, so a key made outside AIN SSO stays byte-for-byte what
+    // it always was.
+    this.records.set(hashOpenaiApiKey(key), {
+      address: address.toLowerCase(), issuedAt: Date.now(), label, ...(orgId ? { orgId } : {}), ...(via ? { via: { iss: via.iss, sub: via.sub } } : {}),
+    });
     this.persist();
     return key;
   }
@@ -127,10 +136,23 @@ export class OpenaiApiKeyStore {
 
   /** Delete every organization key `owner` holds, whichever organization — for a principal that stops being this person's. */
   revokeAllOrgKeys(owner: string): number {
+    return this.revokeWhere(owner, (record) => !!record.orgId);
+  }
+
+  /**
+   * Delete what an AIN account obtained on `owner` while it was linked to it — for a legacy principal that stops
+   * being this person's (a mapping rolled back at AIN SSO): every organization key (only an SSO session makes one),
+   * and every key an SSO session of THAT account made (`via`). Keys the principal made itself stay.
+   */
+  revokeObtainedThrough(owner: string, via: { iss: string; sub: string }): number {
+    return this.revokeWhere(owner, (record) => !!record.orgId || (record.via?.iss === via.iss && record.via?.sub === via.sub));
+  }
+
+  private revokeWhere(owner: string, match: (record: OpenaiApiKeyRecord) => boolean): number {
     const wanted = owner.toLowerCase();
     const next = new Map(this.records);
     let changed = 0;
-    for (const [mapKey, record] of this.records) if (record.address === wanted && record.orgId) { next.delete(mapKey); changed++; }
+    for (const [mapKey, record] of this.records) if (record.address === wanted && match(record)) { next.delete(mapKey); changed++; }
     if (changed) this.commit(next);
     return changed;
   }
