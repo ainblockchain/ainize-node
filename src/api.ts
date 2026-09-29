@@ -65,6 +65,8 @@ export interface ApiDeps {
   market: Market; verifier: Verifier | null; drive?: Drive; teach?: TeachWorker; saveConfig: () => void;
   /** AINIZE_HOME — where the one-time setup token lives while this node has no operator password (item 121). */
   home?: string;
+  /** The Google principal the site vouches for on this request (server.ts `vouchedGoogle`), reported by `/api/auth/me`. */
+  siteSubject?: (req: Request) => string | null;
 }
 
 class HttpError extends Error { constructor(public status: number, message: string, /** extra fields merged into the JSON body — e.g. quota_reset on a 429 */ public body?: Record<string, unknown>) { super(message); } }
@@ -321,6 +323,8 @@ export function buildApi(deps: ApiDeps): Router {
      */
     const sso = who ? null : ssoSession(req, market.store);
     const ident = sso ? market.store.ssoIdentity(sso.iss, sso.sub) : null;
+    /** A Google account the site vouches for, when there is neither: `site.principal` is what it owns agents and keys as. */
+    const google = who || sso ? null : deps.siteSubject?.(req) ?? null;
     return {
       signedIn: !!who, subject: who?.address ?? null, scheme: who?.scheme ?? null, via_key: who?.viaKey ?? null, isOwner: owner,
       scope: [...(who ? ['self'] : []), ...(owner ? ['owner'] : [])],
@@ -328,6 +332,7 @@ export function buildApi(deps: ApiDeps): Router {
       canEnroll: mayClaim(req) || owner,
       operators: owner ? owners().map((o) => o.address) : undefined,
       sso: sso ? { principal: sso.principal, sub: sso.sub, name: ident?.name ?? null, email: ident?.email ?? null, orgs: sso.orgs, activeOrg: sso.org } : null,
+      site: google ? { principal: google } : null,
     };
   }));
   /**

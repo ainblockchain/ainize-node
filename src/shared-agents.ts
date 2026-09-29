@@ -239,11 +239,25 @@ export function withOrganizations(caller: AgentCaller, orgs: OrgDirectory, ident
  * `Authorization: Bearer` — or null. A key is looked at only when no session matched: a site session token is
  * also a bearer, and `siteSession` reads it first.
  */
-export function agentCallerOf(req: Request, deps: { store: Store; nodeAddress: string; keys?: Pick<OpenaiApiKeyStore, 'recordForKey'> }): AgentCaller | null {
+/**
+ * A Google account the site in front of this node vouches for (site-assertion.ts): `google:<sub>`, the same principal
+ * the legacy Google sign-in owns API keys under. It owns what it makes and belongs to no AIN SSO organization — an
+ * ainize organization can still name it as an explicit member (`withOrganizations`).
+ */
+export const siteCaller = (principal: string): AgentCaller =>
+  ({ subject: principal.toLowerCase(), kind: 'principal', sso: null, orgMember: () => false, orgRole: () => null });
+
+export function agentCallerOf(req: Request, deps: {
+  store: Store; nodeAddress: string; keys?: Pick<OpenaiApiKeyStore, 'recordForKey'>;
+  /** The Google principal the site vouches for on this request, already checked (signature, age, not suspended). */
+  siteSubject?: (req: Request) => string | null;
+}): AgentCaller | null {
   const wallet = siteSession(req, deps.store, deps.nodeAddress);
   if (wallet) return walletCaller(wallet.address);
   const sso = ssoSession(req, deps.store);
   if (sso) return ssoCaller(deps.store, sso);
+  const vouched = deps.siteSubject?.(req);
+  if (vouched) return siteCaller(vouched);
   const auth = req.header('authorization') ?? '';
   const token = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
   const record = token && deps.keys ? deps.keys.recordForKey(token) : null;
