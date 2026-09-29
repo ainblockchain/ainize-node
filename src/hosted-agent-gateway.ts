@@ -138,7 +138,7 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HostedAgentEgressRefusal(`only http and https are allowed, not ${url.protocol}`);
     if (url.username || url.password) throw new HostedAgentEgressRefusal('credentials in the URL are not allowed; use a header');
     const host = url.hostname.replace(/^\[|\]$/g, '');
-    if (isIP(host)) throw new HostedAgentEgressRefusal(`${host} is an address; allowed hosts are names`);
+    if (isIP(host) && !unsafePrivateEgress) throw new HostedAgentEgressRefusal(`${host} is an address; allowed hosts are names`);
     if (!hostedAgentHostAllowed(host, allowedHosts)) throw new HostedAgentEgressRefusal(`${host} is not in this agent's allowed hosts`);
 
     const answer = await new Promise<HostedAgentEgressAnswer>((resolve, reject) => {
