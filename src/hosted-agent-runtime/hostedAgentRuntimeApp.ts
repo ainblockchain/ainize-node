@@ -131,22 +131,26 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
     if (prior !== undefined) { yield prior as never; return; }
     const id = (args[0]?.message as { messageId?: string } | undefined)?.messageId;
     if (id) this.streaming.add(id);
-    let taskId: string | undefined;
+    // Assemble the finished task from the stream itself (first event: the task; artifact-update: the answer;
+    // last status-update: the final state), so the replay does not depend on what the task store kept.
+    let task: Record<string, unknown> | undefined;
     let lastMessage: unknown;
+    const answer: string[] = [];
+    let finalStatus: unknown;
     try {
       for await (const event of super.sendMessageStream(...args)) {
-        const e = event as { kind?: string; id?: string; taskId?: string };
-        if (e.kind === 'task' && e.id) taskId = e.id;
-        else if (e.kind === 'status-update' && e.taskId) taskId = e.taskId;
+        const e = event as { kind?: string; artifact?: { parts?: { kind?: string; text?: string }[] }; status?: unknown };
+        if (e.kind === 'task') task = { ...(event as Record<string, unknown>) };
+        else if (e.kind === 'artifact-update') for (const p of e.artifact?.parts ?? []) if (p.kind === 'text' && typeof p.text === 'string') answer.push(p.text);
+        else if (e.kind === 'status-update') finalStatus = e.status;
         else if (e.kind === 'message') lastMessage = event;
         yield event;
       }
     } finally { if (id) this.streaming.delete(id); }
     if (!key) return;
-    let final: unknown = lastMessage;
-    if (taskId) {
-      try { final = await (this as unknown as { getTask: (p: { id: string }) => Promise<unknown> }).getTask({ id: taskId }); } catch { final = lastMessage; }
-    }
+    const final: unknown = task
+      ? { ...task, ...(finalStatus ? { status: finalStatus } : {}), artifacts: answer.length ? [{ artifactId: 'answer', parts: [{ kind: 'text', text: answer.join('') }] }] : (task.artifacts ?? []) }
+      : lastMessage;
     if (final !== undefined) this.remember(key, final);
   }
 }
