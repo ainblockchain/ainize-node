@@ -26,6 +26,7 @@ import type { AgentAdvert, NodeAgentConfig, NodeConfig, PeerInfo } from '@ainize
 import { API_SAM_PREFIX, pipeRelay, verifySamAuth, type MeshRelay } from './sam.js';
 import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
+import type { LinkedAgentStore } from './linked-agent-store.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
 
 /**
@@ -35,6 +36,15 @@ import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAg
  * apart; this alias keeps the name every call site here already uses.
  */
 export type AgentConfig = NodeAgentConfig;
+
+/**
+ * A config agent, or a linked one wearing the same shape. `owner` is set only for linked agents (linked-agent-store.ts):
+ * the operator's config agents belong to the node, a linked agent to the account that registered it.
+ */
+export type ProxiedAgent = AgentConfig & { owner?: string };
+
+/** Where linked agents come from — the store, or anything that lists like it. */
+export type LinkedAgentSource = Pick<LinkedAgentStore, 'list'>;
 
 export const AGENT_PREFIX = '/agents';
 const CARD_PATHS = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/agent.json'];
@@ -147,21 +157,28 @@ async function upstreamFetch(url: string, init: RequestInit = {}, timeoutMs = UP
  * table says.
  */
 async function fetchCard(a: AgentConfig): Promise<{ card?: Record<string, unknown>; error?: string }> {
-  const base = a.upstream.replace(/\/+$/, '');
+  const probed = await probeUpstreamCard(a.upstream);
+  health.set(a.id, probed.card
+    ? { reachable: true, checked_at: Date.now(), card: summariseCard(probed.card) }
+    : { reachable: false, checked_at: Date.now(), error: probed.error });
+  return probed;
+}
+
+/**
+ * The probe alone, with no memory: what `fetchCard` asks and what `/api/linked-agents` asks at registration, so
+ * "does this upstream answer" is decided the same way in both places.
+ */
+export async function probeUpstreamCard(upstream: string): Promise<{ card?: Record<string, unknown>; error?: string }> {
+  const base = upstream.replace(/\/+$/, '');
   for (const p of CARD_PATHS) {
     const r = await upstreamFetch(base + p, { headers: { Accept: 'application/json' } }, 8000);
-    if (!r.ok) { health.set(a.id, { reachable: false, checked_at: Date.now(), error: r.error }); return { error: r.error }; }
+    if (!r.ok) return { error: r.error };
     if (r.res.ok) {
       const card = await r.res.json().catch(() => null) as Record<string, unknown> | null;
-      if (card) {
-        health.set(a.id, { reachable: true, checked_at: Date.now(), card: summariseCard(card) });
-        return { card };
-      }
+      if (card) return { card };
     }
   }
-  const error = 'no agent card at any well-known path';
-  health.set(a.id, { reachable: false, checked_at: Date.now(), error });
-  return { error };
+  return { error: 'no agent card at any well-known path' };
 }
 
 /**
@@ -171,8 +188,8 @@ async function fetchCard(a: AgentConfig): Promise<{ card?: Record<string, unknow
  * the agent processes. Failures are not raised — an agent that is down is advertised as unreachable, which is
  * strictly more useful to a peer than being advertised as absent.
  */
-export async function refreshAgentHealth(cfg: NodeConfig, maxAgeMs = 60_000): Promise<void> {
-  await Promise.all(listAgents(cfg).map(async (a) => {
+export async function refreshAgentHealth(cfg: NodeConfig, maxAgeMs = 60_000, linked?: LinkedAgentSource): Promise<void> {
+  await Promise.all(listAgents(cfg, linked).map(async (a) => {
     const known = health.get(a.id);
     if (known && Date.now() - (known.checked_at ?? 0) < maxAgeMs) return;
     await fetchCard(a);
@@ -202,8 +219,8 @@ const configAgentModel = (a: AgentConfig): string | undefined => {
   return typeof m === 'string' && m ? m : undefined;
 };
 
-export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hosted?: HostedAgentsDeps): AgentAdvertWithModel[] {
-  const own: AgentAdvertWithModel[] = listAgents(cfg).map((a) => {
+export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hosted?: HostedAgentsDeps, linked?: LinkedAgentSource): AgentAdvertWithModel[] {
+  const own: AgentAdvertWithModel[] = listAgents(cfg, linked).map((a) => {
     const h = health.get(a.id);
     return {
       id: a.id,
@@ -215,6 +232,7 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
       ...(h?.card?.extensions?.length ? { extensions: h.card.extensions } : {}),
       ...(h?.reachable === null || h?.reachable === undefined ? {} : { reachable: h.reachable }),
       ...(configAgentModel(a) ? { model: configAgentModel(a) } : {}),
+      ...(a.owner ? { owner: a.owner } : {}),
       kind: 'upstream' as const,
     };
   });
@@ -234,9 +252,21 @@ export function agentAdverts(cfg: NodeConfig, publicUrl: string | undefined, hos
   return [...own, ...hostedAds].slice(0, MAX_ADVERTS);
 }
 
-export function listAgents(cfg: NodeConfig): AgentConfig[] {
+/**
+ * Every agent this node PROXIES: the operator's config agents, then the linked agents people registered. One list
+ * because everything downstream — health, the card, the JSON-RPC forward, the gossip advert — treats them alike;
+ * only the catalogue row says whose each one is.
+ */
+export function listAgents(cfg: NodeConfig, linked?: LinkedAgentSource): ProxiedAgent[] {
   const raw = cfg.agents ?? [];
-  return raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
+  const own: ProxiedAgent[] = raw.filter((a) => a && agentIdOk(a.id) && typeof a.upstream === 'string' && a.enabled !== false);
+  const taken = new Set(own.map((a) => a.id));
+  // A config agent wins a contested id: the operator typed it on this machine, and `reserved` in the routes should
+  // have refused the linked one anyway — this is the belt to that suspenders.
+  const linkedRows: ProxiedAgent[] = (linked?.list() ?? [])
+    .filter((a) => agentIdOk(a.id) && !taken.has(a.id))
+    .map((a) => ({ id: a.id, upstream: a.upstream, name: a.name, description: a.description, owner: a.owner }));
+  return [...own, ...linkedRows];
 }
 
 /** Agents this node RUNS (hosted-agent-host.ts), beside the ones it proxies from `config.agents`. */
@@ -248,6 +278,8 @@ export interface HostedAgentsDeps {
 /** What the list needs from the rest of the node to show — and serve — agents it does not itself operate. */
 export interface AgentsDeps {
   hosted?: HostedAgentsDeps;
+  /** Agents people registered by URL (linked-agent-store.ts). Listed and proxied exactly like config agents. */
+  linked?: LinkedAgentSource;
   /** The peer table and node registry, as `market.knownNodes()` returns it. */
   knownNodes?: () => Promise<PeerInfo[]>;
   /** This node's own address, so its own row is not listed twice. */
@@ -271,7 +303,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   const rateLimited = limiter();
   // express 5 types a wildcard param as string | string[]; an agent id is always one segment
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? '';
-  const find = (id: string) => listAgents(cfg).find((a) => a.id === id);
+  const find = (id: string) => listAgents(cfg, deps.linked).find((a) => a.id === id);
   /** The address this node is known by: its configured public URL, or the host the request came in on. */
   const publicBase = (req: Request) => deps.publicUrl?.() ?? (cfg as NodeConfig & { publicUrl?: string }).publicUrl
     ?? `${req.protocol}://${req.get('host') ?? ''}`;
@@ -326,7 +358,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
   r.get('/api/agents', async (req: Request, res: Response) => {
     const publicUrl = (cfg as NodeConfig & { publicUrl?: string }).publicUrl
       ?? `${req.protocol}://${req.get('host') ?? ''}`;
-    const out = await Promise.all(listAgents(cfg).map(async (a) => {
+    const out = await Promise.all(listAgents(cfg, deps.linked).map(async (a) => {
       const known = health.get(a.id);
       // only probe when we have no recent answer — the list should not cost a round trip per agent per render
       if (!known || Date.now() - (known.checked_at ?? 0) > 30_000) await fetchCard(a);
@@ -354,7 +386,7 @@ export function buildAgents(cfg: NodeConfig, deps: AgentsDeps = {}): Router {
         node: null,
         model: configAgentModel(a) ?? null,
         kind: 'upstream' as AgentKind,
-        owner: null as string | null,
+        owner: (a.owner ?? null) as string | null,
         status: null as string | null,
       };
     }));

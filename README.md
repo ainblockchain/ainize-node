@@ -20,6 +20,7 @@ node's identity.
 | | |
 |---|---|
 | `/api/*` | the node API — catalogue, chat, teach, peers, operator routes |
+| `/api/agents` · `/agents/{id}` | the agent catalogue and each agent's A2A address — config agents, agents the node runs, agents people [linked by URL](docs/superpowers/specs/2026-09-29-linked-agents-design.md), peers' agents |
 | `/api/openapi.json` | OpenAPI 3.1, generated from the routes themselves |
 | `/docs` | the reference, served by the node |
 | `/x402/patch/{id}` | paid download: 402, pay, fetch |
