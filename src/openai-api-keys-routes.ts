@@ -61,7 +61,7 @@ export function openaiApiKeysRoutes(deps: OpenaiApiKeysRoutesDeps): Router {
    *
    * Three ways to be the caller, strongest first: a wallet session (it is what a deposit is tied to), an AIN SSO
    * session (its principal — `sso:<sub>` or the legacy `google:<sub>` it is linked to), and a Google account the
-   * site vouches for. The last two are refused while AIN SSO has the account suspended everywhere.
+   * site vouches for. The last two are refused while AIN SSO has the account suspended and active nowhere (offboarding alone is not a block).
    */
   const mine = (req: Request, res: Response): { owner: string; sso: SsoSiteSession | null } | null => {
     const session = siteSession(req, deps.store, deps.nodeAddress);

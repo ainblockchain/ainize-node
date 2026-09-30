@@ -338,6 +338,75 @@ test('suspension in one organization leaves the other organization\'s keys alone
   assert.equal((await signIn(sub, { orgs: [ORG2], activeOrg: ORG2.id })).status, 200, 'and may still sign in for it');
 });
 
+const keyStatus = async (key: string) => (await fetch(`${url}/v1/models`, { headers: { authorization: `Bearer ${key}` } })).status;
+const offState = { status: 'deprovisioned' as const, appRole: null, groups: [] };
+
+test('a suspended account is blocked on every path, even when its other organization offboarded it', async () => {
+  const legacy = 'google:6161601';
+  const sub = acc('susp_block');
+  await put(desired(sub, 1, { legacyUserId: legacy }));
+  await put(desired(sub, 1, { org: ORG2, legacyUserId: legacy }));
+  await put(desired(sub, 2, { org: ORG2, ...offState, legacyUserId: legacy }));
+  assert.equal((await signIn(sub, { orgs: [ORG], activeOrg: ORG.id })).status, 200, 'offboarded in one organization, active in the other');
+  await put(desired(sub, 2, { status: 'suspended', appRole: null, groups: [], legacyUserId: legacy }));
+  const refused = await signIn(sub, { orgs: [], activeOrg: null });
+  assert.equal(refused.status, 403, 'suspended in one, offboarded in the other: nothing active, and a suspension stands');
+  assert.equal(refused.body.error, 'account_suspended');
+  assert.equal((await principal(legacy)).blocked, true, 'the legacy Google path is refused too');
+  assert.equal((await createKey(vouched(legacy), {})).body.error?.code, 'account_suspended');
+  await put(desired(sub, 3, { legacyUserId: legacy }));
+  assert.equal((await signIn(sub)).status, 200, 'reactivation lets the person back in');
+});
+
+test('offboarding takes away the organization only: personal sign-in and keys stay, the organization key is 401, re-provisioning gives organization access back', async () => {
+  const legacy = 'google:6262601';
+  const sub = acc('org_leave');
+  await put(desired(sub, 1, { legacyUserId: legacy }));
+  const s = await signIn(sub);
+  assert.equal(s.body.principal, legacy);
+  const orgKey = await createKey(cookie(s.body.token!), { label: 'work' });
+  assert.equal(orgKey.body.org_id, ORG.id);
+  const personal = await createKey(cookie(s.body.token!), { label: 'mine', org_id: null });
+  assert.equal(personal.body.org_id, null);
+  assert.equal(await keyStatus(orgKey.body.api_key!), 200);
+
+  const off = await put(desired(sub, 2, { ...offState, legacyUserId: legacy }));
+  assert.deepEqual(off.body, { appliedVersion: 2, localUserId: legacy, status: 'deprovisioned' });
+  assert.equal(N.store.getSession(s.body.token!), null, 'the session the organization was part of ended');
+  assert.equal(await keyStatus(orgKey.body.api_key!), 401, 'the organization key is gone');
+  assert.equal(await keyStatus(personal.body.api_key!), 200, 'the personal key is untouched');
+
+  // AIN SSO no longer names the organization in the ID token; ainize is any_account, so the person signs in personally.
+  const again = await signIn(sub, { orgs: [], activeOrg: null });
+  assert.equal(again.status, 200, 'offboarding is not a suspension');
+  assert.equal(again.body.principal, legacy, 'the same principal, with its personal keys');
+  const list = await fetch(`${url}/api/keys`, { headers: cookie(again.body.token!) });
+  assert.equal(list.status, 200);
+  const newPersonal = await createKey(cookie(again.body.token!), { label: 'after' });
+  assert.equal(newPersonal.status, 200);
+  assert.equal(newPersonal.body.org_id, null, 'no organization in the session: a personal key');
+  assert.equal((await createKey(cookie(again.body.token!), { org_id: ORG.id })).body.error?.code, 'org_not_allowed');
+  assert.deepEqual(await principal(legacy), { linked: true, blocked: false, notBefore: null }, 'the legacy Google path is open');
+  assert.equal((await createKey(vouched(legacy), {})).status, 200);
+  // A session that still names the organization (an ID token from before the offboarding) makes no organization key.
+  const stale = await signIn(sub);
+  assert.equal(stale.status, 200);
+  const refused = await createKey(cookie(stale.body.token!), { org_id: ORG.id });
+  assert.equal(refused.status, 403);
+  assert.equal(refused.body.error?.code, 'account_suspended');
+
+  // Re-provisioned: organization access is back. The revoked key stays revoked; a new organization key works.
+  await put(desired(sub, 3, { legacyUserId: legacy }));
+  const back = await signIn(sub);
+  assert.equal(back.status, 200);
+  const newOrgKey = await createKey(cookie(back.body.token!), { label: 'work again' });
+  assert.equal(newOrgKey.status, 200);
+  assert.equal(newOrgKey.body.org_id, ORG.id);
+  assert.equal(await keyStatus(newOrgKey.body.api_key!), 200, 'the organization key is back');
+  assert.equal(await keyStatus(orgKey.body.api_key!), 401, 'the one offboarding revoked stays revoked');
+  assert.equal(await keyStatus(personal.body.api_key!), 200);
+});
+
 test('only an SSO session can make an organization key', async () => {
   const ownerToken = await operatorToken(url, identity);
   assert.equal((await createKey(cookie(ownerToken), { org_id: ORG.id })).body.error?.code, 'org_needs_sso');

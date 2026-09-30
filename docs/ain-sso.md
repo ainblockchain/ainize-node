@@ -104,7 +104,7 @@ reports the applied state.
 | --- | --- |
 | `active` | Link/create the principal; store role and groups; re-enable this organization's keys that suspension switched off (deleted ones stay deleted). |
 | `suspended` | End **every** SSO session of the account (per person, protocol §4.3); disable this organization's keys (`disabled` in `openai-keys.json`, refused at use). Personal keys untouched. |
-| `deprovisioned` | As suspended, and this organization's keys are **deleted**. `ownershipTransferTo`: nothing here is organization-owned and transferable (organization keys are bearer secrets — revoked, never handed on), so it is recorded and nothing moves. |
+| `deprovisioned` | End every SSO session of the account, and **delete** this organization's keys. Not a suspension: the account is not blocked, so the person signs in again personally (ainize.ai is `any_account`) with the same principal and personal keys; only this organization's access is gone. `ownershipTransferTo`: nothing here is organization-owned and transferable (organization keys are bearer secrets — revoked, never handed on), so it is recorded and nothing moves. |
 
 Keys are written to a copy of the key set and swapped in only after the file is written, so a disk
 failure leaves nothing "disabled until the next restart". At use time an organization key is also
@@ -166,6 +166,8 @@ back-channel `events` member, no `nonce`, `sid` and/or `sub`, single-use `jti`. 
 that OIDC session's sessions. With `sub` alone: ends every SSO session of the account and stamps
 `sessions_not_before`, which the site compares with the minting time of legacy Google cookies.
 `400` for a bad token, `500` (retried by AIN SSO) for a transient failure.
+
+**Blocked** means: some organization has the account `suspended` and none has it `active` (the account-level status). Offboarding (`deprovisioned`) alone never blocks — it removes the organization's keys and membership only, and the person signs in again without it.
 
 **A suspended person cannot get in by any path:** SSO sign-in (403), the legacy Google sign-in and
 its cookie (the site asks `/principal`), `/api/keys` with a vouched Google principal or an SSO
