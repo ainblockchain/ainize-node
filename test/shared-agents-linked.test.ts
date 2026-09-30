@@ -23,8 +23,9 @@ import { HostedAgentStore } from '../src/hosted-agent-store.js';
 import { hostedAgentRoutes } from '../src/hosted-agent-routes.js';
 import { LinkedAgentStore, linkedAgentInput } from '../src/linked-agent-store.js';
 import { linkedAgentRoutes } from '../src/linked-agent-routes.js';
-import { agentCallerOf, apiKeyCaller, SharedAgentEvents, sharedAgentRoutes, walletCaller, type AgentCaller, type AgentEventPage, type AgentListResponse, type AgentRef } from '../src/shared-agents.js';
+import { agentCallerOf, apiKeyCaller, SharedAgentEvents, sharedAgentRoutes, walletCaller, withOrganizations, resolveOrganization, type AgentCaller, type AgentEventPage, type AgentListResponse, type AgentRef } from '../src/shared-agents.js';
 import { Store } from '../src/store.js';
+import { OrganizationStore } from '../src/organization-store.js';
 
 const MODEL = 'Test-Chat-1';
 const ALICE = '0x00000000000000000000000000000000000a11ce';
@@ -79,8 +80,10 @@ test('an organization API key is a caller for that organization alone; a persona
 
 interface Harness { base: string; hosted: HostedAgentStore; linked: LinkedAgentStore; feed: SharedAgentEvents; cfg: NodeConfig; close(): Promise<void> }
 
-async function harness(): Promise<Harness> {
+async function harness(linkOrganizations = false): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'shared-linked-'));
+  const orgs = new OrganizationStore(join(dir, 'orgs.json'));
+  if (linkOrganizations) orgs.create({ id: 'comcom', name: 'ComCom', description: '', readme: '', domains: [], domainRole: 'write' }, { principal: 'sso:p1', email: null, name: null, ssoOrgIds: [COMCOM] });
   const hosted = new HostedAgentStore(join(dir, 'h.json'));
   const linked = new LinkedAgentStore(join(dir, 'l.json'));
   const secrets = new HostedAgentSecretStore(join(dir, 's.json'), join(dir, 's.key'));
@@ -96,7 +99,7 @@ async function harness(): Promise<Harness> {
       { id: 'desk', name: 'Ops desk', description: 'The operations desk', upstream: 'http://127.0.0.1:9', visibility: 'org', orgId: COMCOM },
     ],
   } as unknown as NodeConfig;
-  const caller = (req: Request): AgentCaller | null => {
+  const rawCaller = (req: Request): AgentCaller | null => {
     const address = req.header('x-test-address');
     if (address) return walletCaller(address);
     const key = req.header('x-test-key-org');
@@ -105,6 +108,7 @@ async function harness(): Promise<Harness> {
     if (!principal) return null;
     return member(principal, (req.header('x-test-orgs') ?? '').split(',').filter(Boolean));
   };
+  const caller = (req: Request) => { const c = rawCaller(req); return c && linkOrganizations ? withOrganizations(c, orgs) : c; };
   const isOperator = (req: Request) => { const a = req.header('x-test-address')?.toLowerCase(); return a === NODE || a === OPERATOR2; };
   const feed = new SharedAgentEvents();
   const probe = async (upstream: string) => upstream.includes('down') ? { error: 'ECONNREFUSED' } : { card: { name: 'Card Name', description: 'From the card', skills: [{ id: 's1', name: 'Skill one' }] } };
@@ -112,7 +116,7 @@ async function harness(): Promise<Harness> {
   app.use(express.json());
   app.use(hostedAgentRoutes({ store: hosted, secrets, host, registry, caller, events: feed, reserved: (id) => (cfg.agents ?? []).some((a) => a.id === id) || linked.has(id), publicBase: () => `${ISSUER}/` }));
   app.use(linkedAgentRoutes({ store: linked, caller, events: feed, reserved: (id) => (cfg.agents ?? []).some((a) => a.id === id) || hosted.get(id) !== null, publicBase: () => ISSUER, probe, allowPrivateUpstream: true }));
-  app.use(sharedAgentRoutes({ store: hosted, host, proxied: () => proxiedAgentSummaries(cfg, linked), caller, registryIssuer: () => ISSUER, ssoIssuer: () => SSO_ISSUER, selfAddress: NODE, events: feed, linked, isOperator }));
+  app.use(sharedAgentRoutes({ store: hosted, host, proxied: () => proxiedAgentSummaries(cfg, linked), caller, registryIssuer: () => ISSUER, ssoIssuer: () => SSO_ISSUER, selfAddress: NODE, events: feed, linked, isOperator, resolveOrgId: (id) => resolveOrganization(orgs, id)?.id ?? id }));
   app.use(buildAgents(cfg, { hosted: { host, store: hosted }, linked }));
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -288,5 +292,29 @@ test('who changes who sees an agent: the owner within their organizations, the o
     const feedFor = async (who: Who) => ((await call(who, '/api/shared-agents/events')).body as AgentEventPage).events.filter((e) => e.resourceId.endsWith('#h1')).map((e) => `${e.type}:${e.releaseId}`);
     assert.deepEqual(await feedFor(P1), ['agent.published:v1', 'agent.unpublished:v2', 'agent.published:v3']);
     assert.deepEqual(await feedFor(OPERATOR), ['agent.published:v1', 'agent.unpublished:v2'], 'the operator changed it but is no member: the feed does not name an org agent to outsiders');
+  } finally { await h.close(); }
+});
+
+
+test('Teams organization keys list canonical and SSO-alias agents together, without other organizations', async () => {
+  const h = await harness(true);
+  const call = api(h.base);
+  try {
+    for (const [id, orgId] of [['slug-agent', 'comcom'], ['sso-agent', COMCOM], ['other-agent', 'org_other']]) {
+      const who = orgId === 'org_other' ? P3 : P1;
+      const r = await call(who, '/api/linked-agents', { method: 'POST', body: { id, name: id, upstream: 'https://agents.example/' + id, visibility: 'org', orgId } });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+    }
+    for (const who of [TEAMS_KEY, P1]) {
+      for (const query of ['', '&org=comcom', '&org=' + COMCOM]) {
+        const r = await call(who, '/api/shared-agents?scope=shared_with_org' + query);
+        assert.equal(r.status, 200);
+        assert.deepEqual(listed(r as any), ['desk', 'slug-agent', 'sso-agent']);
+      }
+    }
+    const other = await call(P3, '/api/shared-agents?scope=shared_with_org');
+    assert.deepEqual(listed(other as any), ['other-agent']);
+    assert.equal((await call(P3, '/api/shared-agents?scope=shared_with_org&org=comcom')).status, 403);
+    assert.equal((await call(NOBODY, '/api/shared-agents?scope=shared_with_org&org=comcom')).status, 401);
   } finally { await h.close(); }
 });

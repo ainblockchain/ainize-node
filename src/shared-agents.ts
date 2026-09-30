@@ -534,6 +534,8 @@ export interface SharedAgentRoutesDeps {
   isOperator?: (req: Request) => boolean;
   /** Writes an agent change into the audit log of the organization `orgId` resolves to (server.ts: organization-store.ts `note`). */
   orgAudit?: OrgAudit;
+  /** Canonical organization id for a slug or linked SSO id; unknown ids stay unchanged. */
+  resolveOrgId?: (id: string) => string;
   /** Per-IP ceiling on these routes, per minute. */
   rateLimit?: { windowMs: number; max: number };
 }
@@ -612,6 +614,8 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
     if (scope === 'shared_with_org' && !orgScope) return invalid(res, 'name the organization (?org=) — the session selected none');
     if (orgScope && !caller?.orgMember(orgScope)) return refuse(res, 'forbidden', 'you are not a member of that organization');
 
+    const canonicalOrg = deps.resolveOrgId ?? ((id: string) => id);
+    const inOrg = (id: string | null | undefined) => !!id && !!orgScope && canonicalOrg(id) === canonicalOrg(orgScope);
     const all = everything(req, caller);
     let picked: typeof all;
     switch (scope as AgentListScope) {
@@ -625,11 +629,11 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
         picked = all.filter((e) => e.share.owner !== caller!.subject && hostedAgentVisibilityOf(e.share) === 'org' && listsAgentFor(e.share, caller));
         break;
       case 'shared_with_org':
-        picked = all.filter((e) => hostedAgentVisibilityOf(e.share) === 'org' && e.share.orgId === orgScope);
+        picked = all.filter((e) => hostedAgentVisibilityOf(e.share) === 'org' && inOrg(e.share.orgId) && listsAgentFor(e.share, caller));
         break;
     }
     let items = picked.map((e) => e.item());
-    if (orgScope) items = items.filter((i) => i.ref.orgRef?.subject === orgScope);
+    if (orgScope) items = items.filter((i) => inOrg(i.ref.orgRef?.subject));
     if (q) {
       const needle = q.toLowerCase();
       items = items.filter((i) => i.ref.displayName.toLowerCase().includes(needle) || (i.ref.description ?? '').toLowerCase().includes(needle));
