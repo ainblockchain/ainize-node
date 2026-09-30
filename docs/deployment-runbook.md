@@ -190,7 +190,7 @@ curl -s localhost:3402/api/hosted-agents              # {"agents":[]}
 
 `--no-save`라 다음 `npm ci`가 되돌린다 — 1번이 나오면 그쪽으로 옮길 것.
 
-**새로 생기는 파일** — `~/.ainize/hosted-agents.json`, `hosted-agent-secrets.json`, `hosted-agent-secrets.key`.
+**새로 생기는 파일** — `~/.ainize/data/hosted-agents.json`, `hosted-agent-secrets.json`, `hosted-agent-secrets.key`, `hosted-agent-tasks.sqlite`(prompt 에이전트의 A2A task, 7일 보관 — 재시작·롤백·복원 뒤에도 `tasks/get`이 답한다. 실행 중이던 task는 `failed`(중단됨)로 돌아온다). SQLite 파일은 노드가 도는 동안 `cp`가 아니라 `sqlite3 … ".backup <dest>"`로 복사한다.
 **`.key`를 잃으면 저장된 secret을 못 푼다.** `~/.ainize` 백업에 들어가는지 확인한다.
 
 **여기까지면** prompt 에이전트(모델 + 시스템 프롬프트)는 동작한다. 모델은 `backends`에 있는 chat 모델만 쓸 수 있다.

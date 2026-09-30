@@ -6,7 +6,7 @@
  * and a FRESH one per path, or the v0.3 compat layer answers requests that asked for v1.0.
  */
 import express, { Router } from 'express';
-import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server';
+import { DefaultRequestHandler, InMemoryTaskStore, type TaskStore } from '@a2a-js/sdk/server';
 import { UserBuilder, agentCardHandler, jsonRpcHandler } from '@a2a-js/sdk/server/express';
 import { hostedAgentA2uiExtension } from './hostedAgentA2ui.js';
 import { hostedAgentPopExtension } from './hostedAgentPop.js';
@@ -72,6 +72,11 @@ export function hostedAgentCard(spec: HostedAgentRuntimeSpec, url: string) {
 export interface HostedAgentRuntimeAppOptions extends HostedAgentExecutorOptions {
   /** The address the card names before the node rewrites it. */
   cardUrl: string;
+  /**
+   * Where tasks are kept. The node passes one that outlives the router (hosted-agent-task-store.ts), so `tasks/get`
+   * answers across restarts, restores and agent updates; the container runtime keeps them in memory.
+   */
+  taskStore?: TaskStore;
 }
 
 /**
@@ -86,8 +91,8 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
   /** `<contextId>#<messageId>` → the reply already given. A retry (same id, same context) is the SAME logical request. */
   private readonly answered = new Map<string, { at: number; result: unknown }>();
 
-  constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>) {
-    super(card as never, new InMemoryTaskStore(), executor);
+  constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>, taskStore: TaskStore) {
+    super(card as never, taskStore, executor);
   }
 
   private dedupeKey(message: unknown): string | null {
@@ -169,7 +174,7 @@ export function createHostedAgentRuntimeRouter(o: HostedAgentRuntimeAppOptions):
   const card = hostedAgentCard(o.spec, o.cardUrl);
   const streaming = new Set<string>();
   const executor = new HostedAgentExecutor({ ...o, isStreaming: (id) => streaming.has(id) });
-  const requestHandler = new HostedAgentRequestHandler(card, executor, streaming);
+  const requestHandler = new HostedAgentRequestHandler(card, executor, streaming, o.taskStore ?? new InMemoryTaskStore());
   const router = Router();
   router.get('/health', (_req, res) => { res.json({ ok: true, id: o.spec.id, version: o.spec.version }); });
   for (const path of HOSTED_AGENT_CARD_PATHS) {
