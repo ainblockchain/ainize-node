@@ -16,7 +16,8 @@
  *
  * ORGANIZATIONS. ainize has no organizations of its own. An AIN organization appears in exactly one place: the
  * `orgId` of an API key made in an SSO session for an organization the ID token named. That is the whole
- * org-owned surface, so it is the whole of what suspension switches off (and offboarding deletes). Personal keys —
+ * org-owned surface, so it is the whole of what suspension switches off (and offboarding deletes). Suspension also
+ * locks the account out of signing in here; offboarding does not — it ends the organization's part only. Personal keys —
  * every key made without an organization, including every pre-SSO key — are never touched by either. (A rolled-back
  * legacy mapping is different: what the person made on the legacy principal through the link goes with it.)
  *
@@ -287,10 +288,17 @@ export class SsoService {
 
   // --- status: enforced whether or not AIN SSO is configured right now ------------------------------------------
 
-  /** Suspended or offboarded everywhere this node knows about: organization state exists and none of it is active. */
+  /**
+   * Suspended: some organization has the account `suspended` and none has it `active`. That is the account-level
+   * status — it refuses SSO sign-in, the legacy Google path and key management.
+   *
+   * Offboarding (`deprovisioned`) is NOT a block. It takes away what the organization gave — its keys (revoked in
+   * `apply`, refused at use by `orgKeyUsable`) and its sessions — and nothing else: ainize.ai is open to any AIN
+   * account (`any_account`), so a person who left the organization still signs in and keeps what is personal.
+   */
   isBlocked(issuer: string, subject: string): boolean {
     const ms = this.deps.store.ssoMemberships(issuer, subject);
-    return ms.length > 0 && !ms.some((m) => m.status === 'active');
+    return ms.some((m) => m.status === 'suspended') && !ms.some((m) => m.status === 'active');
   }
 
   /** What the site asks before honouring a legacy (Google) session: is that principal an AIN account's, and may it act? */
