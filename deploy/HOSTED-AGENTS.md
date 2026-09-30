@@ -59,7 +59,11 @@ The node writes four files into its data directory (`AINIZE_HOME/data`): `hosted
 `hosted-agent-secrets.json`, `hosted-agent-secrets.key` and `hosted-agent-tasks.sqlite` (the prompt agents' A2A
 tasks, kept 7 days, so `tasks/get` still answers after a restart, a rollback or a restore; a task that was running
 when the node stopped reads back as `failed` with a message saying it was interrupted). **Back up the key with the
-data**: without it the stored secrets cannot be decrypted. Copy the SQLite files with the SQLite backup API
+data**: without it the stored secrets cannot be decrypted. A node started with the data but without its key (or with
+the key of another backup) still starts, logs an error, keeps the sealed file aside as
+`hosted-agent-secrets.json.unreadable-<time>`, drops the values it cannot open and re-issues each agent's PoP key (a
+new release); to get the values back, stop it and restore `hosted-agent-secrets.key` and `hosted-agents.json` from the
+backup that copy belongs to, with the copy as `hosted-agent-secrets.json`. Copy the SQLite files with the SQLite backup API
 (`sqlite3 hosted-agent-tasks.sqlite ".backup <dest>"`), not `cp`, while the node runs.
 
 The web side needs no configuration: deploy ainize-web as usual (ainize-web `deploy/README.md`).
