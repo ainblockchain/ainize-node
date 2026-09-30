@@ -6,6 +6,7 @@
  *   AINIZE_GATEWAY_URL     the node's gateway on the docker bridge
  *   AINIZE_AGENT_TOKEN     this container's gateway token
  *   AINIZE_SECRET_<NAME>   one per secret the owner has set
+ *   AINIZE_POP_JWK         the private JWK of this agent's proof-of-possession key (hostedAgentPop.ts), when issued
  *   AINIZE_AGENT_ENTRY     the module to load (default /agent/index.mjs)
  *
  * Values arrive as `b64:<base64>` (the node writes them through an env file, where a raw newline would end one).
@@ -47,8 +48,10 @@ async function main() {
   const spec = JSON.parse(hostedAgentEnvValue(process.env.AINIZE_AGENT_SPEC)) as HostedAgentRuntimeSpec;
   const gateway = { url: hostedAgentEnvValue(process.env.AINIZE_GATEWAY_URL), token: hostedAgentEnvValue(process.env.AINIZE_AGENT_TOKEN) };
   const secrets = hostedAgentSecretsFromEnv(process.env);
+  // The PoP private key is the runtime's, not the agent code's: it signs proofs and is offered through no `ctx` door.
+  const popKey = hostedAgentEnvValue(process.env.AINIZE_POP_JWK) || undefined;
   // Scrub them from the environment the agent's code can read; `ctx.secret` is the one way in.
-  for (const k of Object.keys(process.env)) if (k.startsWith(HOSTED_AGENT_SECRET_ENV_PREFIX) || k === 'AINIZE_AGENT_TOKEN') delete process.env[k];
+  for (const k of Object.keys(process.env)) if (k.startsWith(HOSTED_AGENT_SECRET_ENV_PREFIX) || k === 'AINIZE_AGENT_TOKEN' || k === 'AINIZE_POP_JWK') delete process.env[k];
 
   globalThis.fetch = hostedAgentGlobalFetch(gateway);
   const entry = hostedAgentEnvValue(process.env.AINIZE_AGENT_ENTRY) || '/agent/index.mjs';
@@ -57,7 +60,7 @@ async function main() {
   const log = (...args: unknown[]) => console.log(`[${spec.id}]`, ...args);
   const app = express();
   app.disable('x-powered-by');
-  app.use(createHostedAgentRuntimeRouter({ spec, gateway, secrets, log, module: mod, cardUrl: 'http://localhost:8080' }));
+  app.use(createHostedAgentRuntimeRouter({ spec, gateway, secrets, popKey, log, module: mod, cardUrl: 'http://localhost:8080' }));
   app.listen(8080, '0.0.0.0', () => log(`hosted agent v${spec.version} (${spec.mode}, ${spec.model}) on :8080`));
 }
 

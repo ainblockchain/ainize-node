@@ -7,6 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { HostedAgentPopJwk } from './hosted-agent-runtime/hostedAgentPop.js';
 import type { HostedAgentSpec, HostedAgentSpecInput, HostedAgentVisibility } from './hosted-agent-types.js';
 
 export interface HostedAgentStoreLimits {
@@ -58,7 +59,21 @@ export class HostedAgentStore {
   update(id: string, input: HostedAgentSpecInput, by?: string, now = Date.now()): HostedAgentSpec {
     const prior = this.specs.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
-    const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now, ...(by ? { updatedBy: by.toLowerCase() } : {}) };
+    const spec: HostedAgentSpec = { ...input, id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now, ...(by ? { updatedBy: by.toLowerCase() } : {}), ...(prior.popJwk ? { popJwk: prior.popJwk } : {}) };
+    this.specs.set(id, spec);
+    this.save();
+    return spec;
+  }
+
+  /**
+   * The public half of the agent's PoP key (hosted-agent-pop.ts). A first key changes nothing else; a replacement
+   * is a new release — the version moves, so a product that pinned `releaseId` re-reads the card and the JWK.
+   */
+  setPopJwk(id: string, popJwk: HostedAgentPopJwk, now = Date.now()): HostedAgentSpec | null {
+    const prior = this.specs.get(id);
+    if (!prior) return null;
+    const rotated = !!prior.popJwk && prior.popJwk.kid !== popJwk.kid;
+    const spec: HostedAgentSpec = { ...prior, popJwk, ...(rotated ? { version: prior.version + 1, updatedAt: now } : {}) };
     this.specs.set(id, spec);
     this.save();
     return spec;

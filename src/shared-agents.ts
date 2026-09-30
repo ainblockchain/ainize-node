@@ -19,6 +19,7 @@ import type { LinkedAgentStore } from './linked-agent-store.js';
 import type { OpenaiApiKeyStore } from './openai-api-keys.js';
 import { membership, roleAtLeast, type Organization, type OrgRole, type OrgViewer } from './organization-store.js';
 import { HOSTED_AGENT_A2UI_EXTENSION_URI } from './hosted-agent-runtime/hostedAgentA2ui.js';
+import type { HostedAgentPopJwk } from './hosted-agent-runtime/hostedAgentPop.js';
 import { hostedAgentModesOf } from './hosted-agent-runtime/hostedAgentRuntimeApp.js';
 import { HOSTED_AGENT_VISIBILITIES, hostedAgentMediaOf, hostedAgentVisibilityOf, type HostedAgentSpec, type HostedAgentVisibility } from './hosted-agent-types.js';
 import { siteSession, ssoSession } from './site-session.js';
@@ -63,7 +64,15 @@ export interface AgentRef {
   displayName: string;
   description?: string;
   updatedAt: string;
+  /**
+   * The agent's proof-of-possession public key (contract v1.1, optional): a product requesting a resource
+   * delegation for this agent binds it to this key (`cnf.jwk`) without re-reading the card. The same JWK the card
+   * advertises under `https://ainetwork.ai/a2a-extension/pop/v1`.
+   */
+  popJwk?: PopJwk;
 }
+
+export type PopJwk = HostedAgentPopJwk;
 
 export interface AgentListItem { ref: AgentRef; canInvoke: boolean }
 export interface AgentListResponse {
@@ -466,6 +475,7 @@ export function hostedAgentRef(spec: HostedAgentSpec, o: {
     displayName: spec.name,
     ...(spec.description ? { description: spec.description } : {}),
     updatedAt: new Date(spec.updatedAt).toISOString(),
+    ...(spec.popJwk ? { popJwk: spec.popJwk } : {}),
   };
 }
 

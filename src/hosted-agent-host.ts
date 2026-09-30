@@ -17,6 +17,7 @@ import type { Router } from 'express';
 import { createHostedAgentRuntimeRouter } from './hosted-agent-runtime/hostedAgentRuntimeApp.js';
 import type { HostedAgentGateway } from './hosted-agent-gateway.js';
 import type { HostedAgentDocker } from './hosted-agent-docker.js';
+import { hostedAgentPopPrivateKeyOf } from './hosted-agent-pop.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { hostedAgentRuntimeSpecOf, hostedAgentUsesCode, type HostedAgentSpec, type HostedAgentStatus } from './hosted-agent-types.js';
 
@@ -110,6 +111,8 @@ export class HostedAgentHost {
         spec: hostedAgentRuntimeSpecOf(spec),
         gateway: { url: this.loopbackGateway, token: st.token },
         secrets: {},
+        // The PoP private key signs delegated reads (hostedAgentDelegatedReads.ts); it is not one of `secrets`.
+        popKey: hostedAgentPopPrivateKeyOf(this.o.secrets, spec.id),
         module: null,
         cardUrl: `${this.loopbackBase}/a/${spec.id}`,
         log: (...args) => this.o.log('info', `agent ${spec.id}: ${args.map(String).join(' ')}`),
@@ -216,6 +219,9 @@ export class HostedAgentHost {
       AINIZE_AGENT_TOKEN: token,
     };
     for (const [name, value] of Object.entries(this.o.secrets.reveal(spec.id, spec.secretNames))) env[`AINIZE_SECRET_${name}`] = value;
+    // The PoP private key travels like a secret (env file, scrubbed by the entry point) and never in the spec JSON.
+    const popKey = hostedAgentPopPrivateKeyOf(this.o.secrets, spec.id);
+    if (popKey) env.AINIZE_POP_JWK = popKey;
     try {
       const { upstream } = await this.o.docker!.run(spec.id, version, env);
       await waitForHostedAgentHealth(upstream, HOSTED_AGENT_START_TIMEOUT_MS);

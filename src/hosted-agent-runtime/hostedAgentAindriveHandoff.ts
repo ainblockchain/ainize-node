@@ -57,8 +57,11 @@ export interface AindriveHandoffMcpServer {
 type RawPart = Record<string, unknown>;
 const partsOf = (message: unknown): RawPart[] => (((message as { parts?: unknown[] } | undefined)?.parts ?? []) as RawPart[]).filter((p) => p && typeof p === 'object');
 
-/** A data part of the given `metadata.type`, in either protocol's shape (v0.3 `kind: "data"`, v1.0 `content.$case`). */
-function aindriveDataParts(message: unknown, type: string): Record<string, unknown>[] {
+/**
+ * A data part of the given `metadata.type`, in either protocol's shape (v0.3 `kind: "data"`, v1.0 `content.$case`).
+ * Shared with the delegation parts (hostedAgentDelegatedReads.ts), which are addressed the same way.
+ */
+export function hostedAgentDataPartsOf(message: unknown, type: string): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const p of partsOf(message)) {
     const meta = (p.metadata ?? {}) as Record<string, unknown>;
@@ -74,7 +77,7 @@ const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 export function aindriveFolderContextOf(message: unknown): AindriveFolderContext | null {
-  const folder = aindriveDataParts(message, AINDRIVE_FOLDER_CONTEXT_TYPE)[0]?.folder as Record<string, unknown> | undefined;
+  const folder = hostedAgentDataPartsOf(message, AINDRIVE_FOLDER_CONTEXT_TYPE)[0]?.folder as Record<string, unknown> | undefined;
   if (!folder || typeof folder !== 'object') return null;
   const entries = (Array.isArray(folder.entries) ? folder.entries : []) as Record<string, unknown>[];
   return {
@@ -99,7 +102,7 @@ function aindriveExpiry(v: unknown): number | null {
 
 export function aindriveHandoffMcpServersOf(message: unknown): AindriveHandoffMcpServer[] {
   const out: AindriveHandoffMcpServer[] = [];
-  for (const data of aindriveDataParts(message, AINDRIVE_HANDOFF_MCP_TYPE)) {
+  for (const data of hostedAgentDataPartsOf(message, AINDRIVE_HANDOFF_MCP_TYPE)) {
     for (const s of (Array.isArray(data.mcpServers) ? data.mcpServers : []) as Record<string, unknown>[]) {
       const url = str(s?.url);
       if (!url || !/^https:\/\//i.test(url)) continue;
