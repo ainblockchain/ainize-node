@@ -121,7 +121,7 @@ export function organizationRoutes(deps: OrganizationRoutesDeps): Router {
   });
 
   const summary = (org: Organization, role: OrgRole | null) => ({
-    id: org.id, name: org.name, description: org.description, domains: org.domains, member_count: org.members.length,
+    id: org.id, name: org.name, description: org.description, domains: org.domains, sso_org_ids: org.ssoOrgIds, member_count: org.members.length,
     agent_count: deps.agents.listByOrg(org).length, created_at: org.createdAt, updated_at: org.updatedAt, my_role: role,
   });
 

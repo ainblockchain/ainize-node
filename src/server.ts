@@ -498,6 +498,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     linked: linkedStore,
     isOperator: isOperatorRequest,
     orgAudit,
+    resolveOrgId: (id) => resolveOrganization(orgStore, id)?.id ?? id,
   }));
   app.use(organizationRoutes({
     orgs: orgStore,
