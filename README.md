@@ -87,3 +87,22 @@ serving GPUs). `docs/` is the design record. `e2e/` drives a real node in a brow
 Set `AINIZE_PREFERRED_CHAT_PEERS` to a JSON map from a bare model ID to a peer node address, for example `{"Qwen3.8-Flash-Next":"0x...40-hex-digits..."}`. A pinned bare model uses that peer even when a local backend advertises the same name. If the peer is unavailable, the request fails instead of falling back to a different local context window. Explicit `model@node` references still select the named node.
 
 The pin applies to `/v1/chat/completions` and base-mode `/api/chat` playground requests without patches. The playground preserves its `base.content` response field. Tool messages, schemas and caller token budgets reach the peer unchanged through `/v1`; the provider enforces the total input-plus-output context window.
+
+## AI Network integration versions
+
+This repository takes part in the AI Network integration (shared files, shared agents, delegated access). It follows the version pins below. They are a **proposal** (plan item 20.4) and become final once all five products adopt them. PRs that change them use a `contract:` or `a2a:` title prefix.
+
+| Component | Pinned version | Supported range | Deprecation schedule |
+|---|---|---|---|
+| Integration contract `@ain/integration-contracts` | **v1.1** (1.1.0); documents keep `contract: "1.0"` for all of 1.x | 1.x adds optional fields only; any change of meaning is 2.0 | After 2.0 ships, 1.x is still accepted for 6 months; a product may reject by the `contract` value |
+| AIN-UI renderer (`ain-ui`) | **0.3.0** (catalog v1 URL unchanged; adds FilePicker/AgentPicker) | Consumers on 0.2.3 must move to 0.3.0 | Unknown components are skipped by the renderer (backward compatible) |
+| A2A | **0.3.0** (Ainize cards advertise 1.0 and 0.3) | 0.3.0 required for product consumers; 1.0 optional | 0.3 support ends 3 months after all five products can negotiate 1.0 |
+| A2A data parts | `ai.ain/file-refs`, `ai.ain/delegation` (`metadata.type`) | Names never change | Fields are only added |
+| Delegation token | `ain-rdlg+jwt`, TTL ≤ 1 h | Verified with the SSO SDK `verifyResourceDelegation` | Claims are only added; removing one is 2.0 |
+| aindrive file IDs | Phase A `p1:` | When Phase B `f1:` lands, `p1:` stays valid for 6 months with a `movedFrom` hint in listings | `legacy.path` is not a durable identifier |
+
+Product routes (`/api/ain/shared-files`, `/api/ain/shared-agents`, `/api/ain/invoke`, `/api/ain/events`) sit behind the `AIN_INTEGRATION_ENABLED` flag.
+
+This repository provides the Ainize side: `/api/shared-agents`, `/api/shared-agents/events` and hosted-agent `visibility` (a stored spec without `visibility` is public). Agent cards advertise A2A 1.0 and 0.3. Runtime: Node 24.
+
+The source of record is the integration plan's versioning note (`docs/20-versioning.md` in the ain-integration workspace, not yet published). This line will link to it once it is published.
