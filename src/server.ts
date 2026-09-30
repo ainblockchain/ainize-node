@@ -15,6 +15,7 @@ import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { ensureHostedAgentPopKeys } from './hosted-agent-pop.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
+import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
@@ -392,6 +393,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     }) : null,
     idleStopMs: dockerCfg?.idleStopMs ?? 600_000,
     maxRunning: dockerCfg?.maxRunning ?? 20,
+    tasks: new HostedAgentTaskFile(join(cfg.dataDir, 'hosted-agent-tasks.sqlite')),
     log: (level, message) => market.log(level, 'agents', message),
   });
   const agentEvents = new SharedAgentEvents();
