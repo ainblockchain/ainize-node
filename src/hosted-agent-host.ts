@@ -19,6 +19,7 @@ import type { HostedAgentGateway } from './hosted-agent-gateway.js';
 import type { HostedAgentDocker } from './hosted-agent-docker.js';
 import { hostedAgentPopPrivateKeyOf } from './hosted-agent-pop.js';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
+import type { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { hostedAgentRuntimeSpecOf, hostedAgentUsesCode, type HostedAgentSpec, type HostedAgentStatus } from './hosted-agent-types.js';
 
 export interface HostedAgentHostOptions {
@@ -29,6 +30,8 @@ export interface HostedAgentHostOptions {
   gatewaySocketPath?: string;
   idleStopMs: number;
   maxRunning: number;
+  /** Where prompt agents keep their A2A tasks across restarts (hosted-agent-task-store.ts). Absent: in memory. */
+  tasks?: HostedAgentTaskFile;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -95,6 +98,7 @@ export class HostedAgentHost {
     if (this.o.docker) await Promise.all([...this.state.entries()].filter(([, s]) => s.upstream && !s.upstream.startsWith(this.loopbackBase)).map(([id]) => this.o.docker!.stop(id)));
     await new Promise<void>((r) => (this.server ? this.server.close(() => r()) : r()));
     await this.o.gateway.close();
+    this.o.tasks?.close();
   }
 
   /** Create or update. Prompt agents are live on return; code agents build in the background. */
@@ -117,6 +121,8 @@ export class HostedAgentHost {
         popKey: hostedAgentPopPrivateKeyOf(this.o.secrets, spec.id),
         module: null,
         cardUrl: `${this.loopbackBase}/a/${spec.id}`,
+        // The same store for every router this agent gets in this process: an update keeps its tasks.
+        taskStore: this.o.tasks?.forAgent(spec.id),
         log: (...args) => this.o.log('info', `agent ${spec.id}: ${args.map(String).join(' ')}`),
       }));
       Object.assign(st, { status: 'ready', error: null, liveVersion: spec.version, upstream: `${this.loopbackBase}/a/${spec.id}` });
@@ -173,6 +179,7 @@ export class HostedAgentHost {
     this.routers.delete(id);
     this.specs.delete(id);
     this.state.delete(id);
+    this.o.tasks?.removeAgent(id);
     this.o.gateway.revokeAgent(id);
     if (st && this.o.docker) {
       await this.o.docker.stop(id);

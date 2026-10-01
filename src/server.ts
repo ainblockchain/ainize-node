@@ -15,6 +15,7 @@ import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { ensureHostedAgentPopKeys } from './hosted-agent-pop.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
+import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
@@ -321,6 +322,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     total: agentHostCfg.total ?? HOSTED_AGENT_DEFAULT_LIMITS.total,
   });
   const hostedSecrets = new HostedAgentSecretStore(join(hostedHome, 'hosted-agent-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  if (hostedSecrets.unreadable) {
+    const u = hostedSecrets.unreadable;
+    market.log('error', 'agents', `hosted agent secrets unreadable (${u.reason === 'key-missing' ? 'hosted-agent-secrets.key was missing — a new key was made' : 'hosted-agent-secrets.key is not the key they were sealed with'}): ${u.values} value(s) of ${u.agents} agent(s) dropped, sealed copy kept at ${u.keptAt}. PoP keys are re-issued (new releases); owners must set their secrets again — or stop the node, restore hosted-agent-secrets.key and hosted-agents.json from the backup that copy belongs to, put the copy back as hosted-agent-secrets.json and start again.`);
+  }
   /**
    * Agents people registered by URL (linked-agent-store.ts; design in docs/superpowers/specs/2026-09-29-linked-agents-design.md).
    * Listed and proxied like config agents, owned like hosted ones. The three id namespaces reserve each other below.
@@ -395,6 +400,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     }) : null,
     idleStopMs: dockerCfg?.idleStopMs ?? 600_000,
     maxRunning: dockerCfg?.maxRunning ?? 20,
+    tasks: new HostedAgentTaskFile(join(cfg.dataDir, 'hosted-agent-tasks.sqlite')),
     log: (level, message) => market.log(level, 'agents', message),
   });
   const agentEvents = new SharedAgentEvents();

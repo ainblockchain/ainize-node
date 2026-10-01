@@ -18,11 +18,11 @@ import { dirname, join } from 'node:path';
 /** The directory the repositories sit in — `ainize-node`'s parent, wherever it has been checked out. */
 export function workspaceRoot(repo) { return dirname(repo); }
 
-/** `packages/node/src/x.ts` → `<root>/ainize-node/src/x.ts`. Anything else is taken as docs-relative. */
+/** Node sources belong to this checkout; the other repositories remain siblings. */
 export function at(repo, logical) {
   const root = workspaceRoot(repo);
   const m = /^packages\/([a-z]+)(\/.*)?$/.exec(logical);
-  if (m) return join(root, `ainize-${m[1]}`, m[2] ? m[2].slice(1) : '');
+  if (m) return join(m[1] === 'node' ? repo : join(root, `ainize-${m[1]}`), m[2] ? m[2].slice(1) : '');
   return join(root, 'ainize-web', logical);
 }
 
@@ -34,7 +34,7 @@ export function label(logical) {
 
 /** Checked once, up front: every repository this generator reads from has to be here. */
 export function requireSiblings(repo, names = ['core', 'node', 'cli', 'web']) {
-  const missing = names.filter((n) => !existsSync(join(workspaceRoot(repo), `ainize-${n}`)));
+  const missing = names.filter((n) => !existsSync(n === 'node' ? repo : join(workspaceRoot(repo), `ainize-${n}`)));
   if (missing.length) {
     throw new Error(
       `docs-gen needs the sibling repositories checked out beside this one: ${missing.map((n) => `ainize-${n}`).join(', ')} `
