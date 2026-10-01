@@ -60,13 +60,8 @@ else
   SHA="$(git -C "$WORK" rev-parse HEAD)"
 fi
 
-say "installing"
-# `--ignore-scripts` because this package's `prepare` builds, and at this point TypeScript is not installed
-# yet — without it the install dies inside its own lifecycle hook with a missing `tsc`.
-( cd "$WORK" && { npm ci --omit=dev --ignore-scripts --silent 2>/dev/null || npm install --omit=dev --ignore-scripts --silent; } )
-say "building"
-# The build needs TypeScript, which --omit=dev left out; add it alone rather than the whole dev tree.
-( cd "$WORK" && npm install --no-save --ignore-scripts --silent typescript >/dev/null 2>&1 && npx tsc -p tsconfig.json )
+say "CI: typecheck, tests, documentation and build"
+AINIZE_CI_STATE_DIR="$ROOT/ci" bash "$WORK/deploy/ci.sh" "$WORK" "$SHA" "$DIRTY"
 [ -f "$WORK/dist/bin.js" ] || { echo "build produced no dist/bin.js" >&2; exit 1; }
 
 DEST="$RELEASES/$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}"
