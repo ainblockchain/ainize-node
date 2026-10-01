@@ -41,6 +41,9 @@ export function hostedAgentModuleOf(imported: Record<string, unknown>): HostedAg
   return {
     execute: d.execute ?? (imported.execute as HostedAgentModule['execute']),
     tools: d.tools ?? (imported.tools as HostedAgentModule['tools']),
+    manage: d.manage ?? (imported.manage as HostedAgentModule['manage']),
+    rpcMethods: d.rpcMethods ?? (imported.rpcMethods as HostedAgentModule['rpcMethods']),
+    cardExtras: d.cardExtras ?? (imported.cardExtras as HostedAgentModule['cardExtras']),
   };
 }
 

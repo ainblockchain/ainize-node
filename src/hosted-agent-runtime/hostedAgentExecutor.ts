@@ -36,15 +36,15 @@ const HOSTED_AGENT_HISTORY_CONTEXTS = 1000;
 const HOSTED_AGENT_MAX_INPUT_CHARS = 50_000;
 
 /** Every text part the caller sent, in either protocol's part shape (see news-agent `textOf`). */
-export const hostedAgentTextOf = (message: unknown): string => (((message as { parts?: unknown[] } | undefined)?.parts ?? []) as Record<string, unknown>[])
+export const hostedAgentTextPartsOf = (message: unknown): string[] => (((message as { parts?: unknown[] } | undefined)?.parts ?? []) as Record<string, unknown>[])
   .map((p) => {
     const content = p?.content as { $case?: string; value?: unknown } | undefined;
     if (content?.$case === 'text' && typeof content.value === 'string') return content.value;
     if ((p?.kind === 'text' || p?.type === 'text') && typeof p.text === 'string') return p.text;
     return null;
   })
-  .filter((t): t is string => t !== null)
-  .join('\n').trim();
+  .filter((t): t is string => t !== null);
+export const hostedAgentTextOf = (message: unknown): string => hostedAgentTextPartsOf(message).join('\n').trim();
 
 const hostedAgentTextPart = (text: string) => ({ content: { $case: 'text', value: text } });
 
@@ -277,13 +277,20 @@ export class HostedAgentExecutor implements AgentExecutor {
     this.pop = hostedAgentPopSigner(o.popKey);
   }
 
+  private businessMetadata(message: {metadata?: unknown}): Record<string, unknown> {
+    const raw=(message.metadata ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(['skillId','variables','debug','agentSkills'].filter(k=>raw[k]!==undefined).map(k=>[k,raw[k]]));
+  }
+
   async turn(
     text: string, contextId: string, files: HostedAgentAttachment[] = [],
     aindrive: HostedAgentTurnContext = { folder: null, servers: [] },
     hooks?: HostedAgentTurnHooks,
-  ): Promise<{ text: string; parts: unknown[] }> {
+    metadata: Record<string, unknown> = {},
+    textParts?: string[],
+  ): Promise<{ text: string; parts: unknown[]; metadata?: Record<string, unknown> }> {
     const history = this.history.get(contextId);
-    let ctx = createHostedAgentCtx(this.o, { text, contextId, history, files });
+    let ctx = createHostedAgentCtx(this.o, { text, contextId, history, files, ...(Object.keys(metadata).length ? {metadata} : {}), ...(textParts ? {textParts} : {}) });
     if (ctx.media.transcribe && files.some((f) => /^audio\//i.test(f.mimeType))) hooks?.onProgress?.('Transcribing the voice message…');
     // Voice notes become words before the model sees the turn (hostedAgentMedia.ts says why).
     const heard = await hostedAgentTranscribeAudio(ctx, files);
@@ -296,7 +303,7 @@ export class HostedAgentExecutor implements AgentExecutor {
     // What aindrive sent beside the words: the folder as data and this turn's file grant (hostedAgentAindriveHandoff.ts).
     // The model reads both; memory keeps only what was said — a grant is this turn's, and the next turn brings its own.
     const shown = said + aindriveContextNote(aindrive.folder, aindrive.servers) + hostedAgentDelegationNote(delegated, readable);
-    if (shown !== text || heard.transcript) ctx = createHostedAgentCtx(this.o, { text: shown, contextId, history, files: heard.rest });
+    if (shown !== text || heard.transcript) ctx = createHostedAgentCtx(this.o, { text: shown, contextId, history, files: heard.rest, ...(Object.keys(metadata).length ? {metadata} : {}), ...(textParts ? {textParts} : {}) });
     const { mode } = this.o.spec;
     // Built-in tools beside the agent's own: `read_attachment` when something is attached, `generate_image` when
     // the owner turned pictures on, aindrive's `list_files` / `read_file` when this turn carries a grant, and the
@@ -323,7 +330,7 @@ export class HostedAgentExecutor implements AgentExecutor {
     // itself is not kept: it expires in minutes, and the next message carries fresh ones if the sender wants.
     // The transcript is kept (it is what was said); the audio, like any attachment, is only named.
     this.history.append(contextId, [{ role: 'user', content: said + hostedAgentAttachmentHistoryNote(files) + hostedAgentDelegationHistoryNote(delegated.refs) }, { role: 'assistant', content: answer }]);
-    return { text: answer, parts: [...(shaped.parts ?? []), ...(shaped.ui ?? []).map(hostedAgentA2uiPart)] };
+    return { text: answer, parts: [...(shaped.parts ?? []), ...(shaped.ui ?? []).map(hostedAgentA2uiPart)], ...(shaped.metadata ? {metadata:shaped.metadata} : {}) };
   }
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
@@ -332,12 +339,13 @@ export class HostedAgentExecutor implements AgentExecutor {
     const { contextId, taskId } = requestContext;
     let text: string;
     let parts: unknown[] = [];
+    let metadata: Record<string,unknown> | undefined;
     const input = hostedAgentTextOf(requestContext.userMessage);
     const files = hostedAgentAttachmentsOf(requestContext.userMessage);
     const aindrive = hostedAgentTurnContextOf(requestContext.userMessage);
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
-      ({ text, parts } = await this.turn(input, contextId, files, aindrive));
+      ({ text, parts, metadata } = await this.turn(input, contextId, files, aindrive, undefined, this.businessMetadata(requestContext.userMessage), hostedAgentTextPartsOf(requestContext.userMessage)));
     } catch (e) {
       // Reported as a failure in words. An empty reply would read as the agent choosing silence.
       text = `This agent could not answer: ${e instanceof Error ? e.message : String(e)}`;
@@ -348,6 +356,7 @@ export class HostedAgentExecutor implements AgentExecutor {
       messageId: randomUUID(),
       role: HOSTED_AGENT_ROLE_AGENT,
       parts: [hostedAgentTextPart(text), ...parts],
+      ...(metadata ? {metadata} : {}),
       contextId,
       taskId,
     } as unknown as Parameters<typeof AgentEvent.message>[0]));
@@ -363,8 +372,9 @@ export class HostedAgentExecutor implements AgentExecutor {
   private async executeStreaming(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
     const { contextId, taskId } = requestContext;
     const now = () => new Date().toISOString();
+    let replyMetadata: Record<string, unknown> | undefined;
     const agentMessage = (parts: unknown[]) => ({
-      messageId: randomUUID(), contextId, taskId, role: HOSTED_AGENT_ROLE_AGENT, parts, metadata: undefined, extensions: [], referenceTaskIds: [],
+      messageId: randomUUID(), contextId, taskId, role: HOSTED_AGENT_ROLE_AGENT, parts, metadata: replyMetadata, extensions: [], referenceTaskIds: [],
     });
     const status = (state: number, parts?: unknown[]) => AgentEvent.statusUpdate({
       taskId, contextId, status: { state, message: parts ? agentMessage(parts) : undefined, timestamp: now() }, metadata: undefined,
@@ -397,7 +407,8 @@ export class HostedAgentExecutor implements AgentExecutor {
     const aindrive = hostedAgentTurnContextOf(requestContext.userMessage);
     try {
       if (input.length > HOSTED_AGENT_MAX_INPUT_CHARS) throw new Error(`message is ${input.length} characters; the limit is ${HOSTED_AGENT_MAX_INPUT_CHARS}`);
-      const { text, parts } = await this.turn(input, contextId, files, aindrive, hooks);
+      const { text, parts, metadata } = await this.turn(input, contextId, files, aindrive, hooks, this.businessMetadata(requestContext.userMessage), hostedAgentTextPartsOf(requestContext.userMessage));
+      replyMetadata = metadata;
       eventBus.publish(status(HOSTED_AGENT_TASK_COMPLETED, [hostedAgentTextPart(text), ...parts]));
     } catch (e) {
       this.o.log('turn failed', e instanceof Error ? e.stack ?? e.message : e);

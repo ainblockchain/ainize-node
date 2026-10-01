@@ -179,15 +179,20 @@ async function fetchCard(a: AgentConfig): Promise<{ card?: Record<string, unknow
  */
 export async function probeUpstreamCard(upstream: string): Promise<{ card?: Record<string, unknown>; error?: string }> {
   const base = upstream.replace(/\/+$/, '');
-  for (const p of CARD_PATHS) {
-    const r = await upstreamFetch(base + p, { headers: { Accept: 'application/json' } }, 8000);
-    if (!r.ok) return { error: r.error };
-    if (r.res.ok) {
-      const card = await r.res.json().catch(() => null) as Record<string, unknown> | null;
-      if (card) return { card };
+  // Many external cards name a JSON-RPC path, while discovery stays at the same origin's root.
+  const origin = new URL(upstream).origin;
+  let error = 'no agent card at any well-known path';
+  for (const cardBase of [...new Set([base, origin])]) {
+    for (const p of CARD_PATHS) {
+      const r = await upstreamFetch(cardBase + p, { headers: { Accept: 'application/json' } }, 8000);
+      if (!r.ok) { error = r.error; break; }
+      if (r.res.ok) {
+        const card = await r.res.json().catch(() => null) as Record<string, unknown> | null;
+        if (card && typeof card.name === 'string') return { card };
+      }
     }
   }
-  return { error: 'no agent card at any well-known path' };
+  return { error };
 }
 
 /**
