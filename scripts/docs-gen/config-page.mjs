@@ -194,6 +194,9 @@ export function renderConfigPage(repo, mods) {
 
   const printable = JSON.parse(JSON.stringify(defaults));
   printable.identity = { privateKey: '…', address: '0x…', publicKey: '0x…' };
+  // The table above explains the conditional local-directory default. Keep the
+  // example independent of whether that directory exists on the generator host.
+  delete printable.runtime.repo;
 
   const blocks = [];
   blocks.push('## How to read this page');
