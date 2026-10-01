@@ -6,7 +6,9 @@
  * and a FRESH one per path, or the v0.3 compat layer answers requests that asked for v1.0.
  */
 import express, { Router } from 'express';
-import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server';
+import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { createHostedAgentCtx } from './hostedAgentContext.js';
+import { DefaultRequestHandler, InMemoryTaskStore, type TaskStore } from '@a2a-js/sdk/server';
 import { UserBuilder, agentCardHandler, jsonRpcHandler } from '@a2a-js/sdk/server/express';
 import { hostedAgentA2uiExtension } from './hostedAgentA2ui.js';
 import { hostedAgentPopExtension } from './hostedAgentPop.js';
@@ -72,6 +74,11 @@ export function hostedAgentCard(spec: HostedAgentRuntimeSpec, url: string) {
 export interface HostedAgentRuntimeAppOptions extends HostedAgentExecutorOptions {
   /** The address the card names before the node rewrites it. */
   cardUrl: string;
+  /**
+   * Where tasks are kept. The node passes one that outlives the router (hosted-agent-task-store.ts), so `tasks/get`
+   * answers across restarts, restores and agent updates; the container runtime keeps them in memory.
+   */
+  taskStore?: TaskStore;
 }
 
 /**
@@ -86,8 +93,8 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
   /** `<contextId>#<messageId>` → the reply already given. A retry (same id, same context) is the SAME logical request. */
   private readonly answered = new Map<string, { at: number; result: unknown }>();
 
-  constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>) {
-    super(card as never, new InMemoryTaskStore(), executor);
+  constructor(card: unknown, executor: HostedAgentExecutor, private readonly streaming: Set<string>, taskStore: TaskStore) {
+    super(card as never, taskStore, executor);
   }
 
   private dedupeKey(message: unknown): string | null {
@@ -165,14 +172,37 @@ class HostedAgentRequestHandler extends DefaultRequestHandler {
   }
 }
 
+const RESERVED_CARD_FIELDS = new Set(['name','description','url','version','protocolVersion','supportedInterfaces','additionalInterfaces','preferredTransport','capabilities','securitySchemes','securityRequirements','authentication','security','defaultInputModes','defaultOutputModes','skills','metadata','supportsAuthenticatedExtendedCard','provider','documentationUrl','iconUrl','signatures']);
+const customRpcMethod = (method: string) => /^[a-z][a-z0-9_.-]*\/[a-z][a-z0-9_.-]*$/i.test(method) && !/^(message|messages|task|tasks|agent|agents|pushnotifications?)\//i.test(method);
+
 export function createHostedAgentRuntimeRouter(o: HostedAgentRuntimeAppOptions): Router {
   const card = hostedAgentCard(o.spec, o.cardUrl);
   const streaming = new Set<string>();
   const executor = new HostedAgentExecutor({ ...o, isStreaming: (id) => streaming.has(id) });
-  const requestHandler = new HostedAgentRequestHandler(card, executor, streaming);
+  const requestHandler = new HostedAgentRequestHandler(card, executor, streaming, o.taskStore ?? new InMemoryTaskStore());
   const router = Router();
   router.get('/health', (_req, res) => { res.json({ ok: true, id: o.spec.id, version: o.spec.version }); });
   for (const path of HOSTED_AGENT_CARD_PATHS) {
+    router.use(path, (_req, res, next) => {
+      const extras = Object.fromEntries(Object.entries(o.module?.cardExtras ?? {}).filter(([key]) => !RESERVED_CARD_FIELDS.has(key) && !['__proto__','constructor','prototype'].includes(key)));
+      if (Object.keys(extras).length) {
+        delete _req.headers['if-none-match'];
+        const send = res.send.bind(res);
+        res.send = ((body: unknown) => {
+          if (typeof body === 'string') {
+            try {
+              const decoded = JSON.parse(body) as Record<string, unknown>;
+              if (decoded && !Array.isArray(decoded) && typeof decoded.name === 'string') {
+                body = JSON.stringify({ ...decoded, ...extras });
+                res.setHeader('ETag', '"' + createHash('sha256').update(body as string).digest('hex') + '"');
+              }
+            } catch { /* Non-JSON errors are served unchanged. */ }
+          }
+          return send(body);
+        }) as typeof res.send;
+      }
+      next();
+    });
     router.use(path, agentCardHandler({
       agentCardProvider: requestHandler,
       legacyCompat: { enabled: true },
@@ -180,6 +210,31 @@ export function createHostedAgentRuntimeRouter(o: HostedAgentRuntimeAppOptions):
   }
   // The node already parsed JSON for requests it forwards in-process; express.json skips a parsed body.
   router.use(express.json({ limit: '300kb' }));
+  router.post('/_ainize/manage', async (req, res) => {
+    const supplied = Buffer.from(req.header('authorization') ?? '');
+    const expected = Buffer.from('Bearer ' + o.gateway.token);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) { res.status(401).json({ error: 'unauthorized' }); return; }
+    if (!o.module?.manage) { res.status(404).json({ error: 'builder_not_supported' }); return; }
+    const action = req.body?.action;
+    const params = req.body?.params ?? {};
+    if (typeof action !== 'string' || action.length > 64 || !params || typeof params !== 'object' || Array.isArray(params)) { res.status(400).json({ error: 'invalid_request' }); return; }
+    const ctx = createHostedAgentCtx(o, { text: '', contextId: randomUUID(), history: [], files: [] });
+    try { res.json({ result: await o.module.manage(action, params, ctx) }); }
+    catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+  router.post('/', async (req, res, next) => {
+    const body = req.body as { jsonrpc?: unknown; method?: unknown; id?: unknown; params?: unknown } | undefined;
+    const method = typeof body?.method === 'string' ? body.method : '';
+    const key = Object.keys(o.module?.rpcMethods ?? {}).find(k => customRpcMethod(k) && k.toLowerCase() === method.toLowerCase());
+    if (!key) { next(); return; }
+    const error = (code: number, message: string, status = 200) => { res.status(status).json({ jsonrpc: '2.0', id: body?.id ?? null, error: { code, message } }); };
+    if (body?.jsonrpc !== '2.0' || !Object.hasOwn(body, 'id') || !(body.id === null || typeof body.id === 'string' || typeof body.id === 'number')) { error(-32600, 'Invalid Request', 400); return; }
+    if (body.params !== undefined && (!body.params || typeof body.params !== 'object' || Array.isArray(body.params))) { error(-32602, 'params must be an object', 400); return; }
+    const params = (body.params ?? {}) as Record<string, unknown>;
+    const ctx = createHostedAgentCtx(o, { text: '', contextId: randomUUID(), textParts: [], history: [], files: [] });
+    try { const result = await o.module!.rpcMethods![key](params, ctx); res.json({ jsonrpc: '2.0', id: body.id, result }); }
+    catch (e) { const err = e as { rpcCode?: unknown; httpStatus?: unknown; message?: unknown }; error(typeof err?.rpcCode === 'number' ? err.rpcCode : -32603, typeof err?.message === 'string' ? err.message : 'Custom method failed', typeof err?.httpStatus === 'number' && [200,400,404].includes(err.httpStatus) ? err.httpStatus : 200); }
+  });
   router.post('/', jsonRpcHandler({
     requestHandler,
     userBuilder: UserBuilder.noAuthentication,

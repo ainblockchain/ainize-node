@@ -26,6 +26,7 @@ export interface HostedAgentHostOptions {
   secrets: HostedAgentSecretStore;
   /** Null when this node does not run code agents. */
   docker: HostedAgentDocker | null;
+  gatewaySocketPath?: string;
   idleStopMs: number;
   maxRunning: number;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -76,7 +77,8 @@ export class HostedAgentHost {
     this.loopbackGateway = await this.o.gateway.listen('127.0.0.1');
     if (this.o.docker) {
       try {
-        this.dockerGateway = await this.o.gateway.listen(await this.o.docker.ensureNetwork());
+        await this.o.docker.ensureNetwork();
+        this.dockerGateway = this.o.gatewaySocketPath ? await this.o.gateway.listenUnix(this.o.gatewaySocketPath) : await this.o.gateway.listen(await this.o.docker.ensureNetwork());
         await this.o.docker.removeOrphans();
       } catch (e) {
         this.o.log('error', `hosted agents: docker unusable, code agents disabled — ${(e as Error).message}`);
@@ -152,6 +154,18 @@ export class HostedAgentHost {
       st.error = `v${spec.version} did not build: ${err.message.split('\n')[0]}`;
       this.o.log('warn', `hosted agent ${spec.id}: ${st.error}`);
     }
+  }
+
+  /** Called only by the authenticated management API; the scoped token never reaches its response. */
+  async manage(id: string, action: string, params: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    const upstream = await this.resolve(id);
+    const token = this.state.get(id)?.token;
+    if (!upstream || !token) return { status: 503, body: { error: 'agent_unavailable' } };
+    const response = await fetch(upstream.replace(/\/+$/, '') + '/_ainize/manage', {
+      method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ action, params }), signal: AbortSignal.timeout(120_000), redirect: 'error',
+    });
+    return { status: response.status, body: await response.json() };
   }
 
   async remove(id: string): Promise<void> {

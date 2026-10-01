@@ -223,6 +223,8 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec: prior, who } = hit;
+    const expected = req.headers['if-match'];
+    if (expected !== undefined && expected !== String(prior.version)) return refuse(res, 409, 'version_conflict', 'agent changed; pull its latest version before editing');
     const input = parse(req, res, who);
     if (!input) return;
     if (input.id !== prior.id) return refuse(res, 400, 'invalid_request', 'an agent\'s id cannot change — it is its public address');
@@ -239,7 +241,20 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     res.json({ agent: view(req, spec, true, who) });
   });
 
-  router.delete('/api/hosted-agents/:id', async (req, res) => {
+  router.post('/api/hosted-agents/:id/builder', async (req, res) => {
+    const hit = administered(req, res);
+    if (!hit) return;
+    const action = req.body?.action;
+    const params = req.body?.params ?? {};
+    if (!['status', 'memory.set', 'memory.update', 'thinking.evolve'].includes(action) || !params || typeof params !== 'object' || Array.isArray(params)) return refuse(res, 400, 'invalid_request', 'unsupported builder action');
+    try {
+      const result = await deps.host.manage(hit.spec.id, action, params);
+      if (action !== 'status' && result.status === 200) deps.orgAudit?.([hit.spec.orgId], hit.who.subject, 'agent.builder.memory', hit.spec.id, { action });
+      res.status(result.status).json(result.body);
+    } catch { refuse(res, 502, 'builder_unavailable', 'builder operation failed'); }
+  });
+
+  router.delete('/api/hosted-agents/:id' , async (req, res) => {
     const hit = administered(req, res);
     if (!hit) return;
     const { spec, who } = hit;

@@ -18,6 +18,8 @@
  * It listens on loopback for in-process agents and on the Docker bridge gateway address for containers, never on
  * a public interface: a container on the internal network can reach this and nothing else.
  */
+import { mkdirSync, chmodSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
@@ -253,6 +255,16 @@ export class HostedAgentGateway {
     const url = `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
     this.urls.set(host, url);
     return url;
+  }
+
+  /** Owner-only Unix transport; the same token, model and egress checks apply. */
+  async listenUnix(path: string): Promise<string> {
+    mkdirSync(dirname(path), {recursive: true, mode: 0o700});
+    const server = createServer((req, res) => { void this.handle(req, res); });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(path, () => resolve()); });
+    chmodSync(path, 0o600);
+    this.servers.push(server);
+    return 'http://ainize-gateway';
   }
 
   async close(): Promise<void> {

@@ -63,7 +63,7 @@ export const hostedAgentSpecInput = z.object({
   name: z.string().trim().min(1, 'a name is required').max(80),
   description: z.string().trim().max(500).default(''),
   model: z.string().min(1, 'choose a model'),
-  systemPrompt: z.string().max(8000).default(''),
+  systemPrompt: z.string().max(131072).default(''),
   mode: z.enum(['prompt', 'tools', 'handler']).default('prompt'),
   files: z.record(fileName, z.string()).default({}),
   a2ui: z.boolean().default(false),
