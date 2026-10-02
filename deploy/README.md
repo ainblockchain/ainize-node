@@ -222,3 +222,18 @@ ainize keys import ~/node-key.json --passphrase "…"    # the way back, on a ne
   identity and the operator password and only rewrites the rest of the file.
 - Back up `<AINIZE_HOME>/data/` too if the node is a seller: it holds the `.npz` bodies buyers download. They can be
   re-registered from the original files, but only if you still have them.
+
+## CI before releasing
+
+`deploy-node.sh` runs locked dependency installation, typecheck, the complete test
+suite, shared reference checks and build before changing the running release.
+Failure leaves the running release untouched and records the stage, commit and
+private log in `$AINIZE_NODE_ROOT/ci` for the Ainmem collector.
+
+The reference check reads Node, Core, CLI and Web sources. `ci-docs.sh` creates a
+temporary workspace using this exact Node source plus fresh Core, CLI and Web
+`main` checkouts; it records their full commit IDs in the CI log, installs Core's
+locked dependencies and checks all generated pages. It does not modify existing
+developer checkouts or publish documentation. A documentation mismatch fails CI;
+network or dependency failures also stop the release. Temporary sources are removed
+when the check exits.

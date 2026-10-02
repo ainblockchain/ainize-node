@@ -42,7 +42,7 @@ npm run typecheck
 stage test
 npm run test
 stage docs:check
-npm run docs:check
+bash "$WORK/deploy/ci-docs.sh" "$WORK"
 stage build
 npm run build
 [[ -f dist/bin.js ]] || { echo "build produced no dist/bin.js"; exit 1; }
