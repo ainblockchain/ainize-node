@@ -40,9 +40,9 @@ npm ci --include=dev --ignore-scripts --no-audit --no-fund
 stage typecheck
 npm run typecheck
 stage test
-npm run test
+bash "$WORK/deploy/ci-workspace.sh" "$WORK" test
 stage docs:check
-bash "$WORK/deploy/ci-docs.sh" "$WORK"
+bash "$WORK/deploy/ci-workspace.sh" "$WORK" docs:check
 stage build
 npm run build
 [[ -f dist/bin.js ]] || { echo "build produced no dist/bin.js"; exit 1; }

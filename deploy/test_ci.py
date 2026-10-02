@@ -13,7 +13,7 @@ class GateTests(unittest.TestCase):
             root = Path(temporary)
             source = root / 'source'; source.mkdir()
             (source / 'deploy').mkdir()
-            (source / 'deploy/ci-docs.sh').write_text('cd "$1"\nnpm run docs:check\n')
+            (source / 'deploy/ci-workspace.sh').write_text('cd "$1"\nnpm run "$2"\n')
             (source / 'dist').mkdir(); (source / 'dist/bin.js').write_text('test fixture')
             bin_dir = root / 'bin'; bin_dir.mkdir()
             npm = bin_dir / 'npm'

@@ -230,10 +230,10 @@ suite, shared reference checks and build before changing the running release.
 Failure leaves the running release untouched and records the stage, commit and
 private log in `$AINIZE_NODE_ROOT/ci` for the Ainmem collector.
 
-The reference check reads Node, Core, CLI and Web sources. `ci-docs.sh` creates a
+The tests and reference check read Node, Core, CLI and Web sources. `ci-workspace.sh` creates a
 temporary workspace using this exact Node source plus fresh Core, CLI and Web
 `main` checkouts; it records their full commit IDs in the CI log, installs Core's
-locked dependencies and checks all generated pages. It does not modify existing
+locked dependencies and runs the complete tests or checks all generated pages. It does not modify existing
 developer checkouts or publish documentation. A documentation mismatch fails CI;
 network or dependency failures also stop the release. Temporary sources are removed
 when the check exits.
