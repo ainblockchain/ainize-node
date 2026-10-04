@@ -56,6 +56,10 @@ async function main() {
   // Scrub them from the environment the agent's code can read; `ctx.secret` is the one way in.
   for (const k of Object.keys(process.env)) if (k.startsWith(HOSTED_AGENT_SECRET_ENV_PREFIX) || k === 'AINIZE_AGENT_TOKEN' || k === 'AINIZE_POP_JWK') delete process.env[k];
 
+  // Agent top-level initialization must see a filesystem path, not the env-file encoding.
+  if (process.env.AINIZE_AGENT_STATE_DIR !== undefined) {
+    process.env.AINIZE_AGENT_STATE_DIR = hostedAgentEnvValue(process.env.AINIZE_AGENT_STATE_DIR);
+  }
   globalThis.fetch = hostedAgentGlobalFetch(gateway);
   const entry = hostedAgentEnvValue(process.env.AINIZE_AGENT_ENTRY) || '/agent/index.mjs';
   const mod = hostedAgentModuleOf(await import(pathToFileURL(entry).href) as Record<string, unknown>);
