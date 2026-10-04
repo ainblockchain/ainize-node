@@ -101,6 +101,10 @@ export interface HostedAgentAttachment {
 }
 
 export interface HostedAgentInput {
+  /** Business metadata supplied by the A2A caller; never includes credential grants. */
+  metadata?: Record<string, unknown>;
+  /** Original text parts, preserving order and whitespace for compatibility handlers. */
+  textParts?: string[];
   text: string;
   contextId: string;
   history: HostedAgentChatMessage[];
@@ -163,7 +167,7 @@ export interface HostedAgentGeneratedImage {
 export type HostedAgentFetchInit = RequestInit & { maxBytes?: number };
 
 /** What a turn returns. A bare string is `{ text }`. */
-export type HostedAgentReply = string | { text?: string; parts?: unknown[]; ui?: HostedAgentUiMessage[] };
+export type HostedAgentReply = string | { text?: string; parts?: unknown[]; metadata?: Record<string, unknown>; ui?: HostedAgentUiMessage[] };
 
 export interface HostedAgentTool {
   name: string;
@@ -175,8 +179,13 @@ export interface HostedAgentTool {
 
 /** The module an agent's `index.mjs` default-exports (or exports by name). */
 export interface HostedAgentModule {
+  manage?(action: string, params: Record<string, unknown>, ctx: HostedAgentCtx): unknown | Promise<unknown>;
   execute?(input: string, ctx: HostedAgentCtx): HostedAgentReply | Promise<HostedAgentReply>;
   tools?: HostedAgentTool[];
+  /** Explicit nonstandard methods; never overrides the SDK's standard A2A methods. */
+  rpcMethods?: Record<string, (params: Record<string, unknown>, ctx: HostedAgentCtx) => unknown | Promise<unknown>>;
+  /** Extra card fields, with protocol, identity and security fields reserved to the runtime. */
+  cardExtras?: Record<string, unknown>;
 }
 
 /** Where the runtime reaches the node: the gateway base URL and this agent's token. */

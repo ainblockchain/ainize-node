@@ -384,6 +384,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
   const hostedHost = new HostedAgentHost({
     gateway: hostedGateway,
+    gatewaySocketPath: dockerCfg?.enabled ? join(cfg.dataDir,'hosted-agent-gateway','gateway.sock') : undefined,
     secrets: hostedSecrets,
     docker: dockerCfg?.enabled ? new HostedAgentDocker({
       runtime: dockerCfg.runtime,
@@ -393,6 +394,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
       buildTimeoutMs: dockerCfg.buildTimeoutMs ?? HOSTED_AGENT_DOCKER_DEFAULTS.buildTimeoutMs,
       workDir: join(cfg.dataDir, 'hosted-agents'),
+      gatewaySocketDir: join(cfg.dataDir, 'hosted-agent-gateway'),
+      stateDir: join(cfg.dataDir,'hosted-agent-state'),
       runtimeImage: 'ainize/hosted-agent-runtime',
     }) : null,
     idleStopMs: dockerCfg?.idleStopMs ?? 600_000,

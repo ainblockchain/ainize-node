@@ -6,6 +6,7 @@
  * runtime asks, it does not decide, so code that bypasses `ctx` and edits these requests gains nothing — and in a
  * container there is no other route out at all.
  */
+import { hostedAgentGatewayFetch } from './hostedAgentGatewayFetch.js';
 import { hostedAgentUiHelpers } from './hostedAgentA2ui.js';
 import type {
   HostedAgentAudioInput, HostedAgentCtx, HostedAgentFetchInit, HostedAgentGatewayAccess, HostedAgentGeneratedImage, HostedAgentImageRequest, HostedAgentInput,
@@ -23,7 +24,7 @@ export const hostedAgentEgressUrl = (gateway: HostedAgentGatewayAccess) =>
   `${gateway.url.replace(/\/+$/, '')}/t/${gateway.token}/egress`;
 
 /** The original global fetch, captured before a container runtime replaces it with the egress one. */
-const directFetch: typeof fetch = globalThis.fetch.bind(globalThis);
+const directFetch: typeof fetch = hostedAgentGatewayFetch;
 
 export async function hostedAgentLlmChat(gateway: HostedAgentGatewayAccess, model: string, request: HostedAgentLlmRequest): Promise<HostedAgentLlmChoice> {
   const res = await directFetch(`${hostedAgentLlmBaseUrl(gateway)}/chat/completions`, {
