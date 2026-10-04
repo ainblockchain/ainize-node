@@ -243,11 +243,11 @@ export class HostedAgentGateway {
   }
 
   /** Listen on one address (loopback, or a bridge gateway). Returns the base URL a runtime there should use. */
-  async listen(host: string): Promise<string> {
+  async listen(host: string, listenPort = 0): Promise<string> {
     const known = this.urls.get(host);
     if (known) return known;
     const server = createServer((req, res) => { void this.handle(req, res); });
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, host, () => resolve()); });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(listenPort, host, () => resolve()); });
     this.servers.push(server);
     const { port } = server.address() as AddressInfo;
     const url = `http://${host.includes(':') ? `[${host}]` : host}:${port}`;

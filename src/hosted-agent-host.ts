@@ -27,6 +27,8 @@ export interface HostedAgentHostOptions {
   secrets: HostedAgentSecretStore;
   /** Null when this node does not run code agents. */
   docker: HostedAgentDocker | null;
+  /** Fixed bridge gateway port for hosts with an explicit firewall rule. Defaults to an ephemeral port. */
+  dockerGatewayPort?: number;
   idleStopMs: number;
   maxRunning: number;
   /** Where prompt agents keep their A2A tasks across restarts (hosted-agent-task-store.ts). Absent: in memory. */
@@ -79,7 +81,7 @@ export class HostedAgentHost {
     this.loopbackGateway = await this.o.gateway.listen('127.0.0.1');
     if (this.o.docker) {
       try {
-        this.dockerGateway = await this.o.gateway.listen(await this.o.docker.ensureNetwork());
+        this.dockerGateway = await this.o.gateway.listen(await this.o.docker.ensureNetwork(), this.o.dockerGatewayPort);
         await this.o.docker.removeOrphans();
       } catch (e) {
         this.o.log('error', `hosted agents: docker unusable, code agents disabled — ${(e as Error).message}`);

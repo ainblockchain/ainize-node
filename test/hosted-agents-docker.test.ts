@@ -45,7 +45,17 @@ export default {
 
 test('a handler agent builds, starts on demand in Docker, answers over A2A through the node, and stops when idle', { skip: !hasDocker && 'no docker daemon', timeout: 900_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hosted-docker-'));
-  const network = `ainize-hosted-test-${process.pid}`;
+  const configuredNetwork = process.env.AINIZE_CI_DOCKER_NETWORK;
+  const network = configuredNetwork || `ainize-hosted-test-${process.pid}`;
+  const dockerGatewayPort = process.env.AINIZE_CI_DOCKER_GATEWAY_PORT
+    ? Number(process.env.AINIZE_CI_DOCKER_GATEWAY_PORT) : undefined;
+  if (configuredNetwork) {
+    assert.ok(Number.isInteger(dockerGatewayPort) && dockerGatewayPort! > 0 && dockerGatewayPort! <= 65535,
+      'the CI network requires a fixed gateway port permitted by its host firewall');
+    const inspected = await hostedAgentDockerExec(['network', 'inspect', network, '--format', '{{.Internal}}']);
+    assert.equal(inspected.code, 0, 'the configured CI network must already exist');
+    assert.equal(inspected.stdout.trim(), 'true', 'CI agents must remain on an internal network');
+  }
   // the model backend listens on all interfaces here only because the gateway, not the container, calls it
   const backend = createServer((req, res) => {
     let b = '';
@@ -66,7 +76,7 @@ test('a handler agent builds, starts on demand in Docker, answers over A2A throu
     memory: '256m', cpus: 1, pidsLimit: 128, network, buildTimeoutMs: 600_000,
     workDir: join(dir, 'work'), runtimeImage: 'ainize/hosted-agent-runtime-test',
   });
-  const host = new HostedAgentHost({ gateway, secrets, docker, idleStopMs: 1, maxRunning: 2, log: () => {} });
+  const host = new HostedAgentHost({ gateway, secrets, docker, dockerGatewayPort, idleStopMs: 1, maxRunning: 2, log: () => {} });
   await host.start([]);
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
@@ -91,7 +101,8 @@ test('a handler agent builds, starts on demand in Docker, answers over A2A throu
     }) });
     const body = await r.json() as { result?: { parts: { kind: string; text?: string }[] }; error?: unknown };
     assert.ok(body.result, `call failed: ${JSON.stringify(body)}\n${(await host.logs(spec.id)).join('\n')}`);
-    assert.equal(body.result!.parts[0]!.text, `words=3 key=sk-test loopback=refused metadata=refused model=ok:${MODEL}`);
+    assert.equal(body.result!.parts[0]!.text, `words=3 key=sk-test loopback=refused metadata=refused model=ok:${MODEL}`,
+      (await host.logs(spec.id)).join('\n'));
     assert.equal(body.result!.parts.filter((p) => p.kind === 'data').length, 3, 'the A2UI surface came back as data parts');
 
     const inspect = await hostedAgentDockerExec(['inspect', 'ainize-hosted-dock-scorer', '--format', '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.Config.User}}']);
@@ -108,7 +119,7 @@ test('a handler agent builds, starts on demand in Docker, answers over A2A throu
     await host.stop();
     await new Promise<void>((r) => server.close(() => r()));
     await new Promise<void>((r) => backend.close(() => r()));
-    await hostedAgentDockerExec(['network', 'rm', network]);
+    if (!configuredNetwork) await hostedAgentDockerExec(['network', 'rm', network]);
     rmSync(dir, { recursive: true, force: true });
   }
 });

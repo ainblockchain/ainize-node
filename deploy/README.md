@@ -237,3 +237,17 @@ locked dependencies and runs the complete tests or checks all generated pages. I
 developer checkouts or publish documentation. A documentation mismatch fails CI;
 network or dependency failures also stop the release. Temporary sources are removed
 when the check exits.
+
+On CI hosts that deny incoming traffic from Docker bridges, provision a dedicated
+internal network and permit only its gateway port. Set `AINIZE_CI_DOCKER_NETWORK`
+and `AINIZE_CI_DOCKER_GATEWAY_PORT` in the CI worker environment. The Docker
+integration test requires that network to exist and be internal; it keeps the
+network for subsequent runs and removes its own containers and images. The test
+still checks model calls, refused private destinations, container isolation, and
+idle shutdown. Do not use host networking or disable the firewall to pass it.
+For example, on the existing CI server the isolated `ainize-cicd-integration`
+network uses bridge `ainize-ci0`, subnet `172.30.250.0/24`, gateway
+`172.30.250.1`, and TCP port `19999`. Permit incoming traffic only on that bridge,
+from that subnet, to that gateway and port. Check for subnet conflicts before
+provisioning another host. These variables configure the test fixture; ordinary
+runtime listeners continue to use an ephemeral port by default.
