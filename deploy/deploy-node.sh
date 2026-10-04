@@ -72,6 +72,14 @@ node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ref:proces
 
 PREVIOUS="$(readlink -f "$SERVE" 2>/dev/null || true)"
 
+# Host-owned compatibility checks must pass before changing live configuration or the serving link.
+if [ -n "${AINIZE_NODE_RELEASE_PREFLIGHT:-}" ]; then
+  [[ "$AINIZE_NODE_RELEASE_PREFLIGHT" = /* && -x "$AINIZE_NODE_RELEASE_PREFLIGHT" ]] \
+    || { echo 'Release preflight must be an absolute executable path' >&2; exit 1; }
+  say "checking release compatibility"
+  AINIZE_HOME="$NODE_HOME" "$AINIZE_NODE_RELEASE_PREFLIGHT" "$DEST"
+fi
+
 # Config that ships with the code (see the header). Applied before the restart that reads it. A backup is made
 # only when something changes — a redeploy of the same overlay must not replace the pre-overlay copy with one
 # that already has it.

@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 export interface HostedAgentDockerOptions {
   /** The OCI runtime (`runsc` for gVisor). Empty uses Docker's default (runc) — a weaker boundary. */
   runtime?: string;
+  gatewaySocketDir?: string;
+  stateDir?: string;
   memory: string;
   cpus: number;
   pidsLimit: number;
@@ -99,9 +101,9 @@ export async function prepareHostedAgentRuntimeContext(dir: string): Promise<str
   writeFileSync(join(dir, 'Dockerfile'), [
     'FROM node:24-slim',
     'WORKDIR /runtime',
-    'COPY package.json ./',
+    'COPY --chown=node:node package.json ./',
     'RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force',
-    'COPY *.js ./',
+    'COPY --chown=node:node *.js ./',
     'ENV NODE_ENV=production',
     'USER node',
     `EXPOSE ${HOSTED_AGENT_CONTAINER_PORT}`,
@@ -184,6 +186,9 @@ export class HostedAgentDocker {
    */
   async run(agentId: string, version: number, env: Record<string, string>): Promise<{ upstream: string }> {
     const name = hostedAgentContainerName(agentId);
+    if (this.o.stateDir) mkdirSync(join(this.o.stateDir, agentId), {recursive:true, mode:0o700});
+    if (this.o.gatewaySocketDir) env.AINIZE_GATEWAY_SOCKET='/run/ainize-gateway/gateway.sock';
+    if (this.o.stateDir) env.AINIZE_AGENT_STATE_DIR='/state';
     await hostedAgentDockerExec(['rm', '-f', name], 30_000);
     const envFile = join(this.o.workDir, `env-${agentId}-${process.pid}`);
     mkdirSync(this.o.workDir, { recursive: true });
@@ -204,6 +209,8 @@ export class HostedAgentDocker {
         '--pids-limit', String(this.o.pidsLimit),
         '--user', 'node',
         ...(this.o.runtime ? ['--runtime', this.o.runtime] : []),
+        ...(this.o.gatewaySocketDir ? ['--mount', `type=bind,src=${this.o.gatewaySocketDir},dst=/run/ainize-gateway,readonly`] : []),
+        ...(this.o.stateDir ? ['--mount', `type=bind,src=${join(this.o.stateDir,agentId)},dst=/state`] : []),
         '--env-file', envFile,
         hostedAgentImageTag(agentId, version),
       ], 60_000);
@@ -233,9 +240,8 @@ export class HostedAgentDocker {
 
   /** Containers left by a previous node process — removed at start, since their tokens died with it. */
   async removeOrphans(): Promise<void> {
-    const r = await hostedAgentDockerExec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent']);
+    const r = await hostedAgentDockerExec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent', '--filter', `network=${this.o.network}`]);
     const ids = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
     if (ids.length) await hostedAgentDockerExec(['rm', '-f', ...ids], 60_000);
   }
 }
-
