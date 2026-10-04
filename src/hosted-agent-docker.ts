@@ -101,9 +101,9 @@ export async function prepareHostedAgentRuntimeContext(dir: string): Promise<str
   writeFileSync(join(dir, 'Dockerfile'), [
     'FROM node:24-slim',
     'WORKDIR /runtime',
-    'COPY package.json ./',
+    'COPY --chown=node:node package.json ./',
     'RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force',
-    'COPY *.js ./',
+    'COPY --chown=node:node *.js ./',
     'ENV NODE_ENV=production',
     'USER node',
     `EXPOSE ${HOSTED_AGENT_CONTAINER_PORT}`,
@@ -240,9 +240,8 @@ export class HostedAgentDocker {
 
   /** Containers left by a previous node process — removed at start, since their tokens died with it. */
   async removeOrphans(): Promise<void> {
-    const r = await hostedAgentDockerExec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent']);
+    const r = await hostedAgentDockerExec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent', '--filter', `network=${this.o.network}`]);
     const ids = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
     if (ids.length) await hostedAgentDockerExec(['rm', '-f', ...ids], 60_000);
   }
 }
-
