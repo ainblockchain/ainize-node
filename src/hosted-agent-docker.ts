@@ -10,6 +10,7 @@
  *
  * Containers run on an `--internal` network: no route out, except to the node's gateway on the bridge address.
  */
+import { hostedAgentAccess } from './hosted-agent-access.js';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -116,14 +117,14 @@ export async function prepareHostedAgentRuntimeContext(dir: string): Promise<str
 }
 
 export class HostedAgentDocker {
-  constructor(private readonly o: HostedAgentDockerOptions) {}
+  constructor(private readonly o: HostedAgentDockerOptions, private readonly exec = hostedAgentDockerExec, private readonly access = hostedAgentAccess) {}
 
   /** The internal network, created if missing. Returns its gateway address — where the node's gateway listens. */
   async ensureNetwork(): Promise<string> {
-    const inspect = async () => hostedAgentDockerExec(['network', 'inspect', this.o.network, '--format', '{{(index .IPAM.Config 0).Gateway}}']);
+    const inspect = async () => this.exec(['network', 'inspect', this.o.network, '--format', '{{(index .IPAM.Config 0).Gateway}}']);
     let r = await inspect();
     if (r.code !== 0) {
-      const created = await hostedAgentDockerExec(['network', 'create', '--internal', '--label', 'ainize.hosted-agents=1', this.o.network]);
+      const created = await this.exec(['network', 'create', '--internal', '--label', 'ainize.hosted-agents=1', this.o.network]);
       if (created.code !== 0 && !/already exists/.test(created.stderr)) throw new Error(`docker network create failed: ${created.stderr.trim()}`);
       r = await inspect();
     }
@@ -146,8 +147,8 @@ export class HostedAgentDocker {
   private async buildRuntimeImage(): Promise<string> {
     const dir = join(this.o.workDir, 'runtime');
     const tag = `${this.o.runtimeImage}:${await prepareHostedAgentRuntimeContext(dir)}`;
-    if ((await hostedAgentDockerExec(['image', 'inspect', tag], 20_000)).code === 0) return tag;
-    const r = await hostedAgentDockerExec(['build', '-t', tag, '--label', 'ainize.hosted-agent-runtime=1', dir], this.o.buildTimeoutMs);
+    if ((await this.exec(['image', 'inspect', tag], 20_000)).code === 0) return tag;
+    const r = await this.exec(['build', '-t', tag, '--label', 'ainize.hosted-agent-runtime=1', dir], this.o.buildTimeoutMs);
     if (r.code !== 0) throw new Error(`building ${tag} failed:\n${(r.stderr || r.stdout).slice(-4000)}`);
     return tag;
   }
@@ -173,7 +174,7 @@ export class HostedAgentDocker {
       '',
     ].join('\n'));
     const tag = hostedAgentImageTag(agentId, version);
-    const r = await hostedAgentDockerExec(['build', '-t', tag, '--label', `ainize.hosted-agent=${agentId}`, dir], this.o.buildTimeoutMs);
+    const r = await this.exec(['build', '-t', tag, '--label', `ainize.hosted-agent=${agentId}`, dir], this.o.buildTimeoutMs);
     rmSync(dir, { recursive: true, force: true });
     const log = `${r.stdout}\n${r.stderr}`.trim();
     if (r.code !== 0) throw Object.assign(new Error(`build failed:\n${log.slice(-4000)}`), { buildLog: log });
@@ -186,16 +187,17 @@ export class HostedAgentDocker {
    */
   async run(agentId: string, version: number, env: Record<string, string>): Promise<{ upstream: string }> {
     const name = hostedAgentContainerName(agentId);
-    if (this.o.stateDir) mkdirSync(join(this.o.stateDir, agentId), {recursive:true, mode:0o700});
+    if (!/^[a-zA-Z0-9_-]+$/.test(agentId)) throw new Error('invalid agent id');
+    if (this.o.stateDir) await this.access(join(this.o.stateDir, agentId), 'state');
     if (this.o.gatewaySocketDir) env.AINIZE_GATEWAY_SOCKET='/run/ainize-gateway/gateway.sock';
     if (this.o.stateDir) env.AINIZE_AGENT_STATE_DIR='/state';
-    await hostedAgentDockerExec(['rm', '-f', name], 30_000);
+    await this.exec(['rm', '-f', name], 30_000);
     const envFile = join(this.o.workDir, `env-${agentId}-${process.pid}`);
     mkdirSync(this.o.workDir, { recursive: true });
     writeFileSync(envFile, Object.entries(env).map(([k, v]) => `${k}=b64:${Buffer.from(v).toString('base64')}`).join('\n') + '\n', { mode: 0o600 });
     let r: HostedAgentDockerResult;
     try {
-      r = await hostedAgentDockerExec([
+      r = await this.exec([
         'run', '-d', '--name', name,
         '--label', `ainize.hosted-agent=${agentId}`,
         '--network', this.o.network,
@@ -218,30 +220,30 @@ export class HostedAgentDocker {
       rmSync(envFile, { force: true });
     }
     if (r.code !== 0) throw new Error(`docker run failed: ${r.stderr.trim()}`);
-    const ip = (await hostedAgentDockerExec(['inspect', name, '--format', `{{(index .NetworkSettings.Networks "${this.o.network}").IPAddress}}`])).stdout.trim();
+    const ip = (await this.exec(['inspect', name, '--format', `{{(index .NetworkSettings.Networks "${this.o.network}").IPAddress}}`])).stdout.trim();
     if (!ip) throw new Error(`container ${name} has no address on ${this.o.network}`);
     return { upstream: `http://${ip}:${HOSTED_AGENT_CONTAINER_PORT}` };
   }
 
   async stop(agentId: string): Promise<void> {
-    await hostedAgentDockerExec(['rm', '-f', hostedAgentContainerName(agentId)], 30_000);
+    await this.exec(['rm', '-f', hostedAgentContainerName(agentId)], 30_000);
   }
 
   async logs(agentId: string, tail = 200): Promise<string[]> {
-    const r = await hostedAgentDockerExec(['logs', '--tail', String(tail), hostedAgentContainerName(agentId)], 15_000);
+    const r = await this.exec(['logs', '--tail', String(tail), hostedAgentContainerName(agentId)], 15_000);
     return `${r.stdout}${r.stderr}`.split('\n').filter(Boolean).slice(-tail);
   }
 
   async removeImages(agentId: string): Promise<void> {
-    const r = await hostedAgentDockerExec(['image', 'ls', '-q', '--filter', `label=ainize.hosted-agent=${agentId}`]);
+    const r = await this.exec(['image', 'ls', '-q', '--filter', `label=ainize.hosted-agent=${agentId}`]);
     const ids = [...new Set(r.stdout.split('\n').map((s) => s.trim()).filter(Boolean))];
-    if (ids.length) await hostedAgentDockerExec(['image', 'rm', '-f', ...ids], 60_000);
+    if (ids.length) await this.exec(['image', 'rm', '-f', ...ids], 60_000);
   }
 
   /** Containers left by a previous node process — removed at start, since their tokens died with it. */
   async removeOrphans(): Promise<void> {
-    const r = await hostedAgentDockerExec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent', '--filter', `network=${this.o.network}`]);
+    const r = await this.exec(['ps', '-aq', '--filter', 'label=ainize.hosted-agent', '--filter', `network=${this.o.network}`]);
     const ids = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-    if (ids.length) await hostedAgentDockerExec(['rm', '-f', ...ids], 60_000);
+    if (ids.length) await this.exec(['rm', '-f', ...ids], 60_000);
   }
 }
