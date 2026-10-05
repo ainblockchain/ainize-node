@@ -145,11 +145,11 @@ node --test --import tsx \
 | Teams `70afe6dc` | 승인 대기 | `f526a2c0a17fa7d20c06795ad68b47714a790537`; PR [1410](https://github.com/ainetwork-ai/ainteams/pull/1410), [1411](https://github.com/ainetwork-ai/ainteams/pull/1411); [작업 페이지](https://ainmem.ainetwork.ai/p/2c4e3fe3-308c-5716-8aa3-e46415728bdb) |
 | Teams `86382eed` | 승인 대기, 이전 조사에서 main 갱신 필요 | `1e51eba218915fb76fbd72563d11316391a6e446`; PR 1387/1388; [작업 페이지](https://ainmem.ainetwork.ai/p/04c0b8ed-a5cc-5d05-b252-3c40911b472b) |
 | Ainize 웹 `2648f640` | 승인 대기 | `39b2ba37d5ac122fce3122997c8d5b28677c3ea5`; [PR 36](https://github.com/ainblockchain/ainize-web/pull/36); [작업 페이지](https://ainmem.ainetwork.ai/p/d9d2e941-fe3c-5e27-b7eb-8d2d4e6c3c8b) |
-| Ainspace `e8486ea4` | 승인 대기 + 배포 대상 미정 | `6bec65cef4a05e42f52a668850fd728ba09c42d2`; [PR 198](https://github.com/ainetwork-ai/ainspace/pull/198); [작업 페이지](https://ainmem.ainetwork.ai/p/05bc68f6-d4ea-56c1-b614-811da475ffc5) |
+| Ainspace `e8486ea4` | 승인 대기 (배포 대상 확인: ainspace.ainetwork.ai, main 병합) | `6bec65cef4a05e42f52a668850fd728ba09c42d2`; [PR 198](https://github.com/ainetwork-ai/ainspace/pull/198); [작업 페이지](https://ainmem.ainetwork.ai/p/05bc68f6-d4ea-56c1-b614-811da475ffc5) |
 | Aindrive `8d35710f` | failed / coding | Tailwind 보안 수정 후보 보존, 원격 게시 SHA 없음; [작업 페이지](https://ainmem.ainetwork.ai/p/a10a22b1-76e1-5653-9a14-cea902431063) |
 
 - [QA 통합 보드](https://ainmem.ainetwork.ai/p/dc93cb1a-da26-402b-9964-fba52c77ca5c)의 `배포 승인` 보기와 정본 작업 페이지를 유지한다.
-- Ainspace Vercel production target은 `ainspace-4g3e`, `ainspace`, `ainspace-uncommon-space` 중 어느 것인지 사용자 답변이 아직 없다. 추측하지 않는다.
+- Ainspace 배포 대상(2026-10-05 사용자 확인): 프로덕션은 `https://ainspace.ainetwork.ai/` 이며 Vercel 호스팅이다(`server: Vercel`, `x-vercel-id: icn1`). 저장소 `ainetwork-ai/ainspace`(기본 브랜치 `main`)에 Vercel Git 연동으로 연결되어, 승인된 커밋을 `main`에 병합하면 Vercel이 `vercel.json`의 `yarn lint && yarn test && yarn build` 를 거쳐 이 도메인으로 자동 승격한다. 즉 제품 게이트는 lint/test/build 이고, serving-SHA 확인은 이 도메인에 배포된 커밋을 승인 SHA와 대조한다. 세 후보(`ainspace-4g3e`/`ainspace`/`ainspace-uncommon-space`) 중 정확한 Vercel **프로젝트 이름**은 헤더·DNS·저장소에 드러나지 않아 여전히 Vercel 대시보드(Settings → Domains) 또는 토큰 있는 API에서만 확정된다. 병합 기반 배포에는 프로젝트 이름이 불필요하고, Vercel CLI/API 직접 배포가 필요할 때만 확정하면 된다. 추측으로 특정하지 않는다.
 - Teams `70afe6dc`의 이전 기록에는 실제 Chromium layout 11 pass / 0 skip과 최종 커밋 검증이 있다. 네이티브 전환으로 이 제품 변경을 다시 만들 필요는 없다. 기존 검증 로그와 현재 PR을 확인한다.
 - Aindrive 후보는 high audit 5→0, 1,088 tests pass / 3 todo, typecheck 통과까지 진행됐지만 Google Fonts DNS로 build가 막혔던 기록이 있다. 원래 후보와 로그를 보존하여 이어간다.
 - 이전에 릴리스된 Teams/Ainmem/Ainize API/AINA 결과는 네이티브 전환 성공의 증거가 아니다. 최신 serving SHA를 재확인한다.
