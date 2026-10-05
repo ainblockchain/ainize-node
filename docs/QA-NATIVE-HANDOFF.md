@@ -86,6 +86,7 @@
 - 자동 tick → 실제 채널 요청 → 제품 저장소 수정 → 실제 제품 검증 → Ainmem → 진짜 관리자 승인 → 배포까지의 네이티브 통합 흐름.
 - 작은 산술 진단은 어떤 제품의 회귀 테스트나 배포 게이트도 대신하지 않는다.
 - 전체 테스트 스위트가 모두 통과했다고 보고하면 안 된다. 이전 전체 실행은 693개 중 675 pass / 3 fail / 15 skip이었다. 일부 환경 의존 실패를 Linux에서 따로 검증했지만 전체 스위트를 같은 조건에서 재실행한 결과는 없다.
+- 2026-10-05 Linux 검증 호스트에서 `npm test`(`test/*.test.ts`, opt-in `e2e/` 제외) 전체 재실행: **720개 중 712 pass / 1 fail / 7 skip**. 유일한 실패는 `test/hosted-agents-docker.test.ts`의 온디맨드 핸들러 통합 테스트로, 이미지 빌드와 컨테이너 기동(`hosted agent v1 ... on :8080`)은 성공했으나 컨테이너 내부에서 모델 게이트웨이로 나가는 `fetch`가 이 박스의 egress 제약으로 실패했다(`turn failed TypeError: fetch failed`; loopback/metadata 차단은 기대대로 동작). 코드 결함이 아니라 환경 의존 네트워킹 문제이며, 네이티브 QA 모듈(`index.mjs`/`validation.mjs`)과 scheduler 단위 테스트는 모두 통과했다. 여전히 실제 노드+모델 환경에서 이 Docker 경로를 재확인해야 한다.
 
 ## 5. 다음 작업 순서
 
