@@ -116,6 +116,7 @@ export interface HostedAgentEgressRequest {
   url: string;
   method?: string;
   headers?: Record<string, string>;
+  redirect?: 'follow' | 'error' | 'manual';
   bodyBase64?: string;
   /** Raise the response ceiling for this call, up to HOSTED_AGENT_EGRESS_ATTACHMENT_MAX_BYTES. */
   maxBytes?: number;
@@ -175,6 +176,8 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
 
     const location = answer.headers.location;
     if (answer.status >= 300 && answer.status < 400 && location) {
+      if (req.redirect === 'error') throw new HostedAgentEgressRefusal('redirect refused by caller');
+      if (req.redirect === 'manual') return answer;
       url = new URL(location, url);
       if (answer.status === 303 || ((answer.status === 301 || answer.status === 302) && method === 'POST')) { method = 'GET'; body = undefined; }
       continue;

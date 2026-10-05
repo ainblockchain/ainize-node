@@ -150,7 +150,8 @@ export async function hostedAgentEgressFetch(gateway: HostedAgentGatewayAccess, 
   const res = await directFetch(hostedAgentEgressUrl(gateway), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, method, headers, bodyBase64, ...(init.maxBytes ? { maxBytes: init.maxBytes } : {}) }),
+    body: JSON.stringify({ url, method, headers, bodyBase64, redirect: init.redirect ?? req?.redirect,
+      ...(init.maxBytes ? { maxBytes: init.maxBytes } : {}) }),
     signal: init.signal ?? AbortSignal.timeout(45_000),
   });
   // Present only when the gateway could not fetch at all: '1' refused by policy, '0' failed. Either way the caller

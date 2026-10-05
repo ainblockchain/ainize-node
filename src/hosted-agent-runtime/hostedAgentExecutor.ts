@@ -25,6 +25,7 @@ import {
   hostedAgentMessageWithoutCredentials, type HostedAgentDelegatedGrant,
 } from './hostedAgentDelegatedReads.js';
 import { hostedAgentPopSigner, type HostedAgentPopSigner } from './hostedAgentPop.js';
+import { hostedAgentTeamsLocatorOf } from './hostedAgentTeamsLocator.js';
 import type { HostedAgentAttachment, HostedAgentChatMessage, HostedAgentCtx, HostedAgentModule, HostedAgentReply } from './hostedAgentRuntimeTypes.js';
 
 /** v1.0 Role enum: 0 unspecified, 1 user, 2 agent. */
@@ -279,7 +280,9 @@ export class HostedAgentExecutor implements AgentExecutor {
 
   private businessMetadata(message: {metadata?: unknown}): Record<string, unknown> {
     const raw=(message.metadata ?? {}) as Record<string, unknown>;
-    return Object.fromEntries(['skillId','variables','debug','agentSkills'].filter(k=>raw[k]!==undefined).map(k=>[k,raw[k]]));
+    const locator = hostedAgentTeamsLocatorOf(message);
+    return { ...Object.fromEntries(['skillId','variables','debug','agentSkills'].filter(k=>raw[k]!==undefined).map(k=>[k,raw[k]])),
+      ...(locator ? { teamsMessage: locator } : {}) };
   }
 
   async turn(

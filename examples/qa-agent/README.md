@@ -1,0 +1,87 @@
+# QA agent on Ainize hosting
+
+This package is for Ainize `handler` agents. Its files will be uploaded as the
+agent's code, using the existing per-agent `AINIZE_AGENT_STATE_DIR` mount. It does
+not proxy requests to the old external Python QA service.
+
+## Implemented
+
+`jobs.mjs` stores requests and checkpoints in SQLite in the agent's own state
+folder. A stable request key deduplicates retries across process restarts and
+rejects conflicting payloads. A transaction grants only one live execution lease;
+expired attempts cannot renew or overwrite the result of a replacement worker.
+Waiting jobs keep their checkpoint until explicitly woken. Waking a job is only
+scheduling: it never constitutes deployment approval.
+
+The focused test uses real SQLite connections and process-style close/reopen:
+
+```sh
+node --test test/hosted-qa-jobs.test.ts
+```
+
+The hosted runtime also forwards a sanitized `metadata.teamsMessage` lookup hint
+through both A2A send and stream calls. Sender names, claimed administrator roles,
+message text/history and credentials are excluded. The hint is untrusted until the
+handler re-reads the canonical Teams message and membership.
+
+`teams.mjs` uses the hosted gateway and `TEAMS_TOKEN` secret to re-read a request.
+It verifies the configured workspace/channel relationship, the root's presence in
+that channel, a reply's parent, request age, and current human channel membership.
+It accepts ordinary Korean fix requests and excludes deployment commands from fix
+intake. MCP session recovery retries reads only. Caller text and sender claims
+never become job input. This does not yet check organization SSO release rights.
+
+The gateway preserves `redirect: 'error'` so the credential-bearing MCP request
+cannot follow a redirect. The opt-in `e2e/hosted-qa-live-read.test.ts` runs a temporary
+native Docker handler against a real Teams message and verifies SQLite deduplication
+after container replacement. It only reads Teams; its temporary job is not processed,
+registered in the production catalog, or published to Ainmem.
+
+On Linux, persistent hosted agents require `setfacl` and `getfacl` from the `acl`
+package on the node service's PATH. Merely testing a stateless agent does not exercise
+this dependency. The validation host initially lacked these tools; an extracted
+distribution package was used on the isolated test PATH, without changing the
+production unit or weakening directory permissions.
+
+`repository.mjs` reads text from a configured GitHub repository at a full immutable
+commit SHA, using `GITHUB_READ_TOKEN` when needed. `coding.mjs` runs the actual
+hosted model/tool loop: list files, read bounded ranges, replace uniquely matching
+text the model has read, and create source/test files. These tools do not run repository
+code, publish commits, or release. Candidate state stops at `needs_validation`.
+Model context retains complete recent tool exchanges within a byte budget. The
+installed model rejected an initial 8,192-token output request because that was its
+entire context limit; the loop now reserves 2,048 output tokens and bounds reads.
+
+`advance.mjs` connects one model step to the SQLite lease. `checkpoints.mjs` saves
+private immutable blobs before SQLite refers to them, so restart can resume and a
+late attempt cannot overwrite a newer checkpoint. An expired lease cannot publish
+progress. Checkpoint storage still needs retention/capacity policy before production.
+
+`e2e/hosted-qa-live-coding.test.ts` is an opt-in small arithmetic diagnostic using
+the real configured Ainize model inside a native hosted Docker handler. It resumes
+the same SQLite job after container replacement and checks the generated function
+in a separate container without network, credentials or unrelated host mounts.
+This proves the native model/tool/checkpoint path, not product regression coverage.
+
+## Required before registration or cutover
+
+- Check active organization SSO identity for releases, in addition to the canonical
+  Teams message and membership checks implemented above.
+- Connect the native coding components to each product's configured snapshot and
+  actual repository test/build/browser gates. Publish candidates with reviewed commit
+  binding; the arithmetic diagnostic does not satisfy any product's release gate.
+- Execute durable checkpoints within the hosted runtime. Handle idle eviction and
+  node restart without losing queued work. A lease is not exactly-once delivery:
+  reconcile external GitHub and Ainmem writes by stable job identity on retry.
+- Keep release credentials out of coding/model access. Verify designated human
+  approval from the original Teams thread or canonical Ainmem page against the
+  exact reviewed SHA before every release.
+- Keep one canonical Ainmem task page/link, and preserve existing task history,
+  agent IDs, channel links, and approvals during migration. Old approvals cannot
+  authorize newly generated commits.
+- Exercise a real request in every product QA channel, including native hosted
+  execution, tests, PR, genuine administrator approval, deployment, and serving
+  revision verification. Then retire the external runtime.
+
+The store is an implementation component, not a registered or production-ready
+QA agent. No external registration or deployment is performed by these files.
