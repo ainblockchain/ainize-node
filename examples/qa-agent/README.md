@@ -63,6 +63,26 @@ the same SQLite job after container replacement and checks the generated functio
 in a separate container without network, credentials or unrelated host mounts.
 This proves the native model/tool/checkpoint path, not product regression coverage.
 
+## Operational handler
+
+`index.mjs` composes the modules above into the agent the host actually loads. It exports
+`execute` and `tick` (and a testable `createHandler`/`parseConfig`):
+
+- `execute(input, ctx)` reads the untrusted `input.metadata.teamsMessage` locator hint, re-reads the
+  canonical Teams message with `verifyFixRequest`, and enqueues a job only when an active human member
+  of the configured channel made a genuine fix request. The stable request key folds in the pinned
+  base SHA, so retries deduplicate and an old approval cannot ride a new base. Release commands are
+  not fix intake and are never enqueued here.
+- `tick(ctx)` claims one queued job under a SQLite lease and runs a single bounded `advanceCoding`
+  step against the pinned `GitHubSnapshot`, saving an immutable checkpoint. A candidate stops at
+  `needs_validation`. The handler never publishes commits, runs repository code, or deploys, and no
+  release credential is reachable from this path.
+
+Per-service binding comes from `AINIZE_QA_CONFIG` (a secrets-free JSON file: `service`, `teamsOrigin`,
+`workspaceId`, `channelId`, `enabledAt`, `repository`, full `baseCommit`) and the agent's own
+`AINIZE_AGENT_STATE_DIR` mount. Tokens (`TEAMS_TOKEN`, `GITHUB_READ_TOKEN`) are read through
+`ctx.secret`, never from config. The focused test is `test/hosted-qa-index.test.ts`.
+
 ## Required before registration or cutover
 
 - Check active organization SSO identity for releases, in addition to the canonical
