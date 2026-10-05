@@ -210,6 +210,28 @@ export function createHostedAgentRuntimeRouter(o: HostedAgentRuntimeAppOptions):
   }
   // The node already parsed JSON for requests it forwards in-process; express.json skips a parsed body.
   router.use(express.json({ limit: '300kb' }));
+  let tickRunning = false;
+  let tickFailed = false;
+  const hostAuthorized = (header: string | undefined) => {
+    const supplied = Buffer.from(header ?? ''), expected = Buffer.from('Bearer ' + o.gateway.token);
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  };
+  router.post('/_ainize/tick', async (req, res) => {
+    if (!hostAuthorized(req.header('authorization'))) { res.status(401).json({ error: 'unauthorized' }); return; }
+    if (!o.module?.tick) { res.status(404).json({ error: 'tick_not_supported' }); return; }
+    if (!tickRunning) {
+      tickRunning = true; tickFailed = false;
+      const ctx = createHostedAgentCtx(o, { text: '', contextId: randomUUID(), history: [], files: [] });
+      // A repeated poll observes the same execution. It cannot launch a second step while this one runs.
+      void Promise.resolve().then(() => o.module!.tick!(ctx)).catch(() => {
+        tickFailed = true;
+        o.log('scheduled tick failed');
+      }).finally(() => { tickRunning = false; });
+    }
+    // A no-work step normally finishes within one turn; a model call continues after this short reply.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    res.json({ running: tickRunning, failed: tickFailed });
+  });
   router.post('/_ainize/manage', async (req, res) => {
     const supplied = Buffer.from(req.header('authorization') ?? '');
     const expected = Buffer.from('Bearer ' + o.gateway.token);

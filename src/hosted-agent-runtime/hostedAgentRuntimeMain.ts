@@ -39,6 +39,7 @@ export function hostedAgentSecretsFromEnv(env: NodeJS.ProcessEnv): Record<string
 export function hostedAgentModuleOf(imported: Record<string, unknown>): HostedAgentModule {
   const d = (imported.default ?? {}) as HostedAgentModule;
   return {
+    tick: d.tick ?? (imported.tick as HostedAgentModule['tick']),
     execute: d.execute ?? (imported.execute as HostedAgentModule['execute']),
     tools: d.tools ?? (imported.tools as HostedAgentModule['tools']),
     manage: d.manage ?? (imported.manage as HostedAgentModule['manage']),

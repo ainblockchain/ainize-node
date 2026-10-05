@@ -179,6 +179,8 @@ export interface HostedAgentTool {
 
 /** The module an agent's `index.mjs` default-exports (or exports by name). */
 export interface HostedAgentModule {
+  /** One bounded background step, invoked only by an operator-enabled host schedule. */
+  tick?(ctx: HostedAgentCtx): void | Promise<void>;
   manage?(action: string, params: Record<string, unknown>, ctx: HostedAgentCtx): unknown | Promise<unknown>;
   execute?(input: string, ctx: HostedAgentCtx): HostedAgentReply | Promise<HostedAgentReply>;
   tools?: HostedAgentTool[];
