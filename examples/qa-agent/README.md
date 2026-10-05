@@ -83,6 +83,18 @@ Per-service binding comes from `AINIZE_QA_CONFIG` (a secrets-free JSON file: `se
 `AINIZE_AGENT_STATE_DIR` mount. Tokens (`TEAMS_TOKEN`, `GITHUB_READ_TOKEN`) are read through
 `ctx.secret`, never from config. The focused test is `test/hosted-qa-index.test.ts`.
 
+`validation.mjs` is the next stage's reusable core: `validateCandidate` runs a product's configured
+gates in order (stopping at the first failure) through an injected runner and returns a verdict bound
+to a `candidateDigest` of the exact changed files on the pinned base, so a verdict can never be
+reattributed to a different candidate or an older commit. `advanceValidation` runs one such step under
+the SQLite lease and parks the job in `waiting` at `awaiting_approval` or `validation_failed`, never
+publishing, deploying, or recording an approval. The focused test is `test/hosted-qa-validation.test.ts`.
+What still belongs to the host and the maintainer: the real per-product gate runner (an isolated,
+credential-free container built from the base plus the candidate), the policy for waking a
+`needs_validation` job into validation, and the human-approved release path that consumes a verdict by
+its exact digest. `index.mjs` does not yet wake jobs into validation — that scheduling choice depends
+on where product gates run.
+
 ## Required before registration or cutover
 
 - Check active organization SSO identity for releases, in addition to the canonical
