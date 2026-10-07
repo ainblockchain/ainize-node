@@ -48,9 +48,9 @@ export interface FreeTierDeps {
   gates: Map<string, ModalityGate>;
   /** Other nodes' models (peer-models.ts), for a model addressed `id@0x<node>` or one this node does not serve. */
   peerModels?: {
-    target(kind: 'chat' | 'transcription' | 'image', model: string, node: string | null): PeerModelTarget | null;
+    target(kind: 'chat' | 'transcription' | 'image' | 'decision', model: string, node: string | null): PeerModelTarget | null;
     relayChat(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
-    call(target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown): Promise<unknown>;
+    call(target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown): Promise<unknown>;
   };
   /** This node's address — a ref naming it is answered here. */
   self?: string;
@@ -87,7 +87,7 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
    * Validation happens before the allowance is touched throughout: a caller told "that model does not exist" or
    * "n is too large" has not used a try, because nothing was generated for them.
    */
-  const resolve = (res: Response, ref: string, modality: 'transcription' | 'image') => {
+  const resolve = (res: Response, ref: string, modality: 'transcription' | 'image' | 'decision') => {
     const { model, node } = parseNodeModelRef(ref);
     const here = !node || node === deps.self?.toLowerCase();
     const own = here ? deps.registry?.backendForModel(model) : null;
@@ -180,6 +180,48 @@ export function freeTierRouter(deps: FreeTierDeps): Router {
         if (!upstream.ok) throw new RuntimeUnavailableError(`the image backend answered ${upstream.status}`);
         return upstream.json() as Promise<Record<string, unknown>>;
       }, { address: 'free-tier', cost: body.steps * body.n, priority: RUNTIME_PRIORITY.freeServing });
+      res.json(answer);
+    } catch (error) {
+      failed(res, error);
+    }
+  });
+
+  /**
+   * `/api/decide` — the visitor's door to a decision model (Jev/SystemOne), the sibling of `/api/image`.
+   *
+   * The body is the systemone request: a `state` (any JSON) and a non-empty `questions` object, plus optional
+   * `images`/`videos`. It is passed to the sidecar's `/v1/systemone` unchanged except for the resolved model id;
+   * cost is the number of questions, so one press cannot occupy the card with an unbounded batch.
+   */
+  router.post('/api/decide', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const model = String(body.model ?? '');
+    if (!model) { freeTierError(res, 400, 'invalid_request', 'model is required'); return; }
+    const found = resolve(res, model, 'decision');
+    if (!found) return;
+
+    if (body.state === undefined) { freeTierError(res, 400, 'invalid_request', 'state is required'); return; }
+    const questions = body.questions;
+    if (typeof questions !== 'object' || questions === null || Array.isArray(questions) || Object.keys(questions).length === 0) {
+      freeTierError(res, 400, 'invalid_request', 'questions must be a non-empty object');
+      return;
+    }
+    if (found.peer) {
+      try {
+        res.json(await deps.peerModels!.call(found.peer, 'decision', { ...body, model: found.model }));
+      } catch (error) { failed(res, error); }
+      return;
+    }
+
+    try {
+      const answer = await found.gate.run(async () => {
+        const upstream = await fetch(`${found.backend.upstream}/v1/systemone`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...body, model: found.model }),
+        });
+        if (!upstream.ok) throw new RuntimeUnavailableError(`the decision backend answered ${upstream.status}`);
+        return upstream.json() as Promise<Record<string, unknown>>;
+      }, { address: 'free-tier', cost: Math.max(1, Object.keys(questions).length), priority: RUNTIME_PRIORITY.freeServing });
       res.json(answer);
     } catch (error) {
       failed(res, error);

@@ -16,7 +16,7 @@
 import { spawn as nodeSpawn, execFile } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { accessOf, accessRank, capBenchmarkSamples, deltaOnlyParent, deriveRowsPerJob, effectiveRoyaltyShare, effectiveVerifierShare, ETA_MIN_SAMPLES as CORE_ETA_MIN_SAMPLES, gpuOverlap, gpuSet, hashCanonical, isDatasetLicense, licenseCompatible, percentileOf, preStateSha256, readNpzMember, royaltySplit, sha256Hex, unionNpz, validateContributors, verifyMessage, writeNpz,
@@ -88,6 +88,13 @@ export interface TeachChecks {
   note?: string;
   /** true on a stub node without a model server: the numbers above were simulated, nothing was measured (UI: "Demo node — checks are simulated"). */
   simulated?: boolean;
+  /**
+   * true when `teach.check.mode === 'trainer'`: the verdict came from the trainer's own per-question evaluation and
+   * the lesson was NEVER applied to a live model (a node serving only `decision` models has no PLE chat runtime). The
+   * taught/heldout counts are real trainer measurements; locality and parent_regression were not measured (total 0),
+   * so a reader must not take this for a runtime-verified result.
+   */
+  trainer_verified?: true;
   /** The visitor turned the side-effect check off. Publish stays gated until `POST /:id/recheck` measures it. */
   skipped?: true;
   /**
@@ -550,6 +557,8 @@ export class TeachWorker {
     const c = this.cfg;
     if (c.pausedReason) return { state: 'paused', reason: c.pausedReason };
     if (c.backend === 'stub') return { state: this.current ? 'busy' : 'ready' };
+    // Local trainer: a subprocess on the node host, no container to inspect — mirror the stub path's busy/ready.
+    if (c.trainer.runtime === 'local') return { state: this.current ? 'busy' : 'ready' };
     if (!force && this.trainerCache && Date.now() - this.trainerCache.at < 30_000) return this.trainerCache.value;
     let value: { state: 'ready' | 'busy' | 'paused'; reason?: string };
     if (!this.market.runtime.repo) value = { state: 'paused', reason: 'runtime repo is not configured on this node' };
@@ -1981,8 +1990,11 @@ export class TeachWorker {
     const dir = join(repo, 'ple_patch', '.ainize-teach.lock');
     const release = claimSharedLease(dir, { owner: `pid:${process.pid}`, job: job.id, since: Date.now() });
     if (!release) return { ok: false, reason: 'trainer lease is held; verify the holder before recovering an orphaned lease' };
-    // (b) an operator training job inside the container owns the GPUs
-    const pg = await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', 'train/'], 15_000);
+    // (b) an operator training job owns the GPUs. Docker: pgrep inside the container; local: pgrep the trainer
+    // script on the node host, since there is no container to exec into.
+    const pg = c.trainer.runtime === 'local'
+      ? await this.execFn('pgrep', ['-f', c.trainer.script], 15_000)
+      : await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', 'train/'], 15_000);
     if (pg.code === 0 && pg.out.trim()) { release(); return { ok: false, reason: `operator training job is using the trainer (pid ${pg.out.trim().split(/\s+/)[0]})` }; }
     if (pg.code !== 0 && pg.code !== 1) { release(); return { ok: false, reason: `trainer container unavailable (${pg.err || pg.code})` }; }
     // (c) enough free memory on the trainer GPUs
@@ -2264,7 +2276,7 @@ export class TeachWorker {
       job_id: job.id, contributor: job.contributor,
       dataset: job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? facts.length, source: job.dataset_source ?? 'chat' } : undefined,
       ...(parents.length ? {
-        parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
+        parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' && c.trainer.runtime !== 'local' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
         known_file: knownRows ? 'known.jsonl' : null,
         max_known: clampInt(Math.ceil(facts.length / 2), 8, 64),
         // the questions that deliberately override an inherited answer: trained, and kept OUT of the keep-set so the
@@ -2294,19 +2306,32 @@ export class TeachWorker {
      * keep training off the serving GPUs was followed by training on the serving GPUs, and the only symptom would
      * have been vLLM slowing down under a load nobody attributed to it.
      */
-    const env = ['-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True'];
     const uuids = await this.trainerGpuUuids();
     const devices: string[] = [];
     if (uuids.length) {
-      env.push('-e', `CUDA_VISIBLE_DEVICES=${uuids.join(',')}`);
       // With CUDA_VISIBLE_DEVICES set, the visible cards are renumbered from zero, so the trainer's device list is
       // always 0..n-1 regardless of where they sit on the host or in the container.
       devices.push('--devices', uuids.map((_, i) => `cuda:${i}`).join(','));
     } else {
       this.log('warn', `could not resolve teach.trainer.gpus (${c.trainer.gpus}) to GPU UUIDs — the trainer runs unpinned and may land on the serving GPUs`, job.id);
     }
-    const args = ['exec', '-i', ...env, c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`, ...devices];
-    const out = await this.runProcess(job, dir, 'docker', args);
+    let out: { ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string };
+    if (c.trainer.runtime === 'local') {
+      // No docker: spawn python on the node host. The trainer sees the GPUs and the alloc knob through its env
+      // (set on the child below) rather than docker `-e` flags, and reads the HOST job/npz paths, not `/work/...`.
+      const cmd = c.trainer.python ?? 'python3';
+      const base = c.trainer.cwd ?? this.market.cfg.runtime?.repo ?? dir;
+      const script = resolve(base, c.trainer.script);
+      const extraEnv: NodeJS.ProcessEnv = { PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True' };
+      if (uuids.length) extraEnv.CUDA_VISIBLE_DEVICES = uuids.join(',');
+      const args = [script, '--job', join(dir, 'job.json'), ...devices];
+      out = await this.runProcess(job, dir, cmd, args, extraEnv);
+    } else {
+      const env = ['-e', 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True'];
+      if (uuids.length) env.push('-e', `CUDA_VISIBLE_DEVICES=${uuids.join(',')}`);
+      const args = ['exec', '-i', ...env, c.trainer.container, 'python3', `/work/${c.trainer.script}`, '--job', `/work/.teach/${job.id}/job.json`, ...devices];
+      out = await this.runProcess(job, dir, 'docker', args);
+    }
     if (out.ok && parents.length) {
       // Nothing may be called "built on" unless the trainer confirms it loaded the stack and exported against it
       // (design §1 goal 3 / §7.5): an older trainer ignores `parents` and would hand back a stand-alone file.
@@ -2407,7 +2432,7 @@ export class TeachWorker {
     }
   }
 
-  private async runProcess(job: TeachJobRow, dir: string, cmd: string, args: string[]): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
+  private async runProcess(job: TeachJobRow, dir: string, cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): Promise<{ ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string }> {
     const c = this.cfg;
     const state = { facts: job.facts.map((f) => ({ ...f })), progress: { ...((job.progress as unknown as TeachProgress) ?? { step: 0, max_steps: (job.training as TeachTrainingSpec | null)?.max_steps ?? c.trainer.maxSteps, hits: 0, total: job.facts.length }) }, done: null as DoneEvent | null, error: null as string | null };
     const startedAt = Date.now();
@@ -2415,7 +2440,7 @@ export class TeachWorker {
     // wants a bigger `trainer.timeoutMs`; one that was on step 14 of 20 wants fewer rows or fewer passes. The
     // message used to name neither, so the only reading available was "my data is bad".
     let loadedAt: number | null = null;
-    const child = this.spawnFn(cmd, args, { cwd: dir, env: { ...process.env } });
+    const child = this.spawnFn(cmd, args, { cwd: dir, env: { ...process.env, ...extraEnv } });
     this.child = child;
     let stderrTail = '';
     let timedOut = false; let killedForCancel = false;
@@ -2479,6 +2504,8 @@ export class TeachWorker {
   /** SIGTERM the in-container trainer process of `job` (by recorded pid, else by pgrep on the job path). */
   private async killStray(job: TeachJobRow) {
     if (this.cfg.backend !== 'gradient') return;
+    // Local trainer: no container to exec into — killChild's child.kill() terminates the subprocess directly.
+    if (this.cfg.trainer.runtime === 'local') return;
     const c = this.cfg;
     let pid = job.container_pid ?? this.store.getTeachJob(job.id)?.container_pid ?? null;
     if (!pid) { const r = await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', `.teach/${job.id}/job.json`], 10_000).catch(() => null); pid = r && r.code === 0 ? Number(r.out.trim().split(/\s+/)[0]) || null : null; }
@@ -2694,6 +2721,50 @@ export class TeachWorker {
     const facts = job.facts.map((f) => ({ ...f }));
     const training = job.training as TeachTrainingSpec | null;
     const sideEffects = training?.check_side_effects !== false;
+    if (c.check.mode === 'trainer') {
+      /*
+       * Trainer-verified mode (`teach.check.mode === 'trainer'`). A node that serves only `decision` models (e.g. the
+       * Cloudflare Clef node) has NO PLE chat `runtime` to apply the lesson to, so the runtime branch below would sit
+       * out the whole grace on "model server unavailable" and the lesson would only ever be saved UNCHECKED — it never
+       * reaches a verified READY. Here we trust the trainer's own evaluation instead: the per-fact `hit`/`heldout_hit`
+       * flags it recorded during training (the `eval`/`done` events, stored on `job.facts`) are the verdict. Nothing is
+       * applied to `this.market.runtime`, nothing is probed, and `rt.status()` is never called — so the lesson cannot
+       * block on runtime availability. The side-effect gate (locality / parent regression) cannot be measured without a
+       * live model, so it is left explicitly unmeasured (total 0) and `trainer_verified` marks the summary so no reader
+       * mistakes it for a runtime-measured one.
+       */
+      this.store.updateTeachJob(job.id, { status: 'CHECKING', blocked: null });
+      // Only questions the trainer actually evaluated count toward the taught ratio — a fact with no `hit` recorded
+      // was never measured, so it is reported as unmeasured (`sampled`) rather than guessed, exactly as the runtime
+      // path refuses a whole-dataset claim from a sampled check.
+      const measured = facts.filter((f) => typeof f.hit === 'boolean');
+      const hits = measured.filter((f) => f.hit).length;
+      const total = measured.length;
+      const held = facts.filter((f) => f.alt_prompt && typeof f.heldout_hit === 'boolean');
+      const heldHits = held.filter((f) => f.heldout_hit).length;
+      // Same threshold and intent as the runtime path: EXPORTED→READY uses `taught.questions.hits / .total >=
+      // TAUGHT_MIN_RATIO`, so we report the trainer's hits in `questions` and the existing transition decides
+      // READY vs NEEDS_MORE unchanged.
+      const ratio = total ? hits / total : 0;
+      const checks: TeachChecks = {
+        executed: true,
+        taught: { hits, total, questions: { hits, total }, ...(measured.length < facts.length ? { sampled: { checked: measured.length, of: facts.length } } : {}) },
+        heldout: { hits: heldHits, total: held.length },
+        // Not measurable without a runtime: left unmeasured (total 0), never asserted as a passed side-effect gate.
+        parent_regression: { ok: true, hit: 0, total: 0 },
+        locality: { ok: true, same: 0, total: 0 },
+        reverted_and_reapplied: false, reversibility_ok: null,
+        trainer_verified: true,
+        ok: ratio >= TAUGHT_MIN_RATIO,
+        note: 'trainer-verified: this node serves no live chat runtime, so the lesson was verified from the trainer’s own per-question evaluation and was NOT re-measured against a live model (no side-effect / locality check was possible)',
+      };
+      if (!sideEffects) {
+        // The visitor also turned the side-effect check off: say both reasons, keep publish gated the same way.
+        checks.skipped = true;
+        checks.note = 'the side-effect check was turned off for this lesson, and this node has no live chat runtime — nothing was measured about unrelated answers; verified from the trainer’s own per-question evaluation only';
+      }
+      return { checks, facts };
+    }
     if (this.simulatedChecks) {
       // The lesson is never applied and nothing is measured: on a stub backend the body is a placeholder, so the
       // only thing a live run could produce is five minutes of held model lock (item 247).

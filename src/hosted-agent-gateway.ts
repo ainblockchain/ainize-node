@@ -335,7 +335,7 @@ export class HostedAgentGateway {
    * modality when it has one — an agent names what it wants done, not which model does it — and otherwise the
    * freshest peer that advertised one.
    */
-  private mediaRoute(res: ServerResponse, spec: HostedAgentSpec, modality: PeerModelModality):
+  private mediaRoute(res: ServerResponse, spec: HostedAgentSpec, modality: 'transcription' | 'image'):
     { local: InferenceBackend; peer?: undefined } | { local?: undefined; peer: PeerModelTarget } | null {
     if (!hostedAgentMediaOf(spec)[modality]) {
       sendJson(res, 403, { error: { message: `${modality} is not turned on for this agent`, code: 'media_not_enabled' } });

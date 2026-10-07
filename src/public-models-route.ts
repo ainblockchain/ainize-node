@@ -35,7 +35,7 @@ export interface PublicModelCard {
 export const MODEL_PROBE_TTL_MS = 15_000;
 
 /** The order a page shows them in, so the list arrives sorted rather than each caller sorting it. */
-const MODALITY_ORDER: readonly InferenceModality[] = ['chat', 'transcription', 'image'];
+const MODALITY_ORDER: readonly InferenceModality[] = ['chat', 'transcription', 'image', 'decision'];
 
 export interface PublicModelsDeps {
   /** Null when this node has no `backends` block — it then serves no models over the API at all. */

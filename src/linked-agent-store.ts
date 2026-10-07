@@ -62,7 +62,7 @@ export interface LinkedAgentStoreLimits {
   total: number;
 }
 
-export const LINKED_AGENT_DEFAULT_LIMITS: LinkedAgentStoreLimits = { perOwner: 10, total: 500 };
+export const LINKED_AGENT_DEFAULT_LIMITS: LinkedAgentStoreLimits = { perOwner: 100, total: 500 };
 
 export class LinkedAgentLimitError extends Error {}
 export class LinkedAgentIdTakenError extends Error {}

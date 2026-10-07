@@ -1,0 +1,18 @@
+# Clef sidecar runtime deps (torch + torchvision are installed separately from the
+# cu118 wheel index — see the Dockerfile — because the DGX runs driver 525, which the
+# cu118 build runs on; a cu124/cu128 build would need a newer host driver).
+#
+# Verified on the box: torch 2.7.1+cu118, torchvision 0.22.1+cu118, transformers 5.10.2
+# loading Cloudflare/clef-flash and answering /v1/systemone on an A100 (19 GB VRAM).
+# transformers 5.10.2 is required: the Clef backbone is Qwen3_5ForConditionalGeneration,
+# which only exists there, and it needs torch >= 2.7 for the float8_e8m0fnu dtype.
+transformers==5.10.2
+accelerate
+safetensors
+huggingface_hub
+pillow
+einops
+sentencepiece
+numpy<2
+fastapi
+uvicorn[standard]

@@ -450,9 +450,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   /** The same door to other nodes' models for `/v1` and the free tier: addressed by id or `id@0x<node>`. */
   const peerModelAccess = {
-    target: (kind: 'chat' | 'transcription' | 'image', model: string, node: string | null) => peerModelTargetById(peerModelRows(), kind, model, cfg.identity.address, node),
+    target: (kind: 'chat' | 'transcription' | 'image' | 'decision', model: string, node: string | null) => peerModelTargetById(peerModelRows(), kind, model, cfg.identity.address, node),
     relayChat: (target: PeerModelTarget, body: unknown, res: import('express').Response) => relayPeerChat(cfg.identity, target, body, res),
-    call: (target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
+    call: (target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
   const hostedGateway = new HostedAgentGateway({
@@ -747,7 +747,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
     const surfaceHome = opts.home ?? tmpdir();
-    for (const modality of ['transcription', 'image'] as const) {
+    for (const modality of ['transcription', 'image', 'decision'] as const) {
       for (const backend of inferenceRegistry!.backendsFor(modality)) {
         modalityGates.set(backend.id, new ModalityGate(modality, backend.concurrency, stakeQueue));
       }

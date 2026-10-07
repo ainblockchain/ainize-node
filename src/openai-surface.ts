@@ -59,9 +59,9 @@ export interface OpenaiSurfaceDeps {
    * `parseNodeModelRef`. Absent → only this node's models answer.
    */
   peerModels?: {
-    target(kind: 'chat' | 'transcription' | 'image', model: string, node: string | null): PeerModelTarget | null;
+    target(kind: 'chat' | 'transcription' | 'image' | 'decision', model: string, node: string | null): PeerModelTarget | null;
     relayChat(target: PeerModelTarget, body: unknown, res: Response): Promise<void>;
-    call(target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown): Promise<unknown>;
+    call(target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown): Promise<unknown>;
     /** every model fresh peers advertise, as refs */
     models(): { ref: string; node: string }[];
   };
@@ -149,7 +149,7 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
    * Where a model ref is served: this node's backend (a bare id it serves, or a ref naming this node), else the peer
    * the ref names — or, for a bare id, the freshest peer that advertised it.
    */
-  const routeModelRef = (ref: string, kind: 'chat' | 'transcription' | 'image') => {
+  const routeModelRef = (ref: string, kind: 'chat' | 'transcription' | 'image' | 'decision') => {
     const { model, node } = parseNodeModelRef(ref);
     const pinned = !node && kind === 'chat' ? deps.preferredChatPeers?.[model] : undefined;
     if (pinned) return { model, local: null, peer: deps.peerModels?.target(kind, model, pinned) ?? null };
@@ -344,6 +344,61 @@ export function openaiSurfaceRouter(deps: OpenaiSurfaceDeps): Router {
         return;
       }
       openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the image generation failed', 'api_error');
+    }
+  });
+
+  /**
+   * Decisions (Jev/SystemOne).
+   *
+   * Like image, the only backends here that are not vLLM, so the node routes by model and passes the request on as
+   * JSON without assuming its shape — the whole body travels to the sidecar's `/v1/systemone` unchanged except for
+   * the pinned model id. Its own GPU and its own gate, for the same reason as audio and image.
+   *
+   * Cost is the number of questions asked — what the sidecar actually works through for one call.
+   */
+  router.post('/v1/systemone', authed, async (req: Request, res: Response) => {
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof raw.model !== 'string' || !raw.model) { openaiError(res, 400, 'invalid_request', 'model is required'); return; }
+    if (raw.state === undefined) { openaiError(res, 400, 'invalid_request', 'state is required'); return; }
+    const questions = raw.questions;
+    if (typeof questions !== 'object' || questions === null || Array.isArray(questions) || Object.keys(questions).length === 0) {
+      openaiError(res, 400, 'invalid_request', 'questions must be a non-empty object');
+      return;
+    }
+    const where = routeModelRef(raw.model, 'decision');
+    if (where.peer) {
+      try {
+        res.json(await deps.peerModels!.call(where.peer, 'decision', { ...raw, model: where.model }));
+      } catch (error) {
+        openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the decision failed', 'api_error');
+      }
+      return;
+    }
+    const backend = where.local;
+    if (!backend) {
+      openaiError(res, 404, 'model_not_found', `no node in reach serves a decision model called ${raw.model}`);
+      return;
+    }
+
+    const gate = deps.gates.get(backend.id)!;
+    try {
+      const answer = await gate.run(async () => {
+        const upstream = await fetch(`${backend.upstream}/v1/systemone`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...raw, model: where.model }),
+        });
+        if (!upstream.ok) throw new RuntimeUnavailableError(`the decision backend answered ${upstream.status}`);
+        return upstream.json();
+      }, {
+        address: req.openaiCaller!.address,
+        cost: Math.max(1, Object.keys(questions).length),
+      });
+      res.json(answer);
+    } catch (error) {
+      if (error instanceof RuntimeUnavailableError || error instanceof ModalityGateClosedError) {
+        openaiError(res, 503, 'backend_unavailable', error.message, 'api_error');
+        return;
+      }
+      openaiError(res, 502, 'upstream_failed', error instanceof Error ? error.message : 'the decision failed', 'api_error');
     }
   });
 
