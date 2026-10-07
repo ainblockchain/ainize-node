@@ -23,5 +23,34 @@
       }
     ],
     "pollMs": 30000
-  }
+  },
+  "backends": [
+    {
+      "id": "qwen-chat",
+      "modality": "chat",
+      "upstream": "http://127.0.0.1:8000",
+      "models": [
+        "Qwen3.8-Flash-Next"
+      ],
+      "concurrency": 1
+    },
+    {
+      "id": "clef-flash",
+      "modality": "decision",
+      "upstream": "http://192.168.1.15:8300",
+      "models": [
+        "clef-flash"
+      ],
+      "concurrency": 1
+    },
+    {
+      "id": "clef",
+      "modality": "decision",
+      "upstream": "http://192.168.1.15:8301",
+      "models": [
+        "clef"
+      ],
+      "concurrency": 1
+    }
+  ]
 }

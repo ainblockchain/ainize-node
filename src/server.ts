@@ -139,7 +139,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // with what it should hold (item 123). Keys this build does not know are only reported, so a config written by a
   // newer build still starts here.
   const problems = validateConfig(cfg);
-  const invalid = problems.filter((p) => p.kind === 'invalid');
+  // Forward-compat shim: this build serves the `decision` modality (InferenceModality in
+  // inference-backends.ts), but when it runs against an older published @ainize/core whose schema
+  // only knows chat/transcription/image, validateConfig rejects a `decision` backend as an invalid
+  // modality. Drop that one false positive — the node itself understands the modality — and keep
+  // every other validation. Once a core with `decision` in the enum is published this filter simply
+  // matches nothing.
+  const invalid = problems.filter((p) =>
+    p.kind === 'invalid' && !/^backends\.\d+\.modality$/.test(p.key));
   if (invalid.length) {
     throw new Error(`this node's config is not usable:\n${invalid.map((p) => `  ${p.key} ${p.message}`).join('\n')}\n` +
       `fix it with \`ainize config set <key> <value>\` (or \`ainize config unset <key>\` for the default) in ${join(dirname(cfg.dataDir), 'config.json')}`);
