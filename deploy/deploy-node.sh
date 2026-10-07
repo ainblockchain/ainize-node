@@ -41,6 +41,19 @@ PORT="$(node -e 'try{process.stdout.write(String(require(process.argv[1]).port??
 
 say() { printf '  %s\n' "$*"; }
 
+# Build where the releases live, not on the system volume.
+#
+# A deploy clones the repository, installs dev dependencies twice — here and again in the CI workspace, which
+# also clones three sibling repositories — and builds. That is several gigabytes written and deleted every
+# time, and `mktemp` puts it on /tmp: on this host the 95 GB root volume, while the releases it produces go to
+# a 3.5 TB one. A full root volume does not fail a deploy honestly either — tests start hanging and SQLite
+# reports "database or disk is full", which reads as a broken change rather than a full disk.
+#
+# TMPDIR is EXPORTED so every child does the same: ci.sh and ci-workspace.sh each call `mktemp` themselves, and
+# one place deciding this is what keeps them from drifting apart. `AINIZE_BUILD_TMP` overrides it for a host
+# laid out differently.
+export TMPDIR="${AINIZE_BUILD_TMP:-$ROOT/tmp}"
+mkdir -p "$TMPDIR"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
