@@ -29,6 +29,14 @@ export function preferredChatPlayground(deps: {
     const request:Record<string,unknown>={model,messages:parsed.data.messages,stream:body.stream===true};
     if(parsed.data.max_tokens!==undefined) request.max_tokens=parsed.data.max_tokens;
     for(const key of ['tools','tool_choice','parallel_tool_calls','temperature','chat_template_kwargs']) if(body[key]!==undefined) request[key]=body[key];
+    /**
+     * `thinking` is a /api/chat flag (default false), and the local runtime turns it into the serving model's
+     * `chat_template_kwargs.enable_thinking`. On this peer path the flag used to be dropped, so the peer rendered
+     * the template with reasoning ON: for a long prompt the reasoning channel ate the whole token budget and
+     * `content` came back EMPTY with finish_reason "length". Translate it here so both paths mean the same thing.
+     * A caller that sent `chat_template_kwargs` itself keeps it — an explicit choice outranks the flag.
+     */
+    if(request.chat_template_kwargs===undefined) request.chat_template_kwargs={enable_thinking:body.thinking===true};
     try {
       const upstream=await deps.fetch(peer,request);
       if(!upstream.ok) {res.status(upstream.status).json(await upstream.json());return;}

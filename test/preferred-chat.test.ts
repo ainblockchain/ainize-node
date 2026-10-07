@@ -27,3 +27,30 @@ test('pinned bare models and playground retain long inputs and tools; missing pe
  assert.equal(seen.length,3);
  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });
+
+/**
+ * The peer path used to drop `thinking`, so the peer rendered the chat template with reasoning ON. On a long
+ * prompt the reasoning channel ate the whole budget and `content` came back "" with finish_reason "length" —
+ * AINA stored blank assistant messages. Both paths must mean the same thing by the flag.
+ */
+test('thinking reaches the peer as enable_thinking, and an explicit kwargs wins',async()=>{
+ const peer='0x'+'3'.repeat(40),seen:any[]=[];
+ const peers={target:()=>({model:'qwen',address:peer,endpoint:'http://peer'}),models:()=>[]};
+ const app=express();app.use(express.json());
+ app.use(preferredChatPlayground({routes:{qwen:peer},peers:()=>peers as any,
+  fetch:async(_p:any,b:any)=>{seen.push(b);return Response.json({choices:[{message:{content:'a'},finish_reason:'stop'}]});}} as any));
+ const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));
+ const base=`http://127.0.0.1:${(server.address() as any).port}`;
+ const post=(b:any)=>fetch(base+'/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
+ const ask={mode:'base',patch_ids:[],messages:[{role:'user',content:'hi'}]};
+ try{
+  await post(ask);
+  assert.deepEqual(seen[0].chat_template_kwargs,{enable_thinking:false},'the documented default must hold on the peer path');
+  await post({...ask,thinking:false});
+  assert.deepEqual(seen[1].chat_template_kwargs,{enable_thinking:false});
+  await post({...ask,thinking:true});
+  assert.deepEqual(seen[2].chat_template_kwargs,{enable_thinking:true},'asking for reasoning must still reach the peer');
+  await post({...ask,thinking:false,chat_template_kwargs:{enable_thinking:true,extra:1}});
+  assert.deepEqual(seen[3].chat_template_kwargs,{enable_thinking:true,extra:1},'an explicit kwargs outranks the flag');
+ }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
+});
