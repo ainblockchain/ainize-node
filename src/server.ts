@@ -18,12 +18,19 @@ import { HostedAgentHost } from './hosted-agent-host.js';
 import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
+import { AgentGit } from './agent-git.js';
+import { AgentGitHttp } from './agent-git-http.js';
+import { agentGitRoutes } from './agent-git-routes.js';
+import { AgentPullStore } from './agent-pulls.js';
+import { agentPullRoutes } from './agent-pull-routes.js';
+import { AgentMirrorStore } from './agent-mirror.js';
+import { agentMirrorRoutes } from './agent-mirror-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
-import { agentCallerOf, orgViewerOf, resolveOrganization, SharedAgentEvents, sharedAgentRoutes, withOrganizations, type AgentCaller, type OrgAudit } from './shared-agents.js';
+import { agentCallerOf, apiKeyCaller, audienceOf, canManageHostedAgent, canSeeHostedAgent, orgViewerOf, resolveOrganization, SharedAgentEvents, sharedAgentRoutes, withOrganizations, type AgentCaller, type OrgAudit } from './shared-agents.js';
 import { OrganizationStore, type OrgViewer } from './organization-store.js';
 import { organizationRoutes, type OrgAgentRow } from './organization-routes.js';
-import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
+import { hostedAgentVisibilityOf, type HostedAgentSpecInput } from './hosted-agent-types.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
 import { siteSession, ssoSession } from './site-session.js';
@@ -233,6 +240,89 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
   // Models over p2p carry media as base64 — a voice note an agent opened (up to 32 MB) is ~43 MB of JSON — so their
   // routes parse before the 5 MB default does. express.json skips a body already parsed.
+  /**
+   * `git clone` and `git push` for agents — mounted BEFORE the JSON parser below.
+   *
+   * A push IS the request body: `git-receive-pack` reads the pack off standard input, and a parser that has
+   * already consumed it leaves nothing to pipe. The parser on the next line would do exactly that, so these
+   * routes go above it rather than beside the other agent routes.
+   *
+   * The dependencies are closures over bindings declared further down — the store and the host do not exist
+   * yet at this line, and the first request cannot arrive before startup has finished.
+   */
+  /**
+   * Who is pushing, as git is able to say it.
+   *
+   * git speaks HTTP Basic and nothing else: no cookies it will send to a remote, no bearer token it knows how
+   * to mint. So the password field carries an ainize API key, which is the credential a person can already
+   * create, revoke and keep in a credential helper. The username is ignored — git insists on sending one, and
+   * the key alone identifies the account.
+   *
+   * Everything else (a session cookie, a bearer token) is left to `agentCaller`, so a push made from a
+   * workspace on ainize itself works with the session it already has.
+   */
+  const agentGitCaller = (req: Request) => {
+    const basic = /^Basic\s+(.+)$/i.exec(req.header('authorization') ?? '')?.[1];
+    if (basic) {
+      const decoded = Buffer.from(basic, 'base64').toString('utf8');
+      const password = decoded.slice(decoded.indexOf(':') + 1);
+      const record = password ? openaiKeys.recordForKey(password) : null;
+      if (record) {
+        const caller = apiKeyCaller(record);
+        return withOrganizations(caller, orgStore, identityOf(caller));
+      }
+    }
+    return agentCaller(req);
+  };
+
+  /**
+   * What a tree becoming the agent means, in one place.
+   *
+   * A push and a merge are two ways to move the deployed branch, and both end here: the spec is stored, the
+   * agent is re-applied — which is what makes every live address serve the new version — and the same event a
+   * `PUT` appends goes on the feed, so peers and pinned importers learn about it without knowing git exists.
+   * Two copies of this would be two definitions of what "deployed" means, and the one that drifted would be
+   * the one nobody was reading.
+   */
+  const applyPushedTree = async (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => {
+    const prior = hostedStore.get(id);
+    if (!prior) throw new Error(`no hosted agent "${id}"`);
+    const spec = hostedStore.update(id, input, by ?? undefined);
+    hostedHost.apply(spec);
+    agentEvents?.append({ type: 'agent.updated', registryIssuer: market.publicUrl, agentId: id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+    market.log('info', 'agents', `agent ${id}: ${commit.slice(0, 7)} → v${spec.version}, live now`);
+  };
+
+  const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
+  const agentGitHttp = new AgentGitHttp({
+    git: agentGit,
+    // The hook calls back on loopback while a push is in flight, so the server is listening by definition.
+    loopbackPort: () => (server.address() as { port?: number } | null)?.port ?? cfg.port,
+    /**
+     * A push is authenticated the only way git knows how: HTTP Basic, with an ainize API key as the password.
+     * A browser session serves too, for a push made from a workspace on ainize itself. Both resolve to the same
+     * question `PUT /api/hosted-agents/:id` asks — a repository must not be a second, weaker door.
+     */
+    canPush: (req, id) => {
+      const spec = hostedStore.get(id);
+      if (!spec) return false;
+      const who = agentGitCaller(req);
+      if (!who) return false;
+      (req as Request & { agentGitPusher?: string }).agentGitPusher = who.subject;
+      return canManageHostedAgent(spec, who);
+    },
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentGitCaller(req));
+    },
+    // One writable copy. A mirrored agent is pushed to on GitHub, and this is what says so to the person
+    // whose push just bounced, instead of letting the two copies diverge.
+    mirrorOf: (id) => { const m = agentMirrors.get(id); return m ? { url: m.url } : null; },
+    apply: (id, input, commit, by) => applyPushedTree(id, input, commit, by),
+    log: (level, message) => market.log(level, 'agents', message),
+  });
+  app.use(agentGitHttp.router());
+
   app.use('/p2p/models', express.json({ limit: '48mb' }));
   app.use(express.json({ limit: '5mb', verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use((req, res, next) => {
@@ -407,6 +497,32 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // Every agent holds a proof-of-possession key before its runtime starts (hosted-agent-pop.ts): one stored before
   // keys existed gets its key here; one whose key no longer matches its card gets a new release, announced on the feed.
   await hostedHost.start(ensureHostedAgentPopKeys(hostedStore, hostedSecrets, { events: agentEvents, registryIssuer: market.publicUrl }));
+  /**
+   * Every agent has a repository, including the ones that existed before repositories did.
+   *
+   * A backfill rather than a migration: an agent whose repository is missing gets one with a single commit of
+   * what it is now. The history starts here and says so, which is honest — the versions before this have no
+   * commits, because there were none. Nothing is a special case afterwards: there is no "agent without a
+   * repository" branch anywhere else in the code.
+   *
+   * Hooks are (re)installed on every start, not only on create. They are a script the node writes, and the node
+   * they must call back into is this process — a repository restored from a backup, or written by an older
+   * build, would otherwise sit there with a stale hook or none at all.
+   */
+  for (const spec of hostedStore.list()) {
+    try {
+      const fresh = !agentGit.exists(spec.id);
+      if (fresh) await agentGit.init(spec.id);
+      agentGitHttp.installHooks(spec.id);
+      if (!(await agentGit.hasCommits(spec.id))) {
+        await agentGit.commitSpec(spec.id, spec, { message: `Import ${spec.id} at v${spec.version}` });
+        market.log('info', 'agents', `agent ${spec.id}: repository created from v${spec.version} — \`git clone ${market.publicUrl}/git/${spec.id}.git\``);
+      }
+    } catch (e) {
+      // A repository that cannot be made is not a reason to refuse to serve the agent: it runs exactly as it did.
+      market.log('warn', 'agents', `agent ${spec.id}: no git repository (${(e as Error).message}) — it runs, but it cannot be cloned or pushed to`);
+    }
+  }
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
   market.linkedAgents = linkedStore;
@@ -493,6 +609,94 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
     peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
+    /**
+     * The repository side of the same change. An agent created or edited through the API gets the commit a
+     * push would have made, so there is one history rather than one per door.
+     */
+    repo: {
+      create: async (spec) => {
+        await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        await agentGit.commitSpec(spec.id, spec, { message: `Create ${spec.id}` });
+      },
+      commit: async (spec, message, by) => {
+        if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        const parent = (await agentGit.hasCommits(spec.id)) ? await agentGit.resolve(spec.id, 'main') : null;
+        // The person who made the change is the author, so `git log` names them and not the node.
+        await agentGit.commitSpec(spec.id, spec, { message, parent, author: { name: by, email: `${by}@ainize` } });
+      },
+      remove: async (id) => { await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
+      info: (id) => {
+        if (!agentGit.exists(id)) return null;
+        const m = agentMirrors.get(id);
+        return {
+          clone_url: `${(market.publicUrl ?? '').replace(/\/+$/, '')}/git/${id}.git`,
+          // The commit the deployed branch is on, read synchronously from the ref file git keeps it in: a
+          // listing renders many agents, and a child process each would make the page pay for the history.
+          commit: agentGit.headSync(id),
+          mirror: m ? { url: m.url, branch: m.branch, path: m.path, error: m.error ?? null } : null,
+        };
+      },
+    },
+  }));
+  /**
+   * The history a page reads — commits, branches, one file, a diff. Mounted beside the agent routes rather
+   * than with the git transport above, because it answers a browser's questions, not a git client's.
+   */
+  /**
+   * Proposals on an agent, and merging one.
+   *
+   * `apply` is the same function the git push path uses, deliberately: a merge moves the deployed branch, and
+   * every way of moving it has to end in the same place or they will drift.
+   */
+  /**
+   * Agents that follow a repository somewhere else — donga-science's, which already live on GitHub with a team
+   * and a history. Declared before the pull routes because `mirrorOf` is what makes a mirrored agent refuse a
+   * push on this side and name GitHub instead.
+   */
+  const agentMirrors = new AgentMirrorStore(join(hostedHome, 'agent-mirrors.json'));
+  app.use(agentMirrorRoutes({
+    git: agentGit,
+    mirrors: agentMirrors,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    canManage: (req, id) => {
+      const spec = hostedStore.get(id);
+      const who = agentCaller(req);
+      return !!spec && !!who && canManageHostedAgent(spec, who);
+    },
+    principal: (req) => agentCaller(req)?.subject ?? null,
+    apply: applyPushedTree,
+    land: (id, commit) => agentGit.setRef(id, 'main', commit),
+    log: (level, message) => market.log(level, 'agents', message),
+  }));
+
+  const agentPulls = new AgentPullStore(join(hostedHome, 'agent-pulls.json'));
+  app.use(agentPullRoutes({
+    git: agentGit,
+    pulls: agentPulls,
+    principal: (req) => agentCaller(req)?.subject ?? null,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    canMerge: (req, id) => {
+      const spec = hostedStore.get(id);
+      const who = agentCaller(req);
+      return !!spec && !!who && canManageHostedAgent(spec, who);
+    },
+    apply: applyPushedTree,
+  }));
+  app.use(agentGitRoutes({
+    git: agentGit,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    cloneBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
   }));
   // The cross-product agent registry (ain-integration contract "1.0"): the same agents, in the shape every product reads.
   app.use(sharedAgentRoutes({
