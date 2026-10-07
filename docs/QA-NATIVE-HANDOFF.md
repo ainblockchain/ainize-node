@@ -80,6 +80,13 @@
 - 모델이 만든 함수는 별도의 read-only/no-network/no-credential Docker 컨테이너에서 고정된 산술 검증을 통과했다. 마지막 진단은 약 22초, 1 pass / 0 skip.
 - scheduler 단위/HTTP 검증: 호스트 토큰 필요, tick 중복 방지, 실행 중 idle/eviction 보호, 불확실한 관측 후 유지, Docker 종료 확인 후 복구.
 
+### 2026-10-07 네이티브 모듈 실제 E2E (읽기/코딩, 프로덕션 무쓰기)
+
+- `index.mjs`/`validation.mjs`가 포함된 현재 브랜치에서 문서의 opt-in 하네스를 실제 자격증명·실제 서비스로 돌렸다. 둘 다 프로덕션 등록·게시·merge 없음.
+- **live-read 통과**: 네이티브 Docker 핸들러가 실제 Teams 정본 메시지(ainteams-qa 채널, 21시간 내 실제 fix 요청)를 게이트웨이+실제 `TEAMS_TOKEN`으로 읽어 workspace/channel 관계·활성 멤버십·fix 의도·요청 시각을 검증하고, 격리 SQLite에 enqueue, 컨테이너 재시작 후 같은 작업 ID 유지, 위조 metadata(forged-admin)는 거부했다. 읽기 전용.
+- **live-coding 통과**: 실제 Ainize 모델 `Qwen3.8-Flash-Next`가 네이티브 툴(list/read/replace/create)로 후보를 수정하고 체크포인트에서 재개한 뒤, 자격증명·네트워크 없는 별도 Docker에서 고정 산술 검증을 통과했다(약 21초). 제품 회귀 게이트를 대신하지는 않는다.
+- 운영상 핵심 발견: **외부 Python QA 워커(`qa_agent.server`)가 6개 채널을 현재 라이브로 서빙 중**이다. 따라서 네이티브 에이전트로 같은 라이브 Teams/GitHub/Ainmem에 쓰기(후보 PR·페이지·merge)를 하면 이중 처리·중복 쓰기 위험이 있어, 쓰기/릴리스는 조율된 전환(워커 정지 또는 전용 채널) 없이 자율 실행하면 안 된다. 위 두 실증은 읽기·격리라 충돌이 없었다.
+
 ### 아직 증명하지 못한 것
 
 - **후속 scheduler 변경의 실제 Docker 자동 실행 및 Ainize 노드 전체 재시작 복구.** 지금까지 실제 모델 진단은 테스트 호출이 다음 단계를 진행시켰다.
