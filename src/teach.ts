@@ -558,7 +558,7 @@ export class TeachWorker {
     if (c.pausedReason) return { state: 'paused', reason: c.pausedReason };
     if (c.backend === 'stub') return { state: this.current ? 'busy' : 'ready' };
     // Local trainer: a subprocess on the node host, no container to inspect — mirror the stub path's busy/ready.
-    if (c.trainer.runtime === 'local') return { state: this.current ? 'busy' : 'ready' };
+    if ((c.trainer as unknown as { runtime?: 'docker' | 'local' }).runtime === 'local') return { state: this.current ? 'busy' : 'ready' };
     if (!force && this.trainerCache && Date.now() - this.trainerCache.at < 30_000) return this.trainerCache.value;
     let value: { state: 'ready' | 'busy' | 'paused'; reason?: string };
     if (!this.market.runtime.repo) value = { state: 'paused', reason: 'runtime repo is not configured on this node' };
@@ -1992,7 +1992,7 @@ export class TeachWorker {
     if (!release) return { ok: false, reason: 'trainer lease is held; verify the holder before recovering an orphaned lease' };
     // (b) an operator training job owns the GPUs. Docker: pgrep inside the container; local: pgrep the trainer
     // script on the node host, since there is no container to exec into.
-    const pg = c.trainer.runtime === 'local'
+    const pg = (c.trainer as unknown as { runtime?: 'docker' | 'local' }).runtime === 'local'
       ? await this.execFn('pgrep', ['-f', c.trainer.script], 15_000)
       : await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', 'train/'], 15_000);
     if (pg.code === 0 && pg.out.trim()) { release(); return { ok: false, reason: `operator training job is using the trainer (pid ${pg.out.trim().split(/\s+/)[0]})` }; }
@@ -2276,7 +2276,7 @@ export class TeachWorker {
       job_id: job.id, contributor: job.contributor,
       dataset: job.dataset_sha256 ? { sha256: job.dataset_sha256, rows: job.dataset_rows ?? facts.length, source: job.dataset_source ?? 'chat' } : undefined,
       ...(parents.length ? {
-        parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' && c.trainer.runtime !== 'local' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
+        parents: parents.map((p) => ({ patch_id: p.patch_id, sha256: p.sha256, npz: c.backend === 'gradient' && (c.trainer as unknown as { runtime?: 'docker' | 'local' }).runtime !== 'local' ? `/work/.teach/${job.id}/parents/${p.file}` : join(dir, 'parents', p.file) })),
         known_file: knownRows ? 'known.jsonl' : null,
         max_known: clampInt(Math.ceil(facts.length / 2), 8, 64),
         // the questions that deliberately override an inherited answer: trained, and kept OUT of the keep-set so the
@@ -2316,11 +2316,11 @@ export class TeachWorker {
       this.log('warn', `could not resolve teach.trainer.gpus (${c.trainer.gpus}) to GPU UUIDs — the trainer runs unpinned and may land on the serving GPUs`, job.id);
     }
     let out: { ok: true; done: DoneEvent; facts: TeachFactRow[]; recipe: TrainerRecipe } | { ok: false; error: string };
-    if (c.trainer.runtime === 'local') {
+    if ((c.trainer as unknown as { runtime?: 'docker' | 'local' }).runtime === 'local') {
       // No docker: spawn python on the node host. The trainer sees the GPUs and the alloc knob through its env
       // (set on the child below) rather than docker `-e` flags, and reads the HOST job/npz paths, not `/work/...`.
-      const cmd = c.trainer.python ?? 'python3';
-      const base = c.trainer.cwd ?? this.market.cfg.runtime?.repo ?? dir;
+      const cmd = (c.trainer as unknown as { python?: string }).python ?? 'python3';
+      const base = (c.trainer as unknown as { cwd?: string }).cwd ?? this.market.cfg.runtime?.repo ?? dir;
       const script = resolve(base, c.trainer.script);
       const extraEnv: NodeJS.ProcessEnv = { PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True' };
       if (uuids.length) extraEnv.CUDA_VISIBLE_DEVICES = uuids.join(',');
@@ -2505,7 +2505,7 @@ export class TeachWorker {
   private async killStray(job: TeachJobRow) {
     if (this.cfg.backend !== 'gradient') return;
     // Local trainer: no container to exec into — killChild's child.kill() terminates the subprocess directly.
-    if (this.cfg.trainer.runtime === 'local') return;
+    if ((this.cfg.trainer as unknown as { runtime?: 'docker' | 'local' }).runtime === 'local') return;
     const c = this.cfg;
     let pid = job.container_pid ?? this.store.getTeachJob(job.id)?.container_pid ?? null;
     if (!pid) { const r = await this.execFn('docker', ['exec', c.trainer.container, 'pgrep', '-f', `.teach/${job.id}/job.json`], 10_000).catch(() => null); pid = r && r.code === 0 ? Number(r.out.trim().split(/\s+/)[0]) || null : null; }
@@ -2721,7 +2721,7 @@ export class TeachWorker {
     const facts = job.facts.map((f) => ({ ...f }));
     const training = job.training as TeachTrainingSpec | null;
     const sideEffects = training?.check_side_effects !== false;
-    if (c.check.mode === 'trainer') {
+    if ((c.check as unknown as { mode?: 'runtime' | 'trainer' }).mode === 'trainer') {
       /*
        * Trainer-verified mode (`teach.check.mode === 'trainer'`). A node that serves only `decision` models (e.g. the
        * Cloudflare Clef node) has NO PLE chat `runtime` to apply the lesson to, so the runtime branch below would sit
