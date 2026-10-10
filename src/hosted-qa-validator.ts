@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
 // Bump when execution semantics change so old receipts cannot authorize a new validator policy.
-export const QA_VALIDATOR_VERSION = '2-copied-dependencies';
+export const QA_VALIDATOR_VERSION = '3-multiple-dependency-scopes';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
-  dependencyPath: string; cwd: string; gates: { name: string; argv: string[] }[];
+  dependencyPath: string; cwd: string; dependencies?:{cwd:string;dependencyPath:string}[]; gates: { name: string; argv: string[]; cwd?:string }[];
   timeoutMs?: number; memory?: string;
 }
 export interface QaCandidate { repository: string; base: string; changes: Record<string, string> }
@@ -28,6 +28,9 @@ export function validateQaProfile(profile: QaValidationProfile, candidate: QaCan
     || candidate.repository !== profile.repository || candidate.base !== profile.base) throw new Error('Candidate/profile binding mismatch');
   if (!/^sha256:[a-f0-9]{64}$/.test(profile.image)) throw new Error('Immutable validation image required');
   if (!/^\/seed(?:\/[a-zA-Z0-9_-]+)*$/.test(profile.dependencyPath) || (profile.cwd !== '.' && !pathSafe(profile.cwd))) throw new Error('Invalid validation path');
+  const scopes=profile.dependencies??[{cwd:profile.cwd,dependencyPath:profile.dependencyPath}];
+  if(!Array.isArray(scopes)||!scopes.length||scopes.length>16||new Set(scopes.map(s=>s?.cwd)).size!==scopes.length||scopes.some(s=>!s||(s.cwd!=='.'&&!pathSafe(s.cwd))||!/^\/seed(?:\/[a-zA-Z0-9_-]+)*$/.test(s.dependencyPath))||!scopes.some(s=>s.cwd===profile.cwd&&s.dependencyPath===profile.dependencyPath))throw new Error('Invalid dependency scopes');
+  if(profile.gates.some(g=>g.cwd!==undefined&&!scopes.some(s=>s.cwd===g.cwd)))throw new Error('Gate working directory is outside dependency scopes');
   if (!profile.gates.length || profile.gates.length > 16 || new Set(profile.gates.map(g => g.name)).size !== profile.gates.length
     || profile.gates.some(g => !/^[a-z][a-z0-9_-]{0,31}$/.test(g.name) || !g.argv.length || g.argv.some(a => typeof a !== 'string' || a.includes('\0')))) throw new Error('Invalid product gates');
   const entries = Object.entries(candidate.changes);
@@ -48,16 +51,19 @@ const fs=require('node:fs'),cp=require('node:child_process');
 const p=JSON.parse(fs.readFileSync('/input/profile.json','utf8'));
 fs.mkdirSync('/tmp/work',{recursive:true});
 fs.cpSync('/input/source','/tmp/work',{recursive:true});
-const project='/tmp/work/'+p.cwd;
+for(const scope of p.dependencies){
+const project='/tmp/work/'+scope.cwd;
+if(!fs.existsSync(project+'/package.json'))throw new Error('Dependency scope has no package manifest');
 for(const file of ['package.json','yarn.lock','package-lock.json','pnpm-lock.yaml']) {
- const source=project+'/'+file,seed=p.dependencyPath+'/'+file;
+ const source=project+'/'+file,seed=scope.dependencyPath+'/'+file;
  if(fs.existsSync(source) && (!fs.existsSync(seed)||!fs.readFileSync(source).equals(fs.readFileSync(seed)))) {
   console.error('Dependency snapshot mismatch: '+file);process.exit(1);
  }
 }
 // Keep package paths inside the disposable checkout: TypeScript declaration inference follows realpaths.
 // Preserve relative .bin links so compilers resolve the copied dependency tree.
-fs.cpSync(p.dependencyPath+'/node_modules',project+'/node_modules',{recursive:true,verbatimSymlinks:true});
+fs.cpSync(scope.dependencyPath+'/node_modules',project+'/node_modules',{recursive:true,verbatimSymlinks:true});
+}
 const r=cp.spawnSync(p.argv[0],p.argv.slice(1),{cwd:'/tmp/work/'+p.cwd,stdio:'inherit',env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',CI:'1',NEXT_TELEMETRY_DISABLED:'1'}});
 process.exit(r.status===null?1:r.status);
 `;
@@ -87,7 +93,7 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       await writeFile(join(source,path),content);
     }
     for (const gate of profile.gates) {
-      await writeFile(join(dir,'profile.json'),JSON.stringify({dependencyPath:profile.dependencyPath,cwd:profile.cwd,argv:gate.argv}));
+      await writeFile(join(dir,'profile.json'),JSON.stringify({dependencies:profile.dependencies??[{cwd:profile.cwd,dependencyPath:profile.dependencyPath}],cwd:gate.cwd??profile.cwd,argv:gate.argv}));
       // Only non-secret exported Git source and fixed gate config are visible in the mount.
       const name=`ainize-qa-validation-${randomUUID()}`;
       let passed=false, diagnostics='';

@@ -12,3 +12,11 @@ test('product validation requires immutable bindings and confines all paths',()=
  assert.throws(()=>validateQaProfile({...profile,cwd:'../outside'},candidate),/path/);
  assert.throws(()=>validateQaProfile({...profile,timeoutMs:Infinity},candidate),/timeout/);
 });
+test('multi-package gates can only run in unique declared dependency scopes',()=>{
+ const multi={...profile,cwd:'frontend',dependencies:[{cwd:'frontend',dependencyPath:'/seed/0'},{cwd:'backend',dependencyPath:'/seed/1'}],gates:[{name:'frontend',argv:['npm','test']},{name:'backend',cwd:'backend',argv:['npm','test']}]};
+ assert.doesNotThrow(()=>validateQaProfile(multi,candidate));
+ assert.throws(()=>validateQaProfile({...multi,gates:[{name:'unknown',cwd:'other',argv:['npm','test']}]},candidate),/outside/);
+ assert.throws(()=>validateQaProfile({...multi,dependencies:[multi.dependencies[0],multi.dependencies[0]]},candidate),/scopes/);
+ assert.throws(()=>validateQaProfile({...multi,dependencies:[multi.dependencies[1]]},candidate),/scopes/);
+ assert.throws(()=>validateQaProfile({...multi,dependencies:[multi.dependencies[0],{cwd:'../escape',dependencyPath:'/seed/1'}]},candidate),/scopes/);
+});

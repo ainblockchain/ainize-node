@@ -1,9 +1,8 @@
 # Native hosted QA product validator
 
 `src/hosted-qa-validator.ts` runs on the Ainize host. It exports `runQaValidation(profile, candidate)`.
-It must not be uploaded as a handler that has access to a Docker socket. The production gateway
-binding/authorization and tick-to-validation dispatch are still pending; this module alone is not
-an enabled production pipeline.
+It must not be uploaded as a handler that has access to a Docker socket. The private gateway and scheduled handler integration are implemented behind explicit operator
+configuration. Production profiles and the coordinated agent cutover are not yet enabled.
 
 Operator profile pins repository, full base SHA, checkout path, immutable dependency image digest,
 image dependency directory (`/seed/...`), product working directory, and ordered fixed gate argv.
@@ -87,3 +86,33 @@ To reproduce on a prepared host: build this repository; run the opt-in test with
 an unused internal test network. It intentionally refuses the production network name. The profile
 must include an available checkout/commit and pinned dependency image. Runtime state/socket access
 requires the host ACL utilities used by other hosted agent Docker tests.
+
+
+## Multiple package scopes (2026-10-10)
+
+`dependencies` optionally lists `{cwd, dependencyPath}` pairs for every package needed by the
+product. The existing top-level `cwd`/`dependencyPath` pair must be included. Each gate may set
+`cwd` to one of those declared scopes; omitted values use the top-level directory. Duplicate,
+escaping or undeclared scopes are refused. Every gate receives a fresh source copy with **all**
+scopes prepared and each scope's package/lock files checked against its image seed. This supports
+separate frontend/backend gates and workspace dependencies without sharing writable dependencies
+between gates. The receipt version is now `3-multiple-dependency-scopes`; prior receipts cannot
+authorize this changed execution policy.
+
+Actual server image inspection found two package seeds for AINA and a workspace manifest for
+Teams. Only Ainspace's inspected seed had ready executable links. The other images need an
+explicit rebuilt dependency layout; assigning their existing image IDs to native profiles is not
+sufficient. Ainize web had no immediate `/seed/<scope>/package.json` at all. Do not interpret these
+findings as a failure of the existing Python worker, which may restore dependencies differently.
+
+`e2e/hosted-qa-multi-scope.test.ts` passed on .41: 1 test, zero failures/skips. Real Docker gates in
+frontend and backend directories each resolved their own fixture package and saw the same candidate
+overlay across the checkout. No network or release credentials were available. Evidence:
+`/mnt/newdata/qa-services/validation/native-multi-scope-20261010-nE5z42/retry.log`. The first fixture
+used `/seed/0`, inherited the base image's entire dependency tree and failed with no diagnostics;
+the passing fixture uses separate seed paths. No claim is made that the first failure's exact cause
+was established. Diagnostic images and containers were removed by the harness.
+
+The fixture proves the execution contract, not AINA product regression coverage. Actual product
+images/profiles, database/browser gates and service-wide E2E remain required. QA unit/integration
+targets: 101 passed, zero skips; TypeScript build passed.

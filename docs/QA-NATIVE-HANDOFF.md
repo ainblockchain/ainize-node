@@ -534,3 +534,10 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - companion Ainmem PR76의 `10e62a6`에 격리 DB fixture와 browser check를 추가했다. 실제 .41 Next 앱/PostgreSQL + Mac Chromium에서 데스크톱/모바일의 칸반·작업 렌더링, 카드 클릭, 화면 넘침 방지, 동일 페이지 갱신, 검토 SHA 표시, 승인/완료 열 이동을 검증하고 PNG를 직접 확인했다.
 - 증거: `/mnt/newdata/qa-services/validation/native-ainmem-ui-20261010-V9YCTW/results/`. 테스트용 앱/DB 컨테이너, network, SSH 터널은 제거했다. 상세 재현/범위는 Ainmem `docs/QA-NATIVE-TASK-API.md` 참조.
 - 운영 페이지 이관, 실제 로그인/승인, 제품 수정·배포 전체 E2E는 여전히 남아 있다. 이번 fixture의 완료 표시와 SHA는 실제 배포 증거가 아니다.
+
+### 2026-10-10 제품별 의존성 이미지 및 다중 패키지 검증
+
+- Ainmem PR76(10e62a6)을 ready for review로 변경하고 사용자에게 특정 커밋의 main 병합·배포 승인을 요청했다. 아직 승인 답변/병합/배포는 없다. 기존 작업기 전환과 별도다.
+- 실제 7개 서비스의 기존 isolation image를 조회했다. AINA는 두 패키지 seed, Teams는 workspace manifest이며, 검사한 경로에서 실행용 .bin이 준비된 것은 Ainspace뿐이었다. Ainmem 브라우저 검증 때 확인한 의존성 복원 차이가 다른 제품에도 있어 기존 image ID를 네이티브 설정에 그대로 복사하면 안 된다.
+- 네이티브 검증기에 다중 dependency scopes와 gate별 cwd를 추가했다. 각 gate는 모든 scope를 새 private 작업 공간에 복사하고 package/lock을 대조한다. 미등록 경로·중복 scope는 거부하고 receipt version을 3으로 올렸다.
+- QA 타깃 101 pass, build pass. 실제 .41 Docker에서 frontend/backend 두 gate가 각각 자기 패키지를 로드하고 같은 candidate overlay를 읽는 검증 1 pass/0 skip. 증거와 한계는 docs/QA-PRODUCT-VALIDATOR.md 참조. 아직 실제 각 제품의 전체 검증 프로필이 준비된 것은 아니다.
