@@ -1,3 +1,5 @@
+import { AgentArchives } from '../src/agent-archives.js';
+import { AgentGit } from '../src/agent-git.js';
 /**
  * The feature as a person meets it: create an agent, clone it, edit the prompt, push, and the agent that
  * answers is the one you pushed.
@@ -28,6 +30,7 @@ const url = `http://127.0.0.1:${PORT}`;
 const PERSON = createIdentity();
 const MODEL = 'test-model';
 
+let dataDirectory = '';
 let N: RunningNode;
 let session = '';
 let apiKey = '';
@@ -48,6 +51,7 @@ const call = async (method: string, path: string, body?: unknown, token = sessio
 
 before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: HOME, name: 'git-node', port: PORT, peers: [], roles: ['seller'], ledger: 'local' });
+  dataDirectory = cfg.dataDir;
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url;
   cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300_000, auto: false };
@@ -349,4 +353,41 @@ test('a reader proposes from a private fork, and merging uses the recorded commi
   assert.equal(merged.status, 200, JSON.stringify(merged.body));
   const live = (await call('GET', '/api/hosted-agents/desk')).body as unknown as { agent: { systemPrompt: string } };
   assert.equal(live.agent.systemPrompt, 'The reviewed proposal.');
+});
+
+test('deleting an agent over the real node API first preserves its repository, reviews and execution history', async () => {
+  const refs = (await git(['--git-dir', join(dataDirectory, 'agent-git/desk.git'), 'show-ref'])).trim();
+  const deleted = await call('DELETE', '/api/hosted-agents/desk');
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const id = (deleted.body as unknown as { archiveId: string }).archiveId;
+  assert.match(id, /^archive_[0-9a-f]+$/);
+  const archives = new AgentArchives(join(dataDirectory, 'agent-archives.json'), join(dataDirectory, 'agent-archives'));
+  const archived = archives.get(id, PERSON.address)!;
+  assert.equal(archived.spec.systemPrompt, 'The reviewed proposal.');
+  assert.ok(archived.pulls.length > 0);
+  assert.ok(archived.executions!.length > 0);
+  assert.ok(archived.runtime?.activeCommit);
+  assert.equal((await call('GET', '/api/hosted-agents/desk')).status, 404);
+  const restored = new AgentGit(join(tmp, 'offline-restore'));
+  await restored.restoreBundle('desk', archives.bundle(id, PERSON.address)!);
+  assert.equal((await git(['--git-dir', restored.dir('desk'), 'show-ref'])).trim(), refs);
+  assert.equal((await restored.readSpec('desk', 'main')).input.systemPrompt, 'The reviewed proposal.');
+});
+
+test('archive quota refuses deletion before touching the agent or its Git repository', async () => {
+  // The previous test retained one archive; fill the remaining owner capacity through the real API.
+  for (let n = 0; n < 19; n++) {
+    const id = `archive-quota-${n}`;
+    const created = await call('POST', '/api/hosted-agents', { id, name: 'Archive quota test', model: MODEL, systemPrompt: 'Preserve me.' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal((await call('DELETE', `/api/hosted-agents/${id}`)).status, 200);
+  }
+  const id = 'archive-quota-last';
+  assert.equal((await call('POST', '/api/hosted-agents', { id, name: 'Must remain available', model: MODEL, systemPrompt: 'Do not lose me.' })).status, 201);
+  const deleted = await call('DELETE', `/api/hosted-agents/${id}`);
+  assert.equal(deleted.status, 502);
+  assert.match(JSON.stringify(deleted.body), /archive quota reached/);
+  assert.equal((await call('GET', `/api/hosted-agents/${id}`)).status, 200);
+  const repository = new AgentGit(join(dataDirectory, 'agent-git'));
+  assert.equal((await repository.readSpec(id, 'main')).input.systemPrompt, 'Do not lose me.');
 });

@@ -1,3 +1,4 @@
+import { AgentArchives } from './agent-archives.js';
 import { AgentRepositoryQueue, type RepositorySerialize } from './agent-repository-queue.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
@@ -348,6 +349,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     return task;
   };
 
+  const agentArchives = new AgentArchives(join(cfg.dataDir, 'agent-archives.json'), join(cfg.dataDir, 'agent-archives'));
   const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
   const agentGitHttp = new AgentGitHttp({
     serialize: serializeRepository,
@@ -845,6 +847,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         await agentGit.commitSpec(spec.id, spec, { message, parent, author: { name: by, email: `${by}@ainize` } });
       },
       deleting: (id, remove) => mirrorSyncer.removeAgent(id, remove),
+      archive: (spec) => agentArchives.create(agentGit, { spec, pulls: agentPulls.list(spec.id), mirror: agentMirrors.get(spec.id), runtime: agentRuntimes.get(spec.id), executions: agentRuntimes.executionsOf(spec.id) }),
       remove: async (id) => { agentRuntimes.remove(id); await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
       info: (id) => {
         if (!agentGit.exists(id)) return null;

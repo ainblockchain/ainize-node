@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type { AgentGit } from './agent-git.js';
 import type { AgentMirror } from './agent-mirror.js';
 import type { AgentPull } from './agent-pulls.js';
+import type { AgentRuntime, RuntimeExecution } from './repository-runtime.js';
 import type { HostedAgentSpec } from './hosted-agent-types.js';
 
 export interface AgentArchive {
@@ -15,6 +16,9 @@ export interface AgentArchive {
   exportedAt?: number;
   restoredAt?: number;
   bytes: number;
+  repository: boolean;
+  runtime?: AgentRuntime | null;
+  executions?: RuntimeExecution[];
   spec: HostedAgentSpec;
   pulls: AgentPull[];
   mirror: AgentMirror | null;
@@ -38,9 +42,10 @@ export class AgentArchives {
     return record?.owner === owner.toLowerCase() ? structuredClone(record) : null;
   }
   bundle(id: string, owner: string): string | null {
-    return this.get(id, owner) ? join(this.directory, `${id}.bundle`) : null;
+    const record = this.get(id, owner);
+    return record && record.repository !== false ? join(this.directory, `${id}.bundle`) : null;
   }
-  create(git: AgentGit, snapshot: Pick<AgentArchive, 'spec' | 'pulls' | 'mirror'>): Promise<AgentArchive> {
+  create(git: AgentGit, snapshot: Pick<AgentArchive, 'spec' | 'pulls' | 'mirror'> & Partial<Pick<AgentArchive, 'runtime' | 'executions'>>): Promise<AgentArchive> {
     const copied = structuredClone(snapshot);
     const operation = this.pending.catch(() => undefined).then(async () => {
       const owner = copied.spec.owner.toLowerCase();
@@ -49,10 +54,11 @@ export class AgentArchives {
       const id = `archive_${randomBytes(12).toString('hex')}`;
       const bundle = join(this.directory, `${id}.bundle`);
       try {
-        await git.exportBundle(copied.spec.id, bundle);
-        const bytes = statSync(bundle).size + Buffer.byteLength(JSON.stringify(copied));
+        const repository = git.exists(copied.spec.id) && await git.hasCommits(copied.spec.id);
+        if (repository) await git.exportBundle(copied.spec.id, bundle);
+        const bytes = (repository ? statSync(bundle).size : 0) + Buffer.byteLength(JSON.stringify(copied));
         if (bytes + [...this.records.values()].reduce((total, record) => total + record.bytes, 0) > this.limits.bytes) throw new Error('agent archive storage quota reached');
-        const record: AgentArchive = { id, agent: copied.spec.id, owner, createdAt: Date.now(), bytes, ...copied };
+        const record: AgentArchive = { id, agent: copied.spec.id, owner, createdAt: Date.now(), bytes, repository, ...copied };
         this.records.set(id, record);
         try { this.save(); } catch (error) { this.records.delete(id); throw error; }
         return structuredClone(record);

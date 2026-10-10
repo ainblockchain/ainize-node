@@ -138,3 +138,9 @@ This foundation is not yet connected to deletion or owner UI. Remaining archive 
 Connected a shared per-agent queue across complete Git HTTP exchanges (including apply before response completion), hosted-agent creation/edit/deletion/secret changes, PR mutations and merges, mirror sync/configuration/detachment, and project-agent deployment. Authorization, existence and source policy are evaluated after the queue wait; hook validation does not re-enter the lock. Existing mirror-only deletion ordering remains a fallback for integrations without the shared queue.
 
 Real HTTP push validation holds its runtime apply open, verifies an archive cannot overtake it, releases it, and proves the exported bundle includes the final commit. A queued clone rechecks existence after deletion and returns 404. The 66 Git/node/mirror/PR/hosted/project regressions plus 10 focused HTTP tests pass; typecheck passes. Source-project removal semantics and archive API/UI integration remain pending.
+
+### Archive before the real deletion API
+
+The production node wiring now creates the owner-private archive inside the common repository queue before deleting hosted-agent state, secrets, runtime records, Git repository, reviews or mirror metadata. The archive captures the spec, all Git refs, PR/review records, mirror configuration and runtime/execution history. Deletion responds with its archive ID. Missing legacy repositories are recorded explicitly as metadata-only archives. Archive failure prevents cleanup.
+
+A real signed-in node test deletes the agent, reads the persisted archive, and restores every Git ref offline; PR and execution history survive. Another real API test fills the owner archive quota and proves the rejected deletion leaves the agent and repository accessible. 16 archive/node tests and typecheck pass. Owner download/restore endpoints, restored runtime application and user recovery UI are still pending; production deployment is still pending.
