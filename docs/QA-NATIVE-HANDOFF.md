@@ -1011,3 +1011,23 @@ cluster 테스트의 큰 blob 다운로드는 HTTP status만 검사하고 본문
 acl 패키지는 미설치이며 sudo -n은 사용할 수 없다. 이번 설치 시도는 Vault Locked로
 자격증명을 얻기 전에 종료됐으므로 서버 패키지/서비스는 변경되지 않았다.
 PR71/76 승인과 실제 운영 등록·단일 작업기 전환, 전 채널 E2E는 계속 미완료다.
+
+### 최신 native 코드의 실제 hosted Docker 연결 재확인 — 2026-10-11
+
+3e31f95의 compiled runtime을 .41 별도 디렉터리에 반입해 opt-in
+hosted-qa-product-validation 검사를 실행했다. 새 validation.mjs가 coding.mjs를
+import하므로 검사 전용 agent bundle에 coding.mjs와 repository.mjs를 추가했다.
+운영 agent bundle이 아닌 진단 fixture의 누락을 수정한 것이다.
+
+첫 준비 시 기존 ainize-cicd-integration 네트워크가 사용 중이라 실행 전에 중단했다.
+기존 컨테이너를 정지하지 않고 이번 실행용 내부 네트워크 ainize-qa-diag-u9j3zb를
+생성했다. 검사 후 삭제까지 확인했다. 운영 서비스와 기존 QA 작업기는 변경하지 않았다.
+
+실제 Docker agent→private gateway→제품 validator 실행: 1 pass / 0 fail / 0 skip,
+약 39.2초. agent runtime을 중간에 재시작해도 job ID가 유지됐고 host 검증 실행은
+정확히 한 번이며 needs_publication에 도달했다. 제품 profile은 기존 Ainspace PR198
+6bec65cef4a05e42f52a668850fd728ba09c42d2의 lint-only다. 모델을 호출하거나 새 수정,
+PR/페이지/승인/배포를 수행한 검사가 아니다. 전 제품 운영 E2E 완료로 간주하지 않는다.
+
+증거: /mnt/newdata/qa-services/validation/native-gateway-20261011-U9J3ZB/integration.log.
+ACL은 이 진단 PATH에 기존 추출 도구를 사용했다. 운영 ACL 패키지는 여전히 미설치다.

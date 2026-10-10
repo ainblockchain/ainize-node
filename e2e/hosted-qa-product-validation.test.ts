@@ -60,7 +60,7 @@ test('scheduled hosted agent validates a real product through the gateway and su
     await advanceHostedValidation({jobs,claim,checkpoints,ctx});
    }`;
   const spec=store.create(hostedAgentSpecInput.parse({id:agentId,name:'Temporary product validation diagnostic',model:'unused',mode:'handler',allowedHosts:[],
-   files:{'index.mjs':handler,...Object.fromEntries(['jobs.mjs','checkpoints.mjs','validation.mjs'].map(name=>[name,readFileSync(new URL('../examples/qa-agent/'+name,import.meta.url),'utf8')]))}}),'0x00000000000000000000000000000000000a11ce');
+   files:{'index.mjs':handler,...Object.fromEntries(['jobs.mjs','checkpoints.mjs','validation.mjs','coding.mjs','repository.mjs'].map(name=>[name,readFileSync(new URL('../examples/qa-agent/'+name,import.meta.url),'utf8')]))}}),'0x00000000000000000000000000000000000a11ce');
   host.apply(spec);
   const built=Date.now()+300000;while(host.status(agentId)?.status==='building'&&Date.now()<built)await new Promise(r=>setTimeout(r,500));
   assert.equal(host.status(agentId)?.status,'ready');
