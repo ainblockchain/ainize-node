@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 // @ts-expect-error - example module
 import { Jobs } from '../examples/qa-agent/jobs.mjs';
 // @ts-expect-error - example module
@@ -108,4 +108,54 @@ test('replacement job and PR are reconciled separately without transferring arch
  }});
  const evidence=f.checkpoints.load(updated.checkpoint.reconciliation);
  assert.equal(updated.checkpoint.stage,'superseded_candidate');assert.equal(updated.state,'waiting');assert.equal(evidence.replacement.action,'verify_deployment');assert.equal(evidence.replacement.approvalInherited,false);assert.equal(f.jobs.get(successor).state,'completed');assert.equal(updated.checkpoint.approval,undefined);
+});
+
+test('unpublished historical cutover queues native coding only after live intake and host base preparation',async t=>{
+ const {createHash}=await import('node:crypto');
+ // @ts-expect-error example module
+ const {resumeUnpublishedLegacy}=await import('../examples/qa-agent/resume-legacy.mjs');
+ const f=fixture(t),page='https://ainmem.example/p/11111111-1111-4111-8111-111111111111';
+ f.source.prepare('UPDATE jobs SET status=?,details=?').run('blocked',JSON.stringify({kanban_url:page}));
+ importLegacyJobs(f);const original=f.jobs.get(id);let reads=0;
+ const verify=async(archive,fingerprint)=>{reads++;return {jobId:id,repository:cfg.repository,archiveDigest:fingerprint,text:f.payload.text,binding:{workspaceId:'ws',channelId:'ch',rootId:'m',requestId:'m',requestDigest:createHash('sha256').update(f.payload.text).digest('hex')}};};
+ const prepare=async jobId=>{assert.equal(jobId,id);return {repository:cfg.repository,base:'e'.repeat(40)};};
+ await assert.rejects(resumeUnpublishedLegacy({...f,ainmemOrigin:"https://ainmem.example",jobId:id,verify,prepare:async()=>({repository:'other/repo',base:'e'.repeat(40)})}),/base mismatch/);
+ assert.deepEqual(f.jobs.get(id),original);
+ let fail=false;
+ await assert.rejects(resumeUnpublishedLegacy({...f,ainmemOrigin:"https://ainmem.example",jobId:id,verify:async(...args)=>{if(fail)throw new Error('membership revoked');return verify(...args);},prepare:async jobId=>{fail=true;return prepare(jobId);}}),/membership revoked/);
+ assert.deepEqual(f.jobs.get(id),original);
+ const resumed=await resumeUnpublishedLegacy({...f,ainmemOrigin:"https://ainmem.example",jobId:id,verify,prepare});
+ assert.equal(resumed.id,id);assert.equal(resumed.state,'queued');assert.equal(resumed.input.text,original.input.text);
+ assert.equal(resumed.input.base,'e'.repeat(40));assert.equal(resumed.checkpoint.stage,undefined);
+ assert.equal(resumed.checkpoint.hostIntake,true);assert.equal(resumed.checkpoint.hostBase,true);
+ assert.equal(f.checkpoints.load(resumed.checkpoint.legacy).job.details.kanban_url,page);
+ // Ordinary scheduled handler resumes from the prepared base after opening the DB again.
+ const {createHandler}=await import('../examples/qa-agent/index.mjs');
+ let advanced=false;
+ const handler=createHandler({stateDir:dirname(f.sourcePath),config:{service:'ainteams',teamsOrigin:'https://teams.example',workspaceId:'ws',channelId:'ch',enabledAt:new Date().toISOString(),repository:cfg.repository,baseCommit:'a'.repeat(40),hostBase:true,hostReview:true,hostValidation:true},
+ JobsClass:class extends Jobs {constructor(){super(join(dirname(f.sourcePath),'native.sqlite3'));}},
+ newSnapshot:(_ctx,repository,commit)=>({repository,commit}),
+ advance:async({jobs,claim,snapshot})=>{assert.equal(snapshot.commit,'e'.repeat(40));assert.equal(claim.job.id,id);advanced=true;return {job:jobs.finish(id,claim.lease,'waiting',{...claim.job.checkpoint,stage:'needs_validation'})};}});
+ await handler.tick({log:()=>{}});assert.equal(advanced,true);assert.equal(f.jobs.get(id).checkpoint.stage,'needs_validation');assert.ok(reads>=4);
+});
+
+test('historical resume refuses old candidates',async t=>{
+ // @ts-expect-error example module
+ const {resumeUnpublishedLegacy}=await import('../examples/qa-agent/resume-legacy.mjs');
+ const f=fixture(t);importLegacyJobs(f);
+ await assert.rejects(resumeUnpublishedLegacy({...f,ainmemOrigin:"https://ainmem.example",jobId:id,verify:()=>{throw new Error('must not read');},prepare:()=>{throw new Error('must not prepare');}}),/candidate requires reconciliation/);
+});
+
+
+test('concurrent scheduling cannot be overwritten by historical preparation',async t=>{
+ const {createHash}=await import('node:crypto');
+ // @ts-expect-error example module
+ const {resumeUnpublishedLegacy}=await import('../examples/qa-agent/resume-legacy.mjs');
+ const f=fixture(t);
+ f.source.prepare('UPDATE jobs SET status=?,details=?').run('blocked',JSON.stringify({kanban_url:'https://ainmem.example/p/11111111-1111-4111-8111-111111111111'}));importLegacyJobs(f);
+ const verify=async(_archive,fingerprint)=>({jobId:id,repository:cfg.repository,archiveDigest:fingerprint,text:f.payload.text,binding:{workspaceId:'ws',channelId:'ch',rootId:'m',requestId:'m',requestDigest:createHash('sha256').update(f.payload.text).digest('hex')}});
+ await assert.rejects(resumeUnpublishedLegacy({...f,ainmemOrigin:'https://ainmem.example',jobId:id,verify,prepare:async()=>{
+   f.jobs.wake(id);return {repository:cfg.repository,base:'e'.repeat(40)};
+ }}),/job changed during preparation/);
+ assert.equal(f.jobs.get(id).checkpoint.stage,'legacy_reconciliation');assert.equal(f.jobs.get(id).checkpoint.hostBase,undefined);
 });

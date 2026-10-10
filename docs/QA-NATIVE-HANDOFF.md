@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 170개 및 build 통과. 704ced1의 전체 API suite는
+- QA 회귀 173개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -1349,3 +1349,28 @@ QA 170 pass/0 fail/0 skip 및 build 통과. Ainmem 실제 격리 PostgreSQL HTTP
 fixture로 사용한 로컬 outbox 검사이며 API 호출/운영 쓰기는 0건이다.
 증거: `/mnt/newdata/qa-services/validation/native-canonical-pin-hvu9ia5j/summary.json`.
 운영 page adoption/enrollment, native writer 전환 및 채널 E2E는 여전히 미완료다.
+
+
+### 게시 전 중단 작업의 native 재개 — 2026-10-11
+
+실제 GitHub 재조회: Teams #1410은 e183df9d82340998cdeb481ffa427d6bbc354df1로
+2026-10-08 병합됐다. Teams #1387, Ainize web #36, API #55, Ainspace #198은 OPEN이며
+head SHA가 보관 후보와 일치한다. 이 5건은 일괄 신규 코딩으로 보내지 않는다.
+보관본에서 Teams 2e7f6dd3 및 Ainize web 6c05b474는 게시 후보 참조가 없었다.
+
+`examples/qa-agent/resume-legacy.mjs`의 `resumeUnpublishedLegacy`는 offline operator
+전용이다. legacy_import 대기 작업만 허용하며 code_sha/PR/승인/배포/후속 후보가 있으면
+거부한다. archive hash와 원래 요청·저장소·채널·원본 페이지 origin을 확인한다.
+verify adapter는 직전 구현한 host importHistorical 또는 shared activateHistory에
+연결하고, prepare adapter는 동일 scope의 HostedQaBases.prepare 결과를 전달해야 한다.
+준비 후 verify를 다시 호출해 작성자 권한 회수/원문 변경을 확인한다. 마지막 SQLite
+transaction에서 최초 작업 snapshot과 같을 때만 원래 ID/요청/route/legacy archive를
+유지하고 새 base, hostIntake, hostBase로 queued 전환한다. 이전 승인이나 코딩 결과를
+활성 checkpoint로 복원하지 않는다. 별도 gateway나 모델 호출로 노출하지 않았다.
+
+QA 173 pass / 0 fail / 0 skip 및 build 통과. 잘못된 base, 준비 도중 권한 회수,
+기존 후보, 동시 상태 변경을 거부하고 상태를 보존했다. 실제 handler/Jobs를 다시 열어
+prepared base에서 일반 tick이 코딩 단계를 이어받는 통합 테스트를 통과했다. 그 테스트의
+외부 verify/prepare/coding은 fixture이며 실제 제품 모델 수정·배포 증거가 아니다.
+운영 cutover에서는 writer 정지/페이지 등록/host profile 배포 후 이 adapter들을 연결해
+재개해야 한다. 운영 두 작업을 실제로 queued로 바꾸거나 중복 실행하지 않았다.
