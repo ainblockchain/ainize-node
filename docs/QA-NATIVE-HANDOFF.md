@@ -1470,3 +1470,20 @@ vitest run인 것을 확인했으며 원래 test script를 통해 실행한다. 
 `/mnt/newdata/qa-services/validation/native-teams-current-build-4bq_b1k6`, handle 25187.
 원본 전체 실행을 재시작한 것이 아니라 이전 실패 때문에 미실행된 build gate 진단이다.
 운영 writer/채널/PR/페이지/배포에는 쓰지 않았다.
+
+### Teams 빌드 힙 제한 진단 — 2026-10-11
+
+`native-teams-current-build-4bq_b1k6` 빌드는 종료됐으며 passed=false다.
+Backend/desktop build는 성공했지만 web TypeScript worker가 약 2GiB V8 힙 한도에
+도달했다. memory.events의 oom/oom_kill은 모두 0이며 컨테이너 전체 OOM은 아니다.
+원본 로그는 evidence/build.stdout.log와 build.stderr.log에 보존했다.
+
+8GiB 컨테이너 제한을 유지하고 build gate env에
+NODE_OPTIONS=--max-old-space-size=4096을 추가한 진단을 실행 중이다.
+`/mnt/newdata/qa-services/validation/native-teams-build-heap-c5ju_rgb`, handle 46194.
+타입 검사나 빌드를 생략하지 않으며 제품 소스도 바꾸지 않았다. 결과 확정 전에는
+성공으로 취급하지 않는다.
+
+Native QA branch는 현재 origin/main을 포함한다(ahead 91/behind 0). PR70은
+OPEN/DRAFT/MERGEABLE이다. PR71/76 배포 승인에는 아직 답변이 없고 Vault는 locked다.
+운영 전환·페이지 enrollment·전체 채널 E2E는 미완료다.
