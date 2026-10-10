@@ -166,6 +166,23 @@ ainize patch vaults.defi.engram.eth
 `runtime.available: false` means the node cannot reach its serving API. It can still sell and gossip; it
 cannot verify anything (verification runs the benchmark) and it cannot answer a live test.
 
+## 4. Host projects (aindrive git)
+
+A node can also build and run **projects**: repositories in an aindrive drive that deploy on every push
+(`docs/PROJECTS.md`). The repositories are behind aindrive's auth, so the node reads them **as itself** with its
+AIN SSO application credentials:
+
+```
+AIN_SSO_ISSUER=https://auth.comcom.ai
+AIN_SSO_CLIENT_ID=ainize
+AIN_SSO_CLIENT_SECRET=…        # the client secret AIN SSO issued for the ainize application
+```
+
+With the secret, each clone presents a 5-minute `client_credentials` token for the repository's host; aindrive
+accepts it as a viewer on the drives shared with an organization the `ainize` application is assigned in, and
+nothing more (no push, no `.aindrive/`). Without the secret, a project's owner must paste a deploy token at
+creation. Keep the secret in a root-only environment file, never in `config.json`.
+
 ## What each role costs you
 
 | role | what the node does | needs |

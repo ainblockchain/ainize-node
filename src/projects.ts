@@ -17,10 +17,11 @@
  *
  * Reading the repository. aindrive serves a drive's repo behind its own auth (viewer+), and there is no
  * machine-to-machine path from this node's SSO app credentials to an aindrive read token yet. Until there is,
- * a project carries a per-project DEPLOY TOKEN the owner pastes at creation — an aindrive session JWT or an
- * `aind_aat_…` account token with `drives:read` — sent as `Authorization: Bearer …` on the clone. It is written
- * into the git process's environment (GIT_CONFIG_*), never its argument list. docs/PROJECTS.md documents the
- * limitation; `TODO(projects-sso)` below marks where the SSO-issued token goes once aindrive accepts one.
+ * the node clones AS ITSELF: an AIN SSO machine token (`client_credentials`, src/sso-service-token.ts) for the repo's
+ * host, which aindrive honours as a viewer on the drives shared with an organization the ainize app is assigned in.
+ * A per-project DEPLOY TOKEN the owner pastes at creation — an aindrive session JWT or an `aind_aat_…` account
+ * token with `drives:read` — remains an optional override. Either is sent as `Authorization: Bearer …` on the clone,
+ * written into the git process's environment (GIT_CONFIG_*), never its argument list (docs/PROJECTS.md).
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -304,8 +305,13 @@ export interface ProjectWorkerDeps {
   containers?: ProjectContainers;
   /** `kind: agent`. Absent → that kind fails with a clear error. */
   agents?: ProjectAgentDeps;
-  /** The deploy token for a project, or null for an anonymous clone (a public repo). */
+  /** The deploy token pasted for a project, or null. It overrides the node's machine identity when present. */
   deployToken: (projectId: string) => string | null;
+  /**
+   * The node's machine identity (src/sso-service-token.ts): a bearer for the given resource (the repo URL's origin),
+   * or null when the node has none / the issuer refuses. Used when the project has no deploy token.
+   */
+  serviceToken?: (resource: string) => Promise<string | null>;
   /** This node's public base URL — what `AINIZE_DECIDE_URL` is built from. */
   publicUrl: () => string;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -407,7 +413,7 @@ export class ProjectWorker extends EventEmitter {
       // A re-run of a finished deployment (recover) starts from a clean record.
       if (d.outputUrl) store.updateDeployment(d.id, { outputUrl: null });
       say(`[ainize] clone ${project.repo}`);
-      await this.clone(project, d.sha, work);
+      await this.clone(project, d.sha, work, say);
       let manifest: ProjectManifest;
       try { manifest = resolveProjectManifest(work, { entry: project.entry }); }
       catch (e) {
@@ -471,13 +477,20 @@ export class ProjectWorker extends EventEmitter {
   /**
    * `git clone --depth 1 --branch <branch>` then land on `sha`. Right after a push the tip IS the sha; when a
    * later push queued behind this one has moved the tip, the commit is fetched by id (or the clone deepened when
-   * the server will not serve a bare sha). The token travels in the environment as a git config entry, so a
-   * process listing never shows it.
+   * the server will not serve a bare sha). The token (pasted or the node's own) travels in the environment as a
+   * git config entry, so a process listing never shows it.
    */
-  private async clone(project: Project, sha: string, dir: string): Promise<void> {
-    const token = this.deps.deployToken(project.id);
-    // TODO(projects-sso): once aindrive accepts a token this node mints from its SSO app credentials, obtain it here
-    // instead of reading a pasted one.
+  private async clone(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
+    // Credential order: a pasted deploy token (the owner's explicit choice) wins; else the node's own machine identity
+    // at AIN SSO for this repository's host (aindrive makes it a viewer on the drives shared with the organizations
+    // the app is assigned in); else anonymous (a public repo).
+    let token = this.deps.deployToken(project.id);
+    if (token) say('[ainize] clone with the project\'s deploy token');
+    else if (this.deps.serviceToken) {
+      const resource = new URL(project.repo).origin;
+      token = await this.deps.serviceToken(resource);
+      say(token ? `[ainize] clone as this node (AIN SSO machine token for ${resource})` : '[ainize] clone anonymously (no machine token for this host)');
+    }
     const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' };
     if (token) {
       env.GIT_CONFIG_COUNT = '1';

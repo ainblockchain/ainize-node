@@ -67,6 +67,7 @@ import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { readSiteAssertionSecret, siteSubject } from './site-assertion.js';
 import { SiteCallVerifier } from './site-call.js';
 import { readSsoConfig, SsoService, type JwksSource } from './sso.js';
+import { ServiceTokenClient } from './sso-service-token.js';
 import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
@@ -101,7 +102,7 @@ export interface StartOptions {
   teachWorker?: boolean;
   /** Process hooks for the teach worker (tests fake `spawn`/`exec`). */
   teachHooks?: TeachHooks;
-  /** AIN SSO settings; default `process.env` (AIN_SSO_ISSUER, AIN_SSO_CLIENT_ID, AIN_SSO_ADAPTER_URL — docs/ain-sso.md). */
+  /** AIN SSO settings; default `process.env` (AIN_SSO_ISSUER, AIN_SSO_CLIENT_ID, AIN_SSO_ADAPTER_URL, AIN_SSO_CLIENT_SECRET — docs/ain-sso.md). */
   ssoEnv?: NodeJS.ProcessEnv;
   /** Tests: AIN SSO's signing keys, instead of fetching `{issuer}/oidc/jwks`. */
   ssoJwks?: JwksSource;
@@ -387,8 +388,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     log: (message, err) => market.log('warn', 'sso', `${message}: ${(err as Error)?.message ?? String(err)}`),
   }));
   if (ssoConfig) {
-    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}`);
+    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}, machine identity ${ssoConfig.clientSecret ? 'on' : 'off (AIN_SSO_CLIENT_SECRET unset)'}`);
   }
+  const serviceTokens = ssoConfig?.clientSecret
+    ? new ServiceTokenClient({ issuer: ssoConfig.issuer, clientId: ssoConfig.clientId, clientSecret: ssoConfig.clientSecret, log: (level, message) => market.log(level, 'sso', message) })
+    : null;
 
   const pinnedChatPeers = preferredChatPeers(process.env.AINIZE_PREFERRED_CHAT_PEERS);
   app.use(preferredChatPlayground({ routes: pinnedChatPeers, peers: () => peerModelAccess, fetch: (peer, body) => fetchPeerChat(cfg.identity, peer, body) }));
@@ -686,6 +690,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       },
     },
     deployToken: (id) => projectSecrets.reveal(id, [PROJECT_SECRET_DEPLOY_TOKEN])[PROJECT_SECRET_DEPLOY_TOKEN] ?? null,
+    // The node's machine identity at AIN SSO (docs/ain-sso.md §5, docs/PROJECTS.md): with AIN_SSO_CLIENT_SECRET the
+    // clone presents a client_credentials token for the repo's host; a refusal is logged and the clone goes on
+    // anonymously (a public repo still works; a private one fails with aindrive's 401 in the deployment log).
+    serviceToken: serviceTokens ? async (resource) => {
+      try { return await serviceTokens.token(resource); }
+      catch (e) { market.log('warn', 'projects', `no machine token for ${resource}: ${(e as Error).message}`); return null; }
+    } : undefined,
     publicUrl: () => market.publicUrl ?? selfUrl,
     log: (level, message) => market.log(level, 'projects', message),
   });

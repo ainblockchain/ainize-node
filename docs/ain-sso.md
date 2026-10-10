@@ -185,11 +185,13 @@ deployment with several would need a shared cache.
 | `AIN_SSO_CLIENT_ID` | ainize's client_id at AIN SSO (`aud` of adapter and logout tokens) |
 | `AIN_SSO_ADAPTER_URL` | the adapter URL registered at AIN SSO, e.g. `https://ainize.ai/api/sso/adapter`; unset = adapter answers 503 |
 | `AIN_SSO_JWKS_URI` | optional; default `{issuer}/oidc/jwks` |
+| `AIN_SSO_CLIENT_SECRET` | optional; ainize's client secret at AIN SSO (`client_secret_basic`). Only for what the node does **as itself**: `client_credentials` machine tokens that let it clone project repositories from aindrive (`docs/PROJECTS.md`, `src/sso-service-token.ts`). Sign-in needs none |
 | `<AINIZE_HOME>/site-assertion.secret` | already required for Google vouching; also signs the site's SSO calls |
 
 **AIN SSO is on only when `AIN_SSO_ISSUER` and `AIN_SSO_CLIENT_ID` are both set.** Otherwise the
 adapter, sign-in and logout routes are not mounted and the node behaves as before; stored SSO state
-is still enforced. The node needs no client secret.
+is still enforced. Sign-in needs no client secret; `AIN_SSO_CLIENT_SECRET` only gives the node a machine
+identity (AIN SSO architecture §4.9) for reading project repositories.
 
 On ainize.ai the unit `ainize-public-node.service` has no environment file today; add the variables
 with `systemctl --user edit ainize-public-node` (a drop-in `Environment=` or `EnvironmentFile=`)
