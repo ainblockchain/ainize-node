@@ -925,3 +925,21 @@ build를 통과했다. `e2e/fixtures/teams-product.mjs`는 네트워크 없는 �
 늘리거나 실패 항목을 제외하지 않는다. 서버 원문 증거는 e2e-evidence/에 보존했다.
 이번 실행의 validator-pids.mjs는 version 문자열 갱신 전 실행본이며, 실제 pids512
 코드는 동일하다. 저장소 최종 정책 버전은 4이며 이후 검증에는 새 빌드본을 사용한다.
+
+### Teams 레이아웃 검증을 production 서버로 전환 — 2026-10-11
+
+개발 서버의 cold route compile과 제품 화면 검증을 분리하기 위해 fixture는 이제
+`pnpm --filter @app/web build` 후 `next start`를 실행한다. 제품 E2E 소스의 timeout,
+assertion, retry 설정은 수정하지 않는다. DB는 동일한 격리 컨테이너의 임시 DB다.
+이전 pids512 개발 서버 결과는 `e2e-evidence.dev-pids512/`,
+`e2e-result.json.dev-pids512`, `e2e-profile.json.dev-pids512`로 보존했다.
+새 실행은 validator v4, 이미지
+`sha256:e999f4f0e8bd800b2f2b3be7176c172db9b8a3ee4634d7e4c4d98b1df2c2a1b2`를 사용한다.
+로컬 실행 세션 54367, 동일 서버 검증 root의 e2e-result.json이 최종 결과 정본이다.
+
+54367 최종 결과: production web build 성공, layout E2E 4 pass / 0 skip / 0 unexpected /
+0 flaky, 17.0초. desktop channel, desktop thread, desktop DM, mobile channel의 기존
+assertion을 모두 실행했다. 개발 서버 첫 진입 실패 없이 동일 제품 테스트가 통과했다.
+제품 소스와 테스트 timeout은 수정하지 않았다. 단, 이 결과는 앞서 실패한 root 단위
+테스트 전체나 운영 QA 채널의 접수→모델→PR→승인→배포를 통과했다는 뜻이 아니다.
+그 경로와 선행 PR71/76 승인·배포 및 실제 Ainmem 등록은 여전히 남아 있다.

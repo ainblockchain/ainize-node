@@ -25,7 +25,8 @@ try{
  run([pg+'/createdb','-h','127.0.0.1','-U','qa','qa_layout']);
  run(['pnpm','exec','drizzle-kit','push','--force'],join(root,'backend'));
  const backend=start(['node','dist/main.js'],join(root,'backend'),4811,'backend');await ready('http://127.0.0.1:4811/health',backend);
- const web=start(['pnpm','exec','next','dev','--hostname','127.0.0.1','--port','4810'],join(root,'web'),4810,'web');await ready('http://127.0.0.1:4810',web);
+ run(['pnpm','--filter','@app/web','build']);
+ const web=start(['pnpm','exec','next','start','--hostname','127.0.0.1','--port','4810'],join(root,'web'),4810,'web');await ready('http://127.0.0.1:4810',web);
  run(['pnpm','exec','playwright','test','e2e/layout-invariants.spec.ts','--workers=1','--retries=0','--reporter=json'],join(root,'web'));
  const report=JSON.parse(readFileSync(join(temp,'report.json'),'utf8')),s=report.stats;
  if(!s||s.expected<4||s.skipped||s.unexpected||s.flaky||report.errors?.length)throw Error('Layout tests must run without skips, failures or retries');
