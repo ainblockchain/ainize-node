@@ -60,3 +60,20 @@ test('handler automatically wakes a validated job for publication and stops at h
  await handler.tick(ctx);assert.equal(jobs.get(job.id).state,'waiting');assert.equal(jobs.get(job.id).checkpoint.stage,'awaiting_approval');
  await handler.tick(ctx);assert.equal(jobs.get(job.id).checkpoint.approval,undefined);
 });
+
+
+test('handler ticks observe release then deployment without restarting coding',async t=>{
+ // @ts-expect-error example module
+ const {createHandler}=await import('../examples/qa-agent/index.mjs');
+ const root=mkdtempSync(join(tmpdir(),'qa-lifecycle-tick-'));t.after(()=>rmSync(root,{force:true,recursive:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());
+ const published={repository:'test/product',base:'a'.repeat(40),candidateDigest:'c'.repeat(64),sha:'b'.repeat(40)};
+ const job=jobs.enqueue('request',{repository:published.repository,base:published.base,text:'고쳐줘'}),claim=jobs.claim();
+ jobs.finish(job.id,claim.lease,'waiting',{stage:'awaiting_approval',published});
+ const handler=createHandler({stateDir:root,config:{service:'test',teamsOrigin:'https://teams.example',workspaceId:'ws',channelId:'ch',enabledAt:'2026-10-01T00:00:00Z',repository:published.repository,baseCommit:published.base,hostReview:true}});
+ let state='branch_updated',calls=0;
+ const ctx={log(){},qa:{status:async(id:string)=>{calls++;assert.equal(id,job.id);return {jobId:id,...published,state,deploymentVerified:state==='deployment_verified',servingCommit:'d'.repeat(40),mergeCommit:'e'.repeat(40)};}}};
+ await handler.tick(ctx);assert.equal(jobs.get(job.id).checkpoint.stage,'awaiting_deployment');
+ state='deployment_verified';await handler.tick(ctx);assert.equal(jobs.get(job.id).state,'completed');
+ await handler.tick(ctx);assert.equal(calls,2);
+});

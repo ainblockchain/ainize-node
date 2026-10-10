@@ -16,6 +16,7 @@ import { Jobs } from './jobs.mjs';
 import { Checkpoints } from './checkpoints.mjs';
 import { GitHubSnapshot } from './repository.mjs';
 import { advanceCoding } from './advance.mjs';
+import { advanceHostedLifecycle } from './lifecycle.mjs';
 import { advanceHostedPublication } from './publication.mjs';
 import { advanceHostedValidation } from './validation.mjs';
 import { AinmemReports, parseAinmemConfig } from './ainmem.mjs';
@@ -40,7 +41,7 @@ export function parseConfig(raw) {
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, hostReview: config.hostReview === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -129,6 +130,14 @@ export function createHandler({
     let claim;
     try {
       await report(jobs, ctx);
+      if(config.hostReview){
+        const reviewClaim=jobs.claimReview();
+        if(reviewClaim){
+          try{await advanceHostedLifecycle({jobs,claim:reviewClaim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});}
+          catch{try{jobs.finish(reviewClaim.job.id,reviewClaim.lease,'waiting',reviewClaim.job.checkpoint);}catch{}ctx?.log?.('QA lifecycle observation pending');}
+          await report(jobs,ctx,reviewClaim.job.id);
+        }
+      }
       claim = jobs.claim(60_000);
       if (!claim) return; // Nothing queued; a running job holds its own lease.
       const job = claim.job;

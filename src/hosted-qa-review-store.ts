@@ -53,6 +53,20 @@ export class HostedQaReviewStore {
    this.db.prepare('INSERT INTO review_publications(agent_id,job_id,receipt) VALUES(?,?,?)').run(agentId,jobId,value);
   });
  }
+ lifecycle(agentId:string,jobId:string){
+  if(!/^[-\w]{1,80}$/.test(jobId))throw new Error('Invalid job identifier');
+  const published=this.publication(agentId,jobId);if(!published)return {state:'unknown'};
+  const review=this.current(agentId,jobId),release=review?this.releaseRecord(review):null;
+  const receipt=release?.receipt;
+  if(review){
+   const target=review.presentation.target;
+   if(['repository','base','sha','candidateDigest'].some(key=>target[key as keyof typeof target]!==published[key]))throw new Error('Lifecycle review binding changed');
+  }
+  if(receipt&&(receipt.repository!==published.repository||receipt.sha!==published.sha))throw new Error('Lifecycle release binding changed');
+  const state=receipt?.state==='deployment_verified'?'deployment_verified':receipt?.state==='branch_updated'?'branch_updated':release?'release_pending':review?'awaiting_approval':'awaiting_presentation';
+  return {jobId,repository:published.repository,base:published.base,sha:published.sha,candidateDigest:published.candidateDigest,state,
+   ...(state==='deployment_verified'?{servingCommit:receipt.servingCommit,mergeCommit:receipt.mergeCommit,deploymentVerified:true,featureRegressionVerified:false}: {})};
+ }
  publication(agentId:string,jobId:string){const row=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.receipt)):null;}
  pendingPublications(limit=5){
   return this.db.prepare('SELECT * FROM review_publications ORDER BY last_attempt,id LIMIT ?').all(limit).map(r=>({id:Number(r.id),agentId:String(r.agent_id),jobId:String(r.job_id),receipt:JSON.parse(String(r.receipt))}));

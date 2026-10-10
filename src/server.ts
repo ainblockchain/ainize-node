@@ -422,6 +422,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate}):undefined);
   }
   const hostedGateway = new HostedAgentGateway({
+    qaStatus: qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
     qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
     qaValidation: qaValidation ? (id,candidate)=>qaValidation.submit(id,candidate) : undefined,
     registry: () => inferenceRegistry,

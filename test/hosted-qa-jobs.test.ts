@@ -39,7 +39,8 @@ test('waiting checkpoint survives restart and wakes once without claiming deploy
   const claim = a.claim(); a.finish(job.id, claim.lease, 'waiting', { stage: 'awaiting_approval', sha: 'a'.repeat(40) }); a.close();
   const b = open(); assert.equal(b.claim(), null); assert.equal(b.get(job.id).checkpoint.sha, 'a'.repeat(40));
   assert.equal(b.wake(job.id), true); assert.equal(b.wake(job.id), false);
-  assert.equal(b.claim().job.checkpoint.stage, 'awaiting_approval');
+  assert.equal(b.claim(), null);
+  assert.equal(b.claimReview().job.checkpoint.stage, 'awaiting_approval');
   assert.equal('approval' in b.get(job.id).checkpoint, false);
 });
 

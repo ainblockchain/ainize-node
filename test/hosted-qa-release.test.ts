@@ -64,3 +64,14 @@ test('changed host validation policy prevents release even with an administrator
  await assert.rejects(f.make().attempt('agent','job'),/validation policy changed/);
  assert.equal(f.state.patches,0);assert.equal(f.state.checks,0);assert.equal(f.store.releaseRecord(f.review),null);
 });
+
+
+test('host lifecycle exposes only matching release evidence and rejects changed review targets',async t=>{
+ const f=fixture(t);
+ assert.equal(f.store.lifecycle('agent','job').state,'awaiting_approval');
+ await f.make().attempt('agent','job');assert.equal(f.store.lifecycle('agent','job').state,'branch_updated');
+ f.store.releaseObserved(f.review,{repository:target.repository,sha:target.sha,state:'deployment_verified',servingCommit:'d'.repeat(40),mergeCommit:'e'.repeat(40)});
+ const status=f.store.lifecycle('agent','job');assert.equal(status.state,'deployment_verified');assert.equal(status.servingCommit,'d'.repeat(40));assert.equal('candidate' in status,false);
+ f.store.bind('agent',{...f.review.presentation,target:{...f.review.presentation.target,sha:'f'.repeat(40)},presentedAt:'2026-10-10T00:01:00Z'},1);
+ assert.throws(()=>f.store.lifecycle('agent','job'),/binding changed/);
+});

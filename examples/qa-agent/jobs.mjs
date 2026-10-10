@@ -26,6 +26,7 @@ export class Jobs {
     chmodSync(file, 0o600);
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS review_polls(job_id TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, input TEXT NOT NULL,
         state TEXT NOT NULL, checkpoint TEXT NOT NULL, lease TEXT, expires INTEGER,
@@ -90,11 +91,24 @@ export class Jobs {
     if (!Number.isSafeInteger(ttl) || ttl < 1000 || ttl > 300_000) throw new Error('invalid lease duration');
     return this.transaction(() => {
       const now = this.now();
-      const row = this.db.prepare("SELECT * FROM jobs WHERE state='queued' OR (state='running' AND expires<=?) ORDER BY created,id LIMIT 1").get(now);
+      const row = this.db.prepare("SELECT * FROM jobs WHERE (state='queued' OR (state='running' AND expires<=?)) AND coalesce(json_extract(checkpoint,'$.stage'),'') NOT IN ('awaiting_approval','awaiting_deployment') ORDER BY created,id LIMIT 1").get(now);
       if (!row) return null;
       const lease = randomUUID();
       this.db.prepare("UPDATE jobs SET state='running',lease=?,expires=?,updated=? WHERE id=?").run(lease, now + ttl, now, row.id);
       return { job: this.get(row.id), lease };
+    });
+  }
+  claimReview(ttl=60000) {
+    if(!Number.isSafeInteger(ttl)||ttl<1000||ttl>300000)throw new Error('invalid lease duration');
+    return this.transaction(()=>{
+      const now=this.now();
+      const row=this.db.prepare("SELECT j.* FROM jobs j LEFT JOIN review_polls p ON p.job_id=j.id WHERE (j.state IN ('waiting','queued') OR (j.state='running' AND j.expires<=?)) AND json_extract(j.checkpoint,'$.stage') IN ('awaiting_approval','awaiting_deployment') AND json_extract(j.checkpoint,'$.holdReason') IS NULL ORDER BY coalesce(p.last_attempt,0),j.created,j.id LIMIT 1").get(now);
+      if(!row)return null;
+      const lease=randomUUID();
+      this.db.prepare("UPDATE jobs SET state='running',lease=?,expires=?,updated=? WHERE id=?").run(lease,now+ttl,now,row.id);
+      const sequence=Number(this.db.prepare('SELECT coalesce(max(last_attempt),0)+1 AS n FROM review_polls').get().n);
+      this.db.prepare('INSERT INTO review_polls VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET last_attempt=excluded.last_attempt').run(row.id,sequence);
+      return {job:this.get(row.id),lease};
     });
   }
   renew(id, lease, ttl = 60_000) {
