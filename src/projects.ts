@@ -438,7 +438,9 @@ export class ProjectWorker extends EventEmitter {
       say(`[ainize] ${project.org}/${project.repoName}@${d.sha.slice(0, 12)} (${d.ref})`);
       // A re-run of a finished deployment (recover) starts from a clean record.
       if (d.outputUrl) store.updateDeployment(d.id, { outputUrl: null });
-      say(`[ainize] clone ${project.repo}`);
+      // Records bound before the `repositories/` normalisation keep the folder in their URL; clone the canonical form.
+      const cloneUrl = parseRepoUrl(project.repo)?.url ?? project.repo;
+      say(`[ainize] clone ${cloneUrl}`);
       await this.clone(project, d.sha, work, say);
       let manifest: ProjectManifest;
       try { manifest = resolveProjectManifest(work, { entry: project.entry }); }
@@ -532,7 +534,7 @@ export class ProjectWorker extends EventEmitter {
         throw new Error(`git ${args[0]} failed: ${(x.stderr ?? x.message ?? '').replace(/Authorization: Bearer \S+/g, 'Authorization: Bearer ***').trim().slice(0, 500)}`);
       }
     };
-    await git(['clone', '--quiet', '--depth', '1', '--branch', project.branch, '--', project.repo, dir]);
+    await git(['clone', '--quiet', '--depth', '1', '--branch', project.branch, '--', parseRepoUrl(project.repo)?.url ?? project.repo, dir]);
     const head = (await git(['-C', dir, 'rev-parse', 'HEAD'])).stdout.trim();
     if (head === sha) return;
     try { await git(['-C', dir, 'fetch', '--quiet', '--depth', '1', 'origin', sha]); }
