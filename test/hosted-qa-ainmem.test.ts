@@ -76,3 +76,26 @@ test('outbox migration preserves pending records from the previous schema', asyn
   const reports = new AinmemReports(jobs, config); reports.refresh(job.id);
   assert.equal(jobs.db.prepare('SELECT last_attempt FROM ainmem_reports WHERE job_id=?').get(job.id).last_attempt, 0);
 });
+
+
+test('approval display flag excludes failures, holds and deployment observation', async t => {
+  const root=mkdtempSync(join(tmpdir(),'qa-approval-display-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());
+  const reports=new AinmemReports(jobs,config);
+  const published={repository:'owner/repo',number:1,url:'https://github.com/owner/repo/pull/1',sha:'a'.repeat(40)};
+  const cases=[
+    {state:'waiting',checkpoint:{stage:'awaiting_approval',published},expected:true},
+    {state:'waiting',checkpoint:{stage:'awaiting_approval',published,holdReason:'needs operator'},expected:false},
+    {state:'failed',checkpoint:{stage:'awaiting_approval',published},expected:false},
+    {state:'waiting',checkpoint:{stage:'awaiting_deployment',published},expected:false},
+    {state:'waiting',checkpoint:{stage:'needs_validation'},expected:false},
+    {state:'waiting',checkpoint:{stage:'awaiting_approval'},expected:false},
+  ];
+  for(const [index,example] of cases.entries()){
+    const job=jobs.enqueue('case-'+index,{text:'고쳐줘',service:'ainteams',repository:'owner/repo'});
+    const claim=jobs.claim();jobs.finish(job.id,claim.lease,example.state,example.checkpoint);reports.refresh(job.id);
+    const payload=JSON.parse(jobs.db.prepare('SELECT payload FROM ainmem_reports WHERE job_id=?').get(job.id).payload);
+    assert.equal(payload.approvalPending,example.expected);
+    assert.equal(payload.body.includes('관리자 배포 승인이 필요합니다.'),example.expected);
+  }
+});

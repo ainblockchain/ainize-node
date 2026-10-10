@@ -733,3 +733,24 @@ Ainmem PR #76은 아직 배포 승인되지 않았다. 새 credential table은 �
 0005_qa_agent_credentials.sql로 추가할 수 있다. compose는 migration을 자동 실행하지
 않으므로, 승인 후 백업·이 SQL 적용·앱 배포·schema health 확인 순서가 필요하다.
 전체 drizzle push로 무관한 schema 변경을 자동 승인하지 않는다.
+
+## 통합 승인 보드 동기화 — 2026-10-11
+
+Ainmem task API에 operator-only AINMEM_QA_BOARD_MIRRORS를 추가했다. 원본과 같은
+workspace/현재 편집권이 있는 통합 보드에, 같은 page를 참조하는 row만 갱신한다.
+원본과 projection이 한 transaction이며 대상 오류 시 원본도 rollback한다. 기존
+mirror ID/작성자/사람 필드는 명시적 매핑으로 보존한다. 운영 조회의 5개 row는 모두
+원본 페이지 작성자와 같았고 4개가 제품 보드 페이지를 참조했다. 운영 쓰기는 없다.
+
+보고 payload의 approvalPending은 표시 전용이다. 유효한 PR/후보를 가진 승인 대기
+작업만 true이고, 실패/hold/검증 대기/배포 관측은 false다. 잘못된 ‘관리자 배포 승인
+필요’ 문구도 그런 작업에는 보내지 않는다. 실제 승인 결정에는 사용하지 않는다.
+Ainmem 37 tests / 타입 검사 / build 통과, native QA 126 tests pass / 0 skip.
+처음 native 회귀 실행은 PATH의 시스템 git 때문에 실패했으며 Homebrew git으로
+재실행했다. Ainmem의 초기 test helper 타입 오류도 수정 후 전체 게이트를 통과했다.
+
+다음은 이 경로를 포함한 통합 보드 브라우저 검증이다. 실제 cutover 때 checkbox 속성,
+그 속성의 true view filter, 현재 승인 작업 backfill, target board agent 권한,
+새 agent ID와 기존 mirror row 정책을 함께 설치해야 한다. 기존 Python worker는
+checkbox를 쓰지 않으므로 view만 먼저 바꾸지 않는다. PR #71(403860f) 배포 승인은
+여전히 미수신이며 새 main merge나 운영 배포를 수행하지 않았다.
