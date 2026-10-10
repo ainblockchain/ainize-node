@@ -144,12 +144,25 @@ async def systemone_route(request: Request):
     if _load_error is not None:
         return _error(503, "backend_unavailable", f"model failed to load: {_load_error}")
 
+    # `debug: {"prompt": true}` — also return the prompt exactly as the model received it (the decoded
+    # input_ids of the encoded record). This is how a caller sees *why* an answer came out the way it did
+    # without downloading the model; the node forwards the body untouched, so ainize.ai/api/decide carries it.
+    debug = body.pop("debug", None)
+    want_prompt = isinstance(debug, dict) and bool(debug.get("prompt"))
     try:
         with _lock:
             t0 = time.time()
             with torch.inference_mode():
                 response = _systemone(_model, _processor, body, max_length=MAX_LENGTH)
             response.setdefault("usage", {})["latency_ms"] = round((time.time() - t0) * 1000, 1)
+            if want_prompt:
+                import joint_schema_model as J  # type: ignore
+                record = {k: body[k] for k in ("state", "questions", "images", "videos") if k in body}
+                enc = J.encode_record(_processor.tokenizer, record, processor=_processor)
+                ids = enc.input_ids.tolist() if hasattr(enc.input_ids, "tolist") else list(enc.input_ids)
+                ids = ids[0] if ids and isinstance(ids[0], list) else ids
+                response["debug"] = {"prompt": _processor.tokenizer.decode(ids, skip_special_tokens=False),
+                                     "input_tokens": len(ids), "questions": len(getattr(enc, "questions", []) or body["questions"])}
         return response
     except ValueError as exc:
         # Schema problems in the request (bad question type, empty criteria, …).
