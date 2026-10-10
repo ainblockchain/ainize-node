@@ -8,6 +8,7 @@ import {ainmemReviewReader} from './hosted-qa-review.js';
 import {teamsReviewClient} from './hosted-qa-teams-client.js';
 import {HostedQaPublisher,qaGitHubClient,type QaPublicationProfile} from './hosted-qa-publication.js';
 import {HostedQaPublicationService} from './hosted-qa-publication-service.js';
+import {HostedQaBases,prepareQaCheckout,type QaBaseProfile} from './hosted-qa-base.js';
 import { HostedQaValidationService } from './hosted-qa-validation-service.js';
 import type { QaValidationProfile } from './hosted-qa-validator.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
@@ -494,8 +495,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
   const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
+  let qaBases:HostedQaBases|undefined;
   const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
-    JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>) : undefined;
+    JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>,undefined,(id,job,candidate)=>{
+      if(!qaBases?.configured(id))return undefined;
+      if(!job)throw new Error('Prepared job base required');
+      return qaBases.requireProfile(id,job,candidate);
+    }) : undefined;
   const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
   let qaPublication:HostedQaPublicationService|undefined,qaIntake:HostedQaIntake|undefined;
   let intakeRequired=new Set<string>();
@@ -505,6 +511,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA token file must be private');
     const token=readFileSync(path,'utf8').trim();if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA token');return token;
   };
+  if(process.env.AINIZE_QA_BASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA base preparation requires verified intake');
   if(process.env.AINIZE_QA_DEPLOYMENT_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA deployment observation requires review configuration');
   if(process.env.AINIZE_QA_RELEASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA release requires canonical review configuration');
   if(process.env.AINIZE_QA_REVIEW_PROFILES&&!publicationPath)throw new Error('QA review requires publication configuration');
@@ -523,13 +530,27 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
       qaIntake=new HostedQaIntake(qaReviewStore,profiles,readers.teams);
       intakeRequired=new Set(Object.entries(profiles).filter(([,p])=>p.intakeEnabledAt).map(([id])=>id));
+      if(process.env.AINIZE_QA_BASE_PROFILES){
+        const branches=JSON.parse(readFileSync(process.env.AINIZE_QA_BASE_PROFILES,'utf8')) as Record<string,{branch:string}>;
+        const validations=JSON.parse(readFileSync(qaProfilesPath!,'utf8')) as Record<string,QaValidationProfile>;
+        const baseProfiles:Record<string,QaBaseProfile>={};
+        for(const [id,p] of Object.entries(branches)){
+          if(!intakeRequired.has(id)||!Object.hasOwn(validations,id))throw new Error('QA base agent requires intake and validation profiles');
+          if(p.branch!==profiles[id].branch||validations[id].repository!==profiles[id].repository)throw new Error('QA base and review scope must match');
+          baseProfiles[id]={branch:p.branch,validation:validations[id]};
+        }
+        qaBases=new HostedQaBases(join(cfg.dataDir,'qa-bases'),baseProfiles,{
+          head:async(repo,branch)=>{const ref=await github('GET',`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);return ref?.object?.sha;},
+          prepare:(profile,base)=>prepareQaCheckout(profile,base,readQaToken(tokenPath)),
+        },(id,job)=>{if(!qaReviewStore?.intake(id,job))throw new Error('Verified intake required for job base');});
+      }
       const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
       let release:HostedQaRelease|undefined;
       const releasePath=process.env.AINIZE_QA_RELEASE_PROFILES;
       if(releasePath){
         const releaseTokenPath=process.env.AINIZE_QA_RELEASE_TOKEN_FILE;
         if(!releaseTokenPath)throw new Error('QA release token file required');
-        release=new HostedQaRelease(qaReviewStore,coordinator,JSON.parse(readFileSync(releasePath,'utf8')) as Record<string,QaReleaseProfile>,qaReleaseGitHubClient(readQaToken(releaseTokenPath)),(id,candidate)=>qaValidation!.requirePassed(id,candidate));
+        release=new HostedQaRelease(qaReviewStore,coordinator,JSON.parse(readFileSync(releasePath,'utf8')) as Record<string,QaReleaseProfile>,qaReleaseGitHubClient(readQaToken(releaseTokenPath)),(id,candidate,job)=>qaValidation!.requirePassed(id,candidate,job));
       }
       const deploymentPath=process.env.AINIZE_QA_DEPLOYMENT_PROFILES;
       let deployments:Record<string,QaDeploymentProfile>|undefined;
@@ -542,6 +563,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');});
   }
   const hostedGateway = new HostedAgentGateway({
+    qaBase:qaBases?(id,job)=>qaBases!.submit(id,job):undefined,
     qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
     qaStatus: qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
     qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
@@ -1265,6 +1287,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       // Drain an in-flight read pass before closing its SQLite ledger.
       if(qaReviewLoop)await qaReviewLoop.drain();
       await qaIntake?.drain();
+      await qaBases?.drain();
       qaReviewStore?.close();
       clearInterval(watchdog);
       clearInterval(retention);

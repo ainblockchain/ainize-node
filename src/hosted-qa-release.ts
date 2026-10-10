@@ -7,7 +7,7 @@ export interface QaReleaseProfile {repository:string;branch:string;mode:'fast-fo
 export class HostedQaRelease {
  private profiles:Record<string,QaReleaseProfile>;
  private active=new Map<string,Promise<unknown>>();
- constructor(private store:HostedQaReviewStore,private coordinator:Pick<HostedQaReviewCoordinator,'check'>,profiles:Record<string,QaReleaseProfile>,private github:QaReleaseGitHub,private requireValidation:(agentId:string,candidate:QaCandidate)=>unknown){this.profiles=structuredClone(profiles);}
+ constructor(private store:HostedQaReviewStore,private coordinator:Pick<HostedQaReviewCoordinator,'check'>,profiles:Record<string,QaReleaseProfile>,private github:QaReleaseGitHub,private requireValidation:(agentId:string,candidate:QaCandidate,jobId:string)=>unknown){this.profiles=structuredClone(profiles);}
  attempt(agentId:string,jobId:string):Promise<unknown>{
   const key=JSON.stringify([agentId,jobId]),pending=this.active.get(key);if(pending)return pending;
   const run=this.run(agentId,jobId).finally(()=>this.active.delete(key));this.active.set(key,run);return run;
@@ -43,7 +43,7 @@ export class HostedQaRelease {
   if(commit?.sha!==t.sha||commit.parents?.length!==1||commit.parents[0]?.sha!==t.base)throw new Error('Candidate is not the validated direct child');
   const published=this.store.publication(agentId,jobId);
   if(!published?.candidate||published.sha!==t.sha||published.candidateDigest!==t.candidateDigest||qaCandidateDigest(published.candidate)!==t.candidateDigest)throw new Error('Original validated candidate unavailable');
-  this.requireValidation(agentId,published.candidate);
+  this.requireValidation(agentId,published.candidate,jobId);
   const approval=await this.coordinator.check(agentId,jobId);
   if(!approval)return {state:'awaiting_approval'};
   if(approval.generation!==review.generation||approval.sha!==t.sha)throw new Error('Review changed before release');

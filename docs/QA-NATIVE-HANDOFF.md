@@ -556,3 +556,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 최초 의존성 설치 실패는 이미지 준비 시 web/.npmrc 누락 때문이었다. 저장소 설정을 포함하자 통과했으며 제품 코드/lockfile은 수정하지 않았다.
 - 검토 시 확인한 잔여 과제: handler/host profile의 정적 base를 요청별 최신 main과 안전하게 동기화하는 경로, 기존 작업·승인 보존 이관 및 단일 실행자 전환, 실제 전 제품 채널→승인→배포 E2E. 이번 제품 gate 통과만으로 운영 준비 완료로 판단하지 않는다.
 - Ainmem PR76 승인 질문은 여전히 답변 대기이며 새 병합/배포는 실행하지 않았다. 검증용 이미지/checkout은 보존하고 임시 gate 컨테이너는 자동 정리했다.
+
+### 2026-10-10 요청별 최신 main 준비 경로
+
+- `hosted-qa-base.ts`와 private `/qa/base` capability를 추가하고 handler→작업 DB→validation/publication/release에 job ID 바인딩을 연결했다. 새 요청은 정본 접수 후 최신 main을 준비하고, 같은 작업은 재시작해도 처음 준비한 SHA를 보존한다. 진행 중 후보/승인을 새 SHA로 옮기지 않는다.
+- `advanceCoding`이 호스트 접수 확인 기록을 버리던 문제를 수정했다. hostIntake/hostBase가 실제 코딩 단계와 설정 변경 후에도 보존되는 회귀 테스트를 추가했다.
+- opt-in `AINIZE_QA_BASE_PROFILES` 및 handler `hostBase: true`; 상세 설정/한계는 `QA-PRODUCT-VALIDATOR.md`. 의존성 변경은 이미지 갱신 요구로 멈추며, 코딩/게시 후 main 전진에 대한 후보 재작업은 아직 자동화하지 않았다. 기존 작업 이관과 운영 단일 실행자 전환도 남아 있다.
+- QA 테스트 107 pass/0 skip, build pass. 실제 .41 AINA checkout에서 기준 준비→서비스 재생성→동일 SHA 재사용을 확인했다. 증거 `native-base-20261010-fU8Ndn`; 정본 운영 접수/비공개 Git fetch 전체 검증은 아니다.
+- 운영 설정은 활성화하지 않았고 Ainmem PR76 승인 질문도 계속 대기 중이다. 새 main 병합/배포는 수행하지 않았다.

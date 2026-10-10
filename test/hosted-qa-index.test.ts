@@ -150,3 +150,23 @@ test('configured Ainmem intake returns exactly one canonical item link', async t
   assert.equal((first.text.match(/https:\/\//g) ?? []).length, 1);
   assert.match(first.text, /칸반 작업 열기/);
 });
+
+test('host base is bound once before coding and survives coding checkpoints and config changes',async t=>{
+ const {createHash}=await import('node:crypto');
+ // @ts-expect-error example module
+ const {Jobs}=await import('../examples/qa-agent/jobs.mjs');
+ const stateDir=mkdtempSync(join(tmpdir(),'qa-dynamic-base-'));t.after(()=>rmSync(stateDir,{recursive:true,force:true}));
+ const prepared='b'.repeat(40);let calls=0;
+ const config={...CONFIG,hostReview:true,hostBase:true,hostValidation:true};
+ const make=(baseCommit=CONFIG.baseCommit)=>createHandler({config:{...config,baseCommit},stateDir,verifyIntake:async()=>verified,newSnapshot:(_ctx,repository,commit)=>({...snapshot,repository,commit})});
+ const handler=make(),first=await handler.execute('',locatorInput({teamsMessage:{messageId:'m1'}}));
+ const qa={intake:async()=>({state:'done',result:{requestId:'m1',rootId:'m1',workspaceId:'ws1',channelId:'ch1',requestDigest:createHash('sha256').update(verified.text).digest('hex')}}),base:async()=>{calls++;return {state:'done',result:{repository:CONFIG.repository,base:prepared}};}};
+ await handler.tick({...model([]),qa}); // canonical host intake
+ await handler.tick({...model([]),qa}); // bind prepared main
+ await handler.tick({...model([['read_file',{path:'sum.js',startLine:1}]]),qa});
+ const jobs=new Jobs(join(stateDir,'jobs.sqlite3'));t.after(()=>jobs.close());
+ const job=jobs.get(first.metadata.jobId);assert.equal(job.input.base,prepared);assert.equal(job.checkpoint.hostBase,true);assert.equal(job.checkpoint.hostIntake,true);assert.equal(job.checkpoint.stage,'coding');
+ await make('c'.repeat(40)).tick({...model([['replace_text',{path:'sum.js',oldText:'a-b',newText:'a+b'}]]),qa});
+ assert.equal(calls,1);assert.equal(jobs.get(job.id).checkpoint.holdReason,undefined);assert.equal(jobs.get(job.id).input.base,prepared);
+ const claim=jobs.claim();assert.throws(()=>jobs.bindBase(job.id,claim.lease,'d'.repeat(40)),/reconciliation/);
+});

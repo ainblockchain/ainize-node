@@ -26,7 +26,7 @@ export class HostedQaPublisher {
   if(!Object.hasOwn(this.profiles,agentId)||!/^[-\w]{1,128}$/.test(jobId))return Promise.reject(new Error('Publication is not configured'));
   const candidate=structuredClone(raw);
   // This reads the host receipt; caller-supplied verdicts cannot authorize publication.
-  this.validation.requirePassed(agentId,candidate);
+  this.validation.requirePassed(agentId,candidate,jobId);
   const profile=this.profiles[agentId];
   if(candidate.repository!==profile.repository)throw new Error('Publication repository mismatch');
   const digest=qaCandidateDigest(candidate);

@@ -40,9 +40,10 @@ export function parseConfig(raw) {
   if (!Number.isFinite(Date.parse(enabledAt ?? ''))) throw new Error('QA config requires an enabledAt timestamp');
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository ?? '')) throw new Error('QA config requires a repository');
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
+  if(config.hostBase===true&&(!config.hostReview||!config.hostValidation))throw new Error('Host base requires verified intake and validation');
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, hostReview: config.hostReview === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostBase: config.hostBase === true, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, hostReview: config.hostReview === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -143,7 +144,7 @@ export function createHandler({
       if (!claim) return; // Nothing queued; a running job holds its own lease.
       const job = claim.job;
       // Defensive: only advance work pinned to this service's repository and base.
-      if (job.input?.repository !== config.repository || job.input?.base !== config.baseCommit) {
+      if (job.input?.repository !== config.repository || (!config.hostBase && job.input?.base !== config.baseCommit)) {
         jobs.finish(job.id, claim.lease, 'waiting', { ...job.checkpoint, holdReason: 'configuration_changed' });
         ctx?.log?.('qa tick parked job with changed configuration', job.id);
         return;
@@ -156,6 +157,16 @@ export function createHandler({
         if(intake?.state==='running'){jobs.finish(job.id,claim.lease,'queued',job.checkpoint);return;}
         if(intake?.state!=='done'||intake.result?.requestId!==locator.messageId||intake.result.rootId!==locator.parentId||intake.result.workspaceId!==config.workspaceId||intake.result.channelId!==config.channelId||intake.result.requestDigest!==createHash('sha256').update(job.input.text).digest('hex'))throw new Error('Host intake binding mismatch');
         jobs.finish(job.id,claim.lease,'queued',{...job.checkpoint,hostIntake:true});return;
+      }
+      if(config.hostBase&&!job.checkpoint.hostBase){
+        if(Object.keys(job.checkpoint).some(k=>!['hostIntake','stepFailures'].includes(k))){
+          jobs.finish(job.id,claim.lease,'waiting',{...job.checkpoint,holdReason:'base_reconciliation_required'});return;
+        }
+        const prepared=await ctx.qa.base(job.id);
+        if(prepared?.state==='running'){jobs.finish(job.id,claim.lease,'queued',job.checkpoint);return;}
+        if(prepared?.state==='failed'){jobs.finish(job.id,claim.lease,'waiting',{...job.checkpoint,holdReason:'base_preparation_failed'});return;}
+        if(prepared?.state!=='done'||prepared.result?.repository!==job.input.repository||!/^[a-f0-9]{40}$/.test(prepared.result?.base??''))throw new Error('Host base binding mismatch');
+        jobs.bindBase(job.id,claim.lease,prepared.result.base);return;
       }
       if (job.checkpoint.stage === 'needs_validation') {
         const updated=await advanceHostedValidation({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});

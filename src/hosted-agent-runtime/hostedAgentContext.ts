@@ -191,7 +191,10 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
   return {
     input,
     spec: o.spec,
-    qa: { intake: async(jobId,locator)=>{
+    qa: { base: async jobId=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/base`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA base refused');return response.json();
+    }, intake: async(jobId,locator)=>{
       const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/intake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId,locator}),signal:AbortSignal.timeout(10000)});
       if(!response.ok)throw new Error('Host QA intake refused');return response.json();
     }, status: async jobId=>{
@@ -203,9 +206,9 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
       });
       if(!response.ok)throw new Error('Host QA publication refused');
       return response.json();
-    }, validate: async candidate => {
+    }, validate: async (candidate,jobId) => {
       const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/validation`, {
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(candidate),signal:AbortSignal.timeout(10000),
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(jobId===undefined?candidate:{jobId,candidate}),signal:AbortSignal.timeout(10000),
       });
       if(!response.ok)throw new Error('Host QA validation refused');
       return response.json();

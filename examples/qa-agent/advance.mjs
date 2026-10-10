@@ -22,6 +22,7 @@ export async function advanceCoding({ jobs, claim, checkpoints, snapshot, ctx })
     // Save before updating SQLite. An interrupted write may leave an unreferenced blob, never a broken reference.
     const ready = state.phase === 'needs_validation';
     const updated = jobs.finish(job.id, lease, ready ? 'waiting' : 'queued', {
+      ...job.checkpoint,
       stage: ready ? 'needs_validation' : 'coding', coding, repository: snapshot.repository, base: snapshot.commit,
     });
     return { job: updated, state };

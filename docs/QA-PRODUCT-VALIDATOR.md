@@ -170,3 +170,51 @@ a live browser/SSO test, or a channel-to-release E2E. Successful gate receipts d
 retain test output, so no assertion is made about individual test counts or skips.
 No production profile, job, approval, main branch or deployment was changed.
 The prepared image is retained; temporary validation containers are removed by the runner.
+
+## Per-job current-main preparation (2026-10-10)
+
+`AINIZE_QA_BASE_PROFILES` optionally points to an operator JSON map of agent IDs to
+`{ "branch": "main" }`. Each entry requires matching validation/review repository and
+branch, and enabled canonical host intake. Set `hostBase: true` alongside `hostReview`
+and `hostValidation` in the hosted handler configuration. This remains opt-in and has
+not been enabled in production.
+
+After verified intake and before coding, the handler polls `ctx.qa.base(jobId)`. The host
+reads the configured branch's GitHub ref, imports the exact Git commit when missing,
+and stores that job's full SHA in private durable state. No checkout or repository
+script executes. Private-repository fetch uses the host publication token in the Git
+child environment, not command arguments, source exports or agent containers. Git
+credentials still require repository read access. Image preparation remains separate.
+
+The first prepared SHA is immutable for that job. Retries and restarts preserve it;
+a new job reads current main again. Validation, publication and release resolve the
+profile through the job ID. A caller cannot validate an arbitrary SHA or borrow another
+job's prepared base. A changed image/gate/base policy requires explicit reconciliation
+instead of replacing the saved job binding. The handler's durable lease allows input
+base assignment only before any coding candidate exists. Older in-flight candidates
+without this binding are held for migration, not silently rebased.
+
+Known dependency manifests, lockfiles, package-manager configuration, vendor and patch
+directories are compared with the pinned image source base. Changes require an operator
+image rebuild; this path does not install dependencies inside a gate. Such a preparation
+failure is visible as `base_preparation_failed`. Automatic image rebuilding and recovery
+of an already-coded candidate when main advances remain separate unfinished work.
+Publication/release still reject an advanced main; they never force-push or inherit an
+approval onto a reworked candidate.
+
+Regression verification: 107 QA tests passed, zero failures/skips; build passed. Tests
+include real Git import without checkout mutation, changed dependency settings, restart
+and concurrent polling, fresh base per new job, policy/identity/candidate mismatch,
+revocation, gateway token rejection, and preservation through actual coding steps.
+The coding transition previously discarded host-intake checkpoint fields; it now
+preserves them together with the prepared-base marker.
+
+Actual .41 diagnostic: `/mnt/newdata/qa-services/validation/native-base-20261010-fU8Ndn`.
+AINA main was read through the authenticated local GitHub CLI and its non-secret ref
+observation supplied to the server diagnostic. Preparing the actual existing checkout
+and recreating the service returned the same SHA
+`7dd1029d329b0c4b476b3b10a5ac1cfd84119459`, with one head-reader invocation.
+An initial unauthenticated server API attempt failed; production uses the configured
+host GitHub client/token. This diagnostic uses a fixture intake identity and an already
+available object; it does not prove live canonical intake or private-token remote fetch.
+No production job, profile, page, approval or branch was changed.

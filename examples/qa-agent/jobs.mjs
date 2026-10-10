@@ -124,6 +124,18 @@ export class Jobs {
       .run(state, body, now, id, lease, now).changes !== 1) throw new Error('job lease lost');
     return this.get(id);
   }
+  /** Only first-time base preparation may update input. Candidates and approvals are never rebased here. */
+  bindBase(id,lease,base) {
+    if(typeof base!=='string'||!/^[a-f0-9]{40}$/.test(base))throw new Error('Invalid prepared base');
+    return this.transaction(()=>{
+      const job=this.get(id);
+      if(!job||job.checkpoint.hostIntake!==true||Object.keys(job.checkpoint).some(k=>!['hostIntake','stepFailures'].includes(k)))throw new Error('Existing candidate requires explicit reconciliation');
+      const now=this.now();
+      if(this.db.prepare("UPDATE jobs SET input=?,checkpoint=?,state='queued',lease=NULL,expires=NULL,updated=? WHERE id=? AND state='running' AND lease=? AND expires>?")
+        .run(json({...job.input,base}),json({...job.checkpoint,hostBase:true}),now,id,lease,now).changes!==1)throw new Error('job lease lost');
+      return this.get(id);
+    });
+  }
   /** Scheduling only; this does not grant release permission. The executor must recheck approval and SHA. */
   wake(id) {
     return this.db.prepare("UPDATE jobs SET state='queued',updated=? WHERE id=? AND state='waiting'").run(this.now(), id).changes === 1;

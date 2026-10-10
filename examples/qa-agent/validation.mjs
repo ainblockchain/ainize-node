@@ -99,7 +99,7 @@ export async function advanceHostedValidation({ jobs, claim, checkpoints, ctx })
   const candidate={repository:coding.repository,base:coding.commit,changes:coding.changes};
   const digest=candidateDigest(candidate);
   jobs.renew(job.id,lease,60000);
-  const reply=await ctx.qa.validate(candidate);
+  const reply=await ctx.qa.validate(candidate,job.checkpoint.hostBase?job.id:undefined);
   if (reply?.state === 'running' || reply?.state === 'busy') return jobs.finish(job.id,lease,'queued',job.checkpoint);
   if (reply?.state === 'failed') return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,holdReason:'host_validation_failed'});
   const result=reply?.result;

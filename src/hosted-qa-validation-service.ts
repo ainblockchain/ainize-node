@@ -8,16 +8,17 @@ export type QaValidationStatus = { state: 'running' | 'busy' } | { state: 'done'
 export class HostedQaValidationService {
   private readonly running = new Set<string>();
   constructor(private root: string, private profiles: Record<string,QaValidationProfile>,
-    private run: typeof runQaValidation = runQaValidation) {
+    private run: typeof runQaValidation = runQaValidation,
+    private resolveProfile?: (agentId:string,jobId:string|undefined,candidate:QaCandidate)=>QaValidationProfile|undefined) {
     this.profiles=structuredClone(profiles);
     mkdirSync(root,{recursive:true,mode:0o700});
     const st=lstatSync(root);
     if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o077)!==0)throw new Error('QA validation state must be private');
   }
-  private binding(agentId:string, raw:unknown) {
+  private binding(agentId:string, raw:unknown, jobId?:string) {
     if(!Object.hasOwn(this.profiles,agentId))throw new Error('QA validation is not configured for this agent');
-    const profile=this.profiles[agentId]!;
     const candidate=structuredClone(raw) as QaCandidate;
+    const profile=this.resolveProfile?.(agentId,jobId,candidate)??this.profiles[agentId]!;
     validateQaProfile(profile,candidate);
     const key=createHash('sha256').update(JSON.stringify([QA_VALIDATOR_VERSION,agentId,profile,qaCandidateDigest(candidate)])).digest('hex');
     const file=join(this.root,`${key}.json`);
@@ -44,14 +45,20 @@ export class HostedQaValidationService {
       (!result.passed&&result.gates.at(-1)?.passed))throw new Error('Invalid QA validation result binding');
   }
   /** Host-only publication precondition: reads durable evidence without starting any execution. */
-  requirePassed(agentId:string, raw:unknown):Result {
-    const {profile,candidate,file}=this.binding(agentId,raw);
+  requirePassed(agentId:string, raw:unknown, jobId?:string):Result {
+    const {profile,candidate,file}=this.binding(agentId,raw,jobId);
     const saved=this.readReceipt(file,profile,candidate);
     if(saved?.state!=='done'||!saved.result.passed)throw new Error('Candidate has no passing host validation');
     return saved.result;
   }
   submit(agentId:string, raw:unknown):QaValidationStatus {
-    const {profile,candidate,key,file}=this.binding(agentId,raw);
+    let jobId:string|undefined;
+    if(raw && typeof raw==='object' && !Array.isArray(raw) && Object.hasOwn(raw,'candidate')){
+      const input=raw as {jobId:string;candidate:unknown};
+      if(Object.keys(input).sort().join(',')!=='candidate,jobId'||typeof input.jobId!=='string'||!/^[-\w]{1,128}$/.test(input.jobId))throw new Error('Invalid job validation request');
+      jobId=input.jobId;raw=input.candidate;
+    }
+    const {profile,candidate,key,file}=this.binding(agentId,raw,jobId);
     const saved=this.readReceipt(file,profile,candidate);
     if(saved)return saved;
     if(this.running.has(key))return {state:'running'};
