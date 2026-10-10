@@ -54,6 +54,17 @@ export class HostedAgentStore {
     return spec;
   }
 
+  /** A restored release follows the deletion tombstone and never reuses its old private PoP key. */
+  restore(archived: HostedAgentSpec, input: HostedAgentSpecInput, reserved: (id: string) => boolean = () => false, now = Date.now()): HostedAgentSpec {
+    if (input.id !== archived.id) throw new Error('restore cannot change the agent id');
+    if (this.specs.has(input.id) || reserved(input.id)) throw new HostedAgentIdTakenError(`the id "${input.id}" is taken`);
+    if (this.listByOwner(archived.owner).length >= this.limits.perOwner || this.specs.size >= this.limits.total) throw new HostedAgentLimitError('hosted agent quota reached');
+    const spec: HostedAgentSpec = { ...input, owner: archived.owner.toLowerCase(), version: archived.version + 2, createdAt: archived.createdAt, updatedAt: now, updatedBy: archived.owner.toLowerCase() };
+    this.specs.set(spec.id, spec);
+    try { this.save(); } catch (error) { this.specs.delete(spec.id); throw error; }
+    return spec;
+  }
+
   /** The id cannot change: it is the agent's public address, and callers hold it. */
   /** `by` is who made the change (the owner, or a member of the organization it is shared with). */
   update(id: string, input: HostedAgentSpecInput, by?: string, now = Date.now()): HostedAgentSpec {

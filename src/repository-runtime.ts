@@ -58,6 +58,13 @@ export class AgentRuntimeStore {
       }
     }
   }
+  restore(id: string, runtime: AgentRuntime | null, executions: RuntimeExecution[]): void {
+    if (this.states.has(id) || this.records.has(id)) throw new Error('runtime history already exists for this agent');
+    if ((runtime && runtime.agentId !== id) || executions.some((record) => record.agentId !== id)) throw new Error('invalid archived runtime history');
+    if (runtime) this.states.set(id, { ...structuredClone(runtime), activeCommit: null, activeVersion: null, execution: null });
+    this.records.set(id, structuredClone(executions));
+    try { this.save(); } catch (error) { this.states.delete(id); this.records.delete(id); throw error; }
+  }
   get(id: string): AgentRuntime | null { return this.states.get(id) ?? null; }
   executionsOf(id: string): RuntimeExecution[] { return structuredClone(this.records.get(id) ?? []); }
   bind(id: string, source: RuntimeSource): AgentRuntime {
@@ -86,7 +93,7 @@ export class AgentRuntimeStore {
     if (state.execution?.id === executionId) this.states.set(id, { ...state, execution, ...(fields.status === 'ready' ? { activeCommit: execution.sourceCommit, activeVersion: fields.version } : {}) });
     this.save();
   }
-  remove(id: string): void { this.records.delete(id); if (this.states.delete(id)) this.save(); }
+  remove(id: string): void { const records = this.records.delete(id); const state = this.states.delete(id); if (records || state) this.save(); }
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(`${this.file}.tmp`, JSON.stringify({ agents: [...this.states.values()], executions: Object.fromEntries(this.records) }), { mode: 0o600 });

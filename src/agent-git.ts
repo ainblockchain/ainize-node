@@ -241,7 +241,7 @@ export class AgentGit {
    * definition of what an agent is and a tree cannot be valid here and invalid there. Reserved fields are a
    * refusal, not a silent drop (see AGENT_GIT_RESERVED_FIELDS).
    */
-  async readSpec(id: string, ref: string, quarantine?: AgentGitQuarantine): Promise<AgentTreeRead> {
+  async readSpec(id: string, ref: string, quarantine?: AgentGitQuarantine, sourcePath = ''): Promise<AgentTreeRead> {
     let commit: string;
     try {
       commit = await this.resolve(id, ref, quarantine);
@@ -253,7 +253,10 @@ export class AgentGit {
         ? `this agent's repository has no commits yet — push one to ${AGENT_GIT_DEFAULT_BRANCH}`
         : `no such ref "${ref}" in this agent's repository (${(e as Error).message})`);
     }
-    const raw = await this.show(id, commit, AGENT_GIT_SPEC_FILE, quarantine);
+    sourcePath = sourcePath.replace(/^\/+|\/+$/g, '');
+    if (sourcePath && (!/^[A-Za-z0-9_.\/-]+$/.test(sourcePath) || sourcePath.split('/').some((part) => !part || part === '.' || part === '..'))) throw new AgentGitError('invalid agent source path');
+    const prefix = sourcePath ? `${sourcePath}/` : '';
+    const raw = await this.show(id, commit, prefix + AGENT_GIT_SPEC_FILE, quarantine);
     if (raw === null) throw new AgentGitError(`${AGENT_GIT_SPEC_FILE} is missing — an agent's repository has one at its root`);
     let json: Record<string, unknown>;
     try {
@@ -268,11 +271,11 @@ export class AgentGit {
         `An agent's id is its public address and cannot be changed by editing a file.`,
       );
     }
-    const prompt = await this.show(id, commit, AGENT_GIT_PROMPT_FILE, quarantine);
+    const prompt = await this.show(id, commit, prefix + AGENT_GIT_PROMPT_FILE, quarantine);
     const files: Record<string, string> = {};
     for (const path of await this.lsFiles(id, commit, quarantine)) {
-      if (!path.startsWith(`${AGENT_GIT_FILES_DIR}/`)) continue;
-      files[path.slice(AGENT_GIT_FILES_DIR.length + 1)] = (await this.show(id, commit, path, quarantine)) ?? '';
+      if (!path.startsWith(`${prefix}${AGENT_GIT_FILES_DIR}/`)) continue;
+      files[path.slice(prefix.length + AGENT_GIT_FILES_DIR.length + 1)] = (await this.show(id, commit, path, quarantine)) ?? '';
     }
     const parsed = hostedAgentSpecInput.safeParse({ ...json, id, systemPrompt: prompt ?? '', files });
     if (!parsed.success) {
@@ -430,6 +433,34 @@ export class AgentGit {
     await chmod(path, 0o600);
   }
 
+  /** Shallow boundaries are repository metadata, which ordinary bundles cannot carry. */
+  isShallow(id: string): boolean { return existsSync(join(this.dir(id), 'shallow')); }
+
+  async exportBareArchive(id: string, path: string): Promise<void> {
+    if (existsSync(join(this.dir(id), 'objects/info/alternates'))) throw new AgentGitError('a self-contained archive cannot depend on an external object store');
+    const files = ['HEAD', 'objects', 'refs', ...['packed-refs', 'shallow'].filter((file) => existsSync(join(this.dir(id), file)))];
+    // Configuration and hooks are omitted: restoration initializes trusted configuration and reinstalls hooks.
+    await run('tar', ['-czf', path, '-C', this.dir(id), ...files], { encoding: 'utf8' });
+    const { chmod } = await import('node:fs/promises');
+    await chmod(path, 0o600);
+  }
+
+  async restoreBareArchive(id: string, path: string): Promise<void> {
+    const { mkdtemp, rename, rm } = await import('node:fs/promises');
+    mkdirSync(this.repoRoot, { recursive: true });
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    const temporary = await mkdtemp(join(this.repoRoot, '.restore-'));
+    const repo = join(temporary, 'repository.git');
+    try {
+      await run('git', ['init', '--bare', '--initial-branch=main', repo], { encoding: 'utf8' });
+      await run('tar', ['-xzf', path, '-C', repo], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'fsck', '--full'], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'config', 'core.logAllRefUpdates', 'true'], { encoding: 'utf8' });
+      if (this.exists(id)) throw new AgentGitError('repository id already exists');
+      await rename(repo, this.dir(id));
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  }
+
   /** Restore through a temporary bare clone; never overwrite an existing agent. */
   async restoreBundle(id: string, path: string): Promise<void> {
     const { mkdtemp, rename, rm } = await import('node:fs/promises');
@@ -440,6 +471,7 @@ export class AgentGit {
     try {
       await run('git', ['clone', '--mirror', '--', path, repo], { encoding: 'utf8' });
       await run('git', ['--git-dir', repo, 'fsck', '--full'], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'config', 'core.logAllRefUpdates', 'true'], { encoding: 'utf8' });
       // A local archive is not an upstream and must not become a credential-bearing remote.
       await run('git', ['--git-dir', repo, 'remote', 'remove', 'origin'], { encoding: 'utf8' });
       if (this.exists(id)) throw new AgentGitError('repository id already exists');

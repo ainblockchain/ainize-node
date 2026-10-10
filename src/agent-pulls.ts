@@ -117,6 +117,13 @@ export class AgentPullStore {
     return next;
   }
 
+  restoreAgent(agent: string, records: AgentPull[]): void {
+    if (this.pulls.has(agent)) throw new Error('review records already exist for this agent');
+    if (records.some((pull) => pull.agent !== agent) || new Set(records.map((pull) => pull.number)).size !== records.length) throw new Error('invalid archived review records');
+    this.pulls.set(agent, structuredClone(records));
+    try { this.save(); } catch (error) { this.pulls.delete(agent); throw error; }
+  }
+
   /** An agent that is gone takes its proposals with it. */
   dropAgent(agent: string): void {
     if (this.pulls.delete(agent)) this.save();

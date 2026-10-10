@@ -1,3 +1,5 @@
+import { parseNodeModelRef } from './peer-models.js';
+import { restoreArchivedAgent, AgentArchiveRestoreError } from './agent-archive-restore.js';
 import { agentArchiveRoutes } from './agent-archive-routes.js';
 import { AgentArchives } from './agent-archives.js';
 import { AgentRepositoryQueue, type RepositorySerialize } from './agent-repository-queue.js';
@@ -923,7 +925,27 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     },
     apply: applyPushedTree,
   }));
-  app.use(agentArchiveRoutes({ archives: agentArchives, caller: agentCaller, serialize: serializeRepository }));
+  app.use(agentArchiveRoutes({ archives: agentArchives, caller: agentCaller, serialize: serializeRepository,
+    restore: async (archive) => {
+      const restored = await restoreArchivedAgent({ archives: agentArchives, git: agentGit, store: hostedStore, pulls: agentPulls,
+        mirrors: agentMirrors, runtimes: agentRuntimes, secrets: hostedSecrets, host: hostedHost, publicBase: market.publicUrl ?? '',
+        initializeRepository: (id) => agentGitHttp.installHooks(id),
+        reserved: (id) => reservedRepositoryId(id) || (cfg.agents ?? []).some((agent) => agent?.id === id) || linkedStore.has(id),
+        validate: (input) => {
+          const { model, node } = parseNodeModelRef(input.model);
+          const here = !node || node === cfg.identity.address.toLowerCase();
+          const backend = here ? inferenceRegistry?.backendForModel(model) : undefined;
+          if (!backend && !peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, here ? null : node)) throw new AgentArchiveRestoreError(400, 'model_not_served', 'the archived chat model is unavailable');
+          if (backend && backend.modality !== 'chat') throw new AgentArchiveRestoreError(400, 'invalid_request', 'agents require a chat model');
+          for (const modality of ['transcription', 'image'] as const) if (input.media[modality] && !inferenceRegistry?.backendsFor(modality).length && !peerModels.target(modality)) throw new AgentArchiveRestoreError(400, 'model_not_served', `the archived ${modality} capability is unavailable`);
+          if (input.mode !== 'prompt' && !hostedHost.dockerEnabled) throw new AgentArchiveRestoreError(501, 'docker_unavailable', 'this node does not run agent code');
+        },
+      }, archive);
+      const spec = hostedStore.get(restored.agentId)!;
+      agentEvents?.append({ type: 'agent.published', registryIssuer: market.publicUrl, agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+      return restored;
+    },
+  }));
   agentPreviews = new AgentPreviews(agentGit, hostedHost);
   agentPreviews.start();
   app.use(agentPreviewRoutes({

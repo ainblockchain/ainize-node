@@ -154,3 +154,10 @@ Manual mirror configure/sync/detach now recheck current read/manage/source polic
 Added owner-only paginated archive summaries, detail, complete streamed export and permanent removal endpoints. The gzip tar includes metadata.json plus an independently cloneable repository.bundle; metadata-only legacy archives omit the bundle. It excludes runtime secret values and PoP private keys. Export/remove share the agent queue, and only a completed export permits permanent removal. Temporary export files are cleaned up. All new routes are documented in OpenAPI; repository route coverage now includes serialized write registrations.
 
 Real signed-in node tests prove owner isolation, pagination, actual tar extraction and Git restoration, export-before-removal and metadata-only downloads. An 8 MiB random proposal is archived and its actual HTTP download interrupted; permanent removal remains denied and exportedAt remains unset. 17 real node tests and 2 OpenAPI tests pass. Restore-to-running-node API, source-aware rollback/application and recovery UI remain pending; no production deployment claimed.
+
+
+### Source-aware archive recovery
+
+Owner restore now validates current model and organization access, restores the same address with a newer version and fresh PoP key, reinstalls Git hooks, retains reviews and execution history, and waits for readiness. Recorded last successful source/projection commits remain distinct; newer failed history is retained on an archive branch. Failed application rolls back attempted state while retaining the archive. Secret names are reported for re-entry; secret values are never restored.
+
+Shallow mirrors use a private bare-repository archive preserving original objects, refs and shallow boundaries, excluding configuration and hooks. Full repositories retain cloneable bundles. Real owner HTTP tests cover download, offline restoration, same-address runtime restoration and subsequent Git push: 19 tests pass. Recovery UI and production deployment remain pending.

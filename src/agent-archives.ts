@@ -17,6 +17,7 @@ export interface AgentArchive {
   restoredAt?: number;
   bytes: number;
   repository: boolean;
+  repositoryFormat?: 'bundle' | 'bare-tar';
   runtime?: AgentRuntime | null;
   executions?: RuntimeExecution[];
   spec: HostedAgentSpec;
@@ -43,7 +44,12 @@ export class AgentArchives {
   }
   bundle(id: string, owner: string): string | null {
     const record = this.get(id, owner);
-    return record && record.repository !== false ? join(this.directory, `${id}.bundle`) : null;
+    return record && record.repository !== false && record.repositoryFormat !== 'bare-tar' ? join(this.directory, `${id}.bundle`) : null;
+  }
+  repositoryFile(id: string, owner: string): { path: string; format: 'bundle' | 'bare-tar' } | null {
+    const record = this.get(id, owner);
+    if (!record || record.repository === false) return null;
+    return record.repositoryFormat === 'bare-tar' ? { path: join(this.directory, `${id}.git.tar.gz`), format: 'bare-tar' } : { path: join(this.directory, `${id}.bundle`), format: 'bundle' };
   }
   create(git: AgentGit, snapshot: Pick<AgentArchive, 'spec' | 'pulls' | 'mirror'> & Partial<Pick<AgentArchive, 'runtime' | 'executions'>>): Promise<AgentArchive> {
     const copied = structuredClone(snapshot);
@@ -52,17 +58,22 @@ export class AgentArchives {
       if (this.records.size >= this.limits.total || this.list(owner).length >= this.limits.perOwner) throw new Error('agent archive quota reached; export and remove an old archive first');
       mkdirSync(this.directory, { recursive: true, mode: 0o700 });
       const id = `archive_${randomBytes(12).toString('hex')}`;
-      const bundle = join(this.directory, `${id}.bundle`);
+      let artifact = join(this.directory, `${id}.bundle`);
       try {
         const repository = git.exists(copied.spec.id) && await git.hasCommits(copied.spec.id);
-        if (repository) await git.exportBundle(copied.spec.id, bundle);
-        const bytes = (repository ? statSync(bundle).size : 0) + Buffer.byteLength(JSON.stringify(copied));
+        const repositoryFormat = repository && git.isShallow(copied.spec.id) ? 'bare-tar' as const : 'bundle' as const;
+        if (repositoryFormat === 'bare-tar') artifact = join(this.directory, `${id}.git.tar.gz`);
+        if (repository) {
+          if (repositoryFormat === 'bare-tar') await git.exportBareArchive(copied.spec.id, artifact);
+          else await git.exportBundle(copied.spec.id, artifact);
+        }
+        const bytes = (repository ? statSync(artifact).size : 0) + Buffer.byteLength(JSON.stringify(copied));
         if (bytes + [...this.records.values()].reduce((total, record) => total + record.bytes, 0) > this.limits.bytes) throw new Error('agent archive storage quota reached');
-        const record: AgentArchive = { id, agent: copied.spec.id, owner, createdAt: Date.now(), bytes, repository, ...copied };
+        const record: AgentArchive = { id, agent: copied.spec.id, owner, createdAt: Date.now(), bytes, repository, repositoryFormat, ...copied };
         this.records.set(id, record);
         try { this.save(); } catch (error) { this.records.delete(id); throw error; }
         return structuredClone(record);
-      } catch (error) { rmSync(bundle, { force: true }); throw error; }
+      } catch (error) { rmSync(artifact, { force: true }); throw error; }
     });
     this.pending = operation;
     return operation;
@@ -70,12 +81,17 @@ export class AgentArchives {
   markExported(id: string, owner: string): AgentArchive | null {
     const record = this.get(id, owner);
     if (!record) return null;
-    record.exportedAt = Date.now(); this.records.set(id, record); this.save(); return structuredClone(record);
+    const prior = this.records.get(id)!;
+    record.exportedAt = Date.now(); this.records.set(id, record);
+    try { this.save(); } catch (error) { this.records.set(id, prior); throw error; }
+    return structuredClone(record);
   }
   markRestored(id: string, owner: string): void {
     const record = this.get(id, owner);
     if (!record) throw new Error('archive not found');
-    record.restoredAt = Date.now(); this.records.set(id, record); this.save();
+    const prior = this.records.get(id)!;
+    record.restoredAt = Date.now(); this.records.set(id, record);
+    try { this.save(); } catch (error) { this.records.set(id, prior); throw error; }
   }
   remove(id: string, owner: string): 'removed' | 'missing' | 'not_exported' {
     const record = this.get(id, owner);
@@ -84,6 +100,7 @@ export class AgentArchives {
     this.records.delete(id);
     try { this.save(); } catch (error) { this.records.set(id, record); throw error; }
     rmSync(join(this.directory, `${id}.bundle`), { force: true });
+    rmSync(join(this.directory, `${id}.git.tar.gz`), { force: true });
     return 'removed';
   }
   private save(): void {

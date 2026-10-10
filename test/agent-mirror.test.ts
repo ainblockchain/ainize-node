@@ -1,3 +1,4 @@
+import { AgentArchives } from '../src/agent-archives.js';
 import { AgentRepositoryQueue } from '../src/agent-repository-queue.js';
 /**
  * An agent that already lives somewhere else, followed rather than moved.
@@ -283,4 +284,30 @@ test('mirror mutations recheck permission inside the common queue after ownershi
     assert.equal(mirrors.get(mirror.agent)?.path, 'news-agent');
     assert.equal(repos.exists(mirror.agent), false);
   } finally { release(); await syncer.stop(); mirrors.remove(mirror.agent); }
+});
+
+
+test('a real fetched shallow mirror archive retains its source SHA and boundaries without exporting config or hooks', async () => {
+  await upstreamCommit('Archive fetched source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Fetched source to preserve.' });
+  const mirror = { agent: 'archive-mirror-probe', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' };
+  await repos.init(mirror.agent);
+  const fetched = await fetchMirror(repos, mirror);
+  assert.equal(fetched.error, undefined);
+  await repos.setRef(mirror.agent, 'main', fetched.commit);
+  assert.equal(repos.isShallow(mirror.agent), true);
+  await git(['--git-dir', repos.dir(mirror.agent), 'config', 'http.extraHeader', 'Authorization: Bearer test-config-value']);
+  const path = join(tmp, 'fetched-archives.json'), directory = join(tmp, 'fetched-archives');
+  const archives = new AgentArchives(path, directory);
+  const record = await archives.create(repos, { spec: { ...fetched.input!, owner: 'sso:owner', version: 1, createdAt: 1, updatedAt: 1 }, pulls: [], mirror });
+  assert.equal(record.repositoryFormat, 'bare-tar');
+  const artifact = new AgentArchives(path, directory).repositoryFile(record.id, 'sso:owner')!;
+  const listing = (await exec('tar', ['-tzf', artifact.path])).stdout.split('\n');
+  assert.ok(listing.includes('shallow'));
+  assert.ok(!listing.some((entry) => entry === 'config' || entry.startsWith('hooks/')));
+  await repos.deleteRepo(mirror.agent);
+  await repos.restoreBareArchive('archive-mirror-copy', artifact.path);
+  assert.equal(await repos.resolve('archive-mirror-copy', 'main'), fetched.commit);
+  assert.equal(repos.isShallow('archive-mirror-copy'), true);
+  assert.equal((await repos.readSpec('archive-mirror-copy', 'main', undefined, mirror.path)).input.systemPrompt, 'Fetched source to preserve.');
+  await assert.rejects(git(['--git-dir', repos.dir('archive-mirror-copy'), 'config', '--get', 'http.extraHeader']));
 });
