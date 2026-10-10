@@ -589,3 +589,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 공유 경로 테스트 5개 pass/0 skip. 전체 QA 114 pass/0 skip 후, 조회 범위 제한 및 두 DB 연결 테스트 추가분을 포함한 routing 테스트 5개를 다시 통과했다.
 - **아직 handler와 호스트 다중 저장소 capability에 연결하지 않았다.** 기존 단일 저장소 handler를 운영에서 이 코어로 임의 교체하지 않는다. 다음 작업은 한 Teams 봇의 웹/API scope를 host intake→base→validation→publication→review/release까지 일관되게 바인딩하고, 같은 스레드 LGTM이 두 후보를 승인하지 않도록 검증하는 것이다. 기존 페이지/job/승인 이관도 함께 필요하다.
 - Aindrive `run-full-evidence.mjs`는 실행 중이다(마지막 실제 컨테이너 관측: 실행 약 6분). 프로세스/결과를 확인하기 전 재시작하지 않는다. 운영 전환/배포는 수행하지 않았다.
+
+### 2026-10-10 후속 코드 리뷰: 작업 지연·공유 스레드 승인 보완
+
+- 코드 리뷰에서 `Jobs.claim`이 가장 오래된 queued 작업을 매번 선택해, 긴 host 검증을 조회하는 작업이 뒤의 요청을 계속 막는 문제를 확인했다. 별도 work_polls 테이블에 실행 순서를 저장해 각 eligible 작업을 번갈아 선택한다. 기존 job ID/입력/checkpoint/승인/페이지는 변경하지 않으며 live lease와 배포 단계 제외 규칙을 유지한다. 재시작·두 DB 연결·후속 요청 진행을 검증했다.
+- 승인 모호성 검사와 검토 등록 충돌 검사가 agent ID 내부에 한정돼 있었다. 공유 채널의 서로 다른 저장소 scope가 같은 스레드에서 배포 후보를 만들면 검사에서 빠질 수 있어, workspace/channel/root 기준으로 전체 ledger를 대조하도록 수정했다. 서로 다른 agent의 동일 job ID도 별도 후보로 검사한다. Teams 승인 기록과 release intent transaction에서도 모호성을 다시 확인한다. 기존 승인 기록은 삭제하거나 새 권한으로 전환하지 않는다.
+- QA 전체 117 pass/0 fail/0 skip. 이후 cross-agent 회귀를 실제로 유효한 ledger 승인 증거로 강화하고 coordinator/release 13개 테스트를 다시 통과했다. 빌드도 통과했다. 운영 전환이나 실제 사람 승인 소비는 수행하지 않았다.
+- Aindrive의 full-evidence 결과는 145 pass/28 fail/1 skip이다. 서버 stderr에서 약 2GiB JavaScript heap 한도 도달을 확인했다. cgroup oom/oom_kill은 0이었다. #178의 전송 자체 결함으로 단정하지 않는다. 같은 tree/image/8GiB container/4GiB tmpfs에서 operator gate argv에 NODE_OPTIONS=--max-old-space-size=3072를 지정한 진단이 실행 중이다. `run-heap-evidence.mjs`, `heap-evidence-result.json`, `heap-evidence/`를 확인한다. 모델이나 gateway에서 환경변수를 받도록 확장하지 않았다.
+- 공유 저장소 routing core는 여전히 handler/host 전 단계에 연결되지 않았다. 이 변경만으로 qa-ainize 전환 준비가 끝난 것은 아니다. PR76 승인, PR70 운영 전환, 전체 제품 실제 채널 E2E도 남아 있다.

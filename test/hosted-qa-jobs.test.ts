@@ -76,3 +76,26 @@ test('canonical intake reconciles old keys without changing candidate, approval 
     assert.throws(() => jobs.enqueueTeamsRequest(input), /multiple historical/);
   } finally { jobs.close(); }
 });
+
+test('polling a slow host gate cannot starve later jobs, including after restart', t => {
+  let now = 1000;
+  const { open } = setup(t, { now: () => now });
+  const first = open();
+  const slow = first.enqueue('slow', { repository: 'test/web' });
+  now++;
+  const later = first.enqueue('later', { repository: 'test/api' });
+  const claim = first.claim();
+  assert.equal(claim.job.id, slow.id);
+  first.finish(slow.id, claim.lease, 'queued', { stage: 'needs_validation', candidate: 'preserve' });
+  first.close();
+  const resumed = open(), other = open();
+  const next = resumed.claim();
+  assert.equal(next.job.id, later.id);
+  const retry = other.claim();
+  assert.equal(retry.job.id, slow.id);
+  assert.deepEqual(retry.job.checkpoint, { stage: 'needs_validation', candidate: 'preserve' });
+  assert.equal(other.claim(), null, 'both active leases remain exclusive');
+  resumed.finish(later.id, next.lease, 'queued', {});
+  other.finish(slow.id, retry.lease, 'queued', retry.job.checkpoint);
+  assert.equal(resumed.claim().job.id, later.id, 'each eligible job receives another turn');
+});

@@ -27,6 +27,7 @@ export class Jobs {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS review_polls(job_id TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS work_polls(job_id TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, input TEXT NOT NULL,
         state TEXT NOT NULL, checkpoint TEXT NOT NULL, lease TEXT, expires INTEGER,
@@ -91,10 +92,14 @@ export class Jobs {
     if (!Number.isSafeInteger(ttl) || ttl < 1000 || ttl > 300_000) throw new Error('invalid lease duration');
     return this.transaction(() => {
       const now = this.now();
-      const row = this.db.prepare("SELECT * FROM jobs WHERE (state='queued' OR (state='running' AND expires<=?)) AND coalesce(json_extract(checkpoint,'$.stage'),'') NOT IN ('awaiting_approval','awaiting_deployment') ORDER BY created,id LIMIT 1").get(now);
+      // A host operation can return running for many ticks. Give each other eligible job
+      // a turn before polling it again, including across process restarts.
+      const row = this.db.prepare("SELECT j.* FROM jobs j LEFT JOIN work_polls p ON p.job_id=j.id WHERE (j.state='queued' OR (j.state='running' AND j.expires<=?)) AND coalesce(json_extract(j.checkpoint,'$.stage'),'') NOT IN ('awaiting_approval','awaiting_deployment') ORDER BY coalesce(p.last_attempt,0),j.created,j.id LIMIT 1").get(now);
       if (!row) return null;
       const lease = randomUUID();
       this.db.prepare("UPDATE jobs SET state='running',lease=?,expires=?,updated=? WHERE id=?").run(lease, now + ttl, now, row.id);
+      const sequence = Number(this.db.prepare('SELECT coalesce(max(last_attempt),0)+1 AS n FROM work_polls').get().n);
+      this.db.prepare('INSERT INTO work_polls VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET last_attempt=excluded.last_attempt').run(row.id, sequence);
       return { job: this.get(row.id), lease };
     });
   }

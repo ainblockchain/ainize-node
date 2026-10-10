@@ -30,6 +30,7 @@ export class HostedQaReviewStore {
   return this.transaction(()=>{
    const current=this.current(expected.agentId,expected.jobId);
    if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed before release');
+   if(approval.source==='teams'&&current.presentation.target.teamsRequest)this.assertUnambiguousThread(expected.agentId,expected.jobId,current.presentation.target.teamsRequest);
    const prior=this.releaseRecord(expected);
    if(prior)return prior;
    const intent={target:current.presentation.target,approval,reviewKey:current.key};
@@ -56,11 +57,10 @@ export class HostedQaReviewStore {
   });
  }
  assertUnambiguousThread(agentId:string,jobId:string,binding:QaTeamsThreadBinding){
-  const rows=this.db.prepare('SELECT job_id,receipt FROM review_publications WHERE agent_id=? AND job_id<>?').all(agentId,jobId);
+  // The Teams thread is shared authority even when repositories have distinct host scopes.
+  const rows=this.db.prepare("SELECT agent_id,job_id FROM review_publications WHERE NOT (agent_id=? AND job_id=?) AND json_extract(receipt,'$.teamsRequest.workspaceId')=? AND json_extract(receipt,'$.teamsRequest.channelId')=? AND json_extract(receipt,'$.teamsRequest.rootId')=?").all(agentId,jobId,binding.workspaceId,binding.channelId,binding.rootId);
   for(const row of rows){
-   const other=JSON.parse(String(row.receipt)).teamsRequest;
-   if(!other||other.workspaceId!==binding.workspaceId||other.channelId!==binding.channelId||other.rootId!==binding.rootId)continue;
-   const review=this.current(agentId,String(row.job_id));
+   const review=this.current(String(row.agent_id),String(row.job_id));
    if(!review||this.releaseRecord(review)?.receipt?.state!=='deployment_verified')throw new Error('Ambiguous Teams approval; use the canonical task page');
   }
  }
@@ -114,9 +114,9 @@ export class HostedQaReviewStore {
    if(Number(this.db.prepare('SELECT count(*) AS n FROM reviews').get()!.n)>=10000)throw new Error('Review ledger capacity reached');
    if(p.target.teamsRequest){
     const binding=p.target.teamsRequest;
-    const others=this.db.prepare('SELECT r.* FROM reviews r WHERE agent_id=? AND job_id<>? AND generation=(SELECT max(generation) FROM reviews latest WHERE latest.agent_id=r.agent_id AND latest.job_id=r.job_id)').all(agentId,jobId);
+    const others=this.db.prepare('SELECT r.* FROM reviews r WHERE NOT (agent_id=? AND job_id=?) AND generation=(SELECT max(generation) FROM reviews latest WHERE latest.agent_id=r.agent_id AND latest.job_id=r.job_id)').all(agentId,jobId);
     for(const row of others){
-     const other:StoredReview={agentId,jobId:String(row.job_id),generation:Number(row.generation),key:String(row.key),presentation:JSON.parse(String(row.presentation))};
+     const other:StoredReview={agentId:String(row.agent_id),jobId:String(row.job_id),generation:Number(row.generation),key:String(row.key),presentation:JSON.parse(String(row.presentation))};
      const original=other.presentation.target.teamsRequest;
      if(original&&original.workspaceId===binding.workspaceId&&original.channelId===binding.channelId&&original.rootId===binding.rootId&&this.releaseRecord(other)?.receipt?.state!=='deployment_verified')throw new Error('Another review is awaiting approval in this thread');
     }
@@ -132,6 +132,7 @@ export class HostedQaReviewStore {
    if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed while checking approval');
    const p=current.presentation,t=p.target;
    if(evidence.source==='teams'&&(!t.teamsRequest||evidence.threadId!==t.teamsRequest.rootId||evidence.requestId!==t.teamsRequest.requestId))throw new Error('Approval thread binding mismatch');
+   if(evidence.source==='teams'&&t.teamsRequest)this.assertUnambiguousThread(expected.agentId,expected.jobId,t.teamsRequest);
    if(evidence.jobId!==t.jobId||evidence.pageId!==t.pageId||evidence.sha!==t.sha||evidence.repository!==t.repository||evidence.number!==t.number||evidence.candidateDigest!==t.candidateDigest||evidence.presentationDigest!==p.bodyDigest||evidence.issuer!==t.issuer||evidence.orgId!==t.orgId||!(Date.parse(evidence.approvedAt)>Date.parse(p.presentedAt))||!(Date.parse(evidence.checkedAt)>=Date.parse(evidence.approvedAt)))throw new Error('Approval observation binding mismatch');
    const prior=this.db.prepare('SELECT evidence FROM review_observations WHERE agent_id=? AND job_id=? AND generation=? AND comment_id=? LIMIT 1').get(expected.agentId,expected.jobId,expected.generation,evidence.commentId);
    if(prior){

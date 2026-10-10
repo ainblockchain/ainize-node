@@ -84,3 +84,27 @@ test('one Teams thread cannot authorize two simultaneous review targets',()=>{
   assert.throws(()=>store.assertUnambiguousThread('agent','job',teamsRequest),/Ambiguous/);
  }finally{store.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test('shared thread ambiguity is enforced across repository agents and after restart', t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-cross-agent-thread-'));
+ let store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:'root',requestId:'first',requestAuthorId:'human',requestCreatedAt:snapshot.observedAt,requestDigest:'1'.repeat(64)};
+ const first=store.bind('web-agent',captureReview({...target,teamsRequest},snapshot,body),0);
+ // Even an identical job ID on another agent must not be excluded as the current job.
+ const another={...target,repository:'test/api',teamsRequest:{...teamsRequest,requestId:'second'}};
+ const otherBody=body.replace('test/product','test/api');
+ assert.throws(()=>store.bind('api-agent',captureReview(another,{...snapshot,body:otherBody},otherBody),0),/Another review/);
+ const approval={source:'teams' as const,threadId:'root',requestId:'first',jobId:target.jobId,pageId:target.pageId,commentId:'teams:root:approval',subject:'admin',issuer:target.issuer,orgId:target.orgId,repository:target.repository,number:target.number,sha:target.sha,candidateDigest:target.candidateDigest,presentationDigest:first.presentation.bodyDigest,approvedAt:'2026-10-10T00:00:10Z',checkedAt:'2026-10-10T00:00:20Z'};
+ assert.doesNotThrow(()=>store.observe(first,approval));
+ store.enqueuePublication('api-agent','job',{teamsRequest:another.teamsRequest});
+ store.close();store=new HostedQaReviewStore(root);
+ assert.throws(()=>store.assertUnambiguousThread('web-agent','job',teamsRequest),/Ambiguous/);
+ // A conflict arriving after remote verification is checked again when recording evidence.
+ assert.throws(()=>store.observe(first,approval),/Ambiguous/);
+ assert.throws(()=>store.releaseIntent(first,approval),/Ambiguous/);
+ assert.equal(store.releaseRecord(first),null);
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,rootId:'other'}));
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,workspaceId:'other'}));
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,channelId:'other'}));
+});
