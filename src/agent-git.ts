@@ -19,6 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { lstat, readdir } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { hostedAgentSpecInput, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
@@ -60,6 +61,7 @@ export const AGENT_GIT_FILES_DIR = 'files';
 export const AGENT_GIT_RESERVED_FIELDS = ['id', 'owner', 'version', 'createdAt', 'updatedAt', 'popJwk', 'updatedBy'] as const;
 
 export class AgentGitError extends Error {}
+export class AgentGitStorageLimitError extends AgentGitError {}
 
 export interface AgentCommit {
   sha: string;
@@ -104,7 +106,52 @@ export interface AgentGitQuarantine {
 export const AGENT_GIT_QUARANTINE_VARS = ['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_QUARANTINE_PATH'] as const;
 
 export class AgentGit {
-  constructor(private readonly repoRoot: string) {}
+  constructor(private readonly repoRoot: string, readonly storageLimitBytes = 256 * 1024 * 1024) {
+    if (!Number.isSafeInteger(storageLimitBytes) || storageLimitBytes < 1) throw new AgentGitError('invalid repository storage limit');
+  }
+
+  async repositoryIds(): Promise<string[]> {
+    if (!existsSync(this.repoRoot)) return [];
+    return (await readdir(this.repoRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-z0-9][a-z0-9-]{0,39}\.git$/.test(entry.name)).map((entry) => entry.name.slice(0, -4));
+  }
+
+  /** Physical Git objects, including the incoming pack before any ref may move. */
+  async storageBytes(id: string, quarantine?: AgentGitQuarantine): Promise<number> {
+    const size = async (path: string): Promise<number> => {
+      const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (!stat) return 0;
+      if (stat.isSymbolicLink()) throw new AgentGitError('repository objects must not be symlinks');
+      if (!stat.isDirectory()) return stat.size;
+      let bytes = 0;
+      for (const entry of await readdir(path)) bytes += await size(join(path, entry));
+      return bytes;
+    };
+    let bytes = await size(join(this.dir(id), 'objects'));
+    const incoming = quarantine?.GIT_OBJECT_DIRECTORY;
+    if (incoming && !incoming.startsWith(join(this.dir(id), 'objects') + '/')) bytes += await size(incoming);
+    return bytes;
+  }
+
+  async assertStorageLimit(id: string, quarantine?: AgentGitQuarantine): Promise<void> {
+    const bytes = await this.storageBytes(id, quarantine);
+    if (bytes > this.storageLimitBytes) throw new AgentGitStorageLimitError(`repository storage limit exceeded (${bytes} > ${this.storageLimitBytes} bytes); export history or ask the operator to raise the limit`);
+  }
+
+  /** Caller holds the repository queue. Retained runtime commits stay reachable through private refs. */
+  async maintain(id: string, commits: string[] = []): Promise<void> {
+    if (!this.exists(id)) return;
+    await this.git(id, ['config', 'gc.auto', '0']);
+    await this.git(id, ['config', 'receive.autogc', 'false']);
+    for (const commit of new Set(commits)) {
+      if (!/^[a-f0-9]{40,64}$/.test(commit)) continue;
+      try { await this.resolve(id, commit); } catch { continue; }
+      await this.git(id, ['update-ref', `refs/runtime-retained/${commit}`, commit]);
+    }
+    const wanted = new Set(commits);
+    const refs = (await this.git(id, ['for-each-ref', '--format=%(refname)', 'refs/runtime-retained/'])).trim().split('\n').filter(Boolean);
+    for (const ref of refs) if (!wanted.has(ref.split('/').at(-1)!)) await this.git(id, ['update-ref', '-d', ref]);
+    await this.git(id, ['gc', '--prune=2.weeks.ago']);
+  }
 
   /** Where the repositories live — `git http-backend` is scoped to it (GIT_PROJECT_ROOT). */
   get root(): string {
@@ -128,7 +175,7 @@ export class AgentGit {
    */
   private async git(id: string, args: string[], opts: { cwd?: string; quarantine?: AgentGitQuarantine } = {}): Promise<string> {
     try {
-      const { stdout } = await run('git', ['--git-dir', this.dir(id), ...args], {
+      const { stdout } = await run('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '--git-dir', this.dir(id), ...args], {
         maxBuffer: 32 * 1024 * 1024,
         encoding: 'utf8',
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
@@ -154,12 +201,14 @@ export class AgentGit {
   async fork(source: string, id: string, commit: string): Promise<void> {
     if (this.exists(id)) throw new AgentGitError('repository id already exists');
     await run('git', ['clone', '--bare', '--no-hardlinks', this.dir(source), this.dir(id)], { encoding: 'utf8' });
-    await this.setRef(id, AGENT_GIT_DEFAULT_BRANCH, commit);
+    try { await this.setRef(id, AGENT_GIT_DEFAULT_BRANCH, commit); }
+    catch (error) { await this.deleteRepo(id); throw error; }
   }
 
   /** Import only the commit explicitly proposed by an authorized fork owner, retained under an internal ref. */
   async importProposal(id: string, source: string, commit: string, ref: string): Promise<void> {
     await this.git(id, ['fetch', '--no-tags', '--', this.dir(source), commit]);
+    await this.assertStorageLimit(id);
     await this.git(id, ['update-ref', `refs/pull-proposals/${ref}`, commit]);
   }
 
@@ -203,6 +252,7 @@ export class AgentGit {
       },
     });
     const commit = stdout.trim();
+    await this.assertStorageLimit(id);
     await this.git(id, ['update-ref', `refs/heads/${AGENT_GIT_DEFAULT_BRANCH}`, commit]);
     return commit;
   }
@@ -394,6 +444,7 @@ export class AgentGit {
 
   /** Move a branch to a commit — the last step of a merge, after the result has been validated. */
   async setRef(id: string, branch: string, commit: string): Promise<void> {
+    await this.assertStorageLimit(id);
     await this.git(id, ['update-ref', `refs/heads/${branch}`, commit]);
   }
 

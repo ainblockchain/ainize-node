@@ -176,3 +176,10 @@ The live comcom Clef repository remains SCRIPT at source 5ce2fd8 with successful
 ### Committed release validation and review
 
 A HEAD-only release snapshot (excluding other chats' unstaged work) passes Node typecheck, 24 real Git/owner recovery tests and 39 SSE/SSO tests. Explicit exported middleware types fix declaration portability with dependencies in another workspace. The node branch is pushed and draft PR https://github.com/ainblockchain/ainize-node/pull/72 is attached; it remains a draft and is not deployed. The CLI complete one-shot suite now passes: 104 tests, zero failures/skips. Clef local Docker image build is pending because this machine's Docker daemon is unavailable; its actual model/production validation remains open.
+
+
+### Repository growth limits and queued maintenance
+
+Agent Git now bounds incoming HTTP packs at 64 MiB and repository objects at 256 MiB by default, with a positive-byte operator environment override. Object/quarantine size is checked before pushed refs, merge/mirror refs, imported proposals and API-generated main commits move. Failed oversized creation removes attempted spec, keys and new repository; rejected update leaves stored/live release untouched. Oversized fork creation cleans up the attempted fork. Git background maintenance is disabled on managed Git commands, avoiding an observed storage-walk race with disappearing maintenance.lock files.
+
+Queued maintenance runs after startup and daily, drains on shutdown, and uses private refs to retain commits referenced by runtime records before GC. It removes only old unreachable objects; it does not erase committed history to fit quota. Five direct tests cover real HTTP proposal rejection, unchanged main after API object quota, GC with active history protection, queue ordering/deduplication, and real CRUD rejection preserving stored/live state. The combined actual-node/storage suite and mirror/HTTP/OpenAPI suite each pass 24 tests. The clean staged release snapshot also passes typecheck and the 24 actual-node/storage tests. Pushes cannot alter node-managed runtime/proposal retention refs. Production deployment remains pending.

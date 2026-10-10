@@ -157,6 +157,11 @@ process.stdin.on('end', async () => {
    * are for. Deleting `main` is refused — an agent without a main branch has nothing to serve.
    */
   async check(id: string, updates: AgentGitRefUpdate[], quarantine?: AgentGitQuarantine): Promise<{ ok: boolean; message?: string }> {
+    if (updates.some((update) => /^(refs\/runtime-retained\/|refs\/pull-proposals\/)/.test(update.ref))) return { ok: false, message: 'internal runtime and proposal retention refs are node-managed' };
+    if (updates.some((update) => update.after !== NO_REF)) {
+      try { await this.deps.git.assertStorageLimit(id, quarantine); }
+      catch (error) { return { ok: false, message: (error as Error).message }; }
+    }
     for (const u of updates) {
       if (u.ref !== `refs/heads/${AGENT_GIT_DEFAULT_BRANCH}`) continue;
       if (u.after === NO_REF) {
@@ -267,7 +272,7 @@ process.stdin.on('end', async () => {
         ...(req.header('git-protocol') ? { GIT_PROTOCOL: req.header('git-protocol')! } : {}),
         ...(writing ? { AINIZE_AGENT_GIT_PORT: String(this.deps.loopbackPort()), AINIZE_AGENT_GIT_SECRET: this.hookSecret } : {}),
       };
-      const child = spawn('git', ['http-backend'], { env });
+      const child = spawn('git', ['-c', 'receive.maxInputSize=67108864', '-c', 'receive.autogc=false', '-c', 'maintenance.auto=false', 'http-backend'], { env });
       let header = Buffer.alloc(0);
       let headersDone = false;
       let stderr = '';

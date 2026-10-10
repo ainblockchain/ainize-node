@@ -1,3 +1,4 @@
+import { AgentGitStorageLimitError } from './agent-git.js';
 import { serializedWrites, type RepositorySerialize } from './agent-repository-queue.js';
 /**
  * `/api/hosted-agents` — create, read, change and remove agents this node runs.
@@ -228,12 +229,14 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     try {
       // The agent's PoP key is minted with it (hosted-agent-pop.ts), before the runtime that will sign with it starts.
       const spec = issueHostedAgentPopKey(deps.store, deps.secrets, deps.store.create(input, who.subject, deps.reserved));
+      try { await deps.repo?.create(spec); }
+      catch (error) { deps.store.delete(spec.id); deps.secrets.dropAgent(spec.id); throw error; }
       deps.host.apply(spec);
-      await deps.repo?.create(spec).catch(() => { /* an agent that runs but cannot be cloned is still an agent */ });
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
       deps.orgAudit?.([spec.orgId], who.subject, 'agent.create', spec.id, { kind: 'hosted', visibility: hostedAgentVisibilityOf(spec) });
       res.status(201).json({ agent: view(req, spec, false), a2a_url: view(req, spec, false).a2a_url, card_url: view(req, spec, false).card_url });
     } catch (e) {
+      if (e instanceof AgentGitStorageLimitError) return refuse(res, 413, 'repository_storage_limit', e.message);
       if (e instanceof HostedAgentIdTakenError) return refuse(res, 409, 'id_taken', e.message);
       if (e instanceof HostedAgentLimitError) return refuse(res, 429, 'limit_reached', e.message);
       throw e;
@@ -265,11 +268,15 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (sharingChanged && !canAdministerAgent(prior, who)) {
       return refuse(res, 403, 'not_owner', 'only the agent\'s creator or an admin of its organization can change its visibility or organization');
     }
-    const spec = deps.store.update(prior.id, input, who.subject);
+    const now = Date.now();
+    const candidate: HostedAgentSpec = { ...input, id: prior.id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now, updatedBy: who.subject.toLowerCase(), ...(prior.popJwk ? { popJwk: prior.popJwk } : {}) };
+    try { await deps.repo?.commit(candidate, `Update ${candidate.id} (v${candidate.version})`, who.subject); }
+    catch (error) {
+      if (error instanceof AgentGitStorageLimitError) return refuse(res, 413, 'repository_storage_limit', error.message);
+      throw error;
+    }
+    const spec = deps.store.update(prior.id, input, who.subject, now);
     deps.host.apply(spec);
-    // The same change, as a commit. An edit made in the browser is as much a part of the history as a push —
-    // otherwise "what changed" has two answers and a reader has to know which door the change came through.
-    await deps.repo?.commit(spec, `Update ${spec.id} (v${spec.version})`, who.subject).catch(() => {});
     deps.orgAudit?.([prior.orgId, spec.orgId], who.subject, sharingChanged ? 'agent.sharing' : 'agent.update', spec.id,
       { kind: 'hosted', version: spec.version, ...(sharingChanged ? { from: { visibility: hostedAgentVisibilityOf(prior), orgId: prior.orgId ?? null }, to: { visibility: hostedAgentVisibilityOf(spec), orgId: spec.orgId ?? null } } : {}) });
     deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });

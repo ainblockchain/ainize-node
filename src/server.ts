@@ -1,3 +1,4 @@
+import { AgentRepositoryMaintenance } from './agent-repository-maintenance.js';
 import { parseNodeModelRef } from './peer-models.js';
 import { restoreArchivedAgent, AgentArchiveRestoreError } from './agent-archive-restore.js';
 import { agentArchiveRoutes } from './agent-archive-routes.js';
@@ -353,7 +354,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
 
   const agentArchives = new AgentArchives(join(cfg.dataDir, 'agent-archives.json'), join(cfg.dataDir, 'agent-archives'));
-  const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
+  const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'), process.env.AINIZE_AGENT_GIT_MAX_BYTES ? Number(process.env.AINIZE_AGENT_GIT_MAX_BYTES) : undefined);
   const agentGitHttp = new AgentGitHttp({
     serialize: serializeRepository,
     git: agentGit,
@@ -838,9 +839,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       readOnlySource: (id) => projectStore.forAgent(id)?.repo ?? agentMirrors.get(id)?.url ?? null,
       runtime: (id) => agentRuntimes.get(id),
       create: async (spec) => {
+        const existed = agentGit.exists(spec.id);
         await agentGit.init(spec.id);
         agentGitHttp.installHooks(spec.id);
-        await agentGit.commitSpec(spec.id, spec, { message: `Create ${spec.id}` });
+        try { await agentGit.commitSpec(spec.id, spec, { message: `Create ${spec.id}` }); }
+        catch (error) { if (!existed) await agentGit.deleteRepo(spec.id); throw error; }
       },
       commit: async (spec, message, by) => {
         if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
@@ -948,6 +951,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }));
   agentPreviews = new AgentPreviews(agentGit, hostedHost);
   agentPreviews.start();
+  const repositoryMaintenance = new AgentRepositoryMaintenance(agentGit, serializeRepository,
+    (id) => [agentRuntimes.get(id)?.activeCommit, ...agentRuntimes.executionsOf(id).flatMap((execution) => [execution.sourceCommit, execution.projectionCommit])].filter((commit): commit is string => !!commit),
+    (message) => market.log('warn', 'agents', message));
+  repositoryMaintenance.start();
+
   app.use(agentPreviewRoutes({
     previews: agentPreviews,
     runs: new AgentPreviewRuns(join(cfg.dataDir, 'agent-preview-runs.json')),
@@ -1319,6 +1327,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       depositWatcher?.stop();
       try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
       clearInterval(watchdog);
+      await repositoryMaintenance.stop();
       clearInterval(retention);
       clearInterval(diskWatch);
       clearInterval(uploadSweep);
