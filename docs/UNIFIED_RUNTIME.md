@@ -59,3 +59,5 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - `/api/projects/:id/source?target=head|commit|deployed&sha=…`는 같은 조회 권한으로 선택된 SHA의 manifest를 반환한다. Drive의 인증 중계와 ainize 웹 폼이 이를 사용하고, 표시한 SHA를 실행 요청에 고정한다. Drive 관련 17개 테스트 및 양쪽 타입 검사 통과.
 - PR 생성 UI와 리뷰 댓글 API/UI를 추가했다. 댓글은 커밋·파일·줄에 고정할 수 있고, 수정은 작성자, 삭제는 작성자/관리자만 가능하며 삭제 흔적과 재시작 후 보존을 확인했다. 실제 노드 Git push/merge 및 리뷰 테스트 13개, 웹 관련 테스트 44개 통과. 신규 UI 렌더 검증은 추가로 필요하다.
 - 남은 수용 조건(포크·미리보기·CLI·AinCode·공통 문서·보관/삭제/크기 및 전체 운영 배포)은 계속 열려 있다. 위 진행 기록은 전체 완료나 배포 완료를 의미하지 않는다.
+
+- 포크: 읽기 권한이 있는 사용자가 개인 Git 저장소로 포크하고 원본에 변경을 제안할 수 있다. 포크는 실행 환경/비밀값을 만들지 않으며 다른 사용자와 원본 관리자도 직접 읽을 수 없다. 제안 시점 SHA는 원본 저장소 내부 참조로 보존한다. 실제 HTTP clone/push, 타인 포크 도용 거절, 이후 push/삭제 후 고정된 코드 merge를 포함하는 실제 노드 12개 테스트가 통과했다. 소유자별 포크 한도와 재시작 보존 테스트도 통과했다. 운영 검증은 아직 남아 있다.

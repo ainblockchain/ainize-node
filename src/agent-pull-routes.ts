@@ -9,12 +9,16 @@
  */
 import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
+import type { AgentForkStore } from './agent-forks.js';
 import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH } from './agent-git.js';
 import type { AgentPullStore } from './agent-pulls.js';
 import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentPullRoutesDeps {
   git: AgentGit;
+  forks?: AgentForkStore;
+  initializeFork?: (id: string) => void;
   readOnlySource?: (id: string) => string | null;
   pulls: AgentPullStore;
   /** Who is asking, as an agent's `owner` spells a principal; null when nobody is signed in. */
@@ -36,6 +40,7 @@ const openPull = z.object({
   title: z.string().trim().min(1, 'a proposal needs a title').max(120),
   body: z.string().trim().max(4000).default(''),
   head: branchName,
+  headAgent: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).optional(),
   base: branchName.default(AGENT_GIT_DEFAULT_BRANCH),
 });
 
@@ -48,6 +53,44 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (!deps.canRead(req, id) || !deps.git.exists(id)) { refuse(res, 404, 'not_found', `no agent "${id}" on this node`); return null; }
     return id;
   };
+
+  router.post('/api/hosted-agents/:id/forks', json, async (req, res) => {
+    const parent = open(req, res); if (!parent) return;
+    const owner = deps.principal(req);
+    if (!owner) return refuse(res, 401, 'not_signed_in', 'sign in to fork a repository');
+    if (!deps.forks) return refuse(res, 503, 'not_configured', 'repository forks are not enabled');
+    const input = z.object({ ref: branchName.default(AGENT_GIT_DEFAULT_BRANCH) }).safeParse(req.body ?? {});
+    if (!input.success) return refuse(res, 400, 'invalid_request', 'invalid fork ref');
+    const id = `fork-${randomBytes(10).toString('hex')}`;
+    let registered = false;
+    try {
+      if (deps.git.exists(id)) throw new Error('repository id already exists');
+      const commit = await deps.git.resolve(parent, input.data.ref);
+      deps.forks.add({ id, parent, owner, baseCommit: commit, createdAt: Date.now() });
+      registered = true;
+      await deps.git.fork(parent, id, commit);
+      deps.initializeFork?.(id);
+      res.status(201).json({ fork: deps.forks.get(id), clonePath: `/git/${id}.git` });
+    } catch (error) {
+      if (registered) {
+        deps.forks.remove(id);
+        await deps.git.deleteRepo(id);
+      }
+      refuse(res, 400, 'fork_failed', (error as Error).message);
+    }
+  });
+  router.get('/api/agent-forks', (req, res) => {
+    const owner = deps.principal(req);
+    if (!owner) return refuse(res, 401, 'not_signed_in', 'sign in to read your forks');
+    res.json({ forks: deps.forks?.list(owner) ?? [] });
+  });
+  router.delete('/api/agent-forks/:id', async (req, res) => {
+    const fork = deps.forks?.get(String(req.params.id));
+    if (!fork || fork.owner !== deps.principal(req)?.toLowerCase()) return refuse(res, 404, 'not_found', 'no repository fork');
+    await deps.git.deleteRepo(fork.id);
+    deps.forks!.remove(fork.id);
+    res.json({ ok: true });
+  });
 
   router.get('/api/hosted-agents/:id/pulls', (req, res) => {
     const id = open(req, res); if (!id) return;
@@ -70,17 +113,24 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (!who) { refuse(res, 401, 'not_signed_in', 'sign in to propose a change'); return; }
     const parsed = openPull.safeParse(req.body ?? {});
     if (!parsed.success) { refuse(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid request'); return; }
-    const { title, body, head, base } = parsed.data;
-    if (head === base) { refuse(res, 400, 'invalid_request', 'a branch cannot be proposed for itself'); return; }
+    const { title, body, head, base, headAgent } = parsed.data;
+    const fork = headAgent ? deps.forks?.get(headAgent) : null;
+    if (headAgent && (!fork || fork.parent !== id || fork.owner !== who.toLowerCase())) return refuse(res, 403, 'not_allowed', 'only your own fork of this repository can propose a change');
+    if (!headAgent && head === base) { refuse(res, 400, 'invalid_request', 'a branch cannot be proposed for itself'); return; }
+    let headCommit: string | undefined;
     try {
-      await deps.git.resolve(id, head);
+      headCommit = await deps.git.resolve(headAgent ?? id, head);
       await deps.git.resolve(id, base);
     } catch (e) {
       // Naming a branch that does not exist is the commonest mistake here (a push that was never made).
       refuse(res, 400, 'no_such_branch', (e as Error).message);
       return;
     }
-    res.status(201).json({ pull: deps.pulls.open({ agent: id, title, body, head, base, author: who }) });
+    if (headAgent) {
+      try { await deps.git.importProposal(id, headAgent, headCommit!, randomBytes(12).toString('hex')); }
+      catch (error) { return refuse(res, 400, 'git_error', (error as Error).message); }
+    }
+    res.status(201).json({ pull: deps.pulls.open({ agent: id, title, body, head, base, author: who, ...(headAgent ? { headAgent, headCommit } : {}) }) });
   });
 
   const commentBody = z.object({ body: z.string().trim().min(1).max(8000) });
@@ -147,7 +197,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (pull.state !== 'open') { refuse(res, 409, 'not_open', `#${pull.number} is already ${pull.state}`); return; }
 
     try {
-      const merged = await deps.git.mergeTree(id, pull.base, pull.head);
+      const merged = await deps.git.mergeTree(id, pull.base, pull.headCommit ?? pull.head);
       if (!merged.ok) {
         refuse(res, 409, 'conflict', `this proposal conflicts with ${pull.base} in ${merged.conflicts.join(', ') || 'a file'} — rebase it and push again`);
         return;

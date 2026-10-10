@@ -10,8 +10,8 @@
  * instead — so the merge commit is validated exactly as a push is, and a conflict is refused with the paths
  * that conflicted rather than a merge commit nobody reviewed.
  *
- * Branches, not forks: the proposer can already push a branch, and a fork across owners needs a second
- * repository and a cross-repository permission model that nothing here asks for yet.
+ * A reader can propose from a private repository fork. Its commit is imported and pinned when the proposal
+ * opens, so later pushes or deletion of the fork cannot silently change what reviewers will merge.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -27,6 +27,8 @@ export interface AgentPull {
   /** Branch names in the agent's own repository. */
   base: string;
   head: string;
+  headAgent?: string;
+  headCommit?: string;
   /** Who opened it, as an agent's `owner` field spells a principal. */
   author: string;
   state: AgentPullState;
@@ -71,7 +73,7 @@ export class AgentPullStore {
   }
 
   /** Numbers never repeat, even after a close: `#3` has to keep meaning one thing in a conversation. */
-  open(input: { agent: string; title: string; body: string; base: string; head: string; author: string }, now = Date.now()): AgentPull {
+  open(input: { agent: string; title: string; body: string; base: string; head: string; author: string; headAgent?: string; headCommit?: string }, now = Date.now()): AgentPull {
     const rows = this.pulls.get(input.agent) ?? [];
     const pull: AgentPull = {
       ...input,

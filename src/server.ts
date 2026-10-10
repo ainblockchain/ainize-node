@@ -27,6 +27,7 @@ import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, runScri
 import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-containers.js';
 import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
+import { AgentForkStore } from './agent-forks.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
 import { AgentMirrorStore } from './agent-mirror.js';
 import { AgentMirrorSyncer } from './agent-mirror-sync.js';
@@ -300,9 +301,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * Two copies of this would be two definitions of what "deployed" means, and the one that drifted would be
    * the one nobody was reading.
    */
+  const agentForks = new AgentForkStore(join(cfg.dataDir, 'agent-forks.json'));
   const agentRuntimes = new AgentRuntimeStore(join(cfg.dataDir, 'agent-runtimes.json'));
   const agentApplyQueue = new Map<string, Promise<void>>();
   const validateRepositoryPolicy = (id: string, input: HostedAgentSpecInput) => {
+    if (agentForks.get(id)) return;
     const prior = hostedStore.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
     if ((input.visibility ?? 'public') !== (prior.visibility ?? 'public') || (input.orgId ?? null) !== (prior.orgId ?? null)) throw new Error('a repository cannot change agent visibility or organization');
@@ -349,6 +352,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
      * question `PUT /api/hosted-agents/:id` asks — a repository must not be a second, weaker door.
      */
     canPush: (req, id) => {
+      const fork = agentForks.get(id);
+      if (fork) {
+        const who = agentGitCaller(req);
+        if (!who || fork.owner !== who.subject.toLowerCase()) return false;
+        (req as Request & { agentGitPusher?: string }).agentGitPusher = who.subject;
+        return true;
+      }
       const spec = hostedStore.get(id);
       if (!spec) return false;
       const who = agentGitCaller(req);
@@ -357,6 +367,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return canManageHostedAgent(spec, who);
     },
     canRead: (req, id) => {
+      const fork = agentForks.get(id);
+      if (fork) return fork.owner === agentGitCaller(req)?.subject.toLowerCase();
       const spec = hostedStore.get(id);
       return !!spec && canSeeHostedAgent(spec, agentGitCaller(req));
     },
@@ -364,9 +376,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // whose push just bounced, instead of letting the two copies diverge.
     mirrorOf: (id) => { const p = projectStore.forAgent(id); const m = agentMirrors.get(id); return p ? { url: p.repo } : m ? { url: m.url } : null; },
     validate: validateRepositoryPolicy,
-    apply: (id, input, commit, by) => applyPushedTree(id, input, commit, by),
+    apply: (id, input, commit, by) => agentForks.get(id) ? Promise.resolve() : applyPushedTree(id, input, commit, by),
     log: (level, message) => market.log(level, 'agents', message),
   });
+  for (const fork of agentForks.list()) if (agentGit.exists(fork.id)) agentGitHttp.installHooks(fork.id);
   app.use(agentGitHttp.router());
 
   app.use('/p2p/models', express.json({ limit: '48mb' }));
@@ -877,6 +890,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const agentPulls = new AgentPullStore(join(hostedHome, 'agent-pulls.json'));
   app.use(agentPullRoutes({
     git: agentGit,
+    forks: agentForks,
+    initializeFork: (id) => agentGitHttp.installHooks(id),
     pulls: agentPulls,
     readOnlySource: (id) => projectStore.forAgent(id)?.repo ?? agentMirrors.get(id)?.url ?? null,
     principal: (req) => agentCaller(req)?.subject ?? null,
@@ -894,6 +909,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   app.use(agentGitRoutes({
     git: agentGit,
     canRead: (req, id) => {
+      const fork = agentForks.get(id);
+      if (fork) return fork.owner === agentCaller(req)?.subject.toLowerCase();
       const spec = hostedStore.get(id);
       return !!spec && canSeeHostedAgent(spec, agentCaller(req));
     },

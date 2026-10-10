@@ -150,6 +150,19 @@ export class AgentGit {
     await this.git(id, ['config', 'core.logAllRefUpdates', 'true']);
   }
 
+  /** An independent object store: deleting or collecting the source cannot break the fork. */
+  async fork(source: string, id: string, commit: string): Promise<void> {
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    await run('git', ['clone', '--bare', '--no-hardlinks', this.dir(source), this.dir(id)], { encoding: 'utf8' });
+    await this.setRef(id, AGENT_GIT_DEFAULT_BRANCH, commit);
+  }
+
+  /** Import only the commit explicitly proposed by an authorized fork owner, retained under an internal ref. */
+  async importProposal(id: string, source: string, commit: string, ref: string): Promise<void> {
+    await this.git(id, ['fetch', '--no-tags', '--', this.dir(source), commit]);
+    await this.git(id, ['update-ref', `refs/pull-proposals/${ref}`, commit]);
+  }
+
   async hasCommits(id: string): Promise<boolean> {
     try {
       await this.git(id, ['rev-parse', '--verify', `${AGENT_GIT_DEFAULT_BRANCH}^{commit}`]);
