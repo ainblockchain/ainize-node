@@ -3,8 +3,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync,lstatSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import type {ReviewPresentation,verifyAinmemApproval} from './hosted-qa-review.js';
-type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>>;
+import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
+type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
 export interface StoredReview {agentId:string;jobId:string;generation:number;key:string;presentation:ReviewPresentation}
 const json=(value:unknown,limit=64000)=>{const raw=JSON.stringify(value);if(Buffer.byteLength(raw)>limit)throw new Error('Review record too large');return raw;};
 const fingerprint=(p:ReviewPresentation)=>createHash('sha256').update(json([Object.entries(p.target).sort(([a],[b])=>a.localeCompare(b)),p.body,p.bodyDigest,p.revision,p.digest,p.policyDigest??null])).digest('hex');
@@ -98,6 +98,7 @@ export class HostedQaReviewStore {
    const current=this.current(expected.agentId,expected.jobId);
    if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed while checking approval');
    const p=current.presentation,t=p.target;
+   if(evidence.source==='teams'&&(!t.teamsRequest||evidence.threadId!==t.teamsRequest.rootId||evidence.requestId!==t.teamsRequest.requestId))throw new Error('Approval thread binding mismatch');
    if(evidence.jobId!==t.jobId||evidence.pageId!==t.pageId||evidence.sha!==t.sha||evidence.repository!==t.repository||evidence.number!==t.number||evidence.candidateDigest!==t.candidateDigest||evidence.presentationDigest!==p.bodyDigest||evidence.issuer!==t.issuer||evidence.orgId!==t.orgId||!(Date.parse(evidence.approvedAt)>Date.parse(p.presentedAt))||!(Date.parse(evidence.checkedAt)>=Date.parse(evidence.approvedAt)))throw new Error('Approval observation binding mismatch');
    const prior=this.db.prepare('SELECT evidence FROM review_observations WHERE agent_id=? AND job_id=? AND generation=? AND comment_id=? LIMIT 1').get(expected.agentId,expected.jobId,expected.generation,evidence.commentId);
    if(prior){

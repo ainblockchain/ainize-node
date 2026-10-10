@@ -55,3 +55,20 @@ test('an in-flight canonical check cannot record approval after another worker r
   await assert.rejects(coordinator.check('agent','job',Date.parse(later.observedAt)),/changed while checking/);
  }finally{store.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test('persisted original thread approvals require fresh SSO eligibility on every coordinator check',async t=>{
+ const {createHash}=await import('node:crypto');
+ const root=mkdtempSync(join(tmpdir(),'qa-thread-coordinator-'));const store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const clock=Date.now(),parent={id:'request',userId:'requester',content:'여백 고쳐줘.',parentId:null,createdAt:new Date(clock-60000).toISOString()};
+ const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:parent.id,requestId:parent.id,requestAuthorId:parent.userId,requestCreatedAt:parent.createdAt,requestDigest:createHash('sha256').update(parent.content).digest('hex')};
+ let active=true,registered=false,requested:string[]|undefined;
+ const replies=[{id:'approval',userId:'teams-admin',content:'LGTM',parentId:parent.id,createdAt:new Date(clock-10000).toISOString()}];
+ const readers={ainmem:async(_agent:string,_job:string,_board:string,subjects?:string[])=>{requested=subjects;return {...snapshot,observedAt:registered?new Date().toISOString():new Date(clock-30000).toISOString(),reviewers:active?[{subject:'admin'}]:[]};},github:async()=>pr,teams:()=>({call:async(name:string)=>{
+  if(name==='list_channels')return [{id:'qa'}];if(name==='list_channel_members')return [{userId:'teams-admin',isAgent:false}];if(name==='read_channel')return {messages:[parent],nextCursor:null};if(name==='read_thread')return {parent,replies};throw Error('Unexpected tool');
+ }})};
+ const coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ await coordinator.register('agent',{...target,teamsRequest},body);registered=true;
+ const approval=await coordinator.check('agent','job');assert.equal(approval?.source,'teams');assert.deepEqual(requested,['admin']);assert.equal(approval?.sha,target.sha);
+ active=false;assert.equal(await coordinator.check('agent','job'),null);
+ active=true;replies[0].content='not LGTM';assert.equal(await coordinator.check('agent','job'),null);
+});

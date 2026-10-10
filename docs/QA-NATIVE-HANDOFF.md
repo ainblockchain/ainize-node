@@ -493,3 +493,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 .41 진단: 7개 서비스 설정 모두 실제 채널의 최근 사람 원본 메시지와 스레드 읽기 성공. Ainmem 설정에서 지정 관리자 매핑의 literal 답글 1개를 관측했다. 그 답글은 검토 SHA/최초 제시 시각/현재 SSO 조직 권한에 결합하지 않았으므로 승인으로 소비하지 않았다. 진단 바인딩은 실제 QA intake의 영구 등록을 대신하지 않는다.
 - 서버 증거: `/mnt/newdata/qa-services/validation/native-thread-read-20261010-vZMOzm/run.mjs`, `result.json`. 2026-10-10 13:05 UTC 관측. 토큰·개인 ID·대화 본문은 결과 로그에 넣지 않았고, 서비스 메시지/페이지/PR/배포는 변경하지 않았다.
 - QA 타깃 테스트 90개 통과, 실패/skip 0. 빌드 통과. 다음 연결은 호스트가 검증·저장한 intake/thread 바인딩, 정확한 검토 후보 제시, 현재 SSO 조직 상태 조회, 이를 결합한 coordinator 검증이다. 원본 Teams 스레드 승인 경로는 아직 운영 활성화하지 않았다.
+
+### 2026-10-10 Teams 답글 + 현재 SSO 권한 + 검토 후보 결합
+
+- Ainmem task GET의 선택 reviewerSubjects 필터와 reviewers 응답을 추가했다(별도 `native-qa-task-api` 브랜치). 실제 댓글 유무와 무관하게 요청된 subject들의 현재 사람 계정/SSO 로그인/활성 조직·workspace/계정 정지/이전 보류를 검사한다. Ainmem 댓글 승인은 기존 페이지 comment 권한 검사도 그대로 유지한다.
+- `verifyTeamsApproval`은 변경되지 않은 정본 Ainmem 검토 카드와 exact PR/head/base/digest, 원본 Teams 요청 바인딩, 최신 스레드·채널 멤버십, 현재 SSO 적격 subject, 제시 이후 literal 답글을 결합한다. 오래되거나 누락된 SSO 응답, 다른 스레드, 이전 SHA/시각, 권한 취소는 통과하지 않는다. Teams comment ID를 별도 namespace로 저장해 Ainmem 댓글 ID와 충돌하지 않게 했다.
+- host coordinator의 register/check에 선택 `ReviewTarget.teamsRequest`를 연결했다. 원본 요청을 등록 때와 매번 승인 검사 때 실제 Teams에서 재검증한다. 최신 SSO 조회는 Teams 조회 후 수행한다. host ledger도 Teams 승인 증거의 원본 thread/request를 확인한다. 서버 reader는 운영 정책의 지정 subject만 Ainmem에 전달한다.
+- 아직 publication/intake 경로는 teamsRequest를 등록하지 않는다. 모델/승인 메시지에서 이 바인딩을 받아 채우면 안 된다. 다음 작업은 호스트가 실제 QA 접수 원본을 확인해 영구 저장하고 publication/review에 연결하는 것이다. 현재 운영은 기존 Ainmem 승인 경로를 유지하며 새 경로는 비활성이다.
+- QA 타깃 테스트 93개 통과, skip 0, 빌드 통과. Ainmem은 실제 서버 PostgreSQL+HTTP 테스트 7개와 타입 검사 통과. 운영 배포·실제 사람 승인 소비·main 변경은 수행하지 않았다.

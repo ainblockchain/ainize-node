@@ -1,12 +1,15 @@
 /** Host-side review checks. Inputs come from canonical adapters, never model metadata. No merge capability. */
 import {createHash} from 'node:crypto';
+import type {QaTeamsThreadBinding,readQaTeamsThread} from './hosted-qa-teams-thread.js';
 export interface ReviewTarget {
+ teamsRequest?:QaTeamsThreadBinding;
  jobId:string;repository:string;branch:string;base:string;sha:string;number:number;candidateDigest:string;
  pageId:string;databaseId:string;workspaceId:string;teamsWorkspaceId:string;channelId:string;issuer:string;orgId:string;
 }
 export interface ReviewSnapshot {
  jobId:string;databaseId:string;pageId:string;workspaceId:string;issuer:string;orgId:string;
  body:string;revision:number;digest:string;observedAt:string;truncated:boolean;approvalGranted:false;
+ reviewers?:{subject:string}[];
  comments:{id:string;body:string;createdAt:string;authorId:string;subject:string}[];
 }
 export interface ReviewPresentation {target:ReviewTarget;body:string;bodyDigest:string;revision:number;digest:string;presentedAt:string;policyDigest?:string}
@@ -51,12 +54,30 @@ export function verifyAinmemApproval(presentation:ReviewPresentation,policy:Revi
 export function ainmemReviewReader(origin:string,token:string,fetcher:typeof fetch=fetch){
  const url=new URL(origin);
  if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw new Error('Invalid Ainmem origin');
- return async(jobId:string,databaseId:string):Promise<ReviewSnapshot>=>{
+ return async(jobId:string,databaseId:string,reviewerSubjects?:string[]):Promise<ReviewSnapshot>=>{
   if(!/^[-\w]{1,80}$/.test(jobId)||!/^[a-f0-9-]{36}$/i.test(databaseId))throw new Error('Invalid task locator');
+  let query='';
+  if(reviewerSubjects!==undefined){
+   if(!Array.isArray(reviewerSubjects)||reviewerSubjects.length>100||reviewerSubjects.some(s=>typeof s!=='string'||!s||s.length>256||/[\r\n]/.test(s))||new Set(reviewerSubjects).size!==reviewerSubjects.length||JSON.stringify(reviewerSubjects).length>16000)throw new Error('Invalid reviewer subject filter');
+   query='&reviewerSubjects='+encodeURIComponent(JSON.stringify(reviewerSubjects));
+  }
   let response:Response;
-  try{response=await fetcher(`${url.origin}/api/qa/tasks/${encodeURIComponent(jobId)}?databaseId=${encodeURIComponent(databaseId)}`,{headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(10000)});}catch{throw new Error('Ainmem review read failed');}
+  try{response=await fetcher(`${url.origin}/api/qa/tasks/${encodeURIComponent(jobId)}?databaseId=${encodeURIComponent(databaseId)}${query}`,{headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(10000)});}catch{throw new Error('Ainmem review read failed');}
   if(!response.ok)throw new Error('Ainmem review read refused');
   const raw=await response.text();if(Buffer.byteLength(raw)>512000)throw new Error('Ainmem review response too large');
   try{return JSON.parse(raw);}catch{throw new Error('Invalid Ainmem review response');}
  };
+}
+
+/** Combine canonical Teams replies with current SSO eligibility and the exact Ainmem review. */
+export function verifyTeamsApproval(presentation:ReviewPresentation,original:QaTeamsThreadBinding,policy:ReviewPolicy,snapshot:ReviewSnapshot,pr:unknown,thread:Awaited<ReturnType<typeof readQaTeamsThread>>,now=Date.now()) {
+ // Validate the review even when no eligible Teams reply exists.
+ verifyAinmemApproval(presentation,policy,{...snapshot,comments:[]},pr,thread.members,now);
+ if(thread.source!=='teams'||thread.approvalGranted!==false||original.workspaceId!==policy.teamsWorkspaceId||original.channelId!==policy.channelId||Object.keys(original).some(k=>original[k as keyof QaTeamsThreadBinding]!==thread.binding[k as keyof QaTeamsThreadBinding]))throw new Error('Original Teams request binding changed');
+ if(!Number.isFinite(time(thread.observedAt))||time(thread.observedAt)>time(snapshot.observedAt)||now-time(thread.observedAt)>60000||time(thread.observedAt)<time(presentation.presentedAt))throw new Error('Stale Teams approval observation');
+ if(!Array.isArray(snapshot.reviewers)||snapshot.reviewers.length>100||snapshot.reviewers.some(r=>!r||typeof r.subject!=='string'||!r.subject)||new Set(snapshot.reviewers.map(r=>r.subject)).size!==snapshot.reviewers.length)throw new Error('Current SSO reviewer evidence required');
+ const active=new Set(snapshot.reviewers.map(r=>r.subject));
+ const comments=thread.comments.filter(c=>active.has(c.subject)&&time(c.createdAt)<=time(thread.observedAt));
+ const decision=verifyAinmemApproval(presentation,policy,{...snapshot,comments},pr,thread.members,now);
+ return decision?{...decision,source:'teams' as const,commentId:`teams:${original.rootId}:${decision.commentId}`,threadId:original.rootId,requestId:original.requestId}:null;
 }

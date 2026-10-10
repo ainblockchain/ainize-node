@@ -1,11 +1,12 @@
 import {createHash} from 'node:crypto';
+import {readQaTeamsThread} from './hosted-qa-teams-thread.js';
 /** Host-owned orchestration; no gateway route accepts reviewer identities or approval verdicts. */
-import {captureReview,verifyAinmemApproval,type ReviewTarget,type ReviewSnapshot,type ReviewPolicy} from './hosted-qa-review.js';
+import {captureReview,verifyAinmemApproval,verifyTeamsApproval,type ReviewTarget,type ReviewSnapshot,type ReviewPolicy} from './hosted-qa-review.js';
 import {readTeamsReviewMembers,type TeamsReviewMcp} from './hosted-qa-teams-review.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
 export interface HostedReviewProfile {repository:string;branch:string;databaseId:string;policy:ReviewPolicy;identities:Record<string,string>}
 export interface HostedReviewReaders {
- ainmem(agentId:string,jobId:string,databaseId:string):Promise<ReviewSnapshot>;
+ ainmem(agentId:string,jobId:string,databaseId:string,reviewerSubjects?:string[]):Promise<ReviewSnapshot>;
  github(repository:string,number:number):Promise<unknown>;
  teams(agentId:string):TeamsReviewMcp;
 }
@@ -24,6 +25,7 @@ export class HostedQaReviewCoordinator {
  /** Caller supplies the host's published candidate and exact report body, never model-provided authority. */
  async register(agentId:string,raw:ReviewTarget,body:string){
   const target=structuredClone(raw);this.checkTarget(agentId,target);
+  if(target.teamsRequest){const p=this.profile(agentId);await readQaTeamsThread(this.readers.teams(agentId),target.teamsRequest,p.policy,p.identities);}
   const generation=this.store.current(agentId,target.jobId)?.generation??0;
   const snapshot=await this.readers.ainmem(agentId,target.jobId,target.databaseId);
   return this.store.bind(agentId,{...captureReview(target,snapshot,body),policyDigest:policyDigest(this.profile(agentId))},generation);
@@ -34,8 +36,10 @@ export class HostedQaReviewCoordinator {
   if(current.presentation.policyDigest!==policyDigest(p))throw new Error('Administrator policy changed; present review again');
   // Fresh external reads on every call, including after a previously positive observation.
   const [pr,members]=await Promise.all([this.readers.github(t.repository,t.number),readTeamsReviewMembers(this.readers.teams(agentId),p.policy,p.identities)]);
-  const snapshot=await this.readers.ainmem(agentId,jobId,t.databaseId);
-  const decision=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now);
+  const thread=t.teamsRequest?await readQaTeamsThread(this.readers.teams(agentId),t.teamsRequest,p.policy,p.identities):null;
+  const snapshot=await this.readers.ainmem(agentId,jobId,t.databaseId,thread?p.policy.approverSubjects:undefined);
+  const decision=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now)
+   ??(thread&&t.teamsRequest?verifyTeamsApproval(current.presentation,t.teamsRequest,p.policy,snapshot,pr,thread,now):null);
   if(!decision)return null;
   return this.store.observe(current,decision);
  }

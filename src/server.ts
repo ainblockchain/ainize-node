@@ -401,7 +401,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       const profiles=JSON.parse(readFileSync(reviewPath,'utf8')) as Record<string,Profile>;
       const ainmem=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,ainmemReviewReader(p.ainmemOrigin,readQaToken(p.ainmemTokenFile))]));
       const teams=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,teamsReviewClient(p.teamsOrigin,readQaToken(p.teamsTokenFile))]));
-      const readers:HostedReviewReaders={ainmem:(id,job,board)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
+      const readers:HostedReviewReaders={ainmem:(id,job,board,subjects)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board,subjects);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
       qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
       const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
       let release:HostedQaRelease|undefined;

@@ -42,3 +42,27 @@ test('review capture snapshots caller targets and reader confines credentials to
  assert.equal((await reader('job-1','11111111-1111-4111-8111-111111111111')).body,body);
  await assert.rejects(reader('../other','invalid'),/locator/);
 });
+
+test('Teams approval requires current SSO evidence plus original thread and unchanged candidate',async()=>{
+ const {verifyTeamsApproval}=await import('../src/hosted-qa-review.js');
+ const original={workspaceId:target.teamsWorkspaceId,channelId:target.channelId,rootId:'root',requestId:'root',requestAuthorId:'requester',requestCreatedAt:'2026-10-09T00:00:00Z',requestDigest:'1'.repeat(64)};
+ const thread={source:'teams' as const,binding:original,observedAt:'2026-10-10T00:00:19Z',comments:[comment],members,approvalGranted:false as const};
+ const snapshot={...latest,comments:[],reviewers:[{subject:'admin-subject'}]};
+ const result=verifyTeamsApproval(presentation,original,policy,snapshot,pr,thread,now);
+ assert.equal(result?.source,'teams');assert.equal(result?.commentId,'teams:root:comment-1');assert.equal(result?.sha,target.sha);
+ assert.equal(verifyTeamsApproval(presentation,original,policy,{...snapshot,reviewers:[]},pr,thread,now),null);
+ assert.throws(()=>verifyTeamsApproval(presentation,original,policy,latest,pr,thread,now),/SSO/);
+ assert.throws(()=>verifyTeamsApproval(presentation,original,policy,snapshot,pr,{...thread,binding:{...original,rootId:'foreign'}},now),/binding/);
+ assert.equal(verifyTeamsApproval(presentation,original,policy,snapshot,pr,{...thread,members:[]},now),null);
+ assert.equal(verifyTeamsApproval(presentation,original,policy,snapshot,pr,{...thread,comments:[{...comment,createdAt:initial.observedAt}]},now),null);
+ assert.throws(()=>verifyTeamsApproval(presentation,original,policy,snapshot,{...pr,state:'closed'},thread,now),/PR changed/);
+ assert.throws(()=>verifyTeamsApproval(presentation,original,policy,snapshot,pr,{...thread,observedAt:'2026-10-09T00:00:00Z'},now),/Stale/);
+});
+
+test('Ainmem reader bounds reviewer filters and encodes them independently of the task locator',async()=>{
+ const reader=ainmemReviewReader('https://ainmem.example','secret',async(url)=>{
+  const parsed=new URL(String(url));assert.deepEqual(JSON.parse(parsed.searchParams.get('reviewerSubjects')!),['subject &?#']);return new Response(JSON.stringify(latest));
+ });
+ await reader('job','11111111-1111-4111-8111-111111111111',['subject &?#']);
+ await assert.rejects(reader('job','11111111-1111-4111-8111-111111111111',['duplicate','duplicate']),/filter/);
+});
