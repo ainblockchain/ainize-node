@@ -2,18 +2,42 @@
 
 작성일: 2026-10-05. 대상 저장소: `ainblockchain/ainize-node`, 브랜치: `hosted-qa-execution`.
 
-## 최신 리뷰 요약 — 2026-10-10
+## 최신 리뷰 요약 — 2026-10-11
 
-아래 초기 인수인계와 날짜별 기록은 당시 상태다. 현재 코드는 네이티브 handler, 제품 검증, 후보 PR 게시, Ainmem 정본 승인 확인, 승인된 커밋 반영, 서비스 실행 revision 확인까지 연결했다. **운영 전환과 전 서비스 실제 E2E는 여전히 미완료**다.
+**운영 전환과 전 서비스 실제 E2E는 미완료다.** 아래 날짜별 기록은 당시 결과이며,
+새 코드가 push되었다고 운영 서비스에 반영된 것은 아니다.
 
-이번 리뷰에서 배포 관측 결과가 handler의 작업 DB와 Ainmem 페이지로 돌아오지 않는 누락을 보완했다. `hostReview: true`를 설정한 handler는 호스트의 읽기 전용 `/qa/status`를 조회한다. 에이전트 토큰으로 조회 범위를 제한하고 원본 코드·승인자 정보·자격증명은 반환하지 않는다. 작업/저장소/base/후보 SHA/digest가 모두 일치해야 진행하며, 호스트 검토 대상이 달라지면 완료 처리를 거부한다.
+- Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
+  승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
+  재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
+- QA 회귀 151개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
+  그 이후 공통 QA 변경에는 QA 회귀와 build를 실행했으며 전체 API suite 수치를
+  새 head 전체 검증으로 확대해 해석하지 않는다.
+- .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
+  테스트 코드 수정과 격리 실행 검증을 통과했다. 각각 제품/모델 진단이며 실서비스
+  채널→수정→PR→관리자 승인→배포 전체 흐름의 증거는 아니다.
+- Teams main 0e6dfedd: typecheck/lint 통과, production build와 화면 4개 검사 통과.
+  전체 unit gate는 DNS/Git 메타데이터/thumbnail fixture 문제로 실패 기록이 남아 있다.
+- Ainspace main 348b319: 201 tests 통과, lint 오류 0/경고 36. Google Fonts 다운로드
+  의존으로 network=none build 실패. 네이티브 qa-ainspace를 통한 제품 수정이 필요하다.
+- 현재 운영 이력 23건을 6개 격리 저장소에 이관 시험했다. Ainize web/API 5건은 같은
+  저장소에 route를 유지해 가져왔다. 중복 0, 원본 변경 0, 자동 실행 가능 작업 0.
+  운영 이관·활성화는 하지 않았다.
 
-- 승인 대기 작업은 별도 lease로 순환 조회한다. 새 수정 요청은 계속 처리하며, lease 만료로 승인 대기 작업의 코딩을 다시 실행하지 않는다.
-- 커밋 반영 후 `awaiting_deployment`, 실제 서비스 실행 커밋 확인 후에만 `completed / deployed`가 된다. Ainmem에는 배포 확인 상태와 실행 SHA를 반영한다.
-- 실행 revision 확인은 UI 회귀 검증을 대신하지 않으며 `featureRegressionVerified: false`를 유지한다.
-- 관련 QA 테스트 **86개 통과, 실패/skip 0**, 타입 검사와 빌드 통과. 실제 HTTP gateway의 토큰 범위, 후보 불일치 거부, lease 만료·순환 처리, 자동 tick 및 Ainmem 보고 데이터를 포함한다. 전체 저장소 테스트 또는 실제 운영 배포 성공을 뜻하지 않는다.
+### 운영 연결에 필요한 다음 조치
 
-다음 우선순위는 원본 Teams 스레드의 관리자 승인 연결, Ainmem API/네이티브 호스트 배포 준비, 실행 SHA를 제공하지 않는 제품의 배포 관측, 기존 작업과 ID를 보존하는 단일 작업기 전환이다. 실제 관리자 승인과 전 서비스 요청→수정→검증→배포 E2E가 완료될 때까지 기존 운영 상태와 구별해 보고한다. 이번 변경으로 main 병합이나 운영 전환을 수행하지 않았다.
+1. 승인 대기: Ainize PR71 (`403860f`) 조직 참조 수정과 Ainmem PR76 (`971a776`)
+   scoped 등록 API·기존 페이지 채택·통합 보드 반영. 두 PR 병합·배포와 Ainmem 전용
+   DB 변경 승인을 요청했으나 아직 답변이 없다. 다른 PR에 대한 과거 승인을 재사용하지 않는다.
+2. .41의 ACL 도구 설치. 기존 user 서비스와 자동 배포 timer는 active지만 acl 미설치.
+   진단은 추출된 도구를 별도 PATH로 사용했다. 운영 설치 시도는 Vault Locked로 중단됐다.
+3. 실제 SSO로 에이전트 등록·토큰 전달 및 기존 23개 page 권한 연결. 현재 쓰는 Python
+   작업기와 같은 채널에 native writer를 중복 활성화하지 않는다.
+4. Main 변경 시 새 base에서 후보를 자동 재작성하는 경로, 기존 미완료 작업의 native
+   재개, 제품별 검사 실패 해결, 전 채널 실제 수정→승인→배포 검증을 완료한다.
+
+운영 브랜치 병합·배포·작업기 전환은 별도 승인/실행 결과로 확인한다. 아래 초기
+인수인계와 날짜별 세부 로그에는 이미 해결한 항목도 있으므로 이 요약을 먼저 읽는다.
 
 ## 1. 현재 상태
 
@@ -1106,3 +1130,15 @@ native qa-ainspace 전환 후 실제 제품 수정 요청으로 해결할 항목
 관리해줘. lint·201개 기존 테스트·배포용 빌드와 실제 화면을 검증해줘.”
 제품 코드는 여기서 대신 수정하지 않았고 기존 Python 작업기에 중복 접수하지 않았다.
 선행 운영 전환 승인 후 같은 채널→native agent 흐름에서 다룰 재현 가능한 실패다.
+
+### 현재 운영 23건의 공유 저장소 이관 재시험 — 2026-10-11
+
+최신 importer/jobs/checkpoints 코드로 7개 운영 설정의 SQLite를 read-only로 읽어
+6개 격리 DB로 가져왔다. Teams11/AINA2/Drive2/Ainizeweb2/API3/Ainmem2/Space1.
+Ainize web/API는 같은 jobs DB에 넣고 각각 web/api route를 보존했다.
+첫 실행 23 imported, 즉시 재실행 23 unchanged, 모든 대상 claimable=false.
+원본 jobs/reports 조회 digest를 전후 대조해 7개 모두 sourceUnchanged=true였다.
+실제 이력은 private checkpoint에 있고 Git에는 요약만 남긴다.
+
+증거: /mnt/newdata/qa-services/validation/native-import-current-20261011-KvcFd8/summary.json.
+기존 writer/agent/page/승인을 변경하지 않았으며 운영 cutover는 아니다.
