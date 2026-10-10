@@ -18,6 +18,27 @@ and `apiKey` already set. Everything after that line is OpenAI's — its methods
 
 Already hold a key? `connectAinize(url, { apiKey: 'ainize-sk-…' })` skips the signing.
 
+## Decision models (Cloudflare Clef)
+
+A decision model takes a `state` (any JSON) and typed `questions` and answers each with a probability; OpenAI's
+client has no method for it, so the client `connectAinize()` returns is `OpenAI` plus exactly one: `decide()`.
+
+```ts
+const out = await client.decide({
+  model: 'clef-flash',                 // or 'clef' (27B)
+  state: 'The payment webhook is failing and customers cannot check out.',
+  questions: {
+    outage:   { type: 'noul',   instructions: 'Is a service down?' },
+    severity: { type: 'score',  instructions: 'How severe is it?', criteria: ['low', 'medium', 'high'] },
+    team:     { type: 'choice', instructions: 'Who should handle this?', criteria: { billing: 'Payments or invoices', technical: 'Bugs or outages' } },
+  },
+  debug: { prompt: true },             // optional: out.debug.prompt is the exact prompt the model saw
+});
+out.answers.outage.noul;               // P(true)
+```
+
+A refusal throws `DecideError` with the node's `status`, `code` and `body`.
+
 ## What you pay with
 
 A deposit, not a per-token charge. Send AIN or sAIN to the node; the operator holds it staked, and your share of

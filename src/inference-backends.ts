@@ -10,7 +10,7 @@
  * still see it, rather than at the request that happens to arrive first.
  */
 
-export type InferenceModality = 'chat' | 'transcription' | 'image';
+export type InferenceModality = 'chat' | 'transcription' | 'image' | 'decision';
 
 export interface InferenceBackend {
   id: string;

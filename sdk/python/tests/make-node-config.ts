@@ -21,6 +21,10 @@ cfg.publicUrl = `http://127.0.0.1:${port}`;
 cfg.runtime = { api: upstream, hookApi: upstream };
 cfg.gossipIntervalMs = 3_600_000;
 cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 3_600_000, auto: false };
-cfg.backends = [{ id: 'llm', modality: 'chat', upstream, models: ['qwen3.8-flash-next'] }];
+cfg.backends = [
+  { id: 'llm', modality: 'chat', upstream, models: ['qwen3.8-flash-next'] },
+  // the same stub answers /v1/systemone, so `client.decide()` is tested over the node's real wire too
+  { id: 'clef', modality: 'decision', upstream, models: ['clef-flash'] },
+];
 saveConfig(cfg, home);
 console.log(`wrote ${home}/config.json`);

@@ -28,6 +28,49 @@ const MODEL = 'Docker-Chat-1';
 const OWNER = '0x00000000000000000000000000000000000a11ce';
 const hasDocker = await hostedAgentDockerAvailable();
 
+/**
+ * This integration test needs more than a docker daemon: a container on an `--internal` network must be able to
+ * reach the host gateway (that is the one route out of the sandbox, and how the agent calls the model). On a host
+ * whose docker iptables rules have been flushed or disrupted that path silently drops — the agent's call then
+ * fails with "fetch failed" and the test fails for a reason that has nothing to do with the code under test. So,
+ * exactly like `!hasDocker`, verify the precondition up front and skip when the environment cannot provide it:
+ * stand up a throwaway listener on the host and check a container can reach it across the internal network.
+ */
+async function dockerInternalNetReachesHost(): Promise<boolean> {
+  if (!hasDocker) return false;
+  // On a CI host whose firewall admits only one bridge port, probe that network and port (deploy/README.md).
+  const net = process.env.AINIZE_CI_DOCKER_NETWORK || 'ainize-hosted-agents';
+  const fixedPort = process.env.AINIZE_CI_DOCKER_NETWORK ? Number(process.env.AINIZE_CI_DOCKER_GATEWAY_PORT) : 0;
+  try {
+    if (!process.env.AINIZE_CI_DOCKER_NETWORK) await hostedAgentDockerExec(['network', 'create', '--internal', '--label', 'ainize.hosted-agents=1', net]).catch(() => undefined);
+    const gw = (await hostedAgentDockerExec(['network', 'inspect', net, '--format', '{{(index .IPAM.Config 0).Gateway}}'])).stdout.trim();
+    if (!gw) return false;
+    const probe = createServer((_q, s) => s.end('ok'));
+    // The fixed port may be held by another test's gateway for a while; wait for it rather than skip.
+    const until = Date.now() + 600_000;
+    for (;;) {
+      try { await new Promise<void>((r, j) => { probe.once('error', j); probe.listen(fixedPort, '0.0.0.0', () => r()); }); break; }
+      catch (e) { if ((e as { code?: string }).code !== 'EADDRINUSE' || Date.now() > until) throw e; await new Promise((r) => setTimeout(r, 1000)); }
+    }
+    const port = (probe.address() as AddressInfo).port;
+    try {
+      const r = await hostedAgentDockerExec(['run', '--rm', '--network', net, 'alpine:latest', 'sh', '-c', `wget -q -T 4 -O - http://${gw}:${port}/ || echo UNREACHABLE`], 30_000);
+      return /ok/.test(r.stdout) && !/UNREACHABLE/.test(r.stdout);
+    } finally {
+      probe.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+const dockerNetReachesHost = await dockerInternalNetReachesHost();
+const dockerAgentSkip = !hasDocker
+  ? 'no docker daemon'
+  : !dockerNetReachesHost
+    ? 'docker internal network cannot reach the host gateway in this environment (host iptables routing unavailable)'
+    : false;
+
 const HANDLER = `
 export default {
   async execute(input, ctx) {
@@ -43,7 +86,7 @@ export default {
 };
 `;
 
-test('a handler agent builds, starts on demand in Docker, answers over A2A through the node, and stops when idle', { skip: !hasDocker && 'no docker daemon', timeout: 900_000 }, async () => {
+test('a handler agent builds, starts on demand in Docker, answers over A2A through the node, and stops when idle', { skip: dockerAgentSkip, timeout: 900_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hosted-docker-'));
   const configuredNetwork = process.env.AINIZE_CI_DOCKER_NETWORK;
   const network = configuredNetwork || `ainize-hosted-test-${process.pid}`;

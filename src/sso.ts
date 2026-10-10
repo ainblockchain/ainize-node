@@ -40,6 +40,20 @@ export interface SsoConfig {
   /** The adapter base URL registered at AIN SSO (public, e.g. `https://ainize.ai/api/sso/adapter`); null = adapter off. */
   adapterUrl: string | null;
   jwksUri: string;
+  /**
+   * This application's client secret at AIN SSO (`client_secret_basic`) — only for what the node does AS ITSELF:
+   * machine tokens (`client_credentials`, src/sso-service-token.ts) that let it clone project repositories from
+   * aindrive. Null = no machine identity (projects need a pasted deploy token). Nothing about sign-in needs it.
+   */
+  clientSecret: string | null;
+  /**
+   * First-party AIN applications whose MACHINE tokens this node accepts (`AIN_SSO_SERVICE_APPS`, comma-separated
+   * client_ids; e.g. `aindrive`): an OAuth 2.0 client_credentials JWT with `aud` = this node's public URL and
+   * `sub` = `azp` = a listed client_id (`verifyServiceToken`). Empty = no machine token is accepted. Two doors:
+   * `POST /api/projects/auto` (docs/PROJECTS.md), where aindrive binds a pushed repo to a project, and `POST /api/run`,
+   * where aindrive runs a script FOR the person named in `X-AIN-Actor` (run-actor.ts).
+   */
+  serviceApps: string[];
 }
 
 const isLoopback = (host: string) => host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
@@ -64,7 +78,9 @@ export function readSsoConfig(env: NodeJS.ProcessEnv = process.env): SsoConfig |
     try { new URL(adapterUrl); } catch { console.error('[sso] AIN_SSO_ADAPTER_URL is not a URL — AIN SSO stays off'); return null; }
   }
   const jwksUri = env.AIN_SSO_JWKS_URI?.trim() || new URL('oidc/jwks', issuer.endsWith('/') ? issuer : `${issuer}/`).href;
-  return { issuer, clientId, adapterUrl, jwksUri };
+  const clientSecret = env.AIN_SSO_CLIENT_SECRET?.trim() || null;
+  const serviceApps = (env.AIN_SSO_SERVICE_APPS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return { issuer, clientId, adapterUrl, jwksUri, clientSecret, serviceApps };
 }
 
 // ------------------------------------------------------------------------------------------------ errors and principals
@@ -141,6 +157,41 @@ export function resolveJwks(source: JwksSource): JWTVerifyGetKey {
 
 export const bodyHash = (body: Uint8Array | string | null | undefined) => createHash('sha256').update(body ?? '').digest('base64url');
 const htuOf = (url: string) => { const u = new URL(url); u.search = ''; u.hash = ''; return u.href; };
+
+export const SERVICE_TOKEN_TYPE = 'at+jwt';
+
+/** A first-party AIN application acting as itself (AIN SSO architecture §4.9): who, and which organizations it is assigned in. */
+export interface ServicePrincipal { clientId: string; orgs: string[] }
+
+/**
+ * Machine-token verification: `Authorization: Bearer <at+jwt>` signed with a key from the AIN SSO JWKS, `iss`, `aud` =
+ * this node's public URL (the resource the application asked AIN SSO for), unexpired, and `sub` = `azp` = `client_id` =
+ * an application in `serviceApps`. Nothing about an account: the token stands for the application. Throws SsoError
+ * 401 `invalid_token` / `missing_token`; a token for another audience or an unlisted application is refused, never
+ * downgraded.
+ */
+export async function verifyServiceToken(authorization: string | undefined, opts: { issuer: string; audience: string; jwks: JwksSource; serviceApps: readonly string[]; now?: () => Date }): Promise<ServicePrincipal> {
+  const m = authorization ? /^Bearer[ ]+([A-Za-z0-9._~+/=-]+)$/i.exec(authorization.trim()) : null;
+  if (!m) throw new SsoError('missing_token', 401, 'Bearer token required.', false);
+  if (opts.serviceApps.length === 0) throw new SsoError('invalid_token', 401, 'This node accepts no machine tokens (AIN_SSO_SERVICE_APPS unset).', false);
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(m[1]!, resolveJwks(opts.jwks), {
+      issuer: opts.issuer, audience: opts.audience, typ: SERVICE_TOKEN_TYPE, algorithms: SSO_ALGORITHMS, clockTolerance: CLOCK_TOLERANCE_S,
+      currentDate: opts.now?.(), requiredClaims: ['sub', 'exp', 'iat'],
+    }));
+  } catch (e) {
+    if (e instanceof joseErrors.JWKSNoMatchingKey || e instanceof joseErrors.JWKSTimeout) throw new SsoError('temporarily_unavailable', 503, 'The AIN SSO signing keys could not be read.', true);
+    throw new SsoError('invalid_token', 401, `The machine token did not verify: ${(e as Error).message}`, false);
+  }
+  const sub = typeof payload.sub === 'string' ? payload.sub : '';
+  const azp = typeof payload.azp === 'string' ? payload.azp : sub;
+  const clientId = typeof payload.client_id === 'string' ? payload.client_id : sub;
+  if (!sub || azp !== sub || clientId !== sub) throw new SsoError('invalid_token', 401, 'Not a machine token (sub, azp and client_id must name one application).', false);
+  if (!opts.serviceApps.includes(sub)) throw new SsoError('invalid_token', 401, `Application "${sub}" is not allowed to act as itself on this node.`, false);
+  const orgs = Array.isArray(payload.orgs) ? payload.orgs.filter((o): o is string => typeof o === 'string' && o.length > 0) : [];
+  return { clientId: sub, orgs };
+}
 
 export interface AdapterTokenClaims extends JWTPayload { iss: string; iat: number; exp: number; jti: string; htm: string; htu: string; bsh: string }
 
@@ -377,6 +428,26 @@ export class SsoService {
       this.deps.log('info', `ain-sso: ${ident.principal} signed in${created ? ' (first time)' : ''}${linked ? `, linked to ${linked}` : ''}`,
         { actor: 'ain-sso', sub: input.sub, principal: ident.principal, linked });
       return { status: 'ok', token, principal: ident.principal, expiresAt: Date.now() + SSO_SESSION_TTL_MS, created, linked } as const;
+    });
+  }
+
+  /**
+   * The principal behind an SSO subject a trusted application names (run-actor.ts: aindrive's `X-AIN-Actor`),
+   * created just in time exactly as an automatic first sign-in creates it — `sso:<sub>`, proof `sso_login`, no
+   * session. A suspended account is refused as it is at sign-in. No legacy linking happens here: that needs the
+   * person's own proof, in the browser.
+   */
+  resolveActor(sub: string): { principal: string; created: boolean } {
+    const cfg = this.requireConfig();
+    if (!SUBJECT.test(sub)) throw new SsoError('invalid_request', 400, 'The subject is not usable here.', false);
+    const store = this.deps.store;
+    return store.transaction(() => {
+      const ident = store.ssoIdentity(cfg.issuer, sub);
+      if (ident && this.isBlocked(cfg.issuer, sub)) throw new SsoError('account_suspended', 403, 'This account is suspended.', false);
+      if (ident) return { principal: ident.principal, created: false };
+      store.insertSsoIdentity({ issuer: cfg.issuer, subject: sub, principal: ssoPrincipal(sub), linkProof: 'sso_login' });
+      this.deps.log('info', `ain-sso: ${ssoPrincipal(sub)} created just in time for a run`, { actor: 'ain-sso', sub, principal: ssoPrincipal(sub) });
+      return { principal: ssoPrincipal(sub), created: true };
     });
   }
 

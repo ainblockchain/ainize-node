@@ -10,7 +10,7 @@
  *   • ADVERTISE — `peerModelAdvertsOf` is what `selfInfo()` gossips: each backend's modality and model ids. Never
  *     the upstream URL: that is the provider's private address, and the whole point of routing through the node
  *     is that nobody needs it. Older peers store the field with the rest of the hello and ignore it.
- *   • PROVIDE — `peerModelRoutes` mounts `POST /p2p/models/{transcription|image}` on the node that has the
+ *   • PROVIDE — `peerModelRoutes` mounts `POST /p2p/models/{transcription|image|decision}` on the node that has the
  *     model. The caller signs with its NODE key (`p2p-model:<provider>/<modality>:<ts>`), so the provider knows
  *     which node is asking, charges the call to that address in its own per-GPU gate, and can refuse a node that
  *     is flooding it. A signature bound to the provider and the modality cannot be replayed against another.
@@ -28,10 +28,10 @@ import { ModalityGate, ModalityGateClosedError } from './modality-gate.js';
 
 /** The modalities a hosted agent may borrow from another node (by kind: any model of it will do). */
 export type PeerModelModality = Exclude<InferenceModality, 'chat'>;
-export const PEER_MODEL_MODALITIES: readonly PeerModelModality[] = ['transcription', 'image'];
+export const PEER_MODEL_MODALITIES: readonly PeerModelModality[] = ['transcription', 'image', 'decision'];
 /** Everything one node may run for another; chat is routed by model id, the others by kind. */
 export type PeerModelKind = InferenceModality;
-const PEER_MODEL_KINDS: readonly PeerModelKind[] = ['chat', 'transcription', 'image'];
+const PEER_MODEL_KINDS: readonly PeerModelKind[] = ['chat', 'transcription', 'image', 'decision'];
 
 /** What a node gossips about one backend: what kind of model and which ids — never where it listens. */
 export interface PeerModelAdvert {
@@ -81,7 +81,7 @@ export function peerModelAdvertsFromInfo(info: PeerInfoWithModels | null | undef
   const out: PeerModelAdvert[] = [];
   for (const b of raw.slice(0, PEER_MODEL_MAX_ADVERTS) as Record<string, unknown>[]) {
     const modality = b?.modality;
-    if (modality !== 'chat' && modality !== 'transcription' && modality !== 'image') continue;
+    if (modality !== 'chat' && modality !== 'transcription' && modality !== 'image' && modality !== 'decision') continue;
     const models = Array.isArray(b.models) ? b.models.filter((m): m is string => typeof m === 'string' && !!m && m.length <= 200).slice(0, 8) : [];
     if (models.length) out.push({ modality, models });
   }
@@ -291,7 +291,7 @@ export function networkModelsRouter(deps: {
   router.get('/api/network/models', (_req: ExpressRequest, res: ExpressResponse) => {
     const node = { address: deps.self.address.toLowerCase(), name: deps.self.name };
     const data: { id: string; ref: string; modality: InferenceModality; node: { address: string; name: string | null }; local: boolean }[] = [];
-    for (const modality of ['chat', 'transcription', 'image'] as const) {
+    for (const modality of ['chat', 'transcription', 'image', 'decision'] as const) {
       for (const b of deps.registry()?.backendsFor(modality) ?? []) for (const id of b.models) data.push({ id, ref: nodeModelRef(id, node.address), modality, node, local: true });
     }
     const now = Date.now();
@@ -315,7 +315,7 @@ export function networkModelsRouter(deps: {
   return router;
 }
 
-/** The provider side: `POST /p2p/models/transcription` and `POST /p2p/models/image`. */
+/** The provider side: `POST /p2p/models/{transcription|image|decision}`. */
 export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
   const router = Router();
   const calls = new Map<string, number[]>();
@@ -357,7 +357,7 @@ export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
           if (!up.ok || typeof out?.text !== 'string') throw new PeerModelCallError(`the transcription backend answered ${up.status}`, 502);
           return { text: out.text, model: backend.models[0] };
         };
-      } else {
+      } else if (modality === 'image') {
         if (typeof body.prompt !== 'string' || !body.prompt.trim()) return peerModelError(res, 400, 'invalid_request', 'prompt is required');
         if (body.size !== undefined && (typeof body.size !== 'string' || !/^\d{3,4}x\d{3,4}$/.test(body.size))) return peerModelError(res, 400, 'invalid_request', 'size must look like 1024x1024');
         const steps = typeof body.steps === 'number' && Number.isInteger(body.steps) ? Math.min(Math.max(body.steps, 1), PEER_MODEL_IMAGE_MAX_STEPS) : undefined;
@@ -377,6 +377,21 @@ export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
           if (!up.ok || typeof b64 !== 'string') throw new PeerModelCallError(`the image backend answered ${up.status}`, 502);
           return { data: [{ b64_json: b64 }], model: backend.models[0] };
         };
+      } else {
+        // decision — Jev/SystemOne. The whole request goes to the upstream's /v1/systemone unchanged except for the
+        // pinned model id; cost is the number of questions asked, so a caller's share scales with how much it asks.
+        if (body.state === undefined) return peerModelError(res, 400, 'invalid_request', 'state is required');
+        const questions = body.questions;
+        if (typeof questions !== 'object' || questions === null || Array.isArray(questions) || Object.keys(questions).length === 0) return peerModelError(res, 400, 'invalid_request', 'questions must be a non-empty object');
+        cost = Math.max(1, Object.keys(questions).length);
+        run = async () => {
+          const up = await fetch(`${upstreamBase}/v1/systemone`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, model: backend.models[0]! }), signal: AbortSignal.timeout(PEER_MODEL_TIMEOUT_MS),
+          });
+          const out = await up.json().catch(() => null) as Record<string, unknown> | null;
+          if (!up.ok || out === null) throw new PeerModelCallError(`the decision backend answered ${up.status}`, 502);
+          return out;
+        };
       }
       // The calling NODE is the address in the queue: its share is whatever it has deposited here (usually the
       // floor), so a peer's agents wait behind this node's paying callers rather than beside them.
@@ -392,6 +407,7 @@ export function peerModelRoutes(deps: PeerModelRoutesDeps): Router {
 
   router.post('/p2p/models/transcription', handle('transcription'));
   router.post('/p2p/models/image', handle('image'));
+  router.post('/p2p/models/decision', handle('decision'));
 
   /**
    * Chat for a peer, by model id. The request is OpenAI's, passed on with the model pinned; the answer — JSON or an

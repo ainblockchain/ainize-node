@@ -26,7 +26,8 @@
   "files": [
     "dist",
     "fixtures",
-    "trainer"
+    "trainer",
+    "deploy/run-runtime"
   ],
   "bin": {
     "ainize-node": "./dist/bin.js"

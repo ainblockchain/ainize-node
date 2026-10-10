@@ -36,6 +36,25 @@ export interface HostedAgentRoutesDeps {
   orgAudit?: OrgAudit;
   /** Ids a hosted agent may not take — the config agents this node already proxies. */
   reserved: (id: string) => boolean;
+  /**
+   * The agent's repository, if this node keeps them (agent-git.ts). Every change made through this API is a
+   * commit there too, so the history is the whole history — an agent edited in the browser and an agent pushed
+   * to must not be two different stories, or "what changed" has two answers and a person has to know which
+   * door a change came through.
+   */
+  repo?: {
+    create: (spec: HostedAgentSpec) => Promise<void>;
+    commit: (spec: HostedAgentSpec, message: string, by: string) => Promise<void>;
+    remove: (id: string) => Promise<void>;
+    /**
+     * Where to clone it, which commit is live, and whether it follows a repository elsewhere.
+     *
+     * On every agent row, not only the owner's: a product deciding whether to import an agent — ainteams,
+     * ainmem — is asking what it is about to depend on, and "v7" does not answer that. A commit does, and a
+     * mirror says the real home is somewhere else, which is where a reader should go to read the history.
+     */
+    info?: (id: string) => { clone_url: string; commit: string | null; mirror: { url: string; branch: string; path: string; error: string | null } | null } | null;
+  };
   /** This node's public base URL, for the addresses returned on create. */
   publicBase: (req: Request) => string;
   /** Whether a peer currently serves a modality (peer-models.ts). Absent → only this node's backends count. */
@@ -157,6 +176,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       ...(who ? { can_manage: canManageHostedAgent(spec, who), can_delete: canAdministerAgent(spec, who) } : {}),
       status: st?.status ?? 'failed', error: st?.error ?? null, live_version: st?.liveVersion ?? null,
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
+      ...(deps.repo?.info ? { git: deps.repo.info(spec.id) } : {}),
       ...(full ? {
         systemPrompt: spec.systemPrompt, files: spec.files, a2ui: spec.a2ui, allowedHosts: spec.allowedHosts,
         secretNames: spec.secretNames, skills: spec.skills, media: hostedAgentMediaOf(spec),
@@ -191,7 +211,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     res.json({ agents: deps.store.list().filter((s) => listsHostedAgentFor(s, who)).map((s) => view(req, s, false)) });
   });
 
-  router.post('/api/hosted-agents', (req, res) => {
+  router.post('/api/hosted-agents', async (req, res) => {
     const who = signedIn(req, res);
     if (!who) return;
     const input = parse(req, res, who);
@@ -200,6 +220,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       // The agent's PoP key is minted with it (hosted-agent-pop.ts), before the runtime that will sign with it starts.
       const spec = issueHostedAgentPopKey(deps.store, deps.secrets, deps.store.create(input, who.subject, deps.reserved));
       deps.host.apply(spec);
+      await deps.repo?.create(spec).catch(() => { /* an agent that runs but cannot be cloned is still an agent */ });
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
       deps.orgAudit?.([spec.orgId], who.subject, 'agent.create', spec.id, { kind: 'hosted', visibility: hostedAgentVisibilityOf(spec) });
       res.status(201).json({ agent: view(req, spec, false), a2a_url: view(req, spec, false).a2a_url, card_url: view(req, spec, false).card_url });
@@ -219,7 +240,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (hit) res.json({ agent: view(req, hit.spec, hit.owner, callerOf(req)) });
   });
 
-  router.put('/api/hosted-agents/:id', (req, res) => {
+  router.put('/api/hosted-agents/:id', async (req, res) => {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec: prior, who } = hit;
@@ -235,6 +256,9 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     }
     const spec = deps.store.update(prior.id, input, who.subject);
     deps.host.apply(spec);
+    // The same change, as a commit. An edit made in the browser is as much a part of the history as a push —
+    // otherwise "what changed" has two answers and a reader has to know which door the change came through.
+    await deps.repo?.commit(spec, `Update ${spec.id} (v${spec.version})`, who.subject).catch(() => {});
     deps.orgAudit?.([prior.orgId, spec.orgId], who.subject, sharingChanged ? 'agent.sharing' : 'agent.update', spec.id,
       { kind: 'hosted', version: spec.version, ...(sharingChanged ? { from: { visibility: hostedAgentVisibilityOf(prior), orgId: prior.orgId ?? null }, to: { visibility: hostedAgentVisibilityOf(spec), orgId: spec.orgId ?? null } } : {}) });
     deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });
@@ -262,6 +286,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
     deps.secrets.dropAgent(spec.id);
     await deps.host.remove(spec.id);
+    await deps.repo?.remove(spec.id).catch(() => {});
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
     deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: spec.id, version: spec.version + 1, audience: audienceOf(spec) });
     res.json({ deleted: spec.id });

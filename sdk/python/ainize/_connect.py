@@ -1,9 +1,10 @@
 """Point OpenAI at an Ainize node.
 
 This library does one thing on top of `openai`: it proves which address is calling and gets a key back. It does
-not wrap the client, subclass it, or re-export a narrowed version of it — it returns the real `openai.OpenAI`,
-because the whole promise is that nothing after that line is different. A wrapper would have to grow a method
-every time OpenAI's client does, and would be a second place for bugs to live.
+not wrap the client or re-export a narrowed version of it — what comes back IS `openai.OpenAI` (a subclass that
+adds nothing but `decide()`, see `_decide.py`), because the whole promise is that nothing after that line is
+different. A wrapper would have to grow a method every time OpenAI's client does, and would be a second place for
+bugs to live; a subclass inherits every one of them.
 
 It also never signs a transfer. `deposit_address()` says where to send AIN and `await_deposit()` waits for the
 node to notice; moving funds stays with the wallet the person already trusts. A library that signs transfers is a
@@ -16,9 +17,10 @@ from __future__ import annotations
 import time
 
 import httpx
-import openai
 from eth_account import Account
 from eth_account.messages import encode_defunct
+
+from ._decide import Client
 
 __all__ = ["connect", "deposit_address", "await_deposit"]
 
@@ -31,8 +33,8 @@ def connect(
     api_key: str | None = None,
     private_key: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
-) -> openai.OpenAI:
-    """Return an `openai.OpenAI` pointed at `node_url`.
+) -> Client:
+    """Return an `openai.OpenAI` pointed at `node_url` — with one extra method, `decide()`, for decision models.
 
     Pass `api_key`, which you get from the node's site once you have signed in with your wallet there. This is
     the ordinary way, and it is the same shape as every other model API.
@@ -49,7 +51,7 @@ def connect(
                 "(private_key is the alternative, for a program that already holds a wallet.)"
             )
         api_key = _sign_in(node_url, private_key, timeout=timeout)
-    return openai.OpenAI(base_url=f"{node_url}/v1", api_key=api_key)
+    return Client(base_url=f"{node_url}/v1", api_key=api_key)
 
 
 def _sign_in(node_url: str, private_key: str, *, timeout: float) -> str:

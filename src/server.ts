@@ -29,13 +29,25 @@ import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost, hostedAgentScheduleIds } from './hosted-agent-host.js';
 import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
+import { RunSandbox, RUN_SANDBOX_DEFAULTS } from './run-sandbox.js';
+import { runRouter } from './run-routes.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
+import { AgentGit } from './agent-git.js';
+import { AgentGitHttp } from './agent-git-http.js';
+import { agentGitRoutes } from './agent-git-routes.js';
+import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, runScriptViaSandbox, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN } from './projects.js';
+import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-containers.js';
+import { projectRoutes } from './project-routes.js';
+import { AgentPullStore } from './agent-pulls.js';
+import { agentPullRoutes } from './agent-pull-routes.js';
+import { AgentMirrorStore } from './agent-mirror.js';
+import { agentMirrorRoutes } from './agent-mirror-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
-import { agentCallerOf, orgViewerOf, resolveOrganization, SharedAgentEvents, sharedAgentRoutes, withOrganizations, type AgentCaller, type OrgAudit } from './shared-agents.js';
+import { agentCallerOf, apiKeyCaller, audienceOf, canManageHostedAgent, canSeeHostedAgent, orgViewerOf, resolveOrganization, SharedAgentEvents, sharedAgentRoutes, withOrganizations, type AgentCaller, type OrgAudit } from './shared-agents.js';
 import { OrganizationStore, type OrgViewer } from './organization-store.js';
 import { organizationRoutes, type OrgAgentRow } from './organization-routes.js';
-import { hostedAgentVisibilityOf } from './hosted-agent-types.js';
+import { hostedAgentVisibilityOf, type HostedAgentSpecInput } from './hosted-agent-types.js';
 import { ThroughputMeter } from './throughput-meter.js';
 import { throughputRoutes } from './throughput-routes.js';
 import { siteSession, ssoSession } from './site-session.js';
@@ -66,7 +78,9 @@ import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { readSiteAssertionSecret, siteSubject } from './site-assertion.js';
 import { SiteCallVerifier } from './site-call.js';
-import { readSsoConfig, SsoService, type JwksSource } from './sso.js';
+import { readSsoConfig, SsoService, ssoPrincipal, verifyServiceToken, type JwksSource } from './sso.js';
+import { ServiceTokenClient } from './sso-service-token.js';
+import { RunKeyIssuer } from './run-actor.js';
 import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
@@ -101,7 +115,7 @@ export interface StartOptions {
   teachWorker?: boolean;
   /** Process hooks for the teach worker (tests fake `spawn`/`exec`). */
   teachHooks?: TeachHooks;
-  /** AIN SSO settings; default `process.env` (AIN_SSO_ISSUER, AIN_SSO_CLIENT_ID, AIN_SSO_ADAPTER_URL — docs/ain-sso.md). */
+  /** AIN SSO settings; default `process.env` (AIN_SSO_ISSUER, AIN_SSO_CLIENT_ID, AIN_SSO_ADAPTER_URL, AIN_SSO_CLIENT_SECRET — docs/ain-sso.md). */
   ssoEnv?: NodeJS.ProcessEnv;
   /** Tests: AIN SSO's signing keys, instead of fetching `{issuer}/oidc/jwks`. */
   ssoJwks?: JwksSource;
@@ -144,7 +158,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // with what it should hold (item 123). Keys this build does not know are only reported, so a config written by a
   // newer build still starts here.
   const problems = validateConfig(cfg);
-  const invalid = problems.filter((p) => p.kind === 'invalid');
+  // Forward-compat shim: this build serves the `decision` modality (InferenceModality in
+  // inference-backends.ts), but when it runs against an older published @ainize/core whose schema
+  // only knows chat/transcription/image, validateConfig rejects a `decision` backend as an invalid
+  // modality. Drop that one false positive — the node itself understands the modality — and keep
+  // every other validation. Once a core with `decision` in the enum is published this filter simply
+  // matches nothing.
+  const invalid = problems.filter((p) =>
+    p.kind === 'invalid' && !/^backends\.\d+\.modality$/.test(p.key));
   if (invalid.length) {
     throw new Error(`this node's config is not usable:\n${invalid.map((p) => `  ${p.key} ${p.message}`).join('\n')}\n` +
       `fix it with \`ainize config set <key> <value>\` (or \`ainize config unset <key>\` for the default) in ${join(dirname(cfg.dataDir), 'config.json')}`);
@@ -245,6 +266,89 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // keep the raw bytes: the request-bound visitor signature (teach-auth.ts v2) hashes the body exactly as sent
   // Models over p2p carry media as base64 — a voice note an agent opened (up to 32 MB) is ~43 MB of JSON — so their
   // routes parse before the 5 MB default does. express.json skips a body already parsed.
+  /**
+   * `git clone` and `git push` for agents — mounted BEFORE the JSON parser below.
+   *
+   * A push IS the request body: `git-receive-pack` reads the pack off standard input, and a parser that has
+   * already consumed it leaves nothing to pipe. The parser on the next line would do exactly that, so these
+   * routes go above it rather than beside the other agent routes.
+   *
+   * The dependencies are closures over bindings declared further down — the store and the host do not exist
+   * yet at this line, and the first request cannot arrive before startup has finished.
+   */
+  /**
+   * Who is pushing, as git is able to say it.
+   *
+   * git speaks HTTP Basic and nothing else: no cookies it will send to a remote, no bearer token it knows how
+   * to mint. So the password field carries an ainize API key, which is the credential a person can already
+   * create, revoke and keep in a credential helper. The username is ignored — git insists on sending one, and
+   * the key alone identifies the account.
+   *
+   * Everything else (a session cookie, a bearer token) is left to `agentCaller`, so a push made from a
+   * workspace on ainize itself works with the session it already has.
+   */
+  const agentGitCaller = (req: Request) => {
+    const basic = /^Basic\s+(.+)$/i.exec(req.header('authorization') ?? '')?.[1];
+    if (basic) {
+      const decoded = Buffer.from(basic, 'base64').toString('utf8');
+      const password = decoded.slice(decoded.indexOf(':') + 1);
+      const record = password ? openaiKeys.recordForKey(password) : null;
+      if (record) {
+        const caller = apiKeyCaller(record);
+        return withOrganizations(caller, orgStore, identityOf(caller));
+      }
+    }
+    return agentCaller(req);
+  };
+
+  /**
+   * What a tree becoming the agent means, in one place.
+   *
+   * A push and a merge are two ways to move the deployed branch, and both end here: the spec is stored, the
+   * agent is re-applied — which is what makes every live address serve the new version — and the same event a
+   * `PUT` appends goes on the feed, so peers and pinned importers learn about it without knowing git exists.
+   * Two copies of this would be two definitions of what "deployed" means, and the one that drifted would be
+   * the one nobody was reading.
+   */
+  const applyPushedTree = async (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => {
+    const prior = hostedStore.get(id);
+    if (!prior) throw new Error(`no hosted agent "${id}"`);
+    const spec = hostedStore.update(id, input, by ?? undefined);
+    hostedHost.apply(spec);
+    agentEvents?.append({ type: 'agent.updated', registryIssuer: market.publicUrl, agentId: id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+    market.log('info', 'agents', `agent ${id}: ${commit.slice(0, 7)} → v${spec.version}, live now`);
+  };
+
+  const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
+  const agentGitHttp = new AgentGitHttp({
+    git: agentGit,
+    // The hook calls back on loopback while a push is in flight, so the server is listening by definition.
+    loopbackPort: () => (server.address() as { port?: number } | null)?.port ?? cfg.port,
+    /**
+     * A push is authenticated the only way git knows how: HTTP Basic, with an ainize API key as the password.
+     * A browser session serves too, for a push made from a workspace on ainize itself. Both resolve to the same
+     * question `PUT /api/hosted-agents/:id` asks — a repository must not be a second, weaker door.
+     */
+    canPush: (req, id) => {
+      const spec = hostedStore.get(id);
+      if (!spec) return false;
+      const who = agentGitCaller(req);
+      if (!who) return false;
+      (req as Request & { agentGitPusher?: string }).agentGitPusher = who.subject;
+      return canManageHostedAgent(spec, who);
+    },
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentGitCaller(req));
+    },
+    // One writable copy. A mirrored agent is pushed to on GitHub, and this is what says so to the person
+    // whose push just bounced, instead of letting the two copies diverge.
+    mirrorOf: (id) => { const m = agentMirrors.get(id); return m ? { url: m.url } : null; },
+    apply: (id, input, commit, by) => applyPushedTree(id, input, commit, by),
+    log: (level, message) => market.log(level, 'agents', message),
+  });
+  app.use(agentGitHttp.router());
+
   app.use('/p2p/models', express.json({ limit: '48mb' }));
   app.use(express.json({ limit: '5mb', verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use((req, res, next) => {
@@ -297,8 +401,20 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     log: (message, err) => market.log('warn', 'sso', `${message}: ${(err as Error)?.message ?? String(err)}`),
   }));
   if (ssoConfig) {
-    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}`);
+    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}, machine identity ${ssoConfig.clientSecret ? 'on' : 'off (AIN_SSO_CLIENT_SECRET unset)'}, machine tokens accepted from ${ssoConfig.serviceApps.length ? ssoConfig.serviceApps.join(', ') : 'nobody (AIN_SSO_SERVICE_APPS unset)'}`);
   }
+  /**
+   * Runs for a person (run-actor.ts): aindrive proves itself with a machine token and names who pressed ▶; the
+   * node issues that account's `aindrive run` key once and hands it to the script. Only with AIN SSO on.
+   */
+  const runKeys = ssoConfig ? new RunKeyIssuer({
+    keys: openaiKeys, issuer: ssoConfig.issuer, secretFile: join(opts.home ?? tmpdir(), 'run-keys.secret'),
+    resolveActor: (subject) => sso.resolveActor(subject),
+    log: (level, message) => market.log(level, 'run', message),
+  }) : null;
+  const serviceTokens = ssoConfig?.clientSecret
+    ? new ServiceTokenClient({ issuer: ssoConfig.issuer, clientId: ssoConfig.clientId, clientSecret: ssoConfig.clientSecret, log: (level, message) => market.log(level, 'sso', message) })
+    : null;
 
   const pinnedChatPeers = preferredChatPeers(process.env.AINIZE_PREFERRED_CHAT_PEERS);
   app.use(preferredChatPlayground({ routes: pinnedChatPeers, peers: () => peerModelAccess, fetch: (peer, body) => fetchPeerChat(cfg.identity, peer, body) }));
@@ -372,9 +488,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   /** The same door to other nodes' models for `/v1` and the free tier: addressed by id or `id@0x<node>`. */
   const peerModelAccess = {
-    target: (kind: 'chat' | 'transcription' | 'image', model: string, node: string | null) => peerModelTargetById(peerModelRows(), kind, model, cfg.identity.address, node),
+    target: (kind: 'chat' | 'transcription' | 'image' | 'decision', model: string, node: string | null) => peerModelTargetById(peerModelRows(), kind, model, cfg.identity.address, node),
     relayChat: (target: PeerModelTarget, body: unknown, res: import('express').Response) => relayPeerChat(cfg.identity, target, body, res),
-    call: (target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
+    call: (target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
   const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
@@ -472,8 +588,71 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // Every agent holds a proof-of-possession key before its runtime starts (hosted-agent-pop.ts): one stored before
   // keys existed gets its key here; one whose key no longer matches its card gets a new release, announced on the feed.
   await hostedHost.start(ensureHostedAgentPopKeys(hostedStore, hostedSecrets, { events: agentEvents, registryIssuer: market.publicUrl }));
+  /**
+   * Every agent has a repository, including the ones that existed before repositories did.
+   *
+   * A backfill rather than a migration: an agent whose repository is missing gets one with a single commit of
+   * what it is now. The history starts here and says so, which is honest — the versions before this have no
+   * commits, because there were none. Nothing is a special case afterwards: there is no "agent without a
+   * repository" branch anywhere else in the code.
+   *
+   * Hooks are (re)installed on every start, not only on create. They are a script the node writes, and the node
+   * they must call back into is this process — a repository restored from a backup, or written by an older
+   * build, would otherwise sit there with a stale hook or none at all.
+   */
+  for (const spec of hostedStore.list()) {
+    try {
+      const fresh = !agentGit.exists(spec.id);
+      if (fresh) await agentGit.init(spec.id);
+      agentGitHttp.installHooks(spec.id);
+      if (!(await agentGit.hasCommits(spec.id))) {
+        await agentGit.commitSpec(spec.id, spec, { message: `Import ${spec.id} at v${spec.version}` });
+        market.log('info', 'agents', `agent ${spec.id}: repository created from v${spec.version} — \`git clone ${market.publicUrl}/git/${spec.id}.git\``);
+      }
+    } catch (e) {
+      // A repository that cannot be made is not a reason to refuse to serve the agent: it runs exactly as it did.
+      market.log('warn', 'agents', `agent ${spec.id}: no git repository (${(e as Error).message}) — it runs, but it cannot be cloned or pushed to`);
+    }
+  }
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
+  /**
+   * `POST /api/run` (run-sandbox.ts, deploy/run-runtime/README.md): a script pressed ▶ on in aindrive, run once
+   * in the code agents' sandbox. The same Docker switch, daemon and internal network as code agents; without
+   * them the route answers 503 and nothing else changes. `runSandbox` is read like `agentHost`: an optional
+   * block @ainize/core's schema does not know yet.
+   */
+  const runCfg = (cfg as NodeConfig & { runSandbox?: { gatewayPort?: number; maxRunning?: number; perCaller?: number; perKeyedCaller?: number; memory?: string; cpus?: number; pidsLimit?: number } }).runSandbox ?? {};
+  const runSandbox = hostedHost.dockerEnabled && dockerCfg?.enabled ? new RunSandbox({
+    docker: new HostedAgentDocker({
+      runtime: dockerCfg.runtime,
+      memory: runCfg.memory ?? RUN_SANDBOX_DEFAULTS.memory,
+      cpus: runCfg.cpus ?? RUN_SANDBOX_DEFAULTS.cpus,
+      pidsLimit: runCfg.pidsLimit ?? RUN_SANDBOX_DEFAULTS.pidsLimit,
+      network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
+      buildTimeoutMs: dockerCfg.buildTimeoutMs ?? RUN_SANDBOX_DEFAULTS.buildTimeoutMs,
+      workDir: join(cfg.dataDir, 'run-sandbox'),
+      runtimeImage: 'ainize/run-runtime',
+    }),
+    gateway: hostedGateway,
+    gatewayPort: runCfg.gatewayPort,
+    selfUrl: () => `http://127.0.0.1:${(server.address() as { port?: number } | null)?.port ?? cfg.port}`,
+    publicUrl: () => market.publicUrl,
+    runtime: dockerCfg.runtime,
+    memory: runCfg.memory ?? RUN_SANDBOX_DEFAULTS.memory,
+    cpus: runCfg.cpus ?? RUN_SANDBOX_DEFAULTS.cpus,
+    pidsLimit: runCfg.pidsLimit ?? RUN_SANDBOX_DEFAULTS.pidsLimit,
+    maxRunning: runCfg.maxRunning ?? RUN_SANDBOX_DEFAULTS.maxRunning,
+    perCaller: runCfg.perCaller ?? RUN_SANDBOX_DEFAULTS.perCaller,
+    perKeyedCaller: runCfg.perKeyedCaller ?? RUN_SANDBOX_DEFAULTS.perKeyedCaller,
+    buildTimeoutMs: dockerCfg.buildTimeoutMs ?? RUN_SANDBOX_DEFAULTS.buildTimeoutMs,
+    workDir: join(cfg.dataDir, 'run-sandbox'),
+    log: (level, message) => market.log(level, 'run', message),
+  }) : null;
+  if (runSandbox) {
+    await runSandbox.start();
+    if (runSandbox.available) runSandbox.warm();
+  }
   market.linkedAgents = linkedStore;
   // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
   // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
@@ -546,6 +725,91 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return own + peers;
     },
   }));
+  // Projects bound to aindrive git repositories (projects.ts, docs/PROJECTS.md): no repository lives here; a push
+  // there calls the hook here, and the worker clones that commit and runs it through this node's /api/run.
+  const projectStore = new ProjectStore(join(cfg.dataDir, 'projects.json'));
+  const projectSecrets = new HostedAgentSecretStore(join(cfg.dataDir, 'project-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  const projectLogs = new DeploymentLogs(join(cfg.dataDir, 'projects', 'logs'));
+  // Service / Next.js containers: the hosted-agent network and the run sandbox's gateway door, when Docker is on.
+  const projectContainers = runSandbox && dockerCfg?.enabled ? new ProjectContainers({
+    network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
+    gateway: hostedGateway,
+    gatewayUrl: () => runSandbox.gatewayBase,
+    selfUrl: () => `http://127.0.0.1:${(server.address() as { port?: number } | null)?.port ?? cfg.port}`,
+    publicUrl: () => market.publicUrl,
+    workDir: join(cfg.dataDir, 'projects', 'work'),
+    runtime: dockerCfg.runtime,
+    memory: dockerCfg.memory ?? PROJECT_CONTAINER_DEFAULTS.memory,
+    cpus: dockerCfg.cpus ?? PROJECT_CONTAINER_DEFAULTS.cpus,
+    pidsLimit: dockerCfg.pidsLimit ?? PROJECT_CONTAINER_DEFAULTS.pidsLimit,
+    buildTimeoutMs: PROJECT_CONTAINER_DEFAULTS.buildTimeoutMs,
+    log: (level, message) => market.log(level, 'projects', message),
+  }) : undefined;
+  if (projectContainers) await projectContainers.removeOrphans().catch((e: Error) => market.log('warn', 'projects', `could not remove leftover project containers: ${e.message}`));
+  const projectWorker = new ProjectWorker({
+    store: projectStore,
+    logs: projectLogs,
+    run: runSandbox ? runScriptViaSandbox(runSandbox) : runScriptOverHttp(() => `http://127.0.0.1:${cfg.port}`),
+    containers: projectContainers,
+    agents: {
+      store: hostedStore,
+      host: hostedHost,
+      reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
+      // The same repository-side record a hosted agent gets from the API (below): one history per agent.
+      onApplied: async (spec, created) => {
+        if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        const parent = (await agentGit.hasCommits(spec.id)) ? await agentGit.resolve(spec.id, 'main') : null;
+        await agentGit.commitSpec(spec.id, spec, { message: created ? `Create ${spec.id} (ainize project)` : `v${spec.version} (ainize project push)`, parent, author: { name: spec.owner, email: `${spec.owner}@ainize` } });
+        agentEvents?.append({ type: created ? 'agent.published' : 'agent.updated', registryIssuer: market.publicUrl, agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+      },
+    },
+    deployToken: (id) => projectSecrets.reveal(id, [PROJECT_SECRET_DEPLOY_TOKEN])[PROJECT_SECRET_DEPLOY_TOKEN] ?? null,
+    // The node's machine identity at AIN SSO (docs/ain-sso.md §5, docs/PROJECTS.md): with AIN_SSO_CLIENT_SECRET the
+    // clone presents a client_credentials token for the repo's host; a refusal is logged and the clone goes on
+    // anonymously (a public repo still works; a private one fails with aindrive's 401 in the deployment log).
+    serviceToken: serviceTokens ? async (resource) => {
+      try { return await serviceTokens.token(resource); }
+      catch (e) { market.log('warn', 'projects', `no machine token for ${resource}: ${(e as Error).message}`); return null; }
+    } : undefined,
+    publicUrl: () => market.publicUrl ?? selfUrl,
+    keyForActor: runKeys ? (subject) => runKeys.keyFor(subject).key : undefined,
+    log: (level, message) => market.log(level, 'projects', message),
+  });
+  app.use(projectRoutes({
+    store: projectStore,
+    secrets: projectSecrets,
+    logs: projectLogs,
+    worker: projectWorker,
+    containers: projectContainers,
+    caller: agentCaller,
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    log: (level, message) => market.log(level, 'projects', message),
+    // Who counts as a member of the repository's organization (run / redeploy): the node's SSO memberships under the slug.
+    orgIdsForSlug: ssoConfig ? (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug) : undefined,
+    // The `/<org>` page lists the drive's repositories as aindrive does, read with the node's machine identity.
+    aindrive: serviceTokens ? {
+      origin: (process.env.AINDRIVE_URL ?? PROJECT_DEFAULT_CORS_ORIGINS[0]!).replace(/\/+$/, ''),
+      token: async (resource) => { try { return await serviceTokens.token(resource); } catch (e) { market.log('warn', 'projects', `no machine token for ${resource}: ${(e as Error).message}`); return null; } },
+    } : undefined,
+    // aindrive binds a pushed repo to a project as itself (docs/PROJECTS.md "Auto-binding"): its machine token must
+    // name this node's public URL and an application in AIN_SSO_SERVICE_APPS.
+    auto: ssoConfig && ssoConfig.serviceApps.length > 0 && sso.jwks ? {
+      servicePrincipal: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      orgIdsForSlug: (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug),
+      principalForSubject: (subject) => store.ssoIdentity(ssoConfig.issuer, subject)?.principal ?? ssoPrincipal(subject),
+    } : undefined,
+    // Link snippets (docs/PROJECTS.md "Link snippets"): a consumer application's machine token + X-AIN-Actor is the
+    // person it asks for; their access is their ownership or an active membership in the project's organization.
+    actor: ssoConfig && ssoConfig.serviceApps.length > 0 && sso.jwks ? {
+      servicePrincipal: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      principalForSubject: (subject) => store.ssoIdentity(ssoConfig.issuer, subject)?.principal ?? ssoPrincipal(subject),
+      orgIdsForSlug: (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug),
+      memberOrgs: (subject) => store.ssoMemberships(ssoConfig.issuer, subject).filter((m) => m.status === 'active').map((m) => m.org_id),
+      keyFor: runKeys ? (subject) => runKeys.keyFor(subject).key : undefined,
+    } : undefined,
+  }));
+  projectWorker.recover();
   app.use(hostedAgentRoutes({
     store: hostedStore,
     secrets: hostedSecrets,
@@ -558,6 +822,94 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
     peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
+    /**
+     * The repository side of the same change. An agent created or edited through the API gets the commit a
+     * push would have made, so there is one history rather than one per door.
+     */
+    repo: {
+      create: async (spec) => {
+        await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        await agentGit.commitSpec(spec.id, spec, { message: `Create ${spec.id}` });
+      },
+      commit: async (spec, message, by) => {
+        if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        const parent = (await agentGit.hasCommits(spec.id)) ? await agentGit.resolve(spec.id, 'main') : null;
+        // The person who made the change is the author, so `git log` names them and not the node.
+        await agentGit.commitSpec(spec.id, spec, { message, parent, author: { name: by, email: `${by}@ainize` } });
+      },
+      remove: async (id) => { await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
+      info: (id) => {
+        if (!agentGit.exists(id)) return null;
+        const m = agentMirrors.get(id);
+        return {
+          clone_url: `${(market.publicUrl ?? '').replace(/\/+$/, '')}/git/${id}.git`,
+          // The commit the deployed branch is on, read synchronously from the ref file git keeps it in: a
+          // listing renders many agents, and a child process each would make the page pay for the history.
+          commit: agentGit.headSync(id),
+          mirror: m ? { url: m.url, branch: m.branch, path: m.path, error: m.error ?? null } : null,
+        };
+      },
+    },
+  }));
+  /**
+   * The history a page reads — commits, branches, one file, a diff. Mounted beside the agent routes rather
+   * than with the git transport above, because it answers a browser's questions, not a git client's.
+   */
+  /**
+   * Proposals on an agent, and merging one.
+   *
+   * `apply` is the same function the git push path uses, deliberately: a merge moves the deployed branch, and
+   * every way of moving it has to end in the same place or they will drift.
+   */
+  /**
+   * Agents that follow a repository somewhere else — donga-science's, which already live on GitHub with a team
+   * and a history. Declared before the pull routes because `mirrorOf` is what makes a mirrored agent refuse a
+   * push on this side and name GitHub instead.
+   */
+  const agentMirrors = new AgentMirrorStore(join(hostedHome, 'agent-mirrors.json'));
+  app.use(agentMirrorRoutes({
+    git: agentGit,
+    mirrors: agentMirrors,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    canManage: (req, id) => {
+      const spec = hostedStore.get(id);
+      const who = agentCaller(req);
+      return !!spec && !!who && canManageHostedAgent(spec, who);
+    },
+    principal: (req) => agentCaller(req)?.subject ?? null,
+    apply: applyPushedTree,
+    land: (id, commit) => agentGit.setRef(id, 'main', commit),
+    log: (level, message) => market.log(level, 'agents', message),
+  }));
+
+  const agentPulls = new AgentPullStore(join(hostedHome, 'agent-pulls.json'));
+  app.use(agentPullRoutes({
+    git: agentGit,
+    pulls: agentPulls,
+    principal: (req) => agentCaller(req)?.subject ?? null,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    canMerge: (req, id) => {
+      const spec = hostedStore.get(id);
+      const who = agentCaller(req);
+      return !!spec && !!who && canManageHostedAgent(spec, who);
+    },
+    apply: applyPushedTree,
+  }));
+  app.use(agentGitRoutes({
+    git: agentGit,
+    canRead: (req, id) => {
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
+    cloneBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
   }));
   // The cross-product agent registry (ain-integration contract "1.0"): the same agents, in the shape every product reads.
   app.use(sharedAgentRoutes({
@@ -608,7 +960,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   let depositWatcher: DepositWatcher | null = null;
   if (cfg.backends?.length) {
     const surfaceHome = opts.home ?? tmpdir();
-    for (const modality of ['transcription', 'image'] as const) {
+    for (const modality of ['transcription', 'image', 'decision'] as const) {
       for (const backend of inferenceRegistry!.backendsFor(modality)) {
         modalityGates.set(backend.id, new ModalityGate(modality, backend.concurrency, stakeQueue));
       }
@@ -666,6 +1018,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // uses whatever the paying callers are not using.
     app.use(freeTierRouter({ registry: inferenceRegistry, gates: modalityGates, peerModels: peerModelAccess, self: cfg.identity.address }));
   }
+  // Beside the free tier, not inside the backends block: whether a script can run depends on Docker, not on
+  // what this node serves — and a 503 that says so is the answer a node without Docker should give.
+  app.use(runRouter({
+    sandbox: runSandbox, keys: openaiKeys,
+    actor: runKeys && ssoConfig ? {
+      verify: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      keys: runKeys,
+    } : undefined,
+  }));
 
   // After the deposits block: the page needs the ledger and the staking contract it built.
   const throughputChains = cfg.deposits?.chains.map((c) => ({
@@ -911,6 +1272,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(uploadSweep);
       clearInterval(driveSync);
       market.payouts.stop();
+      await runSandbox?.stop().catch(() => {});
       await hostedHost.stop().catch(() => {});
       if (stakeIdleSweep) clearInterval(stakeIdleSweep);
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
