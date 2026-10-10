@@ -68,27 +68,43 @@ def _ensure_loaded() -> None:
 
 
 def _apply_head_override(model: Any, head_path: str) -> None:
-    """Swap in a fine-tuned joint schema head (a Teach artifact) over the released weights.
+    """Apply a Teach fine-tune over the released weights.
 
-    Accepts either a `.safetensors` head or the Teach trainer's `lesson.npz` (clef_teach.py saves the
-    head's state_dict as named float32 arrays)."""
-    if head_path.endswith(".npz"):
-        import numpy as np
+    The Teach `lesson.npz` (clef_teach.py) packs a LoRA adapter for the backbone (`lora.*` + a
+    `lora_config`) and the joint schema head (`head.*`), plus a no-op knowledge-patch envelope
+    (addrs/before/after) the node requires. A plain `.safetensors` (head only) is still accepted."""
+    import numpy as np
+    from safetensors.torch import load_file
 
-        # The Teach lesson.npz wraps the head weights alongside an empty knowledge-patch envelope
-        # (addrs/before/after) that the ainize node requires; those three keys are not head params.
-        envelope = {"addrs", "before", "after"}
-        with np.load(head_path) as data:
-            state = {k: torch.from_numpy(data[k]) for k in data.files if k not in envelope}
-    else:
-        from safetensors.torch import load_file
-
-        state = load_file(head_path)
     target = next(model.parameters())
-    model.head.load_state_dict(
-        {k: v.to(device=target.device, dtype=target.dtype) for k, v in state.items()},
-        strict=True,
-    )
+
+    def _to(sd):
+        return {k: v.to(device=target.device, dtype=target.dtype) for k, v in sd.items()}
+
+    if not head_path.endswith(".npz"):
+        model.head.load_state_dict(_to(load_file(head_path)), strict=True)
+        return
+
+    envelope = {"addrs", "before", "after", "lora_config"}
+    with np.load(head_path) as data:
+        files = set(data.files)
+        head = {k[len("head."):]: torch.from_numpy(data[k]) for k in files if k.startswith("head.")}
+        lora = {k[len("lora."):]: torch.from_numpy(data[k]) for k in files if k.startswith("lora.")}
+        cfg = json.loads(bytes(data["lora_config"]).decode()) if "lora_config" in files else None
+        # back-compat: an older head-only npz stored head tensors at the top level
+        if not head and not lora:
+            head = {k: torch.from_numpy(data[k]) for k in files if k not in envelope}
+
+    if cfg and lora:
+        from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
+
+        lc = LoraConfig(r=cfg["r"], lora_alpha=cfg["lora_alpha"], target_modules=cfg["target_modules"],
+                        lora_dropout=0.0, bias="none")
+        model.language_model = get_peft_model(model.language_model, lc)
+        set_peft_model_state_dict(model.language_model, _to(lora))
+        model.language_model.eval()
+    if head:
+        model.head.load_state_dict(_to(head), strict=True)
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:

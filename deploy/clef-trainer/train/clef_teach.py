@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Fine-tune a Cloudflare Clef decision model from a Teach job, by training ONLY its joint schema head.
+"""Fine-tune a Cloudflare Clef decision model from a Teach job — for real.
 
-This is the Clef counterpart of the PLE knowledge-patch trainer (`train/teach.py`): the node launches it
-exactly the same way —
+Unlike a head-only pass, this adapts the model itself: LoRA adapters on the Qwen3.8 backbone's
+attention and MLP projections ARE trained together with the joint schema head, so the model's
+representation shifts, not only the decision mapping. The base backbone weights stay frozen (LoRA
+is ~0.15% of params), which keeps the lesson small and one GPU enough (clef-flash ~22 GB with
+gradient checkpointing; clef 27B fits one A100 80 GB the same way).
 
-    docker exec -i <trainer.container> python3 /work/train/clef_teach.py --job /work/.teach/<id>/job.json --devices cuda:0,...
+The node launches it exactly like the PLE trainer and it speaks the same stdout JSON-lines protocol
+(load/step/eval/done/error) and writes the same two artifacts next to job.json: `lesson.npz` (the
+trained LoRA adapter + head + a tiny no-op knowledge-patch envelope the node's BlobStore requires)
+and `recipe.json`. The serving sidecar re-applies the LoRA and the head through its HEAD_OVERRIDE.
 
-and it speaks the same stdout JSON-lines protocol (`{"event": "..."}` per line: load, step, eval, done, error)
-and writes the same two artifacts next to job.json: `lesson.npz` (the trained head) and `recipe.json`.
-
-What differs is WHAT is trained. Clef is not a causal LM with a knowledge table; it is a frozen Qwen3.8
-backbone with a small `JointSchemaHead` that turns the backbone's hidden states into one logit per allowed
-option of every question. So a lesson here trains the head and leaves the backbone untouched — the head is
-the artifact, the way a PLE row-slice is for the language model. The serving sidecar swaps it in through its
-`HEAD_OVERRIDE` env.
-
-A Teach "fact" carries the demonstration as two JSON strings so the whole existing dataset/job pipeline works
+A Teach "fact" carries the demonstration as two JSON strings so the whole dataset/job pipeline works
 unchanged:
     prompt = JSON of {"state": <any>, "questions": {qid: {type, instructions?, criteria?}}}
     answer = JSON of {qid: <label>}   label = choice option id | score index (int) | true/false for noul
@@ -34,15 +31,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
 
 def emit(event: str, **fields) -> None:
-    """One protocol line on stdout. The node reads lines starting with '{' and switches on `event`."""
     sys.stdout.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
 def option_ids_for(question: dict) -> list[str]:
-    """The option ids in the SAME order the model's head emits logits (mirrors joint_schema_model.question_options)."""
     qtype = str(question["type"])
     if qtype == "noul":
         return ["true", "false"]
@@ -52,26 +49,22 @@ def option_ids_for(question: dict) -> list[str]:
 
 
 def label_index(question: dict, label, options: list[str]) -> int:
-    """Resolve a teacher's label to the index of the correct option among `options`."""
     qtype = str(question["type"])
     if qtype == "noul":
         truthy = label is True or str(label).strip().lower() in ("true", "yes", "1", "t", "y")
-        return 0 if truthy else 1  # options == ["true", "false"]
+        return 0 if truthy else 1
     if qtype == "choice":
         return options.index(str(label))
-    # score: an integer index, a numeric string, or the option description text.
     try:
         return int(label)
     except (TypeError, ValueError):
-        criteria = [str(c) for c in question["criteria"]]
-        return criteria.index(str(label))
+        return [str(c) for c in question["criteria"]].index(str(label))
 
 
 def load_facts(job: dict, out_dir: Path) -> list[dict]:
     rows = job.get("facts")
     if not rows and job.get("facts_file"):
-        path = out_dir / job["facts_file"]
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        rows = [json.loads(l) for l in (out_dir / job["facts_file"]).read_text().splitlines() if l.strip()]
     parsed: list[dict] = []
     for i, row in enumerate(rows or []):
         try:
@@ -83,7 +76,7 @@ def load_facts(job: dict, out_dir: Path) -> list[dict]:
                 raise ValueError("answer must be JSON {qid: label}")
             parsed.append({"fact": i, "state": req["state"], "questions": req["questions"], "labels": ans,
                            "images": req.get("images"), "videos": req.get("videos")})
-        except Exception as e:  # a bad row is skipped, not fatal, unless none survive
+        except Exception as e:
             emit("skip", fact=i, reason=str(e))
     return parsed
 
@@ -102,29 +95,26 @@ def main() -> int:
     ap.add_argument("--job", required=True)
     ap.add_argument("--devices", default="cuda:0")
     args = ap.parse_args()
-
     device = args.devices.split(",")[0].strip() or "cuda:0"
     job_path = Path(args.job)
     out_dir = job_path.parent
-    npz_path = out_dir / "lesson.npz"
-    recipe_path = out_dir / "recipe.json"
+    npz_path, recipe_path = out_dir / "lesson.npz", out_dir / "recipe.json"
 
     try:
         job = json.loads(job_path.read_text())
     except Exception as e:
-        emit("error", message=f"bad job.json: {e}")
-        return 1
+        emit("error", message=f"bad job.json: {e}"); return 1
 
     model_id = (job.get("model") or {}).get("id_M") or os.environ.get("SERVED_MODEL_NAME", "clef-flash")
     model_path = os.environ.get("CLEF_MODEL_PATH") or model_id
     if not Path(str(model_path)).is_dir() and "/" not in str(model_path):
-        model_path = f"Cloudflare/{model_path}"  # a bare id like "clef-flash" -> the HF repo
-
+        model_path = f"Cloudflare/{model_path}"
     max_steps = int(job.get("max_steps") or 20)
-    lr = float(job.get("lr") or 5e-4)
-    micro = max(1, int(job.get("micro") or 4))
-    eval_sample = job.get("eval_sample") or {}
-    eval_n = int(eval_sample.get("n") or 0)
+    lr = float(job.get("lr") or 1e-4)
+    micro = max(1, int(job.get("micro") or 2))
+    lora_r = int(job.get("lora_r") or os.environ.get("CLEF_LORA_R", 16))
+    lora_alpha = int(job.get("lora_alpha") or os.environ.get("CLEF_LORA_ALPHA", 32))
+    eval_n = int((job.get("eval_sample") or {}).get("n") or 0)
 
     facts = load_facts(job, out_dir)
     if not facts:
@@ -132,73 +122,66 @@ def main() -> int:
         return 1
 
     t0 = time.time()
-    # The model ships its own loader + head; import it from the snapshot like the sidecar does.
     from huggingface_hub import snapshot_download
     path = model_path if Path(str(model_path)).is_dir() else snapshot_download(str(model_path))
     sys.path.insert(0, str(path))
-    from joint_schema_model import load_release_model, collate_records  # type: ignore
-
+    from joint_schema_model import load_release_model  # type: ignore
     model, processor = load_release_model(path, device=device)
     tokenizer = processor.tokenizer
-    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
-    # Freeze the backbone; train the head only. The head is the lesson.
-    for p in model.language_model.parameters():
-        p.requires_grad_(False)
+    # --- real fine-tuning: LoRA on the backbone + the joint schema head ---
+    from peft import LoraConfig, get_peft_model
+    base = model.language_model.get_base_model() if hasattr(model.language_model, "get_base_model") else model.language_model
+    present = {n.split(".")[-1] for n, m in base.named_modules() if isinstance(m, torch.nn.Linear)}
+    targets = [t for t in LORA_TARGETS if t in present] or ["q_proj", "v_proj"]
+    lora_cfg = LoraConfig(r=lora_r, lora_alpha=lora_alpha, target_modules=targets, lora_dropout=0.0, bias="none")
+    model.language_model = get_peft_model(model.language_model, lora_cfg)
+    for n, p in model.language_model.named_parameters():
+        p.requires_grad_("lora_" in n)
     for p in model.head.parameters():
         p.requires_grad_(True)
+    # train through the frozen backbone cheaply: checkpoint activations, and let grad reach the LoRA inputs
+    try:
+        gb = model.language_model.get_base_model()
+        gb.gradient_checkpointing_enable()
+        gb.enable_input_require_grads()
+    except Exception as e:
+        emit("skip", fact=-1, reason=f"gradient_checkpointing unavailable: {e}")
     model.head.train()
 
-    base_model = model.language_model.get_base_model() if hasattr(model.language_model, "get_base_model") else model.language_model
-    text_model = base_model.model
-    emb_weight = base_model.get_output_embeddings().weight
+    def targets_for(fact):
+        return [label_index(q, fact["labels"].get(qid), option_ids_for(q)) for qid, q in fact["questions"].items()]
 
-    def forward_logits(records):
-        """ClefModel.forward, but the frozen backbone runs under no_grad so only the head accumulates gradients."""
-        encoded = [__import__("joint_schema_model").encode_record(tokenizer, record_of(f), processor=processor) for f in records]
-        batch = collate_records(encoded, pad_id, torch.device(device))
-        media = batch.get("media") or {}
-        tm = text_model
-        if not media and hasattr(tm, "language_model"):
-            tm = tm.language_model
-        with torch.no_grad():
-            outputs = tm(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
-                         use_cache=False, return_dict=True, **media)
-        hidden = outputs.last_hidden_state.detach()
-        logits = model.head(hidden, batch["input_ids"], batch["attention_mask"], batch["records"], emb_weight)
-        return encoded, logits
+    def forward_logits(batch_facts):
+        import joint_schema_model as J  # type: ignore
+        enc = [J.encode_record(tokenizer, record_of(f), processor=processor) for f in batch_facts]
+        return model(J.collate_records(enc, tokenizer.pad_token_id, torch.device(device)))
 
-    def targets_for(fact: dict):
-        out = []
-        for qid, q in fact["questions"].items():
-            opts = option_ids_for(q)
-            out.append(label_index(q, fact["labels"].get(qid), opts))
-        return out
+    trainable = [p for p in model.language_model.parameters() if p.requires_grad] + list(model.head.parameters())
+    n_lora = sum(p.numel() for n, p in model.language_model.named_parameters() if p.requires_grad)
+    n_head = sum(p.numel() for p in model.head.parameters())
+    optim = torch.optim.AdamW(trainable, lr=lr)
+    emit("load", secs=round(time.time() - t0, 1), rows=len(facts), model=model_id,
+         lora={"r": lora_r, "alpha": lora_alpha, "targets": targets, "params": int(n_lora)}, head_params=int(n_head))
 
-    optim = torch.optim.Adam([p for p in model.head.parameters() if p.requires_grad], lr=lr)
-    emit("load", secs=round(time.time() - t0, 1), rows=len(facts), model=model_id)
-
-    def evaluate(sample: list[dict]):
+    def evaluate(sample):
         model.head.eval()
         hits = total = 0
-        per_fact = []
+        per = []
         with torch.no_grad():
             for f in sample:
-                _, logits = forward_logits([f])
-                tgts = targets_for(f)
+                logits = forward_logits([f])[0]
+                tg = targets_for(f)
                 ok = 0
                 picks = {}
-                for q_logits, tgt, (qid, q) in zip(logits[0], tgts, f["questions"].items()):
-                    pred = int(q_logits.float().argmax().item())
-                    ok += int(pred == tgt)
+                for ql, t, (qid, q) in zip(logits, tg, f["questions"].items()):
+                    pred = int(ql.float().argmax().item()); ok += int(pred == t)
                     picks[qid] = option_ids_for(q)[pred]
-                hits += ok
-                total += len(tgts)
-                per_fact.append({"fact": f["fact"], "hits": ok, "total": len(tgts),
-                                 "heldout": 0, "heldout_total": 0,
-                                 "after_answer": json.dumps(picks, ensure_ascii=False)})
+                hits += ok; total += len(tg)
+                per.append({"fact": f["fact"], "hits": ok, "total": len(tg), "heldout": 0, "heldout_total": 0,
+                            "after_answer": json.dumps(picks, ensure_ascii=False)})
         model.head.train()
-        return hits, total, per_fact
+        return hits, total, per
 
     import random
     rng = random.Random(1234)
@@ -208,65 +191,55 @@ def main() -> int:
             s0 = time.time()
             rng.shuffle(order)
             batch = [facts[i] for i in order[:micro]]
-            encoded, logits = forward_logits(batch)
-            losses = []
-            hits = total = 0
+            logits = forward_logits(batch)
+            losses, hits, total = [], 0, 0
             for rec_logits, f in zip(logits, batch):
-                tgts = targets_for(f)
-                for q_logits, tgt in zip(rec_logits, tgts):
-                    losses.append(F.cross_entropy(q_logits.float().unsqueeze(0),
-                                                  torch.tensor([tgt], device=q_logits.device)))
-                    hits += int(q_logits.float().argmax().item() == tgt)
-                    total += 1
+                for ql, t in zip(rec_logits, targets_for(f)):
+                    losses.append(F.cross_entropy(ql.float().unsqueeze(0), torch.tensor([t], device=ql.device)))
+                    hits += int(ql.float().argmax().item() == t); total += 1
             loss = torch.stack(losses).mean()
             optim.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optim.step()
             emit("step", step=step, max_steps=max_steps, loss=round(float(loss.item()), 4),
                  hits=hits, total=total, rows_touched=len(batch), secs=round(time.time() - s0, 2))
-
             if eval_n and (step % max(1, max_steps // 4) == 0 or step == max_steps):
                 sample = facts if eval_n >= len(facts) else [facts[i] for i in rng.sample(range(len(facts)), eval_n)]
                 eh, et, pf = evaluate(sample)
                 emit("eval", hits=eh, total=et, facts=pf, sampled={"n": len(sample), "of": len(facts)})
     except Exception as e:
-        emit("error", message=f"training failed: {e}\n{traceback.format_exc()[-800:]}")
-        return 1
+        emit("error", message=f"training failed: {e}\n{traceback.format_exc()[-800:]}"); return 1
 
-    # Final pass over all facts for the done event, then export the trained head.
-    fh, ft, final_facts = evaluate(facts)
-    for pf in final_facts:
+    fh, ft, final = evaluate(facts)
+    for pf in final:
         pf["hit"] = pf["hits"] == pf["total"]
 
     try:
-        arrays = {k: v.detach().float().cpu().numpy() for k, v in model.head.state_dict().items()}
-        # The node's BlobStore treats a lesson.npz as a knowledge patch and requires an `addrs`
-        # member (plus before/after). A Clef lesson is a trained joint head, not PLE memory rows, so
-        # it carries an EMPTY patch envelope — nothing for the node to apply — while the head weights
-        # ride along under their own keys. The serving sidecar's HEAD_OVERRIDE reads the head keys and
-        # ignores addrs/before/after; nothing ever applies the empty rows (this node has no PLE runtime).
-        # One trivial no-op row (addr 0, before == after) rather than an empty set: the node stores a
-        # non-null address set for every blob, and before == after means applying it changes nothing
-        # even if some PLE runtime ever did (this decision node never applies it).
-        envelope = {
-            "addrs": np.zeros((1,), dtype=np.int64),
-            "before": np.zeros((1, 1), dtype=np.float32),
-            "after": np.zeros((1, 1), dtype=np.float32),
-        }
-        np.savez(npz_path, **envelope, **arrays)
-        recipe = {
-            "trainer": "clef_teach", "status": "ok", "model": {"id_M": model_id, "path": str(path)},
-            "head": {"params": sum(int(a.size) for a in arrays.values()), "tensors": len(arrays)},
-            "hp": {"max_steps": max_steps, "lr": lr, "micro": micro},
-            "rows": len(facts), "final_hits": fh, "final_total": ft,
-            "export": "head", "artifact": str(npz_path),
-        }
-        recipe_path.write_text(json.dumps(recipe, ensure_ascii=False, indent=1))
+        from peft import get_peft_model_state_dict
+        arrays = {}
+        for k, v in model.head.state_dict().items():
+            arrays[f"head.{k}"] = v.detach().float().cpu().numpy()
+        for k, v in get_peft_model_state_dict(model.language_model).items():
+            arrays[f"lora.{k}"] = v.detach().float().cpu().numpy()
+        arrays["lora_config"] = np.frombuffer(
+            json.dumps({"r": lora_r, "lora_alpha": lora_alpha, "target_modules": targets}).encode(), dtype=np.uint8)
+        # one trivial no-op row so the node's BlobStore accepts the file as a knowledge patch
+        arrays["addrs"] = np.zeros((1,), dtype=np.int64)
+        arrays["before"] = np.zeros((1, 1), dtype=np.float32)
+        arrays["after"] = np.zeros((1, 1), dtype=np.float32)
+        np.savez(npz_path, **arrays)
+        recipe_path.write_text(json.dumps({
+            "trainer": "clef_teach", "status": "ok", "export": "lora+head",
+            "model": {"id_M": model_id, "path": str(path)},
+            "lora": {"r": lora_r, "alpha": lora_alpha, "targets": targets, "params": int(n_lora)},
+            "head": {"params": int(n_head)}, "hp": {"max_steps": max_steps, "lr": lr, "micro": micro},
+            "rows": len(facts), "final_hits": fh, "final_total": ft, "artifact": str(npz_path),
+        }, ensure_ascii=False, indent=1))
     except Exception as e:
-        emit("error", message=f"export failed: {e}")
-        return 1
+        emit("error", message=f"export failed: {e}\n{traceback.format_exc()[-500:]}"); return 1
 
-    emit("done", rows=len(facts), sentences=ft, hits=fh, total=ft, facts=final_facts, export="head")
+    emit("done", rows=len(facts), sentences=ft, hits=fh, total=ft, facts=final, export="lora+head")
     return 0
 
 
