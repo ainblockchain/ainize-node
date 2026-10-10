@@ -597,3 +597,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - QA 전체 117 pass/0 fail/0 skip. 이후 cross-agent 회귀를 실제로 유효한 ledger 승인 증거로 강화하고 coordinator/release 13개 테스트를 다시 통과했다. 빌드도 통과했다. 운영 전환이나 실제 사람 승인 소비는 수행하지 않았다.
 - Aindrive의 full-evidence 결과는 145 pass/28 fail/1 skip이다. 서버 stderr에서 약 2GiB JavaScript heap 한도 도달을 확인했다. cgroup oom/oom_kill은 0이었다. #178의 전송 자체 결함으로 단정하지 않는다. 같은 tree/image/8GiB container/4GiB tmpfs에서 operator gate argv에 NODE_OPTIONS=--max-old-space-size=3072를 지정한 진단이 실행 중이다. `run-heap-evidence.mjs`, `heap-evidence-result.json`, `heap-evidence/`를 확인한다. 모델이나 gateway에서 환경변수를 받도록 확장하지 않았다.
 - 공유 저장소 routing core는 여전히 handler/host 전 단계에 연결되지 않았다. 이 변경만으로 qa-ainize 전환 준비가 끝난 것은 아니다. PR76 승인, PR70 운영 전환, 전체 제품 실제 채널 E2E도 남아 있다.
+
+### 2026-10-10 공유 Ainize 채널의 호스트 실행 경로 연결
+
+- `AINIZE_QA_SHARED_PROFILES` opt-in과 `HostedQaRoutes`를 추가했다. 한 hosted-agent ID가 웹/API의 내부 capability scope를 사용한다. 호스트가 정본 Teams 메시지를 직접 읽어 선택하고, scope와 검증된 intake를 같은 SQLite transaction에 기록한다. 저장된 job 바인딩으로 base/validation/publication/status를 모두 분기한다. caller의 scope 지정, 내부 scope 직접 호출, 다른 job 조회는 거부한다.
+- handler에도 기존 공유 routing 코어를 연결했다. 같은 Jobs DB에서 두 저장소를 접수하며, 호스트가 확인한 repository/route가 일치해야 코딩한다. 새 일반 요청은 웹, API/백엔드 접두어는 API, 답글은 기존 스레드 저장소를 유지한다. 중복/재시작은 같은 job을 유지하고, 설정이 바뀌거나 이관되지 않은 과거 스레드는 자동 재배정하지 않는다.
+- 두 scope의 실제 Teams/Ainmem 토큰·origin, 조직/채널/승인 정책과 보드가 같아야 한다. 자세한 설정은 examples/qa-agent/README.md. 이것은 Teams 봇을 두 개 등록하는 방식이 아니다. 배포/실행 revision 확인은 기존 scope별 release/deployment 프로필과 최신 승인 검사에 연결된다.
+- QA 전체 122 pass/0 fail/0 skip 및 build pass. 마지막 routing policy digest에 branch도 포함한 뒤 route/gateway 4개 테스트 재통과. host capability 설정의 문자열을 boolean으로 오인하지 않도록 검사하고 handler 10개 테스트도 재통과했다. 실제 로컬 HTTP gateway의 하나의 토큰으로 각 capability가 같은 scope에 전달됨과 직접 scope 접근 거부를 검증했다. handler의 두 저장소 접수·host intake/base 확인 후 코딩도 검증했다. Teams/GitHub 읽기는 fixture이므로 실제 운영 채널 E2E는 아니다.
+- Aindrive 재검증은 173 pass/1 source-declared skip/0 fail로 완료됐다. 동일 tree/image, 8GiB memory/4GiB workspace에서 operator gate의 Node heap을 3GiB로 지정했다. 원래 실패는 약 2GiB JS heap 한도였으며 cgroup OOM은 아니었다. 제외 항목은 wallet-cookie 협업 WebSocket 인증이며, offline font 웹 빌드도 여전히 별도 미해결이다. 자세한 증거는 QA-PRODUCT-VALIDATOR.md.
+- 운영 shared profile 활성화, 기존 23개 작업의 route 포함 보존 이관, 단일 실행자 전환, 최신 제품별 validation/revision 설정 및 실제 전체 채널→Ainmem→관리자 승인→배포는 남아 있다. PR76 승인 대기 상태도 그대로다. 새 main 병합/운영 배포/제품 코드 수정은 수행하지 않았다.

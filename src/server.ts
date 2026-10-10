@@ -1,4 +1,5 @@
 import {HostedQaIntake} from './hosted-qa-intake.js';
+import {HostedQaRoutes,scopedQaCapabilities,type QaSharedProfiles} from './hosted-qa-routes.js';
 import {validateDeploymentProfile,type QaDeploymentProfile} from './hosted-qa-deployment.js';
 import {HostedQaRelease,qaReleaseGitHubClient,type QaReleaseProfile} from './hosted-qa-release.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
@@ -504,6 +505,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     }) : undefined;
   const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
   let qaPublication:HostedQaPublicationService|undefined,qaIntake:HostedQaIntake|undefined;
+  let qaRoutes:HostedQaRoutes|undefined;
   let intakeRequired=new Set<string>();
   let qaReviewStore:HostedQaReviewStore|undefined,qaReviewLoop:HostedQaReviewLoop|undefined;
   const readQaToken=(path:string)=>{
@@ -512,6 +514,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     const token=readFileSync(path,'utf8').trim();if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA token');return token;
   };
   if(process.env.AINIZE_QA_BASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA base preparation requires verified intake');
+  if(process.env.AINIZE_QA_SHARED_PROFILES&&(!process.env.AINIZE_QA_REVIEW_PROFILES||!process.env.AINIZE_QA_BASE_PROFILES))throw new Error('Shared QA requires verified intake and prepared bases');
   if(process.env.AINIZE_QA_DEPLOYMENT_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA deployment observation requires review configuration');
   if(process.env.AINIZE_QA_RELEASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA release requires canonical review configuration');
   if(process.env.AINIZE_QA_REVIEW_PROFILES&&!publicationPath)throw new Error('QA review requires publication configuration');
@@ -529,6 +532,18 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       const readers:HostedReviewReaders={ainmem:(id,job,board,subjects)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board,subjects);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
       qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
       qaIntake=new HostedQaIntake(qaReviewStore,profiles,readers.teams);
+      if(process.env.AINIZE_QA_SHARED_PROFILES){
+        const shared=JSON.parse(readFileSync(process.env.AINIZE_QA_SHARED_PROFILES,'utf8')) as QaSharedProfiles;
+        const validations=JSON.parse(readFileSync(qaProfilesPath!,'utf8')) as Record<string,QaValidationProfile>;
+        const publications=JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>;
+        const bases=JSON.parse(readFileSync(process.env.AINIZE_QA_BASE_PROFILES!,'utf8')) as Record<string,{branch:string}>;
+        qaRoutes=new HostedQaRoutes(qaReviewStore,shared,profiles,readers.teams);
+        for(const selection of Object.values(shared)){
+          const web=profiles[selection.web],api=profiles[selection.api];
+          if(web.teamsOrigin!==api.teamsOrigin||web.ainmemOrigin!==api.ainmemOrigin||readQaToken(web.teamsTokenFile)!==readQaToken(api.teamsTokenFile)||readQaToken(web.ainmemTokenFile)!==readQaToken(api.ainmemTokenFile))throw new Error('Shared QA must use one Teams and Ainmem identity');
+          for(const scope of Object.values(selection))if(!Object.hasOwn(validations,scope)||!Object.hasOwn(publications,scope)||!Object.hasOwn(bases,scope)||validations[scope].repository!==profiles[scope].repository||publications[scope].repository!==profiles[scope].repository||publications[scope].branch!==profiles[scope].branch)throw new Error('Shared QA repository capabilities incomplete');
+        }
+      }
       intakeRequired=new Set(Object.entries(profiles).filter(([,p])=>p.intakeEnabledAt).map(([id])=>id));
       if(process.env.AINIZE_QA_BASE_PROFILES){
         const branches=JSON.parse(readFileSync(process.env.AINIZE_QA_BASE_PROFILES,'utf8')) as Record<string,{branch:string}>;
@@ -563,11 +578,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');});
   }
   const hostedGateway = new HostedAgentGateway({
-    qaBase:qaBases?(id,job)=>qaBases!.submit(id,job):undefined,
-    qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
-    qaStatus: qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
-    qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
-    qaValidation: qaValidation ? (id,candidate)=>qaValidation.submit(id,candidate) : undefined,
+    ...scopedQaCapabilities(qaRoutes,{
+      qaBase:qaBases?(id,job)=>qaBases!.submit(id,job):undefined,
+      qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
+      qaStatus:qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
+      qaPublication:qaPublication?(id,request)=>qaPublication.submit(id,request):undefined,
+      qaValidation:qaValidation?(id,candidate)=>qaValidation.submit(id,candidate):undefined,
+    }),
     registry: () => inferenceRegistry,
     peerModels,
     // Read on each call: the gates are filled further down, once the backends block has been walked.
@@ -1287,6 +1304,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       // Drain an in-flight read pass before closing its SQLite ledger.
       if(qaReviewLoop)await qaReviewLoop.drain();
       await qaIntake?.drain();
+      await qaRoutes?.drain();
       await qaBases?.drain();
       qaReviewStore?.close();
       clearInterval(watchdog);

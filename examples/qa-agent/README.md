@@ -181,3 +181,51 @@ must be within 24 hours and later than this start time. Historical imports requi
 a separate reconciliation, not a fabricated new request. The host refuses PR
 publication without this registration when intake is enabled. Only one unfinished
 review per original Teams thread may solicit deployment approval at a time.
+
+## One Ainize channel for web and API
+
+A shared handler keeps one Teams bot, one state directory, and one Ainmem board. Set
+all four `hostBase`, `hostReview`, `hostValidation`, and `hostPublication` flags to
+`true`, and add `routes` to its bundled config:
+
+```json
+{
+  "routes": {
+    "web": {"service":"ainize","repository":"ainblockchain/ainize-web","baseCommit":"<full web SHA>"},
+    "api": {"service":"ainize-node","repository":"ainblockchain/ainize-node","baseCommit":"<full API SHA>"}
+  }
+}
+```
+
+The top-level service/repository/baseCommit must match `web`; keep the normal Teams,
+time, and Ainmem configuration. Bundle `routing.mjs` with the other example modules.
+A new ordinary request defaults to web. `API`, `백엔드`, `ainize-node`, `web`, `웹`, or
+`ainize-web` followed by whitespace/colon selects explicitly. A reply inherits its
+thread's repository; a conflicting prefix requires a new thread.
+
+The operator sets `AINIZE_QA_SHARED_PROFILES` to a JSON file mapping the authenticated
+hosted-agent ID to two private capability profile IDs:
+
+```json
+{"<existing hosted-agent ID>":{"web":"ainize-web-scope","api":"ainize-api-scope"}}
+```
+
+Use those scope IDs as keys in the host validation, publication, review, base, release,
+and deployment profiles. They are internal identifiers, not additional registered
+Teams bots. Both review profiles must have the same intake start time, Teams workspace
+and channel, SSO identities/approval policy, Ainmem board, origins and credentials.
+Validation/publication/base profiles must match each scope's repository and branch.
+The base profiles are required. Release/deployment profiles still require their normal
+operator opt-ins; omitted profiles do not cause automatic deployment.
+
+The host independently rereads canonical Teams content before atomically persisting
+the selected scope and verified intake. The existing gateway token then resolves
+base/validation/publication/status by the saved job ID; no caller-provided scope is
+accepted. Direct token calls as an internal scope are refused. Restart and duplicate
+polls preserve the original binding. Changed routing policy or unmapped historical
+thread state requires explicit reconciliation; do not enable this on a live legacy
+state directory without the preserving migration and single-writer cutover.
+
+This capability is implemented and covered by host/gateway/handler tests. Production
+profiles, historical route import, and actual channel-to-release validation remain
+separate rollout work. Do not infer a completed production migration from these tests.

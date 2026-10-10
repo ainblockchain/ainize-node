@@ -30,6 +30,7 @@ test('config rejects secrets-free invalid bindings and accepts a pinned one', ()
   assert.throws(() => parseConfig({ ...CONFIG, baseCommit: 'short' }), /base commit/);
   assert.throws(() => parseConfig({ ...CONFIG, teamsOrigin: 'http://teams.example/' }), /https/);
   assert.throws(() => parseConfig({ ...CONFIG, repository: 'no-slash' }), /repository/);
+  assert.throws(() => parseConfig({ ...CONFIG, hostReview: 'false' }), /boolean/);
   const ok = parseConfig(CONFIG);
   assert.equal(ok.repository, 'test/product');
   assert.equal(ok.baseCommit, 'a'.repeat(40));
@@ -169,4 +170,30 @@ test('host base is bound once before coding and survives coding checkpoints and 
  await make('c'.repeat(40)).tick({...model([['replace_text',{path:'sum.js',oldText:'a-b',newText:'a+b'}]]),qa});
  assert.equal(calls,1);assert.equal(jobs.get(job.id).checkpoint.holdReason,undefined);assert.equal(jobs.get(job.id).input.base,prepared);
  const claim=jobs.claim();assert.throws(()=>jobs.bindBase(job.id,claim.lease,'d'.repeat(40)),/reconciliation/);
+});
+
+test('shared handler queues both repositories and requires matching host route before coding',async t=>{
+ const {createHash}=await import('node:crypto');
+ // @ts-expect-error plain ESM example
+ const {Jobs}=await import('../examples/qa-agent/jobs.mjs');
+ const stateDir=mkdtempSync(join(tmpdir(),'qa-shared-handler-'));t.after(()=>rmSync(stateDir,{recursive:true,force:true}));
+ const config={...CONFIG,hostBase:true,hostReview:true,hostValidation:true,hostPublication:true,routes:{web:{service:CONFIG.service,repository:CONFIG.repository,baseCommit:CONFIG.baseCommit},api:{service:'ainize-node',repository:'test/api',baseCommit:'b'.repeat(40)}}};
+ assert.throws(()=>parseConfig({...config,hostBase:false}),/all host capabilities/);
+ const messages={web:{...verified,messageId:'web',parentId:'web'},api:{...verified,messageId:'api',parentId:'api',text:'API 오류 고쳐줘.'}};
+ const seen=[];
+ const handler=createHandler({config,stateDir,verifyIntake:async(_ctx,loc)=>messages[loc.messageId],newSnapshot:(_ctx,repo,base)=>({repository:repo,commit:base}),advance:async({jobs,claim,snapshot})=>{
+  seen.push([snapshot.repository,snapshot.commit]);return {job:jobs.finish(claim.job.id,claim.lease,'waiting',{...claim.job.checkpoint,stage:'needs_validation'})};
+ }});
+ const ids={};
+ for(const route of ['web','api'])ids[route]=(await handler.execute('',locatorInput({teamsMessage:{messageId:route},route:'spoofed'}))).metadata.jobId;
+ const routeOf=id=>id===ids.api?'api':'web';
+ const ctx={log(){},qa:{intake:async(id,locator)=>{
+  const route=routeOf(id),m=messages[route];return {state:'done',result:{requestId:locator.messageId,rootId:locator.parentId,workspaceId:CONFIG.workspaceId,channelId:CONFIG.channelId,requestDigest:createHash('sha256').update(m.text).digest('hex'),repository:config.routes[route].repository,route}};
+ },base:async id=>({state:'done',result:{repository:config.routes[routeOf(id)].repository,base:'c'.repeat(40)}})}};
+ // Two jobs each pass host intake and base binding before any coding.
+ for(let i=0;i<6;i++)await handler.tick(ctx);
+ assert.deepEqual(seen.map(x=>x[0]).sort(),['test/api','test/product']);
+ assert.ok(seen.every(x=>x[1]==='c'.repeat(40)));
+ const jobs=new Jobs(join(stateDir,'jobs.sqlite3'));
+ try{for(const id of Object.values(ids)){assert.equal(jobs.get(id).checkpoint.hostIntake,true);assert.equal(jobs.get(id).checkpoint.hostBase,true);}}finally{jobs.close();}
 });

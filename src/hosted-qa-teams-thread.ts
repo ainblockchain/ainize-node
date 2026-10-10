@@ -50,7 +50,7 @@ export async function readQaTeamsThread(mcp:TeamsReviewMcp,rawBinding:QaTeamsThr
 }
 
 /** Resolve a fresh fix request independently of agent-provided author/text/time fields. */
-export async function captureQaTeamsRequest(mcp:TeamsReviewMcp,policy:ReviewPolicy,identities:Record<string,string>,locator:{messageId:string;parentId?:string},enabledAt:string,now=Date.now()){
+export async function captureQaTeamsRequestWithText(mcp:TeamsReviewMcp,policy:ReviewPolicy,identities:Record<string,string>,locator:{messageId:string;parentId?:string},enabledAt:string,now=Date.now()){
  if(!locator||!id(locator.messageId)||(locator.parentId!==undefined&&!id(locator.parentId))||!Number.isFinite(Date.parse(enabledAt)))throw new Error('Invalid intake configuration');
  const rootId=locator.parentId??locator.messageId;
  const thread:any=await mcp.call('read_thread',{messageId:rootId});
@@ -64,5 +64,6 @@ export async function captureQaTeamsRequest(mcp:TeamsReviewMcp,policy:ReviewPoli
  if(!Array.isArray(members)||!members.some(m=>m?.userId===request.userId&&m.isAgent===false))throw new Error('Request author is not a current human channel member');
  const binding:QaTeamsThreadBinding={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId,requestId:request.id,requestAuthorId:request.userId,requestCreatedAt:request.createdAt,requestDigest:digest(request.content)};
  await readQaTeamsThread(mcp,binding,policy,identities);
- return binding;
+ return {binding,text:request.content};
 }
+export async function captureQaTeamsRequest(...args:Parameters<typeof captureQaTeamsRequestWithText>){return (await captureQaTeamsRequestWithText(...args)).binding;}

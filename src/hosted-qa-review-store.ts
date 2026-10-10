@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
+export interface QaRepositoryRoutes {web:{scope:string;repository:string};api:{scope:string;repository:string}}
+export interface QaRoutedIntake {scope:string;repository:string;route:'web'|'api';policyDigest:string;binding:QaTeamsThreadBinding}
 export interface StoredReview {agentId:string;jobId:string;generation:number;key:string;presentation:ReviewPresentation}
 const json=(value:unknown,limit=64000)=>{const raw=JSON.stringify(value);if(Buffer.byteLength(raw)>limit)throw new Error('Review record too large');return raw;};
 const fingerprint=(p:ReviewPresentation)=>createHash('sha256').update(json([Object.entries(p.target).sort(([a],[b])=>a.localeCompare(b)),p.body,p.bodyDigest,p.revision,p.digest,p.policyDigest??null])).digest('hex');
@@ -20,6 +22,7 @@ export class HostedQaReviewStore {
   this.db=new DatabaseSync(file);
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS review_intakes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,request_key TEXT NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(agent_id,job_id),UNIQUE(agent_id,request_key));
+   CREATE TABLE IF NOT EXISTS review_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
@@ -66,6 +69,37 @@ export class HostedQaReviewStore {
  }
  intake(agentId:string,jobId:string):QaTeamsThreadBinding|null {
   const row=this.db.prepare('SELECT binding FROM review_intakes WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.binding)):null;
+ }
+ routedIntake(owner:string,jobId:string):QaRoutedIntake|null {
+  const row=this.db.prepare('SELECT record FROM review_routes WHERE owner_id=? AND job_id=?').get(owner,jobId);
+  return row?JSON.parse(String(row.record)):null;
+ }
+ registerRoutedIntake(owner:string,jobId:string,routes:QaRepositoryRoutes,policyDigest:string,binding:QaTeamsThreadBinding,text:string):QaRoutedIntake {
+  if(!/^[-\w]{1,128}$/.test(owner)||!/^[-\w]{1,80}$/.test(jobId)||createHash('sha256').update(text).digest('hex')!==binding.requestDigest)throw new Error('Invalid routed intake');
+  return this.transaction(()=>{
+   const prior=this.routedIntake(owner,jobId);
+   if(prior){if(prior.policyDigest!==policyDigest||json(prior.binding)!==json(binding))throw new Error('Routed intake changed');return prior;}
+   const rows=this.db.prepare("SELECT agent_id,job_id,binding FROM review_intakes WHERE json_extract(binding,'$.workspaceId')=? AND json_extract(binding,'$.channelId')=? AND (json_extract(binding,'$.rootId')=? OR json_extract(binding,'$.requestId')=?)").all(binding.workspaceId,binding.channelId,binding.rootId,binding.requestId);
+   let inherited:'web'|'api'|undefined;
+   for(const row of rows){
+    const original:QaTeamsThreadBinding=JSON.parse(String(row.binding));
+    if(original.requestId===binding.requestId)throw new Error('Original request already assigned; reconciliation required');
+    const route=(Object.keys(routes) as ('web'|'api')[]).find(key=>routes[key].scope===row.agent_id);
+    if(!route||inherited&&inherited!==route)throw new Error('Ambiguous historical thread route');
+    const previous=this.routedIntake(owner,String(row.job_id));
+    if(!previous||previous.policyDigest!==policyDigest||previous.scope!==row.agent_id||previous.repository!==routes[route].repository)throw new Error('Historical route policy changed; reconciliation required');
+    inherited=route;
+   }
+   const prefix=/^(api|ainize-node|백엔드|web|ainize-web|웹)(?=\s|:|：|$)/i.exec(text.trim().replace(/^\/fix\s+/i,''));
+   const requested=prefix?(/^(api|ainize-node|백엔드)$/i.test(prefix[1])?'api':'web'):undefined;
+   if(inherited&&requested&&inherited!==requested)throw new Error('Different repository requires a new thread');
+   const route=inherited??requested??'web',selected=routes[route];
+   if(Number(this.db.prepare('SELECT count(*) AS n FROM review_intakes').get()!.n)>=10000)throw new Error('Intake capacity reached');
+   this.db.prepare('INSERT INTO review_intakes VALUES(?,?,?,?)').run(selected.scope,jobId,json([binding.workspaceId,binding.channelId,binding.requestId]),json(binding));
+   const record={...selected,route,policyDigest,binding};
+   this.db.prepare('INSERT INTO review_routes VALUES(?,?,?)').run(owner,jobId,json(record));
+   return structuredClone(record);
+  });
  }
  registerIntake(agentId:string,jobId:string,binding:QaTeamsThreadBinding){
   if(!/^[-\w]{1,128}$/.test(agentId)||!/^[-\w]{1,80}$/.test(jobId))throw new Error('Invalid intake identity');

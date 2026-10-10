@@ -305,3 +305,27 @@ Evidence: `/mnt/newdata/qa-services/validation/native-ainize-web-product-2026101
 (`profile.json`, `result.json`, `run.mjs`, `image-id`, Dockerfile/build log, exact Git
 bundle/checkout, `registry-probe.json`). The unchanged package manifest was the overlay.
 No product fix, production profile, live QA job, approval or deployment was performed.
+
+## Aindrive complete scenario run with explicit heap policy (2026-10-10)
+
+`full-evidence-result.json` confirmed the previous failure: 145 passed, 28 failed,
+one skipped. The temporary Next development server exhausted its JavaScript heap
+at roughly 2 GiB (`FATAL ERROR: Reached heap limit`); cgroup `oom` and `oom_kill` were
+both zero. This evidence identifies the process exit cause, not a proven memory leak
+or a product streaming defect.
+
+The same exact main/image/candidate passed the full scenario run with operator gate
+argv `env NODE_OPTIONS=--max-old-space-size=3072 npm run test:e2e`. Container memory
+remained 8 GiB, workspace 4096 MiB, and networking disabled. No source changes or
+model-controlled environment settings were introduced. Result: **173 passed, 1 skipped,
+0 failed**, 174 total, about 429 seconds. This exercised the actual temporary HTTP
+server and CLI, including the previous #178 failure and all subsequent scenarios.
+
+Evidence under the existing Aindrive product root: `run-heap-evidence.mjs`,
+`heap-evidence-result.json`, and `heap-evidence/full-e2e.{stdout,stderr}.log`.
+The one source-declared skip is the wallet-cookie collaboration WebSocket authentication
+scenario in `web/scenarios/collab-cases.mjs`: dochub currently recognizes only the
+regular session cookie. The skip remains a product coverage gap; it is not a pass.
+The web production build's offline Google Fonts failure and existing PR199 remain
+separate unresolved work. These results do not prove a live QA channel/model/approval/
+production release, and the profile has not been enabled for production jobs.
