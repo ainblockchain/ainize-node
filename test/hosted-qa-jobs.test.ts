@@ -99,3 +99,41 @@ test('polling a slow host gate cannot starve later jobs, including after restart
   other.finish(slow.id, retry.lease, 'queued', retry.job.checkpoint);
   assert.equal(resumed.claim().job.id, later.id, 'each eligible job receives another turn');
 });
+
+test('revalidation archives the original attempt atomically without changing task identity, base or prior authority', t => {
+  const {open}=setup(t);let jobs=open();
+  const input={service:'test',repository:'test/product',base:'a'.repeat(40),text:'고쳐줘',teams:{workspaceId:'w',channelId:'c',parentId:'m',messageId:'m'}};
+  const job=jobs.enqueueTeamsRequest(input),claim=jobs.claim();
+  const checkpoint={stage:'awaiting_approval',published:{repository:input.repository,base:input.base,sha:'b'.repeat(40),candidateDigest:'c'.repeat(64)},coding:{jobId:job.id,checksum:'d'.repeat(64)},validation:{jobId:job.id,checksum:'e'.repeat(64)},pageId:'original-page',approval:{sha:'b'.repeat(40)}};
+  jobs.finish(job.id,claim.lease,'waiting',checkpoint);
+  const review=jobs.claimReview();const parked=jobs.parkForRevalidation(job.id,review.lease,'f'.repeat(40));
+  assert.equal(parked.id,job.id);assert.deepEqual(parked.input,input);assert.equal(parked.checkpoint.pageId,'original-page');assert.equal(parked.checkpoint.approval,undefined);assert.equal(jobs.wake(job.id),false);
+  const history=jobs.revalidationHistory(job.id);assert.equal(history.length,1);assert.deepEqual(history[0].checkpoint,checkpoint);assert.deepEqual(history[0].input,input);
+  assert.equal(parked.checkpoint.priorAttempt.sourceDigest,history[0].sourceDigest);
+  jobs.close();jobs=open();assert.deepEqual(jobs.revalidationHistory(job.id),history);
+  assert.equal(jobs.enqueueTeamsRequest({...input,base:'f'.repeat(40)}).id,job.id);
+  assert.throws(()=>jobs.parkForRevalidation(job.id,review.lease,'f'.repeat(40)),/binding changed/);
+  assert.equal(jobs.revalidationHistory(job.id).length,1);assert.equal(jobs.claim(),null);
+});
+
+test('expired revalidation writer cannot add history or overwrite the active lease', t => {
+  let now=1000;const {open}=setup(t,{now:()=>now}),jobs=open();
+  const job=jobs.enqueue('request',{repository:'test/product',base:'a'.repeat(40)}),claim=jobs.claim();
+  const checkpoint={stage:'awaiting_approval',published:{repository:'test/product',base:'a'.repeat(40),sha:'b'.repeat(40)}};
+  jobs.finish(job.id,claim.lease,'waiting',checkpoint);const expired=jobs.claimReview(1000);now=2000;
+  const fresh=jobs.claimReview();assert.throws(()=>jobs.parkForRevalidation(job.id,expired.lease,'c'.repeat(40)),/lease lost/);
+  assert.deepEqual(jobs.revalidationHistory(job.id),[]);assert.deepEqual(jobs.get(job.id).checkpoint,checkpoint);
+  jobs.parkForRevalidation(job.id,fresh.lease,'c'.repeat(40));assert.equal(jobs.revalidationHistory(job.id).length,1);
+});
+
+test('history write failure rolls back the visible revalidation transition', t => {
+  const {open}=setup(t),jobs=open();
+  const job=jobs.enqueue('request',{repository:'test/product',base:'a'.repeat(40)}),claim=jobs.claim();
+  const checkpoint={stage:'awaiting_approval',published:{repository:'test/product',base:'a'.repeat(40),sha:'b'.repeat(40)}};
+  jobs.finish(job.id,claim.lease,'waiting',checkpoint);const review=jobs.claimReview();
+  jobs.db.exec("CREATE TRIGGER fail_history BEFORE INSERT ON revalidation_history BEGIN SELECT RAISE(ABORT, 'test history failure'); END");
+  assert.throws(()=>jobs.parkForRevalidation(job.id,review.lease,'c'.repeat(40)),/history failure/);
+  assert.equal(jobs.get(job.id).state,'running');assert.deepEqual(jobs.get(job.id).checkpoint,checkpoint);assert.deepEqual(jobs.revalidationHistory(job.id),[]);
+  jobs.db.exec('DROP TRIGGER fail_history');jobs.parkForRevalidation(job.id,review.lease,'c'.repeat(40));
+  assert.equal(jobs.get(job.id).state,'waiting');assert.equal(jobs.revalidationHistory(job.id).length,1);
+});

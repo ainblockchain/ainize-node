@@ -28,6 +28,7 @@ export class Jobs {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS review_polls(job_id TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS work_polls(job_id TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS revalidation_history(job_id TEXT NOT NULL,sequence INTEGER NOT NULL,source_digest TEXT NOT NULL,input TEXT NOT NULL,checkpoint TEXT NOT NULL,observed_base TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(job_id,sequence),UNIQUE(job_id,source_digest));
       CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, input TEXT NOT NULL,
         state TEXT NOT NULL, checkpoint TEXT NOT NULL, lease TEXT, expires INTEGER,
@@ -129,6 +130,35 @@ export class Jobs {
       .run(state, body, now, id, lease, now).changes !== 1) throw new Error('job lease lost');
     return this.get(id);
   }
+  /** Preserve the exact prior attempt before changing its visible state. No new base or approval is bound here. */
+  parkForRevalidation(id, lease, observedBase) {
+    if (typeof observedBase !== 'string' || !/^[a-f0-9]{40}$/.test(observedBase)) throw new Error('Invalid changed base');
+    return this.transaction(() => {
+      const job = this.get(id), published = job?.checkpoint.published;
+      if (!job || job.checkpoint.stage !== 'awaiting_approval' || !published
+        || published.repository !== job.input.repository || published.base !== job.input.base
+        || !/^[a-f0-9]{40}$/.test(published.sha ?? '') || observedBase === job.input.base) throw new Error('Revalidation candidate binding changed');
+      const input = json(job.input), checkpoint = json(job.checkpoint);
+      const sourceDigest = createHash('sha256').update(JSON.stringify([input, checkpoint])).digest('hex');
+      const prior = this.db.prepare('SELECT sequence,observed_base FROM revalidation_history WHERE job_id=? AND source_digest=?').get(id, sourceDigest);
+      const sequence = prior?.sequence ?? Number(this.db.prepare('SELECT coalesce(max(sequence),0)+1 AS n FROM revalidation_history WHERE job_id=?').get(id).n);
+      if (sequence > 20) throw new Error('Revalidation attempt limit reached');
+      if (prior && prior.observed_base !== observedBase) throw new Error('Archived base observation changed');
+      // Lease validation and archival share a transaction: an expired writer leaves neither behind.
+      const { approval: _approval, release: _release, deployment: _deployment, servingCommit: _servingCommit, ...preserved } = job.checkpoint;
+      const result = this.finish(id, lease, 'waiting', { ...preserved, stage: 'needs_revalidation',
+        holdReason: 'base_changed', observedBase, priorAttempt: { sequence, sourceDigest } });
+      if (!prior) this.db.prepare('INSERT INTO revalidation_history VALUES(?,?,?,?,?,?,?)')
+        .run(id, sequence, sourceDigest, input, checkpoint, observedBase, this.now());
+      return result;
+    });
+  }
+  revalidationHistory(id) {
+    return this.db.prepare('SELECT * FROM revalidation_history WHERE job_id=? ORDER BY sequence').all(id).map(row => ({
+      sequence: Number(row.sequence), sourceDigest: row.source_digest, input: JSON.parse(row.input),
+      checkpoint: JSON.parse(row.checkpoint), observedBase: row.observed_base, created: Number(row.created),
+    }));
+  }
   /** Only first-time base preparation may update input. Candidates and approvals are never rebased here. */
   bindBase(id,lease,base) {
     if(typeof base!=='string'||!/^[a-f0-9]{40}$/.test(base))throw new Error('Invalid prepared base');
@@ -143,6 +173,6 @@ export class Jobs {
   }
   /** Scheduling only; this does not grant release permission. The executor must recheck approval and SHA. */
   wake(id) {
-    return this.db.prepare("UPDATE jobs SET state='queued',updated=? WHERE id=? AND state='waiting'").run(this.now(), id).changes === 1;
+    return this.db.prepare("UPDATE jobs SET state='queued',updated=? WHERE id=? AND state='waiting' AND coalesce(json_extract(checkpoint,'$.holdReason'),'')<>'base_changed'").run(this.now(), id).changes === 1;
   }
 }
