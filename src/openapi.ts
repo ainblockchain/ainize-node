@@ -2,6 +2,8 @@
  * OpenAPI 3.1 description of an Ainize node — served at GET /api/openapi.json and rendered by the web /docs page
  * and by `ainize --help`. Kept next to the routes so it changes with them.
  */
+import { agentRepositoryPaths } from './agent-repository-openapi.js';
+
 export function buildOpenApi(base: string, version: string) {
   const ok = (description: string, schema: unknown = { type: 'object' }) => ({ 200: { description, content: { 'application/json': { schema } } } });
   const S = {
@@ -210,6 +212,7 @@ export function buildOpenApi(base: string, version: string) {
       schemas: S,
     },
     paths: {
+      ...agentRepositoryPaths(),
       '/api/shared-agents': { get: { tags: ['Agents'], summary: 'Agents this node runs or proxies, in the cross-product registry shape (contract 1.0)', security: [],
         description: 'The same list every product reads from every origin — hosted agents, linked agents and the operator\'s config agents alike. `public` needs no sign-in; `mine` and `shared_with_me` need a wallet or AIN SSO session; `shared_with_org` needs an AIN SSO session or an ORGANIZATION API KEY (`POST /api/keys {org_id}`, sent as `Authorization: Bearer ainize-sk-…`) and lists what is shared with that organization — the way a product with no browser session (AIN Teams) reads its organization\'s list. Sorted by `updatedAt` descending, then id.',
         parameters: [
