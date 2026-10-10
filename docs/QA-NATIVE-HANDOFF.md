@@ -625,3 +625,29 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 운영 adoption 환경변수/새 token/페이지 쓰기는 아직 하지 않았다. PR76 배포 승인도 대기 중이다. 기존 작업 데이터가 준비됐다는 사실과 실제 native agent가 페이지를 갱신할 수 있다는 사실을 구분한다. 승인 모아보기와 페이지 댓글 LGTM을 포함한 실채널 E2E는 남아 있다.
 
 - 조회가 끝난 뒤 추가 summary 파일 저장 시도 때 vault 잠금이 만료되어 접속하지 못했다. 기존 evidence/bindings 파일은 앞선 성공한 조회에서 저장됐으며 summary 파일은 생성되지 않았다.
+
+## Ainmem QA 등록 API 구현 — 2026-10-10
+
+Ainmem PR #76 최신 head `f25fedf`는 앞선 `10e62a6`/`5edeb3e`를 대체한다.
+이전 head 승인 요청은 최신 head의 배포 승인이 아니다. 운영 배포하지 않았다.
+
+- `/api/qa/agents` POST는 현재 SSO 조직 관리자와 보드 공유 권한을 확인한 뒤
+  실제 Ainize org registry 조회로 agent를 확인한다. 동일 registry/org/agent는 같은
+  Ainmem user로 등록하며 지정 workspace guest/보드 edit만 부여한다.
+- 보드별 `qaa_` token 원문은 발급 시 한 번 반환, DB에는 해시만 저장한다.
+  재시도는 회전하지 않고, 명시적 rotate와 DELETE 폐기를 지원한다.
+- task API는 token의 보드/workspace 범위와 현재 발급 관리자 SSO/역할/계정 상태를
+  재검증한다. 일반 A2A/MCP token은 기본 거부한다. 운영에서 이전용 예외인
+  `AINMEM_QA_ALLOW_LEGACY_AGENT_TOKENS`를 켜지 않는다.
+- 새 task page에는 guest agent의 edit grant를 추가한다. 기존 페이지 권한은
+  자동 확대하지 않으므로 23개 legacy page의 명시적 권한 연결은 다음 작업이다.
+- 서버 PostgreSQL + task HTTP/route 테스트 **12 pass / 0 skip**, 타입 검사 통과.
+  registry는 mock, 실제 사용자 브라우저 등록/SSO 검증은 미완료다.
+  서버 증거 `native-ainmem-permission-1e4a3seo/integration.log`와 `typecheck.log`.
+  테스트 DB 컨테이너 제거 확인. 운영 DB 스키마/권한/agent/token 변경 없음.
+
+운영 스키마에는 `0005_qa_agent_credentials.sql` 또는 db:push 적용이 필요하다.
+Registry에서 agent가 제거될 때 기존 token의 자동 폐기 동기화는 아직 없다.
+그 전에는 explicit credential 폐기가 필요하며 운영 전환 완료로 보지 않는다.
+새 token을 Ainize private profile에 전달하고 실제 기존 페이지·채널 작업·승인·배포를
+검증하는 단계, 통합 승인 보드 mirror 갱신과 단일 작업기 전환은 계속 남아 있다.
