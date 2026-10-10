@@ -1,0 +1,47 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {HostedQaReviewStore} from '../src/hosted-qa-review-store.js';
+import {HostedQaPublicationService,type QaPublicationDrift} from '../src/hosted-qa-publication-service.js';
+import {QaPublicationBaseChanged} from '../src/hosted-qa-publication.js';
+import {qaCandidateDigest} from '../src/hosted-qa-validator.js';
+const candidate={repository:'test/product',base:'a'.repeat(40),changes:{'a.js':'fix'}};
+const next='b'.repeat(40),later='c'.repeat(40),digest=qaCandidateDigest(candidate);
+const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'request',requestAuthorId:'human',requestDigest:'d'.repeat(64),requestCreatedAt:'2026-10-10T00:00:00Z'};
+test('publisher drift survives host restart and a return of main without republishing the old candidate',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-pub-drift-'));let store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ store.registerIntake('agent','job',binding);let calls=0,allowed=true;
+ const read=(id,job,c)=>{
+  const saved=store.publicationBaseChange(id,job,qaCandidateDigest(c));
+  if(!saved)return null;const {teamsRequest:_request,...proof}=saved;return {state:'requires_revalidation',...proof} as QaPublicationDrift;
+ };
+ const before=()=>{if(!allowed)throw new Error('intake revoked');};
+ const save=(id,job,c,status)=>{store.recordPublicationBaseChange(id,job,c,status.observedBase,status.artifact);return read(id,job,c)!;};
+ let service=new HostedQaPublicationService({publish:async()=>{calls++;throw new QaPublicationBaseChanged(next);}} as any,undefined,before,save,read);
+ const input={jobId:'job',candidate};assert.equal(service.submit('agent',input).state,'running');await new Promise(r=>setImmediate(r));
+ const first=service.submit('agent',input);assert.equal(first.state,'requires_revalidation');assert.equal(store.publicationBaseChange('agent','job',digest)?.observedBase,next);
+ store.close();store=new HostedQaReviewStore(root);
+ service=new HostedQaPublicationService({publish:async()=>{calls++;throw Error('must not publish');}} as any,undefined,before,save,read);
+ assert.deepEqual(service.submit('agent',input),first);assert.equal(calls,1);
+ allowed=false;assert.throws(()=>service.submit('agent',input),/revoked/);allowed=true;
+ const artifact={sha:'e'.repeat(40),number:4,url:'https://github.com/test/product/pull/4'};
+ store.recordPublicationBaseChange('agent','job',candidate,later,artifact);
+ assert.equal(store.publicationBaseChange('agent','job',digest)?.observedBase,next);
+ assert.deepEqual(store.publicationBaseChange('agent','job',digest)?.artifact,artifact);
+ assert.throws(()=>store.recordPublicationBaseChange('agent','job',candidate,later,{...artifact,sha:'f'.repeat(40)}),/binding changed/);
+ assert.equal(store.publicationBaseChange('other','job',digest),null);
+ assert.throws(()=>store.recordPublicationBaseChange('other','job',candidate,next),/intake/);
+});
+test('drift persistence failure is not acknowledged and an in-flight revocation prevents writing evidence',async()=>{
+ const input={jobId:'job',candidate};let writes=0;
+ const publisher={publish:async()=>{throw new QaPublicationBaseChanged(next);}} as any;
+ const failed=new HostedQaPublicationService(publisher,undefined,()=>{},()=>{writes++;throw Error('disk failure');});
+ failed.submit('agent',input);await new Promise(r=>setImmediate(r));assert.equal(failed.submit('agent',input).state,'failed');assert.equal(writes,1);
+ let allowed=true,release:(value?:unknown)=>void=()=>{};
+ const pending=new HostedQaPublicationService({publish:()=>new Promise((_resolve,reject)=>{release=()=>reject(new QaPublicationBaseChanged(next));})} as any,undefined,()=>{if(!allowed)throw Error('revoked');},()=>{assert.fail('must not persist');});
+ pending.submit('agent',input);allowed=false;release();await new Promise(r=>setImmediate(r));allowed=true;
+ assert.equal(pending.submit('agent',input).state,'failed');
+});

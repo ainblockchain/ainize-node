@@ -12,7 +12,7 @@ import {HostedQaPublisher,qaGitHubClient,type QaPublicationProfile} from './host
 import {HostedQaPublicationService} from './hosted-qa-publication-service.js';
 import {HostedQaBases,prepareQaCheckout,type QaBaseProfile} from './hosted-qa-base.js';
 import { HostedQaValidationService } from './hosted-qa-validation-service.js';
-import type { QaValidationProfile } from './hosted-qa-validator.js';
+import {qaCandidateDigest,type QaValidationProfile} from './hosted-qa-validator.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
@@ -579,7 +579,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       }
       qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release,deployments?{profiles:deployments,github:path=>github('GET',path)}:undefined);
     }
-    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job,candidate)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');qaValidation!.requirePassed(id,candidate,job);});
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job,candidate)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');qaValidation!.requirePassed(id,candidate,job);},qaReviewStore?(id,job,candidate,status)=>{
+      qaReviewStore!.recordPublicationBaseChange(id,job,candidate,status.observedBase,status.artifact);
+      const saved=qaReviewStore!.publicationBaseChange(id,job,status.candidateDigest)!;
+      const {teamsRequest:_request,...evidence}=saved;return {state:'requires_revalidation',...evidence};
+    }:undefined,qaReviewStore?(id,job,candidate)=>{
+      const saved=qaReviewStore!.publicationBaseChange(id,job,qaCandidateDigest(candidate));
+      if(!saved)return null;const {teamsRequest:_request,...evidence}=saved;return {state:'requires_revalidation',...evidence};
+    }:undefined);
   }
   const hostedGateway = new HostedAgentGateway({
     ...scopedQaCapabilities(qaRoutes,{

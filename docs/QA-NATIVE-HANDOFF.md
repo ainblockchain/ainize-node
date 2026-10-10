@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 160개 및 build 통과. 이번 gateway 연결 상태의 전체 API suite는
+- QA 회귀 162개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -27,6 +27,25 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 게시 전 base 변경 증거 영구 보존:
+publisher가 반환한 `QaPublicationBaseChanged`를 새 `publication_base_changes` 테이블에
+agent/job/candidate digest로 묶어 기록한다. 서버는 저장 전 intake·정확한 validation
+receipt를 재확인하며 저장 실패를 `requires_revalidation` 성공으로 알리지 않는다.
+재시작 후와 cached 응답 전에도 이 기록을 읽으므로 main이 원래 SHA로 돌아오더라도
+이전 후보 게시를 다시 수행하지 않는다. 최초 observed base는 유지하고, 호스트가
+검증한 기존 PR artifact만 추가할 수 있다. 다른 artifact로 교체하는 것은 거부한다.
+저장 실패·처리 중 권한 철회·재시작·다른 agent 접근 거부 포함 QA 162 pass/0 fail/0 skip,
+build 통과. 전체 API suite를 이번 변경 뒤 재실행한 것은 아니며 위 704ced1 결과와 구분한다.
+
+**게시 전 자동 재개 연결은 아직 미완료:** handler의 재개 요청에 해당 candidate digest를
+포함시켜 위 증거와 정확히 대조해야 한다. 현재 request의 sourceDigest는 로컬 보관 이력의
+해시이므로 host candidate digest를 대신하지 못한다. 처음부터 review가 없던 경우와
+이전 review는 남아 있지만 중간 준비 base에서 다시 drift한 경우의 reservation 및
+publication 교체를 별도로 검증해야 한다. 기록 존재만으로 임의 후보 재개를 허용하지 않는다.
+
+운영 선행 PR 재조회: Ainize #71(403860f), Ainmem #76(971a776)은 모두 OPEN/MERGEABLE이다.
+해당 두 PR 병합·배포 승인 요청은 아직 답변이 없으며 운영 배포를 수행하지 않았다.
 
 2026-10-11 에이전트 재개 호출 연결:
 `HostedQaRevalidationService`와 authenticated `/qa/revalidation`, runtime `ctx.qa.revalidate`,

@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
 import type {QaRevalidationRequest,QaRevalidationReceipt} from './hosted-qa-base.js';
+import {qaCandidateDigest,type QaCandidate} from './hosted-qa-validator.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
 interface RevalidationRecord {request:QaRevalidationRequest;generation:number;reviewKey:string;publication:any;observedBase:string;pageId?:string;prepared?:QaRevalidationReceipt;replacement?:{repository:string;base:string;sha:string;candidateDigest:string;number:number;url:string}}
 export interface QaRepositoryRoutes {web:{scope:string;repository:string};api:{scope:string;repository:string}}
@@ -29,10 +30,43 @@ export class HostedQaReviewStore {
    CREATE TABLE IF NOT EXISTS review_historical_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS review_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,review_key TEXT NOT NULL,observed_base TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_revalidations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,sequence INTEGER NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,sequence));
+   CREATE TABLE IF NOT EXISTS publication_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,candidate_digest TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,candidate_digest));
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
    CREATE TABLE IF NOT EXISTS review_observations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,comment_id TEXT NOT NULL,checked_at TEXT NOT NULL,evidence TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation,comment_id,checked_at));`);
+ }
+ /** Host publisher evidence only. Call after checking fresh intake and exact validation binding.
+  * The first observation survives retries and a later return of main to the original commit.
+  */
+ recordPublicationBaseChange(agentId:string,jobId:string,candidate:QaCandidate,observedBase:string,artifact?:{sha:string;number:number;url:string}):void {
+  if(!/^[-\w]{1,128}$/.test(agentId)||!/^[-\w]{1,80}$/.test(jobId)||typeof observedBase!=='string'
+   ||!/^[a-f0-9]{40}$/.test(observedBase)||observedBase===candidate.base)throw new Error('Invalid publication base change');
+  const candidateDigest=qaCandidateDigest(candidate);
+  if(artifact&&(typeof artifact.sha!=='string'||!/^[a-f0-9]{40}$/.test(artifact.sha)||!Number.isSafeInteger(artifact.number)||artifact.number<1
+   ||artifact.url!==`https://github.com/${candidate.repository}/pull/${artifact.number}`))throw new Error('Invalid prior publication artifact');
+  this.transaction(()=>{
+   const intake=this.intake(agentId,jobId);if(!intake)throw new Error('Verified intake required');
+   const review=this.current(agentId,jobId);
+   if(review&&this.releaseRecord(review))throw new Error('Release reconciliation required before recording drift');
+   const record={repository:candidate.repository,base:candidate.base,candidateDigest,observedBase,...(artifact?{artifact:structuredClone(artifact)}:{}),teamsRequest:intake};
+   const prior=this.publicationBaseChange(agentId,jobId,candidateDigest);
+   if(prior){
+    if(prior.repository!==record.repository||prior.base!==record.base||json(prior.teamsRequest)!==json(intake)
+     ||(prior.artifact&&artifact&&json(prior.artifact)!==json(artifact)))throw new Error('Publication drift binding changed');
+    // A lost response can precede artifact discovery. Preserve the original observation and
+    // enrich only with a host-reconciled PR, never replace an already recorded artifact.
+    if(!prior.artifact&&artifact)this.db.prepare('UPDATE publication_base_changes SET record=? WHERE agent_id=? AND job_id=? AND candidate_digest=?')
+     .run(json({...prior,artifact}),agentId,jobId,candidateDigest);
+    return;
+   }
+   if(Number(this.db.prepare('SELECT count(*) AS n FROM publication_base_changes').get()!.n)>=10000)throw new Error('Publication drift capacity reached');
+   this.db.prepare('INSERT INTO publication_base_changes VALUES(?,?,?,?)').run(agentId,jobId,candidateDigest,json(record));
+  });
+ }
+ publicationBaseChange(agentId:string,jobId:string,candidateDigest:string):{repository:string;base:string;candidateDigest:string;observedBase:string;teamsRequest:QaTeamsThreadBinding;artifact?:{sha:string;number:number;url:string}}|null {
+  const row=this.db.prepare('SELECT record FROM publication_base_changes WHERE agent_id=? AND job_id=? AND candidate_digest=?').get(agentId,jobId,candidateDigest);
+  return row?JSON.parse(String(row.record)):null;
  }
  /** Permanent invalidation of this generation, even if the branch later moves back. */
  baseChange(expected:StoredReview):string|null {
