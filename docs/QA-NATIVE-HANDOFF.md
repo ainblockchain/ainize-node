@@ -16,6 +16,8 @@
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
   테스트 코드 수정과 격리 실행 검증을 통과했다. 각각 제품/모델 진단이며 실서비스
   채널→수정→PR→관리자 승인→배포 전체 흐름의 증거는 아니다.
+- 실제 모델의 **검증 실패 후 자동 재수정** 진단도 통과했다. 아래 기록의 실패 후보는
+  테스트가 의도적으로 넣은 것으로, 최초 모델 출력이었다고 해석하지 않는다.
 - Teams main 0e6dfedd: typecheck/lint 통과, production build와 화면 4개 검사 통과.
   전체 unit gate는 DNS/Git 메타데이터/thumbnail fixture 문제로 실패 기록이 남아 있다.
 - Ainspace main 348b319: 201 tests 통과, lint 오류 0/경고 36. Google Fonts 다운로드
@@ -25,6 +27,19 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 실제 재수정 진단:
+`/mnt/newdata/qa-services/validation/native-repair-20261011-Vf8Xs1/repair.log`.
+`e2e/hosted-qa-live-coding.test.ts`의 두 시나리오가 2 pass/0 fail/0 skip, 총 56.1초.
+첫 시나리오는 실제 모델의 native 도구 수정→restart→격리된 고정 산술 검사 통과.
+두 번째는 잘못된 후보를 checkpoint에 의도적으로 저장→실제 Docker 검사 실패→
+production HostedQaValidationService/private gateway를 통한 실패 전달→
+advanceHostedValidation의 자동 재수정 전환→runtime restart→실제
+Qwen3.8-Flash-Next 도구 수정→새 digest로 재검증 성공을 확인한다.
+같은 job ID, repair count 1, host verdict 순서 `[false,true]`, 후보 digest 변경,
+최종 `needs_publication`/`waiting`을 검증했다. PR·승인·배포는 실행하지 않았다.
+고정 검사는 진단용 산술 코드에만 적용되며 실제 제품 gate 전체의 대체 증거가 아니다.
+별도 internal network는 종료 후 삭제했고 기존 운영 agent/network를 사용하지 않았다.
 
 추가 리뷰: Ainmem의 후속/동시 응답이 정본 page URL을 바꾸면 수신을 거부하고 기존
 링크와 미전달 revision을 보존하도록 수정했다. 정상 정본 응답으로 재시도할 수 있다.
