@@ -63,3 +63,31 @@ test('runtime gateway binds validation to the authenticated agent and polling pr
  gateway.revoke(token);
  await assert.rejects(ctx.qa!.validate(candidate),/refused/);
 });
+
+test('publication requires durable passing evidence for the exact agent, candidate and gate policy',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-publish-proof-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let runs=0;
+ const result={repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}],passed:true};
+ const service=new HostedQaValidationService(root,{agent:profile},async()=>{runs++;return result;});
+ assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);assert.equal(runs,0);
+ service.submit('agent',candidate);await new Promise(r=>setImmediate(r));
+ assert.equal(service.requirePassed('agent',candidate).candidateDigest,result.candidateDigest);
+ assert.throws(()=>service.requirePassed('other',candidate),/not configured/);
+ assert.throws(()=>service.requirePassed('agent',{...candidate,changes:{'a.js':'changed'}}),/no passing/);
+ const changedPolicy=new HostedQaValidationService(root,{agent:{...profile,gates:[...profile.gates,{name:'build',argv:['yarn','build']}]} });
+ assert.throws(()=>changedPolicy.requirePassed('agent',candidate),/no passing/);
+ const {readdirSync,writeFileSync}=await import('node:fs');
+ writeFileSync(join(root,readdirSync(root)[0]!),JSON.stringify({state:'done',result:{...result,gates:[]}}));
+ assert.throws(()=>service.requirePassed('agent',candidate),/result binding/);
+});
+
+test('runner cannot attest a different candidate or omit mandatory gates',async t=>{
+ for(const altered of [{candidateDigest:'0'.repeat(64)},{gates:[]},{gates:[{gate:'other',passed:true}]}]){
+  const root=mkdtempSync(join(tmpdir(),'qa-invalid-proof-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const result={repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}],passed:true,...altered};
+  const service=new HostedQaValidationService(root,{agent:profile},async()=>result as any);
+  service.submit('agent',candidate);await new Promise(r=>setImmediate(r));
+  assert.deepEqual(service.submit('agent',candidate),{state:'failed'});
+  assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);
+ }
+});
