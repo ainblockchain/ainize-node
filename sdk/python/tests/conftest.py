@@ -49,6 +49,8 @@ class _StubModel(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         raw = self.rfile.read(int(self.headers.get("content-length", 0)))
+        if self.path == "/v1/systemone":
+            return self._decide(raw)
         try:
             wants_stream = bool(json.loads(raw).get("stream"))
         except Exception:
@@ -97,6 +99,30 @@ class _StubModel(BaseHTTPRequestHandler):
         self.wfile.write(frame({"content": "ng"}, "stop"))
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+    def _decide(self, raw: bytes):
+        """The decision sidecar's dialect: one answer per question, typed as the question was, and the prompt it
+        built when the request asked to see it (`debug.prompt`)."""
+        req = json.loads(raw)
+        answers = {}
+        for qid, q in req["questions"].items():
+            kind = q.get("type", "noul")
+            if kind == "noul":
+                answers[qid] = {"type": "noul", "noul": 0.91 if qid == "a1" else 0.12}
+            elif kind == "score":
+                answers[qid] = {"type": "score", "score": 2, "distribution": [0.1, 0.2, 0.7]}
+            else:
+                ids = list(q.get("criteria", {}).keys()) or ["x"]
+                answers[qid] = {"type": "choice", "choice": ids[0], "distribution": {i: 1 / len(ids) for i in ids}}
+        body = {"model": req["model"], "answers": answers, "usage": {"questions": len(answers), "input_tokens": 42}}
+        if (req.get("debug") or {}).get("prompt"):
+            body["debug"] = {"prompt": f"STATE {json.dumps(req['state'])}", "input_tokens": 42, "questions": len(answers)}
+        out = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
 
 @pytest.fixture(scope="session")

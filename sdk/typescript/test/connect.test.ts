@@ -18,7 +18,7 @@ import OpenAI from 'openai';
 import { generatePrivateKey } from 'viem/accounts';
 import { defaultConfig, type NodeConfig } from '@ainize/core';
 import { startNode, type RunningNode } from '../../../src/server.js';
-import { connectAinize } from '../src/index.js';
+import { connectAinize, AinizeClient, DecideError } from '../src/index.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ainize-ts-sdk-'));
 const PORT = 24221;
@@ -33,6 +33,20 @@ let issuedKey = '';
 function startUpstream(): Promise<Server> {
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url === '/v1/systemone') {
+      let b = '';
+      req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        const r = JSON.parse(b) as { model: string; state: unknown; questions: Record<string, { type?: string; criteria?: unknown }>; debug?: { prompt?: boolean } };
+        const answers = Object.fromEntries(Object.entries(r.questions).map(([id, q]) => [id,
+          q.type === 'score' ? { type: 'score', score: 2, distribution: [0.1, 0.2, 0.7] }
+          : q.type === 'choice' ? { type: 'choice', choice: Object.keys(q.criteria as object)[0], distribution: {} }
+          : { type: 'noul', noul: id === 'a1' ? 0.91 : 0.12 }]));
+        res.end(JSON.stringify({ model: r.model, answers, usage: { questions: Object.keys(answers).length },
+          ...(r.debug?.prompt ? { debug: { prompt: `STATE ${JSON.stringify(r.state)}`, questions: Object.keys(answers).length } } : {}) }));
+      });
+      return;
+    }
     if (req.url?.startsWith('/v1/models')) {
       res.end(JSON.stringify({ object: 'list', data: [{ id: 'qwen3.8-flash-next', object: 'model', created: 1 }] }));
       return;
@@ -69,7 +83,10 @@ before(async () => {
   cfg.host = '127.0.0.1'; cfg.publicUrl = `http://127.0.0.1:${PORT}`;
   cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300_000, auto: false };
   cfg.gossipIntervalMs = 60_000;
-  cfg.backends = [{ id: 'llm', modality: 'chat', upstream: `http://127.0.0.1:${UPSTREAM_PORT}`, models: ['qwen3.8-flash-next'] }];
+  cfg.backends = [
+    { id: 'llm', modality: 'chat', upstream: `http://127.0.0.1:${UPSTREAM_PORT}`, models: ['qwen3.8-flash-next'] },
+    { id: 'clef', modality: 'decision', upstream: `http://127.0.0.1:${UPSTREAM_PORT}`, models: ['clef-flash'] },
+  ];
   N = await startNode(cfg, { quiet: true, serveWeb: false });
   url = `http://127.0.0.1:${PORT}`;
   issuedKey = (await connectAinize(url, { privateKey: WALLET })).apiKey;
@@ -151,4 +168,41 @@ test('an unknown model raises NotFoundError', async () => {
     () => client.chat.completions.create({ model: 'gpt-4', messages: [{ role: 'user', content: 'ping' }] }),
     OpenAI.NotFoundError,
   );
+});
+
+// ── decide(): the one method added to OpenAI's client (mirrors sdk/python/tests/test_decide.py)
+
+test('decide round trips every question type through the node, authenticated', async () => {
+  const client = await connectAinize(url, { apiKey: issuedKey });
+  assert.ok(client instanceof OpenAI && client instanceof AinizeClient);
+  const out = await client.decide({
+    model: 'clef-flash', state: 'The payment webhook is failing.',
+    questions: {
+      team: { type: 'choice', instructions: 'Who?', criteria: { billing: 'Payments', technical: 'Bugs' } },
+      severity: { type: 'score', instructions: 'How severe?', criteria: ['low', 'medium', 'high'] },
+      a1: { type: 'noul', instructions: 'Is a service down?' },
+    },
+  });
+  assert.equal(out.model, 'clef-flash');
+  assert.equal(out.answers.a1!.noul, 0.91);
+  assert.equal(out.answers.severity!.score, 2);
+  assert.equal(out.answers.team!.choice, 'billing');
+  assert.equal(out.usage?.questions, 3);
+  assert.equal(out.debug, undefined, 'no debug unless asked');
+});
+
+test('debug.prompt returns the prompt the model saw', async () => {
+  const client = await connectAinize(url, { apiKey: issuedKey });
+  const out = await client.decide({ model: 'clef-flash', state: { k: 1 }, questions: { a1: { type: 'noul' } }, debug: { prompt: true } });
+  assert.match(out.debug?.prompt ?? '', /^STATE .*"k":1/);
+});
+
+test('a bad key is a DecideError carrying the node status; an unknown model is model_not_found', async () => {
+  await assert.rejects(
+    () => new AinizeClient({ baseURL: `${url}/v1`, apiKey: 'ainize-sk-not-a-real-key' }).decide({ model: 'clef-flash', state: {}, questions: { a1: { type: 'noul' } } }),
+    (e: DecideError) => e instanceof DecideError && e.status === 401);
+  await assert.rejects(
+    () => connectAinize(url, { apiKey: issuedKey }).then((c) => c.decide({ model: 'nope', state: {}, questions: { a1: { type: 'noul' } } })),
+    (e: DecideError) => e instanceof DecideError && e.status === 404 && e.code === 'model_not_found');
+  await assert.rejects(() => connectAinize(url, { apiKey: issuedKey }).then((c) => c.decide({ model: 'clef-flash', state: {}, questions: {} })), /non-empty questions/);
 });
