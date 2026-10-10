@@ -30,6 +30,7 @@ export type A2uiMessage =
 
 export type SnippetAction =
   | { method: 'GET'; url: string; navigate: true }
+  | { method: 'GET'; url: string; navigate: false; replace: true }
   | { method: 'POST'; url: string; body: Record<string, unknown>; stream?: 'sse'; output?: { path: string; status: string } };
 
 export interface AinuiSnippet {
@@ -150,6 +151,7 @@ export interface ProjectSnippetInput {
   run: { entry: string; inputs: SnippetInput[]; sha?: string } | null;
   /** owner: may redeploy */
   canRedeploy: boolean;
+  source?: { selected: string; baseUrl: string };
   now?: number;
 }
 
@@ -189,6 +191,22 @@ export function projectSnippet(i: ProjectSnippetInput): AinuiSnippet {
   });
   comps.push(column('deployments.body', rows), card('deployments', 'deployments.body'));
   sections.push('deployments');
+  if (i.source) {
+    const children = ['source.selected'];
+    comps.push(text('source.selected', i.source.selected, 'caption'));
+    for (const [target, label] of [['head', 'Latest commit'], ['deployed', 'Deployed version']] as const) {
+      const id = `source.${target}`;
+      const url = new URL(i.source.baseUrl);
+      url.searchParams.set('runTarget', target);
+      url.searchParams.delete('runSha');
+      actions[id] = { method: 'GET', url: url.toString(), navigate: false, replace: true };
+      comps.push(...button(id, label, id, { variant: 'borderless' }));
+      children.push(id);
+    }
+    comps.push(column('source', children));
+    sections.push('source');
+  }
+
 
   let data: Record<string, unknown> = {};
   if (i.run) {

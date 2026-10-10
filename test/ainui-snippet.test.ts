@@ -283,7 +283,7 @@ test('GET /api/ainui/snippet: the project page URL → the snippet for the viewe
     assert.equal(s.kind, 'ainize.project');
     assert.equal(s.title, 'Demo');
     assert.match(s.subtitle!, new RegExp(`^testorg/demo · main · ● ready ${sha1.slice(0, 7)}$`));
-    assert.equal(s.url, `${NODE}/testorg/demo`);
+    assert.equal(s.url, `${NODE}/testorg/demo?runTarget=commit&runSha=${sha1}`);
     const ids = comps.map((c) => c.id);
     for (const id of ['deployments.0', 'run.input.DESC', 'run.input.TOP_K', 'run.input.MODEL', 'run.button']) assert.ok(ids.includes(id), `${who}: ${id}`);
     assert.equal(comps.find((c) => c.id === 'run.input.MODEL')!.label, 'MODEL (clef-flash | clef)');
@@ -418,4 +418,36 @@ test('streamed runs pin the selected source and deployed runs survive a newer fa
   for (const body of [{ target: 'commit' }, { target: 'head', sha: sha1 }, { entry: 'sub/../main.py' }]) {
     assert.equal((await request(app).post(`/api/projects/${projectId}/run`).set(await asActor('acc_member')).send(body)).status, 400);
   }
+});
+
+test('snippet source selection pins the form and replacement actions to the resolved Git commit', async () => {
+  const head = (await request(app).get(`/api/projects/${projectId}/source`).query({ target: 'head' }).set('x-test-user', OWNER)).body.sha;
+  for (const target of ['head', 'deployed', 'commit']) {
+    const expected = target === 'head' ? head : sha1;
+    const url = new URL(`${NODE}/testorg/demo`);
+    url.searchParams.set('runTarget', target);
+    if (target === 'commit') url.searchParams.set('runSha', sha1);
+    const res = await request(app).get('/api/ainui/snippet').query({ url: url.toString() }).set('x-test-user', OWNER);
+    assert.equal(res.status, 200, res.text);
+    const snippet = JSON.parse(res.text) as AinuiSnippet;
+    checkSurface(snippet);
+    const canonical = new URL(snippet.url);
+    assert.equal(canonical.searchParams.get('runTarget'), 'commit');
+    assert.equal(canonical.searchParams.get('runSha'), expected);
+    const run = snippet.actions.run;
+    assert.ok(run && run.method === 'POST');
+    assert.equal(run.body.sha, expected);
+    for (const choice of ['head', 'deployed']) {
+      const action = snippet.actions[`source.${choice}`];
+      assert.ok(action && action.method === 'GET' && action.navigate === false && action.replace);
+      assert.equal(new URL(action.url).searchParams.get('runTarget'), choice);
+      assert.equal(new URL(action.url).searchParams.has('runSha'), false);
+    }
+  }
+  for (const suffix of ['?runTarget=working-tree', '?runTarget=commit', '?runTarget=head&runSha=' + sha1]) {
+    const res = await request(app).get('/api/ainui/snippet').query({ url: `${NODE}/testorg/demo${suffix}` }).set('x-test-user', OWNER);
+    assert.equal(res.status, 400);
+  }
+  const missing = await request(app).get('/api/ainui/snippet').query({ url: `${NODE}/testorg/demo?runTarget=commit&runSha=${'f'.repeat(40)}` }).set('x-test-user', OWNER);
+  assert.equal(missing.status, 502, 'a missing commit never falls back to the deployed form');
 });

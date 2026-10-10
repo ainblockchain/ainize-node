@@ -114,3 +114,9 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - Teams `dd93e1151`: 같은 생산자 origin의 GET replace 액션을 현재 사람으로 조회해 카드의 폼/봉투를 교체한다. 이후 Run은 새 봉투의 고정 URL에서 액션을 다시 읽는다. 선택 실패 때 이전 편집값을 유지하고 원래 링크 refresh가 선택을 덮지 않는다. 새 원본 URL은 카드 key로 이전 요청/상태를 폐기한다. 관련 카드 8개/계약 14개, 웹 전체 7,398개(98개 환경 의존 제외), 타입 및 변경 파일 lint 통과.
 - Drive `cb82cb8`: 연결된 저장소/파일 카드에 최신 커밋·배포본·작업 트리 교체 버튼을 추가했다. 커밋과 배포본의 폼은 선택 SHA를 canonical URL과 Run body에 함께 고정한다. 작업 트리는 mutable manifest/파일과 명시적인 target을 사용하며 파일 카드에 committed Raw 링크를 제공하지 않는다. 이전 트리/커밋 링크는 해당 소스를 조회한다. 실제 SSO/조회 권한·버전별 폼·고정 URL 재조회·파일 조회·거절 시 mutable fallback 없음 및 표준 A2UI schema를 포함한 33개 검사와 타입 검사 통과.
 - ainize 생산자도 같은 선택 버튼/고정 URL을 제공하는 구현, 교체 액션의 실제 모바일 렌더·운영 신원/Run 검증 및 전체 배포는 남아 있다. 전체 목표는 계속 미완료다.
+
+### Ainize snippet source selection
+
+Ainize project snippets now expose latest-commit and deployed-version replacement actions using the same GET/replace contract as Drive and Teams. The selected form, canonical snippet URL, and Run payload all pin the resolved SHA. A missing commit or deployment fails without substituting another source. Source manifest resolution is shared with the project source API; working-tree execution remains with Drive, which owns that mutable source.
+
+Validation: 19 snippet/SSO tests and 18 project tests passed in separate runs; typecheck passed. The first combined run exposed a transient repository-listing assertion that passed on isolated rerun. Actual mobile rendering of the new producer selectors and production deployment remain pending.

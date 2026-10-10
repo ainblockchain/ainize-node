@@ -242,6 +242,17 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
 
   const snippetHeaders = (res: Response) => res.set({ 'content-type': AINUI_MEDIA_TYPE, 'cache-control': 'private, no-store', vary: 'Accept, Authorization, X-AIN-Actor' });
 
+  const resolveSource = async (project: Project, sha: string) => {
+    const work = mkdtempSync(join(tmpdir(), 'ainize-project-source-'));
+    try {
+      const resolved = await deps.worker.checkout(project, sha, work);
+      const manifest = resolveProjectManifest(projectRoot(work, project.sourcePath), { entry: project.entry });
+      return { sha: resolved, manifest };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  };
+
   /**
    * `GET /api/ainui/snippet?url=<pasted URL>` (or `?path=/<org>/<repo>`): the project's AIN-UI snippet for the
    * viewer. ainize-web's middleware sends a page request with `Accept: application/vnd.ain.ui+json` here. An
@@ -260,10 +271,31 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     if (!canSee(project, viewer)) return res.status(403).send(JSON.stringify(deniedSnippet(new URL(base(req)).host, `${project.org}/${project.repoName}`, pageUrlOf(req, project))));
     const deployments = deps.store.deploymentsOf(project.id);
     const last = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
-    const kind = last?.kind ?? project.kind;
-    const entry = last?.manifest?.entry ?? project.entry;
-    const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs), sha: last.sha } : null;
-    res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: pageUrlOf(req, project), run, canRedeploy: canEdit(project, viewer) })));
+    const pasted = new URL(raw, base(req));
+    const selection = pasted.searchParams.get('runTarget') ?? 'deployed';
+    const requestedSha = pasted.searchParams.get('runSha');
+    if (!['head', 'deployed', 'commit'].includes(selection) ||
+        (selection === 'commit' ? !requestedSha || !/^[0-9a-f]{40,64}$/i.test(requestedSha) : requestedSha !== null)) {
+      return refuse(res, 400, 'invalid_request', 'invalid snippet source target');
+    }
+    let selected = last ? { sha: last.sha, manifest: last.manifest } : null;
+    if (selection !== 'deployed') {
+      try { selected = await resolveSource(project, selection === 'commit' ? requestedSha! : ''); }
+      catch (error) { return refuse(res, 502, 'source_failed', (error as Error).message); }
+    } else if (!last && pasted.searchParams.has('runTarget')) {
+      return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
+    }
+    const kind = selected?.manifest?.kind ?? last?.kind ?? project.kind;
+    const entry = selected?.manifest?.entry ?? project.entry;
+    const run = kind === 'script' && selected && entry ? { entry, inputs: snippetInputsOf(selected.manifest?.inputs), sha: selected.sha } : null;
+    const page = new URL(pageUrlOf(req, project));
+    if (selected) {
+      page.searchParams.set('runTarget', 'commit');
+      page.searchParams.set('runSha', selected.sha);
+    }
+    res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: page.toString(), run,
+      source: { selected: selected ? `Commit ${selected.sha}` : 'No deployed version', baseUrl: pageUrlOf(req, project) },
+      canRedeploy: canEdit(project, viewer) })));
   });
 
   /** The project when the viewer may see it; 404 otherwise (never a hint that it exists). */
@@ -287,16 +319,11 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const project = hit.project;
     const active = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
     if (target === 'deployed' && !active?.sha) return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
-    const work = mkdtempSync(join(tmpdir(), 'ainize-project-source-'));
     try {
-      const resolved = await deps.worker.checkout(project, target === 'deployed' ? active!.sha : sha ?? '', work);
-      const root = projectRoot(work, project.sourcePath);
-      const manifest = resolveProjectManifest(root, { entry: project.entry });
-      res.set('cache-control', 'private, no-store').json({ repoId: repositoryId(project.repo), target, sha: resolved, sourcePath: project.sourcePath ?? '', manifest });
+      const resolved = await resolveSource(project, target === 'deployed' ? active!.sha : sha ?? '');
+      res.set('cache-control', 'private, no-store').json({ repoId: repositoryId(project.repo), target, ...resolved, sourcePath: project.sourcePath ?? '' });
     } catch (error) {
       refuse(res, 502, 'source_failed', (error as Error).message);
-    } finally {
-      rmSync(work, { recursive: true, force: true });
     }
   });
 
