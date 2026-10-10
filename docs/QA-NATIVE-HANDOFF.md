@@ -997,3 +997,17 @@ cluster 테스트의 큰 blob 다운로드는 HTTP status만 검사하고 본문
 검사하도록 보완했으며 별도 cluster 재실행 결과를 확인한다.
 
 다운로드 본문 처리 후 cluster 재실행은 8 pass / 0 skip, 18.6초에 정상 종료했다.
+
+### 수정 후 API 전체 suite 재확인 — 2026-10-11
+
+5420891(최신 main c8a6176 포함)에서 `npm test`를 다시 실행했다.
+924 tests: 906 pass / 0 fail / 18 skip / 0 cancelled, 57.8초.
+최초 전체 실행에서 실패했던 cluster 정족수/상태 검사와 runtime 경로 검사도 포함해
+통과했다. 이 수치는 로컬 API suite이며 opt-in Docker 및 실제 외부 서비스 검사의
+18 skip을 통과로 계산하지 않는다. 로그: /tmp/qa-native-final-suite.log.
+최종 소스 build는 직전 turn의 /tmp/qa-main-final-build.log에서 통과했다.
+
+.41의 SSH multiplex 연결과 사용자 서비스/자동 배포 타이머는 동작 중이다.
+acl 패키지는 미설치이며 sudo -n은 사용할 수 없다. 이번 설치 시도는 Vault Locked로
+자격증명을 얻기 전에 종료됐으므로 서버 패키지/서비스는 변경되지 않았다.
+PR71/76 승인과 실제 운영 등록·단일 작업기 전환, 전 채널 E2E는 계속 미완료다.
