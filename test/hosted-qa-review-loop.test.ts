@@ -1,0 +1,51 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {HostedQaReviewStore} from '../src/hosted-qa-review-store.js';
+import {HostedQaReviewLoop} from '../src/hosted-qa-review-loop.js';
+import {HostedQaReviewCoordinator} from '../src/hosted-qa-review-coordinator.js';
+import {HostedQaPublicationService} from '../src/hosted-qa-publication-service.js';
+import {teamsReviewClient} from '../src/hosted-qa-teams-client.js';
+test('publisher receipt survives restart, waits for the visible card, then background checks the persisted review',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-loop-'));let store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{force:true,recursive:true});});
+ const receipt={repository:'test/product',base:'a'.repeat(40),sha:'b'.repeat(40),number:1,candidateDigest:'c'.repeat(64),url:'https://github.com/test/product/pull/1'};
+ const publisher=new HostedQaPublicationService({publish:async()=>receipt} as any,(id,job,r)=>store.enqueuePublication(id,job,r));
+ assert.equal(publisher.submit('agent',{jobId:'job',candidate:{}}).state,'running');await new Promise(r=>setImmediate(r));
+ assert.equal(publisher.submit('agent',{jobId:'job',candidate:{}}).state,'done');
+ store.close();store=new HostedQaReviewStore(root);assert.equal(store.pendingPublications().length,1);
+ const policy={issuer:'https://auth.example',orgId:'org',workspaceId:'ainmem',teamsWorkspaceId:'teams',channelId:'qa',approverSubjects:['admin']};
+ const profiles={agent:{repository:'test/product',branch:'main',databaseId:'board',policy,identities:{'https://auth.example\nadmin':'teams-admin'}}};
+ let body='report not ready',reads=0;
+ const readers={ainmem:async()=>({jobId:'job',databaseId:'board',pageId:'page',workspaceId:'ainmem',issuer:policy.issuer,orgId:'org',body,revision:1,digest:'d'.repeat(64),observedAt:new Date().toISOString(),truncated:false,approvalGranted:false as const,comments:[]}),github:async()=>{reads++;return {number:1,state:'open',head:{sha:receipt.sha,repo:{full_name:'test/product'}},base:{sha:receipt.base,ref:'main',repo:{full_name:'test/product'}}};},teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:[{userId:'teams-admin',isAgent:false}]})};
+ const coordinator=new HostedQaReviewCoordinator(store,profiles,readers),loop=new HostedQaReviewLoop(store,coordinator,profiles,readers);
+ await loop.tick();assert.equal(store.current('agent','job'),null);
+ body=`상태: waiting / awaiting_approval\n검토 PR: ${receipt.url}\n검토 커밋: ${receipt.sha}`;
+ const first=loop.tick();assert.equal(loop.tick(),first);await first;
+ assert.equal(store.current('agent','job')?.generation,1);assert.equal(reads,1);
+ await loop.tick();assert.equal(reads,2);assert.equal(store.current('agent','job')?.generation,1);
+ assert.throws(()=>store.enqueuePublication('agent','job',{...receipt,sha:'e'.repeat(40)}),/changed/);
+ await loop.drain();
+});
+test('a failed durable enqueue is never acknowledged as successful publication',async()=>{
+ const service=new HostedQaPublicationService({publish:async()=>({})} as any,()=>{throw Error('disk failed');});
+ service.submit('agent',{jobId:'job',candidate:{}});await new Promise(r=>setImmediate(r));
+ assert.equal(service.submit('agent',{jobId:'job',candidate:{}}).state,'failed');
+});
+test('host MCP read handles sessions and matching SSE responses without forwarding secrets',async()=>{
+ const methods:string[]=[];
+ const client=teamsReviewClient('https://teams.example','private',async(url,init)=>{
+  assert.equal(String(url),'https://teams.example/api/mcp');assert.equal(init?.redirect,'error');
+  const body=JSON.parse(String(init?.body));methods.push(body.method);
+  if(body.method==='initialize')return new Response(JSON.stringify({jsonrpc:'2.0',id:body.id,result:{}}),{headers:{'Mcp-Session-Id':'session'}});
+  assert.equal(new Headers(init?.headers).get('Mcp-Session-Id'),'session');
+  if(body.method==='notifications/initialized')return new Response(null,{status:202});
+  return new Response('data: '+JSON.stringify({id:body.id,result:{content:[{type:'text',text:'[{"id":"qa"}]'}]}})+'\n\n',{headers:{'content-type':'text/event-stream'}});
+ });
+ assert.deepEqual(await client.call('list_channels',{workspaceId:'teams'}),[{id:'qa'}]);
+ assert.deepEqual(methods,['initialize','notifications/initialized','tools/call']);
+ await assert.rejects(client.call('send_message',{}),/Read-only/);
+ const denied=teamsReviewClient('https://teams.example','private',async()=>new Response('sensitive',{status:403}));
+ await assert.rejects(denied.call('list_channels',{}),e=>String(e)==='Error: Teams review refused');
+});

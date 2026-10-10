@@ -1,3 +1,8 @@
+import {HostedQaReviewStore} from './hosted-qa-review-store.js';
+import {HostedQaReviewCoordinator,type HostedReviewProfile,type HostedReviewReaders} from './hosted-qa-review-coordinator.js';
+import {HostedQaReviewLoop} from './hosted-qa-review-loop.js';
+import {ainmemReviewReader} from './hosted-qa-review.js';
+import {teamsReviewClient} from './hosted-qa-teams-client.js';
 import {HostedQaPublisher,qaGitHubClient,type QaPublicationProfile} from './hosted-qa-publication.js';
 import {HostedQaPublicationService} from './hosted-qa-publication-service.js';
 import { HostedQaValidationService } from './hosted-qa-validation-service.js';
@@ -374,15 +379,29 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>) : undefined;
   const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
   let qaPublication:HostedQaPublicationService|undefined;
+  let qaReviewStore:HostedQaReviewStore|undefined,qaReviewLoop:HostedQaReviewLoop|undefined;
+  const readQaToken=(path:string)=>{
+    const st=lstatSync(path);
+    if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA token file must be private');
+    const token=readFileSync(path,'utf8').trim();if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA token');return token;
+  };
+  if(process.env.AINIZE_QA_REVIEW_PROFILES&&!publicationPath)throw new Error('QA review requires publication configuration');
   if(publicationPath){
     if(!qaValidation)throw new Error('QA publication requires host validation');
     const tokenPath=process.env.AINIZE_QA_PUBLICATION_TOKEN_FILE;
     if(!tokenPath)throw new Error('QA publication token file required');
-    const st=lstatSync(tokenPath);
-    if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA publication token file must be private');
-    const token=readFileSync(tokenPath,'utf8').trim();
-    if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA publication token');
-    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,qaGitHubClient(token)));
+    const github=qaGitHubClient(readQaToken(tokenPath));
+    const reviewPath=process.env.AINIZE_QA_REVIEW_PROFILES;
+    if(reviewPath){
+      type Profile=HostedReviewProfile&{ainmemOrigin:string;ainmemTokenFile:string;teamsOrigin:string;teamsTokenFile:string};
+      const profiles=JSON.parse(readFileSync(reviewPath,'utf8')) as Record<string,Profile>;
+      const ainmem=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,ainmemReviewReader(p.ainmemOrigin,readQaToken(p.ainmemTokenFile))]));
+      const teams=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,teamsReviewClient(p.teamsOrigin,readQaToken(p.teamsTokenFile))]));
+      const readers:HostedReviewReaders={ainmem:(id,job,board)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
+      qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
+      qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,new HostedQaReviewCoordinator(qaReviewStore,profiles,readers),profiles,readers,message=>market.log('info','agents',message));
+    }
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result)=>qaReviewStore!.enqueuePublication(id,job,result):undefined);
   }
   const hostedGateway = new HostedAgentGateway({
     qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
@@ -793,6 +812,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // The same 20-second tick brings subscribed tracks up to date (item 255): "subscribe" was a one-time snapshot and
   // nothing ever reacted to a later `branch` or `supersede` record, so a subscriber served yesterday's retired bake
   // indefinitely while every screen said it was current.
+  const qaReviewTimer=qaReviewLoop?setInterval(()=>{void qaReviewLoop!.tick().catch(()=>market.log('warn','agents','QA review loop failed'));},30000):null;
+  qaReviewTimer?.unref();
   const watchdog = setInterval(() => {
     market.watchdog().catch(() => undefined);
     market.reconcileSupersedes().catch(() => undefined);
@@ -855,6 +876,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       if (inferenceTimer) clearInterval(inferenceTimer);
       depositWatcher?.stop();
       try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
+      if(qaReviewTimer)clearInterval(qaReviewTimer);
+      // Drain an in-flight read pass before closing its SQLite ledger.
+      if(qaReviewLoop)await qaReviewLoop.drain();
+      qaReviewStore?.close();
       clearInterval(watchdog);
       clearInterval(retention);
       clearInterval(diskWatch);

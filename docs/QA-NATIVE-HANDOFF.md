@@ -443,3 +443,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 관측 결과는 감사 기록이며 영구 배포 권한이 아니다. 이전 관측이 성공해도 다음 검사에서 권한이 사라지면 null을 반환한다. gateway에는 사용자/모델이 승인 여부를 제출하는 경로를 추가하지 않았다.
 - 관련 QA 테스트 67개 통과. 후속 정책 바인딩 변경 뒤 승인 관련 8개 재검증과 빌드 통과. 파일 권한, 재시작, 취소, 후보 되돌림, 늦은 처리, 정책 변경을 검증했다.
 - 남은 연결: 운영 publication/report 완료 후 호스트 `register` 호출, awaiting approval 작업을 이 coordinator로 주기 확인하는 scheduler, 실제 승인 직후 exact-SHA merge와 배포 확인. 새 호스트 ledger/coordinator는 아직 운영에 설치하지 않았다. 실제 승인이나 배포를 수행한 결과가 아니다.
+
+### 2026-10-10 게시 → 호스트 승인 확인 루프 연결
+
+- 호스트 publication 서비스가 성공 응답 전에 private review ledger에 검증된 PR receipt를 저장한다. 저장 실패는 성공으로 응답하지 않는다. 재시작 후에도 확인할 작업 목록을 유지한다. 같은 job의 다른 PR/SHA를 조용히 덮어쓰지 않고 명시적 재조정을 요구한다.
+- `hosted-qa-review-loop.ts`는 먼저 Ainmem 카드의 승인 대기 상태·정확한 PR/SHA 표시를 확인하고 검토 기준을 등록한다. 이후 매번 정본을 재조회한다. 단일 실행, 작업별 오류 격리, 재시도 순환, 종료 시 진행 중 읽기 drain을 적용했다. 같은 승인 댓글의 반복 확인은 감사 행을 무한히 늘리지 않는다.
+- 서버 opt-in 환경 변수 `AINIZE_QA_REVIEW_PROFILES`: agent ID → `HostedReviewProfile` (`repository`, `branch`, `databaseId`, `policy`, `identities`) + `ainmemOrigin`, `ainmemTokenFile`, `teamsOrigin`, `teamsTokenFile` JSON 파일 경로. 토큰 파일은 private 일반 파일이어야 한다. publication/validation 설정이 필수다. 30초마다 최대 5개 작업을 확인한다. **운영 설정은 아직 활성화하지 않았다.**
+- host 전용 `teamsReviewClient`는 list_channels/list_channel_members만 허용하고, HTTPS·redirect 거부·세션·SSE 응답 ID 대조·오류 비공개를 적용한다. .41에서 실제 7개 서비스 조회를 다시 성공했다. 증거는 `native-review-members-20261010-cjpgqw/host-client-result.json`에 있다.
+- QA 테스트 70개 통과. 후속 감사 중복 방지 뒤 review 테스트 11개 재검증 및 빌드 통과. publisher→durable queue→카드 대기→검토 등록→정본 확인을 테스트했다. 실제 토큰 조회 실증은 Teams 읽기만 수행했다.
+- 아직 merge/배포를 실행하지 않는다. 실제 승인 직후 exact-SHA merge·배포 상태 확인, Teams 원본 스레드 승인 경로, 운영 상태 보존 전환 및 전 채널 실제 요청 E2E가 남아 있다. Ainmem 새 API 역시 별도 배포가 필요하다.
