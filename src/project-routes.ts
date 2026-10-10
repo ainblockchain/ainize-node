@@ -317,9 +317,11 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' });
       res.flushHeaders();
     };
-    const send = (event: string, data: unknown) => { open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+    const send = (event: string, data: unknown) => { if (abort.signal.aborted) return; open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
     try {
+      abort.signal.throwIfAborted();
       const sha = await deps.worker.checkout(project, record.sha, work);
+      abort.signal.throwIfAborted();
       const root = projectRoot(work, project.sourcePath);
       const manifest = resolveProjectManifest(root, { entry: project.entry });
       const entry = input.entry ?? manifest.entry;
@@ -343,7 +345,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
           if (ev.event === 'stdout') deps.logs.append(record.id, ev.data, 'out');
         }
         send(ev.event, ev.data);
-      });
+      }, abort.signal);
       const result = exit as { code: number; ms: number } | null;
       if (!result) throw new Error('runner ended without an exit code');
       deps.store.updateDeployment(record.id, { status: result.code === 0 ? 'ready' : 'error', exitCode: result.code, ms: result.ms, finishedAt: Date.now(), error: result.code === 0 ? null : `exit ${result.code}` });
@@ -352,6 +354,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
       deps.logs.append(record.id, `[ainize] ${message}\n`);
       deps.store.updateDeployment(record.id, { status: 'error', error: message, ms: Date.now() - startedAt, finishedAt: Date.now() });
+      if (abort.signal.aborted) return;
       if (!streaming) return refuse(res, 502, 'run_failed', message);
       send('error', message);
       send('exit', { code: 1, ms: 0 });

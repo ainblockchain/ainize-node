@@ -148,7 +148,7 @@ export interface RunRequest {
 }
 export type RunEvent = { event: 'stdout' | 'stderr' | 'error'; data: string } | { event: 'exit'; data: { code: number; ms: number } };
 /** Run one script; every event the sandbox emits goes to `onEvent`, `exit` last. */
-export type RunScript = (req: RunRequest, onEvent: (ev: RunEvent) => void) => Promise<void>;
+export type RunScript = (req: RunRequest, onEvent: (ev: RunEvent) => void, signal?: AbortSignal) => Promise<void>;
 
 // The same caps as /api/run — refused here so a repo over them fails with a reason, not a 413 from the sandbox.
 export const PROJECT_MAX_FILES = 32;
@@ -500,7 +500,7 @@ export class ProjectWorker extends EventEmitter {
   stop(): void { this.stopped = true; }
 
   /** The `RunScript` this worker deploys scripts with, for a run pressed from a link snippet (project-routes.ts). */
-  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void): Promise<void> { return this.deps.run(req, onEvent); }
+  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void, signal?: AbortSignal): Promise<void> { return this.deps.run(req, onEvent, signal); }
 
   /** Resolves when nothing is queued or building (tests). */
   idle(): Promise<void> {
@@ -749,13 +749,13 @@ export function readTree(root: string): Record<string, string> {
 
 /** The run sandbox in this process (run-sandbox.ts) as a `RunScript` — what server.ts wires when Docker is on. */
 export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId = 'project'): RunScript {
-  return async (req, onEvent) => {
+  return async (req, onEvent, signal) => {
     try {
       const { apiKey, ...rest } = req;
       const outcome = await sandbox.run({ ...rest, bytes: Object.values(req.files).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0) }, { id: `project:${callerId}`, keyed: true, ...(apiKey ? { key: apiKey } : {}) }, {
         stdout: (chunk) => onEvent({ event: 'stdout', data: chunk }),
         stderr: (chunk) => onEvent({ event: 'stderr', data: chunk }),
-      });
+      }, signal);
       if (outcome.error) onEvent({ event: 'error', data: outcome.error });
       onEvent({ event: 'exit', data: { code: outcome.code, ms: outcome.ms } });
     } catch (e) {
@@ -771,11 +771,11 @@ export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId =
  * API is another module's (deploy/run-runtime/README.md) and this is its contract, not its code.
  */
 export function runScriptOverHttp(base: () => string, headers: () => Record<string, string> = () => ({})): RunScript {
-  return async (req, onEvent) => {
+  return async (req, onEvent, signal) => {
     // Over HTTP the key is the caller's bearer, never a body field: the pusher's key rides as `authorization`.
     const { apiKey, ...body } = req;
     const res = await fetch(`${base().replace(/\/+$/, '')}/api/run`, {
-      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers(), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers(), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify(body), signal,
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
