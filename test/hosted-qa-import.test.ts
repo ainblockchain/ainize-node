@@ -62,3 +62,22 @@ test('completed and failed historical jobs keep their terminal native state', t 
     assert.equal(f.jobs.claim(), null);
   }
 });
+
+test('reconciliation records live merge evidence without reusing archived approval', async t => {
+  const f = fixture(t);
+  f.source.prepare('UPDATE jobs SET details=?').run(JSON.stringify({ ...f.details, pr_main:'https://github.com/test/product/pull/7' }));
+  importLegacyJobs(f); f.jobs.wake(id);
+  // @ts-expect-error - example module
+  const { reconcileLegacyJob } = await import('../examples/qa-agent/reconcile.mjs');
+  const updated = await reconcileLegacyJob({ jobs: f.jobs, claim: f.jobs.claim(), checkpoints: f.checkpoints,
+    read: async path => {
+      assert.equal(path, 'pulls/7');
+      return { number:7, state:'closed', merged:true, merged_at:'2026-10-08T00:00:00Z', merge_commit_sha:'c'.repeat(40),
+        head:{ sha:f.details.code_sha, repo:{full_name:cfg.repository}}, base:{sha:'d'.repeat(40),ref:'main',repo:{full_name:cfg.repository}} };
+    } });
+  assert.equal(updated.state, 'waiting');
+  assert.equal(updated.checkpoint.stage, 'verify_deployment');
+  assert.equal(updated.checkpoint.approval, undefined);
+  assert.equal(f.checkpoints.load(updated.checkpoint.legacy).job.details.approval.sha, f.details.code_sha);
+  assert.equal(f.checkpoints.load(updated.checkpoint.reconciliation).mergeCommit, 'c'.repeat(40));
+});

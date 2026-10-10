@@ -323,3 +323,24 @@ parent/message identity를 SQLite transaction 안에서 대조한다. 기존 bas
 - 운영 writer/agent/채널은 전환하지 않았다. 다음 단계는 후보 branch/검토 SHA/현재 PR
   및 canonical Ainmem page를 대조하고 native 검증/게시/승인 경로로 재개할 수 있게 연결하는 것.
   스냅샷에 과거 승인이 존재한다는 이유로 merge하거나 배포하면 안 된다.
+
+### 2026-10-10 후속: GitHub 현재 상태와 운영 배포 대조
+
+GitHub API를 직접 읽어 확인한 최신 상태이며 이전 승인 대기 표보다 우선한다.
+
+- Teams PR #1410(main), #1411(develop): **둘 다 MERGED**. 후보는 기존
+  `f526a2c0a17fa7d20c06795ad68b47714a790537`, 병합 SHA는
+  `e183df9d82340998cdeb481ffa427d6bbc354df1`. 각각 10월 8일/6일 병합.
+- Teams `/api/health`: status ok, database/meilisearch/realtime 모두 ok, version `f118bbfea`.
+  GitHub compare(병합 SHA...serving version)는 ahead, behind_by=0, merge base가 병합 SHA와
+  일치하므로 현재 배포에 해당 병합이 포함된다. 실제 화면 여백 회귀가 해결됐다는 증거는 아니다.
+- Ainize web PR #36: OPEN, 기존 head `39b2ba37d5ac122fce3122997c8d5b28677c3ea5`와 일치.
+- Ainspace PR #198: OPEN, 기존 head `6bec65cef4a05e42f52a668850fd728ba09c42d2`와 일치.
+- 열린 후보는 최신 base 기준 재검증 대상으로 분류했다. 과거 승인/검증을 자동 재사용하지 않는다.
+
+`reconcile.mjs`는 configured repo/branch/후보 SHA를 원격 PR과 대조하고,
+이미 병합됨/후보 변경/병합 없이 닫힘/재검증 필요를 구분한다. legacy job의 immutable
+이력과 별도로 원격 증거를 저장하며 release authority를 추가하지 않는다.
+`verifyDeploymentCommit`은 serving SHA의 merge ancestry만 확인하고 featureRegressionVerified=false를
+명시한다. 이 함수는 실제 화면 검증이나 전체 채널 성공 판정을 대신하지 않는다.
+QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배포하지 않았다.
