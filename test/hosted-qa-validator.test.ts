@@ -32,3 +32,11 @@ test('Git inventory is an operator option and cannot be requested by candidate c
  for(const gitInventory of ['true',1,{}])assert.throws(()=>validateQaProfile({...profile,gitInventory} as any,candidate),/Git inventory/);
  assert.throws(()=>validateQaProfile(profile,{...candidate,gitInventory:true} as any),/shape/);
 });
+
+
+test('larger builds remain operator bounded and memory cannot come from a candidate',()=>{
+ for(const memory of ['1g','4g','8g','12g','16g'])assert.doesNotThrow(()=>validateQaProfile({...profile,memory},candidate));
+ for(const memory of ['0g','17g','64g','4.5g','4096m','-1g','unlimited'])assert.throws(()=>validateQaProfile({...profile,memory},candidate),/memory limit/);
+ assert.throws(()=>validateQaProfile(profile,{...candidate,memory:'16g'} as any),/shape/);
+ assert.throws(()=>validateQaProfile({...profile,memory:'16g',workspaceMiB:16385},candidate),/workspace size/);
+});

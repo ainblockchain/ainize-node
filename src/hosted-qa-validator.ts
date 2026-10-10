@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
 // Bump when execution semantics change so old receipts cannot authorize a new validator policy.
-export const QA_VALIDATOR_VERSION = '5-isolated-git-inventory';
+export const QA_VALIDATOR_VERSION = '6-bounded-large-builds';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
   dependencyPath: string; cwd: string; dependencies?:{cwd:string;dependencyPath:string}[]; gates: { name: string; argv: string[]; cwd?:string }[];
@@ -37,7 +37,7 @@ export function validateQaProfile(profile: QaValidationProfile, candidate: QaCan
   if (!entries.length || entries.length > 40 || entries.some(([p,c]) => !pathSafe(p) || p.split('/').some(part => /^\.env(?:\.|$)/.test(part)) || typeof c !== 'string' || c.includes('\0') || Buffer.byteLength(c) > 1024*1024)
     || Buffer.byteLength(JSON.stringify(candidate.changes)) > 2*1024*1024) throw new Error('Invalid candidate changes');
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1000 || profile.timeoutMs > 1800000)) throw new Error('Invalid validation timeout');
-  if (profile.memory !== undefined && !/^[1-8]g$/.test(profile.memory)) throw new Error('Invalid memory limit');
+  if (profile.memory !== undefined && !/^(?:[1-9]|1[0-6])g$/.test(profile.memory)) throw new Error('Invalid memory limit');
   if(profile.gitInventory!==undefined&&typeof profile.gitInventory!=='boolean')throw new Error('Invalid Git inventory policy');
   if(profile.pidsLimit!==undefined&&(!Number.isSafeInteger(profile.pidsLimit)||profile.pidsLimit<64||profile.pidsLimit>1024))throw new Error('Invalid process limit');
   if(profile.workspaceMiB!==undefined&&(!Number.isSafeInteger(profile.workspaceMiB)||profile.workspaceMiB<512||profile.workspaceMiB>Number.parseInt(profile.memory??'4g')*1024))throw new Error('Invalid workspace size');

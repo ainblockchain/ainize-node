@@ -374,3 +374,16 @@ Real .41 regression at Teams f118bbfe: inventory isolation assertions passed and
 product source. Evidence: `native-git-inventory-fctn5u_l/result.json` and `evidence/`.
 `full-profile.json` there preserves all original gates and adds the option; its complete
 suite has not yet run. The two-gate diagnostic profile must not be used as a release profile.
+
+## Bounded memory for larger builds
+
+Operator memory profiles accept integer limits from `1g` through `16g`; the default remains
+`4g`. Candidate input cannot set memory. Workspace capacity still cannot exceed the selected
+container memory, and the hosted validation service still runs at most one validation at a time.
+Policy version `6-bounded-large-builds` invalidates receipts from the previous execution policy.
+
+Teams f118bbfe demonstrated two different failures: the default Node heap reached about 2GiB
+without a container OOM; a 4GiB Node heap within an 8GiB container then recorded OOM kills.
+The .41 host had about 118GiB available when a 12GiB container retry was started, preserving the
+4GiB Node heap, all build checks, network isolation, two CPUs and existing workspace/PID limits.
+That retry is diagnostic; its result must be checked before the profile is used for release.

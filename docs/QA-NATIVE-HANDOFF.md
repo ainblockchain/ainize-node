@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 174개 및 build 통과. 4ec1c69의 전체 API suite는
+- QA 회귀 175개 및 build 통과. 4ec1c69의 전체 API suite는
   950 tests, 932 pass/0 fail/18 skip, 34.3초다. skip은 통과로 계산하지 않는다.
   704ced1의 919 pass 결과는 이전 기록이다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
@@ -1487,3 +1487,19 @@ NODE_OPTIONS=--max-old-space-size=4096을 추가한 진단을 실행 중이다.
 Native QA branch는 현재 origin/main을 포함한다(ahead 91/behind 0). PR70은
 OPEN/DRAFT/MERGEABLE이다. PR71/76 배포 승인에는 아직 답변이 없고 Vault는 locked다.
 운영 전환·페이지 enrollment·전체 채널 E2E는 미완료다.
+
+### Teams 컨테이너 메모리 진단과 제한 조정 — 2026-10-11
+
+4GiB Node 힙/8GiB 컨테이너 재시도 `native-teams-build-heap-c5ju_rgb`는 실패했다.
+이번에는 exit 137, memory.events oom=12/oom_kill=2로 컨테이너 OOM이 확인됐다.
+최초 실행의 V8 힙 한도 실패와 구분한다. 타입 검사나 제품 코드는 바꾸지 않았다.
+
+서버 MemAvailable=123990108KiB(약 118GiB)를 확인했고, validation service의 running.size
+가 한 번에 한 실행만 허용하는 것을 확인했다. 운영자 memory 상한을 16GiB로 확대했다.
+기본 4GiB, 후보의 설정 변경 거부, workspace≤memory 및 기존 CPU/PID/time 제한은 유지한다.
+정책 버전 6-bounded-large-builds. QA 175 pass/0 fail/0 skip, TypeScript build 통과.
+
+12GiB 컨테이너/4GiB Node 힙 진단 실행 중:
+`/mnt/newdata/qa-services/validation/native-teams-build-12g-l5dhvl8w`, handle 23271.
+profile.json과 run.log/result.json이 정본이다. 이 결과는 아직 미확정이며 운영 profile은
+변경하지 않았다. 이전 실패 기록은 그대로 보존했다.
