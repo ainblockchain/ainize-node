@@ -185,7 +185,7 @@ review per original Teams thread may solicit deployment approval at a time.
 ### Resume after a published review's base changes
 
 `hostRevalidation: true` opts into automatic preparation after a published review
-has been durably invalidated because its base moved. It requires all four host
+has been durably invalidated or the host publisher has recorded base movement. It requires all four host
 base/review/validation/publication flags. `/qa/revalidation` uses the authenticated
 job scope, including shared web/API routing; the request cannot select an agent.
 The host records its new base and the review reservation before returning success.
@@ -195,9 +195,10 @@ is presented on the same canonical Ainmem page and needs a fresh approval.
 
 Failed preparation is attempted at most three times before the task waits with
 `revalidation_preparation_failed`. Pending work does not block unrelated coding.
-This opt-in does not yet resume drift detected before a published review exists,
-including another main change before the replacement PR is published. Those
-cases stay preserved for reconciliation. Enabling this flag is not evidence that
+Before-publication and repeated base changes require the exact candidate digest
+to match durable host publisher evidence. An observed SHA alone cannot authorize
+a new attempt. Prior candidates, orphan PR evidence and comments stay archived.
+Enabling this flag is not evidence that
 the production channels or release path have been tested end to end.
 
 ## One Ainize channel for web and API

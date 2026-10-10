@@ -10,7 +10,7 @@ const exec=promisify(execFile);
 const fullSha=(s:unknown):s is string=>typeof s==='string'&&/^[a-f0-9]{40}$/.test(s);
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export interface QaBaseProfile {validation:QaValidationProfile;branch:string}
-export interface QaRevalidationRequest {previousBase:string;sequence:number;sourceDigest:string}
+export interface QaRevalidationRequest {previousBase:string;sequence:number;sourceDigest:string;candidateDigest?:string}
 export interface QaRevalidationReceipt extends QaRevalidationRequest {jobId:string;repository:string;base:string}
 interface QaBaseRecord {agentId:string;jobId:string;policyDigest:string;base:string;attempts?:QaRevalidationReceipt[]}
 export interface QaBaseSource {
@@ -89,6 +89,7 @@ export class HostedQaBases {
           if(!attempt||attempt.jobId!==jobId||attempt.repository!==policy.validation.repository||attempt.sequence!==index+1
             ||!fullSha(attempt.previousBase)||!fullSha(attempt.base)||attempt.base===attempt.previousBase
             ||typeof attempt.sourceDigest!=='string'||!/^[a-f0-9]{64}$/.test(attempt.sourceDigest)
+            ||(attempt.candidateDigest!==undefined&&(typeof attempt.candidateDigest!=='string'||!/^[a-f0-9]{64}$/.test(attempt.candidateDigest)))
             ||(index>0&&attempt.previousBase!==record.attempts[index-1].base))throw new Error('Invalid QA base history');
         }
         if(record.attempts.at(-1).base!==record.base)throw new Error('Invalid QA base history');
@@ -105,9 +106,10 @@ export class HostedQaBases {
    */
   prepareRevalidation(agentId:string,jobId:string,raw:QaRevalidationRequest):Promise<QaRevalidationReceipt> {
     const request=structuredClone(raw);
-    if(!request||Object.keys(request).sort().join(',')!=='previousBase,sequence,sourceDigest'
+    if(!request||!['previousBase,sequence,sourceDigest','candidateDigest,previousBase,sequence,sourceDigest'].includes(Object.keys(request).sort().join(','))
       ||!fullSha(request.previousBase)||!Number.isSafeInteger(request.sequence)||request.sequence<1||request.sequence>20
       ||typeof request.sourceDigest!=='string'||!/^[a-f0-9]{64}$/.test(request.sourceDigest))throw new Error('Invalid revalidation request');
+    if(request.candidateDigest!==undefined&&(typeof request.candidateDigest!=='string'||!/^[a-f0-9]{64}$/.test(request.candidateDigest)))throw new Error('Invalid candidate digest');
     const authorize=()=>{
       this.requireIntake(agentId,jobId);
       if(!this.requireRevalidation)throw new Error('Host revalidation authority unavailable');
@@ -123,7 +125,7 @@ export class HostedQaBases {
     const {policy,key,file}=this.binding(agentId,jobId),prior=this.readRecord(agentId,jobId);
     if(!prior)throw new Error('Job base has not been prepared');
     const attempts=prior.attempts??[],last=attempts.at(-1);
-    if(last?.sequence===request.sequence&&last.previousBase===request.previousBase&&last.sourceDigest===request.sourceDigest)return Promise.resolve(structuredClone(last));
+    if(last?.sequence===request.sequence&&last.previousBase===request.previousBase&&last.sourceDigest===request.sourceDigest&&last.candidateDigest===request.candidateDigest)return Promise.resolve(structuredClone(last));
     if(prior.base!==request.previousBase||request.sequence!==attempts.length+1)throw new Error('Revalidation attempt changed');
     const fingerprint=hash(request),running=this.rebasing.get(key);
     if(running){

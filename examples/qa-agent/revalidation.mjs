@@ -5,7 +5,7 @@ export async function advanceHostedRevalidation({jobs,claim,ctx}) {
  try {
   jobs.renew(job.id,lease,60000);
   if(!ctx.qa?.revalidate)throw new Error('Host revalidation unavailable');
-  const response=await ctx.qa.revalidate(job.id,{previousBase:job.input.base,sequence:prior.sequence,sourceDigest:prior.sourceDigest});
+  const response=await ctx.qa.revalidate(job.id,{previousBase:job.input.base,sequence:prior.sequence,sourceDigest:prior.sourceDigest,...(job.checkpoint.revalidationCandidateDigest?{candidateDigest:job.checkpoint.revalidationCandidateDigest}:{})});
   if(response?.state==='running'||response?.state==='busy')return jobs.finish(job.id,lease,'waiting',job.checkpoint);
   if(response?.state!=='done')throw new Error('Host revalidation incomplete');
   return jobs.bindRevalidation(job.id,lease,response.result);

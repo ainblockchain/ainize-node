@@ -7,13 +7,13 @@ export class HostedQaRevalidationService {
  private entries=new Map<string,{status:Status;task:Promise<void>;finished?:number}>();
  constructor(private bases:HostedQaBases,private reviews:HostedQaReviewStore){}
  submit(agentId:string,raw:unknown):Status {
-  const input=structuredClone(raw) as {jobId:string;previousBase:string;sequence:number;sourceDigest:string};
-  if(!input||Object.keys(input).sort().join(',')!=='jobId,previousBase,sequence,sourceDigest'
+  const input=structuredClone(raw) as {jobId:string;previousBase:string;sequence:number;sourceDigest:string;candidateDigest?:string};
+  if(!input||!['jobId,previousBase,sequence,sourceDigest','candidateDigest,jobId,previousBase,sequence,sourceDigest'].includes(Object.keys(input).sort().join(','))
    ||typeof input.jobId!=='string'||!/^[-\w]{1,80}$/.test(input.jobId))throw new Error('Invalid revalidation request');
   const {jobId,...request}=input;
   // Cached results never bypass current intake, invalidation or release checks.
   this.reviews.authorizeRevalidation(agentId,jobId,request);
-  const key=createHash('sha256').update(JSON.stringify([agentId,jobId,request.previousBase,request.sequence,request.sourceDigest])).digest('hex');
+  const key=createHash('sha256').update(JSON.stringify([agentId,jobId,request.previousBase,request.sequence,request.sourceDigest,request.candidateDigest??null])).digest('hex');
   for(const [key,entry] of this.entries)if(entry.finished&&Date.now()-entry.finished>60000)this.entries.delete(key);
   const prior=this.entries.get(key);
   if(prior){

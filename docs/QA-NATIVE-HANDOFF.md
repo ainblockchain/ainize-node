@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 162개 및 build 통과. 704ced1의 전체 API suite는
+- QA 회귀 164개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -27,6 +27,19 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 게시 전·반복 main 변경 재개 연결 완료(코드 통합 검증):
+재개 요청/응답에 선택적 candidateDigest를 추가했다. 게시 전 park는 검증한 후보 digest를
+보관하고 handler가 이를 전달한다. 호스트는 같은 agent/job/base/candidate의 영구 게시
+변경 기록과 원래 요청을 대조한다. 처음 review가 없는 경우와 이전 PR을 보관한 채 준비된
+중간 base에서 다시 drift한 경우를 구분한다. 새 시도는 이전 준비 base 체인을 따라야 하며,
+최종 publication은 마지막 준비 base와 원래 요청에 일치해야 한다. 첫 검토 페이지도
+canonical API 응답으로 등록한 뒤 고정한다. 임의 관측 SHA만으로 재개를 허용하지 않는다.
+두 번의 main 이동, 준비 서비스 재시작, PR 유무 양쪽, 다른 후보 응답 거부, 기존 orphan PR
+보관 및 같은 Ainmem 페이지 검토를 검증했다. QA 164 pass/0 fail/0 skip, build 통과.
+운영 플래그는 여전히 기본 false이고 배포·실제 채널 E2E는 수행하지 않았다.
+이 아래의 ‘게시 전 미완료’ 기록은 당시 상태이며 이번 변경으로 코드 연결을 완료했다.
+
 
 2026-10-11 게시 전 base 변경 증거 영구 보존:
 publisher가 반환한 `QaPublicationBaseChanged`를 새 `publication_base_changes` 테이블에
@@ -105,8 +118,8 @@ gateway는 아직 연결하지 않았다.
 잘못된 준비 응답, 중복 재개 거부를 포함해 QA 153 pass/0 fail/0 skip, build 통과.
 
 **아직 이 API를 handler에서 호출하지 않는다.** 자동 main 재수정은 다음 연결까지 미완료:
-1. 게시 전 main drift 및 재수정 후보 게시 전 반복 drift를 위한 호스트 권한 근거를 추가한다.
-   현재 ledger 권한 경로는 게시된 review의 이전 base만 허용한다.
+1. 게시 전·반복 main drift 코드 연결은 완료했다. 실제 호스트에서 모델 수정·제품 gate·
+   publisher 재시작과 결합한 검증을 수행한다. 로컬 통합 테스트를 운영 증거로 대체하지 않는다.
 2. gateway/handler/새 publication/review 연결은 구현됐다. 실제 호스트의 main 변경과
    재시작 통합 검증을 수행한다. 진행 중인 release intent는 계속 재개를 거부한다.
 3. 운영 활성화 전에 기존 이관 작업과 겹치지 않는 단일 writer 구성을 확인한다.

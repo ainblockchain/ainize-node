@@ -106,15 +106,26 @@ test('changed publication base archives the validated candidate and orphan PR wi
  const job=jobs.enqueue('request',{repository:candidate.repository,base:candidate.base,text:'고쳐줘'}),claim=jobs.claim();
  const coding=checkpoints.save(job.id,{repository:candidate.repository,commit:candidate.base,changes:candidate.changes});
  const validation=checkpoints.save(job.id,{candidateDigest:digest,passed:true});
- jobs.finish(job.id,claim.lease,'queued',{stage:'needs_publication',coding,validation});
+ jobs.finish(job.id,claim.lease,'queued',{stage:'needs_publication',coding,validation,hostIntake:true,hostBase:true});
  const artifact={sha:'b'.repeat(40),number:7,url:'https://github.com/test/product/pull/7'};let enqueued=0;
  const service=new HostedQaPublicationService({publish:async()=>{throw new QaPublicationBaseChanged('e'.repeat(40),artifact);}} as any,()=>{enqueued++;});
  const ctx={qa:{publish:async(id:string,c:unknown)=>service.submit('agent',{jobId:id,candidate:c})}};
  await advanceHostedPublication({jobs,claim:jobs.claim(),checkpoints,ctx});await new Promise(r=>setImmediate(r));
  const result=await advanceHostedPublication({jobs,claim:jobs.claim(),checkpoints,ctx});
+ assert.equal(result.checkpoint.revalidationCandidateDigest,digest);
  assert.equal(result.checkpoint.stage,'needs_revalidation');assert.equal(result.checkpoint.holdReason,'base_changed');assert.equal(result.checkpoint.published,undefined);assert.equal(enqueued,0);
  const history=jobs.revalidationHistory(job.id);assert.equal(history.length,1);assert.equal(history[0].checkpoint.stage,'needs_publication');assert.deepEqual(checkpoints.load(history[0].checkpoint.coding).changes,candidate.changes);
  assert.deepEqual(checkpoints.load(result.checkpoint.revalidationEvidence).artifact,artifact);assert.equal(result.input.base,candidate.base);assert.equal(jobs.wake(job.id),false);
+ const {advanceHostedRevalidation}=await import('../examples/qa-agent/revalidation.mjs');
+ let wrong=true;
+ const revalidate=async(id,request)=>{
+  assert.equal(request.candidateDigest,digest);
+  return {state:'done',result:{...request,jobId:id,repository:candidate.repository,base:'e'.repeat(40),candidateDigest:wrong?'f'.repeat(64):digest}};
+ };
+ await advanceHostedRevalidation({jobs,claim:jobs.claimRevalidation(),ctx:{qa:{revalidate}}});assert.equal(jobs.get(job.id).input.base,candidate.base);
+ wrong=false;await advanceHostedRevalidation({jobs,claim:jobs.claimRevalidation(),ctx:{qa:{revalidate}}});
+ assert.equal(jobs.get(job.id).input.base,'e'.repeat(40));assert.equal(jobs.get(job.id).checkpoint.validation,undefined);
+ assert.deepEqual(checkpoints.load(jobs.revalidationHistory(job.id)[0].checkpoint.revalidationEvidence).artifact,artifact);
 });
 
 test('mismatched revalidation responses cannot archive or replace a pending publication',async t=>{

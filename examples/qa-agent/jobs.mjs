@@ -131,14 +131,15 @@ export class Jobs {
     return this.get(id);
   }
   /** Preserve the exact prior attempt before changing its visible state. No new base or approval is bound here. */
-  parkForRevalidation(id, lease, observedBase, evidence) {
+  parkForRevalidation(id, lease, observedBase, evidence, candidateDigest) {
     if (typeof observedBase !== 'string' || !/^[a-f0-9]{40}$/.test(observedBase)) throw new Error('Invalid changed base');
+    if(candidateDigest!==undefined&&(typeof candidateDigest!=='string'||!/^[a-f0-9]{64}$/.test(candidateDigest)))throw new Error('Invalid revalidation candidate');
     return this.transaction(() => {
       const job = this.get(id), published = job?.checkpoint.published;
       const reviewing=job?.checkpoint.stage==='awaiting_approval'&&published?.repository===job.input.repository&&published.base===job.input.base&&/^[a-f0-9]{40}$/.test(published.sha??'');
       const publishing=job?.checkpoint.stage==='needs_publication'&&job.checkpoint.coding?.jobId===id&&job.checkpoint.validation?.jobId===id&&evidence?.jobId===id&&/^[a-f0-9]{64}$/.test(evidence.checksum??'');
       if (!job || (!reviewing&&!publishing) || observedBase === job.input.base) throw new Error('Revalidation candidate binding changed');
-      const priorCheckpoint={...job.checkpoint,...(publishing?{revalidationEvidence:evidence}:{})};
+      const priorCheckpoint={...job.checkpoint,...(publishing?{revalidationEvidence:evidence,...(candidateDigest?{revalidationCandidateDigest:candidateDigest}:{})}:{})};
       const input = json(job.input), checkpoint = json(priorCheckpoint);
       const sourceDigest = createHash('sha256').update(JSON.stringify([input, checkpoint])).digest('hex');
       const prior = this.db.prepare('SELECT sequence,observed_base FROM revalidation_history WHERE job_id=? AND source_digest=?').get(id, sourceDigest);
@@ -186,7 +187,7 @@ export class Jobs {
         || archived.input.base !== job.input.base || archived.observedBase !== job.checkpoint.observedBase
         || json(archived.input) !== json(job.input)) throw new Error('Revalidation archive binding changed');
       if (!receipt || receipt.jobId !== id || receipt.repository !== job.input.repository
-        || receipt.previousBase !== job.input.base || receipt.sequence !== prior.sequence
+        || receipt.previousBase !== job.input.base || receipt.candidateDigest !== job.checkpoint.revalidationCandidateDigest || receipt.sequence !== prior.sequence
         || receipt.sourceDigest !== prior.sourceDigest || typeof receipt.base !== 'string' || !/^[a-f0-9]{40}$/.test(receipt.base)
         || receipt.base === job.input.base) throw new Error('Revalidation preparation binding changed');
       const now = this.now();
