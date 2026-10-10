@@ -123,7 +123,7 @@ export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs 
   const dir = git.dir(mirror.agent);
   const remoteRef = `refs/remotes/upstream/${mirror.branch}`;
   const g = async (args: string[]) => {
-    const { stdout } = await run('git', ['--git-dir', dir, ...args], {
+    const { stdout } = await run('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '--git-dir', dir, ...args], {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
@@ -133,6 +133,7 @@ export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs 
     return stdout;
   };
 
+  await git.assertStorageLimit(mirror.agent);
   try {
     await g(['fetch', '--quiet', '--depth', '1', mirror.url, `+${mirror.branch}:${remoteRef}`]);
   } catch (e) {
@@ -140,6 +141,9 @@ export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs 
     throw new AgentGitError(`could not fetch ${mirror.url}: ${why.split('\n').slice(0, 3).join(' ')}`);
   }
 
+  // Reject before reading or applying the new tree. Landing performs the same check,
+  // but that is too late once the live runtime has already been replaced.
+  await git.assertStorageLimit(mirror.agent);
   const commit = (await g(['rev-parse', '--verify', `${remoteRef}^{commit}`])).trim();
   if (mirror.lastCommit === commit) return { changed: false, commit };
 

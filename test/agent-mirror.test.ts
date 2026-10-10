@@ -11,7 +11,7 @@ import { AgentRepositoryQueue } from '../src/agent-repository-queue.js';
  *
  *   node --test --import tsx test/agent-mirror.test.ts
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { AgentMirrorSyncer } from '../src/agent-mirror-sync.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -310,4 +310,32 @@ test('a real fetched shallow mirror archive retains its source SHA and boundarie
   assert.equal(repos.isShallow('archive-mirror-copy'), true);
   assert.equal((await repos.readSpec('archive-mirror-copy', 'main', undefined, mirror.path)).input.systemPrompt, 'Fetched source to preserve.');
   await assert.rejects(git(['--git-dir', repos.dir('archive-mirror-copy'), 'config', '--get', 'http.extraHeader']));
+});
+
+test('an oversized mirror update preserves the running agent and its landed source', async () => {
+  const limited = new AgentGit(join(tmp, 'quota-repositories'), 32 * 1024);
+  await limited.init('quota-agent');
+  const store = new AgentMirrorStore(join(tmp, 'quota-mirrors.json'));
+  const mirror = store.set({ agent: 'quota-agent', url: `${base}/donga-science-admin.git`, path: 'news-agent', branch: 'main' });
+  const releases: string[] = [];
+  const syncer = new AgentMirrorSyncer({
+    git: limited, mirrors: store,
+    apply: async (_id, _input, commit) => { releases.push(commit); },
+    land: async (id, commit) => { await limited.setRef(id, 'main', commit); },
+    log: () => {},
+  });
+  const initial = await syncer.sync(mirror);
+  assert.equal(initial?.error, null);
+  assert.equal(releases.length, 1);
+  const active = await limited.resolve('quota-agent', 'main');
+  await upstreamCommit('Oversized mirror source', {
+    'news-agent/agent.json': AGENT(),
+    'news-agent/prompt.md': 'This update must not replace the running prompt.',
+    'large-source.bin': randomBytes(96 * 1024).toString('hex'),
+  });
+  const failed = await syncer.sync(store.get('quota-agent')!);
+  assert.match(failed?.error ?? '', /repository storage limit exceeded/);
+  assert.equal(releases.length, 1);
+  assert.equal(failed?.lastCommit, active);
+  assert.equal(await limited.resolve('quota-agent', 'main'), active);
 });
