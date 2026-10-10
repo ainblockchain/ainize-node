@@ -1573,3 +1573,19 @@ Ainize 서버는 docs-runtime-practice 709c888을 서빙 중이고 자동 배포
 https://github.com/ainblockchain/ainize-node/pull/74 head4d4157b.
 기존 serving 커밋과 PR71을 보존한 merge이며 관련34tests/0fail/0skip 및 build 통과.
 통합·배포 승인을 별도로 질문한 상태다. 운영 serving SHA와 페이지 등록은 아직 미완료.
+
+
+### PR83 검증 확정 — 2026-10-11
+
+정확한 e339fe8 전체 소스 snapshot의 .41 --fast 검사가 모두 통과했다(exit-code=0).
+QA 통합 테스트는 같은 snapshot+격리 PostgreSQL에서 57 pass/0 fail/0 skip,
+typecheck 통과. 최초 추가 검증은 예전 파일 overlay의 누락 모듈 때문에 실패했으나
+정확한 전체 snapshot으로 다시 검증했다. Next 빌드는 외부 node_modules symlink를
+거부해 의존성을 snapshot 내부에 복사한 후 재실행했고 build-exit=0으로 통과했다.
+증거 root native-ainmem-gates-QyYZbM8c의 fast.log, integration.log, build.log,
+exit-code, build-exit. 최종 build pid2201807은 종료됐다.
+
+PR83 exact head의 병합·배포 재개 승인을 추가 요청했다. PR74의 기존 serving 수정
+보존·통합·배포 질문도 답변 대기다. PR71/76 및 DB 변경 승인은 유효하고 처리했지만,
+추가 PR을 자동으로 승인된 것으로 해석하지 않았다. 운영 앱 교체, 실제 credential
+enrollment,23pageadoption, native single-writer 및 전체채널 E2E는 아직 미완료.
