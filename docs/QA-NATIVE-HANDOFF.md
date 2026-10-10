@@ -528,3 +528,9 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 Aindrive `8d9bf634`의 PR199는 후보 `483fc269d531e34effbbb412221ec4c97bfe347c` 그대로 open/unmerged다. 기존 approved_release 실패 기록을 자동 재배포 권한으로 쓰지 않고 `revalidate_candidate`로 보존했다.
 - 실제 .41에서 두 서비스의 작업 4개를 새 private DB로 가져와 새 reconciliation 코드를 실행했다. 운영 source jobs/reports digest가 실행 전후 일치했다. 운영 DB/페이지/PR/배포에는 쓰지 않았다. 증거: `/mnt/newdata/qa-services/validation/native-reconcile-live-20261010-zI9Plb/result.json` 및 `run.mjs`.
 - QA 타깃 100개 통과, 실패/skip 0. 실제 객체형 PR·후속 작업·승인 비상속·기존 완료 상태 보존 검증을 포함한다. 실제 운영 이관과 서비스별 E2E는 여전히 미완료다.
+
+### 2026-10-10 Ainmem 칸반/작업 실제 Chromium 검증
+
+- companion Ainmem PR76의 `10e62a6`에 격리 DB fixture와 browser check를 추가했다. 실제 .41 Next 앱/PostgreSQL + Mac Chromium에서 데스크톱/모바일의 칸반·작업 렌더링, 카드 클릭, 화면 넘침 방지, 동일 페이지 갱신, 검토 SHA 표시, 승인/완료 열 이동을 검증하고 PNG를 직접 확인했다.
+- 증거: `/mnt/newdata/qa-services/validation/native-ainmem-ui-20261010-V9YCTW/results/`. 테스트용 앱/DB 컨테이너, network, SSH 터널은 제거했다. 상세 재현/범위는 Ainmem `docs/QA-NATIVE-TASK-API.md` 참조.
+- 운영 페이지 이관, 실제 로그인/승인, 제품 수정·배포 전체 E2E는 여전히 남아 있다. 이번 fixture의 완료 표시와 SHA는 실제 배포 증거가 아니다.
