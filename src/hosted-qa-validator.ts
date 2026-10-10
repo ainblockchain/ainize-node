@@ -66,9 +66,15 @@ for(const file of ['package.json','yarn.lock','package-lock.json','pnpm-lock.yam
 fs.cpSync(scope.dependencyPath+'/node_modules',project+'/node_modules',{recursive:true,verbatimSymlinks:true});
 }
 const r=cp.spawnSync(p.argv[0],p.argv.slice(1),{cwd:'/tmp/work/'+p.cwd,stdio:'inherit',env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',CI:'1',NEXT_TELEMETRY_DISABLED:'1'}});
+if(r.status!==0){
+ let memoryEvents=null;try{memoryEvents=fs.readFileSync('/sys/fs/cgroup/memory.events','utf8');}catch{}
+ console.error('QA_RESOURCE_EVIDENCE '+JSON.stringify({status:r.status,signal:r.signal,memoryEvents}));
+}
 process.exit(r.status===null?1:r.status);
 `;
-export async function runQaValidation(profile: QaValidationProfile, candidate: QaCandidate) {
+export interface QaGateEvidence {passed:boolean;stdout:string;stderr:string}
+export async function runQaValidation(profile: QaValidationProfile, candidate: QaCandidate,
+  evidence?:(gate:string,output:QaGateEvidence)=>void|Promise<void>) {
   // Freeze the exact input before any asynchronous checkout/container operation.
   profile = structuredClone(profile); candidate = structuredClone(candidate);
   validateQaProfile(profile, candidate);
@@ -97,21 +103,24 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       await writeFile(join(dir,'profile.json'),JSON.stringify({dependencies:profile.dependencies??[{cwd:profile.cwd,dependencyPath:profile.dependencyPath}],cwd:gate.cwd??profile.cwd,argv:gate.argv}));
       // Only non-secret exported Git source and fixed gate config are visible in the mount.
       const name=`ainize-qa-validation-${randomUUID()}`;
-      let passed=false, diagnostics='';
+      let passed=false, stdout='',stderr='';
       try {
         const output=await exec('docker',['run','--rm','--name',name,'--network','none','--read-only','--user',`${uid}:${gid}`,
           '--cap-drop','ALL','--security-opt','no-new-privileges','--memory',profile.memory??'4g','--cpus','2','--pids-limit','256',
           '--tmpfs',`/tmp:rw,exec,nosuid,nodev,size=${(profile.workspaceMiB??2048)*1024*1024}`,'--mount',`type=bind,src=${dir},dst=/input,readonly`,
           '--entrypoint','node',profile.image,'-e',bootstrap],{timeout:profile.timeoutMs??300000,maxBuffer:4*1024*1024});
         // Retain bounded private evidence on success too: an exit code alone cannot show skipped tests.
-        diagnostics=`${output.stdout}\n${output.stderr}`.slice(-12000);
+        stdout=output.stdout;stderr=output.stderr;
         passed=true;
       } catch (error) {
         // Private validation evidence only. Callers must not copy arbitrary product logs to public cards.
         const failure=error as {stdout?:string;stderr?:string};
-        diagnostics=`${failure.stdout??''}\n${failure.stderr??''}`.slice(-12000);
+        stdout=failure.stdout??'';stderr=failure.stderr??'';
       }
       finally { await exec('docker',['rm','-f',name],{timeout:15000}).catch(()=>{}); }
+      await evidence?.(gate.name,{passed,stdout,stderr});
+      // Reserve room for both streams so a long error stack cannot hide the test summary.
+      const diagnostics=`[stdout]\n${stdout.slice(-5900)}\n[stderr]\n${stderr.slice(-5900)}`;
       results.push({gate:gate.name,passed,summary:passed?'Product gate passed':'Product gate failed or timed out',diagnostics});
       if(!passed)break;
     }

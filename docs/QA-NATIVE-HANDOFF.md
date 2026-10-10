@@ -572,3 +572,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실행기 `workspaceMiB`를 추가했다(기본 2048, 최대 container memory 이내). Aindrive 의존성만 약 1.8GiB였으므로 4096MiB/8GiB memory로 재검증한다. 성공 로그도 private tail에 보존해 pass/skip/TODO 수를 확인할 수 있게 했다. 실제 Docker probe로 4GiB mount와 성공 로그 보존을 확인했다. QA 108 pass/0 skip, build pass.
 - 서버 증거: `/mnt/newdata/qa-services/validation/native-aindrive-product-20261010-dOcf0d`. 첫 별도 full E2E는 실제 서버/CLI가 실행되었으나 SQLITE_FULL 발생 후 해당 컨테이너를 종료하고 로그를 보존했다. 실패를 통과로 처리하지 않았다.
 - 새 `run-e2e-workspace.mjs`가 4GiB 환경에서 실행 중이다. 다음 작업은 실제 프로세스와 `e2e-workspace-result.json`을 확인하는 것이다. 운영 채널의 모델 수정→승인→배포 E2E와는 별도 제품 시나리오 검증이다. 운영 설정/작업기 전환은 아직 수행하지 않았다.
+
+### 2026-10-10 Ainize 웹 검증 및 공유 채널 전환 주의점
+
+- Ainize 웹 main `2c493a2`의 실제 native profile 네 gate(gen:check/typecheck/test/build)가 성공했다. 테스트 348 pass, 1 skip(외부 npm 조회), 0 fail. 레지스트리의 ainize 0.4.0 존재는 별도 읽기로 확인했다. 서버 증거 `native-ainize-web-product-20261010-5yn1dC`; 자세한 범위는 QA-PRODUCT-VALIDATOR.md에 기록했다.
+- 운영 설정을 읽어 확인한 결과 `qa-ainize`와 `qa-ainize-node`는 같은 channel_id와 Teams agent_id를 쓴다. 현재 Python의 `qa_agent/routing.py`는 정본 본문에서 API/백엔드/web/웹 접두어를 읽고, 신규 미지정 요청은 웹으로 보낸다. 기존 스레드는 원래 저장소를 유지하고 다른 저장소 지정은 거부한다. 두 저장소에 작업이 있는 스레드는 승인 모호성으로 거부한다. 재전송은 새 저장소 작업을 만들지 않는다.
+- 이 동작을 읽은 실제 운영 소스는 `/mnt/newdata/qa-services/releases/8b654ff/ainteams-qa/qa_agent/routing.py`다. a2a-agents에는 수정/커밋하지 않았다. Native handler/host profiles는 현재 단일 저장소 기준이므로, **Ainize 공유 채널의 저장소 선택·중복 방지·승인 범위를 이관하기 전 전환하면 안 된다.** 두 profile을 별도 Teams 봇으로 복제하는 방식도 요구사항을 만족하지 않는다.
+- Aindrive 4GiB full E2E는 #178 전송 실패 뒤 서버 연결 거부로 실패했다. #178 단독은 1 pass/173 제외로 통과했으므로 제품 전송 자체의 결함이나 OOM으로 단정하지 않는다. private 로그가 잘리지 않게 stdout/stderr 별도 저장과 실패 시 cgroup memory.events 기록을 추가했고 QA 110 pass/0 skip 및 build pass다.
+- 같은 Aindrive 증거 디렉터리에서 `run-full-evidence.mjs`로 full E2E를 재실행 중이다. 다음에는 실제 실행 상태와 `full-evidence-result.json`, `full-evidence/*.log`를 확인한다. 기존 실행을 단순 관측 시간 초과로 재시작하지 않는다. 운영 배포/전환은 계속 미실행이며 PR76 승인 질문도 대기 중이다.

@@ -69,7 +69,21 @@ export class HostedQaValidationService {
       const temp=join(this.root,`${key}.${randomUUID()}.tmp`);
       writeFileSync(temp,JSON.stringify(status),{mode:0o600,flag:'wx'});renameSync(temp,file);
     };
-    void Promise.resolve().then(()=>this.run(profile,candidate))
+    void Promise.resolve().then(()=>this.run(profile,candidate,(gate,output)=>{
+      if(!profile.gates.some(g=>g.name===gate))throw new Error('Unknown QA evidence gate');
+      let directory=this.root;
+      for(const part of ['logs',key]){
+        directory=join(directory,part);
+        try{mkdirSync(directory,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+        const st=lstatSync(directory);
+        if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o077)!==0)throw new Error('QA logs must be private');
+      }
+      const bounded=(text:string)=>{const bytes=Buffer.from(text);return bytes.length<=1024*1024?bytes:Buffer.concat([bytes.subarray(0,512*1024),Buffer.from('\n[private log truncated]\n'),bytes.subarray(-512*1024)]);};
+      for(const stream of ['stdout','stderr'] as const){
+        const target=join(directory,`${gate}.${stream}.log`),temp=join(directory,`${gate}.${stream}.${randomUUID()}.tmp`);
+        writeFileSync(temp,bounded(output[stream]),{mode:0o600,flag:'wx'});renameSync(temp,target);
+      }
+    }))
       .then(result=>{this.checkResult(result,profile,candidate);save({state:'done',result});})
       .catch(()=>save({state:'failed'}))
       .catch(()=>{/* Receipt persistence failure permits a later safe validation retry. */})

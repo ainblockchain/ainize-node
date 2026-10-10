@@ -91,3 +91,35 @@ test('runner cannot attest a different candidate or omit mandatory gates',async 
   assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);
  }
 });
+
+test('host preserves bounded private streams across gates without exposing their paths to the agent',async t=>{
+ const {readFileSync,readdirSync,statSync}=await import('node:fs');
+ const root=mkdtempSync(join(tmpdir(),'qa-private-logs-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const p={...profile,gates:[...profile.gates,{name:'build',argv:['npm','run','build']}]};
+ const service=new HostedQaValidationService(root,{agent:p},async(_p,c,evidence)=>{
+  await evidence!('test',{passed:true,stdout:'TEST SUMMARY',stderr:'warning'});
+  await evidence!('build',{passed:false,stdout:'start\n'+'x'.repeat(2*1024*1024)+'\nend',stderr:'ROOT CAUSE'});
+  return {repository:c.repository,base:c.base,candidateDigest:qaCandidateDigest(c),passed:false,gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''},{gate:'build',passed:false,summary:'failed',diagnostics:''}]};
+ });
+ service.submit('agent',candidate);await new Promise(r=>setImmediate(r));
+ const status=service.submit('agent',candidate);assert.equal(status.state,'done');assert(!JSON.stringify(status).includes(root));
+ const logs=join(root,'logs',readdirSync(join(root,'logs'))[0]!);
+ assert.equal(readFileSync(join(logs,'test.stdout.log'),'utf8'),'TEST SUMMARY');
+ assert.equal(readFileSync(join(logs,'build.stderr.log'),'utf8'),'ROOT CAUSE');
+ const long=readFileSync(join(logs,'build.stdout.log'),'utf8');assert(long.startsWith('start\n'));assert(long.endsWith('\nend'));assert(long.includes('[private log truncated]'));assert(Buffer.byteLength(long)<1024*1024+100);
+ for(const name of readdirSync(logs))assert.equal(statSync(join(logs,name)).mode&0o077,0);
+});
+
+test('a redirected log directory cannot receive evidence or authorize a passing receipt',async t=>{
+ const {symlinkSync,readdirSync}=await import('node:fs');
+ const root=mkdtempSync(join(tmpdir(),'qa-log-link-')),outside=mkdtempSync(join(tmpdir(),'qa-log-outside-'));
+ t.after(()=>{rmSync(root,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});});
+ symlinkSync(outside,join(root,'logs'),'dir');
+ const service=new HostedQaValidationService(root,{agent:profile},async(_p,c,evidence)=>{
+  await evidence!('test',{passed:true,stdout:'private diagnostic',stderr:''});
+  return {repository:c.repository,base:c.base,candidateDigest:qaCandidateDigest(c),passed:true,gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}]};
+ });
+ service.submit('agent',candidate);await new Promise(r=>setImmediate(r));
+ assert.deepEqual(service.submit('agent',candidate),{state:'failed'});
+ assert.deepEqual(readdirSync(outside),[]);assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);
+});

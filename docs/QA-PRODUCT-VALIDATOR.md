@@ -260,3 +260,48 @@ its full private stdout/stderr preserved as `e2e-2g-stdout.log` / `e2e-2g-stderr
 That result is failed, not a partial success. A fresh 4096 MiB attempt is now running via
 `run-e2e-workspace.mjs`; inspect `e2e-workspace-result.json` and the actual running process
 before taking further action. Do not infer completion from the log file alone.
+
+## Private gate evidence and Aindrive follow-up (2026-10-10)
+
+The 4 GiB Aindrive full E2E attempt finished with a failing verdict. Its first retained
+failure was scenario #178 (large streaming download), followed by connection-refused
+failures because the temporary server was no longer listening. The old 12,000-character
+combined tail discarded earlier server output and test totals, so it cannot establish
+the server exit cause or a reliable whole-suite pass count. Do not call this an OOM or
+product streaming defect without additional evidence.
+
+Scenario #178 alone passed on the same main/image/resource profile (1 passed, 173
+intentionally excluded). This is a diagnostic reproduction, not a passing full suite.
+Evidence: `stream-result.json`, `stream-evidence/`, `run-stream-repro.mjs` under the
+Aindrive evidence root. A new full-suite run uses `run-full-evidence.mjs`; inspect its
+actual process and `full-evidence-result.json` before retrying. It writes separate full
+private stdout/stderr under `full-evidence/` and records cgroup memory events on failure.
+
+The native validation service now stores stdout/stderr separately under private
+`qa-validation/logs/<receipt key>/<gate>.<stream>.log`. Each stream is limited to 1 MiB
+plus a truncation marker, preserving both ends of longer output. Directory and file
+permissions are checked, symlink redirection is rejected, and persistence failure cannot
+produce a passing receipt. Runtime responses contain no host artifact paths. The small
+receipt diagnostic reserves space for both stdout and stderr so test totals are not
+crowded out by long error stacks. The runner also offers an operator-only evidence
+callback for isolated diagnostics; it is not a model/gateway option. No public card
+should contain raw logs. Retention/orphan management remains an operational follow-up.
+QA verification: 110 tests passed, zero failures/skips; build passed.
+
+## Ainize web actual profile (2026-10-10)
+
+Verified main `2c493a2880032adfe73ead7f32150505cd835f05` in a prepared immutable image
+`sha256:c16674669023247bd029d6e087f13885cbfc15e92f2f6d4dd67d6091a94ec90e`, using
+`/seed/native_web`, 8 GiB memory and 4096 MiB workspace. Generated-file freshness,
+typecheck, tests and production build all returned success. Tests were 348 passed,
+zero failed, and one skipped, out of 349.
+
+The skip is `test/lifecycle.test.ts`'s registry check for `npm install -g ainize`; the
+container has no network. A separate host-side read of the public registry confirmed
+package `ainize` version `0.4.0` at 2026-10-10 14:17 UTC. This does not rewrite the
+isolated test result into 349 passes, or prove a live installation/UI flow.
+
+Evidence: `/mnt/newdata/qa-services/validation/native-ainize-web-product-20261010-5yn1dC`
+(`profile.json`, `result.json`, `run.mjs`, `image-id`, Dockerfile/build log, exact Git
+bundle/checkout, `registry-probe.json`). The unchanged package manifest was the overlay.
+No product fix, production profile, live QA job, approval or deployment was performed.
