@@ -711,3 +711,25 @@ placeholder였으므로 카드 자체 visible 확인을 추가해 전체를 다�
 PR #70의 큰 네이티브 QA 변경과 함께 들어 있다. 이를 현재 main 기준의 작은 별도 PR로
 분리해 검증·승인받으면, 전체 native runtime 전환 전에 Ainmem 등록 경로를 검증할 수 있다.
 이후 원본 23개 페이지 권한 및 승인 mirror를 연결하고 단일 작업기 전환을 진행해야 한다.
+
+## Registry 선행 배포 PR 분리 — 2026-10-11
+
+현재 main `c8a6176`을 기준으로 응답 조직 참조 수정만 별도 worktree/브랜치로 분리했다.
+- PR #71: https://github.com/ainblockchain/ainize-node/pull/71
+- head `403860f1513ad53df6de0a50ce1bd18b0dc40ff3`
+- worktree `/Users/kmh4500/git/ainize-registry-org-reference`, branch `fix/registry-org-reference`
+- 변경은 shared-agents.ts와 회귀 테스트 두 파일, 16 tests pass / 0 skip, build pass.
+  추가로 원본 alias/SSO sharing metadata가 그대로인지 검증한다.
+- .41의 ainize-public-node와 ainize-auto-deploy.timer 둘 다 active.
+  실제 build-info는 main `c8a6176`, dirty=false. main 병합 시 타이머가 배포할 수 있다.
+
+사용자에게 **PR #71 exact head의 main 병합·자동 배포 승인**을 요청했다. 아직 답변이
+없으며, PR 생성/push 외 main이나 운영 상태는 바꾸지 않았다. 이전 PR #53 등의 승인과
+혼동하지 않는다. 승인되면 최신 head/base를 다시 확인하고 병합 후 serving SHA와 실제
+조직 registry의 QA 6개 ref가 모두 요청한 SSO org로 오는지 재확인한다.
+PR #70은 큰 native QA 변경을 유지하며 이 선행 PR과 별개다.
+
+Ainmem PR #76은 아직 배포 승인되지 않았다. 새 credential table은 대상이 명확한
+0005_qa_agent_credentials.sql로 추가할 수 있다. compose는 migration을 자동 실행하지
+않으므로, 승인 후 백업·이 SQL 적용·앱 배포·schema health 확인 순서가 필요하다.
+전체 drizzle push로 무관한 schema 변경을 자동 승인하지 않는다.
