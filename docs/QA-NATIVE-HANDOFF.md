@@ -865,3 +865,26 @@ QA 회귀 137 tests / 0 skip 및 TypeScript production build 통과. 재시작 �
 전체 QA 139 tests / 0 skip 및 TypeScript production build 통과. 캐시된 성공 뒤 정책 철회, 게시 중 철회, 완료/실행 중
 반환 객체 변조를 검증했다. 마지막 실행 중 객체 복사 보완은 publication-flow 검증으로
 재확인했다. 호스트의 새 시도 발급/자동 재수정은 아직 연결하지 않았고 운영 배포도 없다.
+
+## AIN Teams 최신 main 제품 검증 — 2026-10-11 (진행 중)
+
+`ainetwork-ai/ainteams` main `0e6dfedd65930412b3e3ce4184ccde0fe63eb469`을
+Ainize 서버의 별도 checkout으로 반입했다. 운영 코드/DB/토큰/작업기를 변경하지 않았다.
+서버 경로: `/mnt/newdata/qa-services/validation/native-teams-product-20261011-Sj66BF`.
+검증 이미지: `sha256:8b9e1d5a6ee9d1728232d4f121a7a3336a46bce302e1f4b33830168acfe22f32`.
+Node 20.20.2 / pnpm 10.33.0, 현재 lockfile의 의존성을 별도 이미지에 설치했다.
+
+Teams는 `.npmrc`의 hoisted 구조라 desktop/mobile에 node_modules가 없는 것이 정상이다.
+최초 bootstrap은 이 디렉터리 복사에서 ENOENT로 중단됐다. 제품 오류가 아니며 검증
+이미지에 빈 디렉터리만 추가했다. 모든 패키지 manifest와 root lockfile 대조는 유지한다.
+최초 결과는 `bootstrap-failure.json`에 보존했다. 이미지 준비 중 tag 대소문자와
+Dockerfile FROM의 local image ID 해석 오류도 수정했다.
+
+`run.mjs`는 현행 native validator를 사용해 네트워크 없음/비루트/읽기 전용/8GiB 메모리/
+4GiB 작업 공간에서 root typecheck→lint→test→build를 실행한다. 원본 README와 동일한
+candidate로 main의 실제 제품 게이트 실행 가능성을 확인한다. 실행 명령은 `profile.json`,
+개별 원문 로그는 `evidence/`, 최종 결과는 `result.json`에 저장된다.
+
+현재 전체 typecheck 통과, lint 실행 중이다. web/browser E2E 통과를 의미하지 않는다.
+로컬 도구 실행 세션은 `21171`, 서버 runner는 위 경로의 `run.mjs`다. 상태 조회가 잠깐
+안 된다고 다시 시작하지 말고 같은 프로세스/컨테이너와 결과 파일을 확인한다.
