@@ -171,3 +171,8 @@ Ainize My Agents now includes private paginated deleted-agent archives, complete
 ### Clef service preparation
 
 The live comcom Clef repository remains SCRIPT at source 5ce2fd8 with successful deployments visible on 2026-10-11. Its authenticated folder download was inspected; direct terminal clone currently requires credentials. A local preparation at /Users/kmh4500/git/clef-artwork-search-unified exposes the same art_search ranking through POST /search, adds /health, keeps the repository name and original script manifest, and changes kind to service with an 8080 Docker entry. Every search requires the caller's own Bearer key and never falls back to an operator environment key. Five real local HTTP tests cover ranking parity, key separation, input limits and sanitized errors; the Node manifest validator accepts the service manifest. This preparation is a downloaded working snapshot, not a clone of upstream Git history. It has not been uploaded, built in production or deployed. Existing project identity and live model responses still require production verification.
+
+
+### Committed release validation and review
+
+A HEAD-only release snapshot (excluding other chats' unstaged work) passes Node typecheck, 24 real Git/owner recovery tests and 39 SSE/SSO tests. Explicit exported middleware types fix declaration portability with dependencies in another workspace. The node branch is pushed and draft PR https://github.com/ainblockchain/ainize-node/pull/72 is attached; it remains a draft and is not deployed. The CLI complete one-shot suite now passes: 104 tests, zero failures/skips. Clef local Docker image build is pending because this machine's Docker daemon is unavailable; its actual model/production validation remains open.
