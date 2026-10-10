@@ -1049,3 +1049,21 @@ Qwen3.8-Flash-Next 실제 호출: 1 test / 0 fail / 0 skip, 약 22.6초.
 증거: /mnt/newdata/qa-services/validation/native-gateway-20261011-U9J3ZB/live-coding.log.
 운영 ACL 설치 및 선행 PR 승인·배포, canonical page enrollment와 6개 채널/7개 제품
 profile의 단일 native writer 전환은 계속 남아 있다.
+
+### 호스트 검증 실행 예외의 제한 재시도 — 2026-10-11
+
+HostedQaValidationService에서 run 자체가 예외를 내면 실패 receipt를 영구 반환하던
+경로를 보완했다. 새 실행 예외는 30초 backoff, 최대 총 3회 실행으로 제한하고 시도
+횟수/다음 시각을 private receipt에 저장한다. backoff 중에는 busy로 응답해 handler가
+같은 작업을 보존하며 다음 tick에서 확인한다. 재시작해도 지연/횟수를 초기화하지 않는다.
+동일 시점의 중복 polling은 실행 중 검증을 공유하며 동시 실행 제한도 유지한다.
+
+실제 gate 실패(done, passed:false)는 이 재시도 대상이 아니며 기존 모델 자동 재수정
+경로로 간다. 반환 candidate/gate binding이 잘못되거나 로그 디렉터리가 symlink로
+바뀐 경우는 즉시 terminal failed다. 이전 버전의 실패 receipt는 원인/시도 횟수를
+복원할 근거가 없어 그대로 terminal로 유지한다. 모든 단계에서 requirePassed는 실제
+성공 receipt가 없으면 게시를 거부한다. 최대 횟수 초과 후에는 실패 상태를 보존한다.
+
+QA 149 tests / 0 fail / 0 skip, TypeScript build 및 diff check 통과. 재시작/backoff,
+중복 poll, 성공 복구, 3회 상한, 제품 실패 유지, 변조된 로그 경로 거부를 확인했다.
+운영 배포와 실제 채널의 장애 복구 E2E는 아직 수행하지 않았다.

@@ -123,3 +123,29 @@ test('a redirected log directory cannot receive evidence or authorize a passing 
  assert.deepEqual(service.submit('agent',candidate),{state:'failed'});
  assert.deepEqual(readdirSync(outside),[]);assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);
 });
+
+test('host execution exceptions retry after a durable delay and recover across restart',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-execution-retry-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let now=100000,runs=0;
+ const run=async()=>{runs++;if(runs===1)throw new Error('temporary export failure');return {repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}],passed:true};};
+ let service=new HostedQaValidationService(root,{agent:profile},run,undefined,()=>now);
+ assert.equal(service.submit('agent',candidate).state,'running');await new Promise(r=>setImmediate(r));
+ assert.deepEqual(service.submit('agent',candidate),{state:'busy'});assert.equal(runs,1);
+ assert.throws(()=>service.requirePassed('agent',candidate),/no passing/);
+ service=new HostedQaValidationService(root,{agent:profile},run,undefined,()=>now);
+ assert.equal(service.submit('agent',candidate).state,'busy');now+=30000;
+ assert.equal(service.submit('agent',candidate).state,'running');assert.equal(service.submit('agent',candidate).state,'running');
+ await new Promise(r=>setImmediate(r));assert.equal(runs,2);assert.equal(service.requirePassed('agent',candidate).passed,true);
+});
+test('host execution retries stop at three attempts but product failures are returned unchanged',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-retry-limit-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let now=100000,runs=0;
+ const service=new HostedQaValidationService(root,{agent:profile},async()=>{runs++;throw new Error('unavailable');},undefined,()=>now);
+ for(let i=0;i<3;i++){assert.equal(service.submit('agent',candidate).state,'running');await new Promise(r=>setImmediate(r));now+=30000;}
+ assert.deepEqual(service.submit('agent',candidate),{state:'failed'});assert.equal(runs,3);
+ const otherRoot=join(root,'product');let productRuns=0;
+ const product=new HostedQaValidationService(otherRoot,{agent:profile},async()=>{productRuns++;return {repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:false,summary:'assertion failed',diagnostics:''}],passed:false};});
+ product.submit('agent',candidate);await new Promise(r=>setImmediate(r));
+ const status=product.submit('agent',candidate);assert.equal(status.state,'done');if(status.state==='done')assert.equal(status.result.passed,false);
+ assert.equal(productRuns,1);
+});

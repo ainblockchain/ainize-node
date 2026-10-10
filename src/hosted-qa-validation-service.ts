@@ -5,11 +5,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { QA_VALIDATOR_VERSION, runQaValidation, validateQaProfile, qaCandidateDigest, type QaCandidate, type QaValidationProfile } from './hosted-qa-validator.js';
 type Result = Awaited<ReturnType<typeof runQaValidation>>;
 export type QaValidationStatus = { state: 'running' | 'busy' } | { state: 'done'; result: Result } | { state: 'failed' };
+class InvalidValidationEvidence extends Error {}
+type SavedStatus = QaValidationStatus | {state:'failed';attempts:number;retryAt:number};
 export class HostedQaValidationService {
   private readonly running = new Set<string>();
   constructor(private root: string, private profiles: Record<string,QaValidationProfile>,
     private run: typeof runQaValidation = runQaValidation,
-    private resolveProfile?: (agentId:string,jobId:string|undefined,candidate:QaCandidate)=>QaValidationProfile|undefined) {
+    private resolveProfile?: (agentId:string,jobId:string|undefined,candidate:QaCandidate)=>QaValidationProfile|undefined,
+    private now:()=>number=Date.now) {
     this.profiles=structuredClone(profiles);
     mkdirSync(root,{recursive:true,mode:0o700});
     const st=lstatSync(root);
@@ -24,12 +27,16 @@ export class HostedQaValidationService {
     const file=join(this.root,`${key}.json`);
     return {profile,candidate,key,file};
   }
-  private readReceipt(file:string, profile:QaValidationProfile, candidate:QaCandidate):QaValidationStatus|undefined {
+  private readReceipt(file:string, profile:QaValidationProfile, candidate:QaCandidate):SavedStatus|undefined {
     try {
       const st=lstatSync(file);
       if(!st.isFile()||st.isSymbolicLink()||st.size>1024*1024||(st.mode&0o077)!==0)throw new Error('Invalid QA validation receipt');
-      const saved=JSON.parse(readFileSync(file,'utf8')) as QaValidationStatus;
-      if(saved.state==='failed')return saved;
+      const saved=JSON.parse(readFileSync(file,'utf8')) as SavedStatus;
+      if(saved.state==='failed'){
+        if('attempts' in saved && (!Number.isSafeInteger(saved.attempts)||saved.attempts<1||saved.attempts>3||!Number.isSafeInteger(saved.retryAt)||saved.retryAt<0))throw new Error('Invalid QA retry receipt');
+        if('retryAt' in saved && !('attempts' in saved))throw new Error('Invalid QA retry receipt');
+        return saved;
+      }
       if(saved.state!=='done')throw new Error('Invalid QA validation state');
       this.checkResult(saved.result,profile,candidate);
       return saved;
@@ -60,23 +67,26 @@ export class HostedQaValidationService {
     }
     const {profile,candidate,key,file}=this.binding(agentId,raw,jobId);
     const saved=this.readReceipt(file,profile,candidate);
-    if(saved)return saved;
+    if(saved?.state==='done')return saved;
+    if(saved?.state==='failed'&&(!('attempts' in saved)||saved.attempts>=3))return {state:'failed'};
+    if(saved?.state==='failed'&&'retryAt' in saved&&this.now()<saved.retryAt)return {state:'busy'};
+    const attempts=saved?.state==='failed'&&'attempts' in saved?saved.attempts+1:1;
     if(this.running.has(key))return {state:'running'};
     if(this.running.size)return {state:'busy'};
-    if(readdirSync(this.root).length>=1000)throw new Error('QA validation receipt capacity reached');
+    if(!saved&&readdirSync(this.root).length>=1000)throw new Error('QA validation receipt capacity reached');
     this.running.add(key);
-    const save=(status:QaValidationStatus)=>{
+    const save=(status:SavedStatus)=>{
       const temp=join(this.root,`${key}.${randomUUID()}.tmp`);
       writeFileSync(temp,JSON.stringify(status),{mode:0o600,flag:'wx'});renameSync(temp,file);
     };
     void Promise.resolve().then(()=>this.run(profile,candidate,(gate,output)=>{
-      if(!profile.gates.some(g=>g.name===gate))throw new Error('Unknown QA evidence gate');
+      if(!profile.gates.some(g=>g.name===gate))throw new InvalidValidationEvidence('Unknown QA evidence gate');
       let directory=this.root;
       for(const part of ['logs',key]){
         directory=join(directory,part);
         try{mkdirSync(directory,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
         const st=lstatSync(directory);
-        if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o077)!==0)throw new Error('QA logs must be private');
+        if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o077)!==0)throw new InvalidValidationEvidence('QA logs must be private');
       }
       const bounded=(text:string)=>{const bytes=Buffer.from(text);return bytes.length<=1024*1024?bytes:Buffer.concat([bytes.subarray(0,512*1024),Buffer.from('\n[private log truncated]\n'),bytes.subarray(-512*1024)]);};
       for(const stream of ['stdout','stderr'] as const){
@@ -84,8 +94,12 @@ export class HostedQaValidationService {
         writeFileSync(temp,bounded(output[stream]),{mode:0o600,flag:'wx'});renameSync(temp,target);
       }
     }))
-      .then(result=>{this.checkResult(result,profile,candidate);save({state:'done',result});})
-      .catch(()=>save({state:'failed'}))
+      .then(result=>{
+        // Invalid receipts are terminal; they must never be accepted by retrying a malformed result.
+        try{this.checkResult(result,profile,candidate);}catch{save({state:'failed'});return;}
+        save({state:'done',result});
+      })
+      .catch(error=>save(error instanceof InvalidValidationEvidence?{state:'failed'}:{state:'failed',attempts,retryAt:this.now()+30000}))
       .catch(()=>{/* Receipt persistence failure permits a later safe validation retry. */})
       .finally(()=>this.running.delete(key));
     return {state:'running'};
