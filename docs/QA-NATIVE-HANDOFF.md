@@ -28,6 +28,18 @@
 
 ### 운영 연결에 필요한 다음 조치
 
+2026-10-11 재검증 후 PR 교체:
+`commitRevalidationBase`가 호스트 준비 응답을 예약에 고정한다. 다른 base로 같은 예약을
+덮어쓰지 못한다. `enqueuePublication`은 그 준비 base와 같은 repository·Teams 요청의
+새 SHA/digest/PR만 교체하며, 이전 publication은 예약 이력에 보존한다. 교체된 후보는
+새 presentation 전까지 `awaiting_presentation`이다. review loop는 현재 검토와 publisher
+receipt가 다르면 새 presentation을 등록한다. `bind`는 원래 Ainmem page ID와 새 후보만
+허용하고, 새 generation 뒤에도 과거 후보로 돌아가는 것을 거부한다.
+실제 ledger/base service/coordinator/review loop를 함께 사용하고 Teams/Ainmem/GitHub
+읽기만 fixture로 제공한 테스트에서 교체·동일 페이지·이전 승인 거부를 확인했다.
+QA 157 pass/0 fail/0 skip 및 build 통과, 추가 통합 검토 테스트 9 pass. 운영 E2E 증거는
+아니다. gateway의 준비 요청/응답 및 handler 재개 연결은 아직 남아 있다.
+
 2026-10-11 검토 ledger와 호스트 재준비 권한 연결:
 `HostedQaReviewStore.authorizeRevalidation`이 verified intake·원래 Teams 요청·현재
 publication·review generation·영구 base invalidation을 확인하고 이전 publication,
@@ -37,9 +49,9 @@ release intent가 있으면 receipt가 없어도 거부한다(원격 merge 진�
 예약된 이전 generation의 `bind`도 거부해 presentation 갱신으로 이전 승인을 되살리지
 못하게 했다. server의 HostedQaBases 권한 콜백을 이 메서드로 연결했고, 실제 store와
 base service를 함께 사용한 준비 테스트를 포함해 QA 157 pass/0 fail/0 skip, build 통과.
-**재수정 gateway와 handler 호출은 아직 없으며 활성화하지 않았다.** 새 base 준비 결과를
-ledger에 확정하고 새 publication으로 교체하는 경로, review loop의 새 generation 등록이
-다음 단계다. 현재 예약된 generation은 의도적으로 다시 bind할 수 없다.
+**재수정 gateway와 handler 호출은 아직 없으며 활성화하지 않았다.** 위 후속 작업에서
+새 base 준비 확정·publication 교체·review loop의 새 generation 등록까지 구현했다.
+예약된 이전 후보를 다시 bind할 수 없으며, 준비된 새 후보만 등록할 수 있다.
 
 2026-10-11 호스트 기준 커밋 재준비:
 `HostedQaBases.prepareRevalidation`을 추가했다. 호스트 전용 동기 권한 콜백을
@@ -61,10 +73,10 @@ gateway는 아직 연결하지 않았다.
 잘못된 준비 응답, 중복 재개 거부를 포함해 QA 153 pass/0 fail/0 skip, build 통과.
 
 **아직 이 API를 handler에서 호출하지 않는다.** 자동 main 재수정은 다음 연결까지 미완료:
-1. 호스트 base와 review ledger의 준비 완료 응답을 연결한다. 권한 콜백은 연결되어 있다.
-   저장된 원래 base를 직접 삭제해서 재준비를 우회하지 않는다.
-2. 검토 ledger의 원래 publication을 보관하고 새 publication/review generation을 연결한다.
-   진행 중인 release intent와 경합하면 재개를 거부하고 상태를 조정해야 한다.
+1. gateway의 비동기 준비 서비스가 host base 응답을 ledger의 `commitRevalidationBase`에
+   반영한 뒤에만 에이전트에게 반환하도록 연결한다. 저장된 원래 base를 직접 삭제하지 않는다.
+2. publication 교체와 새 review generation은 구현됐다. gateway/handler와 함께 경합 및
+   재시작 통합 검증을 수행한다. 진행 중인 release intent는 계속 재개를 거부한다.
 3. gateway/runtime capability와 공유 web/API route에 준비 응답을 연결한 뒤 handler에서
    별도 claim 및 bind를 사용한다. 새 snapshot에서 원래 요청으로 코딩부터 다시 시작한다.
 4. 동일 Ainmem 페이지, 이전 댓글 보존, 새 SHA 이전 LGTM 거부, 최신 후보 재검증·새 승인·

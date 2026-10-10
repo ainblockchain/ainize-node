@@ -1,4 +1,6 @@
 import {test} from 'node:test';
+import {createHash} from 'node:crypto';
+import {HostedQaReviewLoop} from '../src/hosted-qa-review-loop.js';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -135,7 +137,7 @@ test('main advancement durably invalidates only the matching generation and neve
 test('revalidation reservation preserves invalidated review and publication across restart', async t=>{
  const root=mkdtempSync(join(tmpdir(),'qa-review-revalidation-'));let store=new HostedQaReviewStore(root);
  t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
- const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'request',requestAuthorId:'human',requestDigest:'e'.repeat(64),requestCreatedAt:'2026-10-09T00:00:00Z'};
+ const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'root',requestAuthorId:'human',requestDigest:createHash('sha256').update('여백 고쳐줘').digest('hex'),requestCreatedAt:'2026-10-09T00:00:00Z'};
  const scoped={...target,teamsRequest:binding},publication={...target,teamsRequest:binding,url:'https://github.com/test/product/pull/1'};
  store.registerIntake('agent','job',binding);store.enqueuePublication('agent','job',publication);
  const review=store.bind('agent',captureReview(scoped,snapshot,body),0);
@@ -159,6 +161,35 @@ test('revalidation reservation preserves invalidated review and publication acro
  await bases.prepare('agent','job');main='d'.repeat(40);
  const receipt=await bases.prepareRevalidation('agent','job',request);assert.equal(receipt.base,main);
  assert.deepEqual(await bases.prepareRevalidation('agent','job',request),receipt);
+ const replacement={...publication,base:receipt.base,sha:'e'.repeat(40),candidateDigest:'a'.repeat(64),number:2,url:'https://github.com/test/product/pull/2'};
+ assert.throws(()=>store.enqueuePublication('agent','job',replacement),/reconciliation/);
+ store.commitRevalidationBase('agent',receipt);store.commitRevalidationBase('agent',receipt);
+ assert.throws(()=>store.commitRevalidationBase('agent',{...receipt,base:'f'.repeat(40)}),/base changed/);
+ for(const change of [{base:target.base},{sha:target.sha},{number:1},{teamsRequest:{...binding,rootId:'other'}}]){
+  assert.throws(()=>store.enqueuePublication('agent','job',{...replacement,...change}),/reconciliation/);
+ }
+ store.enqueuePublication('agent','job',replacement);store.enqueuePublication('agent','job',replacement);
+ assert.equal(store.lifecycle('agent','job').state,'awaiting_presentation');
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].publication,publication);
+ assert.throws(()=>store.enqueuePublication('agent','job',publication),/reconciliation/);
+ const nextBody=`${replacement.url}\n${replacement.sha}`;
+ const nextSnapshot={...snapshot,body:nextBody,revision:2,digest:'a'.repeat(64),observedAt:'2026-10-10T00:01:00Z'};
+ assert.throws(()=>store.bind('agent',captureReview({...scoped,...replacement,pageId:'different'},{...nextSnapshot,pageId:'different'},nextBody),1),/reserved/);
+ const displayedBody=`상태: waiting / awaiting_approval\n검토 PR: ${replacement.url}\n검토 커밋: ${replacement.sha}`;
+ const rootMessage={id:'root',parentId:null,userId:'human',content:'여백 고쳐줘',createdAt:new Date(binding.requestCreatedAt).toISOString()};
+ const readers={ainmem:async()=>({...nextSnapshot,body:displayedBody}),github:async()=>({number:2,state:'open',head:{sha:replacement.sha,repo:{full_name:target.repository}},base:{sha:replacement.base,ref:'main',repo:{full_name:target.repository}}}),
+  teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:name==='read_channel'?{messages:[rootMessage]}:name==='read_thread'?{parent:rootMessage,replies:[]}:[{userId:'human',isAgent:false},{userId:'teams-admin',isAgent:false}]})};
+ const coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ await new HostedQaReviewLoop(store,coordinator,{agent:profile},readers).tick();
+ const nextReview=store.current('agent','job')!;
+ assert.equal(nextReview.generation,2);assert.equal(nextReview.presentation.target.pageId,review.presentation.target.pageId);
+ assert.equal(store.lifecycle('agent','job').state,'awaiting_approval');
+ assert.throws(()=>store.bind('agent',captureReview(scoped,{...snapshot,revision:3,observedAt:'2026-10-10T00:02:00Z'},body),2),/reserved/);
+ const oldApproval={...target,source:'ainmem',subject:'admin',commentId:'old',approvedAt:'2026-10-10T00:01:10Z',checkedAt:'2026-10-10T00:01:20Z',presentationDigest:nextReview.presentation.bodyDigest};
+ assert.throws(()=>store.observe(nextReview,oldApproval as any),/binding mismatch/);
+ assert.throws(()=>store.observe(review,oldApproval as any),/Review changed/);
+ const fresh={...oldApproval,...replacement,jobId:'job',pageId:'page',presentationDigest:nextReview.presentation.bodyDigest};
+ assert.equal(store.observe(nextReview,fresh as any).generation,2);
 });
 
 test('a pending release intent prevents reservation even after base invalidation', t=>{

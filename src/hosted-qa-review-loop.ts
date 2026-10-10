@@ -19,7 +19,8 @@ export class HostedQaReviewLoop {
     if(!Object.hasOwn(this.profiles,item.agentId))continue;
     const p=this.profiles[item.agentId],r=item.receipt;
     if(r.repository!==p.repository||!/^[a-f0-9]{40}$/.test(r.sha??'')||!/^[a-f0-9]{40}$/.test(r.base??'')||!/^[a-f0-9]{64}$/.test(r.candidateDigest??'')||!Number.isSafeInteger(r.number)||r.number<1||r.url!==`https://github.com/${p.repository}/pull/${r.number}`)throw new Error('Invalid host publication receipt');
-    if(!this.store.current(item.agentId,item.jobId)){
+    const existing=this.store.current(item.agentId,item.jobId);
+    if(!existing||['repository','base','sha','candidateDigest','number'].some(key=>existing.presentation.target[key as keyof typeof existing.presentation.target]!==r[key])){
      const snapshot=await this.readers.ainmem(item.agentId,item.jobId,p.databaseId);
      const lines=snapshot.body.split('\n');
      if(!lines.includes(`검토 PR: ${r.url}`)||!lines.includes(`검토 커밋: ${r.sha}`)||!lines.includes('상태: waiting / awaiting_approval'))throw new Error('Published candidate not yet displayed');

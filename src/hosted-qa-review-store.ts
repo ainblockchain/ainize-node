@@ -5,8 +5,9 @@ import {mkdirSync,lstatSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
-import type {QaRevalidationRequest} from './hosted-qa-base.js';
+import type {QaRevalidationRequest,QaRevalidationReceipt} from './hosted-qa-base.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
+interface RevalidationRecord {request:QaRevalidationRequest;generation:number;reviewKey:string;publication:any;observedBase:string;pageId?:string;prepared?:QaRevalidationReceipt;replacement?:{repository:string;base:string;sha:string;candidateDigest:string;number:number;url:string}}
 export interface QaRepositoryRoutes {web:{scope:string;repository:string};api:{scope:string;repository:string}}
 export interface QaRoutedIntake {scope:string;repository:string;route:'web'|'api';policyDigest:string;binding:QaTeamsThreadBinding}
 export interface QaHistoricalRoute {jobId:string;scope:string;repository:string;route:'web'|'api';policyDigest:string;archiveDigest:string;workspaceId:string;channelId:string;rootId:string;requestId:string}
@@ -86,12 +87,27 @@ export class HostedQaReviewStore {
    if(request.sequence!==rows.length+1)throw new Error('Revalidation sequence changed');
    if(prior?.generation===review.generation)throw new Error('Review already reserved for revalidation');
    const record={request:structuredClone(request),generation:review.generation,reviewKey:review.key,
-    publication,observedBase:this.baseChange(review)};
+    publication,pageId:review.presentation.target.pageId,observedBase:this.baseChange(review)};
    this.db.prepare('INSERT INTO review_revalidations VALUES(?,?,?,?)').run(agentId,jobId,request.sequence,json(record,4*1024*1024));
   });
  }
- revalidationHistory(agentId:string,jobId:string):Array<{request:QaRevalidationRequest;generation:number;reviewKey:string;publication:any;observedBase:string}> {
+ revalidationHistory(agentId:string,jobId:string):RevalidationRecord[] {
   return this.db.prepare('SELECT record FROM review_revalidations WHERE agent_id=? AND job_id=? ORDER BY sequence').all(agentId,jobId).map(row=>JSON.parse(String(row.record)));
+ }
+ /** Called only with the host base service's durable receipt, never a model-supplied SHA. */
+ commitRevalidationBase(agentId:string,receipt:QaRevalidationReceipt):void {
+  if(!receipt||typeof receipt.base!=='string'||!/^[a-f0-9]{40}$/.test(receipt.base)||receipt.base===receipt.previousBase)throw new Error('Invalid revalidation base receipt');
+  const {previousBase,sequence,sourceDigest}=receipt;
+  this.authorizeRevalidation(agentId,receipt.jobId,{previousBase,sequence,sourceDigest});
+  this.transaction(()=>{
+   const record=this.revalidationHistory(agentId,receipt.jobId).at(-1)!;
+   const current=this.current(agentId,receipt.jobId);
+   if(!current||current.key!==record.reviewKey||this.releaseRecord(current)
+    ||receipt.repository!==record.publication.repository||record.replacement)throw new Error('Prepared revalidation binding changed');
+   if(record.prepared){if(json(record.prepared)!==json(receipt))throw new Error('Prepared revalidation base changed');return;}
+   this.db.prepare('UPDATE review_revalidations SET record=? WHERE agent_id=? AND job_id=? AND sequence=?')
+    .run(json({...record,prepared:structuredClone(receipt)},4*1024*1024),agentId,receipt.jobId,sequence);
+  });
  }
  releaseRecord(expected:StoredReview):{intent:any;receipt:any}|null {
   const row=this.db.prepare('SELECT intent,receipt FROM review_releases WHERE agent_id=? AND job_id=? AND generation=?').get(expected.agentId,expected.jobId,expected.generation);
@@ -106,7 +122,24 @@ export class HostedQaReviewStore {
   const value=json(receipt,3*1024*1024);
   this.transaction(()=>{
    const prior=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);
-   if(prior){if(prior.receipt!==value)throw new Error('Published job changed; explicit reconciliation required');return;}
+   if(prior){
+    if(prior.receipt===value)return;
+    const reserved=this.revalidationHistory(agentId,jobId).at(-1),current=this.current(agentId,jobId);
+    const next=JSON.parse(value);
+    if(!reserved?.prepared||reserved.replacement||!current||current.key!==reserved.reviewKey
+     ||!this.baseChange(current)||this.releaseRecord(current)||json(reserved.publication,3*1024*1024)!==prior.receipt
+     ||next.repository!==reserved.prepared.repository||next.base!==reserved.prepared.base
+     ||typeof next.sha!=='string'||!/^[a-f0-9]{40}$/.test(next.sha)||next.sha===reserved.publication.sha
+     ||typeof next.candidateDigest!=='string'||!/^[a-f0-9]{64}$/.test(next.candidateDigest)||next.candidateDigest===reserved.publication.candidateDigest
+     ||!Number.isSafeInteger(next.number)||next.number<1||next.number===reserved.publication.number
+     ||next.url!==`https://github.com/${next.repository}/pull/${next.number}`
+     ||!next.teamsRequest||json(next.teamsRequest)!==json(reserved.publication.teamsRequest))throw new Error('Published job changed; explicit reconciliation required');
+    const {repository,base,sha,candidateDigest,number,url}=next;
+    this.db.prepare('UPDATE review_revalidations SET record=? WHERE agent_id=? AND job_id=? AND sequence=?')
+     .run(json({...reserved,replacement:{repository,base,sha,candidateDigest,number,url}},4*1024*1024),agentId,jobId,reserved.request.sequence);
+    this.db.prepare('UPDATE review_publications SET receipt=?,last_attempt=0 WHERE agent_id=? AND job_id=?').run(value,agentId,jobId);
+    return;
+   }
    if(Number(this.db.prepare('SELECT count(*) AS n FROM review_publications').get()!.n)>=10000)throw new Error('Publication review capacity reached');
    this.db.prepare('INSERT INTO review_publications(agent_id,job_id,receipt) VALUES(?,?,?)').run(agentId,jobId,value);
   });
@@ -191,7 +224,12 @@ export class HostedQaReviewStore {
   const receipt=release?.receipt;
   if(review){
    const target=review.presentation.target;
-   if(['repository','base','sha','candidateDigest'].some(key=>target[key as keyof typeof target]!==published[key]))throw new Error('Lifecycle review binding changed');
+   if(['repository','base','sha','candidateDigest'].some(key=>target[key as keyof typeof target]!==published[key])){
+    const reserved=this.revalidationHistory(agentId,jobId).at(-1);
+    if(!reserved?.replacement||reserved.reviewKey!==review.key||reserved.generation!==review.generation
+     ||Object.entries(reserved.replacement).some(([key,value])=>published[key]!==value))throw new Error('Lifecycle review binding changed');
+    return {jobId,repository:published.repository,base:published.base,sha:published.sha,candidateDigest:published.candidateDigest,state:'awaiting_presentation'};
+   }
   }
   if(receipt&&(receipt.repository!==published.repository||receipt.sha!==published.sha))throw new Error('Lifecycle release binding changed');
   const observedBase=review?this.baseChange(review):null;
@@ -225,7 +263,11 @@ export class HostedQaReviewStore {
   return this.transaction(()=>{
    const prior=this.current(agentId,jobId);
    const reserved=this.revalidationHistory(agentId,jobId).at(-1);
-   if(reserved&&reserved.generation===prior?.generation)throw new Error('Prior review is reserved for revalidation');
+   if(reserved){
+    const replacement=reserved.replacement;
+    if(!replacement||!reserved.pageId||p.target.pageId!==reserved.pageId
+     ||['repository','base','sha','candidateDigest','number'].some(key=>p.target[key as keyof typeof p.target]!==replacement[key as keyof typeof replacement]))throw new Error('Prior review is reserved for revalidation');
+   }
    if(prior?.key===key)return prior; // Preserve the first server observation across replay/restart.
    if((prior?.generation??0)!==expectedGeneration)throw new Error('Review changed while capturing presentation');
    if(prior&&Date.parse(p.presentedAt)<=Date.parse(prior.presentation.presentedAt))throw new Error('New review must have a later observation');
