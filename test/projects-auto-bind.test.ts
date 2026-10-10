@@ -95,7 +95,7 @@ test('the first push creates the project for the pusher and returns the secret o
   assert.equal(first.status, 201, first.text);
   assert.match(first.body.webhookSecret, /^whsec_[0-9a-f]{48}$/);
   assert.equal(first.body.created, true);
-  assert.equal(first.body.pageUrl, `${NODE}/projects/${first.body.id}`);
+  assert.equal(first.body.pageUrl, `${NODE}/comcom/site`, 'the page is /<org>/<repo>, mirroring the repo\'s aindrive URL');
   const p = store.get(first.body.id)!;
   assert.equal(p.owner, 'sso:acc_alice');
   assert.equal(p.kind, 'script');
@@ -108,11 +108,13 @@ test('the first push creates the project for the pusher and returns the secret o
 
   const again = await auto(body, await token());
   assert.equal(again.status, 200);
-  assert.deepEqual(again.body, { id: p.id, pageUrl: `${NODE}/projects/${p.id}`, created: false });
+  assert.deepEqual(again.body, { id: p.id, pageUrl: `${NODE}/comcom/site`, created: false });
   assert.equal(store.list().length, 1);
-  // The owner reads it like any project of theirs; a stranger cannot.
-  assert.equal((await request(app).get(`/api/projects/${p.id}`).set('x-test-user', 'sso:acc_alice')).status, 200);
-  assert.equal((await request(app).get(`/api/projects/${p.id}`).set('x-test-user', 'sso:nobody')).status, 404);
+  // The owner reads it with owner and hook address; a stranger reads the public view of the organization's repository.
+  const owner = await request(app).get(`/api/projects/${p.id}`).set('x-test-user', 'sso:acc_alice');
+  assert.equal(owner.status, 200); assert.equal(owner.body.owner, 'sso:acc_alice');
+  const stranger = await request(app).get(`/api/projects/${p.id}`).set('x-test-user', 'sso:nobody');
+  assert.equal(stranger.status, 200); assert.equal(stranger.body.owner, undefined); assert.equal(stranger.body.hookUrl, undefined);
   // Another branch of the same repo is a conflict (one project per repo).
   assert.equal((await auto({ ...body, branch: 'dev' }, await token())).status, 409);
 });
