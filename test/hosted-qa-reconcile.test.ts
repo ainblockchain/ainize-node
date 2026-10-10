@@ -33,3 +33,10 @@ test('deployment inclusion rejects older/divergent deployments and does not clai
   await assert.rejects(verifyDeploymentCommit({reconciliation,health,read:async path => path.startsWith('commits/') ? {sha:'d'.repeat(40)} : {...comparison,status:'diverged',behind_by:2}}), /does not contain/);
   await assert.rejects(verifyDeploymentCommit({reconciliation,health:{...health,checks:{database:{status:'error'}}},read}), /dependency/);
 });
+
+test('legacy PR object numbers must agree with their canonical repository URL',async()=>{
+ // @ts-expect-error example module
+ const {legacyPullUrl}=await import('../examples/qa-agent/reconcile.mjs');
+ assert.equal(legacyPullUrl(repository,{number:5,url:pullUrl}),pullUrl);
+ for(const value of [{number:6,url:pullUrl},{number:5,url:'https://github.com/foreign/product/pull/5'}, {url:pullUrl},[pullUrl],null])assert.throws(()=>legacyPullUrl(repository,value));
+});

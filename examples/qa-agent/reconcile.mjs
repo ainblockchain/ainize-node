@@ -7,6 +7,13 @@ export function pullNumber(repository, url) {
     || !match || match[1] !== repository || !Number.isSafeInteger(Number(match[2]))) throw new Error('PR does not belong to configured repository');
   return Number(match[2]);
 }
+/** Older workers stored {number,url}; never accept a mismatched number or foreign repository. */
+export function legacyPullUrl(repository, value) {
+  if (typeof value === 'string') { pullNumber(repository,value); return value; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.url !== 'string'
+    || !Number.isSafeInteger(value.number) || value.number < 1 || pullNumber(repository,value.url) !== value.number) throw new Error('Invalid legacy PR reference');
+  return value.url;
+}
 export async function reconcileCandidate({ repository, pullUrl, candidateSha, baseBranch = 'main', read }) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !sha(candidateSha)
     || !/^[A-Za-z0-9._/-]{1,200}$/.test(baseBranch)) throw new Error('Invalid candidate binding');
@@ -35,10 +42,22 @@ export async function reconcileLegacyJob({ jobs, claim, checkpoints, read, baseB
   const archive = checkpoints.load(job.checkpoint.legacy);
   if (archive.job.id !== job.id || archive.repository !== job.input.repository) throw new Error('Legacy archive binding mismatch');
   const details = archive.job.details;
-  const pullUrl = baseBranch === 'main' ? details.pr_main : baseBranch === 'develop' ? details.pr_develop : null;
-  if (!pullUrl || !sha(details.code_sha)) throw new Error('Legacy job has no published candidate');
+  const reference = baseBranch === 'main' ? details.pr_main : baseBranch === 'develop' ? details.pr_develop : null;
+  if (!reference || !sha(details.code_sha)) throw new Error('Legacy job has no published candidate');
+  const pullUrl = legacyPullUrl(job.input.repository, reference);
   jobs.renew(job.id, lease, 120_000);
   const result = await reconcileCandidate({ repository: job.input.repository, pullUrl, candidateSha: details.code_sha, baseBranch, read });
+  if (details.superseded_by || details.superseded_pr) {
+    const successor = jobs.get(details.superseded_by);
+    if (!successor || successor.id === job.id || successor.input.repository !== job.input.repository || successor.checkpoint.legacy?.jobId !== successor.id) throw new Error('Legacy replacement binding unavailable');
+    const replacement = checkpoints.load(successor.checkpoint.legacy);
+    const next = replacement.job.details;
+    const nextUrl = legacyPullUrl(job.input.repository, baseBranch === 'main' ? next.pr_main : next.pr_develop);
+    if (replacement.job.id !== successor.id || replacement.repository !== job.input.repository || nextUrl !== legacyPullUrl(job.input.repository, details.superseded_pr)) throw new Error('Legacy replacement PR mismatch');
+    const evidence = await reconcileCandidate({repository:job.input.repository,pullUrl:nextUrl,candidateSha:next.code_sha,baseBranch,read});
+    result.replacement = {jobId:successor.id,...evidence,approvalInherited:false};
+    if (result.action === 'closed_unmerged') result.action = 'superseded_candidate';
+  }
   jobs.renew(job.id, lease, 120_000);
   const reconciliation = checkpoints.save(job.id, { kind: 'github-reconciliation-v1', ...result });
   return jobs.finish(job.id, lease, 'waiting', { ...job.checkpoint, reconciliation,

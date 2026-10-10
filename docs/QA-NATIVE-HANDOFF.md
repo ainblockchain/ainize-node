@@ -519,3 +519,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 검토용 draft PR: Ainize https://github.com/ainblockchain/ainize-node/pull/70 ; Ainmem https://github.com/ainetwork-ai/ainmem/pull/76 . 둘 다 운영 전환이 끝났다는 의미가 아니며 병합/배포하지 않았다.
 - 실제 .41 운영 API는 `/mnt/newdata/ainize-node-releases/releases/20261010T130910Z-5135f19cde1d`를 실행 중이고 user unit `ainize-public-node`는 active였다. QA 관련 running user units는 `ainteams-qa.service`, `ainteams-qa-kanban.service`였다. 새 native opt-in 설정을 켜지 않았다.
 - 기존 23개 작업 상태를 읽기 전용으로 재확인했다: Teams 11, Ainmem 2, Aindrive 2, Ainize 웹 2/API 3, AINA 2, Ainspace 1. 승인 대기 4, completed 6, failed 10, blocked 3이다. Ainmem/Aindrive 각각 한 작업이 `failed / approved_release`로 남아 있으므로 이관 시 승인 기록과 실제 원격 릴리스 상태를 대조해야 한다. 실패를 곧바로 재실행하거나 completed로 바꾸지 않았다.
+
+### 2026-10-10 `approved_release` 실패 작업의 실제 원격 대조
+
+- 실제 기존 DB의 `pr_main`은 문자열이 아니라 `{number,url}` 객체였다. `reconcileLegacyJob`이 문자열만 받던 결함을 수정했다. URL의 저장소/PR 번호와 객체 number를 함께 확인하며 불일치를 거부한다.
+- 기존 작업의 `superseded_by`/`superseded_pr`가 있으면 같은 서비스의 실제 이관된 후속 작업 archive 및 PR을 대조한다. 원래 후보가 closed/unmerged일 때만 `superseded_candidate`로 구분하고, 후속 후보는 별도 원격 증거로 남긴다. 원래 승인이나 완료 상태를 후속 커밋으로 이전하지 않는다.
+- 실제 Ainmem `8186a70c`의 PR55는 후보 `2f27095117138a09235b5012220972953024a086` 그대로 closed/unmerged다. 후속 작업 `4fe1ea61`의 PR59는 후보 `38445a88259071c97f5e77ed8be0df0484a5135e`, merge `962bd0def52d153fd1a399c67987a7edb2f5a9ce`로 2026-10-04 병합됨을 현재 GitHub에서 확인했다. 후속 서비스 실행 revision 확인은 별도로 남긴다.
+- 실제 Aindrive `8d9bf634`의 PR199는 후보 `483fc269d531e34effbbb412221ec4c97bfe347c` 그대로 open/unmerged다. 기존 approved_release 실패 기록을 자동 재배포 권한으로 쓰지 않고 `revalidate_candidate`로 보존했다.
+- 실제 .41에서 두 서비스의 작업 4개를 새 private DB로 가져와 새 reconciliation 코드를 실행했다. 운영 source jobs/reports digest가 실행 전후 일치했다. 운영 DB/페이지/PR/배포에는 쓰지 않았다. 증거: `/mnt/newdata/qa-services/validation/native-reconcile-live-20261010-zI9Plb/result.json` 및 `run.mjs`.
+- QA 타깃 100개 통과, 실패/skip 0. 실제 객체형 PR·후속 작업·승인 비상속·기존 완료 상태 보존 검증을 포함한다. 실제 운영 이관과 서비스별 E2E는 여전히 미완료다.

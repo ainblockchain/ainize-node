@@ -65,7 +65,7 @@ test('completed and failed historical jobs keep their terminal native state', t 
 
 test('reconciliation records live merge evidence without reusing archived approval', async t => {
   const f = fixture(t);
-  f.source.prepare('UPDATE jobs SET details=?').run(JSON.stringify({ ...f.details, pr_main:'https://github.com/test/product/pull/7' }));
+  f.source.prepare('UPDATE jobs SET details=?').run(JSON.stringify({ ...f.details, pr_main:{number:7,url:'https://github.com/test/product/pull/7'} }));
   importLegacyJobs(f); f.jobs.wake(id);
   // @ts-expect-error - example module
   const { reconcileLegacyJob } = await import('../examples/qa-agent/reconcile.mjs');
@@ -80,4 +80,18 @@ test('reconciliation records live merge evidence without reusing archived approv
   assert.equal(updated.checkpoint.approval, undefined);
   assert.equal(f.checkpoints.load(updated.checkpoint.legacy).job.details.approval.sha, f.details.code_sha);
   assert.equal(f.checkpoints.load(updated.checkpoint.reconciliation).mergeCommit, 'c'.repeat(40));
+});
+
+test('replacement job and PR are reconciled separately without transferring archived approval',async t=>{
+ const f=fixture(t),successor='22222222-2222-4222-8222-222222222222';
+ f.source.prepare('UPDATE jobs SET details=?').run(JSON.stringify({...f.details,pr_main:{number:7,url:'https://github.com/test/product/pull/7'},superseded_by:successor,superseded_pr:'https://github.com/test/product/pull/8'}));
+ f.source.prepare('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)').run(successor,'next','completed','completed',JSON.stringify({...f.payload,message_id:'next',parent_id:'next'}),JSON.stringify({...f.details,code_sha:'e'.repeat(40),pr_main:{number:8,url:'https://github.com/test/product/pull/8'}}),1002,1003);
+ importLegacyJobs(f);f.jobs.wake(id);
+ // @ts-expect-error example module
+ const {reconcileLegacyJob}=await import('../examples/qa-agent/reconcile.mjs');
+ const updated=await reconcileLegacyJob({jobs:f.jobs,claim:f.jobs.claim(),checkpoints:f.checkpoints,read:async(path:string)=>{
+  const number=path==='pulls/7'?7:8;return {number,state:'closed',merged:number===8,merged_at:number===8?'2026-10-10T00:00:00Z':null,merge_commit_sha:number===8?'f'.repeat(40):null,head:{sha:number===7?f.details.code_sha:'e'.repeat(40),repo:{full_name:cfg.repository}},base:{sha:'d'.repeat(40),ref:'main',repo:{full_name:cfg.repository}}};
+ }});
+ const evidence=f.checkpoints.load(updated.checkpoint.reconciliation);
+ assert.equal(updated.checkpoint.stage,'superseded_candidate');assert.equal(updated.state,'waiting');assert.equal(evidence.replacement.action,'verify_deployment');assert.equal(evidence.replacement.approvalInherited,false);assert.equal(f.jobs.get(successor).state,'completed');assert.equal(updated.checkpoint.approval,undefined);
 });
