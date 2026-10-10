@@ -667,7 +667,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       const issue = parsed.error.issues[0];
       return refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
     }
-    if (ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
+    if (parsed.data.target !== 'commit' && ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
     if (parsed.data.target !== 'commit' && parsed.data.sha) return refuse(res, 400, 'invalid_request', 'sha is only used for a commit run');
     if (parsed.data.entry && parsed.data.entry.split('/').some((part) => part === '' || part === '.' || part === '..')) return refuse(res, 400, 'invalid_request', 'entry is a repository-relative file');
     if (parsed.data.target === 'commit' && !parsed.data.sha) return refuse(res, 400, 'invalid_request', 'a commit run requires sha');
