@@ -35,6 +35,7 @@ let watch: { id: string; byStatus: Record<string, number> } | null = null;
 const countCall = () => { if (!watch) return; const st = N.teach!.get(watch.id)?.status ?? '?'; watch.byStatus[st] = (watch.byStatus[st] ?? 0) + 1; };
 const table = new Map<string, number>();
 let seq = 0;
+let runtimeGate: Promise<void> | null = null;
 function installFakeRuntime() {
   const rt = N.market.runtime as unknown as Record<string, unknown>;
   Object.assign(rt, {
@@ -44,7 +45,7 @@ function installFakeRuntime() {
     removeRaw: async (p: string) => { table.delete(p); return { code: 0, out: 'ok', err: '' }; },
     // with a lesson on the table the model answers `answer-<n>` for `…<n> — …`; with nothing loaded it knows nothing.
     // That is enough for a lesson to reach READY, which is what the publish gates are asserted against.
-    completeRaw: async (p: string) => { calls.raw++; countCall(); return taught(p) ?? 'I do not know'; },
+    completeRaw: async (p: string) => { calls.raw++; countCall(); if (runtimeGate) await runtimeGate; return taught(p) ?? 'I do not know'; },
     chat: async (m: ChatMessage[]): Promise<ChatResult> => { calls.chat++; countCall(); return { content: taught([...m].reverse().find((x) => x.role === 'user')?.content ?? '') ?? 'I do not know.', latency_ms: 1, model: 'demo-ainize-1b' }; },
   });
 }
@@ -386,17 +387,27 @@ test('a dataset in use cannot be edited or deleted — it is forked instead, and
   assert.equal(first[0].prompt, 'edit9 — what is the 9th thing?');
 
   // while a lesson is running: 409, then fork
-  const job = (await api('POST', '/api/teach/jobs', { dataset_id: ds.id })).json.job!;
-  const busy = await api('PATCH', `/api/teach/datasets/${ds.id}`, { rows_op: { op: 'remove', indexes: [0] } });
-  assert.equal(busy.status, 409);
-  assert.match(busy.json.error!, /^dataset_in_use/);
-  const noDelete = await api('DELETE', `/api/teach/datasets/${ds.id}`);
-  assert.equal(noDelete.status, 409);
-  const forked = await api('POST', `/api/teach/datasets/${ds.id}/fork`, { rows_op: { op: 'append', rows: [{ prompt: 'edit8 — what is the 8th thing?', answer: 'answer-8' }] } });
-  assert.equal(forked.status, 201, forked.text);
-  assert.equal(forked.json.dataset!.parent_dataset, ds.id);
-  assert.equal(forked.json.dataset!.revision, 1);
-  assert.equal(forked.json.dataset!.rows, 6);
+  // Hold the fake model at preflight; the stub can otherwise finish before the
+  // next HTTP request, so a 200 is valid but no longer tests an in-use dataset.
+  let release!: () => void;
+  runtimeGate = new Promise<void>((resolve) => { release = resolve; });
+  let job!: TeachJob;
+  try {
+    job = (await api('POST', '/api/teach/jobs', { dataset_id: ds.id })).json.job!;
+    const busy = await api('PATCH', `/api/teach/datasets/${ds.id}`, { rows_op: { op: 'remove', indexes: [0] } });
+    assert.equal(busy.status, 409);
+    assert.match(busy.json.error!, /^dataset_in_use/);
+    const noDelete = await api('DELETE', `/api/teach/datasets/${ds.id}`);
+    assert.equal(noDelete.status, 409);
+    const forked = await api('POST', `/api/teach/datasets/${ds.id}/fork`, { rows_op: { op: 'append', rows: [{ prompt: 'edit8 — what is the 8th thing?', answer: 'answer-8' }] } });
+    assert.equal(forked.status, 201, forked.text);
+    assert.equal(forked.json.dataset!.parent_dataset, ds.id);
+    assert.equal(forked.json.dataset!.revision, 1);
+    assert.equal(forked.json.dataset!.rows, 6);
+  } finally {
+    runtimeGate = null;
+    release();
+  }
   await waitFor(job.id, ['READY', 'NEEDS_MORE']);
 
   // deleted afterwards: files gone, tombstone kept, and the lesson still renders and says the dataset is gone
