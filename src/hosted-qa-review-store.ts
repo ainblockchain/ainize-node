@@ -167,7 +167,15 @@ export class HostedQaReviewStore {
  }
  publication(agentId:string,jobId:string){const row=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.receipt)):null;}
  pendingPublications(limit=5){
-  return this.db.prepare('SELECT * FROM review_publications ORDER BY last_attempt,id LIMIT ?').all(limit).map(r=>({id:Number(r.id),agentId:String(r.agent_id),jobId:String(r.job_id),receipt:JSON.parse(String(r.receipt))}));
+  return this.db.prepare(`SELECT p.* FROM review_publications p WHERE NOT EXISTS (
+   SELECT 1 FROM reviews r JOIN review_releases l
+    ON l.agent_id=r.agent_id AND l.job_id=r.job_id AND l.generation=r.generation
+   WHERE r.agent_id=p.agent_id AND r.job_id=p.job_id
+    AND r.generation=(SELECT max(latest.generation) FROM reviews latest WHERE latest.agent_id=p.agent_id AND latest.job_id=p.job_id)
+    AND json_extract(l.receipt,'$.state')='deployment_verified'
+    AND json_extract(l.receipt,'$.repository')=json_extract(p.receipt,'$.repository')
+    AND json_extract(l.receipt,'$.sha')=json_extract(p.receipt,'$.sha')
+   ) ORDER BY p.last_attempt,p.id LIMIT ?`).all(limit).map(r=>({id:Number(r.id),agentId:String(r.agent_id),jobId:String(r.job_id),receipt:JSON.parse(String(r.receipt))}));
  }
  attemptedPublication(id:number){this.db.prepare('UPDATE review_publications SET last_attempt=(SELECT coalesce(max(last_attempt),0)+1 FROM review_publications) WHERE id=?').run(id);}
  close(){this.db.close();}

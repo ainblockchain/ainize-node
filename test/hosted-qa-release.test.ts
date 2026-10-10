@@ -84,3 +84,24 @@ test('base changed at release remains invalidated if the branch returns to its p
  await assert.rejects(f.make().attempt('agent','job'),/base changed/);
  assert.equal(f.state.patches,0);assert.equal(f.state.checks,0);
 });
+
+test('verified deployments leave the polling batch without deleting history or hiding a new review generation',async t=>{
+ const f=fixture(t);
+ await f.make().attempt('agent','job');
+ assert.equal(f.store.pendingPublications(1)[0]?.jobId,'job','branch update still needs deployment observation');
+ f.store.releaseObserved(f.review,{repository:target.repository,sha:target.sha,state:'deployment_verified',servingCommit:'d'.repeat(40),mergeCommit:'e'.repeat(40)});
+ f.store.enqueuePublication('other-agent','job',{...target,candidate});
+ assert.equal(f.store.pendingPublications(1)[0]?.agentId,'other-agent','completed work must not consume a polling slot');
+ assert.equal(f.store.publication('agent','job').sha,target.sha);
+ assert.equal(f.store.lifecycle('agent','job').state,'deployment_verified');
+ assert.equal(f.store.releaseRecord(f.review)?.receipt.state,'deployment_verified');
+ f.store.bind('agent',{...f.review.presentation,revision:2,presentedAt:'2026-10-10T00:01:00Z'},1);
+ assert.equal(f.store.pendingPublications(1)[0]?.agentId,'agent','an earlier generation cannot hide the new review');
+});
+test('mismatched deployment evidence is not allowed to hide a pending publication',async t=>{
+ const f=fixture(t);await f.make().attempt('agent','job');
+ f.store.releaseObserved(f.review,{repository:'other/repo',sha:target.sha,state:'deployment_verified'});
+ assert.equal(f.store.pendingPublications(1).length,1);
+ f.store.releaseObserved(f.review,{repository:target.repository,sha:'f'.repeat(40),state:'deployment_verified'});
+ assert.equal(f.store.pendingPublications(1).length,1);
+});

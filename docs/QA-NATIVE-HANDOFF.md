@@ -1067,3 +1067,17 @@ HostedQaValidationService에서 run 자체가 예외를 내면 실패 receipt를
 QA 149 tests / 0 fail / 0 skip, TypeScript build 및 diff check 통과. 재시작/backoff,
 중복 poll, 성공 복구, 3회 상한, 제품 실패 유지, 변조된 로그 경로 거부를 확인했다.
 운영 배포와 실제 채널의 장애 복구 E2E는 아직 수행하지 않았다.
+
+### 배포 완료 작업의 승인 polling 슬롯 제외 — 2026-10-11
+
+pendingPublications는 배포 확인이 끝난 작업까지 5개 polling batch에 넣고 있었다.
+완료 작업이 누적될수록 실제 승인 대기 작업의 조회 주기가 늘어나는 원인이 된다.
+이제 최신 review generation의 deployment_verified receipt가 게시된 repository/SHA와
+일치하는 작업만 활성 batch에서 제외한다. publication/review/approval/release 기록은
+삭제하지 않으며 lifecycle은 계속 배포 완료를 반환한다. branch_updated만 있는 작업,
+다른 agent의 같은 job ID, 새 review generation, 불일치 receipt는 제외하지 않는다.
+
+QA 151 tests / 0 fail / 0 skip, TypeScript build 통과. 기존 API로 기록 보존과 조회 슬롯,
+새 generation 재등장, repository/SHA 불일치 거부를 확인했다. 운영 배포는 하지 않았다.
+PR71(403860f)과 PR76(971a776)의 병합·배포/전용 DB 변경 승인을 묶어 다시 요청했으며
+아직 승인 답변은 없다. 승인 대기와 무관한 공통 코드 보완을 진행한 결과다.
