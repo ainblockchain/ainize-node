@@ -9,7 +9,7 @@ export interface ReviewSnapshot {
  body:string;revision:number;digest:string;observedAt:string;truncated:boolean;approvalGranted:false;
  comments:{id:string;body:string;createdAt:string;authorId:string;subject:string}[];
 }
-export interface ReviewPresentation {target:ReviewTarget;body:string;bodyDigest:string;revision:number;digest:string;presentedAt:string}
+export interface ReviewPresentation {target:ReviewTarget;body:string;bodyDigest:string;revision:number;digest:string;presentedAt:string;policyDigest?:string}
 export interface ReviewPolicy {issuer:string;orgId:string;workspaceId:string;teamsWorkspaceId:string;channelId:string;approverSubjects:string[]}
 export interface ReviewMember {subject:string;issuer:string;orgId:string;workspaceId:string;channelId:string;isAgent:boolean;active:boolean}
 const hex40=(s:string)=>/^[a-f0-9]{40}$/.test(s);

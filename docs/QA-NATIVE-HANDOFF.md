@@ -435,3 +435,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 .41에서 운영 agent 토큰을 비공개로 읽어 네이티브 TeamsMcp와 새 어댑터를 실행했다. 7개 서비스 모두 조회 성공: Teams/Ainmem/Aindrive/Ainize 웹/Ainize API는 설정된 승인자 4명 중 현재 사람 채널 멤버 2명, AINA/Ainspace는 5명 중 3명이다. 현재 채널을 떠난 승인자는 제외했다. 재가입/설정 변경/메시지 게시/승인은 하지 않았다.
 - 증거: `/mnt/newdata/qa-services/validation/native-review-members-20261010-cjpgqw/result.json` 및 `run.mjs`. 로그에는 토큰·SSO subject·사용자 ID를 출력하지 않았다.
 - 관련 QA 테스트 64개 통과, 빌드 통과. 운영 호스트의 durable 검토 기준 저장 및 승인/merge 루프 연결은 아직 남아 있다. 이 조회는 실제 사용자 승인을 받은 것이 아니다.
+
+### 2026-10-10 호스트 검토 기록 및 승인 조회 조합
+
+- `hosted-qa-review-store.ts`: 호스트 private SQLite에 최초 제시 시각과 후보/본문/페이지 바인딩을 저장한다. 재시작·같은 게시 재시도는 최초 시각을 보존한다. 후보/본문/관리자 정책 변경 시 새 generation을 만들며, 과거 후보로 돌아와도 이전 승인을 재사용하지 않는다. 이전 generation의 늦은 게시/승인 관측은 트랜잭션 비교로 거부한다. 과거 검토 기록은 보존한다.
+- `hosted-qa-review-coordinator.ts`: 호스트 설정의 제품/보드/조직/채널 범위를 검사하고, 매번 GitHub PR·실제 Teams 멤버십·Ainmem 정본을 새로 조회한 뒤 승인 코어에 전달한다. 승인자 정책과 검증된 SSO→Teams 매핑도 검토 기준에 결합했다. 운영 정책이 바뀌면 검토를 다시 제시해야 한다.
+- 관측 결과는 감사 기록이며 영구 배포 권한이 아니다. 이전 관측이 성공해도 다음 검사에서 권한이 사라지면 null을 반환한다. gateway에는 사용자/모델이 승인 여부를 제출하는 경로를 추가하지 않았다.
+- 관련 QA 테스트 67개 통과. 후속 정책 바인딩 변경 뒤 승인 관련 8개 재검증과 빌드 통과. 파일 권한, 재시작, 취소, 후보 되돌림, 늦은 처리, 정책 변경을 검증했다.
+- 남은 연결: 운영 publication/report 완료 후 호스트 `register` 호출, awaiting approval 작업을 이 coordinator로 주기 확인하는 scheduler, 실제 승인 직후 exact-SHA merge와 배포 확인. 새 호스트 ledger/coordinator는 아직 운영에 설치하지 않았다. 실제 승인이나 배포를 수행한 결과가 아니다.
