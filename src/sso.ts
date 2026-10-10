@@ -46,6 +46,13 @@ export interface SsoConfig {
    * aindrive. Null = no machine identity (projects need a pasted deploy token). Nothing about sign-in needs it.
    */
   clientSecret: string | null;
+  /**
+   * First-party AIN applications whose MACHINE tokens this node accepts (`AIN_SSO_SERVICE_APPS`, comma-separated
+   * client_ids; e.g. `aindrive`): an OAuth 2.0 client_credentials JWT with `aud` = this node's public URL and
+   * `sub` = `azp` = a listed client_id (`verifyServiceToken`). Empty = no machine token is accepted. Today's one
+   * door: `POST /api/projects/auto` (docs/PROJECTS.md), where aindrive binds a pushed repo to a project.
+   */
+  serviceApps: string[];
 }
 
 const isLoopback = (host: string) => host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
@@ -71,7 +78,8 @@ export function readSsoConfig(env: NodeJS.ProcessEnv = process.env): SsoConfig |
   }
   const jwksUri = env.AIN_SSO_JWKS_URI?.trim() || new URL('oidc/jwks', issuer.endsWith('/') ? issuer : `${issuer}/`).href;
   const clientSecret = env.AIN_SSO_CLIENT_SECRET?.trim() || null;
-  return { issuer, clientId, adapterUrl, jwksUri, clientSecret };
+  const serviceApps = (env.AIN_SSO_SERVICE_APPS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return { issuer, clientId, adapterUrl, jwksUri, clientSecret, serviceApps };
 }
 
 // ------------------------------------------------------------------------------------------------ errors and principals
@@ -148,6 +156,41 @@ export function resolveJwks(source: JwksSource): JWTVerifyGetKey {
 
 export const bodyHash = (body: Uint8Array | string | null | undefined) => createHash('sha256').update(body ?? '').digest('base64url');
 const htuOf = (url: string) => { const u = new URL(url); u.search = ''; u.hash = ''; return u.href; };
+
+export const SERVICE_TOKEN_TYPE = 'at+jwt';
+
+/** A first-party AIN application acting as itself (AIN SSO architecture §4.9): who, and which organizations it is assigned in. */
+export interface ServicePrincipal { clientId: string; orgs: string[] }
+
+/**
+ * Machine-token verification: `Authorization: Bearer <at+jwt>` signed with a key from the AIN SSO JWKS, `iss`, `aud` =
+ * this node's public URL (the resource the application asked AIN SSO for), unexpired, and `sub` = `azp` = `client_id` =
+ * an application in `serviceApps`. Nothing about an account: the token stands for the application. Throws SsoError
+ * 401 `invalid_token` / `missing_token`; a token for another audience or an unlisted application is refused, never
+ * downgraded.
+ */
+export async function verifyServiceToken(authorization: string | undefined, opts: { issuer: string; audience: string; jwks: JwksSource; serviceApps: readonly string[]; now?: () => Date }): Promise<ServicePrincipal> {
+  const m = authorization ? /^Bearer[ ]+([A-Za-z0-9._~+/=-]+)$/i.exec(authorization.trim()) : null;
+  if (!m) throw new SsoError('missing_token', 401, 'Bearer token required.', false);
+  if (opts.serviceApps.length === 0) throw new SsoError('invalid_token', 401, 'This node accepts no machine tokens (AIN_SSO_SERVICE_APPS unset).', false);
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(m[1]!, resolveJwks(opts.jwks), {
+      issuer: opts.issuer, audience: opts.audience, typ: SERVICE_TOKEN_TYPE, algorithms: SSO_ALGORITHMS, clockTolerance: CLOCK_TOLERANCE_S,
+      currentDate: opts.now?.(), requiredClaims: ['sub', 'exp', 'iat'],
+    }));
+  } catch (e) {
+    if (e instanceof joseErrors.JWKSNoMatchingKey || e instanceof joseErrors.JWKSTimeout) throw new SsoError('temporarily_unavailable', 503, 'The AIN SSO signing keys could not be read.', true);
+    throw new SsoError('invalid_token', 401, `The machine token did not verify: ${(e as Error).message}`, false);
+  }
+  const sub = typeof payload.sub === 'string' ? payload.sub : '';
+  const azp = typeof payload.azp === 'string' ? payload.azp : sub;
+  const clientId = typeof payload.client_id === 'string' ? payload.client_id : sub;
+  if (!sub || azp !== sub || clientId !== sub) throw new SsoError('invalid_token', 401, 'Not a machine token (sub, azp and client_id must name one application).', false);
+  if (!opts.serviceApps.includes(sub)) throw new SsoError('invalid_token', 401, `Application "${sub}" is not allowed to act as itself on this node.`, false);
+  const orgs = Array.isArray(payload.orgs) ? payload.orgs.filter((o): o is string => typeof o === 'string' && o.length > 0) : [];
+  return { clientId: sub, orgs };
+}
 
 export interface AdapterTokenClaims extends JWTPayload { iss: string; iat: number; exp: number; jti: string; htm: string; htu: string; bsh: string }
 

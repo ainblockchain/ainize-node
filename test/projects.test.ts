@@ -120,7 +120,7 @@ before(async () => {
   await git(work, ['config', 'user.email', 'person@example.com']);
   await git(work, ['remote', 'add', 'origin', join(repoRoot, 'demo.git')]);
   writeFileSync(join(work, 'README.md'), '# demo\n');
-  writeFileSync(join(work, 'ainize.json'), JSON.stringify({ kind: 'script', entry: 'main.py', env: { GREETING: 'hi' } }, null, 2));
+  writeFileSync(join(work, 'ainize.json'), JSON.stringify({ kind: 'script', entry: 'main.py', env: { GREETING: 'hi' }, inputs: { desc: { description: '묘사', default: 'a boat at dusk' }, TOP_K: { type: 'number', default: 5 }, verbose: { type: 'boolean', default: false }, MODEL: { type: 'choice', options: ['clef-flash', 'clef'] } } }, null, 2));
   sha1 = await commit(work, 'main.py', 'print("v1")\n', 'v1');
 
   // A fake chat model behind a real hosted-agent host, for `kind: agent` (prompt mode needs no Docker).
@@ -310,6 +310,10 @@ test('a push clones that commit with the deploy token, runs the entry, and the d
   assert.deepEqual(Object.keys(run.files).sort(), ['README.md', 'ainize.json', 'main.py'], '.git is not shipped');
   assert.equal(run.env.AINIZE_DECIDE_URL, 'https://node.example/api/decide');
   assert.equal(run.env.GREETING, 'hi', 'ainize.json env reaches the run');
+  assert.equal(run.env.INPUT_DESC, 'a boat at dusk', 'an input default is INPUT_<NAME> on a push-deploy');
+  assert.equal(run.env.INPUT_TOP_K, '5', 'a number default travels as text');
+  assert.equal(run.env.INPUT_VERBOSE, 'false', 'a boolean default travels as true|false');
+  assert.equal('INPUT_MODEL' in run.env, false, 'an input without a default sets nothing');
   assert.equal(run.env.AINIZE_COMMIT, sha1);
 
   const view = await request(app).get(`/api/deployments/${d.id}`).set(as(ALICE));

@@ -34,7 +34,7 @@ import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
 import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
 import type { ProjectContainers } from './project-containers.js';
-import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestKind } from './project-manifest.js';
+import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestKind, inputDefaults } from './project-manifest.js';
 import type { RunSandbox } from './run-sandbox.js';
 
 const exec = promisify(execFile);
@@ -454,7 +454,7 @@ export class ProjectWorker extends EventEmitter {
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;
       let runError: string | null = null;
-      await this.deps.run({ language, entry, files, env: { ...manifest.env, AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
+      await this.deps.run({ language, entry, files, env: { ...manifest.env, ...inputDefaults(manifest.inputs), AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
         if (ev.event === 'stdout') { logs.append(d.id, ev.data); logs.append(d.id, ev.data, 'out'); }
         else if (ev.event === 'stderr') logs.append(d.id, ev.data);
         else if (ev.event === 'error') { runError = ev.data; say(`[ainize] error: ${ev.data}`); }

@@ -161,7 +161,7 @@ test('configuration: off unless issuer and client are both set; https only, exce
   assert.equal(readSsoConfig({ AIN_SSO_CLIENT_ID: 'app_ainize' }), null);
   assert.equal(readSsoConfig({ AIN_SSO_ISSUER: 'http://auth.comcom.ai', AIN_SSO_CLIENT_ID: 'app_ainize' }), null);
   assert.deepEqual(readSsoConfig({ AIN_SSO_ISSUER: 'https://auth.comcom.ai', AIN_SSO_CLIENT_ID: 'app_ainize', AIN_SSO_ADAPTER_URL: 'https://ainize.ai/api/sso/adapter/' }), {
-    issuer: 'https://auth.comcom.ai', clientId: 'app_ainize', adapterUrl: 'https://ainize.ai/api/sso/adapter', jwksUri: 'https://auth.comcom.ai/oidc/jwks', clientSecret: null,
+    issuer: 'https://auth.comcom.ai', clientId: 'app_ainize', adapterUrl: 'https://ainize.ai/api/sso/adapter', jwksUri: 'https://auth.comcom.ai/oidc/jwks', clientSecret: null, serviceApps: [],
   });
   assert.ok(readSsoConfig({ AIN_SSO_ISSUER: 'http://127.0.0.1:9', AIN_SSO_CLIENT_ID: 'c' }));
 });

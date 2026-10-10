@@ -66,7 +66,7 @@ import { freeTierRouter } from './free-tier-routes.js';
 import { openaiApiKeysRoutes } from './openai-api-keys-routes.js';
 import { readSiteAssertionSecret, siteSubject } from './site-assertion.js';
 import { SiteCallVerifier } from './site-call.js';
-import { readSsoConfig, SsoService, type JwksSource } from './sso.js';
+import { readSsoConfig, SsoService, ssoPrincipal, verifyServiceToken, type JwksSource } from './sso.js';
 import { ServiceTokenClient } from './sso-service-token.js';
 import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
 import { ModalityGate } from './modality-gate.js';
@@ -388,7 +388,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     log: (message, err) => market.log('warn', 'sso', `${message}: ${(err as Error)?.message ?? String(err)}`),
   }));
   if (ssoConfig) {
-    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}, machine identity ${ssoConfig.clientSecret ? 'on' : 'off (AIN_SSO_CLIENT_SECRET unset)'}`);
+    market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}, machine identity ${ssoConfig.clientSecret ? 'on' : 'off (AIN_SSO_CLIENT_SECRET unset)'}, machine tokens accepted from ${ssoConfig.serviceApps.length ? ssoConfig.serviceApps.join(', ') : 'nobody (AIN_SSO_SERVICE_APPS unset)'}`);
   }
   const serviceTokens = ssoConfig?.clientSecret
     ? new ServiceTokenClient({ issuer: ssoConfig.issuer, clientId: ssoConfig.clientId, clientSecret: ssoConfig.clientSecret, log: (level, message) => market.log(level, 'sso', message) })
@@ -709,6 +709,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     caller: agentCaller,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     log: (level, message) => market.log(level, 'projects', message),
+    // aindrive binds a pushed repo to a project as itself (docs/PROJECTS.md "Auto-binding"): its machine token must
+    // name this node's public URL and an application in AIN_SSO_SERVICE_APPS.
+    auto: ssoConfig && ssoConfig.serviceApps.length > 0 && sso.jwks ? {
+      servicePrincipal: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      orgIdsForSlug: (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug),
+      principalForSubject: (subject) => store.ssoIdentity(ssoConfig.issuer, subject)?.principal ?? ssoPrincipal(subject),
+    } : undefined,
   }));
   projectWorker.recover();
   app.use(hostedAgentRoutes({

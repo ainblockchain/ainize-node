@@ -45,6 +45,7 @@ JSON only (no YAML is read). Unknown keys are refused, so a typo cannot silently
 | `runtime` | script | `python3.11` or `node20`; default by the entry's extension (`.py` → python, `.js`/`.mjs`/`.cjs` → node) |
 | `entry` | script | the file to run. A project row's `entry` (given at creation) is the fallback |
 | `env` | all | merged under the project's own env (`AINIZE_PROJECT`, `AINIZE_COMMIT`, …). **Never secrets** — the file is in the repo. ≤ 32 entries |
+| `inputs` | all (used by `script` runs) | parameters a person fills in before a run — **the same shape as GitHub Actions `workflow_dispatch` inputs**: `{ "<name>": { description?, type: string\|choice\|boolean\|number (default string), required?, default?, options? (choice) } }`, delivered to the program as **`INPUT_<NAME>`** environment variables (name upper-cased; booleans `true`/`false`, numbers as decimal text). aindrive's Run panel renders one field per input (prefilled with `default`, remembered per repo) and sends the answers as `env`; a push-deploy uses each `default`. Names `^[A-Za-z_][A-Za-z0-9_]*$`, ≤ 16 inputs, values ≤ 2 KiB |
 | `build.dockerfile`, `build.context` | service (nextjs when the repo has a Dockerfile) | paths inside the repo; defaults `Dockerfile`, `.` |
 | `port` | service, nextjs | the container port the node exposes; default 8080 (service), 3000 (nextjs) |
 | `healthcheck` | service, nextjs | a path polled until it answers 200, 120 s; default `/` |
@@ -111,11 +112,30 @@ A project's `status` and `kind` are its newest deployment's (`idle` / `null` bef
 
 ## The aindrive side
 
-**Connect** (aindrive's git panel, "Connect to ainize"): aindrive opens
-`${AINIZE_URL}/projects/new?repo=<cloneUrl>&driveId=<id>&returnTo=<drive page url>`. That page (ainize-web) for the
-signed-in AIN SSO user (1) `POST /api/projects { repo, branch: "main" }`, (2) hands the one-time secret back by
-POSTing `{ repo, projectId, webhookSecret }` to `https://aindrive.ainetwork.ai/api/drives/<driveId>/git-connect`
-with the user's aindrive session (`credentials: include`), then (3) redirects to `returnTo`.
+**Auto-binding — "ainize.json이 있다는 건 자동 배포가 되었다는 것".** There is no "Connect to ainize" step. After a
+successful `git-receive-pack` of a repo whose root has `ainize.json` and that aindrive has not bound yet, aindrive
+itself (an AIN SSO machine token for this node: `client_credentials`, `aud` = the node's public URL, `sub` = `azp` =
+`aindrive`; AIN SSO architecture §4.9) calls
+
+```
+POST /api/projects/auto                    Authorization: Bearer <at+jwt>
+{ "repo": "https://aindrive.ainetwork.ai/<org>/git/<repo>", "branch": "main",
+  "pusher": { "subject": "<AIN SSO sub>", "email": "a@b.c" }, "manifest": { "kind": "script", "name": "…" } }
+```
+
+- no project bound to `repo` → **201** `{ id, pageUrl, webhookSecret, created: true }` — the secret once; aindrive
+  stores it beside the repo and fires the hook below for the same push;
+- a project exists → **200** `{ id, pageUrl, created: false }` (no secret; a different branch is 409 `repo_taken`);
+- the token must name, in `orgs`, an AIN organization this node knows under the URL's `<org>` slug (from provisioned
+  memberships) — else 403 `org_not_allowed`. The drive-id URL form (`/api/drives/<id>/git/…`) names no organization
+  and cannot auto-bind; a bad or missing machine token is 401; a node without `AIN_SSO_SERVICE_APPS` answers 503.
+- the owner is the pusher's principal here (`sso:<sub>`, or the legacy principal they were linked to); without a
+  pusher subject, the organization itself, `org:<orgId>` (nobody signs in as it; the project is read through
+  `by-repo` and the deployment log links).
+
+Node configuration: `AIN_SSO_SERVICE_APPS=aindrive` (with `AIN_SSO_ISSUER` / `AIN_SSO_CLIENT_ID`; `docs/ain-sso.md` §5).
+AIN SSO must list the node's public URL in `AIN_SSO_SERVICE_RESOURCES`. `POST /api/projects` (signed in) and
+aindrive's `git-connect` remain for repositories hosted elsewhere or projects made by hand.
 
 **On push.** After a successful `git-receive-pack`, aindrive POSTs one request per updated ref:
 

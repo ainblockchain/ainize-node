@@ -17,6 +17,8 @@ import {
 } from './projects.js';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { z } from 'zod';
+import { SsoError, type ServicePrincipal } from './sso.js';
 
 export interface ProjectRoutesDeps {
   store: ProjectStore;
@@ -31,7 +33,28 @@ export interface ProjectRoutesDeps {
   /** Browser origins allowed to read status and (for aindrive's server) post the hook. */
   corsOrigins?: string[];
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  /**
+   * Auto-binding (`POST /api/projects/auto`, docs/PROJECTS.md): aindrive acting as itself with an AIN SSO machine
+   * token. Absent → the route answers 503 (no AIN SSO, or no `AIN_SSO_SERVICE_APPS`).
+   */
+  auto?: {
+    /** Verifies `Authorization` as a machine token for this node (sso.ts verifyServiceToken); throws SsoError. */
+    servicePrincipal: (authorization: string | undefined) => Promise<ServicePrincipal>;
+    /** AIN organization IDs this node knows under an org slug (the repo URL's `<org>` segment). */
+    orgIdsForSlug: (slug: string) => string[];
+    /** The principal an AIN SSO subject is here (`sso:<sub>`, or the legacy principal it was linked to). */
+    principalForSubject: (subject: string) => string;
+  };
 }
+
+/** `POST /api/projects/auto` body: the pushed repo and what aindrive knows about it. */
+export const autoBindInput = z.object({
+  repo: z.string().min(1).max(1024),
+  branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).optional(),
+  pusher: z.object({ subject: z.string().min(1).max(300).nullable().optional(), email: z.string().max(300).nullable().optional() }).optional(),
+  manifest: z.object({ kind: z.string().max(40).nullable().optional(), name: z.string().min(1).max(100).nullable().optional() }).optional(),
+});
+export type AutoBindInput = z.infer<typeof autoBindInput>;
 
 const refuse = (res: Response, status: number, code: string, message: string) => { res.status(status).json({ error: { code, message } }); };
 
@@ -117,6 +140,57 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     deps.log?.('info', `project ${project.id}: ${project.org}/${project.repoName} (${project.branch}, ${project.kind}) created by ${who.subject}`);
     // The secret is shown once: aindrive stores it beside the repo's hook, this node keeps it sealed.
     res.status(201).json({ ...projectView(req, project), webhookSecret, hasDeployToken: !!input.deployToken });
+  });
+
+  /**
+   * Auto-binding: aindrive (as itself, with an AIN SSO machine token for this node) reports a push of a repository
+   * whose root has `ainize.json`. The owner's words: "ainize.json이 있다는 건 자동 배포가 되었다는 것" — a project exists
+   * because the file exists, with no step in between. If no project is bound to the repo, one is created and the
+   * webhook secret is returned ONCE (201); if one is, only its id (200) — the secret aindrive already holds keeps
+   * working. Who may bind: the application's token must name, in `orgs`, an AIN organization this node knows under
+   * the repo URL's `<org>` slug (the drive-id URL form has no org, so it cannot auto-bind). The owner is the pusher's
+   * principal here (`sso:<sub>`, or the legacy principal they were linked to); without a pusher subject, the
+   * organization itself, `org:<orgId>`.
+   */
+  router.post('/api/projects/auto', async (req, res) => {
+    if (!deps.auto) return refuse(res, 503, 'auto_bind_off', 'this node accepts no machine tokens (AIN SSO off or AIN_SSO_SERVICE_APPS unset)');
+    let who: ServicePrincipal;
+    try { who = await deps.auto.servicePrincipal(req.header('authorization')); }
+    catch (e) {
+      if (e instanceof SsoError) { if (e.status === 401) res.set('www-authenticate', 'Bearer error="invalid_token"'); return refuse(res, e.status, e.code, e.message); }
+      throw e;
+    }
+    const parsed = autoBindInput.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
+    }
+    const input = parsed.data;
+    const repo = parseRepoUrl(input.repo);
+    if (!repo) return refuse(res, 400, 'invalid_request', 'repo: an aindrive git URL — https://aindrive.ainetwork.ai/<org>/git/<repo>');
+    const orgIds = deps.auto.orgIdsForSlug(repo.org).filter((id) => who.orgs.includes(id));
+    if (orgIds.length === 0) return refuse(res, 403, 'org_not_allowed', `"${who.clientId}" may not bind repositories of "${repo.org}" here: none of the token's organizations is known under that slug`);
+    const branch = input.branch ?? 'main';
+    const existing = deps.store.byRepo(repo.url);
+    if (existing) {
+      if (existing.branch !== branch) return refuse(res, 409, 'repo_taken', `${repo.url} is bound to branch ${existing.branch} on this node`);
+      return res.status(200).json({ id: existing.id, pageUrl: `${base(req)}/projects/${existing.id}`, created: false });
+    }
+    const subject = input.pusher?.subject ?? null;
+    const owner = subject ? deps.auto.principalForSubject(subject) : `org:${orgIds[0]}`;
+    const kind = input.manifest?.kind ?? null;
+    let project: Project;
+    try {
+      project = deps.store.create({ repo, branch, kind: kind && (['nextjs', 'script', 'service', 'agent'] as const).includes(kind as 'script') ? (kind as Project['kind']) : null, entry: null, name: input.manifest?.name ?? undefined }, owner);
+    } catch (e) {
+      if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
+      if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
+      throw e;
+    }
+    const webhookSecret = `whsec_${randomBytes(24).toString('hex')}`;
+    deps.secrets.set(project.id, PROJECT_SECRET_WEBHOOK, webhookSecret);
+    deps.log?.('info', `project ${project.id}: ${project.org}/${project.repoName} (${project.branch}) auto-bound by ${who.clientId} for ${owner}`);
+    res.status(201).json({ id: project.id, pageUrl: `${base(req)}/projects/${project.id}`, webhookSecret, created: true });
   });
 
   router.get('/api/projects', (req, res) => {
