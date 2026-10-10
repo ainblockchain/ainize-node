@@ -6,10 +6,8 @@
  *
  * Authority is the canonical Teams message and current channel membership, never the A2A caller's
  * text or metadata (the locator in `input.metadata.teamsMessage` is only an untrusted lookup hint).
- * This handler does not publish commits, run repository code, or deploy. A candidate stops at
- * `needs_validation`; validation, GitHub publishing, Ainmem lifecycle, and release approval are
- * separate steps with their own credentials. Release tokens are never loaded here — only the
- * repository read token and the agent's own model are reachable from the coding path.
+ * Coding has no release credentials. Optional host capabilities validate the candidate and publish
+ * its draft PR; the durable job then waits for a separate human approval/release path.
  */
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -18,6 +16,7 @@ import { Jobs } from './jobs.mjs';
 import { Checkpoints } from './checkpoints.mjs';
 import { GitHubSnapshot } from './repository.mjs';
 import { advanceCoding } from './advance.mjs';
+import { advanceHostedPublication } from './publication.mjs';
 import { advanceHostedValidation } from './validation.mjs';
 import { AinmemReports, parseAinmemConfig } from './ainmem.mjs';
 
@@ -41,7 +40,7 @@ export function parseConfig(raw) {
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -140,7 +139,13 @@ export function createHandler({
         return;
       }
       if (job.checkpoint.stage === 'needs_validation') {
-        await advanceHostedValidation({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});
+        const updated=await advanceHostedValidation({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});
+        if(config.hostPublication && updated.checkpoint.stage==='needs_publication')jobs.wake(updated.id);
+        return;
+      }
+      if(job.checkpoint.stage==='needs_publication'){
+        if(!config.hostPublication){jobs.finish(job.id,claim.lease,'waiting',job.checkpoint);return;}
+        await advanceHostedPublication({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});
         return;
       }
       const snapshot = newSnapshot(ctx, job.input.repository, job.input.base);

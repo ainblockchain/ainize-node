@@ -1,3 +1,5 @@
+import {HostedQaPublisher,qaGitHubClient,type QaPublicationProfile} from './hosted-qa-publication.js';
+import {HostedQaPublicationService} from './hosted-qa-publication-service.js';
 import { HostedQaValidationService } from './hosted-qa-validation-service.js';
 import type { QaValidationProfile } from './hosted-qa-validator.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
@@ -5,7 +7,7 @@ import { NODE_VERSION as VERSION } from './version.js';
 /**
  * Assemble and run a marketplace node: ledger + store + blobs + runtime + market + p2p + verifier + HTTP.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -370,7 +372,20 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
   const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
     JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>) : undefined;
+  const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
+  let qaPublication:HostedQaPublicationService|undefined;
+  if(publicationPath){
+    if(!qaValidation)throw new Error('QA publication requires host validation');
+    const tokenPath=process.env.AINIZE_QA_PUBLICATION_TOKEN_FILE;
+    if(!tokenPath)throw new Error('QA publication token file required');
+    const st=lstatSync(tokenPath);
+    if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA publication token file must be private');
+    const token=readFileSync(tokenPath,'utf8').trim();
+    if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA publication token');
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,qaGitHubClient(token)));
+  }
   const hostedGateway = new HostedAgentGateway({
+    qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
     qaValidation: qaValidation ? (id,candidate)=>qaValidation.submit(id,candidate) : undefined,
     registry: () => inferenceRegistry,
     peerModels,

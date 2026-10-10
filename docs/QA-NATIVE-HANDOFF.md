@@ -399,3 +399,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 기존 파일의 실행 권한을 보존하고, 생성된 Git tree의 전체 파일 SHA/권한을 검증 후보와 대조한다. 에이전트·작업·후보 digest로 브랜치를 정하고 고정 커밋 메타데이터를 사용한다. 응답 유실 후 재조회하며, 원격 브랜치/PR이 바뀌면 덮어쓰지 않는다. 게시 전후 base를 재확인한다.
 - 단위 테스트에서 응답 유실, 재시작 후 중복 방지, 바뀐 base/branch/닫힌 PR, 다른 tree, 검증 기록 부재, 토큰 오류 비노출을 확인했다. 전체 QA 타깃 55개 통과, skip 0. 빌드 통과.
 - **아직 운영 gateway/tick에 연결하지 않았고 실제 GitHub 쓰기 실증도 하지 않았다.** 다음 단계는 비밀 게시 토큰을 호스트에만 유지하는 설정, 비동기 게시 상태/체크포인트, Ainmem PR/SHA 표시 연결 및 격리된 실제 게시 검증이다. 운영 QA 중복 작업기를 먼저 확인해야 한다.
+
+### 2026-10-10 게시 단계 연결
+
+- 호스트의 비동기 publication 서비스와 런타임의 `ctx.qa.publish`를 연결했다. 게이트웨이 인증으로 에이전트를 결정하며, 요청에 다른 agent ID를 넣을 수 없다. GitHub token은 host에서만 읽는다.
+- opt-in 설정: `AINIZE_QA_PUBLICATION_PROFILES`는 agent ID → `{repository,branch}` JSON 파일 경로, `AINIZE_QA_PUBLICATION_TOKEN_FILE`은 private 일반 파일 경로다. 기존 host validation 설정이 필수다. 운영 환경에는 아직 설정하지 않았다.
+- 서비스 handler 설정 `hostPublication:true`가 있으면 검증 통과 후 자동으로 게시를 진행한다. 원격 작업은 host에서 실행하고 handler는 상태만 조회한다. PR/SHA receipt를 immutable checkpoint에 저장한 뒤 `awaiting_approval`에서 멈춘다. 이 단계는 승인 기록이나 merge를 만들지 않는다.
+- Ainmem 상태 보고에 검토 PR과 정확한 커밋을 추가했다. 실제 Ainmem 서버에서 승인 댓글을 수신하는 경로는 여전히 남아 있다.
+- 실제 private HTTP gateway + SQLite/checkpoint + Ainmem outbox 통합 테스트 및 handler tick 테스트 통과. GitHub 응답은 테스트 대체 구현이며 실제 PR 쓰기 실증은 아니다. 관련 QA 테스트 57개 pass / 0 skip, 타입 검사·빌드 통과.
+- 다음: 실제 GitHub 게시 실증, 게시된 SHA에 결합된 사람 승인 확인, 릴리스/serving SHA 확인, 운영 상태 보존 전환과 전 채널 E2E. 게시 polling의 host 완료 캐시는 60초이며 재시작 시 원격 ref/PR을 재대조한다. 실패 작업은 후보를 보존한 채 대기하므로 운영 재개 정책이 필요하다.

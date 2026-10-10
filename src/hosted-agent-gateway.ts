@@ -205,6 +205,7 @@ export interface HostedAgentGatewayDeps {
     target(model: string, node: string | null): PeerModelTarget | null;
     fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
   };
+  qaPublication?: (agentId: string, request: unknown) => unknown;
   qaValidation?: (agentId: string, candidate: unknown) => unknown;
   spec: (agentId: string) => HostedAgentSpec | null;
   log: (message: string) => void;
@@ -289,6 +290,14 @@ export class HostedAgentGateway {
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
     const path = m[2]!;
     try {
+      if (req.method === 'POST' && path === '/qa/publication') {
+        if (!this.deps.qaPublication) return sendJson(res,403,{error:{message:'QA publication disabled'}});
+        let request:unknown;
+        try {request=JSON.parse((await readBody(req,3*1024*1024)).toString('utf8'));}
+        catch {return sendJson(res,400,{error:{message:'Invalid QA publication'}});}
+        try {return sendJson(res,200,this.deps.qaPublication(spec.id,request));}
+        catch {return sendJson(res,403,{error:{message:'QA publication binding refused'}});}
+      }
       if (req.method === 'POST' && path === '/qa/validation') {
         if (!this.deps.qaValidation) return sendJson(res, 403, { error: { message: 'QA validation disabled' } });
         let candidate: unknown;

@@ -20,9 +20,14 @@ function card(job, config) {
   const state = job.state === 'failed' ? 'failed' : job.state === 'completed' ? 'completed'
     : job.checkpoint.holdReason || job.state === 'waiting' ? 'waiting'
     : stage === 'needs_validation' ? 'validating' : stage === 'coding' ? 'coding' : 'queued';
+  const published=job.checkpoint.published;
+  const review=stage==='awaiting_approval' && published?.repository===job.input.repository
+    && /^[a-f0-9]{40}$/.test(published.sha??'') && Number.isSafeInteger(published.number) && published.number>0
+    && published.url===`https://github.com/${job.input.repository}/pull/${published.number}`
+    ? `\n검토 PR: ${published.url}\n검토 커밋: ${published.sha}\n관리자 배포 승인이 필요합니다.\n` : '';
   return { databaseId: config.databaseId, titlePropertyId: config.titlePropertyId, statusPropertyId: config.statusPropertyId,
     statusOptionId: config.statusOptions[state], title: job.input.text.trim().slice(0, 200) || 'QA 수정 요청',
-    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n\n이 상태 표시는 배포 승인이 아닙니다.` };
+    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${review}\n이 상태 표시는 배포 승인이 아닙니다.` };
 }
 export class AinmemReports {
   constructor(jobs, config) {

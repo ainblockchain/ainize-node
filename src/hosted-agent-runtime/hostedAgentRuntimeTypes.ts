@@ -115,7 +115,7 @@ export interface HostedAgentInput {
 /** What an agent's code is handed on every turn. Identical in and out of Docker. */
 export interface HostedAgentCtx {
   input: HostedAgentInput;
-  qa?: { validate(candidate: { repository: string; base: string; changes: Record<string,string> }): Promise<unknown> };
+  qa?: { publish(jobId:string, candidate:{repository:string;base:string;changes:Record<string,string>}):Promise<unknown>; validate(candidate: { repository: string; base: string; changes: Record<string,string> }): Promise<unknown> };
   spec: HostedAgentRuntimeSpec;
   llm: {
     /**
