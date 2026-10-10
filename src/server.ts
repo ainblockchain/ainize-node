@@ -28,6 +28,8 @@ import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-contain
 import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
 import { AgentForkStore } from './agent-forks.js';
+import { AgentPreviews } from './agent-previews.js';
+import { agentPreviewRoutes } from './agent-preview-routes.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
 import { AgentMirrorStore } from './agent-mirror.js';
 import { AgentMirrorSyncer } from './agent-mirror-sync.js';
@@ -301,6 +303,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * Two copies of this would be two definitions of what "deployed" means, and the one that drifted would be
    * the one nobody was reading.
    */
+  const reservedRepositoryId = (id: string) => /^(preview|fork)-[a-f0-9]{20}$/.test(id);
   const agentForks = new AgentForkStore(join(cfg.dataDir, 'agent-forks.json'));
   const agentRuntimes = new AgentRuntimeStore(join(cfg.dataDir, 'agent-runtimes.json'));
   const agentApplyQueue = new Map<string, Promise<void>>();
@@ -526,6 +529,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     call: (target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
+  let agentPreviews: AgentPreviews | null = null;
   const hostedGateway = new HostedAgentGateway({
     registry: () => inferenceRegistry,
     peerModels,
@@ -536,7 +540,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       target: (model, node) => peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node),
       fetch: (target, body) => fetchPeerChat(cfg.identity, target, body),
     },
-    spec: (id) => hostedStore.get(id),
+    spec: (id) => hostedStore.get(id) ?? agentPreviews?.spec(id) ?? null,
     log: (message) => market.log('info', 'agents', message),
   });
   const dockerCfg = agentHostCfg.docker;
@@ -687,7 +691,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     caller: agentCaller,
     events: agentEvents,
     orgAudit,
-    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
+    reserved: (id) => reservedRepositoryId(id) || (cfg.agents ?? []).some((a) => a?.id === id) || hostedStore.get(id) !== null,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     probe: probeUpstreamCard,
   }));
@@ -734,7 +738,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     agents: {
       store: hostedStore,
       host: hostedHost,
-      reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
+      reserved: (id) => reservedRepositoryId(id) || (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
       // The same repository-side record a hosted agent gets from the API (below): one history per agent.
       onApplied: async (spec, created, source) => {
         if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
@@ -810,7 +814,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     caller: agentCaller,
     events: agentEvents,
     orgAudit,
-    reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
+    reserved: (id) => reservedRepositoryId(id) || (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     peerServes: (modality) => !!peerModels.target(modality),
     peerChat: { self: cfg.identity.address, serves: (model, node) => !!peerModelTargetById(peerModelRows(), 'chat', model, cfg.identity.address, node) },
@@ -905,6 +909,18 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return !!spec && !!who && canManageHostedAgent(spec, who);
     },
     apply: applyPushedTree,
+  }));
+  agentPreviews = new AgentPreviews(agentGit, hostedHost);
+  agentPreviews.start();
+  app.use(agentPreviewRoutes({
+    previews: agentPreviews,
+    principal: (req) => agentCaller(req)?.subject ?? null,
+    canRead: (req, id) => {
+      const fork = agentForks.get(id);
+      if (fork) return fork.owner === agentCaller(req)?.subject.toLowerCase();
+      const spec = hostedStore.get(id);
+      return !!spec && canSeeHostedAgent(spec, agentCaller(req));
+    },
   }));
   app.use(agentGitRoutes({
     git: agentGit,
@@ -1274,6 +1290,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       await mirrorSyncer.stop();
       await Promise.allSettled([...agentApplyQueue.values()]);
       await runSandbox?.stop().catch(() => {});
+      await agentPreviews?.stop().catch(() => {});
       await hostedHost.stop().catch(() => {});
       if (stakeIdleSweep) clearInterval(stakeIdleSweep);
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);

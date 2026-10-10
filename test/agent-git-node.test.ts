@@ -307,9 +307,17 @@ test('a reader proposes from a private fork, and merging uses the recorded commi
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const fork = (made.body as unknown as { fork: { id: string; owner: string; baseCommit: string } }).fork;
   assert.equal(fork.owner, person.address.toLowerCase());
+  assert.equal((await call('POST', '/api/hosted-agents', { id: fork.id, name: 'Replace private fork', model: MODEL }, token)).status, 409, 'an agent cannot take a private repository id');
   assert.equal((await call('GET', `/api/hosted-agents/${fork.id}`)).status, 404, 'forks never create a running agent');
   assert.equal((await call('GET', `/api/hosted-agents/${fork.id}/refs`)).status, 404, 'a fork is private even to the original owner');
   assert.equal((await call('GET', `/api/hosted-agents/${fork.id}/refs`, undefined, token)).status, 200);
+  const previewResponse = await call('POST', '/api/hosted-agents/desk/previews', { ref: fork.baseCommit }, token);
+  assert.equal(previewResponse.status, 202, JSON.stringify(previewResponse.body));
+  const previewId = (previewResponse.body as unknown as { preview: { id: string } }).preview.id;
+  assert.equal((await call('GET', `/api/agent-previews/${previewId}`, undefined, token)).status, 200);
+  assert.equal((await call('GET', `/api/agent-previews/${previewId}`)).status, 404);
+  assert.equal((await call('POST', '/api/hosted-agents', { id: previewId, name: 'Replace preview', model: MODEL }, token)).status, 409);
+  assert.equal((await call('DELETE', `/api/agent-previews/${previewId}`, undefined, token)).status, 200);
   const remote = `http://x:${key}@127.0.0.1:${PORT}/git/${fork.id}.git`;
   const dir = join(tmp, 'private-fork');
   await git(['clone', '--quiet', remote, dir]);

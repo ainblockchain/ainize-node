@@ -1,0 +1,105 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import request from 'supertest';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { AgentGit } from '../src/agent-git.js';
+import { AgentPreviews } from '../src/agent-previews.js';
+import { agentPreviewRoutes } from '../src/agent-preview-routes.js';
+import { HostedAgentGateway } from '../src/hosted-agent-gateway.js';
+import { HostedAgentHost } from '../src/hosted-agent-host.js';
+import { HostedAgentSecretStore } from '../src/hosted-agent-secrets.js';
+import { InferenceBackendRegistry } from '../src/inference-backends.js';
+import { hostedAgentSpecInput } from '../src/hosted-agent-types.js';
+
+test('preview executes the pinned prompt through the real runtime, without source authority, and expires', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-preview-'));
+  const modelApp = express(); modelApp.use(express.json());
+  modelApp.post('/v1/chat/completions', (req, res) => res.json({ id: 'reply', object: 'chat.completion', model: 'model', choices: [{ index: 0, message: { role: 'assistant', content: `prompt=${req.body.messages[0].content}` }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+  const modelServer = createServer(modelApp);
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(modelServer.address() as AddressInfo).port}`;
+  const git = new AgentGit(join(root, 'git'));
+  const secrets = new HostedAgentSecretStore(join(root, 'secrets.json'), join(root, 'secrets.key'));
+  secrets.set('desk', 'API_KEY', 'source-only-secret');
+  let previews: AgentPreviews | null = null;
+  const registry = new InferenceBackendRegistry([{ id: 'test', modality: 'chat', upstream: base, models: ['model'], concurrency: 1 }]);
+  const gateway = new HostedAgentGateway({ registry: () => registry, spec: (id) => previews?.spec(id) ?? null, log: () => {} });
+  const host = new HostedAgentHost({ gateway, secrets, docker: null, idleStopMs: 1000, maxRunning: 2, log: () => {} });
+  let now = Date.now();
+  try {
+    await host.start([]);
+    await git.init('desk');
+    const original = hostedAgentSpecInput.parse({ id: 'desk', name: 'Desk', model: 'model', systemPrompt: 'Reviewed prompt', allowedHosts: ['example.com'], secretNames: ['API_KEY'], media: { image: true, transcription: true } });
+    const pinned = await git.commitSpec('desk', original, { message: 'Proposal' });
+    previews = new AgentPreviews(git, host, { now: () => now, ttlMs: 1000, pollMs: 1 });
+    const app = express(); app.use(express.json());
+    app.use(agentPreviewRoutes({ previews, principal: (req) => req.get('x-person') ?? null, canRead: (req) => req.get('x-person') !== 'denied' }));
+    assert.equal((await request(app).post('/api/hosted-agents/desk/previews').send({ ref: pinned })).status, 401);
+    const started = await request(app).post('/api/hosted-agents/desk/previews').set('x-person', 'reader').send({ ref: pinned });
+    assert.equal(started.status, 202, started.text);
+    const id = started.body.preview.id as string;
+    const spec = previews.spec(id)!;
+    assert.equal(spec.visibility, 'private');
+    assert.deepEqual(spec.allowedHosts, []); assert.deepEqual(spec.secretNames, []);
+    assert.deepEqual(spec.media, { transcription: false, image: false });
+    assert.equal(spec.orgId, null);
+    assert.deepEqual(secrets.names(id), []);
+    assert.equal(host.has('desk'), false, 'preview never updates or starts the source agent');
+    await git.commitSpec('desk', { ...original, systemPrompt: 'Later unreviewed prompt' }, { message: 'Later', parent: pinned });
+    for (let n = 0; n < 100 && previews.get(id, 'reader')?.status !== 'ready'; n++) await new Promise((resolve) => setTimeout(resolve, 1));
+    const route = `/api/agent-previews/${id}`;
+    assert.equal((await request(app).get(route).set('x-person', 'other')).status, 404);
+    const rpc = { jsonrpc: '2.0', id: 1, method: 'message/send', params: { message: { kind: 'message', role: 'user', messageId: 'test', parts: [{ kind: 'text', text: 'hello' }] } } };
+    assert.equal((await request(app).post(`${route}/rpc`).set('x-person', 'other').send(rpc)).status, 404);
+    const reply = await request(app).post(`${route}/rpc`).set('x-person', 'reader').send(rpc);
+    assert.equal(reply.status, 200, reply.text);
+    assert.match(JSON.stringify(reply.body.result), /Reviewed prompt/);
+    assert.doesNotMatch(JSON.stringify(reply.body), /Later unreviewed|source-only-secret/);
+    const gatewayUrl = await gateway.listen('127.0.0.1');
+    const gatewayToken = gateway.issue(id);
+    assert.equal((await fetch(`${gatewayUrl}/t/${gatewayToken}/egress`, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/' }) })).status, 403);
+    await previews.create('desk', pinned, 'reader');
+    await assert.rejects(previews.create('desk', pinned, 'reader'), /limit/);
+    const lifetime = previews.signal(id)!;
+    now += 1001;
+    assert.equal((await request(app).get(route).set('x-person', 'reader')).status, 404);
+    await previews.sweep();
+    assert.equal(lifetime.aborted, true);
+    assert.equal(host.has(id), false);
+    assert.equal((await fetch(`${gatewayUrl}/t/${gatewayToken}/v1/models`)).status, 401);
+    assert.equal(await git.resolve('desk', 'main') === pinned, false, 'source remains at its newer commit');
+  } finally {
+    await previews?.stop(); await host.stop();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('removing a code preview waits for its build before removing images', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'preview-build-'));
+  const gateway = new HostedAgentGateway({ registry: () => null, spec: () => null, log: () => {} });
+  let finishBuild: (() => void) | undefined;
+  let imagesRemoved = false;
+  const docker = {
+    ensureNetwork: async () => '127.0.0.1', removeOrphans: async () => {},
+    buildAgent: async () => { await new Promise<void>((resolve) => { finishBuild = resolve; }); return ''; },
+    stop: async () => {}, removeImages: async () => { imagesRemoved = true; },
+  } as unknown as import('../src/hosted-agent-docker.js').HostedAgentDocker;
+  const host = new HostedAgentHost({ gateway, secrets: new HostedAgentSecretStore(join(root, 'secrets.json'), join(root, 'secrets.key')), docker, idleStopMs: 1000, maxRunning: 2, log: () => {} });
+  try {
+    await host.start([]);
+    host.apply({ ...hostedAgentSpecInput.parse({ id: 'preview-build', name: 'Code preview', model: 'model', mode: 'handler', files: { 'index.mjs': 'export default { execute: async () => "ok" }' } }), owner: 'reader', version: 1, createdAt: 1, updatedAt: 1 }, { ephemeral: true });
+    const removing = host.remove('preview-build');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(imagesRemoved, false, 'an image cannot be removed before the build that creates it ends');
+    finishBuild!();
+    await removing;
+    assert.equal(imagesRemoved, true);
+    assert.equal(host.has('preview-build'), false);
+  } finally { finishBuild?.(); await host.stop(); rmSync(root, { recursive: true, force: true }); }
+});
