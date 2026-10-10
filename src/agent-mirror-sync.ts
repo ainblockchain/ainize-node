@@ -2,10 +2,12 @@
 import { fetchMirror, type AgentMirror, type AgentMirrorStore } from './agent-mirror.js';
 import type { AgentGit } from './agent-git.js';
 import type { HostedAgentSpecInput } from './hosted-agent-types.js';
+import type { RepositorySerialize } from './agent-repository-queue.js';
 
 export interface AgentMirrorSyncDeps {
   git: AgentGit;
   available?: (id: string) => boolean;
+  serialize?: RepositorySerialize;
   mirrors: AgentMirrorStore;
   apply: (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => Promise<void>;
   land: (id: string, commit: string) => Promise<void>;
@@ -38,7 +40,7 @@ export class AgentMirrorSyncer {
   }
   private serial(agent: string, operation: () => Promise<AgentMirror | null>): Promise<AgentMirror | null> {
     const previous = this.inflight.get(agent) ?? Promise.resolve(null);
-    const next = previous.catch(() => null).then(operation);
+    const next = previous.catch(() => null).then(() => this.deps.serialize ? this.deps.serialize(agent, operation) : operation());
     this.inflight.set(agent, next);
     void next.finally(() => { if (this.inflight.get(agent) === next) this.inflight.delete(agent); }).catch(() => {});
     return next;

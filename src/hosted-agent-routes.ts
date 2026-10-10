@@ -1,3 +1,4 @@
+import { serializedWrites, type RepositorySerialize } from './agent-repository-queue.js';
 /**
  * `/api/hosted-agents` — create, read, change and remove agents this node runs.
  *
@@ -44,6 +45,7 @@ export interface HostedAgentRoutesDeps {
    * door a change came through.
    */
   repo?: {
+    serialize?: RepositorySerialize;
     readOnlySource?: (id: string) => string | null;
     runtime?: (id: string) => AgentRuntime | null;
     create: (spec: HostedAgentSpec) => Promise<void>;
@@ -76,6 +78,7 @@ const refuse = (res: Response, status: number, code: string, message: string) =>
 
 export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
   const router = Router();
+  const writes = serializedWrites(router, deps.repo?.serialize);
 
   const callerOf = (req: Request): AgentCaller | null => {
     if (deps.caller) return deps.caller(req);
@@ -216,7 +219,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     res.json({ agents: deps.store.list().filter((s) => listsHostedAgentFor(s, who)).map((s) => view(req, s, false)) });
   });
 
-  router.post('/api/hosted-agents', async (req, res) => {
+  writes.post('/api/hosted-agents', async (req, res) => {
     const who = signedIn(req, res);
     if (!who) return;
     const input = parse(req, res, who);
@@ -245,7 +248,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (hit) res.json({ agent: view(req, hit.spec, hit.owner, callerOf(req)) });
   });
 
-  router.put('/api/hosted-agents/:id', async (req, res) => {
+  writes.put('/api/hosted-agents/:id', async (req, res) => {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec: prior, who } = hit;
@@ -272,7 +275,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     res.json({ agent: view(req, spec, true, who) });
   });
 
-  router.post('/api/hosted-agents/:id/builder', async (req, res) => {
+  writes.post('/api/hosted-agents/:id/builder', async (req, res) => {
     const hit = administered(req, res);
     if (!hit) return;
     const action = req.body?.action;
@@ -285,7 +288,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     } catch { refuse(res, 502, 'builder_unavailable', 'builder operation failed'); }
   });
 
-  router.delete('/api/hosted-agents/:id' , async (req, res) => {
+  writes.delete('/api/hosted-agents/:id' , async (req, res) => {
     const hit = administered(req, res);
     if (!hit) return;
     const { spec, who } = hit;
@@ -297,7 +300,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       await deps.repo?.remove(spec.id);
     };
     try {
-      if (deps.repo?.deleting) await deps.repo.deleting(spec.id, remove);
+      if (deps.repo?.deleting && !deps.repo.serialize) await deps.repo.deleting(spec.id, remove);
       else await remove();
     } catch (error) { return refuse(res, 502, 'delete_failed', (error as Error).message); }
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
@@ -306,7 +309,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
   });
 
   /** Write-only: set with `{ value }`, clear with `{ value: null }`. There is no route that reads a value back. */
-  router.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
+  writes.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec, who } = hit;

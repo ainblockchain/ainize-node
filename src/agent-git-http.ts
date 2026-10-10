@@ -28,6 +28,7 @@ import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 const NO_REF = '0'.repeat(40);
 
 export interface AgentGitHttpDeps {
+  serialize?: import('./agent-repository-queue.js').RepositorySerialize;
   git: AgentGit;
   /** Where the internal hook endpoint lives, for the hook script to call back on. */
   loopbackPort: () => number;
@@ -194,6 +195,20 @@ process.stdin.on('end', async () => {
   }
 
   private async serve(req: Request, res: Response): Promise<void> {
+    const id = /^\/git\/([a-z0-9][a-z0-9-]{0,39})\.git(?:\/.*)?$/.exec(req.path)?.[1];
+    if (!id) { this.refuse(res, 404, 'not a repository'); return; }
+    try {
+      const operation = () => this.serveUnlocked(req, res);
+      if (this.deps.serialize) await this.deps.serialize(id, operation);
+      else await operation();
+    } catch (error) {
+      this.deps.log('warn', `agent ${id}: repository request failed: ${(error as Error).message}`);
+      if (!res.headersSent) this.refuse(res, 500, 'repository request failed');
+      else res.end();
+    }
+  }
+
+  private async serveUnlocked(req: Request, res: Response): Promise<void> {
     const m = /^\/git\/([a-z0-9][a-z0-9-]{0,39})\.git(\/.*)?$/.exec(req.path);
     if (!m) { res.status(404).end(); return; }
     const id = m[1]!;

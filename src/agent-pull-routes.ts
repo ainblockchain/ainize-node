@@ -1,3 +1,4 @@
+import { serializedWrites, type RepositorySerialize } from './agent-repository-queue.js';
 /**
  * Pull requests over HTTP: open one, read them, merge one.
  *
@@ -16,6 +17,7 @@ import type { AgentPullStore } from './agent-pulls.js';
 import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentPullRoutesDeps {
+  serialize?: RepositorySerialize;
   git: AgentGit;
   forks?: AgentForkStore;
   initializeFork?: (id: string) => void;
@@ -46,6 +48,7 @@ const openPull = z.object({
 
 export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
   const router = Router();
+  const writes = serializedWrites(router, deps.serialize);
   const json = express.json({ limit: '64kb' });
 
   const open = (req: Request, res: Response): string | null => {
@@ -54,7 +57,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     return id;
   };
 
-  router.post('/api/hosted-agents/:id/forks', json, async (req, res) => {
+  writes.post('/api/hosted-agents/:id/forks', json, async (req, res) => {
     const parent = open(req, res); if (!parent) return;
     const owner = deps.principal(req);
     if (!owner) return refuse(res, 401, 'not_signed_in', 'sign in to fork a repository');
@@ -84,7 +87,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (!owner) return refuse(res, 401, 'not_signed_in', 'sign in to read your forks');
     res.json({ forks: deps.forks?.list(owner) ?? [] });
   });
-  router.delete('/api/agent-forks/:id', async (req, res) => {
+  writes.delete('/api/agent-forks/:id', async (req, res) => {
     const fork = deps.forks?.get(String(req.params.id));
     if (!fork || fork.owner !== deps.principal(req)?.toLowerCase()) return refuse(res, 404, 'not_found', 'no repository fork');
     await deps.git.deleteRepo(fork.id);
@@ -105,7 +108,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     res.json({ pull });
   });
 
-  router.post('/api/hosted-agents/:id/pulls', json, async (req, res) => {
+  writes.post('/api/hosted-agents/:id/pulls', json, async (req, res) => {
     const id = open(req, res); if (!id) return;
     const source = deps.readOnlySource?.(id);
     if (source) return refuse(res, 409, 'read_only_source', `propose changes at ${source}`);
@@ -140,7 +143,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (!pull) return refuse(res, 404, 'not_found', 'no pull request');
     res.json({ comments: pull.comments ?? [] });
   });
-  router.post('/api/hosted-agents/:id/pulls/:number/comments', json, async (req, res) => {
+  writes.post('/api/hosted-agents/:id/pulls/:number/comments', json, async (req, res) => {
     const id = open(req, res); if (!id) return;
     const author = deps.principal(req);
     if (!author) return refuse(res, 401, 'not_signed_in', 'sign in to review a proposal');
@@ -162,7 +165,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     }
     res.status(201).json({ comment: deps.pulls.addComment(id, pull.number, { author, body, ...(commit ? { commit } : {}), ...(path ? { path, line } : {}) }) });
   });
-  router.patch('/api/hosted-agents/:id/pulls/:number/comments/:comment', json, (req, res) => {
+  writes.patch('/api/hosted-agents/:id/pulls/:number/comments/:comment', json, (req, res) => {
     const id = open(req, res); if (!id) return;
     const pull = deps.pulls.get(id, Number(req.params.number));
     const comment = pull?.comments?.find((row) => row.id === Number(req.params.comment));
@@ -173,7 +176,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     if (!parsed.success) return refuse(res, 400, 'invalid_request', 'a comment needs text');
     res.json({ comment: deps.pulls.updateComment(id, pull.number, comment.id, { body: parsed.data.body }) });
   });
-  router.delete('/api/hosted-agents/:id/pulls/:number/comments/:comment', (req, res) => {
+  writes.delete('/api/hosted-agents/:id/pulls/:number/comments/:comment', (req, res) => {
     const id = open(req, res); if (!id) return;
     const pull = deps.pulls.get(id, Number(req.params.number));
     const comment = pull?.comments?.find((row) => row.id === Number(req.params.comment));
@@ -183,7 +186,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     res.json({ comment: deps.pulls.updateComment(id, pull.number, comment.id, { body: '', deletedAt: Date.now() }) });
   });
 
-  router.post('/api/hosted-agents/:id/pulls/:number/merge', json, async (req, res) => {
+  writes.post('/api/hosted-agents/:id/pulls/:number/merge', json, async (req, res) => {
     const id = open(req, res); if (!id) return;
     const source = deps.readOnlySource?.(id);
     if (source) return refuse(res, 409, 'read_only_source', `merge proposals at ${source}`);
@@ -235,7 +238,7 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
     }
   });
 
-  router.post('/api/hosted-agents/:id/pulls/:number/close', json, (req, res) => {
+  writes.post('/api/hosted-agents/:id/pulls/:number/close', json, (req, res) => {
     const id = open(req, res); if (!id) return;
     const who = deps.principal(req);
     const pull = deps.pulls.get(id, Number(req.params.number));

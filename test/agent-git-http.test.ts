@@ -1,3 +1,4 @@
+import { AgentRepositoryQueue } from '../src/agent-repository-queue.js';
 /**
  * Push is the deploy — proven with a real `git push` over HTTP against the real server.
  *
@@ -23,6 +24,8 @@ import { AgentGitHttp } from '../src/agent-git-http.js';
 import { hostedAgentSpecInput, type HostedAgentSpecInput } from '../src/hosted-agent-types.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'ainize-git-http-'));
+const repositoryQueue = new AgentRepositoryQueue();
+let holdApply: (() => Promise<void>) | null = null;
 let git: AgentGit;
 let server: Server;
 let base = '';
@@ -62,13 +65,14 @@ before(async () => {
   git = new AgentGit(join(tmp, 'agent-git'));
   const app = express();
   const http = new AgentGitHttp({
+    serialize: (id, operation) => repositoryQueue.run(id, operation),
     git,
     loopbackPort: () => (server.address() as AddressInfo).port,
     canPush: () => mayPush,
     canRead: () => true,
     mirrorOf: () => mirror,
     validate: () => { if (policyError) throw new Error(policyError); },
-    apply: async (id, input, commit, by) => { applied.push({ input, commit, by }); },
+    apply: async (id, input, commit, by) => { applied.push({ input, commit, by }); await holdApply?.(); },
     log: () => {},
   });
   // Mounted before any body parser: a push IS the body, and a parser that has read it leaves nothing to pipe.
@@ -189,4 +193,38 @@ test('server policy rejects a push before its deployed ref moves', async () => {
     assert.match(message, /cannot change agent visibility/);
     assert.equal(await git.resolve('news-review', 'main'), before);
   } finally { policyError = null; }
+});
+
+test('an archive/deletion waits for a real HTTP push to apply, and queued readers recheck repository existence', async () => {
+  const dir = join(tmp, 'archive-race-clone');
+  await clone('news-review', dir);
+  writeFileSync(join(dir, 'prompt.md'), 'Preserve this final push.');
+  await gitIn(dir, ['commit', '-qam', 'Final push before archive']);
+  const sha = (await gitIn(dir, ['rev-parse', 'HEAD'])).trim();
+  let release!: () => void, started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  holdApply = async () => { started(); await gate; };
+  const pushing = gitIn(dir, ['push', 'origin', 'main']);
+  const bundle = join(tmp, 'final.bundle');
+  let exported = false;
+  try {
+    await began;
+    const archiving = repositoryQueue.run('news-review', async () => { await git.exportBundle('news-review', bundle); exported = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(exported, false, 'archive cannot pass an unfinished apply');
+    release(); await pushing; await archiving;
+    await git.restoreBundle('archive-copy', bundle);
+    assert.equal(await git.resolve('archive-copy', 'main'), sha);
+    assert.equal(await git.show('archive-copy', sha, 'prompt.md'), 'Preserve this final push.');
+    let releaseDelete!: () => void, enteredDelete!: () => void;
+    const deletingGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    const deletionBegan = new Promise<void>((resolve) => { enteredDelete = resolve; });
+    const deleting = repositoryQueue.run('news-review', async () => { enteredDelete(); await deletingGate; await git.deleteRepo('news-review'); });
+    await deletionBegan;
+    const reading = fetch(`${base}/git/news-review.git/info/refs?service=git-upload-pack`);
+    releaseDelete(); await deleting;
+    assert.equal((await reading).status, 404, 'authorization and existence are checked after the queue wait');
+    assert.equal(await git.resolve('archive-copy', 'main'), sha);
+  } finally { release(); holdApply = null; }
 });

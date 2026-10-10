@@ -1,3 +1,4 @@
+import type { RepositorySerialize } from './agent-repository-queue.js';
 /**
  * `kind: agent` — a project's repository deployed as a hosted A2A agent this node runs (hosted-agent-*.ts).
  *
@@ -75,6 +76,7 @@ export function projectAgentSpecOf(dir: string, id: string, manifest: ProjectMan
 }
 
 export interface ProjectAgentDeps {
+  serialize?: RepositorySerialize;
   store: HostedAgentStore;
   host: HostedAgentHost;
   /** Ids a hosted agent may not take (config agents, linked agents). */
@@ -93,6 +95,7 @@ export interface ProjectAgentDeps {
  */
 export async function deployProjectAgent(deps: ProjectAgentDeps, p: { id?: string; repo?: string; sourcePath?: string; branch?: string; org: string; repoName: string; owner: string }, dir: string, manifest: ProjectManifest, say: (line: string) => void, sourceCommit?: string): Promise<HostedAgentSpec> {
   const id = projectAgentId(p.org, p.repoName);
+  if (deps.serialize) return deps.serialize(id, () => deployProjectAgent({ ...deps, serialize: undefined }, p, dir, manifest, say, sourceCommit));
   const input = projectAgentSpecOf(dir, id, manifest);
   const prior = deps.store.get(id);
   if (prior && prior.owner !== p.owner) throw new ProjectAgentError(`agent "${id}" belongs to another account on this node`);

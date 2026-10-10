@@ -1,3 +1,4 @@
+import { AgentRepositoryQueue, type RepositorySerialize } from './agent-repository-queue.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
@@ -307,6 +308,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const reservedRepositoryId = (id: string) => /^(preview|fork)-[a-f0-9]{20}$/.test(id);
   const agentForks = new AgentForkStore(join(cfg.dataDir, 'agent-forks.json'));
   const agentRuntimes = new AgentRuntimeStore(join(cfg.dataDir, 'agent-runtimes.json'));
+  const repositoryQueue = new AgentRepositoryQueue();
+  const serializeRepository: RepositorySerialize = (id, operation) => repositoryQueue.run(id, operation);
   const agentApplyQueue = new Map<string, Promise<void>>();
   const validateRepositoryPolicy = (id: string, input: HostedAgentSpecInput) => {
     if (agentForks.get(id)) return;
@@ -347,6 +350,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
   const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
   const agentGitHttp = new AgentGitHttp({
+    serialize: serializeRepository,
     git: agentGit,
     // The hook calls back on loopback while a push is in flight, so the server is listening by definition.
     loopbackPort: () => (server.address() as { port?: number } | null)?.port ?? cfg.port,
@@ -737,6 +741,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     run: runSandbox ? runScriptViaSandbox(runSandbox) : runScriptOverHttp(() => `http://127.0.0.1:${cfg.port}`),
     containers: projectContainers,
     agents: {
+      serialize: serializeRepository,
       store: hostedStore,
       host: hostedHost,
       reserved: (id) => reservedRepositoryId(id) || (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
@@ -824,6 +829,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
      * push would have made, so there is one history rather than one per door.
      */
     repo: {
+      serialize: serializeRepository,
       readOnlySource: (id) => projectStore.forAgent(id)?.repo ?? agentMirrors.get(id)?.url ?? null,
       runtime: (id) => agentRuntimes.get(id),
       create: async (spec) => {
@@ -869,7 +875,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * push on this side and name GitHub instead.
    */
   const agentMirrors = new AgentMirrorStore(join(hostedHome, 'agent-mirrors.json'));
-  const mirrorSyncer = new AgentMirrorSyncer({ available: (id) => !!hostedStore.get(id), git: agentGit, mirrors: agentMirrors, apply: applyPushedTree, land: (id, commit) => agentGit.setRef(id, 'main', commit), log: (level, message) => market.log(level, 'agents', message) });
+  const mirrorSyncer = new AgentMirrorSyncer({ serialize: serializeRepository, available: (id) => !!hostedStore.get(id), git: agentGit, mirrors: agentMirrors, apply: applyPushedTree, land: (id, commit) => agentGit.setRef(id, 'main', commit), log: (level, message) => market.log(level, 'agents', message) });
   app.use(agentMirrorRoutes({
     syncer: mirrorSyncer,
     webhookSecret: () => process.env.AINIZE_AGENT_MIRROR_WEBHOOK_SECRET || null,
@@ -895,6 +901,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
 
   const agentPulls = new AgentPullStore(join(hostedHome, 'agent-pulls.json'));
   app.use(agentPullRoutes({
+    serialize: serializeRepository,
     git: agentGit,
     forks: agentForks,
     initializeFork: (id) => agentGitHttp.installHooks(id),
