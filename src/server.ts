@@ -23,7 +23,7 @@ import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { AgentGit } from './agent-git.js';
 import { AgentGitHttp } from './agent-git-http.js';
 import { agentGitRoutes } from './agent-git-routes.js';
-import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, runScriptViaSandbox, PROJECT_SECRET_DEPLOY_TOKEN } from './projects.js';
+import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, runScriptViaSandbox, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN } from './projects.js';
 import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-containers.js';
 import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
@@ -720,6 +720,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     caller: agentCaller,
     publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
     log: (level, message) => market.log(level, 'projects', message),
+    // Who counts as a member of the repository's organization (run / redeploy): the node's SSO memberships under the slug.
+    orgIdsForSlug: ssoConfig ? (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug) : undefined,
+    // The `/<org>` page lists the drive's repositories as aindrive does, read with the node's machine identity.
+    aindrive: serviceTokens ? {
+      origin: (process.env.AINDRIVE_URL ?? PROJECT_DEFAULT_CORS_ORIGINS[0]!).replace(/\/+$/, ''),
+      token: async (resource) => { try { return await serviceTokens.token(resource); } catch (e) { market.log('warn', 'projects', `no machine token for ${resource}: ${(e as Error).message}`); return null; } },
+    } : undefined,
     // aindrive binds a pushed repo to a project as itself (docs/PROJECTS.md "Auto-binding"): its machine token must
     // name this node's public URL and an application in AIN_SSO_SERVICE_APPS.
     auto: ssoConfig && ssoConfig.serviceApps.length > 0 && sso.jwks ? {

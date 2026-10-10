@@ -324,14 +324,14 @@ test('GET /api/ainui/snippet: who may not see it, and what does not exist', asyn
   assert.equal((await request(app).get('/api/ainui/snippet')).status, 400);
 });
 
-test('GET /api/projects/:id/deployments answers an application naming a member, 404 for anyone else', async () => {
+test('GET /api/projects/:id/deployments is public (as the project is): members, strangers and applications all read it', async () => {
   const ok = await request(app).get(`/api/projects/${projectId}/deployments`).set(await asActor('acc_member'));
   assert.equal(ok.status, 200, ok.text);
   assert.equal(ok.body.deployments.length, 1);
   assert.equal(ok.body.deployments[0].sha, sha1);
-  assert.equal((await request(app).get(`/api/projects/${projectId}/deployments`).set(await asActor('acc_other'))).status, 404);
+  assert.equal((await request(app).get(`/api/projects/${projectId}/deployments`).set(await asActor('acc_other'))).status, 200);
   assert.equal((await request(app).get(`/api/projects/${projectId}/deployments`).set('x-test-user', OWNER)).status, 200);
-  assert.equal((await request(app).get(`/api/projects/${projectId}/deployments`).set('x-test-user', 'sso:stranger')).status, 404);
+  assert.equal((await request(app).get(`/api/projects/${projectId}/deployments`).set('x-test-user', 'sso:stranger')).status, 200);
 });
 
 test('POST /api/projects/:id/run: the deployed commit again, for the person, with their answers over the defaults', async () => {

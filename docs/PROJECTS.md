@@ -16,8 +16,29 @@ ainize keeps **no** git repositories for projects. The repository lives in an ai
 with aindrive's history, permissions and UI. A **Project** on an ainize node binds to one such repo + branch
 (default `main`). What a push means is said by the repository itself, in **`ainize.json`** at its root — the one
 source of truth, like `vercel.json`. The owner is the signed-in account (AIN SSO, or the wallet / API-key sessions
-the agent routes accept — `shared-agents.ts agentCallerOf`); only the owner reads or removes a project. The project's
-page is `ainize.ai/projects/<id>` (`pageUrl`); its vanity URL mirrors the repo, `ainize.ai/<org>/<repo>` (`url`).
+the agent routes accept — `shared-agents.ts agentCallerOf`); the owner alone removes a project or rotates its secret.
+The project's page is **`ainize.ai/<org>/<repo>`** (`pageUrl`, also `url`) — the GitHub-shaped address that mirrors the
+repository's own `aindrive.ainetwork.ai/<org>/git/<repo>`; `ainize.ai/<org>` lists the organization's repositories.
+`/projects/<id>` still resolves (the web app forwards it to the pretty URL).
+
+## Who sees what
+
+A project is an organization's repository, and it reads like one. `GET /by-repo` had always answered anyone with the
+status and the newest deployment (aindrive's UI shows it next to the repo), so the page's own reads follow the same
+rule rather than a stricter one that would only have moved the same facts one click away:
+
+| | anyone | owner | owner or a member of the repo's organization |
+|---|---|---|---|
+| project (`GET /:id`, `/by-name`, `/by-repo`, `/api/orgs/:org/projects`), deployments, runs, a deployment's log and output | yes — public fields: repo, branch, kind, status, `url`/`pageUrl`, the newest deployment, the `manifest` the last deploy read, `runnable` files | also `owner`, `hookUrl` | |
+| `DELETE /:id`, `PATCH /:id/rotate-secret` | | yes (anyone else: 404) | |
+| `POST /:id/runs`, `POST /api/deployments/:id/redeploy` | 401 | | yes (others: 403 `not_member`) — they run with the caller's own key |
+
+Never on the wire: the webhook secret (shown once at creation and at rotation), the deploy token, the clone credentials.
+Deployment logs are build and run output of a repository that is itself readable by the organization; a program that
+prints a secret to stdout has published it either way, as it would on any CI. `canManage` / `canOperate` on a project
+view tell a page which of these the caller may do without a second round trip. Membership of "the repo's organization"
+is the node's SSO memberships under the slug (`store.ssoOrgIdsBySlug`); a node without AIN SSO knows no members, so
+only the owner may run and redeploy there.
 
 ## `ainize.json`
 
@@ -46,6 +67,7 @@ JSON only (no YAML is read). Unknown keys are refused, so a typo cannot silently
 | `entry` | script | the file to run. A project row's `entry` (given at creation) is the fallback |
 | `env` | all | merged under the project's own env (`AINIZE_PROJECT`, `AINIZE_COMMIT`, …). **Never secrets** — the file is in the repo. ≤ 32 entries |
 | `inputs` | all (used by `script` runs) | parameters a person fills in before a run — **the same shape as GitHub Actions `workflow_dispatch` inputs**: `{ "<name>": { description?, type: string\|choice\|boolean\|number (default string), required?, default?, options? (choice) } }`, delivered to the program as **`INPUT_<NAME>`** environment variables (name upper-cased; booleans `true`/`false`, numbers as decimal text). aindrive's Run panel renders one field per input (prefilled with `default`, remembered per repo) and sends the answers as `env`; a push-deploy uses each `default`. Names `^[A-Za-z_][A-Za-z0-9_]*$`, ≤ 16 inputs, values ≤ 2 KiB |
+| `examples` | script: named presets of `inputs` — `[{ name, description?, inputs: { <name>: value } }]`, ≤ 16 — the Run panel's one-click rows ("노을 바다 유화", "인물 초상", …). An example that answers an input the manifest does not declare fails the deploy with a clear message. |
 | `build.dockerfile`, `build.context` | service (nextjs when the repo has a Dockerfile) | paths inside the repo; defaults `Dockerfile`, `.` |
 | `port` | service, nextjs | the container port the node exposes; default 8080 (service), 3000 (nextjs) |
 | `healthcheck` | service, nextjs | a path polled until it answers 200, 120 s; default `/` |
@@ -99,10 +121,17 @@ Errors are `{ error: { code, message } }`.
 |---|---|
 | `POST /api/projects` | signed in. Body `{ repo, branch?: "main", kind?, entry?, name?, deployToken? }` — `kind` and `entry` are hints only; the deployed kind is always the commit's `ainize.json`. 201 `{ id, org, repoName, repo, branch, kind, entry, name, status, url, pageUrl, hookUrl, webhookSecret, hasDeployToken, … }`. **`webhookSecret` is returned once**; sealed at rest, never read back. 400 bad URL, 409 `repo_taken` (one project per repo+branch per node). |
 | `GET /api/projects` | the caller's projects. |
-| `GET /api/projects/:id`, `DELETE /api/projects/:id` | owner only; anyone else sees 404. Delete removes deployments, logs and secrets (a running service container is stopped). |
-| `GET /api/projects/by-repo?repo=<url>` | **no auth, CORS for `https://aindrive.ainetwork.ai`** — `{ id, org, repoName, repo, branch, kind, status, url, pageUrl, lastDeployment }`; no owner, no hook address. 404 when none. aindrive's "Inspect" links to `pageUrl`. |
+| `GET /api/projects/:id` | public view (above); the owner also gets `owner`, `hookUrl`. 404 when there is no such project. |
+| `DELETE /api/projects/:id` | owner only; anyone else sees 404. Removes deployments, runs, logs and secrets (a running service container is stopped). |
+| `PATCH /api/projects/:id/rotate-secret` | owner only. `{ id, webhookSecret, hookUrl }` — the new secret once; the old one stops verifying at once. |
+| `GET /api/projects/by-repo?repo=<url>` | **no auth, CORS for `https://aindrive.ainetwork.ai`** — the public view, `pageUrl` = `/<org>/<repo>`. 404 when none. aindrive's "Inspect" links to `pageUrl`. |
+| `GET /api/projects/by-name?org=<org>&repo=<repo>` | **no auth, CORS** — the project at `/<org>/<repo>`, both matched case-insensitively (the newest when two branches of one repo are bound). 404 `not_found`. The page's own lookup. |
+| `GET /api/orgs/:org/projects` | **no auth, CORS** — `{ org, projects }`, every project of the slug, case-insensitive. An organization with none is an empty list; only a malformed slug is 404. |
+| `GET /api/orgs/:org/repositories` | **no auth** — the drive's `repositories/` as aindrive lists it (`GET <aindrive>/api/orgs/<org>/repositories`, called with this node's machine token, cached 30 s): `{ org, known, driveId, driveUrl, repositories: [{ name, cloneUrl, headSha, headSubject, updatedAt, hasManifest }] }`. The `/<org>` page merges it with the projects so a repo shows before its first push ("not deployed yet · push to deploy"). 503 `aindrive_off` without a machine identity (`AIN_SSO_CLIENT_SECRET`); aindrive's origin is `AINDRIVE_URL` (default `https://aindrive.ainetwork.ai`). |
+| `GET /api/projects/:id/runs`, `POST /api/projects/:id/runs` | the console's **Run panel** (script projects). POST — owner or org member — `{ entry?, inputs?, env?, timeoutMs? }` clones the branch's HEAD like a deploy and runs it with the caller's own `aindrive run` key; `entry` defaults to the manifest's, `inputs` answer `ainize.json` `inputs` (`INPUT_<NAME>`), `env` adds plain variables. 202 `{ runId, deploymentId, status }`; the log streams at `GET /api/deployments/<runId>/log`. A run is a deployment-shaped record with `trigger: "run"` that never becomes the project's status. 409 `not_a_script` for other kinds. |
+| `POST /api/deployments/:id/redeploy` | owner or org member — the same sha and ref as a new deployment (`trigger: "redeploy"`): Redeploy, and for a service/nextjs the way to roll back to an earlier commit. 202 `{ deploymentId, status }`. |
 | `POST /api/projects/:id/hook` | **the push webhook** (below). 202 `{ deploymentId, status: "queued" }`, or 202 `{ ignored: true, reason }` for another branch / a deleted branch. 401 `bad_signature`, 404 unknown project. |
-| `GET /api/projects/:id/deployments` | newest first. The owner — or a person a trusted application names (link snippets, below); anyone else 404. |
+| `GET /api/projects/:id/deployments` | newest first — pushes and redeploys; runs are under `/runs`. Each carries `trigger`, the commit `subject`, and `manifest`/`runnable` snapshots are summarized on the project. |
 | `POST /api/projects/:id/run` | **link snippets**: the deployed commit of a `script` project run again, for the viewer, with `{ env?: { INPUT_<NAME>: value } }` over the manifest's defaults; `text/event-stream` like `/api/run`. Viewer+. 409 `no_deployment` / `not_a_script`. |
 | `POST /api/projects/:id/redeploy` | **link snippets**: the owner deploys the newest commit again. 202 `{ deploymentId, status: "queued" }`; 403 for a member. |
 | `GET /api/ainui/snippet?url=<pasted URL>` | **link snippets**: the project's AIN-UI snippet (`application/vnd.ain.ui+json`) for the viewer; 403 with a sign-in surface, 404 unknown. |
@@ -155,8 +184,8 @@ before cloning; status is read back by id.
 
 **In the UI.** `GET /api/projects/by-repo?repo=<friendly URL>` from the browser (origin
 `https://aindrive.ainetwork.ai` gets `Access-Control-Allow-Origin`) gives `status`, `pageUrl` and `lastDeployment`
-(`sha`, `status`, `kind`, `ms`, `logUrl`, `outputUrl`). The log endpoint needs the owner's ainize session: link to
-`pageUrl` rather than fetching it cross-origin.
+(`sha`, `status`, `kind`, `ms`, `logUrl`, `outputUrl`). Link to `pageUrl` (`https://ainize.ai/<org>/<repo>`) for the
+full console — deployments, runs, logs, settings.
 
 ## How the node reads the repository
 
