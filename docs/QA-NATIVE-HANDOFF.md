@@ -501,3 +501,13 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - host coordinator의 register/check에 선택 `ReviewTarget.teamsRequest`를 연결했다. 원본 요청을 등록 때와 매번 승인 검사 때 실제 Teams에서 재검증한다. 최신 SSO 조회는 Teams 조회 후 수행한다. host ledger도 Teams 승인 증거의 원본 thread/request를 확인한다. 서버 reader는 운영 정책의 지정 subject만 Ainmem에 전달한다.
 - 아직 publication/intake 경로는 teamsRequest를 등록하지 않는다. 모델/승인 메시지에서 이 바인딩을 받아 채우면 안 된다. 다음 작업은 호스트가 실제 QA 접수 원본을 확인해 영구 저장하고 publication/review에 연결하는 것이다. 현재 운영은 기존 Ainmem 승인 경로를 유지하며 새 경로는 비활성이다.
 - QA 타깃 테스트 93개 통과, skip 0, 빌드 통과. Ainmem은 실제 서버 PostgreSQL+HTTP 테스트 7개와 타입 검사 통과. 운영 배포·실제 사람 승인 소비·main 변경은 수행하지 않았다.
+
+### 2026-10-10 네이티브 접수 → 원본 스레드 → 검토 연결
+
+- `/qa/intake`는 agent token으로 식별한 호스트 설정만 사용한다. 입력은 job ID와 message/parent locator뿐이며, 작성자·본문·시각은 실제 Teams에서 다시 읽는다. 운영 설정 `intakeEnabledAt` 이후 24시간 이내의 실제 사람 수정 요청만 신규 등록한다. 문자 그대로의 배포 명령은 접수가 아니다.
+- private review SQLite에 agent/job → 원본 workspace/channel/root/request/author/time/content digest를 저장한다. 같은 원본 요청을 다른 job으로 등록하거나 기존 job의 원본을 바꾸면 거부한다. 재시작 후 동일 job 재시도는 저장된 바인딩을 재사용한다. 비동기 확인 중에는 gateway가 running을 반환하고 handler가 다음 tick에 조회하므로 긴 MCP 조회로 HTTP 응답을 붙잡지 않는다.
+- `hostReview: true` handler는 코딩/검증/게시 전에 호스트 접수를 확인하고 원본 본문 digest까지 대조한다. `intakeEnabledAt`을 설정한 호스트 profile은 저장된 접수가 없으면 GitHub 게시를 시작하지 않는다. 성공한 publication ledger에 호스트 저장 바인딩을 첨부하고 review loop가 이를 coordinator에 전달한다. caller가 보내는 승인자/본문/스레드 정보를 publication authority로 사용하지 않는다.
+- 동일 Teams 원본 스레드에서는 하나의 미완료 검토만 등록한다. 서로 다른 수정 요청의 LGTM이 동시에 두 후보에 적용되지 않도록 한다. 앞선 작업의 serving revision 확인이 끝나야 후속 검토가 등록된다.
+- 신규 접수와 과거 작업 이관은 별개다. 24시간 이전의 기존 작업을 새 요청으로 위장해 등록하지 않는다. 기존 작업·페이지·승인을 보존하는 운영자 이관과 단일 실행자 전환은 여전히 남아 있다. 운영 profile/handler는 아직 활성화하지 않았다.
+- 같은 스레드에 두 후보가 이미 게시되어 있으면 검토 등록 여부와 무관하게 bare Teams 승인을 거부한다. 이 경우 특정 작업의 정본 Ainmem 페이지 승인은 계속 사용할 수 있다. 먼저 표시된 후보만 임의로 선택해 LGTM을 적용하지 않는다.
+- QA 타깃 98개 통과、실패/skip 0, 빌드 통과. 원본 요청 등록·재시작·중복 방지·변조 거부·게시 전 검사·handler 재개·스레드 승인 모호성 검증을 포함한다. 이 테스트는 운영 전환/서비스별 실제 배포 완료를 뜻하지 않는다.

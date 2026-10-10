@@ -1,3 +1,4 @@
+import {HostedQaIntake} from './hosted-qa-intake.js';
 import {validateDeploymentProfile,type QaDeploymentProfile} from './hosted-qa-deployment.js';
 import {HostedQaRelease,qaReleaseGitHubClient,type QaReleaseProfile} from './hosted-qa-release.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
@@ -380,7 +381,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
     JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>) : undefined;
   const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
-  let qaPublication:HostedQaPublicationService|undefined;
+  let qaPublication:HostedQaPublicationService|undefined,qaIntake:HostedQaIntake|undefined;
+  let intakeRequired=new Set<string>();
   let qaReviewStore:HostedQaReviewStore|undefined,qaReviewLoop:HostedQaReviewLoop|undefined;
   const readQaToken=(path:string)=>{
     const st=lstatSync(path);
@@ -403,6 +405,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       const teams=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,teamsReviewClient(p.teamsOrigin,readQaToken(p.teamsTokenFile))]));
       const readers:HostedReviewReaders={ainmem:(id,job,board,subjects)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board,subjects);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
       qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
+      qaIntake=new HostedQaIntake(qaReviewStore,profiles,readers.teams);
+      intakeRequired=new Set(Object.entries(profiles).filter(([,p])=>p.intakeEnabledAt).map(([id])=>id));
       const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
       let release:HostedQaRelease|undefined;
       const releasePath=process.env.AINIZE_QA_RELEASE_PROFILES;
@@ -419,9 +423,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       }
       qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release,deployments?{profiles:deployments,github:path=>github('GET',path)}:undefined);
     }
-    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate}):undefined);
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');});
   }
   const hostedGateway = new HostedAgentGateway({
+    qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
     qaStatus: qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
     qaPublication: qaPublication ? (id,request)=>qaPublication.submit(id,request) : undefined,
     qaValidation: qaValidation ? (id,candidate)=>qaValidation.submit(id,candidate) : undefined,
@@ -898,6 +903,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       if(qaReviewTimer)clearInterval(qaReviewTimer);
       // Drain an in-flight read pass before closing its SQLite ledger.
       if(qaReviewLoop)await qaReviewLoop.drain();
+      await qaIntake?.drain();
       qaReviewStore?.close();
       clearInterval(watchdog);
       clearInterval(retention);

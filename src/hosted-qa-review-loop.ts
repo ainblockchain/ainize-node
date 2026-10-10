@@ -23,7 +23,7 @@ export class HostedQaReviewLoop {
      const snapshot=await this.readers.ainmem(item.agentId,item.jobId,p.databaseId);
      const lines=snapshot.body.split('\n');
      if(!lines.includes(`검토 PR: ${r.url}`)||!lines.includes(`검토 커밋: ${r.sha}`)||!lines.includes('상태: waiting / awaiting_approval'))throw new Error('Published candidate not yet displayed');
-     await this.coordinator.register(item.agentId,{jobId:item.jobId,repository:p.repository,branch:p.branch,base:r.base,sha:r.sha,number:r.number,candidateDigest:r.candidateDigest,pageId:snapshot.pageId,databaseId:p.databaseId,workspaceId:p.policy.workspaceId,teamsWorkspaceId:p.policy.teamsWorkspaceId,channelId:p.policy.channelId,issuer:p.policy.issuer,orgId:p.policy.orgId},snapshot.body);
+     await this.coordinator.register(item.agentId,{jobId:item.jobId,...(r.teamsRequest?{teamsRequest:r.teamsRequest}:{}),repository:p.repository,branch:p.branch,base:r.base,sha:r.sha,number:r.number,candidateDigest:r.candidateDigest,pageId:snapshot.pageId,databaseId:p.databaseId,workspaceId:p.policy.workspaceId,teamsWorkspaceId:p.policy.teamsWorkspaceId,channelId:p.policy.channelId,issuer:p.policy.issuer,orgId:p.policy.orgId},snapshot.body);
     }
     const current=this.store.current(item.agentId,item.jobId)!;
     const previous=this.store.releaseRecord(current);

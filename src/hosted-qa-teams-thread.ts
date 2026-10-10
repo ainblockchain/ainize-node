@@ -48,3 +48,21 @@ export async function readQaTeamsThread(mcp:TeamsReviewMcp,rawBinding:QaTeamsThr
   .map(m=>({id:m.id,body:m.content,createdAt:m.createdAt,authorId:m.userId,subject:subjects.get(m.userId)!}));
  return {source:'teams' as const,binding,observedAt:new Date().toISOString(),comments,members,approvalGranted:false as const};
 }
+
+/** Resolve a fresh fix request independently of agent-provided author/text/time fields. */
+export async function captureQaTeamsRequest(mcp:TeamsReviewMcp,policy:ReviewPolicy,identities:Record<string,string>,locator:{messageId:string;parentId?:string},enabledAt:string,now=Date.now()){
+ if(!locator||!id(locator.messageId)||(locator.parentId!==undefined&&!id(locator.parentId))||!Number.isFinite(Date.parse(enabledAt)))throw new Error('Invalid intake configuration');
+ const rootId=locator.parentId??locator.messageId;
+ const thread:any=await mcp.call('read_thread',{messageId:rootId});
+ const parent=message(thread?.parent);
+ if(parent.id!==rootId||parent.parentId!==null||!Array.isArray(thread.replies))throw new Error('Original request thread unavailable');
+ const request=locator.messageId===rootId?parent:message(thread.replies.find((m:any)=>m?.id===locator.messageId));
+ const created=Date.parse(request.createdAt);
+ const direct=request.content.replace(/```[\s\S]*?```|`[^`\n]*`/g,'').replace(/^\s*>[^\n]*/gm,'').replace(/"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’/g,'');
+ if(created<Date.parse(enabledAt)||now-created>86400000||created>now+30000||!(/^\/fix\s+\S/i.test(request.content.trim())||/(?:고쳐\s*(?:줘|주세요)|수정해\s*(?:줘|주세요)|해결해\s*(?:줘|주세요))(?:[.!?。]+(?=\s|$)|\s*$|[ \t]*\n)/.test(direct)))throw new Error('Not an eligible fresh fix request');
+ const members=await mcp.call('list_channel_members',{channelId:policy.channelId});
+ if(!Array.isArray(members)||!members.some(m=>m?.userId===request.userId&&m.isAgent===false))throw new Error('Request author is not a current human channel member');
+ const binding:QaTeamsThreadBinding={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId,requestId:request.id,requestAuthorId:request.userId,requestCreatedAt:request.createdAt,requestDigest:digest(request.content)};
+ await readQaTeamsThread(mcp,binding,policy,identities);
+ return binding;
+}

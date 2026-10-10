@@ -72,3 +72,15 @@ test('persisted original thread approvals require fresh SSO eligibility on every
  active=false;assert.equal(await coordinator.check('agent','job'),null);
  active=true;replies[0].content='not LGTM';assert.equal(await coordinator.check('agent','job'),null);
 });
+
+test('one Teams thread cannot authorize two simultaneous review targets',()=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-thread-exclusive-'));const store=new HostedQaReviewStore(root);
+ try{
+  const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:'root',requestId:'first',requestAuthorId:'human',requestCreatedAt:snapshot.observedAt,requestDigest:'1'.repeat(64)};
+  store.bind('agent',captureReview({...target,teamsRequest},snapshot,body),0);
+  const another={...target,jobId:'another',teamsRequest:{...teamsRequest,requestId:'second'}};
+  assert.throws(()=>store.bind('agent',captureReview(another,{...snapshot,jobId:'another'},body),0),/Another review/);
+  store.enqueuePublication('agent','another',{teamsRequest:another.teamsRequest});
+  assert.throws(()=>store.assertUnambiguousThread('agent','job',teamsRequest),/Ambiguous/);
+ }finally{store.close();rmSync(root,{recursive:true,force:true});}
+});

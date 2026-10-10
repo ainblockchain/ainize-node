@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 /** Operational hosted QA handler.
  *
  * Composes the validated building blocks into the agent an Ainize host actually runs:
@@ -146,6 +147,15 @@ export function createHandler({
         jobs.finish(job.id, claim.lease, 'waiting', { ...job.checkpoint, holdReason: 'configuration_changed' });
         ctx?.log?.('qa tick parked job with changed configuration', job.id);
         return;
+      }
+      if(config.hostReview&&!job.checkpoint.hostIntake){
+        const locator=job.input.teams;
+        if(!locator||locator.workspaceId!==config.workspaceId||locator.channelId!==config.channelId)throw new Error('Original QA locator missing');
+        const intake=await ctx.qa.intake(job.id,{messageId:locator.messageId,parentId:locator.parentId});
+        if(intake?.state==='failed'){jobs.finish(job.id,claim.lease,'waiting',{...job.checkpoint,holdReason:'host_intake_failed'});return;}
+        if(intake?.state==='running'){jobs.finish(job.id,claim.lease,'queued',job.checkpoint);return;}
+        if(intake?.state!=='done'||intake.result?.requestId!==locator.messageId||intake.result.rootId!==locator.parentId||intake.result.workspaceId!==config.workspaceId||intake.result.channelId!==config.channelId||intake.result.requestDigest!==createHash('sha256').update(job.input.text).digest('hex'))throw new Error('Host intake binding mismatch');
+        jobs.finish(job.id,claim.lease,'queued',{...job.checkpoint,hostIntake:true});return;
       }
       if (job.checkpoint.stage === 'needs_validation') {
         const updated=await advanceHostedValidation({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});

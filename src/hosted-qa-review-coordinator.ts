@@ -4,7 +4,7 @@ import {readQaTeamsThread} from './hosted-qa-teams-thread.js';
 import {captureReview,verifyAinmemApproval,verifyTeamsApproval,type ReviewTarget,type ReviewSnapshot,type ReviewPolicy} from './hosted-qa-review.js';
 import {readTeamsReviewMembers,type TeamsReviewMcp} from './hosted-qa-teams-review.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
-export interface HostedReviewProfile {repository:string;branch:string;databaseId:string;policy:ReviewPolicy;identities:Record<string,string>}
+export interface HostedReviewProfile {intakeEnabledAt?:string;repository:string;branch:string;databaseId:string;policy:ReviewPolicy;identities:Record<string,string>}
 export interface HostedReviewReaders {
  ainmem(agentId:string,jobId:string,databaseId:string,reviewerSubjects?:string[]):Promise<ReviewSnapshot>;
  github(repository:string,number:number):Promise<unknown>;
@@ -38,8 +38,11 @@ export class HostedQaReviewCoordinator {
   const [pr,members]=await Promise.all([this.readers.github(t.repository,t.number),readTeamsReviewMembers(this.readers.teams(agentId),p.policy,p.identities)]);
   const thread=t.teamsRequest?await readQaTeamsThread(this.readers.teams(agentId),t.teamsRequest,p.policy,p.identities):null;
   const snapshot=await this.readers.ainmem(agentId,jobId,t.databaseId,thread?p.policy.approverSubjects:undefined);
-  const decision=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now)
-   ??(thread&&t.teamsRequest?verifyTeamsApproval(current.presentation,t.teamsRequest,p.policy,snapshot,pr,thread,now):null);
+  let decision:ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now);
+  if(!decision&&thread&&t.teamsRequest){
+   this.store.assertUnambiguousThread(agentId,jobId,t.teamsRequest);
+   decision=verifyTeamsApproval(current.presentation,t.teamsRequest,p.policy,snapshot,pr,thread,now);
+  }
   if(!decision)return null;
   return this.store.observe(current,decision);
  }

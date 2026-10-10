@@ -205,6 +205,7 @@ export interface HostedAgentGatewayDeps {
     target(model: string, node: string | null): PeerModelTarget | null;
     fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
   };
+  qaIntake?: (agentId:string,input:unknown)=>unknown;
   qaStatus?: (agentId:string,jobId:string)=>unknown;
   qaPublication?: (agentId: string, request: unknown) => unknown;
   qaValidation?: (agentId: string, candidate: unknown) => unknown;
@@ -291,6 +292,11 @@ export class HostedAgentGateway {
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
     const path = m[2]!;
     try {
+      if(req.method==='POST'&&path==='/qa/intake'){
+        if(!this.deps.qaIntake)return sendJson(res,403,{error:{message:'QA intake disabled'}});
+        let input:unknown;try{input=JSON.parse((await readBody(req,2048)).toString('utf8'));}catch{return sendJson(res,400,{error:{message:'Invalid QA intake'}});}
+        try{return sendJson(res,200,this.deps.qaIntake(spec.id,input));}catch{return sendJson(res,403,{error:{message:'QA intake refused'}});}
+      }
       if(req.method==='POST'&&path==='/qa/status'){
         if(!this.deps.qaStatus)return sendJson(res,403,{error:{message:'QA status disabled'}});
         let input:any;

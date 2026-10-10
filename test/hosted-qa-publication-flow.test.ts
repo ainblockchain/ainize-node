@@ -77,3 +77,22 @@ test('handler ticks observe release then deployment without restarting coding',a
  state='deployment_verified';await handler.tick(ctx);assert.equal(jobs.get(job.id).state,'completed');
  await handler.tick(ctx);assert.equal(calls,2);
 });
+
+test('handler verifies and persists intake before continuing a prepared candidate',async t=>{
+ // @ts-expect-error example module
+ const {createHandler}=await import('../examples/qa-agent/index.mjs');
+ const {createHash}=await import('node:crypto');
+ const root=mkdtempSync(join(tmpdir(),'qa-intake-tick-'));t.after(()=>rmSync(root,{force:true,recursive:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());const checkpoints=new Checkpoints(join(root,'checkpoints'));
+ const candidate={repository:'test/product',base:'a'.repeat(40),changes:{file:'fixed'}},digest=qaCandidateDigest(candidate);
+ const job=jobs.enqueue('request',{repository:candidate.repository,base:candidate.base,text:'여백 고쳐줘.',teams:{workspaceId:'ws',channelId:'ch',messageId:'request',parentId:'request'}}),claim=jobs.claim();
+ const coding=checkpoints.save(job.id,{repository:candidate.repository,commit:candidate.base,changes:candidate.changes});
+ jobs.finish(job.id,claim.lease,'queued',{stage:'needs_validation',coding});
+ const config={service:'test',teamsOrigin:'https://teams.example',workspaceId:'ws',channelId:'ch',enabledAt:'2026-10-01T00:00:00Z',repository:candidate.repository,baseCommit:candidate.base,hostValidation:true,hostPublication:true,hostReview:true};
+ let intake=0,validation=0;
+ const ctx={log(){},qa:{intake:async(id:string,locator:any)=>{intake++;assert.equal(id,job.id);assert.equal(locator.messageId,'request');return intake===1?{state:'running'}:{state:'done',result:{requestId:'request',rootId:'request',workspaceId:'ws',channelId:'ch',requestDigest:createHash('sha256').update(job.input.text).digest('hex')}};},validate:async()=>{validation++;return {state:'done',result:{...candidate,candidateDigest:digest,passed:true,gates:[{gate:'test',passed:true}]}};}}};
+ const handler=createHandler({stateDir:root,config});
+ await handler.tick(ctx);assert.equal(validation,0);assert.equal(jobs.get(job.id).checkpoint.hostIntake,undefined);
+ await handler.tick(ctx);assert.equal(validation,0);assert.equal(jobs.get(job.id).checkpoint.hostIntake,true);
+ const restarted=createHandler({stateDir:root,config});await restarted.tick(ctx);assert.equal(intake,2);assert.equal(validation,1);assert.equal(jobs.get(job.id).checkpoint.stage,'needs_publication');
+});

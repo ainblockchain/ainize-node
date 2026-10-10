@@ -191,7 +191,10 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
   return {
     input,
     spec: o.spec,
-    qa: { status: async jobId=>{
+    qa: { intake: async(jobId,locator)=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/intake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId,locator}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA intake refused');return response.json();
+    }, status: async jobId=>{
       const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId}),signal:AbortSignal.timeout(10000)});
       if(!response.ok)throw new Error('Host QA status refused');return response.json();
     }, publish: async (jobId,candidate) => {

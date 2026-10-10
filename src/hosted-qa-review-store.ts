@@ -1,4 +1,5 @@
 /** Private host ledger. Approval observations are audit evidence, never cached release authority. */
+import type {QaTeamsThreadBinding} from './hosted-qa-teams-thread.js';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync,lstatSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
@@ -18,6 +19,7 @@ export class HostedQaReviewStore {
   const st=lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0)throw new Error('Invalid review ledger');
   this.db=new DatabaseSync(file);
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+   CREATE TABLE IF NOT EXISTS review_intakes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,request_key TEXT NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(agent_id,job_id),UNIQUE(agent_id,request_key));
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
@@ -51,6 +53,28 @@ export class HostedQaReviewStore {
    if(prior){if(prior.receipt!==value)throw new Error('Published job changed; explicit reconciliation required');return;}
    if(Number(this.db.prepare('SELECT count(*) AS n FROM review_publications').get()!.n)>=10000)throw new Error('Publication review capacity reached');
    this.db.prepare('INSERT INTO review_publications(agent_id,job_id,receipt) VALUES(?,?,?)').run(agentId,jobId,value);
+  });
+ }
+ assertUnambiguousThread(agentId:string,jobId:string,binding:QaTeamsThreadBinding){
+  const rows=this.db.prepare('SELECT job_id,receipt FROM review_publications WHERE agent_id=? AND job_id<>?').all(agentId,jobId);
+  for(const row of rows){
+   const other=JSON.parse(String(row.receipt)).teamsRequest;
+   if(!other||other.workspaceId!==binding.workspaceId||other.channelId!==binding.channelId||other.rootId!==binding.rootId)continue;
+   const review=this.current(agentId,String(row.job_id));
+   if(!review||this.releaseRecord(review)?.receipt?.state!=='deployment_verified')throw new Error('Ambiguous Teams approval; use the canonical task page');
+  }
+ }
+ intake(agentId:string,jobId:string):QaTeamsThreadBinding|null {
+  const row=this.db.prepare('SELECT binding FROM review_intakes WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.binding)):null;
+ }
+ registerIntake(agentId:string,jobId:string,binding:QaTeamsThreadBinding){
+  if(!/^[-\w]{1,128}$/.test(agentId)||!/^[-\w]{1,80}$/.test(jobId))throw new Error('Invalid intake identity');
+  const value=json(binding),key=json([binding.workspaceId,binding.channelId,binding.requestId]);
+  return this.transaction(()=>{
+   const existing=this.intake(agentId,jobId);
+   if(existing){if(json(existing)!==value)throw new Error('Original intake changed');return existing;}
+   if(Number(this.db.prepare('SELECT count(*) AS n FROM review_intakes').get()!.n)>=10000)throw new Error('Intake capacity reached');
+   this.db.prepare('INSERT INTO review_intakes VALUES(?,?,?,?)').run(agentId,jobId,key,value);return structuredClone(binding);
   });
  }
  lifecycle(agentId:string,jobId:string){
@@ -88,6 +112,15 @@ export class HostedQaReviewStore {
    if((prior?.generation??0)!==expectedGeneration)throw new Error('Review changed while capturing presentation');
    if(prior&&Date.parse(p.presentedAt)<=Date.parse(prior.presentation.presentedAt))throw new Error('New review must have a later observation');
    if(Number(this.db.prepare('SELECT count(*) AS n FROM reviews').get()!.n)>=10000)throw new Error('Review ledger capacity reached');
+   if(p.target.teamsRequest){
+    const binding=p.target.teamsRequest;
+    const others=this.db.prepare('SELECT r.* FROM reviews r WHERE agent_id=? AND job_id<>? AND generation=(SELECT max(generation) FROM reviews latest WHERE latest.agent_id=r.agent_id AND latest.job_id=r.job_id)').all(agentId,jobId);
+    for(const row of others){
+     const other:StoredReview={agentId,jobId:String(row.job_id),generation:Number(row.generation),key:String(row.key),presentation:JSON.parse(String(row.presentation))};
+     const original=other.presentation.target.teamsRequest;
+     if(original&&original.workspaceId===binding.workspaceId&&original.channelId===binding.channelId&&original.rootId===binding.rootId&&this.releaseRecord(other)?.receipt?.state!=='deployment_verified')throw new Error('Another review is awaiting approval in this thread');
+    }
+   }
    const generation=(prior?.generation??0)+1;
    this.db.prepare('INSERT INTO reviews VALUES(?,?,?,?,?)').run(agentId,jobId,generation,key,json(p));
    return {agentId,jobId,generation,key,presentation:p};
