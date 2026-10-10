@@ -806,6 +806,10 @@ export class Store {
       (Omit<SsoMembershipRow, 'groups'> & { groups: string }) | undefined;
     return r ? { ...r, groups: JSON.parse(r.groups) as string[] } : null;
   }
+  /** The AIN organization IDs this node has seen under `slug` (from provisioned memberships), any status. */
+  ssoOrgIdsBySlug(issuer: string, slug: string): string[] {
+    return (this.db.prepare('SELECT DISTINCT org_id FROM sso_memberships WHERE issuer = ? AND org_slug = ? COLLATE NOCASE ORDER BY org_id').all(issuer, slug) as { org_id: string }[]).map((r) => r.org_id);
+  }
   ssoMemberships(issuer: string, subject: string): SsoMembershipRow[] {
     return (this.db.prepare('SELECT * FROM sso_memberships WHERE issuer = ? AND subject = ? ORDER BY org_id').all(issuer, subject) as
       (Omit<SsoMembershipRow, 'groups'> & { groups: string })[]).map((r) => ({ ...r, groups: JSON.parse(r.groups) as string[] }));

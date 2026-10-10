@@ -186,6 +186,7 @@ deployment with several would need a shared cache.
 | `AIN_SSO_ADAPTER_URL` | the adapter URL registered at AIN SSO, e.g. `https://ainize.ai/api/sso/adapter`; unset = adapter answers 503 |
 | `AIN_SSO_JWKS_URI` | optional; default `{issuer}/oidc/jwks` |
 | `AIN_SSO_CLIENT_SECRET` | optional; ainize's client secret at AIN SSO (`client_secret_basic`). Only for what the node does **as itself**: `client_credentials` machine tokens that let it clone project repositories from aindrive (`docs/PROJECTS.md`, `src/sso-service-token.ts`). Sign-in needs none |
+| `AIN_SSO_SERVICE_APPS` | optional; comma-separated client_ids of first-party AIN applications whose **machine tokens** this node accepts (`aud` = the node's public URL). `aindrive` → it may auto-bind pushed repositories to projects (`POST /api/projects/auto`, `docs/PROJECTS.md`) |
 | `<AINIZE_HOME>/site-assertion.secret` | already required for Google vouching; also signs the site's SSO calls |
 
 **AIN SSO is on only when `AIN_SSO_ISSUER` and `AIN_SSO_CLIENT_ID` are both set.** Otherwise the

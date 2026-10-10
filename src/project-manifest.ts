@@ -23,6 +23,18 @@ export type ProjectManifestKind = (typeof PROJECT_MANIFEST_KINDS)[number];
 
 const relPath = z.string().min(1).max(200).regex(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\0]+$/, 'a relative path inside the repository');
 const envName = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const INPUTS_MAX = 16;
+export const INPUT_VALUE_MAX = 2048;
+
+/** The environment variable an input is delivered as: `INPUT_<NAME>`, upper-cased (GitHub Actions' convention). */
+export const inputEnvName = (name: string) => `INPUT_${name.toUpperCase()}`;
+
+/** The env a manifest's inputs contribute without a person's answers: each `default` as text. */
+export function inputDefaults(inputs: Record<string, { default?: string | number | boolean }> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, spec] of Object.entries(inputs ?? {})) if (spec.default !== undefined) out[inputEnvName(name)] = String(spec.default);
+  return out;
+}
 
 export const projectManifestSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
@@ -33,6 +45,19 @@ export const projectManifestSchema = z.object({
   entry: relPath.optional(),
   /** Merged under the project's own env. Never secrets — this file is in the repository. */
   env: z.record(z.string().regex(envName, 'an environment variable name'), z.string().max(4096)).refine((e) => Object.keys(e).length <= 32, 'at most 32 env entries').default({}),
+  /**
+   * Parameters a person fills in before a run — the same shape as GitHub Actions `workflow_dispatch.inputs`
+   * (name → `{ description, type: string|choice|boolean|number, required, default, options }`), delivered to the
+   * program as `INPUT_<NAME>` environment variables (name upper-cased; booleans `true|false`, numbers as decimal
+   * text). aindrive's Run panel renders one field per input; a push-deploy uses the defaults. ≤ 16, values ≤ 2 KiB.
+   */
+  inputs: z.record(z.string().regex(envName, 'an input name'), z.object({
+    description: z.string().trim().max(500).optional(),
+    type: z.enum(['string', 'choice', 'boolean', 'number']).default('string'),
+    required: z.boolean().default(false),
+    options: z.array(z.string().max(INPUT_VALUE_MAX)).max(64).optional(),
+    default: z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()]).optional(),
+  }).strict()).refine((r) => Object.keys(r).length <= INPUTS_MAX, `at most ${INPUTS_MAX} inputs`).default({}),
   /** service only. */
   build: z.object({
     dockerfile: relPath.default('Dockerfile'),
