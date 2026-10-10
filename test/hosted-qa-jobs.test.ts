@@ -137,3 +137,41 @@ test('history write failure rolls back the visible revalidation transition', t =
   jobs.db.exec('DROP TRIGGER fail_history');jobs.parkForRevalidation(job.id,review.lease,'c'.repeat(40));
   assert.equal(jobs.get(job.id).state,'waiting');assert.equal(jobs.revalidationHistory(job.id).length,1);
 });
+
+test('prepared revalidation keeps job identity and history but starts coding without old authority', t => {
+  let now = 1000;
+  const { open } = setup(t, { now: () => now }); let jobs = open();
+  const old = 'a'.repeat(40), observed = 'b'.repeat(40), latest = 'c'.repeat(40);
+  const input = { repository: 'test/product', base: old, text: '여백 고쳐줘', service: 'teams', teams: { messageId: 'm1' } };
+  const job = jobs.enqueue('revalidation', input), claim = jobs.claim();
+  const original = { hostIntake: true, hostBase: true, stage: 'awaiting_approval',
+    coding: { jobId: job.id, checksum: 'd'.repeat(64) }, validation: { passed: true },
+    published: { repository: input.repository, base: old, sha: 'e'.repeat(40) },
+    approval: { commentId: 'old-approval' }, release: { old: true }, deployment: { old: true }, servingCommit: old };
+  jobs.finish(job.id, claim.lease, 'waiting', original);
+  const review = jobs.claimReview(); jobs.parkForRevalidation(job.id, review.lease, observed);
+  const history = jobs.revalidationHistory(job.id);
+  const receipt = { jobId: job.id, repository: input.repository, previousBase: old, base: latest,
+    sequence: 1, sourceDigest: history[0].sourceDigest };
+  assert.equal(jobs.claim(), null);
+  const expired = jobs.claimRevalidation(1000); assert.equal(jobs.claimRevalidation(), null);
+  now += 1001;
+  assert.equal(jobs.claim(), null, 'normal coding must not reclaim an expired revalidation lease');
+  const current = jobs.claimRevalidation();
+  assert.throws(() => jobs.bindRevalidation(job.id, expired.lease, receipt), /lease lost/);
+  for (const change of [{ jobId: 'other' }, { repository: 'other/repo' }, { previousBase: latest },
+    { base: old }, { base: 'main' }, { sequence: 2 }, { sourceDigest: 'f'.repeat(64) }]) {
+    assert.throws(() => jobs.bindRevalidation(job.id, current.lease, { ...receipt, ...change }), /binding changed/);
+  }
+  assert.deepEqual(jobs.revalidationHistory(job.id), history);
+  const resumed = jobs.bindRevalidation(job.id, current.lease, receipt);
+  assert.equal(resumed.id, job.id); assert.equal(resumed.requestKey, job.requestKey);
+  assert.deepEqual(resumed.input, { ...input, base: latest }); assert.equal(resumed.state, 'queued');
+  assert.deepEqual(Object.keys(resumed.checkpoint).sort(), ['hostBase', 'hostIntake', 'revalidationAttempt']);
+  assert.equal(resumed.checkpoint.revalidationAttempt.previousBase, old);
+  assert.deepEqual(jobs.revalidationHistory(job.id)[0].checkpoint, original);
+  jobs.close(); jobs = open();
+  const next = jobs.claim(); assert.equal(next.job.id, job.id); assert.equal(next.job.input.base, latest);
+  assert.throws(() => jobs.bindRevalidation(job.id, current.lease, receipt), /archive binding changed/);
+  assert.equal(jobs.revalidationHistory(job.id).length, 1);
+});

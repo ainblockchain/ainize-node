@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 152개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
+- QA 회귀 153개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
   그 이후 공통 QA 변경에는 QA 회귀와 build를 실행했으며 전체 API suite 수치를
   새 head 전체 검증으로 확대해 해석하지 않는다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -27,6 +27,25 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 main 변경 재개 상태 전환:
+`Jobs.claimRevalidation`/`bindRevalidation`을 추가했다. ordinary claim은 만료된
+`needs_revalidation` 실행도 가져가지 않는다. 별도 claim은 host intake/base가 준비된
+작업만 선택하며, 재개는 job/repository/previousBase/sequence/sourceDigest가 보관 이력과
+맞는 호스트 준비 응답을 요구한다. 같은 작업 ID와 원본 요청을 유지하고 base만 바꾸며,
+활성 checkpoint에는 host intake/base와 새 시도 출처만 남긴다. 이전 후보·검증·PR·승인은
+보관 이력에서 유지되고 새 후보의 권한으로 사용되지 않는다. 경쟁 lease, 재시작,
+잘못된 준비 응답, 중복 재개 거부를 포함해 QA 153 pass/0 fail/0 skip, build 통과.
+
+**아직 이 API를 handler에서 호출하지 않는다.** 자동 main 재수정은 다음 연결까지 미완료:
+1. `HostedQaBases`에 호스트가 확인한 이전 시도 무효화 + 새로운 main 준비 기록을 추가한다.
+   현재 원래 job base는 불변이므로 이를 우회하거나 단순 삭제해서는 안 된다.
+2. 검토 ledger의 원래 publication을 보관하고 새 publication/review generation을 연결한다.
+   진행 중인 release intent와 경합하면 재개를 거부하고 상태를 조정해야 한다.
+3. gateway/runtime capability와 공유 web/API route에 준비 응답을 연결한 뒤 handler에서
+   별도 claim 및 bind를 사용한다. 새 snapshot에서 원래 요청으로 코딩부터 다시 시작한다.
+4. 동일 Ainmem 페이지, 이전 댓글 보존, 새 SHA 이전 LGTM 거부, 최신 후보 재검증·새 승인·
+   배포까지 통합 검증한다. 코드 상태 전환 테스트만으로 이 전체 흐름을 통과라 하지 않는다.
 
 2026-10-11 실제 재수정 진단:
 `/mnt/newdata/qa-services/validation/native-repair-20261011-Vf8Xs1/repair.log`.

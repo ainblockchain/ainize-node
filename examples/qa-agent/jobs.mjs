@@ -95,7 +95,7 @@ export class Jobs {
       const now = this.now();
       // A host operation can return running for many ticks. Give each other eligible job
       // a turn before polling it again, including across process restarts.
-      const row = this.db.prepare("SELECT j.* FROM jobs j LEFT JOIN work_polls p ON p.job_id=j.id WHERE (j.state='queued' OR (j.state='running' AND j.expires<=?)) AND coalesce(json_extract(j.checkpoint,'$.stage'),'') NOT IN ('awaiting_approval','awaiting_deployment') ORDER BY coalesce(p.last_attempt,0),j.created,j.id LIMIT 1").get(now);
+      const row = this.db.prepare("SELECT j.* FROM jobs j LEFT JOIN work_polls p ON p.job_id=j.id WHERE (j.state='queued' OR (j.state='running' AND j.expires<=?)) AND coalesce(json_extract(j.checkpoint,'$.stage'),'') NOT IN ('awaiting_approval','awaiting_deployment','needs_revalidation') ORDER BY coalesce(p.last_attempt,0),j.created,j.id LIMIT 1").get(now);
       if (!row) return null;
       const lease = randomUUID();
       this.db.prepare("UPDATE jobs SET state='running',lease=?,expires=?,updated=? WHERE id=?").run(lease, now + ttl, now, row.id);
@@ -159,6 +159,44 @@ export class Jobs {
       sequence: Number(row.sequence), sourceDigest: row.source_digest, input: JSON.parse(row.input),
       checkpoint: JSON.parse(row.checkpoint), observedBase: row.observed_base, created: Number(row.created),
     }));
+  }
+  /** Separate, opt-in claim: ordinary scheduling must not wake a base-invalidated candidate. */
+  claimRevalidation(ttl = 60000) {
+    if (!Number.isSafeInteger(ttl) || ttl < 1000 || ttl > 300000) throw new Error('invalid lease duration');
+    return this.transaction(() => {
+      const now = this.now();
+      const row = this.db.prepare("SELECT * FROM jobs WHERE (state='waiting' OR (state='running' AND expires<=?)) AND json_extract(checkpoint,'$.stage')='needs_revalidation' AND json_extract(checkpoint,'$.holdReason')='base_changed' AND json_extract(checkpoint,'$.hostIntake')=1 AND json_extract(checkpoint,'$.hostBase')=1 ORDER BY updated,id LIMIT 1").get(now);
+      if (!row) return null;
+      const lease = randomUUID();
+      this.db.prepare("UPDATE jobs SET state='running',lease=?,expires=?,updated=? WHERE id=?").run(lease, now + ttl, now, row.id);
+      return { job: this.get(row.id), lease };
+    });
+  }
+  /** Apply a host-prepared new attempt, never an observed SHA alone. The caller must obtain this
+   * receipt from the host's revalidation capability, after invalidating the prior review there.
+   * The entire old candidate remains in history; coding starts afresh from the original request.
+   */
+  bindRevalidation(id, lease, receipt) {
+    return this.transaction(() => {
+      const job = this.get(id), prior = job?.checkpoint.priorAttempt;
+      const archived = prior && this.revalidationHistory(id).find(row => row.sequence === prior.sequence);
+      if (!job || job.state !== 'running' || job.checkpoint.stage !== 'needs_revalidation'
+        || job.checkpoint.holdReason !== 'base_changed' || job.checkpoint.hostIntake !== true
+        || job.checkpoint.hostBase !== true || !archived || archived.sourceDigest !== prior.sourceDigest
+        || archived.input.base !== job.input.base || archived.observedBase !== job.checkpoint.observedBase
+        || json(archived.input) !== json(job.input)) throw new Error('Revalidation archive binding changed');
+      if (!receipt || receipt.jobId !== id || receipt.repository !== job.input.repository
+        || receipt.previousBase !== job.input.base || receipt.sequence !== prior.sequence
+        || receipt.sourceDigest !== prior.sourceDigest || typeof receipt.base !== 'string' || !/^[a-f0-9]{40}$/.test(receipt.base)
+        || receipt.base === job.input.base) throw new Error('Revalidation preparation binding changed');
+      const now = this.now();
+      // No coding, validation, publication or release field survives into the new active attempt.
+      const checkpoint = { hostIntake: true, hostBase: true,
+        revalidationAttempt: { sequence: prior.sequence, sourceDigest: prior.sourceDigest, previousBase: job.input.base } };
+      if (this.db.prepare("UPDATE jobs SET input=?,checkpoint=?,state='queued',lease=NULL,expires=NULL,updated=? WHERE id=? AND state='running' AND lease=? AND expires>?")
+        .run(json({ ...job.input, base: receipt.base }), json(checkpoint), now, id, lease, now).changes !== 1) throw new Error('job lease lost');
+      return this.get(id);
+    });
   }
   /** Only first-time base preparation may update input. Candidates and approvals are never rebased here. */
   bindBase(id,lease,base) {
