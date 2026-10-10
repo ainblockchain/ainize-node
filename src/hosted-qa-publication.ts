@@ -3,6 +3,9 @@ import {createHash} from 'node:crypto';
 import {qaCandidateDigest, type QaCandidate} from './hosted-qa-validator.js';
 import type {HostedQaValidationService} from './hosted-qa-validation-service.js';
 export type QaGitHub = (method:'GET'|'POST',path:string,body?:unknown)=>Promise<any>;
+export class QaPublicationBaseChanged extends Error {
+ constructor(readonly observedBase:string,readonly artifact?:{sha:string;number:number;url:string}){super('Base changed; revalidation required');}
+}
 export interface QaPublicationProfile {repository:string;branch:string}
 const sha=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const blob=(value:string)=>createHash('sha1').update(`blob ${Buffer.byteLength(value)}\0`).update(value).digest('hex');
@@ -38,7 +41,8 @@ export class HostedQaPublisher {
  private async perform(profile:QaPublicationProfile,candidate:QaCandidate,key:string,digest:string){
   const api=`/repos/${profile.repository}`, branch=`ainize-qa/${key}`, github=this.github;
   const head=await github('GET',`${api}/git/ref/heads/${encodeURIComponent(profile.branch)}`);
-  if(head?.object?.sha!==candidate.base)throw new Error('Base changed; revalidation required');
+  if(!sha(head?.object?.sha))throw new Error('Incomplete publication base observation');
+  if(head.object.sha!==candidate.base)throw new QaPublicationBaseChanged(head.object.sha);
   const base=await github('GET',`${api}/git/commits/${candidate.base}`);
   if(base?.sha!==candidate.base||!sha(base.tree?.sha)||typeof base.committer?.date!=='string'||!Number.isFinite(Date.parse(base.committer.date)))throw new Error('Invalid base commit');
   const source=await github('GET',`${api}/git/trees/${base.tree.sha}?recursive=1`);
@@ -83,7 +87,8 @@ export class HostedQaPublisher {
   if(pr.state!=='open'||pr.head?.sha!==commit.sha||pr.head?.ref!==branch||pr.head?.repo?.full_name!==profile.repository||pr.base?.ref!==profile.branch||pr.base?.repo?.full_name!==profile.repository||!Number.isSafeInteger(pr.number)||pr.number<1)throw new Error('Candidate PR binding changed');
   const currentBase=await github('GET',`${api}/git/ref/heads/${encodeURIComponent(profile.branch)}`);
   const currentHead=await github('GET',refPath);
-  if(currentBase?.object?.sha!==candidate.base||currentHead?.object?.sha!==commit.sha)throw new Error('Publication changed during reconciliation; revalidation required');
+  if(currentHead?.object?.sha!==commit.sha||!sha(currentBase?.object?.sha))throw new Error('Publication changed during reconciliation; revalidation required');
+  if(currentBase.object.sha!==candidate.base)throw new QaPublicationBaseChanged(currentBase.object.sha,{sha:commit.sha,number:pr.number,url:`https://github.com/${profile.repository}/pull/${pr.number}`});
   return {repository:profile.repository,base:candidate.base,candidateDigest:digest,sha:commit.sha,branch,number:pr.number,url:`https://github.com/${profile.repository}/pull/${pr.number}`};
  }
 }

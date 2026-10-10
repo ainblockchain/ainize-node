@@ -4,6 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {HostedAgentGateway} from '../src/hosted-agent-gateway.js';
+import {QaPublicationBaseChanged} from '../src/hosted-qa-publication.js';
 import {HostedQaPublicationService} from '../src/hosted-qa-publication-service.js';
 import {hostedAgentSpecInput} from '../src/hosted-agent-types.js';
 import {createHostedAgentCtx} from '../src/hosted-agent-runtime/hostedAgentContext.js';
@@ -95,4 +96,36 @@ test('handler verifies and persists intake before continuing a prepared candidat
  await handler.tick(ctx);assert.equal(validation,0);assert.equal(jobs.get(job.id).checkpoint.hostIntake,undefined);
  await handler.tick(ctx);assert.equal(validation,0);assert.equal(jobs.get(job.id).checkpoint.hostIntake,true);
  const restarted=createHandler({stateDir:root,config});await restarted.tick(ctx);assert.equal(intake,2);assert.equal(validation,1);assert.equal(jobs.get(job.id).checkpoint.stage,'needs_publication');
+});
+
+
+test('changed publication base archives the validated candidate and orphan PR without requesting approval',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-publish-base-'));t.after(()=>rmSync(root,{force:true,recursive:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());const checkpoints=new Checkpoints(join(root,'checkpoints'));
+ const candidate={repository:'test/product',base:'a'.repeat(40),changes:{file:'fixed'}},digest=qaCandidateDigest(candidate);
+ const job=jobs.enqueue('request',{repository:candidate.repository,base:candidate.base,text:'고쳐줘'}),claim=jobs.claim();
+ const coding=checkpoints.save(job.id,{repository:candidate.repository,commit:candidate.base,changes:candidate.changes});
+ const validation=checkpoints.save(job.id,{candidateDigest:digest,passed:true});
+ jobs.finish(job.id,claim.lease,'queued',{stage:'needs_publication',coding,validation});
+ const artifact={sha:'b'.repeat(40),number:7,url:'https://github.com/test/product/pull/7'};let enqueued=0;
+ const service=new HostedQaPublicationService({publish:async()=>{throw new QaPublicationBaseChanged('e'.repeat(40),artifact);}} as any,()=>{enqueued++;});
+ const ctx={qa:{publish:async(id:string,c:unknown)=>service.submit('agent',{jobId:id,candidate:c})}};
+ await advanceHostedPublication({jobs,claim:jobs.claim(),checkpoints,ctx});await new Promise(r=>setImmediate(r));
+ const result=await advanceHostedPublication({jobs,claim:jobs.claim(),checkpoints,ctx});
+ assert.equal(result.checkpoint.stage,'needs_revalidation');assert.equal(result.checkpoint.holdReason,'base_changed');assert.equal(result.checkpoint.published,undefined);assert.equal(enqueued,0);
+ const history=jobs.revalidationHistory(job.id);assert.equal(history.length,1);assert.equal(history[0].checkpoint.stage,'needs_publication');assert.deepEqual(checkpoints.load(history[0].checkpoint.coding).changes,candidate.changes);
+ assert.deepEqual(checkpoints.load(result.checkpoint.revalidationEvidence).artifact,artifact);assert.equal(result.input.base,candidate.base);assert.equal(jobs.wake(job.id),false);
+});
+
+test('mismatched revalidation responses cannot archive or replace a pending publication',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-publish-forged-'));t.after(()=>rmSync(root,{force:true,recursive:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());const checkpoints=new Checkpoints(join(root,'checkpoints'));
+ const candidate={repository:'test/product',base:'a'.repeat(40),changes:{file:'fixed'}},digest=qaCandidateDigest(candidate);
+ const job=jobs.enqueue('request',{repository:candidate.repository,base:candidate.base,text:'고쳐줘'}),initial=jobs.claim();
+ const checkpoint={stage:'needs_publication',coding:checkpoints.save(job.id,{repository:candidate.repository,commit:candidate.base,changes:candidate.changes}),validation:checkpoints.save(job.id,{candidateDigest:digest,passed:true})};
+ jobs.finish(job.id,initial.lease,'queued',checkpoint);
+ for(const patch of [{repository:'other/product'},{candidateDigest:'f'.repeat(64)},{observedBase:candidate.base},{observedBase:'invalid'},{artifact:{sha:'b'.repeat(40),number:7,url:'https://github.com/other/product/pull/7'}}]){
+  const claim=jobs.claim();await assert.rejects(advanceHostedPublication({jobs,claim,checkpoints,ctx:{qa:{publish:async()=>({state:'requires_revalidation',repository:candidate.repository,base:candidate.base,candidateDigest:digest,observedBase:'e'.repeat(40),...patch})}}}),/binding mismatch/);
+  assert.deepEqual(jobs.revalidationHistory(job.id),[]);assert.deepEqual(jobs.get(job.id).checkpoint,checkpoint);jobs.finish(job.id,claim.lease,'queued',checkpoint);
+ }
 });

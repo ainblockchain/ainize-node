@@ -131,21 +131,22 @@ export class Jobs {
     return this.get(id);
   }
   /** Preserve the exact prior attempt before changing its visible state. No new base or approval is bound here. */
-  parkForRevalidation(id, lease, observedBase) {
+  parkForRevalidation(id, lease, observedBase, evidence) {
     if (typeof observedBase !== 'string' || !/^[a-f0-9]{40}$/.test(observedBase)) throw new Error('Invalid changed base');
     return this.transaction(() => {
       const job = this.get(id), published = job?.checkpoint.published;
-      if (!job || job.checkpoint.stage !== 'awaiting_approval' || !published
-        || published.repository !== job.input.repository || published.base !== job.input.base
-        || !/^[a-f0-9]{40}$/.test(published.sha ?? '') || observedBase === job.input.base) throw new Error('Revalidation candidate binding changed');
-      const input = json(job.input), checkpoint = json(job.checkpoint);
+      const reviewing=job?.checkpoint.stage==='awaiting_approval'&&published?.repository===job.input.repository&&published.base===job.input.base&&/^[a-f0-9]{40}$/.test(published.sha??'');
+      const publishing=job?.checkpoint.stage==='needs_publication'&&job.checkpoint.coding?.jobId===id&&job.checkpoint.validation?.jobId===id&&evidence?.jobId===id&&/^[a-f0-9]{64}$/.test(evidence.checksum??'');
+      if (!job || (!reviewing&&!publishing) || observedBase === job.input.base) throw new Error('Revalidation candidate binding changed');
+      const priorCheckpoint={...job.checkpoint,...(publishing?{revalidationEvidence:evidence}:{})};
+      const input = json(job.input), checkpoint = json(priorCheckpoint);
       const sourceDigest = createHash('sha256').update(JSON.stringify([input, checkpoint])).digest('hex');
       const prior = this.db.prepare('SELECT sequence,observed_base FROM revalidation_history WHERE job_id=? AND source_digest=?').get(id, sourceDigest);
       const sequence = prior?.sequence ?? Number(this.db.prepare('SELECT coalesce(max(sequence),0)+1 AS n FROM revalidation_history WHERE job_id=?').get(id).n);
       if (sequence > 20) throw new Error('Revalidation attempt limit reached');
       if (prior && prior.observed_base !== observedBase) throw new Error('Archived base observation changed');
       // Lease validation and archival share a transaction: an expired writer leaves neither behind.
-      const { approval: _approval, release: _release, deployment: _deployment, servingCommit: _servingCommit, ...preserved } = job.checkpoint;
+      const { approval: _approval, release: _release, deployment: _deployment, servingCommit: _servingCommit, ...preserved } = priorCheckpoint;
       const result = this.finish(id, lease, 'waiting', { ...preserved, stage: 'needs_revalidation',
         holdReason: 'base_changed', observedBase, priorAttempt: { sequence, sourceDigest } });
       if (!prior) this.db.prepare('INSERT INTO revalidation_history VALUES(?,?,?,?,?,?,?)')

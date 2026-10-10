@@ -1,12 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {HostedQaPublisher,qaGitHubClient,type QaGitHub} from '../src/hosted-qa-publication.js';
+import {HostedQaPublisher,QaPublicationBaseChanged,qaGitHubClient,type QaGitHub} from '../src/hosted-qa-publication.js';
 const base='a'.repeat(40),baseTree='b'.repeat(40),newTree='c'.repeat(40);
 const candidate={repository:'test/product',base,changes:{'run.sh':'echo fixed\n','new.txt':'한글'}};
 const hash=(s:string)=>createHash('sha1').update(s).digest('hex');
 function remote(){
- const state={refs:new Map<string,string>(),prs:[] as any[],writes:[] as any[],lostRef:false,lostPr:false,corrupt:false,stale:false,commit:''};
+ const state={refs:new Map<string,string>(),prs:[] as any[],writes:[] as any[],lostRef:false,lostPr:false,corrupt:false,stale:false,advanceAfterPr:false,commit:''};
  let entries:any[]=[];
  const github:QaGitHub=async(method,path,body:any)=>{
   if(method==='POST')state.writes.push({path,body});
@@ -17,7 +17,7 @@ function remote(){
   if(path.endsWith('/git/commits')){state.commit=hash(JSON.stringify(body));return {sha:state.commit,tree:{sha:body.tree},parents:body.parents.map((sha:string)=>({sha}))};}
   if(path.endsWith('/git/refs')){state.refs.set(body.ref.slice(11),body.sha);if(state.lostRef){state.lostRef=false;throw Error('lost ref response');}return {};}
   if(path.includes('/pulls?'))return state.prs;
-  if(path.endsWith('/pulls')){assert.equal(body.draft,true);state.prs.push({number:7,state:'open',head:{sha:state.commit,ref:body.head,repo:{full_name:'test/product'}},base:{ref:body.base,repo:{full_name:'test/product'}}});if(state.lostPr){state.lostPr=false;throw Error('lost PR response');}return state.prs[0];}
+  if(path.endsWith('/pulls')){assert.equal(body.draft,true);state.prs.push({number:7,state:'open',head:{sha:state.commit,ref:body.head,repo:{full_name:'test/product'}},base:{ref:body.base,repo:{full_name:'test/product'}}});if(state.advanceAfterPr)state.stale=true;if(state.lostPr){state.lostPr=false;throw Error('lost PR response');}return state.prs[0];}
   throw Error('Unexpected request '+path);
  };
  const publisher=()=>new HostedQaPublisher({agent:{repository:'test/product',branch:'main'}},{requirePassed:()=>({} as any)},github);
@@ -48,4 +48,16 @@ test('missing host evidence and unconfigured agents cannot make GitHub writes',a
 test('GitHub transport refuses redirects and does not expose response secrets',async()=>{
  const client=qaGitHubClient('private',async(url,init)=>{assert.equal(url,'https://api.github.com/repos/test/product/pulls');assert.equal(init?.redirect,'error');return new Response('secret diagnostic',{status:403});});
  await assert.rejects(client('POST','/repos/test/product/pulls',{}),error=>String(error)==='Error: QA GitHub request failed (403)');
+});
+
+
+test('publication distinguishes a changed base from incomplete reads and preserves an already-created PR locator',async()=>{
+ const early=remote();early.state.stale=true;
+ await assert.rejects(early.publisher().publish('agent','job',candidate),error=>error instanceof QaPublicationBaseChanged&&error.observedBase==='d'.repeat(40)&&error.artifact===undefined);
+ assert.equal(early.state.writes.length,0);
+ const late=remote();late.state.advanceAfterPr=true;
+ await assert.rejects(late.publisher().publish('agent','job',candidate),error=>error instanceof QaPublicationBaseChanged&&error.artifact?.sha===late.state.commit&&error.artifact?.url==='https://github.com/test/product/pull/7');
+ assert.equal(late.state.prs.length,1);
+ const incomplete=new HostedQaPublisher({agent:{repository:'test/product',branch:'main'}},{requirePassed:()=>({} as any)},async()=>null);
+ await assert.rejects(incomplete.publish('agent','job',candidate),error=>!(error instanceof QaPublicationBaseChanged)&&/Incomplete/.test(String(error)));
 });

@@ -1,8 +1,8 @@
 /** Bounded asynchronous gateway adapter. Remote refs/PRs are the durable retry authority. */
 import {createHash} from 'node:crypto';
-import type {HostedQaPublisher} from './hosted-qa-publication.js';
-import type {QaCandidate} from './hosted-qa-validator.js';
-type Status={state:'running'}|{state:'done';result:unknown}|{state:'failed'};
+import {QaPublicationBaseChanged,type HostedQaPublisher} from './hosted-qa-publication.js';
+import {qaCandidateDigest,type QaCandidate} from './hosted-qa-validator.js';
+type Status={state:'running'}|{state:'done';result:unknown}|{state:'failed'}|{state:'requires_revalidation';repository:string;base:string;candidateDigest:string;observedBase:string;artifact?:{sha:string;number:number;url:string}};
 export class HostedQaPublicationService {
  private entries=new Map<string,{status:Status;finishedAt?:number}>();
  constructor(private publisher:HostedQaPublisher,private onPublished?:(agentId:string,jobId:string,result:unknown,candidate:QaCandidate)=>void,private beforePublish?:(agentId:string,jobId:string)=>void){}
@@ -17,7 +17,7 @@ export class HostedQaPublicationService {
   const task=this.publisher.publish(agentId,input.jobId,input.candidate);
   const entry:{status:Status;finishedAt?:number}={status:{state:'running'}};
   this.entries.set(key,entry);
-  void task.then(result=>{this.onPublished?.(agentId,input.jobId,result,input.candidate);entry.status={state:'done',result};}).catch(()=>{entry.status={state:'failed'};}).finally(()=>{entry.finishedAt=Date.now();});
+  void task.then(result=>{this.onPublished?.(agentId,input.jobId,result,input.candidate);entry.status={state:'done',result};}).catch(error=>{entry.status=error instanceof QaPublicationBaseChanged?{state:'requires_revalidation',repository:input.candidate.repository,base:input.candidate.base,candidateDigest:qaCandidateDigest(input.candidate),observedBase:error.observedBase,...(error.artifact?{artifact:error.artifact}:{})}:{state:'failed'};}).finally(()=>{entry.finishedAt=Date.now();});
   return entry.status;
  }
 }
