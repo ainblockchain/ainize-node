@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
 // Bump when execution semantics change so old receipts cannot authorize a new validator policy.
-export const QA_VALIDATOR_VERSION = '3-multiple-dependency-scopes';
+export const QA_VALIDATOR_VERSION = '4-bounded-process-limits';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
   dependencyPath: string; cwd: string; dependencies?:{cwd:string;dependencyPath:string}[]; gates: { name: string; argv: string[]; cwd?:string }[];
-  timeoutMs?: number; memory?: string; workspaceMiB?: number;
+  timeoutMs?: number; memory?: string; workspaceMiB?: number; pidsLimit?: number;
 }
 export interface QaCandidate { repository: string; base: string; changes: Record<string, string> }
 const canonical = (value: unknown): unknown => value && typeof value === 'object'
@@ -38,6 +38,7 @@ export function validateQaProfile(profile: QaValidationProfile, candidate: QaCan
     || Buffer.byteLength(JSON.stringify(candidate.changes)) > 2*1024*1024) throw new Error('Invalid candidate changes');
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1000 || profile.timeoutMs > 1800000)) throw new Error('Invalid validation timeout');
   if (profile.memory !== undefined && !/^[1-8]g$/.test(profile.memory)) throw new Error('Invalid memory limit');
+  if(profile.pidsLimit!==undefined&&(!Number.isSafeInteger(profile.pidsLimit)||profile.pidsLimit<64||profile.pidsLimit>1024))throw new Error('Invalid process limit');
   if(profile.workspaceMiB!==undefined&&(!Number.isSafeInteger(profile.workspaceMiB)||profile.workspaceMiB<512||profile.workspaceMiB>Number.parseInt(profile.memory??'4g')*1024))throw new Error('Invalid workspace size');
 }
 async function rejectLinks(root: string) {
@@ -106,7 +107,7 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       let passed=false, stdout='',stderr='';
       try {
         const output=await exec('docker',['run','--rm','--name',name,'--network','none','--read-only','--user',`${uid}:${gid}`,
-          '--cap-drop','ALL','--security-opt','no-new-privileges','--memory',profile.memory??'4g','--cpus','2','--pids-limit','256',
+          '--cap-drop','ALL','--security-opt','no-new-privileges','--memory',profile.memory??'4g','--cpus','2','--pids-limit',String(profile.pidsLimit??256),
           '--tmpfs',`/tmp:rw,exec,nosuid,nodev,size=${(profile.workspaceMiB??2048)*1024*1024}`,'--mount',`type=bind,src=${dir},dst=/input,readonly`,
           '--entrypoint','node',profile.image,'-e',bootstrap],{timeout:profile.timeoutMs??300000,maxBuffer:4*1024*1024});
         // Retain bounded private evidence on success too: an exit code alone cannot show skipped tests.

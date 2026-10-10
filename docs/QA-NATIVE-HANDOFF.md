@@ -888,3 +888,40 @@ candidate로 main의 실제 제품 게이트 실행 가능성을 확인한다. �
 현재 전체 typecheck 통과, lint 실행 중이다. web/browser E2E 통과를 의미하지 않는다.
 로컬 도구 실행 세션은 `21171`, 서버 runner는 위 경로의 `run.mjs`다. 상태 조회가 잠깐
 안 된다고 다시 시작하지 말고 같은 프로세스/컨테이너와 결과 파일을 확인한다.
+
+### AIN Teams 제품 검증 결과 및 프로세스 상한 — 2026-10-11
+
+위 전체 검사(세션 21171)는 종료됐다. typecheck와 lint는 통과했고 test에서 중단되어
+build는 실행되지 않았다. backend는 1124 통과/1 실패/6 skip, web은 5445 통과/3 실패/
+92 skip이다. web thumbnail suite의 beforeAll timeout도 별도로 발생했다.
+backend 실패는 network=none 환경에서 example.com DNS를 기대하는 테스트,
+web 3건은 Git 메타데이터 없는 검증 복사본에서 git ls-files를 호출하는 테스트다.
+원본 로그와 result.json을 보존했다. 이를 전체 제품 게이트 통과로 취급하면 안 된다.
+
+별도 실제 layout E2E 최초 실행은 desktop thread/DM/mobile channel 3개 통과,
+desktop channel 1개 이동 시간 초과였다(0 skip/0 retry). Next 로그의 EAGAIN과
+uv_thread_create 실패로 PID 256 한도 문제를 확인했다. 해당 증거는
+`e2e-evidence-pids256/`와 `e2e-result-pids256.json`에 보존했다.
+
+native validator에 운영자 profile의 pidsLimit(64..1024, 기본 256)을 추가했다.
+candidate가 상한을 지정하는 것은 계속 거부한다. QA 140 tests/0 skip 및 TypeScript
+build를 통과했다. `e2e/fixtures/teams-product.mjs`는 네트워크 없는 컨테이너 내부의
+일회용 UTF8 PostgreSQL과 앱을 기동해 layout-invariants 전체를 실행한다.
+4개 이상 통과 및 skip/failure/flaky 0을 요구하고 종료 시 프로세스/DB를 정리한다.
+운영 DB나 토큰을 사용하지 않는다.
+
+재실행 이미지 `sha256:adc77596af785eb5b5b0dce23ab65d2e4319386a18703fd40b761ee988e5916b`,
+별도 validator-pids.mjs, pidsLimit=512를 사용했다. 실제 Docker inspect에서 512를
+확인했다. 현재 재실행 세션 93954, 증거 e2e-evidence/ 및 e2e-result.json.
+
+검증 버전을 `4-bounded-process-limits`로 올려 이전 정책의 receipt 재사용도 차단했다.
+버전 변경 후 전체 QA 140 tests/0 skip 및 TypeScript build를 다시 통과했다.
+
+재실행 93954도 종료됐다: 3 pass / 1 fail / 0 skip / 0 flaky, 85.8초.
+실패는 같은 desktop channel page.goto 15초 timeout이며, pidsLimit=512만으로
+해결되지 않았다. 스레드/DM/모바일은 통과했다. 전체 브라우저 검증 통과 주장은 금지한다.
+다음 단계는 dev 서버 초기 route 컴파일과 화면 준비 시간을 분리하여 진단하고,
+최종 fixture가 모든 화면 assertion을 실행하도록 하는 것이다. timeout을 무작정
+늘리거나 실패 항목을 제외하지 않는다. 서버 원문 증거는 e2e-evidence/에 보존했다.
+이번 실행의 validator-pids.mjs는 version 문자열 갱신 전 실행본이며, 실제 pids512
+코드는 동일하다. 저장소 최종 정책 버전은 4이며 이후 검증에는 새 빌드본을 사용한다.

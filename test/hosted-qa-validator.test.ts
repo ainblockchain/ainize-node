@@ -20,3 +20,9 @@ test('multi-package gates can only run in unique declared dependency scopes',()=
  assert.throws(()=>validateQaProfile({...multi,dependencies:[multi.dependencies[1]]},candidate),/scopes/);
  assert.throws(()=>validateQaProfile({...multi,dependencies:[multi.dependencies[0],{cwd:'../escape',dependencyPath:'/seed/1'}]},candidate),/scopes/);
 });
+
+test('operator process limits remain bounded and cannot come from a candidate',()=>{
+ for(const pidsLimit of [64,256,512,1024])assert.doesNotThrow(()=>validateQaProfile({...profile,pidsLimit},candidate));
+ for(const pidsLimit of [0,-1,63,1025,Infinity,1.5])assert.throws(()=>validateQaProfile({...profile,pidsLimit},candidate),/process limit/);
+ assert.throws(()=>validateQaProfile(profile,{...candidate,pidsLimit:512} as any),/shape/);
+});
