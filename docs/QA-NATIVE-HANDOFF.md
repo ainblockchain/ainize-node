@@ -749,8 +749,25 @@ Ainmem 37 tests / 타입 검사 / build 통과, native QA 126 tests pass / 0 ski
 처음 native 회귀 실행은 PATH의 시스템 git 때문에 실패했으며 Homebrew git으로
 재실행했다. Ainmem의 초기 test helper 타입 오류도 수정 후 전체 게이트를 통과했다.
 
-다음은 이 경로를 포함한 통합 보드 브라우저 검증이다. 실제 cutover 때 checkbox 속성,
+통합 보드 브라우저 검증도 완료했다(아래 참조). 실제 cutover 때 checkbox 속성,
 그 속성의 true view filter, 현재 승인 작업 backfill, target board agent 권한,
 새 agent ID와 기존 mirror row 정책을 함께 설치해야 한다. 기존 Python worker는
 checkbox를 쓰지 않으므로 view만 먼저 바꾸지 않는다. PR #71(403860f) 배포 승인은
 여전히 미수신이며 새 main merge나 운영 배포를 수행하지 않았다.
+
+
+### 통합 보드 브라우저 검증 완료 — 2026-10-11
+
+Ainmem PR #76 head `971a776`은 격리 서버 앱·DB·HTTP registry와 Mac Chromium으로
+통합 승인 보드까지 검증했다. 데스크톱/모바일 승인 카드 표시, 카드에서 전체 페이지로
+열었을 때 원본과 동일 URL, queued 제외, waiting 상태의 검증 보류 제외, 완료 시 원본
+칸반 이동과 승인 목록 제외가 통과했다. 타입 검사 통과. 37 API 테스트/빌드 통과 이후
+이번 변경은 fixture·브라우저 검증·문서뿐이다.
+
+증거는 .41의 `/mnt/newdata/qa-services/validation/native-ainmem-registry-ui-gman5k_a/results/`
+에 최종 result.json과 PNG 8개로 보존했다. 테스트 서비스/DB/포워드를 종료하고 임시
+토큰·세션 fixture를 삭제했다. 실제 SSO 관리자 등록과 운영 채널 E2E는 아직 아니다.
+
+PR #71 `403860f`와 PR #76 `971a776` 병합·배포 및 실제 등록/페이지 연결 승인을 함께
+요청했으며 이 기록 시점에 응답은 없다. 승인 전 운영 배포/DB 변경을 하지 않는다.
+PR #70 native runtime 자체는 별도 검증·승인이 필요하고 이전 작업 승인을 재사용하지 않는다.
