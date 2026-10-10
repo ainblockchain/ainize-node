@@ -130,7 +130,10 @@ export function parseRepoUrl(input: string): RepoRef | null {
   const at = segs.indexOf('git');
   if (at < 1 || at === segs.length - 1) return null;
   const before = segs.slice(0, at);
-  const after = segs.slice(at + 1);
+  let after = segs.slice(at + 1);
+  // aindrive keeps repos under the drive folder `repositories/`; the pretty URL names only the repo and
+  // the drive-id form may spell the folder out. Both mean the same repo, so the canonical URL drops it.
+  if (after[0] === 'repositories' && after.length > 1) after = after.slice(1);
   const org = before[0] === 'api' && before[1] === 'drives' && before[2] ? before[2] : before[before.length - 1]!;
   const repoName = after[after.length - 1]!.replace(/\.git$/, '');
   if (!/^[A-Za-z0-9._-]+$/.test(org) || !/^[A-Za-z0-9._-]+$/.test(repoName)) return null;
@@ -203,11 +206,13 @@ export class ProjectStore {
   byRepo(url: string): Project | null {
     const ref = parseRepoUrl(url);
     if (!ref) return null;
-    return this.list().find((p) => p.repo === ref.url) ?? null;
+    // Compare canonical forms on both sides: records bound before the `repositories/` normalisation
+    // carry the folder in their URL and must still resolve.
+    return this.list().find((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === ref.url) ?? null;
   }
 
   create(input: { repo: RepoRef; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
-    if (this.list().some((p) => p.repo === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
+    if (this.list().some((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
     if (this.listByOwner(owner).length >= this.limits.perOwner) throw new ProjectLimitError(`an account may have ${this.limits.perOwner} projects on this node`);
     if (this.projects.size >= this.limits.total) throw new ProjectLimitError(`this node holds its maximum of ${this.limits.total} projects`);
     const project: Project = {
