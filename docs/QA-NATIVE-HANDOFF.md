@@ -1081,3 +1081,28 @@ QA 151 tests / 0 fail / 0 skip, TypeScript build 통과. 기존 API로 기록 �
 새 generation 재등장, repository/SHA 불일치 거부를 확인했다. 운영 배포는 하지 않았다.
 PR71(403860f)과 PR76(971a776)의 병합·배포/전용 DB 변경 승인을 묶어 다시 요청했으며
 아직 승인 답변은 없다. 승인 대기와 무관한 공통 코드 보완을 진행한 결과다.
+
+### AINSpace 최신 main 제품 검증 — 2026-10-11 (실행 중)
+
+현재 main 348b3192b5894d9c4db2b500265029c147ac4791을 별도 서버 checkout으로 옮겼다.
+경로: /mnt/newdata/qa-services/validation/native-ainspace-main-20261011-EIG2gw.
+기존 immutable seed image 9f401e534b38d0ead9ef3c415ec728e4923877268cf0fbc0bd29b1f752210b95
+와 package/lockfile 대조를 통과했다. README 원본과 같은 overlay를 사용해 기존 코드의
+실행 가능성을 확인한다. 새 모델 수정이나 제품 source 변경은 없다.
+
+현재 lint 0 errors/36 warnings, test 201 pass/0 fail/0 skip. build가 실행 중이다.
+profile.json, evidence/*.log, result.json이 정본이며 로컬 실행 세션은 27911이다.
+8GiB memory, 4GiB ephemeral workspace, pids512, network none, 비루트 컨테이너를 사용했다.
+최종 빌드 결과를 확인하기 전 전체 제품 게이트 통과로 보고하지 않는다.
+
+최종 결과: build 실패, 전체 profile passed=false. src/app/layout.tsx의 next/font가
+Google Fonts(Geist, Geist Mono, Manrope)를 다운로드하려다 network=none에서 EAI_AGAIN
+으로 실패했다. memory.events의 oom/oom_kill은 모두 0이다. 이 결과를 메모리 문제로
+오인하거나 검증 컨테이너의 외부 네트워크를 열어 통과시키지 않는다.
+
+native qa-ainspace 전환 후 실제 제품 수정 요청으로 해결할 항목:
+“QA의 네트워크 없는 환경에서도 빌드되도록 Google Fonts 다운로드 의존을 없애줘.
+현재 Geist/Geist Mono/Manrope의 화면 모양을 유지하고, 폰트 파일과 라이선스를 함께
+관리해줘. lint·201개 기존 테스트·배포용 빌드와 실제 화면을 검증해줘.”
+제품 코드는 여기서 대신 수정하지 않았고 기존 Python 작업기에 중복 접수하지 않았다.
+선행 운영 전환 승인 후 같은 채널→native agent 흐름에서 다룰 재현 가능한 실패다.
