@@ -116,3 +116,30 @@ was established. Diagnostic images and containers were removed by the harness.
 The fixture proves the execution contract, not AINA product regression coverage. Actual product
 images/profiles, database/browser gates and service-wide E2E remain required. QA unit/integration
 targets: 101 passed, zero skips; TypeScript build passed.
+
+## Ainmem actual two-package profile (2026-10-10)
+
+Prepared and executed a pinned dependency image against Ainmem PR76 head
+`10e62a69fdb7f098b821ada55681adb63c5df7aa`:
+
+- Image: `sha256:11ca84ad2c9676015cf761cad371e63d8c9847edb88656d4b1222784efd7d035`.
+- Scopes: `app` → `/seed/app`, `relational-memory-mcp` → `/seed/mcp`.
+- App dependencies match the known server validation copy's dependency declarations and exact
+  pnpm lockfile. The current package manifest is stored in the image; MCP uses its exact package
+  lock through `npm ci --include=dev --ignore-scripts` during image preparation.
+- Five actual gates passed: app typecheck, MCP typecheck, MCP build, QA task contract tests, app
+  production build. All gate execution used the native validator's non-root, no-network containers
+  with private dependency copies, 8 GiB memory and a ten-minute per-gate limit.
+- Evidence root: `/mnt/newdata/qa-services/validation/native-ainmem-product-20261010-9EPoSz`.
+  `profile.json`, `result.json`, `run.mjs`, `image-id`, `image/Dockerfile` and `build.log` are retained.
+
+The candidate overlay was the unchanged task-contract file from the PR head. This verifies the
+actual existing PR tree and execution profile, not a new model-authored product fix. Database/HTTP
+and desktop/mobile browser tests were exercised separately as recorded in the handoff. The five
+native gates do not constitute all Ainmem regression suites or a complete channel-to-deployment E2E.
+The profile is a prepared diagnostic checkout, not installed production configuration; current-base
+synchronization and deployment approval remain required. The dependency image is retained for reuse.
+
+Further image layout observation: Ainize web's package is directly at `/seed` (not `/seed/0`), but
+that seed also lacks its executable dependency links. This refines the prior inspection; it is not
+an absent package. A native-ready dependency image is still needed for that product.

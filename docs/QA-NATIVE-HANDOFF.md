@@ -541,3 +541,10 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 7개 서비스의 기존 isolation image를 조회했다. AINA는 두 패키지 seed, Teams는 workspace manifest이며, 검사한 경로에서 실행용 .bin이 준비된 것은 Ainspace뿐이었다. Ainmem 브라우저 검증 때 확인한 의존성 복원 차이가 다른 제품에도 있어 기존 image ID를 네이티브 설정에 그대로 복사하면 안 된다.
 - 네이티브 검증기에 다중 dependency scopes와 gate별 cwd를 추가했다. 각 gate는 모든 scope를 새 private 작업 공간에 복사하고 package/lock을 대조한다. 미등록 경로·중복 scope는 거부하고 receipt version을 3으로 올렸다.
 - QA 타깃 101 pass, build pass. 실제 .41 Docker에서 frontend/backend 두 gate가 각각 자기 패키지를 로드하고 같은 candidate overlay를 읽는 검증 1 pass/0 skip. 증거와 한계는 docs/QA-PRODUCT-VALIDATOR.md 참조. 아직 실제 각 제품의 전체 검증 프로필이 준비된 것은 아니다.
+
+### 2026-10-10 Ainmem 실제 제품 검증 이미지 준비
+
+- Ainmem PR76 head `10e62a6`의 실제 Git checkout과 고정 image `sha256:11ca84ad2c9676015cf761cad371e63d8c9847edb88656d4b1222784efd7d035`를 준비했다. 웹 앱과 별도 relational-memory-mcp 패키지를 각각 `/seed/app`, `/seed/mcp`로 묶었다.
+- native validator에서 app typecheck, MCP typecheck/build, QA contract test, app production build의 다섯 gate가 모두 통과했다. 실행은 네트워크/배포 자격증명 없이 격리된 컨테이너에서 수행했다.
+- 증거: `/mnt/newdata/qa-services/validation/native-ainmem-product-20261010-9EPoSz/profile.json`, `result.json`, `run.mjs`, `image-id`. 검증용 Git checkout/이미지는 재사용할 수 있게 보존했다. 운영 설정에 설치하거나 배포하지 않았다.
+- unchanged file overlay로 현재 PR tree를 검증한 결과다. 새로운 제품 버그의 모델 수정·실제 관리자 승인·배포 E2E를 대신하지 않는다. 전체 DB/UI 회귀를 이 다섯 gate만으로 판정하지 않는다. Ainmem 배포 승인 질문은 아직 답변 대기다.
