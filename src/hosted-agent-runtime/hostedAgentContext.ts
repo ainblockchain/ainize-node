@@ -150,7 +150,8 @@ export async function hostedAgentEgressFetch(gateway: HostedAgentGatewayAccess, 
   const res = await directFetch(hostedAgentEgressUrl(gateway), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, method, headers, bodyBase64, ...(init.maxBytes ? { maxBytes: init.maxBytes } : {}) }),
+    body: JSON.stringify({ url, method, headers, bodyBase64, redirect: init.redirect ?? req?.redirect,
+      ...(init.maxBytes ? { maxBytes: init.maxBytes } : {}) }),
     signal: init.signal ?? AbortSignal.timeout(45_000),
   });
   // Present only when the gateway could not fetch at all: '1' refused by policy, '0' failed. Either way the caller
@@ -190,6 +191,31 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
   return {
     input,
     spec: o.spec,
+    qa: { revalidate: async(jobId,request)=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/revalidation`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...request,jobId}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA revalidation refused');return response.json();
+    }, base: async jobId=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/base`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA base refused');return response.json();
+    }, intake: async(jobId,locator)=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/intake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId,locator}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA intake refused');return response.json();
+    }, status: async jobId=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA status refused');return response.json();
+    }, publish: async (jobId,candidate) => {
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/publication`, {
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId,candidate}),signal:AbortSignal.timeout(10000),
+      });
+      if(!response.ok)throw new Error('Host QA publication refused');
+      return response.json();
+    }, validate: async (candidate,jobId) => {
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/validation`, {
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(jobId===undefined?candidate:{jobId,candidate}),signal:AbortSignal.timeout(10000),
+      });
+      if(!response.ok)throw new Error('Host QA validation refused');
+      return response.json();
+    } },
     llm: {
       chat: (request, opts) => (opts?.onDelta
         ? hostedAgentLlmChatStream(o.gateway, o.spec.model, request, opts.onDelta)

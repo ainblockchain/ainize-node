@@ -234,6 +234,14 @@ export class HostedAgentDocker {
     await this.exec(['rm', '-f', hostedAgentContainerName(agentId)], 30_000);
   }
 
+  /** False only after Docker confirms the container is absent/stopped; command failure is unknown. */
+  async isRunning(agentId: string): Promise<boolean> {
+    const name = hostedAgentContainerName(agentId);
+    const result = await this.exec(['ps', '--format', '{{.Names}}', '--filter', `name=^/${name}$`], 10_000);
+    if (result.code !== 0) throw new Error('could not inspect hosted container');
+    return result.stdout.split('\n').some(line => line.trim() === name);
+  }
+
   async logs(agentId: string, tail = 200): Promise<string[]> {
     const r = await this.exec(['logs', '--tail', String(tail), hostedAgentContainerName(agentId)], 15_000);
     return `${r.stdout}${r.stderr}`.split('\n').filter(Boolean).slice(-tail);

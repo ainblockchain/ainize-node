@@ -17,6 +17,7 @@
  */
 import express from 'express';
 import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { hostedAgentGlobalFetch } from './hostedAgentContext.js';
 import { createHostedAgentRuntimeRouter } from './hostedAgentRuntimeApp.js';
 import type { HostedAgentModule, HostedAgentRuntimeSpec } from './hostedAgentRuntimeTypes.js';
@@ -39,6 +40,7 @@ export function hostedAgentSecretsFromEnv(env: NodeJS.ProcessEnv): Record<string
 export function hostedAgentModuleOf(imported: Record<string, unknown>): HostedAgentModule {
   const d = (imported.default ?? {}) as HostedAgentModule;
   return {
+    tick: d.tick ?? (imported.tick as HostedAgentModule['tick']),
     execute: d.execute ?? (imported.execute as HostedAgentModule['execute']),
     tools: d.tools ?? (imported.tools as HostedAgentModule['tools']),
     manage: d.manage ?? (imported.manage as HostedAgentModule['manage']),
@@ -71,6 +73,6 @@ async function main() {
   app.listen(8080, '0.0.0.0', () => log(`hosted agent v${spec.version} (${spec.mode}, ${spec.model}) on :8080`));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }

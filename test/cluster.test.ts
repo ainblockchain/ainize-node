@@ -48,15 +48,19 @@ test('seed: prototype ledger imports and synthetic patches are announced', async
   assert.equal(cat.find((e) => e.anchor.id === 'law-kr-2025')?.status, 'ANNOUNCED');
 });
 
-test('gossip replicates records to peers and verifiers reach quorum → VERIFIED', async () => {
-  const listed = await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2025')?.status === 'VERIFIED', 30000);
+test('gossip replicates records to peers and verifiers reach quorum even when the next version supersedes it', async () => {
+  const listed = await waitFor(() => A.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2025')?.quorum_ok === true, 30000);
   const e = listed.find((x) => x.anchor.id === 'law-kr-2025')!;
-  assert.equal(e.status, 'VERIFIED', JSON.stringify(e.attestations));
+  // The seeded 2026 successor may already have verified and superseded this version.
+  assert.equal(e.quorum_ok, true, JSON.stringify(e.attestations));
+  assert.ok(['VERIFIED', 'SUPERSEDED'].includes(e.status));
   assert.ok(e.attestations.every((a) => a.verified_on === 'hash-only' && a.passed));
   assert.ok(new Set(e.attestations.map((a) => a.verifier)).size >= 2);
   // C also sees it
-  const onC = await waitFor(() => C.market.catalog(true), (c) => c.find((x) => x.anchor.id === 'law-kr-2025')?.status === 'VERIFIED');
-  assert.equal(onC.find((x) => x.anchor.id === 'law-kr-2025')?.status, 'VERIFIED');
+  const onC = await waitFor(() => C.market.catalog(true), (c) => c.find((x) => x.anchor.id === 'law-kr-2025')?.quorum_ok === true);
+  const replica=onC.find((x) => x.anchor.id === 'law-kr-2025')!;
+  assert.equal(replica.quorum_ok, true);
+  assert.ok(['VERIFIED', 'SUPERSEDED'].includes(replica.status));
   const v = await B.ledger.verify();
   assert.ok(v.valid, v.errors.join(','));
 });
@@ -108,6 +112,7 @@ test('x402: GET without payment → 402 with requirements; C buys with signed cr
   const { authHeader } = await import('../src/p2p.js');
   const dl = await fetch(`${A.url}/p2p/blob/${res.manifest.patch_sha256}`, { headers: { 'x-ainize-auth': authHeader(C.cfg.identity, `blob:${res.manifest.patch_sha256}`) } });
   assert.equal(dl.status, 200);
+  assert.ok((await dl.arrayBuffer()).byteLength > 0, 'consume the download before closing the test server');
   const anon = await fetch(`${A.url}/p2p/blob/${res.manifest.patch_sha256}`);
   assert.equal(anon.status, 402);
 });

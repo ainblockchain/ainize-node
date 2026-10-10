@@ -142,6 +142,7 @@ export interface HostedAgentEgressRequest {
   url: string;
   method?: string;
   headers?: Record<string, string>;
+  redirect?: 'follow' | 'error' | 'manual';
   bodyBase64?: string;
   /** Raise the response ceiling for this call, up to HOSTED_AGENT_EGRESS_ATTACHMENT_MAX_BYTES. */
   maxBytes?: number;
@@ -201,6 +202,8 @@ export async function hostedAgentEgress(req: HostedAgentEgressRequest, allowedHo
 
     const location = answer.headers.location;
     if (answer.status >= 300 && answer.status < 400 && location) {
+      if (req.redirect === 'error') throw new HostedAgentEgressRefusal('redirect refused by caller');
+      if (req.redirect === 'manual') return answer;
       url = new URL(location, url);
       if (answer.status === 303 || ((answer.status === 301 || answer.status === 302) && method === 'POST')) { method = 'GET'; body = undefined; }
       continue;
@@ -228,16 +231,22 @@ export interface HostedAgentGatewayDeps {
     target(model: string, node: string | null): PeerModelTarget | null;
     fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
   };
+  qaRevalidation?: (agentId:string,input:unknown)=>unknown;
+  qaBase?: (agentId:string,jobId:string)=>unknown;
+  qaIntake?: (agentId:string,input:unknown)=>unknown;
+  qaStatus?: (agentId:string,jobId:string)=>unknown;
+  qaPublication?: (agentId: string, request: unknown) => unknown;
+  qaValidation?: (agentId: string, candidate: unknown) => unknown;
   spec: (agentId: string) => HostedAgentSpec | null;
   log: (message: string) => void;
 }
 
-async function readBody(req: IncomingMessage): Promise<Buffer> {
+async function readBody(req: IncomingMessage, limit = HOSTED_AGENT_GATEWAY_MAX_BODY): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += (c as Buffer).length;
-    if (size > HOSTED_AGENT_GATEWAY_MAX_BODY) throw new HostedAgentEgressRefusal('request body too large');
+    if (size > limit) throw new HostedAgentEgressRefusal('request body too large');
     chunks.push(c as Buffer);
   }
   return Buffer.concat(chunks);
@@ -326,6 +335,44 @@ export class HostedAgentGateway {
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
     const path = m[2]!;
     try {
+      if(req.method==='POST'&&path==='/qa/revalidation'){
+        if(!this.deps.qaRevalidation)return sendJson(res,403,{error:{message:'QA revalidation disabled'}});
+        let input:unknown;try{input=JSON.parse((await readBody(req,2048)).toString('utf8'));}catch{return sendJson(res,400,{error:{message:'Invalid QA revalidation'}});}
+        try{return sendJson(res,200,this.deps.qaRevalidation(spec.id,input));}catch{return sendJson(res,403,{error:{message:'QA revalidation refused'}});}
+      }
+      if(req.method==='POST'&&path==='/qa/base'){
+        if(!this.deps.qaBase)return sendJson(res,403,{error:{message:'QA base disabled'}});
+        let input:any;try{input=JSON.parse((await readBody(req,1024)).toString('utf8'));if(!input||Object.keys(input).join(',')!=='jobId'||typeof input.jobId!=='string'||!/^[-\w]{1,128}$/.test(input.jobId))throw new Error();}catch{return sendJson(res,400,{error:{message:'Invalid QA base request'}});}
+        try{return sendJson(res,200,this.deps.qaBase(spec.id,input.jobId));}catch{return sendJson(res,403,{error:{message:'QA base refused'}});}
+      }
+      if(req.method==='POST'&&path==='/qa/intake'){
+        if(!this.deps.qaIntake)return sendJson(res,403,{error:{message:'QA intake disabled'}});
+        let input:unknown;try{input=JSON.parse((await readBody(req,2048)).toString('utf8'));}catch{return sendJson(res,400,{error:{message:'Invalid QA intake'}});}
+        try{return sendJson(res,200,this.deps.qaIntake(spec.id,input));}catch{return sendJson(res,403,{error:{message:'QA intake refused'}});}
+      }
+      if(req.method==='POST'&&path==='/qa/status'){
+        if(!this.deps.qaStatus)return sendJson(res,403,{error:{message:'QA status disabled'}});
+        let input:any;
+        try{input=JSON.parse((await readBody(req,1024)).toString('utf8'));if(!input||Object.keys(input).join(',')!=='jobId'||typeof input.jobId!=='string'||!/^[-\w]{1,80}$/.test(input.jobId))throw new Error();}
+        catch{return sendJson(res,400,{error:{message:'Invalid QA status request'}});}
+        try{return sendJson(res,200,this.deps.qaStatus(spec.id,input.jobId));}catch{return sendJson(res,403,{error:{message:'QA status refused'}});}
+      }
+      if (req.method === 'POST' && path === '/qa/publication') {
+        if (!this.deps.qaPublication) return sendJson(res,403,{error:{message:'QA publication disabled'}});
+        let request:unknown;
+        try {request=JSON.parse((await readBody(req,3*1024*1024)).toString('utf8'));}
+        catch {return sendJson(res,400,{error:{message:'Invalid QA publication'}});}
+        try {return sendJson(res,200,this.deps.qaPublication(spec.id,request));}
+        catch {return sendJson(res,403,{error:{message:'QA publication binding refused'}});}
+      }
+      if (req.method === 'POST' && path === '/qa/validation') {
+        if (!this.deps.qaValidation) return sendJson(res, 403, { error: { message: 'QA validation disabled' } });
+        let candidate: unknown;
+        try { candidate=JSON.parse((await readBody(req,3*1024*1024)).toString('utf8')); }
+        catch { return sendJson(res,400,{error:{message:'Invalid QA candidate'}}); }
+        try { return sendJson(res,200,this.deps.qaValidation(spec.id,candidate)); }
+        catch { return sendJson(res,403,{error:{message:'QA candidate or agent binding refused'}}); }
+      }
       if (req.method === 'POST' && path === '/v1/chat/completions') return await this.llm(req, res, spec);
       if (req.method === 'GET' && path === '/v1/models') return sendJson(res, 200, { object: 'list', data: [{ id: spec.model, object: 'model', owned_by: 'ainize' }] });
       if (req.method === 'POST' && path === '/egress') return await this.egress(req, res, spec);

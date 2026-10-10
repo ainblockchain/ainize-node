@@ -1,9 +1,24 @@
+import {HostedQaRevalidationService} from './hosted-qa-revalidation-service.js';
+import {HostedQaIntake} from './hosted-qa-intake.js';
+import {HostedQaRoutes,scopedQaCapabilities,type QaSharedProfiles} from './hosted-qa-routes.js';
+import {validateDeploymentProfile,type QaDeploymentProfile} from './hosted-qa-deployment.js';
+import {HostedQaRelease,qaReleaseGitHubClient,type QaReleaseProfile} from './hosted-qa-release.js';
+import {HostedQaReviewStore} from './hosted-qa-review-store.js';
+import {HostedQaReviewCoordinator,type HostedReviewProfile,type HostedReviewReaders} from './hosted-qa-review-coordinator.js';
+import {HostedQaReviewLoop} from './hosted-qa-review-loop.js';
+import {ainmemReviewReader} from './hosted-qa-review.js';
+import {teamsReviewClient} from './hosted-qa-teams-client.js';
+import {HostedQaPublisher,qaGitHubClient,type QaPublicationProfile} from './hosted-qa-publication.js';
+import {HostedQaPublicationService} from './hosted-qa-publication-service.js';
+import {HostedQaBases,prepareQaCheckout,type QaBaseProfile} from './hosted-qa-base.js';
+import { HostedQaValidationService } from './hosted-qa-validation-service.js';
+import {qaCandidateDigest,type QaValidationProfile} from './hosted-qa-validator.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
  * Assemble and run a marketplace node: ledger + store + blobs + runtime + market + p2p + verifier + HTTP.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -14,7 +29,7 @@ import { HostedAgentStore, HOSTED_AGENT_DEFAULT_LIMITS } from './hosted-agent-st
 import { HostedAgentSecretStore } from './hosted-agent-secrets.js';
 import { ensureHostedAgentPopKeys } from './hosted-agent-pop.js';
 import { HostedAgentGateway } from './hosted-agent-gateway.js';
-import { HostedAgentHost } from './hosted-agent-host.js';
+import { HostedAgentHost, hostedAgentScheduleIds } from './hosted-agent-host.js';
 import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
 import { RunSandbox, RUN_SANDBOX_DEFAULTS } from './run-sandbox.js';
@@ -481,7 +496,107 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     call: (target: PeerModelTarget, kind: 'transcription' | 'image' | 'decision', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
+  const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
+  let qaBases:HostedQaBases|undefined;
+  let qaRevalidation:HostedQaRevalidationService|undefined;
+  const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
+    JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>,undefined,(id,job,candidate)=>{
+      if(!qaBases?.configured(id))return undefined;
+      if(!job)throw new Error('Prepared job base required');
+      return qaBases.requireProfile(id,job,candidate);
+    }) : undefined;
+  const publicationPath=process.env.AINIZE_QA_PUBLICATION_PROFILES;
+  let qaPublication:HostedQaPublicationService|undefined,qaIntake:HostedQaIntake|undefined;
+  let qaRoutes:HostedQaRoutes|undefined;
+  let intakeRequired=new Set<string>();
+  let qaReviewStore:HostedQaReviewStore|undefined,qaReviewLoop:HostedQaReviewLoop|undefined;
+  const readQaToken=(path:string)=>{
+    const st=lstatSync(path);
+    if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA token file must be private');
+    const token=readFileSync(path,'utf8').trim();if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA token');return token;
+  };
+  if(process.env.AINIZE_QA_BASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA base preparation requires verified intake');
+  if(process.env.AINIZE_QA_SHARED_PROFILES&&(!process.env.AINIZE_QA_REVIEW_PROFILES||!process.env.AINIZE_QA_BASE_PROFILES))throw new Error('Shared QA requires verified intake and prepared bases');
+  if(process.env.AINIZE_QA_DEPLOYMENT_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA deployment observation requires review configuration');
+  if(process.env.AINIZE_QA_RELEASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA release requires canonical review configuration');
+  if(process.env.AINIZE_QA_REVIEW_PROFILES&&!publicationPath)throw new Error('QA review requires publication configuration');
+  if(publicationPath){
+    if(!qaValidation)throw new Error('QA publication requires host validation');
+    const tokenPath=process.env.AINIZE_QA_PUBLICATION_TOKEN_FILE;
+    if(!tokenPath)throw new Error('QA publication token file required');
+    const github=qaGitHubClient(readQaToken(tokenPath));
+    const reviewPath=process.env.AINIZE_QA_REVIEW_PROFILES;
+    if(reviewPath){
+      type Profile=HostedReviewProfile&{ainmemOrigin:string;ainmemTokenFile:string;teamsOrigin:string;teamsTokenFile:string};
+      const profiles=JSON.parse(readFileSync(reviewPath,'utf8')) as Record<string,Profile>;
+      const ainmem=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,ainmemReviewReader(p.ainmemOrigin,readQaToken(p.ainmemTokenFile))]));
+      const teams=Object.fromEntries(Object.entries(profiles).map(([id,p])=>[id,teamsReviewClient(p.teamsOrigin,readQaToken(p.teamsTokenFile))]));
+      const readers:HostedReviewReaders={ainmem:(id,job,board,subjects)=>{if(!Object.hasOwn(ainmem,id))throw new Error('Unknown review agent');return ainmem[id](job,board,subjects);},github:(repo,number)=>github('GET',`/repos/${repo}/pulls/${number}`),teams:id=>{if(!Object.hasOwn(teams,id))throw new Error('Unknown review agent');return teams[id];}};
+      qaReviewStore=new HostedQaReviewStore(join(cfg.dataDir,'qa-review'));
+      qaIntake=new HostedQaIntake(qaReviewStore,profiles,readers.teams);
+      if(process.env.AINIZE_QA_SHARED_PROFILES){
+        const shared=JSON.parse(readFileSync(process.env.AINIZE_QA_SHARED_PROFILES,'utf8')) as QaSharedProfiles;
+        const validations=JSON.parse(readFileSync(qaProfilesPath!,'utf8')) as Record<string,QaValidationProfile>;
+        const publications=JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>;
+        const bases=JSON.parse(readFileSync(process.env.AINIZE_QA_BASE_PROFILES!,'utf8')) as Record<string,{branch:string}>;
+        qaRoutes=new HostedQaRoutes(qaReviewStore,shared,profiles,readers.teams);
+        for(const selection of Object.values(shared)){
+          const web=profiles[selection.web],api=profiles[selection.api];
+          if(web.teamsOrigin!==api.teamsOrigin||web.ainmemOrigin!==api.ainmemOrigin||readQaToken(web.teamsTokenFile)!==readQaToken(api.teamsTokenFile)||readQaToken(web.ainmemTokenFile)!==readQaToken(api.ainmemTokenFile))throw new Error('Shared QA must use one Teams and Ainmem identity');
+          for(const scope of Object.values(selection))if(!Object.hasOwn(validations,scope)||!Object.hasOwn(publications,scope)||!Object.hasOwn(bases,scope)||validations[scope].repository!==profiles[scope].repository||publications[scope].repository!==profiles[scope].repository||publications[scope].branch!==profiles[scope].branch)throw new Error('Shared QA repository capabilities incomplete');
+        }
+      }
+      intakeRequired=new Set(Object.entries(profiles).filter(([,p])=>p.intakeEnabledAt).map(([id])=>id));
+      if(process.env.AINIZE_QA_BASE_PROFILES){
+        const branches=JSON.parse(readFileSync(process.env.AINIZE_QA_BASE_PROFILES,'utf8')) as Record<string,{branch:string}>;
+        const validations=JSON.parse(readFileSync(qaProfilesPath!,'utf8')) as Record<string,QaValidationProfile>;
+        const baseProfiles:Record<string,QaBaseProfile>={};
+        for(const [id,p] of Object.entries(branches)){
+          if(!intakeRequired.has(id)||!Object.hasOwn(validations,id))throw new Error('QA base agent requires intake and validation profiles');
+          if(p.branch!==profiles[id].branch||validations[id].repository!==profiles[id].repository)throw new Error('QA base and review scope must match');
+          baseProfiles[id]={branch:p.branch,validation:validations[id]};
+        }
+        qaBases=new HostedQaBases(join(cfg.dataDir,'qa-bases'),baseProfiles,{
+          head:async(repo,branch)=>{const ref=await github('GET',`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);return ref?.object?.sha;},
+          prepare:(profile,base)=>prepareQaCheckout(profile,base,readQaToken(tokenPath)),
+        },(id,job)=>{if(!qaReviewStore?.intake(id,job))throw new Error('Verified intake required for job base');},
+        (id,job,request)=>qaReviewStore!.authorizeRevalidation(id,job,request));
+        qaRevalidation=new HostedQaRevalidationService(qaBases,qaReviewStore);
+      }
+      const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
+      let release:HostedQaRelease|undefined;
+      const releasePath=process.env.AINIZE_QA_RELEASE_PROFILES;
+      if(releasePath){
+        const releaseTokenPath=process.env.AINIZE_QA_RELEASE_TOKEN_FILE;
+        if(!releaseTokenPath)throw new Error('QA release token file required');
+        release=new HostedQaRelease(qaReviewStore,coordinator,JSON.parse(readFileSync(releasePath,'utf8')) as Record<string,QaReleaseProfile>,qaReleaseGitHubClient(readQaToken(releaseTokenPath)),(id,candidate,job)=>qaValidation!.requirePassed(id,candidate,job));
+      }
+      const deploymentPath=process.env.AINIZE_QA_DEPLOYMENT_PROFILES;
+      let deployments:Record<string,QaDeploymentProfile>|undefined;
+      if(deploymentPath){
+        deployments=JSON.parse(readFileSync(deploymentPath,'utf8')) as Record<string,QaDeploymentProfile>;
+        for(const profile of Object.values(deployments))validateDeploymentProfile(profile);
+      }
+      qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release,deployments?{profiles:deployments,github:path=>github('GET',path)}:undefined);
+    }
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job,candidate)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');qaValidation!.requirePassed(id,candidate,job);},qaReviewStore?(id,job,candidate,status)=>{
+      qaReviewStore!.recordPublicationBaseChange(id,job,candidate,status.observedBase,status.artifact);
+      const saved=qaReviewStore!.publicationBaseChange(id,job,status.candidateDigest)!;
+      const {teamsRequest:_request,...evidence}=saved;return {state:'requires_revalidation',...evidence};
+    }:undefined,qaReviewStore?(id,job,candidate)=>{
+      const saved=qaReviewStore!.publicationBaseChange(id,job,qaCandidateDigest(candidate));
+      if(!saved)return null;const {teamsRequest:_request,...evidence}=saved;return {state:'requires_revalidation',...evidence};
+    }:undefined);
+  }
   const hostedGateway = new HostedAgentGateway({
+    ...scopedQaCapabilities(qaRoutes,{
+      qaRevalidation:qaRevalidation?(id,input)=>qaRevalidation!.submit(id,input):undefined,
+      qaBase:qaBases?(id,job)=>qaBases!.submit(id,job):undefined,
+      qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
+      qaStatus:qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
+      qaPublication:qaPublication?(id,request)=>qaPublication.submit(id,request):undefined,
+      qaValidation:qaValidation?(id,candidate)=>qaValidation.submit(id,candidate):undefined,
+    }),
     registry: () => inferenceRegistry,
     peerModels,
     // Read on each call: the gates are filled further down, once the backends block has been walked.
@@ -516,6 +631,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     }) : null,
     idleStopMs: dockerCfg?.idleStopMs ?? 600_000,
     maxRunning: dockerCfg?.maxRunning ?? 20,
+    scheduledAgentIds: hostedAgentScheduleIds(process.env.AINIZE_HOSTED_SCHEDULED_AGENTS),
     tasks: new HostedAgentTaskFile(join(cfg.dataDir, 'hosted-agent-tasks.sqlite')),
     log: (level, message) => market.log(level, 'agents', message),
   });
@@ -1132,6 +1248,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   // The same 20-second tick brings subscribed tracks up to date (item 255): "subscribe" was a one-time snapshot and
   // nothing ever reacted to a later `branch` or `supersede` record, so a subscriber served yesterday's retired bake
   // indefinitely while every screen said it was current.
+  const qaReviewTimer=qaReviewLoop?setInterval(()=>{void qaReviewLoop!.tick().catch(()=>market.log('warn','agents','QA review loop failed'));},30000):null;
+  qaReviewTimer?.unref();
   const watchdog = setInterval(() => {
     market.watchdog().catch(() => undefined);
     market.reconcileSupersedes().catch(() => undefined);
@@ -1194,6 +1312,14 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       if (inferenceTimer) clearInterval(inferenceTimer);
       depositWatcher?.stop();
       try { store.set('node.stopped_at', String(Date.now())); } catch { /* the database may already be gone */ }
+      if(qaReviewTimer)clearInterval(qaReviewTimer);
+      // Drain an in-flight read pass before closing its SQLite ledger.
+      if(qaReviewLoop)await qaReviewLoop.drain();
+      await qaIntake?.drain();
+      await qaRoutes?.drain();
+      await qaRevalidation?.drain();
+      await qaBases?.drain();
+      qaReviewStore?.close();
       clearInterval(watchdog);
       clearInterval(retention);
       clearInterval(diskWatch);

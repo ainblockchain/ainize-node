@@ -1,0 +1,125 @@
+/** Validate a coding candidate against a product's configured gates.
+ *
+ * Gate execution is injected. In production each gate runs the real product check
+ * (typecheck/lint/test/build/browser) in an isolated, credential-free container built from the
+ * pinned base commit plus the candidate's changed files; this module owns only the orchestration
+ * and the strict binding of a verdict to the exact candidate. No gate here publishes a commit,
+ * deploys, or can reach release credentials, and a verdict is bound to the candidate's content so
+ * it can never be reattributed to a different candidate or an older commit.
+ */
+import { createHash } from 'node:crypto';
+import { CodingSession } from './coding.mjs';
+
+const canonical = value => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
+  return value;
+};
+
+/** A candidate is its repository, pinned base commit, and the exact changed files. */
+export function candidateDigest({ repository, base, changes }) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository ?? '')) throw new Error('Repository required');
+  if (!/^[a-f0-9]{40}$/.test(base ?? '')) throw new Error('Full base commit SHA required');
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('Candidate changes required');
+  const entries = Object.entries(changes);
+  if (!entries.length || entries.length > 40 || entries.some(([path, content]) =>
+    !path || path.startsWith('/') || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')
+    || typeof content !== 'string')) throw new Error('Invalid candidate files');
+  return createHash('sha256').update(JSON.stringify(canonical({ repository, base, changes }))).digest('hex');
+}
+
+const GATE = /^[a-z][a-z0-9_-]{0,31}$/;
+
+/**
+ * Run the configured gates in order and return a verdict bound to the candidate digest. Stops at
+ * the first failing gate: later gates add no signal to an already-failed candidate. `passed` is true
+ * only when every configured gate ran and passed.
+ */
+export async function validateCandidate({ repository, base, changes, gates, run }) {
+  if (!Array.isArray(gates) || gates.length === 0 || gates.length > 16
+    || !gates.every(g => GATE.test(g)) || new Set(gates).size !== gates.length) throw new Error('Invalid gate list');
+  if (typeof run !== 'function') throw new Error('A gate runner is required');
+  const digest = candidateDigest({ repository, base, changes });
+  // Snapshot before the first await: caller and gate code cannot change what this digest covers.
+  const candidate = Object.freeze({ repository, base, changes: Object.freeze({ ...changes }) });
+  const gateNames = [...gates];
+  const results = [];
+  for (const gate of gateNames) {
+    let outcome;
+    try { outcome = await run(gate, candidate); }
+    catch (error) { outcome = { passed: false, summary: `gate errored: ${error?.message ?? 'unknown'}` }; }
+    results.push({ gate, passed: outcome?.passed === true, summary: typeof outcome?.summary === 'string' ? outcome.summary.slice(0, 4000) : '' });
+    if (!results.at(-1).passed) break;
+  }
+  return { candidateDigest: digest, repository, base, gates: results, passed: results.length === gateNames.length && results.every(r => r.passed) };
+}
+
+/**
+ * One bounded validation step under the SQLite lease, mirroring `advanceCoding`. The host schedules
+ * this once a `needs_validation` job is woken; it loads the immutable coding checkpoint, runs the
+ * gates, saves an immutable verdict, and parks the job in `waiting` at `needs_publication` (all gates
+ * passed) or `validation_failed` (otherwise). It never publishes, deploys, or records an approval —
+ * the candidate is preserved for a human-approved release path to pick up by the exact digest.
+ */
+export async function advanceValidation({ jobs, claim, checkpoints, gates, run }) {
+  const { job, lease } = claim;
+  if (!job || job.state !== 'running' || job.checkpoint.stage !== 'needs_validation') throw new Error('Job is not awaiting validation');
+  const codingRef = job.checkpoint.coding;
+  if (!codingRef || codingRef.jobId !== job.id) throw new Error('No coding candidate to validate');
+  const coding = checkpoints.load(codingRef);
+  if (coding.repository !== job.input.repository || coding.commit !== job.input.base) {
+    throw new Error('Coding candidate does not match the job repository and base');
+  }
+  // Validation may outlive the initial claim; refresh the lease while gates run.
+  jobs.renew(job.id, lease, 120_000);
+  let lost = false;
+  const heartbeat = setInterval(() => { try { jobs.renew(job.id, lease, 120_000); } catch { lost = true; } }, 30_000);
+  heartbeat.unref();
+  try {
+    const result = await validateCandidate({ repository: coding.repository, base: coding.commit, changes: coding.changes, gates, run });
+    if (lost) throw new Error('Job lease lost during validation');
+    jobs.renew(job.id, lease, 120_000);
+    const validation = checkpoints.save(job.id, { kind: 'validation', ...result });
+    // Save before SQLite references it, so an interrupted write never leaves a broken reference.
+    const updated = jobs.finish(job.id, lease, 'waiting', {
+      ...job.checkpoint,
+      stage: result.passed ? 'needs_publication' : 'validation_failed',
+      validation,
+    });
+    return { job: updated, result };
+  } finally { clearInterval(heartbeat); }
+}
+
+/** Poll an operator-configured host validator. Commands, images and checkout paths never come from the model. */
+export async function advanceHostedValidation({ jobs, claim, checkpoints, ctx }) {
+  const { job, lease } = claim;
+  if (job.state !== 'running' || job.checkpoint.stage !== 'needs_validation' || job.checkpoint.coding?.jobId !== job.id) throw new Error('Job is not awaiting hosted validation');
+  const coding=checkpoints.load(job.checkpoint.coding);
+  if (coding.repository !== job.input.repository || coding.commit !== job.input.base) throw new Error('Candidate binding mismatch');
+  if (!ctx.qa?.validate) throw new Error('Host validation capability unavailable');
+  const candidate={repository:coding.repository,base:coding.commit,changes:coding.changes};
+  const digest=candidateDigest(candidate);
+  jobs.renew(job.id,lease,60000);
+  const reply=await ctx.qa.validate(candidate,job.checkpoint.hostBase?job.id:undefined);
+  if (reply?.state === 'running' || reply?.state === 'busy') return jobs.finish(job.id,lease,'queued',job.checkpoint);
+  if (reply?.state === 'failed') return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,holdReason:'host_validation_failed'});
+  const result=reply?.result;
+  if (reply?.state !== 'done' || result?.candidateDigest !== digest || result.repository !== candidate.repository || result.base !== candidate.base
+    || typeof result.passed !== 'boolean' || !Array.isArray(result.gates) || !result.gates.length
+    || result.gates.some(g=>typeof g.gate!=='string'||typeof g.passed!=='boolean')
+    || (result.passed && !result.gates.every(g=>g.passed))) throw new Error('Host validation receipt mismatch');
+  const validation=checkpoints.save(job.id,{kind:'validation',...result});
+  const attempts=job.checkpoint.validationAttempts ?? [];
+  if(!Array.isArray(attempts)||attempts.length>2||attempts.some(a=>a?.coding?.jobId!==job.id||a?.validation?.jobId!==job.id))throw new Error('Invalid validation repair history');
+  // Only pre-publication failures can return to coding. Prior candidates remain immutable.
+  if(!result.passed && attempts.length<2 && coding.rounds<40
+    && !['published','approval','release','deployment'].some(k=>Object.hasOwn(job.checkpoint,k))){
+    const feedback=JSON.stringify(result.gates.filter(g=>!g.passed).map(g=>({gate:g.gate,summary:g.summary,diagnostics:g.diagnostics}))).slice(0,5000);
+    const session=new CodingSession({repository:coding.repository,commit:coding.commit},job.input.text,coding);
+    const repaired=checkpoints.save(job.id,session.retryValidation(feedback));
+    const {stepFailures:_stepFailures,holdReason:_holdReason,...prior}=job.checkpoint;
+    return jobs.finish(job.id,lease,'queued',{...prior,stage:'coding',coding:repaired,validation,
+      validationAttempts:[...attempts,{coding:job.checkpoint.coding,validation}]});
+  }
+  return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,validation,stage:result.passed?'needs_publication':'validation_failed'});
+}

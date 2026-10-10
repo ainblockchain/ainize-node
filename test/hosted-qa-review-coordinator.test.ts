@@ -1,0 +1,217 @@
+import {test} from 'node:test';
+import {createHash} from 'node:crypto';
+import {HostedQaReviewLoop} from '../src/hosted-qa-review-loop.js';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync,statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {HostedQaReviewStore} from '../src/hosted-qa-review-store.js';
+import {HostedQaReviewCoordinator} from '../src/hosted-qa-review-coordinator.js';
+import {captureReview,type ReviewTarget,type ReviewSnapshot} from '../src/hosted-qa-review.js';
+const target:ReviewTarget={jobId:'job',repository:'test/product',branch:'main',base:'a'.repeat(40),sha:'b'.repeat(40),number:1,candidateDigest:'c'.repeat(64),pageId:'page',databaseId:'board',workspaceId:'ainmem',teamsWorkspaceId:'teams',channelId:'qa',issuer:'https://auth.example',orgId:'org'};
+const body=`https://github.com/test/product/pull/1\n${target.sha}`;
+const policy={issuer:target.issuer,orgId:target.orgId,workspaceId:target.workspaceId,teamsWorkspaceId:target.teamsWorkspaceId,channelId:target.channelId,approverSubjects:['admin']};
+const profile={repository:target.repository,branch:target.branch,databaseId:target.databaseId,policy,identities:{'https://auth.example\nadmin':'teams-admin'}};
+const snapshot:ReviewSnapshot={jobId:'job',databaseId:'board',pageId:'page',workspaceId:'ainmem',issuer:target.issuer,orgId:'org',body,revision:1,digest:'d'.repeat(64),observedAt:'2026-10-10T00:00:00Z',truncated:false,approvalGranted:false,comments:[]};
+const pr={state:'open',number:1,head:{sha:target.sha,repo:{full_name:target.repository}},base:{sha:target.base,ref:'main',repo:{full_name:target.repository}}};
+test('restart preserves first presentation; every observation rereads permissions and does not cache approval',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-ledger-'));let store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ let current=structuredClone(snapshot),active=true,reads=0;
+ const readers={ainmem:async()=>{reads++;return structuredClone(current);},github:async()=>pr,teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:active?[{userId:'teams-admin',isAgent:false}]:[]})};
+ let coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ const first=await coordinator.register('agent',target,body);assert.equal(first.generation,1);
+ store.close();store=new HostedQaReviewStore(root);coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ current.observedAt='2026-10-10T00:00:20Z';
+ assert.equal((await coordinator.register('agent',target,body)).presentation.presentedAt,snapshot.observedAt);
+ current.comments=[{id:'comment',body:'LGTM',createdAt:'2026-10-10T00:00:10Z',authorId:'human',subject:'admin'}];
+ const decision=await coordinator.check('agent','job',Date.parse(current.observedAt));assert.equal(decision?.generation,1);assert.equal(decision?.sha,target.sha);
+ active=false;assert.equal(await coordinator.check('agent','job',Date.parse(current.observedAt)),null);assert.equal(reads,4);
+ assert.equal(statSync(join(root,'reviews.sqlite3')).mode&0o077,0);
+ await assert.rejects(coordinator.check('other','job'),/not configured/);
+ const changed=new HostedQaReviewCoordinator(store,{agent:{...profile,policy:{...policy,approverSubjects:['admin','new']}}},readers);
+ await assert.rejects(changed.check('agent','job',Date.parse(current.observedAt)),/policy changed/);
+});
+test('candidate changes create a new generation; old approval and delayed capture cannot overwrite it',()=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-race-'));const store=new HostedQaReviewStore(root);
+ try{
+  const first=store.bind('agent',captureReview(target,snapshot,body),0);
+  const nextTarget={...target,sha:'e'.repeat(40)},nextBody=body.replace(target.sha,nextTarget.sha);
+  const nextSnapshot={...snapshot,body:nextBody,revision:2,observedAt:'2026-10-10T00:00:30Z'};
+  const next=store.bind('agent',captureReview(nextTarget,nextSnapshot,nextBody),1);assert.equal(next.generation,2);
+  assert.throws(()=>store.observe(first,{} as any),/changed while checking/);
+  assert.throws(()=>store.bind('agent',captureReview(target,{...snapshot,observedAt:'2026-10-10T00:00:40Z'},body),1),/changed while capturing/);
+  // Returning to a previous candidate is a new generation, never reuse of the previous review.
+  const restored=store.bind('agent',captureReview(target,{...snapshot,observedAt:'2026-10-10T00:01:00Z'},body),2);
+  assert.equal(restored.generation,3);assert.equal(restored.presentation.presentedAt,'2026-10-10T00:01:00Z');
+ }finally{store.close();rmSync(root,{recursive:true,force:true});}
+});
+test('an in-flight canonical check cannot record approval after another worker replaces the review',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-check-race-'));const store=new HostedQaReviewStore(root);
+ try{
+  const bootstrap=new HostedQaReviewCoordinator(store,{agent:profile},{ainmem:async()=>snapshot,github:async()=>pr,teams:()=>({call:async()=>[]})});
+  const first=await bootstrap.register('agent',target,body);
+  const later={...snapshot,observedAt:'2026-10-10T00:00:20Z',comments:[{id:'comment',body:'LGTM',createdAt:'2026-10-10T00:00:10Z',authorId:'human',subject:'admin'}]};
+  const coordinator=new HostedQaReviewCoordinator(store,{agent:profile},{github:async()=>pr,teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:[{userId:'teams-admin',isAgent:false}]}),ainmem:async()=>{
+   store.bind('agent',captureReview(target,{...snapshot,revision:2,observedAt:'2026-10-10T00:00:30Z'},body),first.generation);return later;
+  }});
+  await assert.rejects(coordinator.check('agent','job',Date.parse(later.observedAt)),/changed while checking/);
+ }finally{store.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('persisted original thread approvals require fresh SSO eligibility on every coordinator check',async t=>{
+ const {createHash}=await import('node:crypto');
+ const root=mkdtempSync(join(tmpdir(),'qa-thread-coordinator-'));const store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const clock=Date.now(),parent={id:'request',userId:'requester',content:'여백 고쳐줘.',parentId:null,createdAt:new Date(clock-60000).toISOString()};
+ const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:parent.id,requestId:parent.id,requestAuthorId:parent.userId,requestCreatedAt:parent.createdAt,requestDigest:createHash('sha256').update(parent.content).digest('hex')};
+ let active=true,registered=false,requested:string[]|undefined;
+ const replies=[{id:'approval',userId:'teams-admin',content:'LGTM',parentId:parent.id,createdAt:new Date(clock-10000).toISOString()}];
+ const readers={ainmem:async(_agent:string,_job:string,_board:string,subjects?:string[])=>{requested=subjects;return {...snapshot,observedAt:registered?new Date().toISOString():new Date(clock-30000).toISOString(),reviewers:active?[{subject:'admin'}]:[]};},github:async()=>pr,teams:()=>({call:async(name:string)=>{
+  if(name==='list_channels')return [{id:'qa'}];if(name==='list_channel_members')return [{userId:'teams-admin',isAgent:false}];if(name==='read_channel')return {messages:[parent],nextCursor:null};if(name==='read_thread')return {parent,replies};throw Error('Unexpected tool');
+ }})};
+ const coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ await coordinator.register('agent',{...target,teamsRequest},body);registered=true;
+ const approval=await coordinator.check('agent','job');assert.equal(approval?.source,'teams');assert.deepEqual(requested,['admin']);assert.equal(approval?.sha,target.sha);
+ active=false;assert.equal(await coordinator.check('agent','job'),null);
+ active=true;replies[0].content='not LGTM';assert.equal(await coordinator.check('agent','job'),null);
+});
+
+test('one Teams thread cannot authorize two simultaneous review targets',()=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-thread-exclusive-'));const store=new HostedQaReviewStore(root);
+ try{
+  const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:'root',requestId:'first',requestAuthorId:'human',requestCreatedAt:snapshot.observedAt,requestDigest:'1'.repeat(64)};
+  store.bind('agent',captureReview({...target,teamsRequest},snapshot,body),0);
+  const another={...target,jobId:'another',teamsRequest:{...teamsRequest,requestId:'second'}};
+  assert.throws(()=>store.bind('agent',captureReview(another,{...snapshot,jobId:'another'},body),0),/Another review/);
+  store.enqueuePublication('agent','another',{teamsRequest:another.teamsRequest});
+  assert.throws(()=>store.assertUnambiguousThread('agent','job',teamsRequest),/Ambiguous/);
+ }finally{store.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('shared thread ambiguity is enforced across repository agents and after restart', t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-cross-agent-thread-'));
+ let store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const teamsRequest={workspaceId:policy.teamsWorkspaceId,channelId:policy.channelId,rootId:'root',requestId:'first',requestAuthorId:'human',requestCreatedAt:snapshot.observedAt,requestDigest:'1'.repeat(64)};
+ const first=store.bind('web-agent',captureReview({...target,teamsRequest},snapshot,body),0);
+ // Even an identical job ID on another agent must not be excluded as the current job.
+ const another={...target,repository:'test/api',teamsRequest:{...teamsRequest,requestId:'second'}};
+ const otherBody=body.replace('test/product','test/api');
+ assert.throws(()=>store.bind('api-agent',captureReview(another,{...snapshot,body:otherBody},otherBody),0),/Another review/);
+ const approval={source:'teams' as const,threadId:'root',requestId:'first',jobId:target.jobId,pageId:target.pageId,commentId:'teams:root:approval',subject:'admin',issuer:target.issuer,orgId:target.orgId,repository:target.repository,number:target.number,sha:target.sha,candidateDigest:target.candidateDigest,presentationDigest:first.presentation.bodyDigest,approvedAt:'2026-10-10T00:00:10Z',checkedAt:'2026-10-10T00:00:20Z'};
+ assert.doesNotThrow(()=>store.observe(first,approval));
+ store.enqueuePublication('api-agent','job',{teamsRequest:another.teamsRequest});
+ store.close();store=new HostedQaReviewStore(root);
+ assert.throws(()=>store.assertUnambiguousThread('web-agent','job',teamsRequest),/Ambiguous/);
+ // A conflict arriving after remote verification is checked again when recording evidence.
+ assert.throws(()=>store.observe(first,approval),/Ambiguous/);
+ assert.throws(()=>store.releaseIntent(first,approval),/Ambiguous/);
+ assert.equal(store.releaseRecord(first),null);
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,rootId:'other'}));
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,workspaceId:'other'}));
+ assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,channelId:'other'}));
+});
+
+test('main advancement durably invalidates only the matching generation and never revives old approval',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-base-change-'));let store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ let remote=structuredClone(pr),current=structuredClone(snapshot);
+ const readers={ainmem:async()=>current,github:async()=>remote,teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:[{userId:'teams-admin',isAgent:false}]})};
+ let coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ const review=await coordinator.register('agent',target,body);store.enqueuePublication('agent','job',target);
+ current={...snapshot,observedAt:'2026-10-10T00:00:20Z',comments:[{id:'approval',body:'LGTM',createdAt:'2026-10-10T00:00:10Z',authorId:'human',subject:'admin'}]};
+ const now=Date.parse(current.observedAt);assert.ok(await coordinator.check('agent','job',now));
+ remote={...pr,base:{...pr.base,sha:'e'.repeat(40),repo:{full_name:'different/repo'}}};
+ await assert.rejects(coordinator.check('agent','job',now),/PR changed/);assert.equal(store.baseChange(review),null);
+ remote={...pr,base:{...pr.base,sha:'not-a-sha'}};
+ await assert.rejects(coordinator.check('agent','job',now),/Invalid reviewed/);assert.equal(store.baseChange(review),null);
+ remote={...pr,base:{...pr.base,sha:'e'.repeat(40)}};
+ await assert.rejects(coordinator.check('agent','job',now),/base changed/);
+ assert.equal(store.lifecycle('agent','job').state,'requires_revalidation');assert.equal(store.lifecycle('agent','job').observedBase,'e'.repeat(40));
+ store.close();store=new HostedQaReviewStore(root);coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ remote=structuredClone(pr);await assert.rejects(coordinator.check('agent','job',now),/base changed/);
+ assert.equal(store.baseChange(review),'e'.repeat(40));
+ const next=store.bind('agent',{...review.presentation,target:{...target,base:'e'.repeat(40),sha:'f'.repeat(40)},presentedAt:'2026-10-10T00:01:00Z'},1);
+ assert.equal(store.baseChange(next),null);assert.throws(()=>store.invalidateBase(review,'f'.repeat(40)),/Review changed/);
+ assert.equal(store.baseChange(next),null);
+});
+
+test('revalidation reservation preserves invalidated review and publication across restart', async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-revalidation-'));let store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'root',requestAuthorId:'human',requestDigest:createHash('sha256').update('여백 고쳐줘').digest('hex'),requestCreatedAt:'2026-10-09T00:00:00Z'};
+ const scoped={...target,teamsRequest:binding},publication={...target,teamsRequest:binding,url:'https://github.com/test/product/pull/1'};
+ store.registerIntake('agent','job',binding);store.enqueuePublication('agent','job',publication);
+ const review=store.bind('agent',captureReview(scoped,snapshot,body),0);
+ const request={previousBase:target.base,sequence:1,sourceDigest:'f'.repeat(64)};
+ assert.throws(()=>store.authorizeRevalidation('agent','job',request),/Invalidated/);
+ store.invalidateBase(review,'d'.repeat(40));store.authorizeRevalidation('agent','job',request);
+ store.authorizeRevalidation('agent','job',request);
+ assert.equal(store.revalidationHistory('agent','job').length,1);
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].publication,publication);
+ store.close();store=new HostedQaReviewStore(root);store.authorizeRevalidation('agent','job',request);
+ assert.equal(store.current('agent','job')?.generation,1);assert.deepEqual(store.publication('agent','job'),publication);
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{...request,sourceDigest:'1'.repeat(64)}),/reservation changed/);
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{...request,sequence:2}),/already reserved/);
+ assert.throws(()=>store.authorizeRevalidation('other','job',request),/Invalidated/);
+ assert.throws(()=>store.bind('agent',captureReview(scoped,{...snapshot,revision:2,digest:'a'.repeat(64),observedAt:'2026-10-10T00:00:30Z'},body),1),/reserved/);
+ assert.equal(store.baseChange(review),'d'.repeat(40));
+ const {HostedQaBases}=await import('../src/hosted-qa-base.js');
+ const validation={repository:target.repository,base:target.base,checkout:'/operator/repo',image:'sha256:'+'d'.repeat(64),dependencyPath:'/seed',cwd:'.',gates:[{name:'test',argv:['node','test']}]};
+ let main=target.base;
+ const bases=new HostedQaBases(join(root,'bases'),{agent:{branch:'main',validation}}, {head:async()=>main,prepare:async()=>{}},()=>{assert(store.intake('agent','job'));},(id,job,request)=>store.authorizeRevalidation(id,job,request));
+ await bases.prepare('agent','job');main='d'.repeat(40);
+ const {HostedQaRevalidationService}=await import('../src/hosted-qa-revalidation-service.js');
+ const {HostedAgentGateway}=await import('../src/hosted-agent-gateway.js');
+ const {createHostedAgentCtx}=await import('../src/hosted-agent-runtime/hostedAgentContext.js');
+ const service=new HostedQaRevalidationService(bases,store);
+ const spec=(id:string)=>({id,name:id,model:'unused',mode:'handler' as const,files:{'index.mjs':'export default {}'},allowedHosts:[],version:1,owner:'owner',createdAt:1,updatedAt:1});
+ const gateway=new HostedAgentGateway({registry:()=>null,spec,log:()=>{},qaRevalidation:(id,input)=>service.submit(id,input)});
+ const gatewayUrl=await gateway.listen('127.0.0.1');t.after(()=>gateway.close());
+ const context=(id:string)=>createHostedAgentCtx({spec:spec(id),gateway:{url:gatewayUrl,token:gateway.issue(id)},secrets:{},log:()=>{}},{text:''});
+ const ctx=context('agent');
+ await assert.rejects(context('other').qa!.revalidate!('job',request),/refused/);
+ assert.equal((await ctx.qa!.revalidate!('job',request) as any).state,'running');await service.drain();
+ const prepared=await ctx.qa!.revalidate!('job',request) as any;
+ assert.equal(prepared.state,'done');const receipt=prepared.result;assert.equal(receipt.base,main);
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].prepared,receipt);
+ assert.deepEqual(await bases.prepareRevalidation('agent','job',request),receipt);
+ const replacement={...publication,base:receipt.base,sha:'e'.repeat(40),candidateDigest:'a'.repeat(64),number:2,url:'https://github.com/test/product/pull/2'};
+ store.commitRevalidationBase('agent',receipt);store.commitRevalidationBase('agent',receipt);
+ assert.throws(()=>store.commitRevalidationBase('agent',{...receipt,base:'f'.repeat(40)}),/base changed/);
+ for(const change of [{base:target.base},{sha:target.sha},{number:1},{teamsRequest:{...binding,rootId:'other'}}]){
+  assert.throws(()=>store.enqueuePublication('agent','job',{...replacement,...change}),/reconciliation/);
+ }
+ store.enqueuePublication('agent','job',replacement);store.enqueuePublication('agent','job',replacement);
+ assert.equal(store.lifecycle('agent','job').state,'awaiting_presentation');
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].publication,publication);
+ assert.throws(()=>store.enqueuePublication('agent','job',publication),/reconciliation/);
+ const nextBody=`${replacement.url}\n${replacement.sha}`;
+ const nextSnapshot={...snapshot,body:nextBody,revision:2,digest:'a'.repeat(64),observedAt:'2026-10-10T00:01:00Z'};
+ assert.throws(()=>store.bind('agent',captureReview({...scoped,...replacement,pageId:'different'},{...nextSnapshot,pageId:'different'},nextBody),1),/reserved/);
+ const displayedBody=`상태: waiting / awaiting_approval\n검토 PR: ${replacement.url}\n검토 커밋: ${replacement.sha}`;
+ const rootMessage={id:'root',parentId:null,userId:'human',content:'여백 고쳐줘',createdAt:new Date(binding.requestCreatedAt).toISOString()};
+ const readers={ainmem:async()=>({...nextSnapshot,body:displayedBody}),github:async()=>({number:2,state:'open',head:{sha:replacement.sha,repo:{full_name:target.repository}},base:{sha:replacement.base,ref:'main',repo:{full_name:target.repository}}}),
+  teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:name==='read_channel'?{messages:[rootMessage]}:name==='read_thread'?{parent:rootMessage,replies:[]}:[{userId:'human',isAgent:false},{userId:'teams-admin',isAgent:false}]})};
+ const coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ await new HostedQaReviewLoop(store,coordinator,{agent:profile},readers).tick();
+ const nextReview=store.current('agent','job')!;
+ assert.equal(nextReview.generation,2);assert.equal(nextReview.presentation.target.pageId,review.presentation.target.pageId);
+ assert.equal(store.lifecycle('agent','job').state,'awaiting_approval');
+ assert.throws(()=>store.bind('agent',captureReview(scoped,{...snapshot,revision:3,observedAt:'2026-10-10T00:02:00Z'},body),2),/reserved/);
+ const oldApproval={...target,source:'ainmem',subject:'admin',commentId:'old',approvedAt:'2026-10-10T00:01:10Z',checkedAt:'2026-10-10T00:01:20Z',presentationDigest:nextReview.presentation.bodyDigest};
+ assert.throws(()=>store.observe(nextReview,oldApproval as any),/binding mismatch/);
+ assert.throws(()=>store.observe(review,oldApproval as any),/Review changed/);
+ const fresh={...oldApproval,...replacement,jobId:'job',pageId:'page',presentationDigest:nextReview.presentation.bodyDigest};
+ assert.equal(store.observe(nextReview,fresh as any).generation,2);
+});
+
+test('a pending release intent prevents reservation even after base invalidation', t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-release-race-'));const store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'request',requestAuthorId:'human',requestDigest:'e'.repeat(64),requestCreatedAt:'2026-10-09T00:00:00Z'};
+ store.registerIntake('agent','job',binding);store.enqueuePublication('agent','job',{...target,teamsRequest:binding});
+ const review=store.bind('agent',captureReview({...target,teamsRequest:binding},snapshot,body),0);
+ store.releaseIntent(review,{...target,source:'ainmem',subject:'admin',commentId:'comment',approvedAt:'2026-10-10T00:00:10Z',checkedAt:'2026-10-10T00:00:20Z',presentationDigest:review.presentation.bodyDigest} as any);
+ store.invalidateBase(review,'d'.repeat(40));
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{previousBase:target.base,sequence:1,sourceDigest:'f'.repeat(64)}),/Release reconciliation/);
+ assert.deepEqual(store.revalidationHistory('agent','job'),[]);
+});

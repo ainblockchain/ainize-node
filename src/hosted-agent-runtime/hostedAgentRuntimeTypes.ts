@@ -115,6 +115,7 @@ export interface HostedAgentInput {
 /** What an agent's code is handed on every turn. Identical in and out of Docker. */
 export interface HostedAgentCtx {
   input: HostedAgentInput;
+  qa?: { revalidate?(jobId:string,request:{previousBase:string;sequence:number;sourceDigest:string;candidateDigest?:string}):Promise<unknown>; base?(jobId:string):Promise<unknown>; intake(jobId:string,locator:{messageId:string;parentId?:string}):Promise<unknown>; status(jobId:string):Promise<unknown>; publish(jobId:string, candidate:{repository:string;base:string;changes:Record<string,string>}):Promise<unknown>; validate(candidate: { repository: string; base: string; changes: Record<string,string> }, jobId?:string): Promise<unknown> };
   spec: HostedAgentRuntimeSpec;
   llm: {
     /**
@@ -179,6 +180,8 @@ export interface HostedAgentTool {
 
 /** The module an agent's `index.mjs` default-exports (or exports by name). */
 export interface HostedAgentModule {
+  /** One bounded background step, invoked only by an operator-enabled host schedule. */
+  tick?(ctx: HostedAgentCtx): void | Promise<void>;
   manage?(action: string, params: Record<string, unknown>, ctx: HostedAgentCtx): unknown | Promise<unknown>;
   execute?(input: string, ctx: HostedAgentCtx): HostedAgentReply | Promise<HostedAgentReply>;
   tools?: HostedAgentTool[];

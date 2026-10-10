@@ -32,6 +32,9 @@ export interface HostedAgentHostOptions {
   gatewaySocketPath?: string;
   idleStopMs: number;
   maxRunning: number;
+  /** Operator allowlist. Agent code or incoming messages cannot enable their own schedule. */
+  scheduledAgentIds?: string[];
+  scheduleIntervalMs?: number;
   /** Where prompt agents keep their A2A tasks across restarts (hosted-agent-task-store.ts). Absent: in memory. */
   tasks?: HostedAgentTaskFile;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -52,6 +55,13 @@ interface HostedAgentState {
 const HOSTED_AGENT_START_TIMEOUT_MS = 30_000;
 const HOSTED_AGENT_BUILD_LOG_LINES = 200;
 
+export function hostedAgentScheduleIds(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const ids = [...new Set(value.split(',').map(id => id.trim()))];
+  if (ids.length > 32 || ids.some(id => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(id))) throw new Error('invalid hosted agent schedule allowlist');
+  return ids;
+}
+
 export class HostedAgentHost {
   private readonly state = new Map<string, HostedAgentState>();
   private readonly specs = new Map<string, HostedAgentSpec>();
@@ -61,6 +71,12 @@ export class HostedAgentHost {
   private loopbackGateway = '';
   private dockerGateway = '';
   private sweeper: NodeJS.Timeout | null = null;
+  private scheduler: NodeJS.Timeout | null = null;
+  private scheduling = false;
+  private stopping = false;
+  private readonly scheduledBusy = new Set<string>();
+  private readonly scheduleErrors = new Set<string>();
+  private startQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly o: HostedAgentHostOptions) {}
 
@@ -69,6 +85,7 @@ export class HostedAgentHost {
   }
 
   async start(specs: HostedAgentSpec[]): Promise<void> {
+    this.stopping = false;
     const app = express();
     app.disable('x-powered-by');
     app.use('/a/:id', (req, res, next) => {
@@ -95,10 +112,17 @@ export class HostedAgentHost {
     for (const spec of specs) this.apply(spec, { boot: true });
     this.sweeper = setInterval(() => { void this.sweep(); }, 30_000);
     this.sweeper.unref();
+    if (this.o.scheduledAgentIds?.length) {
+      this.scheduler = setInterval(() => { void this.runScheduled(); }, this.o.scheduleIntervalMs ?? 30_000);
+      this.scheduler.unref();
+    }
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.scheduler) clearInterval(this.scheduler);
     if (this.sweeper) clearInterval(this.sweeper);
+    await this.startQueue;
     if (this.o.docker) await Promise.all([...this.state.entries()].filter(([, s]) => s.upstream && !s.upstream.startsWith(this.loopbackBase)).map(([id]) => this.o.docker!.stop(id)));
     await new Promise<void>((r) => (this.server ? this.server.close(() => r()) : r()));
     await this.o.gateway.close();
@@ -179,6 +203,8 @@ export class HostedAgentHost {
   }
 
   async remove(id: string): Promise<void> {
+    this.scheduledBusy.delete(id);
+    this.scheduleErrors.delete(id);
     const st = this.state.get(id);
     this.routers.delete(id);
     this.specs.delete(id);
@@ -228,7 +254,12 @@ export class HostedAgentHost {
     if (st.upstream) return st.upstream;
     if (!hostedAgentUsesCode(spec.mode) || !this.o.docker) return null;
     if (!st.starting) {
-      st.starting = this.startContainer(spec, st).finally(() => { st.starting = null; });
+      const start = this.startQueue.then(() => {
+        if (this.stopping || !this.specs.has(id)) throw new Error('hosted agent is stopping');
+        return this.startContainer(spec, st);
+      });
+      this.startQueue = start.then(() => {}, () => {});
+      st.starting = start.finally(() => { st.starting = null; });
     }
     return st.starting;
   }
@@ -262,6 +293,7 @@ export class HostedAgentHost {
   }
 
   private async stopContainer(id: string): Promise<void> {
+    this.scheduledBusy.delete(id);
     const st = this.state.get(id);
     if (st?.token) { this.o.gateway.revoke(st.token); st.token = null; }
     if (st) st.upstream = null;
@@ -275,7 +307,9 @@ export class HostedAgentHost {
   private async makeRoom(forId: string): Promise<void> {
     const running = this.running().filter(([id]) => id !== forId).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     while (running.length >= this.o.maxRunning) {
-      const [id] = running.shift()!;
+      const candidate = running.findIndex(([id]) => !this.scheduledBusy.has(id));
+      if (candidate < 0) throw new Error('hosted agent capacity is busy');
+      const [id] = running.splice(candidate, 1)[0]!;
       this.o.log('info', `hosted agent ${id} stopped to make room`);
       await this.stopContainer(id);
     }
@@ -284,8 +318,43 @@ export class HostedAgentHost {
   /** Stop containers nobody has called for `idleStopMs`. */
   async sweep(now = Date.now()): Promise<void> {
     for (const [id, st] of this.running()) {
-      if (now - st.lastUsed > this.o.idleStopMs) await this.stopContainer(id);
+      if (!this.scheduledBusy.has(id) && now - st.lastUsed > this.o.idleStopMs) await this.stopContainer(id);
     }
+  }
+
+  /** Short polls only. The runtime holds single-flight state; durable job leases cover node restarts. */
+  async runScheduled(): Promise<void> {
+    if (this.scheduling || this.stopping) return;
+    this.scheduling = true;
+    try {
+      for (const id of this.o.scheduledAgentIds ?? []) {
+        if (this.stopping) break;
+        const spec = this.specs.get(id), st = this.state.get(id);
+        if (spec?.mode !== 'handler' || st?.status !== 'ready') continue;
+        this.scheduledBusy.add(id); // Includes start and observation, so eviction cannot race the poll.
+        try {
+          const upstream = await this.resolve(id), token = this.state.get(id)?.token;
+          if (!upstream || !token || this.stopping) throw new Error('scheduled agent unavailable');
+          const response = await fetch(`${upstream}/_ainize/tick`, { method: 'POST',
+            headers: { authorization: 'Bearer ' + token }, redirect: 'error', signal: AbortSignal.timeout(5000) });
+          if (response.status === 404) this.scheduledBusy.delete(id); // Runtime confirms there is no tick hook.
+          if (!response.ok) throw new Error('tick refused');
+          const status = await response.json() as { running?: unknown; failed?: unknown };
+          if (typeof status.running !== 'boolean') throw new Error('invalid tick status');
+          if (!status.running) this.scheduledBusy.delete(id);
+          if (status.failed === true) throw new Error('tick failed');
+          this.scheduleErrors.delete(id);
+        } catch {
+          // A timeout alone is not evidence that execution ended. Keep the eviction pin until a
+          // later tick response or Docker itself confirms the runtime is no longer running.
+          try {
+            if (!st.upstream || (this.o.docker && !(await this.o.docker.isRunning(id)))) await this.stopContainer(id);
+          } catch { /* Unknown Docker status must not restart an active step. */ }
+          if (!this.scheduleErrors.has(id)) this.o.log('warn', `scheduled agent ${id} needs another status check`);
+          this.scheduleErrors.add(id);
+        }
+      }
+    } finally { this.scheduling = false; }
   }
 }
 
