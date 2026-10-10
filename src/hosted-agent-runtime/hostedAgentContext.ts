@@ -191,7 +191,10 @@ export function createHostedAgentCtx(o: HostedAgentCtxOptions, input: HostedAgen
   return {
     input,
     spec: o.spec,
-    qa: { base: async jobId=>{
+    qa: { revalidate: async(jobId,request)=>{
+      const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/revalidation`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...request,jobId}),signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw new Error('Host QA revalidation refused');return response.json();
+    }, base: async jobId=>{
       const response=await directFetch(`${o.gateway.url.replace(/\/+$/, '')}/t/${o.gateway.token}/qa/base`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId}),signal:AbortSignal.timeout(10000)});
       if(!response.ok)throw new Error('Host QA base refused');return response.json();
     }, intake: async(jobId,locator)=>{

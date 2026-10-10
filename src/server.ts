@@ -1,3 +1,4 @@
+import {HostedQaRevalidationService} from './hosted-qa-revalidation-service.js';
 import {HostedQaIntake} from './hosted-qa-intake.js';
 import {HostedQaRoutes,scopedQaCapabilities,type QaSharedProfiles} from './hosted-qa-routes.js';
 import {validateDeploymentProfile,type QaDeploymentProfile} from './hosted-qa-deployment.js';
@@ -497,6 +498,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   };
   const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
   let qaBases:HostedQaBases|undefined;
+  let qaRevalidation:HostedQaRevalidationService|undefined;
   const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
     JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>,undefined,(id,job,candidate)=>{
       if(!qaBases?.configured(id))return undefined;
@@ -559,6 +561,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
           prepare:(profile,base)=>prepareQaCheckout(profile,base,readQaToken(tokenPath)),
         },(id,job)=>{if(!qaReviewStore?.intake(id,job))throw new Error('Verified intake required for job base');},
         (id,job,request)=>qaReviewStore!.authorizeRevalidation(id,job,request));
+        qaRevalidation=new HostedQaRevalidationService(qaBases,qaReviewStore);
       }
       const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
       let release:HostedQaRelease|undefined;
@@ -580,6 +583,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
   const hostedGateway = new HostedAgentGateway({
     ...scopedQaCapabilities(qaRoutes,{
+      qaRevalidation:qaRevalidation?(id,input)=>qaRevalidation!.submit(id,input):undefined,
       qaBase:qaBases?(id,job)=>qaBases!.submit(id,job):undefined,
       qaIntake:qaIntake?(id,input)=>qaIntake!.submit(id,input):undefined,
       qaStatus:qaReviewStore?(id,job)=>qaReviewStore!.lifecycle(id,job):undefined,
@@ -1306,6 +1310,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       if(qaReviewLoop)await qaReviewLoop.drain();
       await qaIntake?.drain();
       await qaRoutes?.drain();
+      await qaRevalidation?.drain();
       await qaBases?.drain();
       qaReviewStore?.close();
       clearInterval(watchdog);

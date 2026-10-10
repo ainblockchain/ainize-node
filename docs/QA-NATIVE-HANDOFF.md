@@ -10,9 +10,9 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 157개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
-  그 이후 공통 QA 변경에는 QA 회귀와 build를 실행했으며 전체 API suite 수치를
-  새 head 전체 검증으로 확대해 해석하지 않는다.
+- QA 회귀 160개 및 build 통과. 이번 gateway 연결 상태의 전체 API suite는
+  937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
+  이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
   테스트 코드 수정과 격리 실행 검증을 통과했다. 각각 제품/모델 진단이며 실서비스
   채널→수정→PR→관리자 승인→배포 전체 흐름의 증거는 아니다.
@@ -27,6 +27,19 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 에이전트 재개 호출 연결:
+`HostedQaRevalidationService`와 authenticated `/qa/revalidation`, runtime `ctx.qa.revalidate`,
+web/API의 scoped routing을 연결했다. 호스트 base 준비 응답을 ledger에 확정한 뒤에만
+`done`을 반환한다. 캐시 조회 전에도 현재 권한을 확인하고, ledger 저장 실패는 성공으로
+반환하지 않는다. handler는 `hostRevalidation:true` 명시 설정 시 별도 lease로 준비를
+요청하며, 같은 job ID와 원본 요청으로 새 snapshot 코딩을 시작한다. 실패는 작업에
+누적해 3회 뒤 보존 대기한다. 기본값은 false이고 운영 설정은 변경하지 않았다.
+실제 gateway/runtime/host ledger/base service와 fixture 외부 읽기의 연결, 공유 API route,
+handler의 재시작 후 새 소스 수정, 저장 실패 재시도를 검증했다. QA 160 pass/0 fail/0 skip,
+build 및 전체 API suite 919 pass/0 fail/18 skip 통과. **현재 지원은 게시된 review의 base invalidation에 한정된다.** 게시 전 drift와
+새 PR 게시 전에 main이 다시 이동한 경우는 호스트 publication 기반 준비 권한을 추가해야
+하며 현재는 보존 대기한다. 실제 채널·제품 E2E 및 운영 전환은 여전히 미완료다.
 
 2026-10-11 재검증 후 PR 교체:
 `commitRevalidationBase`가 호스트 준비 응답을 예약에 고정한다. 다른 base로 같은 예약을
@@ -73,12 +86,12 @@ gateway는 아직 연결하지 않았다.
 잘못된 준비 응답, 중복 재개 거부를 포함해 QA 153 pass/0 fail/0 skip, build 통과.
 
 **아직 이 API를 handler에서 호출하지 않는다.** 자동 main 재수정은 다음 연결까지 미완료:
-1. gateway의 비동기 준비 서비스가 host base 응답을 ledger의 `commitRevalidationBase`에
-   반영한 뒤에만 에이전트에게 반환하도록 연결한다. 저장된 원래 base를 직접 삭제하지 않는다.
-2. publication 교체와 새 review generation은 구현됐다. gateway/handler와 함께 경합 및
+1. 게시 전 main drift 및 재수정 후보 게시 전 반복 drift를 위한 호스트 권한 근거를 추가한다.
+   현재 ledger 권한 경로는 게시된 review의 이전 base만 허용한다.
+2. gateway/handler/새 publication/review 연결은 구현됐다. 실제 호스트의 main 변경과
    재시작 통합 검증을 수행한다. 진행 중인 release intent는 계속 재개를 거부한다.
-3. gateway/runtime capability와 공유 web/API route에 준비 응답을 연결한 뒤 handler에서
-   별도 claim 및 bind를 사용한다. 새 snapshot에서 원래 요청으로 코딩부터 다시 시작한다.
+3. 운영 활성화 전에 기존 이관 작업과 겹치지 않는 단일 writer 구성을 확인한다.
+   `hostRevalidation`은 현재 기본 false이며 운영 설정을 바꾸지 않았다.
 4. 동일 Ainmem 페이지, 이전 댓글 보존, 새 SHA 이전 LGTM 거부, 최신 후보 재검증·새 승인·
    배포까지 통합 검증한다. 코드 상태 전환 테스트만으로 이 전체 흐름을 통과라 하지 않는다.
 

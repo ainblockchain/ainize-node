@@ -17,6 +17,7 @@ import { Jobs } from './jobs.mjs';
 import { Checkpoints } from './checkpoints.mjs';
 import { GitHubSnapshot } from './repository.mjs';
 import { advanceCoding } from './advance.mjs';
+import { advanceHostedRevalidation } from './revalidation.mjs';
 import { advanceHostedLifecycle } from './lifecycle.mjs';
 import { advanceHostedPublication } from './publication.mjs';
 import { advanceHostedValidation } from './validation.mjs';
@@ -41,8 +42,9 @@ export function parseConfig(raw) {
   if (!Number.isFinite(Date.parse(enabledAt ?? ''))) throw new Error('QA config requires an enabledAt timestamp');
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository ?? '')) throw new Error('QA config requires a repository');
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
-  for(const key of ['hostBase','hostReview','hostValidation','hostPublication'])if(config[key]!==undefined&&typeof config[key]!=='boolean')throw new Error('Host capability flags must be boolean');
+  for(const key of ['hostBase','hostReview','hostValidation','hostPublication','hostRevalidation'])if(config[key]!==undefined&&typeof config[key]!=='boolean')throw new Error('Host capability flags must be boolean');
   if(config.hostBase===true&&(!config.hostReview||!config.hostValidation))throw new Error('Host base requires verified intake and validation');
+  if(config.hostRevalidation&&(!config.hostBase||!config.hostReview||!config.hostValidation||!config.hostPublication))throw new Error('Host revalidation requires all host capabilities');
   let routes;
   if(config.routes!==undefined){
     if(!config.hostBase||!config.hostReview||!config.hostValidation||!config.hostPublication)throw new Error('Shared routes require all host capabilities');
@@ -55,7 +57,7 @@ export function parseConfig(raw) {
   }
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, ...(routes?{routes}:{}), hostBase: config.hostBase === true, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, hostReview: config.hostReview === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, ...(routes?{routes}:{}), hostRevalidation: config.hostRevalidation === true, hostBase: config.hostBase === true, hostValidation: config.hostValidation === true, hostPublication: config.hostPublication === true, hostReview: config.hostReview === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -144,6 +146,14 @@ export function createHandler({
     let claim;
     try {
       await report(jobs, ctx);
+      if(config.hostRevalidation){
+        const retry=jobs.claimRevalidation();
+        if(retry){
+          try{await advanceHostedRevalidation({jobs,claim:retry,ctx});}
+          catch{ctx?.log?.('QA revalidation lease recovery pending');}
+          await report(jobs,ctx,retry.job.id);
+        }
+      }
       if(config.hostReview){
         const reviewClaim=jobs.claimReview();
         if(reviewClaim){

@@ -68,7 +68,7 @@ test('one real gateway token dispatches every job capability to its canonical re
  const calls:string[]=[];
  const observe=(cap:string)=>(id:string,_input:unknown)=>{calls.push(`${cap}:${id}`);return {state:'done'};};
  const spec=(id:string)=>({...hostedAgentSpecInput.parse({id,name:id,model:'unused',mode:'handler',files:{'index.mjs':'export default {}'}}),version:1,owner:'test',createdAt:1,updatedAt:1});
- const gateway=new HostedAgentGateway({registry:()=>null,spec:id=>spec(id),log:()=>{},...scopedQaCapabilities(routes,{qaIntake:observe('intake'),qaBase:observe('base'),qaStatus:observe('status'),qaValidation:observe('validation'),qaPublication:observe('publication')})});
+ const gateway=new HostedAgentGateway({registry:()=>null,spec:id=>spec(id),log:()=>{},...scopedQaCapabilities(routes,{qaRevalidation:observe('revalidation'),qaIntake:observe('intake'),qaBase:observe('base'),qaStatus:observe('status'),qaValidation:observe('validation'),qaPublication:observe('publication')})});
  const url=await gateway.listen('127.0.0.1');t.after(()=>gateway.close());
  const ctx=(id:string)=>createHostedAgentCtx({spec:spec(id),gateway:{url,token:gateway.issue(id)},secrets:{},log:()=>{}},{text:''});
  const qa=ctx('bot').qa!;
@@ -76,13 +76,15 @@ test('one real gateway token dispatches every job capability to its canonical re
  await qa.intake!('job',{messageId:'request'});await routes.drain();
  assert.equal((await qa.intake!('job',{messageId:'request'}) as any).result.repository,'test/api');
  await qa.base!('job');await qa.status!('job');
+ await qa.revalidate!('job',{previousBase:'a'.repeat(40),sequence:1,sourceDigest:'b'.repeat(64)});
  const candidate={repository:'test/api',base:'a'.repeat(40),changes:{file:'fix'}};
  await qa.validate(candidate,'job');await qa.publish!('job',candidate);
- assert.deepEqual(calls,['base:api','status:api','validation:api','publication:api']);
+ assert.deepEqual(calls,['base:api','status:api','revalidation:api','validation:api','publication:api']);
  await assert.rejects(qa.validate(candidate),/refused/);
  await assert.rejects(qa.publish!('unknown',candidate),/refused/);
  await assert.rejects(ctx('api').qa!.base!('job'),/refused/);
- assert.equal(calls.length,4);
+ await assert.rejects(qa.revalidate!('unknown',{previousBase:'a'.repeat(40),sequence:1,sourceDigest:'b'.repeat(64)}),/refused/);
+ assert.equal(calls.length,5);
 });
 
 test('historical routes preserve thread ownership without minting live intake or old approval authority',async t=>{

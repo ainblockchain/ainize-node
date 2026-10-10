@@ -231,6 +231,7 @@ export interface HostedAgentGatewayDeps {
     target(model: string, node: string | null): PeerModelTarget | null;
     fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
   };
+  qaRevalidation?: (agentId:string,input:unknown)=>unknown;
   qaBase?: (agentId:string,jobId:string)=>unknown;
   qaIntake?: (agentId:string,input:unknown)=>unknown;
   qaStatus?: (agentId:string,jobId:string)=>unknown;
@@ -334,6 +335,11 @@ export class HostedAgentGateway {
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
     const path = m[2]!;
     try {
+      if(req.method==='POST'&&path==='/qa/revalidation'){
+        if(!this.deps.qaRevalidation)return sendJson(res,403,{error:{message:'QA revalidation disabled'}});
+        let input:unknown;try{input=JSON.parse((await readBody(req,2048)).toString('utf8'));}catch{return sendJson(res,400,{error:{message:'Invalid QA revalidation'}});}
+        try{return sendJson(res,200,this.deps.qaRevalidation(spec.id,input));}catch{return sendJson(res,403,{error:{message:'QA revalidation refused'}});}
+      }
       if(req.method==='POST'&&path==='/qa/base'){
         if(!this.deps.qaBase)return sendJson(res,403,{error:{message:'QA base disabled'}});
         let input:any;try{input=JSON.parse((await readBody(req,1024)).toString('utf8'));if(!input||Object.keys(input).join(',')!=='jobId'||typeof input.jobId!=='string'||!/^[-\w]{1,128}$/.test(input.jobId))throw new Error();}catch{return sendJson(res,400,{error:{message:'Invalid QA base request'}});}

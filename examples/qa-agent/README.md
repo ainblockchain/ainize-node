@@ -182,6 +182,24 @@ a separate reconciliation, not a fabricated new request. The host refuses PR
 publication without this registration when intake is enabled. Only one unfinished
 review per original Teams thread may solicit deployment approval at a time.
 
+### Resume after a published review's base changes
+
+`hostRevalidation: true` opts into automatic preparation after a published review
+has been durably invalidated because its base moved. It requires all four host
+base/review/validation/publication flags. `/qa/revalidation` uses the authenticated
+job scope, including shared web/API routing; the request cannot select an agent.
+The host records its new base and the review reservation before returning success.
+The handler preserves the job ID, original request and archived attempts, then
+starts coding on the new snapshot without the old candidate or approval. A new PR
+is presented on the same canonical Ainmem page and needs a fresh approval.
+
+Failed preparation is attempted at most three times before the task waits with
+`revalidation_preparation_failed`. Pending work does not block unrelated coding.
+This opt-in does not yet resume drift detected before a published review exists,
+including another main change before the replacement PR is published. Those
+cases stay preserved for reconciliation. Enabling this flag is not evidence that
+the production channels or release path have been tested end to end.
+
 ## One Ainize channel for web and API
 
 A shared handler keeps one Teams bot, one state directory, and one Ainmem board. Set

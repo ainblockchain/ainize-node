@@ -159,10 +159,22 @@ test('revalidation reservation preserves invalidated review and publication acro
  let main=target.base;
  const bases=new HostedQaBases(join(root,'bases'),{agent:{branch:'main',validation}}, {head:async()=>main,prepare:async()=>{}},()=>{assert(store.intake('agent','job'));},(id,job,request)=>store.authorizeRevalidation(id,job,request));
  await bases.prepare('agent','job');main='d'.repeat(40);
- const receipt=await bases.prepareRevalidation('agent','job',request);assert.equal(receipt.base,main);
+ const {HostedQaRevalidationService}=await import('../src/hosted-qa-revalidation-service.js');
+ const {HostedAgentGateway}=await import('../src/hosted-agent-gateway.js');
+ const {createHostedAgentCtx}=await import('../src/hosted-agent-runtime/hostedAgentContext.js');
+ const service=new HostedQaRevalidationService(bases,store);
+ const spec=(id:string)=>({id,name:id,model:'unused',mode:'handler' as const,files:{'index.mjs':'export default {}'},allowedHosts:[],version:1,owner:'owner',createdAt:1,updatedAt:1});
+ const gateway=new HostedAgentGateway({registry:()=>null,spec,log:()=>{},qaRevalidation:(id,input)=>service.submit(id,input)});
+ const gatewayUrl=await gateway.listen('127.0.0.1');t.after(()=>gateway.close());
+ const context=(id:string)=>createHostedAgentCtx({spec:spec(id),gateway:{url:gatewayUrl,token:gateway.issue(id)},secrets:{},log:()=>{}},{text:''});
+ const ctx=context('agent');
+ await assert.rejects(context('other').qa!.revalidate!('job',request),/refused/);
+ assert.equal((await ctx.qa!.revalidate!('job',request) as any).state,'running');await service.drain();
+ const prepared=await ctx.qa!.revalidate!('job',request) as any;
+ assert.equal(prepared.state,'done');const receipt=prepared.result;assert.equal(receipt.base,main);
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].prepared,receipt);
  assert.deepEqual(await bases.prepareRevalidation('agent','job',request),receipt);
  const replacement={...publication,base:receipt.base,sha:'e'.repeat(40),candidateDigest:'a'.repeat(64),number:2,url:'https://github.com/test/product/pull/2'};
- assert.throws(()=>store.enqueuePublication('agent','job',replacement),/reconciliation/);
  store.commitRevalidationBase('agent',receipt);store.commitRevalidationBase('agent',receipt);
  assert.throws(()=>store.commitRevalidationBase('agent',{...receipt,base:'f'.repeat(40)}),/base changed/);
  for(const change of [{base:target.base},{sha:target.sha},{number:1},{teamsRequest:{...binding,rootId:'other'}}]){

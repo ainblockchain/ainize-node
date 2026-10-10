@@ -82,12 +82,13 @@ export class HostedQaRoutes {
  async drain(){await Promise.allSettled(this.active.values());}
 }
 
-type QaCapabilities=Pick<import('./hosted-agent-gateway.js').HostedAgentGatewayDeps,'qaIntake'|'qaBase'|'qaValidation'|'qaPublication'|'qaStatus'>;
+type QaCapabilities=Pick<import('./hosted-agent-gateway.js').HostedAgentGatewayDeps,'qaRevalidation'|'qaIntake'|'qaBase'|'qaValidation'|'qaPublication'|'qaStatus'>;
 /** Apply the same authenticated job scope to every gateway capability. */
 export function scopedQaCapabilities(routes:HostedQaRoutes|undefined,services:QaCapabilities):QaCapabilities {
  if(!routes)return services;
  return {
   qaIntake:services.qaIntake?(id,input)=>routes.configured(id)?routes.submit(id,input):services.qaIntake!(routes.resolve(id,undefined),input):undefined,
+  qaRevalidation:services.qaRevalidation?(id,input)=>services.qaRevalidation!(routes.resolve(id,(input as {jobId?:unknown})?.jobId),input):undefined,
   qaBase:services.qaBase?(id,job)=>services.qaBase!(routes.resolve(id,job),job):undefined,
   qaStatus:services.qaStatus?(id,job)=>services.qaStatus!(routes.resolve(id,job),job):undefined,
   qaValidation:services.qaValidation?(id,input)=>services.qaValidation!(routes.resolve(id,(input as {jobId?:unknown})?.jobId),input):undefined,
