@@ -108,3 +108,26 @@ test('shared thread ambiguity is enforced across repository agents and after res
  assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,workspaceId:'other'}));
  assert.doesNotThrow(()=>store.assertUnambiguousThread('web-agent','job',{...teamsRequest,channelId:'other'}));
 });
+
+test('main advancement durably invalidates only the matching generation and never revives old approval',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-base-change-'));let store=new HostedQaReviewStore(root);t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ let remote=structuredClone(pr),current=structuredClone(snapshot);
+ const readers={ainmem:async()=>current,github:async()=>remote,teams:()=>({call:async(name:string)=>name==='list_channels'?[{id:'qa'}]:[{userId:'teams-admin',isAgent:false}]})};
+ let coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ const review=await coordinator.register('agent',target,body);store.enqueuePublication('agent','job',target);
+ current={...snapshot,observedAt:'2026-10-10T00:00:20Z',comments:[{id:'approval',body:'LGTM',createdAt:'2026-10-10T00:00:10Z',authorId:'human',subject:'admin'}]};
+ const now=Date.parse(current.observedAt);assert.ok(await coordinator.check('agent','job',now));
+ remote={...pr,base:{...pr.base,sha:'e'.repeat(40),repo:{full_name:'different/repo'}}};
+ await assert.rejects(coordinator.check('agent','job',now),/PR changed/);assert.equal(store.baseChange(review),null);
+ remote={...pr,base:{...pr.base,sha:'not-a-sha'}};
+ await assert.rejects(coordinator.check('agent','job',now),/Invalid reviewed/);assert.equal(store.baseChange(review),null);
+ remote={...pr,base:{...pr.base,sha:'e'.repeat(40)}};
+ await assert.rejects(coordinator.check('agent','job',now),/base changed/);
+ assert.equal(store.lifecycle('agent','job').state,'requires_revalidation');assert.equal(store.lifecycle('agent','job').observedBase,'e'.repeat(40));
+ store.close();store=new HostedQaReviewStore(root);coordinator=new HostedQaReviewCoordinator(store,{agent:profile},readers);
+ remote=structuredClone(pr);await assert.rejects(coordinator.check('agent','job',now),/base changed/);
+ assert.equal(store.baseChange(review),'e'.repeat(40));
+ const next=store.bind('agent',{...review.presentation,target:{...target,base:'e'.repeat(40),sha:'f'.repeat(40)},presentedAt:'2026-10-10T00:01:00Z'},1);
+ assert.equal(store.baseChange(next),null);assert.throws(()=>store.invalidateBase(review,'f'.repeat(40)),/Review changed/);
+ assert.equal(store.baseChange(next),null);
+});

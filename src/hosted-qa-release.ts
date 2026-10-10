@@ -24,7 +24,11 @@ export class HostedQaRelease {
    const receipt={sha:t.sha,branch:t.branch,repository:t.repository,observedAt:new Date().toISOString(),state:'branch_updated',deploymentVerified:false};
    this.store.releaseObserved(review,receipt);return receipt;
   }
-  if(initial?.object?.sha!==t.base)throw new Error('Release base changed; reconcile and revalidate');
+  if(this.store.baseChange(review))throw new Error('Release base changed; reconcile and revalidate');
+  if(initial?.object?.sha!==t.base){
+   if(/^[a-f0-9]{40}$/.test(initial?.object?.sha??''))this.store.invalidateBase(review,initial.object.sha);
+   throw new Error('Release base changed; reconcile and revalidate');
+  }
   // Do not use an administrative token to bypass a repository's PR/status/review rules.
   const branchInfo=await this.github('GET',`${api}/branches/${branch}`);
   if(branchInfo?.name!==t.branch||branchInfo.protected!==false)throw new Error('Protected branch requires a repository-specific merge adapter');

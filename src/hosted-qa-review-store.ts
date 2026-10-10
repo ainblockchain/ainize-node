@@ -25,10 +25,26 @@ export class HostedQaReviewStore {
    CREATE TABLE IF NOT EXISTS review_intakes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,request_key TEXT NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(agent_id,job_id),UNIQUE(agent_id,request_key));
    CREATE TABLE IF NOT EXISTS review_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS review_historical_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
+   CREATE TABLE IF NOT EXISTS review_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,review_key TEXT NOT NULL,observed_base TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
    CREATE TABLE IF NOT EXISTS review_observations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,comment_id TEXT NOT NULL,checked_at TEXT NOT NULL,evidence TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation,comment_id,checked_at));`);
+ }
+ /** Permanent invalidation of this generation, even if the branch later moves back. */
+ baseChange(expected:StoredReview):string|null {
+  const row=this.db.prepare('SELECT review_key,observed_base FROM review_base_changes WHERE agent_id=? AND job_id=? AND generation=?').get(expected.agentId,expected.jobId,expected.generation);
+  if(row&&row.review_key!==expected.key)throw new Error('Review invalidation binding changed');
+  return row?String(row.observed_base):null;
+ }
+ invalidateBase(expected:StoredReview,observedBase:string){
+  if(!/^[a-f0-9]{40}$/.test(observedBase)||observedBase===expected.presentation.target.base)throw new Error('Invalid changed base');
+  this.transaction(()=>{
+   const current=this.current(expected.agentId,expected.jobId);
+   if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed during base observation');
+   if(this.releaseRecord(current)?.receipt)throw new Error('Release already observed');
+   this.db.prepare('INSERT OR IGNORE INTO review_base_changes VALUES(?,?,?,?,?)').run(expected.agentId,expected.jobId,expected.generation,expected.key,observedBase);
+  });
  }
  releaseIntent(expected:StoredReview,approval:Approval){
   this.observe(expected,approval);
@@ -144,8 +160,9 @@ export class HostedQaReviewStore {
    if(['repository','base','sha','candidateDigest'].some(key=>target[key as keyof typeof target]!==published[key]))throw new Error('Lifecycle review binding changed');
   }
   if(receipt&&(receipt.repository!==published.repository||receipt.sha!==published.sha))throw new Error('Lifecycle release binding changed');
-  const state=receipt?.state==='deployment_verified'?'deployment_verified':receipt?.state==='branch_updated'?'branch_updated':release?'release_pending':review?'awaiting_approval':'awaiting_presentation';
-  return {jobId,repository:published.repository,base:published.base,sha:published.sha,candidateDigest:published.candidateDigest,state,
+  const observedBase=review?this.baseChange(review):null;
+  const state=receipt?.state==='deployment_verified'?'deployment_verified':receipt?.state==='branch_updated'?'branch_updated':observedBase?'requires_revalidation':release?'release_pending':review?'awaiting_approval':'awaiting_presentation';
+  return {jobId,repository:published.repository,base:published.base,sha:published.sha,candidateDigest:published.candidateDigest,state,...(state==='requires_revalidation'?{observedBase}:{}),
    ...(state==='deployment_verified'?{servingCommit:receipt.servingCommit,mergeCommit:receipt.mergeCommit,deploymentVerified:true,featureRegressionVerified:false}: {})};
  }
  publication(agentId:string,jobId:string){const row=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.receipt)):null;}
@@ -187,6 +204,7 @@ export class HostedQaReviewStore {
   return this.transaction(()=>{
    const current=this.current(expected.agentId,expected.jobId);
    if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed while checking approval');
+   if(this.baseChange(current))throw new Error('Review base changed; revalidation required');
    const p=current.presentation,t=p.target;
    if(evidence.source==='teams'&&(!t.teamsRequest||evidence.threadId!==t.teamsRequest.rootId||evidence.requestId!==t.teamsRequest.requestId))throw new Error('Approval thread binding mismatch');
    if(evidence.source==='teams'&&t.teamsRequest)this.assertUnambiguousThread(expected.agentId,expected.jobId,t.teamsRequest);

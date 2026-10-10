@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readQaTeamsThread} from './hosted-qa-teams-thread.js';
 /** Host-owned orchestration; no gateway route accepts reviewer identities or approval verdicts. */
-import {captureReview,verifyAinmemApproval,verifyTeamsApproval,type ReviewTarget,type ReviewSnapshot,type ReviewPolicy} from './hosted-qa-review.js';
+import {QaReviewBaseChanged,captureReview,verifyAinmemApproval,verifyTeamsApproval,type ReviewTarget,type ReviewSnapshot,type ReviewPolicy} from './hosted-qa-review.js';
 import {readTeamsReviewMembers,type TeamsReviewMcp} from './hosted-qa-teams-review.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
 export interface HostedReviewProfile {intakeEnabledAt?:string;repository:string;branch:string;databaseId:string;policy:ReviewPolicy;identities:Record<string,string>}
@@ -33,12 +33,15 @@ export class HostedQaReviewCoordinator {
  async check(agentId:string,jobId:string,now?:number){
   this.profile(agentId);const current=this.store.current(agentId,jobId);if(!current)throw new Error('No presented review');
   const t=current.presentation.target,p=this.checkTarget(agentId,t);
+  if(this.store.baseChange(current))throw new Error('Review base changed; revalidation required');
   if(current.presentation.policyDigest!==policyDigest(p))throw new Error('Administrator policy changed; present review again');
   // Fresh external reads on every call, including after a previously positive observation.
   const [pr,members]=await Promise.all([this.readers.github(t.repository,t.number),readTeamsReviewMembers(this.readers.teams(agentId),p.policy,p.identities)]);
   const thread=t.teamsRequest?await readQaTeamsThread(this.readers.teams(agentId),t.teamsRequest,p.policy,p.identities):null;
   const snapshot=await this.readers.ainmem(agentId,jobId,t.databaseId,thread?p.policy.approverSubjects:undefined);
-  let decision:ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now);
+  let decision:ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>;
+  try{decision=verifyAinmemApproval(current.presentation,p.policy,snapshot,pr,members,now);}
+  catch(error){if(error instanceof QaReviewBaseChanged)this.store.invalidateBase(current,error.observedBase);throw error;}
   if(!decision&&thread&&t.teamsRequest){
    this.store.assertUnambiguousThread(agentId,jobId,t.teamsRequest);
    decision=verifyTeamsApproval(current.presentation,t.teamsRequest,p.policy,snapshot,pr,thread,now);

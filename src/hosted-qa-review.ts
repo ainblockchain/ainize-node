@@ -1,6 +1,9 @@
 /** Host-side review checks. Inputs come from canonical adapters, never model metadata. No merge capability. */
 import {createHash} from 'node:crypto';
 import type {QaTeamsThreadBinding,readQaTeamsThread} from './hosted-qa-teams-thread.js';
+export class QaReviewBaseChanged extends Error {
+ constructor(readonly observedBase:string){super('Reviewed PR changed; base changed; revalidation required');}
+}
 export interface ReviewTarget {
  teamsRequest?:QaTeamsThreadBinding;
  jobId:string;repository:string;branch:string;base:string;sha:string;number:number;candidateDigest:string;
@@ -38,7 +41,9 @@ export function verifyAinmemApproval(presentation:ReviewPresentation,policy:Revi
  if(!Array.isArray(policy.approverSubjects)||!policy.approverSubjects.length||policy.approverSubjects.some(s=>typeof s!=='string'||!s))throw new Error('Invalid administrator policy');
  if(!Number.isFinite(now)||time(snapshot.observedAt)>now+30000||now-time(snapshot.observedAt)>60000||!Number.isFinite(time(presentation.presentedAt))||time(snapshot.observedAt)<time(presentation.presentedAt))throw new Error('Stale review observation');
  if(snapshot.body!==presentation.body||hash(snapshot.body)!==presentation.bodyDigest||snapshot.revision!==presentation.revision||snapshot.digest!==presentation.digest)throw new Error('Review presentation changed');
- if(pr?.state!=='open'||pr.number!==target.number||pr.head?.sha!==target.sha||pr.head?.repo?.full_name!==target.repository||pr.base?.repo?.full_name!==target.repository||pr.base?.ref!==target.branch||pr.base?.sha!==target.base)throw new Error('Reviewed PR changed; revalidation required');
+ if(pr?.state!=='open'||pr.number!==target.number||pr.head?.sha!==target.sha||pr.head?.repo?.full_name!==target.repository||pr.base?.repo?.full_name!==target.repository||pr.base?.ref!==target.branch)throw new Error('Reviewed PR changed; revalidation required');
+ if(typeof pr.base.sha!=='string'||!hex40(pr.base.sha))throw new Error('Invalid reviewed PR base');
+ if(pr.base.sha!==target.base)throw new QaReviewBaseChanged(pr.base.sha);
  if(!Array.isArray(members))throw new Error('Canonical channel membership unavailable');
  const eligible=snapshot.comments.filter(comment=>{
   const created=time(comment.createdAt);

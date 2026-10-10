@@ -30,7 +30,7 @@ function card(job, config) {
   return { databaseId: config.databaseId, titlePropertyId: config.titlePropertyId, statusPropertyId: config.statusPropertyId,
     approvalPending: !!review && job.state === 'waiting' && !job.checkpoint.holdReason,
     statusOptionId: config.statusOptions[state], title: job.input.text.trim().slice(0, 200) || 'QA 수정 요청',
-    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${review}${deployment}\n이 상태 표시는 배포 승인이 아닙니다.` };
+    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason === 'base_changed' ? 'main이 변경되어 최신 코드 기준으로 수정·검증이 필요합니다. 기존 승인은 재사용하지 않습니다.\n' : job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${review}${deployment}\n이 상태 표시는 배포 승인이 아닙니다.` };
 }
 export class AinmemReports {
   constructor(jobs, config) {

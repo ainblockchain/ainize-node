@@ -75,3 +75,12 @@ test('host lifecycle exposes only matching release evidence and rejects changed 
  f.store.bind('agent',{...f.review.presentation,target:{...f.review.presentation.target,sha:'f'.repeat(40)},presentedAt:'2026-10-10T00:01:00Z'},1);
  assert.throws(()=>f.store.lifecycle('agent','job'),/binding changed/);
 });
+
+test('base changed at release remains invalidated if the branch returns to its previous tip',async t=>{
+ const f=fixture(t);f.state.tip='e'.repeat(40);
+ await assert.rejects(f.make().attempt('agent','job'),/base changed/);
+ assert.equal(f.store.lifecycle('agent','job').state,'requires_revalidation');
+ f.state.tip=target.base;
+ await assert.rejects(f.make().attempt('agent','job'),/base changed/);
+ assert.equal(f.state.patches,0);assert.equal(f.state.checks,0);
+});

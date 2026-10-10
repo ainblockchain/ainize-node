@@ -70,3 +70,14 @@ test('private status gateway scopes reads to the authenticated agent and returns
  const forged=await fetch(`${url}/t/${other}/qa/status`,{method:'POST',body:JSON.stringify({jobId:'job',agentId:'agent'})});assert.equal(forged.status,400);
  gateway.revoke(token);await assert.rejects(ctx.qa!.status('job'),/refused/);
 });
+
+test('host base invalidation preserves the candidate and removes misleading approval solicitation',async t=>{
+ const f=setup(t),job=f.enqueue('request'),claim=f.jobs.claimReview();
+ const result=await advanceHostedLifecycle({jobs:f.jobs,claim,checkpoints:f.checkpoints,ctx:{qa:{status:async()=>({jobId:job.id,...published,state:'requires_revalidation',observedBase:'e'.repeat(40)})}}});
+ assert.equal(result.state,'waiting');assert.equal(result.checkpoint.stage,'needs_revalidation');assert.equal(result.checkpoint.holdReason,'base_changed');
+ assert.deepEqual(result.checkpoint.published,published);assert.equal(result.input.base,published.base);assert.equal(f.jobs.claimReview(),null);
+ const uuid='11111111-1111-4111-8111-111111111111';
+ new AinmemReports(f.jobs,{origin:'https://ainmem.example',databaseId:uuid,titlePropertyId:uuid,statusPropertyId:uuid,statusOptions:Object.fromEntries(['queued','coding','validating','waiting','completed','failed'].map(s=>[s,s]))}).refresh(job.id);
+ const payload=JSON.parse(f.jobs.db.prepare('SELECT payload FROM ainmem_reports WHERE job_id=?').get(job.id).payload);
+ assert.equal(payload.approvalPending,false);assert.ok(payload.body.includes('main이 변경되어'));assert.equal(payload.body.includes('관리자 배포 승인이 필요합니다.'),false);
+});
