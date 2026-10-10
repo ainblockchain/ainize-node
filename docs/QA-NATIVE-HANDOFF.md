@@ -307,3 +307,19 @@ parent/message identity를 SQLite transaction 안에서 대조한다. 기존 bas
 - 이 기능은 실제 운영 legacy 작업 import 및 승인 기록 migration 완료의 증거가 아니다.
   운영 mapping 설치/배포/채널 전환은 아직 하지 않았다. 다음은 기존 작업 metadata와
   approval SHA/history를 안전하게 import하고, 실제 화면·제품별 검증/게시/승인을 연결하는 일.
+
+### 2026-10-10 후속: 운영 이력 23건의 격리 이전 시험
+
+- `import-legacy.mjs` 추가. legacy SQLite를 read-only transaction으로 읽고 native 대상에
+  ID/시간/원문/detail/report 전체를 보존한다. private immutable checkpoint 사용.
+  승인 데이터는 archive로 보존하며 native release permission으로 자동 변환하지 않는다.
+- 실제 서버 설정 7개: Teams 11, AINA 2, Aindrive 2, Ainize web 2, Ainize API 3,
+  Ainmem 2, Ainspace 1 = 23건. 원본을 수정하지 않고 격리된 새 대상 DB에 이전 성공.
+  재실행도 모두 unchanged였고, 7개 대상 모두 claimable=false.
+- 최종 시험 위치: `/mnt/newdata/qa-services/validation/native-import-final-20261010-FUB6T3`.
+  파일에는 private 작업 이력이 있으므로 Git에 넣거나 공개 출력하지 않는다.
+- 로컬 QA 테스트 42개 및 typecheck 통과. terminal 상태 보존, 승인 이력 보존,
+  동일 message 재수신 시 원래 ID 재사용, 중복 import, 원본 변경/작업 중 상태 거부 검증.
+- 운영 writer/agent/채널은 전환하지 않았다. 다음 단계는 후보 branch/검토 SHA/현재 PR
+  및 canonical Ainmem page를 대조하고 native 검증/게시/승인 경로로 재개할 수 있게 연결하는 것.
+  스냅샷에 과거 승인이 존재한다는 이유로 merge하거나 배포하면 안 된다.

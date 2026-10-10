@@ -145,3 +145,18 @@ Requires Ainmem branch `native-qa-task-api`. Do not enable for existing producti
 legacy page adoption is not implemented. Initial report failure currently returns a text receipt;
 a later successful tick updates the page but does not yet send a Teams follow-up with its link.
 No PR publication, release approval or deployment authority is granted by this reporting path.
+
+## Offline legacy history import
+
+`importLegacyJobs({ sourcePath, jobs, checkpoints, config })` reads a consistent snapshot of the
+old SQLite `jobs` and `reports` tables with a read-only connection. Operator config binds service,
+repository, workspace and channel. Use a private destination directory and snapshot the source
+before actual cutover. The importer refuses working/queued jobs, duplicate canonical messages,
+repository conflicts, orphan reports, changed repeat imports, and source/destination equality.
+
+IDs, original timestamps, payload/details and report history are preserved in immutable private
+checkpoints. Completed/failed jobs keep terminal states; other history waits at `legacy_reconciliation`.
+Old approval data stays archived and is not promoted into a native approval. Waking an imported job
+cannot resume a legacy runner stage: a separate reconciliation must bind the candidate, exact SHA,
+canonical page and current verified human approval to the native stage first. Snapshot import is
+not proof that a live legacy writer is disabled, so this function never performs a cutover itself.
