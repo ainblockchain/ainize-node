@@ -15,7 +15,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { AgentMirrorSyncer } from '../src/agent-mirror-sync.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -328,6 +328,9 @@ test('an oversized mirror update preserves the running agent and its landed sour
   assert.equal(initial?.error, null);
   assert.equal(releases.length, 1);
   const active = await limited.resolve('quota-agent', 'main');
+  const retainedBytes = await limited.storageBytes('quota-agent');
+  const shallowPath = join(limited.dir('quota-agent'), 'shallow');
+  const boundaries = readFileSync(shallowPath, 'utf8');
   await upstreamCommit('Oversized mirror source', {
     'news-agent/agent.json': AGENT(),
     'news-agent/prompt.md': 'This update must not replace the running prompt.',
@@ -338,4 +341,13 @@ test('an oversized mirror update preserves the running agent and its landed sour
   assert.equal(releases.length, 1);
   assert.equal(failed?.lastCommit, active);
   assert.equal(await limited.resolve('quota-agent', 'main'), active);
+  assert.equal(await limited.storageBytes('quota-agent'), retainedBytes, 'rejected objects do not remain in the repository');
+  assert.equal(readFileSync(shallowPath, 'utf8'), boundaries);
+  rmSync(join(UPSTREAM, 'large-source.bin'));
+  await upstreamCommit('Recover with a source that fits quota', { 'news-agent/prompt.md': 'Recovered source.' });
+  const recovered = await syncer.sync(store.get('quota-agent')!);
+  assert.equal(recovered?.error, null);
+  assert.equal(releases.length, 2);
+  assert.notEqual(recovered?.lastCommit, active);
+  assert.equal(await limited.resolve('quota-agent', 'main'), recovered?.lastCommit);
 });
