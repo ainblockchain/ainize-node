@@ -10,8 +10,9 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 173개 및 build 통과. 704ced1의 전체 API suite는
-  937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
+- QA 회귀 173개 및 build 통과. 4ec1c69의 전체 API suite는
+  950 tests, 932 pass/0 fail/18 skip, 34.3초다. skip은 통과로 계산하지 않는다.
+  704ced1의 919 pass 결과는 이전 기록이다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
   테스트 코드 수정과 격리 실행 검증을 통과했다. 각각 제품/모델 진단이며 실서비스
@@ -1401,3 +1402,19 @@ image: `sha256:fa5f1248c066ad9244edaffef4062dc20e4f4d3580f5a4f200ddb21ed42c3fd4`
 `validation.log`, `result.json`, `evidence/`가 결과 정본이고 로컬 process handle은 47038이다.
 컨테이너 실행 및 backend/desktop typecheck 성공을 확인했으며 web typecheck는 아직 진행 중.
 이 상태를 전체 gate 통과나 실제 채널 E2E 완료로 해석하지 않는다.
+
+
+### 최신 API 전체 회귀 및 릴리스 전제 재확인 — 2026-10-11
+
+4ec1c69에서 전체 API suite 실행 완료: 950 tests / 932 pass / 0 fail / 18 skip,
+34.285초. 로컬 증거 `/tmp/qa-full-current-api.log`. 이번 검사는 historical intake,
+canonical page pinning, unpublished legacy resume를 모두 포함한 상태다.
+
+GitHub branches/main을 직접 읽어 Teams/Ainmem/Drive/Ainize web/API/AINA/Space 모두
+protected=false임을 확인했다. 현재 fast-forward-unprotected adapter의 브랜치 보호
+전제와 일치한다. 이 관측은 나중의 배포 승인이 아니며 release 직전 다시 확인해야 한다.
+운영 endpoint/서비스 SHA 검증 및 관리자 승인, 6개 채널 전체 E2E는 여전히 남아 있다.
+
+Teams f118bbfe 검증은 현재 typecheck 전체 통과, backend lint 통과, web lint 실행 중이다.
+동일한 실행 handle 47038과 native-teams-refresh-61qaqajj 결과를 계속 추적한다.
+실행 중인 검사를 중단하거나 새 실행으로 대체하지 않았다.
