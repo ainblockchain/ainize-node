@@ -36,5 +36,10 @@ test('private proposal evidence survives restart, marks interrupted requests, an
     const afterExport = new AgentPreviewRuns(file);
     assert.equal(afterExport.remove(done.id, 'desk', 'alice'), 'removed');
     assert.equal(new AgentPreviewRuns(file).list('desk', 'alice').length, 1);
+    const inProgress = restored.begin(preview, 'model', { message: 'still running' });
+    restored.export(inProgress.id, 'desk', 'alice');
+    assert.equal(restored.remove(inProgress.id, 'desk', 'alice'), 'running');
+    restored.finish(inProgress.id, { status: 'ready', output: 'final answer', outputBytes: 12, outputTruncated: false, error: null });
+    assert.equal(restored.remove(inProgress.id, 'desk', 'alice'), 'not_exported', 'export before completion does not cover the final output');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
