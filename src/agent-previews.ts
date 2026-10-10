@@ -11,7 +11,7 @@ export class AgentPreviews {
   private readonly specs = new Map<string, HostedAgentSpec>();
   private readonly pending = new Set<Promise<void>>();
   private timer: ReturnType<typeof setInterval> | null = null;
-  constructor(private readonly git: Pick<AgentGit, 'readSpec'>, private readonly host: PreviewHost, private readonly o: { ttlMs?: number; now?: () => number; pollMs?: number } = {}) {}
+  constructor(private readonly git: Pick<AgentGit, 'readSpec'>, private readonly host: PreviewHost, private readonly o: { ttlMs?: number; now?: () => number; pollMs?: number; sourcePath?: (agent: string) => string } = {}) {}
   private now(): number { return this.o.now?.() ?? Date.now(); }
   signal(id: string): AbortSignal | undefined { return this.lifetimes.get(id)?.signal; }
   spec(id: string): HostedAgentSpec | null { return (this.records.get(id)?.expiresAt ?? 0) > this.now() ? this.specs.get(id) ?? null : null; }
@@ -20,7 +20,7 @@ export class AgentPreviews {
     return record && record.owner === owner.toLowerCase() && record.expiresAt > this.now() ? { ...record } : null;
   }
   async create(agent: string, ref: string, owner: string): Promise<AgentPreview> {
-    const read = await this.git.readSpec(agent, ref);
+    const read = await this.git.readSpec(agent, ref, undefined, this.o.sourcePath?.(agent) ?? '');
     await this.sweep();
     const who = owner.toLowerCase();
     if ([...this.records.values()].filter((record) => record.owner === who).length >= 2 || this.records.size >= 8) throw new Error('preview limit reached');

@@ -4,10 +4,11 @@ import express from 'express';
 import request from 'supertest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentGit } from '../src/agent-git.js';
+import { AgentGit, agentJsonOf } from '../src/agent-git.js';
 import { AgentPreviewRuns } from '../src/agent-preview-runs.js';
 import { AgentPreviews } from '../src/agent-previews.js';
 import { agentPreviewRoutes } from '../src/agent-preview-routes.js';
@@ -16,6 +17,43 @@ import { HostedAgentHost } from '../src/hosted-agent-host.js';
 import { HostedAgentSecretStore } from '../src/hosted-agent-secrets.js';
 import { InferenceBackendRegistry } from '../src/inference-backends.js';
 import { hostedAgentSpecInput } from '../src/hosted-agent-types.js';
+
+test('mirror previews read the configured folder at the selected source commit, not the root agent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'preview-mirror-folder-'));
+  const git = new AgentGit(join(root, 'git'));
+  let previews: AgentPreviews | undefined;
+  try {
+    await git.init('desk');
+    const decoy = hostedAgentSpecInput.parse({ id: 'desk', name: 'Root agent', model: 'root-model', systemPrompt: 'Wrong root prompt' });
+    await git.commitSpec('desk', decoy, { message: 'Root agent' });
+    const clone = join(root, 'clone');
+    execFileSync('git', ['clone', '--quiet', git.dir('desk'), clone]);
+    const g = (args: string[]) => execFileSync('git', ['-C', clone, ...args], { encoding: 'utf8' }).trim();
+    g(['config', 'user.name', 'Mirror author']); g(['config', 'user.email', 'mirror@example.com']);
+    const folder = join(clone, 'news', 'desk'); mkdirSync(folder, { recursive: true });
+    const input = hostedAgentSpecInput.parse({ id: 'desk', name: 'Folder agent', model: 'folder-model', systemPrompt: 'Reviewed folder prompt' });
+    writeFileSync(join(folder, 'agent.json'), JSON.stringify(agentJsonOf(input)));
+    writeFileSync(join(folder, 'prompt.md'), input.systemPrompt);
+    g(['add', '.']); g(['commit', '-qm', 'Reviewed folder']); const pinned = g(['rev-parse', 'HEAD']);
+    writeFileSync(join(folder, 'prompt.md'), 'Unreviewed later folder prompt');
+    g(['add', '.']); g(['commit', '-qm', 'Later folder']); g(['push', '--quiet', 'origin', 'main']);
+    const host = {
+      apply: () => {}, remove: async () => {}, status: () => ({ status: 'ready', liveVersion: 1 }),
+      resolve: async () => 'http://127.0.0.1:8080', has: () => false,
+    } as unknown as HostedAgentHost;
+    previews = new AgentPreviews(git, host, { sourcePath: () => 'news/desk', pollMs: 1 });
+    const preview = await previews.create('desk', pinned, 'reader');
+    assert.equal(preview.commit, pinned);
+    assert.equal(previews.spec(preview.id)?.model, 'folder-model');
+    assert.equal(previews.spec(preview.id)?.systemPrompt, 'Reviewed folder prompt');
+    assert.notEqual(await git.resolve('desk', 'main'), pinned);
+    const ordinary = new AgentPreviews(git, host);
+    try {
+      const fromRoot = await ordinary.create('desk', pinned, 'reader');
+      assert.equal(ordinary.spec(fromRoot.id)?.model, 'root-model');
+    } finally { await ordinary.stop(); }
+  } finally { await previews?.stop(); rmSync(root, { recursive: true, force: true }); }
+});
 
 test('preview executes the pinned prompt through the real runtime, without source authority, and expires', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-preview-'));

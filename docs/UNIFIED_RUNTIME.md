@@ -188,3 +188,9 @@ Queued maintenance runs after startup and daily, drains on shutdown, and uses pr
 ### Complete generated-reference refresh
 
 All five generated reference pages (HTTP, CLI, schemas, configuration and errors) match clean source snapshots from the four committed repositories. Archive download/restore, shallow archive format, storage refusal responses and Git limits are included. Stable source labels prevent temporary release checkout paths from leaking into errors.md. Three path tests, two repository OpenAPI coverage tests and 27 web docs/reference tests pass. The web bundle is regenerated from the same clean reference content; other chats' working documentation edits are preserved separately. Production release checks remain pending.
+
+### Full server release check and source-folder previews
+
+The clean release snapshot passes the complete one-shot server suite: 818 tests, 801 passed, zero failures and 17 environment-dependent skips. Real child-process runtime tests exposed a symlink entrypoint mismatch; canonical filesystem paths now identify the entrypoint correctly. Both previously failing files pass their six regression tests. This complete run precedes the subsequent folder-preview change.
+
+Mirror previews now read the configured source folder at the selected commit instead of assuming agent.json is at the repository root. A real Git regression includes a different root agent and a newer folder commit, proving that the preview selects the reviewed folder prompt/model and leaves main untouched; ordinary root previews still work. All 16 preview/history/mirror regressions and the clean server build pass after this change. Production deployment, actual Teams identity and runtime verification remain pending.

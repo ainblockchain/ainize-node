@@ -949,7 +949,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return restored;
     },
   }));
-  agentPreviews = new AgentPreviews(agentGit, hostedHost);
+  agentPreviews = new AgentPreviews(agentGit, hostedHost, { sourcePath: (id) => agentMirrors.get(id)?.path ?? '' });
   agentPreviews.start();
   const repositoryMaintenance = new AgentRepositoryMaintenance(agentGit, serializeRepository,
     (id) => [agentRuntimes.get(id)?.activeCommit, ...agentRuntimes.executionsOf(id).flatMap((execution) => [execution.sourceCommit, execution.projectionCommit])].filter((commit): commit is string => !!commit),
