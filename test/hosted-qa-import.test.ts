@@ -63,6 +63,20 @@ test('completed and failed historical jobs keep their terminal native state', t 
   }
 });
 
+test('shared migration records operator route without granting execution or changing archived approval',t=>{
+ const f=fixture(t);
+ const options={...f,config:{...cfg,route:'api'}};
+ importLegacyJobs(options);
+ const job=f.jobs.get(id);
+ assert.equal(job.input.route,'api');assert.equal(job.input.repository,cfg.repository);
+ assert.equal(job.state,'waiting');assert.equal(f.jobs.claim(),null);
+ assert.equal(job.checkpoint.approval,undefined);
+ assert.deepEqual(f.checkpoints.load(job.checkpoint.legacy).job.details.approval,f.details.approval);
+ assert.deepEqual(importLegacyJobs(options),{imported:0,unchanged:1,total:1});
+ assert.throws(()=>importLegacyJobs({...f,config:{...cfg,route:'web'}}),/differs/);
+ assert.equal(f.jobs.get(id).input.route,'api');
+});
+
 test('reconciliation records live merge evidence without reusing archived approval', async t => {
   const f = fixture(t);
   f.source.prepare('UPDATE jobs SET details=?').run(JSON.stringify({ ...f.details, pr_main:{number:7,url:'https://github.com/test/product/pull/7'} }));

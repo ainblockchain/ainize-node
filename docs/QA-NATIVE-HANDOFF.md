@@ -606,3 +606,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - QA 전체 122 pass/0 fail/0 skip 및 build pass. 마지막 routing policy digest에 branch도 포함한 뒤 route/gateway 4개 테스트 재통과. host capability 설정의 문자열을 boolean으로 오인하지 않도록 검사하고 handler 10개 테스트도 재통과했다. 실제 로컬 HTTP gateway의 하나의 토큰으로 각 capability가 같은 scope에 전달됨과 직접 scope 접근 거부를 검증했다. handler의 두 저장소 접수·host intake/base 확인 후 코딩도 검증했다. Teams/GitHub 읽기는 fixture이므로 실제 운영 채널 E2E는 아니다.
 - Aindrive 재검증은 173 pass/1 source-declared skip/0 fail로 완료됐다. 동일 tree/image, 8GiB memory/4GiB workspace에서 operator gate의 Node heap을 3GiB로 지정했다. 원래 실패는 약 2GiB JS heap 한도였으며 cgroup OOM은 아니었다. 제외 항목은 wallet-cookie 협업 WebSocket 인증이며, offline font 웹 빌드도 여전히 별도 미해결이다. 자세한 증거는 QA-PRODUCT-VALIDATOR.md.
 - 운영 shared profile 활성화, 기존 23개 작업의 route 포함 보존 이관, 단일 실행자 전환, 최신 제품별 validation/revision 설정 및 실제 전체 채널→Ainmem→관리자 승인→배포는 남아 있다. PR76 승인 대기 상태도 그대로다. 새 main 병합/운영 배포/제품 코드 수정은 수행하지 않았다.
+
+### 2026-10-10 공유 채널 실제 과거 작업 이관 재현
+
+- legacy importer에 선택 route(web/api)를 추가했다. 같은 native Jobs DB에 두 저장소의 작업을 넣되 기존 ID·상태·후보·페이지 참조·승인 archive를 보존한다. 이미 가져온 작업에 다른 route를 지정하면 거부한다.
+- `HostedQaRoutes.importHistory`는 operator-only 경로다. archive fingerprint와 workspace/channel/repository를 검증해 과거 스레드의 저장소만 private ledger에 기록한다. 실제 intake, review, release 권한은 생성하지 않는다. 새 정본 답글은 기존 저장소를 따르며, 과거 요청을 새 요청처럼 재접수하거나 혼재된 스레드를 임의로 선택하지 않는다. HTTP gateway에는 이관 기능을 노출하지 않았다.
+- 실제 .41의 현재 Ainize 웹 2개/API 3개 작업을 하나의 새 DB로 가져왔다. 재실행은 각각 2개/3개 unchanged, 호스트 history 이관은 5개 imported 후 재시작·재실행에서 5개 unchanged였다. 기존 jobs/reports digest가 실행 전후 동일했고 claimable/liveIntakeGranted/approvalGranted/productionCutover는 모두 false였다.
+- 증거: `/mnt/newdata/qa-services/validation/native-shared-history-20261010-cnv66oax/rehearse.mjs`, `result.json`, `run.log`, 새 jobs/checkpoints/host ledger. 승인을 검사하거나 실제 Teams/GitHub로 요청하지 않는 진단용 정책을 사용했다. 운영 profile 설치나 작업기 전환이 아니며 실제 권한 이관으로 해석하면 안 된다.
+- QA 125 pass/0 fail/0 skip, build pass. 이관·재시작·변조 거부·후속 스레드 선택·혼재 거부를 포함한다. Ainmem 기존 페이지 adoption 설정, 과거 후보 원격 대조 및 현재 승인/배포 확인, 전체 제품 프로필과 실채널 E2E, main 승인·배포는 여전히 남아 있다.

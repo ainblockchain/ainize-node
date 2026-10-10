@@ -84,3 +84,36 @@ test('one real gateway token dispatches every job capability to its canonical re
  await assert.rejects(ctx('api').qa!.base!('job'),/refused/);
  assert.equal(calls.length,4);
 });
+
+test('historical routes preserve thread ownership without minting live intake or old approval authority',async t=>{
+ const {createHash}=await import('node:crypto');const f=fixture(t),s=f.service();
+ const archive={kind:'legacy-job-v1',repository:'test/api',workspaceId:'teams',channelId:'qa',job:{id:'old-job',message_id:'old',payload:{message_id:'old',parent_id:'old'},details:{approval:{sha:'a'.repeat(40)}}},reports:[]};
+ const item={archive,fingerprint:createHash('sha256').update(JSON.stringify(archive)).digest('hex')};
+ assert.deepEqual(s.importHistory('bot',[item]),{imported:1,unchanged:0});
+ assert.deepEqual(s.importHistory('bot',[item]),{imported:0,unchanged:1});
+ assert.equal(f.store.intake('api','old-job'),null);assert.equal(f.store.current('api','old-job'),null);
+ assert.throws(()=>s.resolve('bot','old-job'),/intake required/);
+ f.reopen();const restored=f.service();
+ f.add('old','API 오류 고쳐줘.');f.add('followup','이것도 고쳐줘.','old');
+ restored.submit('bot',input('new-job','followup','old'));await restored.drain();
+ assert.equal(restored.resolve('bot','new-job'),'api');
+ restored.submit('bot',input('replay','old'));await restored.drain();
+ assert.equal(restored.submit('bot',input('replay','old')).state,'failed');assert.equal(f.store.routedIntake('bot','replay'),null);
+ assert.throws(()=>restored.importHistory('bot',[{...item,fingerprint:'f'.repeat(64)}]),/evidence/);
+ const changed={...archive,repository:'test/web'};
+ assert.throws(()=>restored.importHistory('bot',[{archive:changed,fingerprint:createHash('sha256').update(JSON.stringify(changed)).digest('hex')}]),/changed/);
+});
+
+test('mixed historical repository threads stay preserved and refuse new ambiguous work',async t=>{
+ const {createHash}=await import('node:crypto');const f=fixture(t),s=f.service();
+ const items=['web','api'].map(route=>{
+  const archive={kind:'legacy-job-v1',repository:`test/${route}`,workspaceId:'teams',channelId:'qa',job:{id:route,message_id:route,payload:{message_id:route,parent_id:'old-root'}}};
+  return {archive,fingerprint:createHash('sha256').update(JSON.stringify(archive)).digest('hex')};
+ });
+ assert.deepEqual(s.importHistory('bot',items),{imported:2,unchanged:0});
+ f.add('old-root','메시지 고쳐줘.');f.add('new','이것도 고쳐줘.','old-root');
+ s.submit('bot',input('new','new','old-root'));await s.drain();
+ assert.equal(s.submit('bot',input('new','new','old-root')).state,'failed');
+ assert.deepEqual(s.importHistory('bot',items),{imported:0,unchanged:2});
+ assert.equal(f.store.intake('web','new'),null);assert.equal(f.store.intake('api','new'),null);
+});

@@ -8,6 +8,7 @@ const repo = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]*\
 
 export function importLegacyJobs({ sourcePath, jobs, checkpoints, config }) {
   if (!id(config?.service) || !id(config?.workspaceId) || !id(config?.channelId) || !repo(config?.repository)) throw new Error('Invalid legacy service binding');
+  if(config.route!==undefined&&!['web','api'].includes(config.route))throw new Error('Invalid legacy repository route');
   const targetPath = jobs.db.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file;
   if (!targetPath || realpathSync(sourcePath) === realpathSync(targetPath)) throw new Error('Legacy source and destination must differ');
   const source = new DatabaseSync(sourcePath, { readOnly: true });
@@ -38,7 +39,7 @@ export function importLegacyJobs({ sourcePath, jobs, checkpoints, config }) {
       workspaceId: config.workspaceId, channelId: config.channelId,
       job: { ...row, payload, details }, reports: reports.filter(report => report.job_id === row.id) };
     const fingerprint = createHash('sha256').update(JSON.stringify(archive)).digest('hex');
-    const input = { service: config.service, repository: config.repository, base, text: payload.text,
+    const input = { service: config.service, repository: config.repository, ...(config.route?{route:config.route}:{}), base, text: payload.text,
       teams: { workspaceId: config.workspaceId, channelId: config.channelId, messageId: row.message_id, parentId: payload.parent_id },
       legacySenderId: payload.sender_id, legacyCreatedAt: payload.created_at ?? null };
     if (Buffer.byteLength(JSON.stringify(input)) > 64 * 1024) throw new Error('Legacy input exceeds native job limit');

@@ -229,3 +229,25 @@ state directory without the preserving migration and single-writer cutover.
 This capability is implemented and covered by host/gateway/handler tests. Production
 profiles, historical route import, and actual channel-to-release validation remain
 separate rollout work. Do not infer a completed production migration from these tests.
+
+### Preserving shared-channel history
+
+For an offline migration, pass `route: "web"` or `route: "api"` in each product's
+`importLegacyJobs` config and import both snapshots into the same new Jobs database.
+The selected route is added to the native input; original archives, job IDs, states,
+page references and historical approval details remain unchanged. Reimporting with a
+different route is refused.
+
+The host operator can call `HostedQaRoutes.importHistory(ownerId, items)`, where each
+item is the immutable archive loaded from the imported job's checkpoint and its
+`legacyFingerprint`. This writes only historical routing evidence. It does **not**
+create a verified live intake, review target, or approval; gateway calls for those old
+jobs still fail until explicit reconciliation. The method is not exposed by HTTP.
+Afterward, a newly verified reply inherits the old thread's repository. Replaying the
+old request as a fresh job is refused. Mixed historical repositories remain archived
+and require reconciliation before a new request can proceed in that thread.
+
+Ainmem legacy page adoption remains a separate operator mapping in the Ainmem QA API;
+this route import does not move or recreate cards. Use a new diagnostic target before
+cutover, inspect results, stop the legacy writer at cutover, and reconcile any changes
+to the live source since rehearsal before activating native work.

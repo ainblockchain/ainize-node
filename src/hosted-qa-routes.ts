@@ -2,7 +2,7 @@
  * Only independently captured canonical request text selects a scope. No caller scope hint is accepted.
  */
 import {createHash} from 'node:crypto';
-import {HostedQaReviewStore,type QaRepositoryRoutes,type QaRoutedIntake} from './hosted-qa-review-store.js';
+import {HostedQaReviewStore,type QaRepositoryRoutes,type QaRoutedIntake,type QaHistoricalRoute} from './hosted-qa-review-store.js';
 import {captureQaTeamsRequestWithText} from './hosted-qa-teams-thread.js';
 import type {HostedReviewProfile} from './hosted-qa-review-coordinator.js';
 import type {TeamsReviewMcp} from './hosted-qa-teams-review.js';
@@ -30,6 +30,19 @@ export class HostedQaRoutes {
   if(Object.keys(this.owners).some(owner=>this.scopes.has(owner)))throw new Error('Shared QA owner cannot be an internal scope');
  }
  configured(id:string){return Object.hasOwn(this.owners,id);}
+ /** Offline operator entry only; no gateway endpoint exposes historical intake. */
+ importHistory(owner:string,items:{archive:any;fingerprint:string}[]){
+  if(!this.configured(owner)||!Array.isArray(items)||items.length>10000)throw new Error('Invalid route migration');
+  const policy=this.owners[owner];
+  const records:QaHistoricalRoute[]=items.map(({archive:raw,fingerprint})=>{
+   const archive=structuredClone(raw),job=archive?.job,payload=job?.payload;
+   if(!archive||archive.kind!=='legacy-job-v1'||createHash('sha256').update(JSON.stringify(archive)).digest('hex')!==fingerprint||!/^[-\w]{1,80}$/.test(job?.id??'')||!/^[-\w]{1,80}$/.test(job?.message_id??'')||payload?.message_id!==job.message_id||!/^[-\w]{1,80}$/.test(payload?.parent_id??'')||archive.workspaceId!==policy.profile.policy.teamsWorkspaceId||archive.channelId!==policy.profile.policy.channelId)throw new Error('Invalid historical route evidence');
+   const route=(['web','api'] as const).find(key=>policy.routes[key].repository===archive.repository);
+   if(!route)throw new Error('Historical repository is outside shared profile');
+   return {jobId:job.id,...policy.routes[route],route,policyDigest:policy.digest,archiveDigest:fingerprint,workspaceId:archive.workspaceId,channelId:archive.channelId,rootId:payload.parent_id,requestId:job.message_id};
+  });
+  return this.store.importHistoricalRoutes(owner,records);
+ }
  /** Called only at the authenticated gateway boundary, never by the host review loop. */
  resolve(owner:string,jobId:unknown){
   if(this.scopes.has(owner))throw new Error('Internal QA scope cannot be called directly');
