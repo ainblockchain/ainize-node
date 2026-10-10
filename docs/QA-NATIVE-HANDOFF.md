@@ -673,3 +673,25 @@ Ainize 타입 빌드 통과. Ainmem은 QA/knowledge 회귀 33 pass / 0 skip.
 운영 registry·스키마·페이지 권한·agent token에는 이번에도 쓰지 않았다.
 자동 registry 제거 동기화, 실제 관리자 세션 등록/비밀 토큰 전달, 23개 page 권한,
 승인 mirror, 단일 작업기 전환과 전 제품 채널 E2E는 남아 있다.
+
+## Ainmem registry 폐기 경로 연결 — 2026-10-11
+
+Ainmem PR #76 head `b716271`은 QA token을 쓸 때 현재 Ainize 조직 목록을 조회한다.
+성공 권한 캐시 없음, no-store/redirect 거부, 전체 조회 10초/응답 1 MB 제한.
+완전한 목록에서 agent 제거·공유 해제가 확인되면 DB credential을 폐기한다.
+재등록만으로 이전 token은 복구되지 않는다. Registry 장애·잘못된 응답·cursor 문제·
+일시적 중단은 token을 보존하고 task API 503으로 재시도하게 한다.
+따라서 앞선 'registry 제거 자동 폐기 미구현' 항목은 이 요청 시 검증 경로로 보완했다.
+사용하지 않는 credential을 선제 삭제하는 background 동기화는 필요하지 않으며,
+사용 시 반드시 검증하므로 제거된 agent의 작업 권한을 계속 허용하지 않는다.
+
+서버 36 tests pass / 0 skip, 타입 검사 통과. runtime production build 통과 후
+테스트 fixture 추가분은 테스트·타입 검사를 다시 통과했다. DB 및 loopback HTTP
+검증으로 등록 제거·복구·503·영구 폐기를 확인했다. 운영 쓰기는 없다.
+증거는 `native-ainmem-permission-1e4a3seo/registry-revocation-b716271/`에 별도 보존.
+
+브라우저 fixture는 새 권한 검사를 우회하지 않도록 loopback registry를 사용한다.
+`app/tests/qa/registry-fixture-server.mjs`와 fixture 환경 설정은 Ainmem API 문서 참조.
+이 변경 이후 전체 Chromium UI 시나리오는 아직 재실행하지 않았다.
+다음은 새 registry/권한 경로를 포함한 브라우저 확인, 통합 배포 승인 mirror 갱신,
+실제 관리자 등록/23개 page 권한/토큰 전달, 단일 작업기 전환과 전 제품 E2E다.
