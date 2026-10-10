@@ -1,3 +1,4 @@
+import {observeQaDeployment,type QaDeploymentProfile} from './hosted-qa-deployment.js';
 import type {HostedQaRelease} from './hosted-qa-release.js';
 /** Host background reconciliation; registration and checks are driven by verified publisher receipts. */
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
@@ -5,7 +6,7 @@ import {HostedQaReviewCoordinator,type HostedReviewProfile,type HostedReviewRead
 export class HostedQaReviewLoop {
  private running:Promise<void>|null=null;
  private profiles:Record<string,HostedReviewProfile>;
- constructor(private store:HostedQaReviewStore,private coordinator:HostedQaReviewCoordinator,profiles:Record<string,HostedReviewProfile>,private readers:HostedReviewReaders,private log:(message:string)=>void=()=>{},private release?:Pick<HostedQaRelease,'attempt'>){this.profiles=structuredClone(profiles);}
+ constructor(private store:HostedQaReviewStore,private coordinator:HostedQaReviewCoordinator,profiles:Record<string,HostedReviewProfile>,private readers:HostedReviewReaders,private log:(message:string)=>void=()=>{},private release?:Pick<HostedQaRelease,'attempt'>,private deployments?:{profiles:Record<string,QaDeploymentProfile>;github:(path:string)=>Promise<any>}){this.profiles=structuredClone(profiles);}
  async drain(){if(this.running)await this.running;}
  tick():Promise<void>{
   if(this.running)return this.running;
@@ -26,7 +27,14 @@ export class HostedQaReviewLoop {
     }
     const current=this.store.current(item.agentId,item.jobId)!;
     const previous=this.store.releaseRecord(current);
-    if(previous?.receipt?.state==='branch_updated')continue; // Deployment observation is a separate stage.
+    if(previous?.receipt?.state==='deployment_verified')continue;
+    if(previous?.receipt?.state==='branch_updated'){
+     if(this.deployments&&Object.hasOwn(this.deployments.profiles,item.agentId)){
+      const observed=await observeQaDeployment(this.deployments.profiles[item.agentId],current,this.deployments.github);
+      if(observed.state==='deployment_verified')this.store.releaseObserved(current,{...previous.receipt,...observed});
+     }
+     continue;
+    }
     if(previous&&this.release){await this.release.attempt(item.agentId,item.jobId);continue;}
     const approval=await this.coordinator.check(item.agentId,item.jobId);
     if(approval&&this.release)await this.release.attempt(item.agentId,item.jobId);

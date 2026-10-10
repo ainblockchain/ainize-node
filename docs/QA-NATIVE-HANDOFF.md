@@ -461,3 +461,13 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 서버 opt-in: `AINIZE_QA_RELEASE_PROFILES`는 agent ID → `{repository,branch,mode:"fast-forward-unprotected"}` JSON 파일 경로, `AINIZE_QA_RELEASE_TOKEN_FILE`은 별도 private 호스트 토큰 파일이다. review/publication/validation 설정이 필수다. 모델/agent container에 release token을 전달하지 않는다. **운영에서는 아직 비활성이다.**
 - 성공 receipt는 `branch_updated`, `deploymentVerified:false`다. GitHub PR merged 상태와 실제 서비스 배포/serving SHA 확인은 별도 단계이며 아직 미구현이다. 보호 저장소 전용 merge 방식, 변경 base 재검증, 실제 사람 승인 릴리스 E2E도 남아 있다. 이 코드 추가로 main을 변경하지 않았다.
 - QA 타깃 75개 통과 및 빌드 통과. 검증 정책 변경 테스트 추가 후 release 테스트 6개 통과. 승인 없음, 보호 규칙, 동시 main 갱신, 잘못된 ancestry, 응답 유실/서비스 재생성, 변경된 검증 정책을 검증했다. 실제 GitHub 쓰기/배포 테스트는 아직 수행하지 않았다.
+
+### 2026-10-10 실제 배포 커밋 관측
+
+- `hosted-qa-deployment.ts`는 정본 PR의 저장소/head/base 및 merged 기록을 확인하고, 설정된 HTTPS 상태 API의 필수 건강 조건과 실행 revision을 읽는다. GitHub에서 full SHA를 해석한 뒤 검토 후보와 merge commit이 모두 serving commit의 조상인지 확인한다. 열린 PR·옛 배포는 pending이며 revision 없는 건강 응답/semver/깨진 의존성은 완료 증거가 아니다.
+- host review loop는 branch_updated 이후 이 확인을 수행하며, 성공 시에만 `deployment_verified` receipt를 저장한다. UI 회귀 검증은 별도이므로 `featureRegressionVerified:false`를 유지한다.
+- opt-in `AINIZE_QA_DEPLOYMENT_PROFILES`: agent ID → `{repository,branch,url,revisionPath:string[],healthy:[{path:string[],equals:string|boolean}]}` JSON 파일. review 설정이 필수다. 운영에서는 아직 설정하지 않았다.
+- 실제 Teams PR1410 재조회: 후보 `f526a2c0a17fa7d20c06795ad68b47714a790537`, merge `e183df9d82340998cdeb481ffa427d6bbc354df1`이 serving `f118bbfea579984dabb6d652a2d5219bdce8708a`에 포함됨을 새 코드로 확인했다. 상태/DB/Meilisearch/realtime 모두 ok. 이는 과거 PR의 읽기 전용 배포 관측이며 새 배포를 실행한 것이 아니다.
+- 실제 Ainspace PR198은 여전히 `awaiting_merge_evidence`로 판정했다. 건강한 기존 서비스가 있다고 열린 후보를 배포 완료로 바꾸지 않는다.
+- 현행 공개 API 조사: Teams `/api/health`는 `version`, Ainspace `/api/health`는 `sha`를 제공한다. Ainmem `/api/health`는 `ok`만, Aindrive `/api/healthz`는 건강 상태만 제공한다. Ainize `/api/info`의 node.version은 semver이고 node.build는 날짜다. AINA `/api/health`와 Ainize `/api/health`는 404였다. 따라서 나머지 서비스에는 별도의 실제 실행 revision 증거/어댑터가 필요하다.
+- QA 타깃 테스트 80개 통과, 빌드 및 타입 검사 통과. 운영 전환·상태를 agent/Ainmem으로 환류·실제 사람 승인 릴리스·전 서비스 E2E는 여전히 남아 있다.

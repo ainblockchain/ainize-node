@@ -1,3 +1,4 @@
+import {validateDeploymentProfile,type QaDeploymentProfile} from './hosted-qa-deployment.js';
 import {HostedQaRelease,qaReleaseGitHubClient,type QaReleaseProfile} from './hosted-qa-release.js';
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
 import {HostedQaReviewCoordinator,type HostedReviewProfile,type HostedReviewReaders} from './hosted-qa-review-coordinator.js';
@@ -386,6 +387,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>16384)throw new Error('QA token file must be private');
     const token=readFileSync(path,'utf8').trim();if(!token||/[\r\n]/.test(token))throw new Error('Invalid QA token');return token;
   };
+  if(process.env.AINIZE_QA_DEPLOYMENT_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA deployment observation requires review configuration');
   if(process.env.AINIZE_QA_RELEASE_PROFILES&&!process.env.AINIZE_QA_REVIEW_PROFILES)throw new Error('QA release requires canonical review configuration');
   if(process.env.AINIZE_QA_REVIEW_PROFILES&&!publicationPath)throw new Error('QA review requires publication configuration');
   if(publicationPath){
@@ -409,7 +411,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         if(!releaseTokenPath)throw new Error('QA release token file required');
         release=new HostedQaRelease(qaReviewStore,coordinator,JSON.parse(readFileSync(releasePath,'utf8')) as Record<string,QaReleaseProfile>,qaReleaseGitHubClient(readQaToken(releaseTokenPath)),(id,candidate)=>qaValidation!.requirePassed(id,candidate));
       }
-      qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release);
+      const deploymentPath=process.env.AINIZE_QA_DEPLOYMENT_PROFILES;
+      let deployments:Record<string,QaDeploymentProfile>|undefined;
+      if(deploymentPath){
+        deployments=JSON.parse(readFileSync(deploymentPath,'utf8')) as Record<string,QaDeploymentProfile>;
+        for(const profile of Object.values(deployments))validateDeploymentProfile(profile);
+      }
+      qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release,deployments?{profiles:deployments,github:path=>github('GET',path)}:undefined);
     }
     qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate}):undefined);
   }
