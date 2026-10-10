@@ -14,6 +14,21 @@ export function agentPreviewRoutes(deps: { previews: AgentPreviews; runs?: Agent
     const runs = deps.runs?.list(id, owner) ?? [];
     res.set('cache-control', 'private, no-store').json({ runs: runs.slice(page.data.offset, page.data.offset + page.data.limit), total: runs.length, ...page.data });
   });
+  router.post('/api/hosted-agents/:id/preview-runs/:run/export', (req, res) => {
+    const id = String(req.params.id), owner = deps.principal(req);
+    if (!owner || !deps.canRead(req, id)) return fail(res, 404, 'not_found', 'no preview history');
+    const run = deps.runs?.export(String(req.params.run), id, owner);
+    if (!run) return fail(res, 404, 'not_found', 'no preview history');
+    res.set('cache-control', 'private, no-store').json({ run });
+  });
+  router.delete('/api/hosted-agents/:id/preview-runs/:run', (req, res) => {
+    const id = String(req.params.id), owner = deps.principal(req);
+    if (!owner || !deps.canRead(req, id)) return fail(res, 404, 'not_found', 'no preview history');
+    const result = deps.runs?.remove(String(req.params.run), id, owner) ?? 'missing';
+    if (result === 'missing') return fail(res, 404, 'not_found', 'no preview history');
+    if (result !== 'removed') return fail(res, 409, 'export_required', result === 'running' ? 'wait for the request to finish' : 'export this record before deleting it');
+    res.json({ ok: true });
+  });
   router.post('/api/hosted-agents/:id/previews', async (req, res) => {
     const id = String(req.params.id);
     if (!deps.canRead(req, id)) return fail(res, 404, 'not_found', 'no agent repository');

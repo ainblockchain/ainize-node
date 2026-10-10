@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import type { AgentPreview } from './agent-previews.js';
 export interface PreviewRun {
   id: string; previewId: string; agent: string; owner: string; commit: string; model: string;
-  request: unknown; output: string; outputTruncated: boolean; outputBytes: number;
+  exportedAt?: number; request: unknown; output: string; outputTruncated: boolean; outputBytes: number;
   status: 'running' | 'ready' | 'error' | 'cancelled'; error: string | null; createdAt: number; finishedAt: number | null;
 }
 export class AgentPreviewRuns {
@@ -24,9 +24,22 @@ export class AgentPreviewRuns {
   }
   finish(id: string, result: Pick<PreviewRun, 'status' | 'output' | 'outputTruncated' | 'outputBytes' | 'error'>): void {
     const run = this.records.get(id); if (!run || run.status !== 'running') return;
-    this.records.set(id, { ...run, ...result, finishedAt: Date.now() }); this.save();
+    this.records.set(id, { ...run, ...result, exportedAt: undefined, finishedAt: Date.now() }); this.save();
   }
   list(agent: string, owner: string): PreviewRun[] { return structuredClone([...this.records.values()].filter((run) => run.agent === agent && run.owner === owner.toLowerCase()).reverse()); }
+  export(id: string, agent: string, owner: string): PreviewRun | null {
+    const run = this.records.get(id);
+    if (!run || run.agent !== agent || run.owner !== owner.toLowerCase()) return null;
+    const exported = { ...run, exportedAt: Date.now() };
+    this.records.set(id, exported); this.save(); return structuredClone(exported);
+  }
+  remove(id: string, agent: string, owner: string): 'removed' | 'missing' | 'not_exported' | 'running' {
+    const run = this.records.get(id);
+    if (!run || run.agent !== agent || run.owner !== owner.toLowerCase()) return 'missing';
+    if (run.status === 'running') return 'running';
+    if (!run.exportedAt) return 'not_exported';
+    this.records.delete(id); this.save(); return 'removed';
+  }
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(`${this.file}.tmp`, JSON.stringify({ runs: [...this.records.values()] }), { mode: 0o600 });

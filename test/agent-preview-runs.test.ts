@@ -27,5 +27,14 @@ test('private proposal evidence survives restart, marks interrupted requests, an
     assert.deepEqual(restored.list('desk', 'bob'), []);
     assert.deepEqual(restored.list('other-agent', 'alice'), []);
     assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.equal(restored.remove(done.id, 'desk', 'bob'), 'missing');
+    assert.equal(restored.remove(done.id, 'desk', 'alice'), 'not_exported');
+    assert.equal(restored.export(done.id, 'desk', 'bob'), null);
+    const exported = restored.export(done.id, 'desk', 'alice')!;
+    assert.equal(exported.output, 'answer');
+    assert.ok(exported.exportedAt);
+    const afterExport = new AgentPreviewRuns(file);
+    assert.equal(afterExport.remove(done.id, 'desk', 'alice'), 'removed');
+    assert.equal(new AgentPreviewRuns(file).list('desk', 'alice').length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

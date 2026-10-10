@@ -86,6 +86,14 @@ test('preview executes the pinned prompt through the real runtime, without sourc
     assert.equal(new AgentPreviewRuns(join(root, 'review-runs.json')).list('desk', 'reader').length, 1);
     assert.deepEqual((await request(app).get('/api/hosted-agents/desk/preview-runs').set('x-person', 'other')).body.runs, []);
     assert.equal((await request(app).get('/api/hosted-agents/desk/preview-runs').set('x-person', 'denied')).status, 404);
+    const recordPath = `/api/hosted-agents/desk/preview-runs/${history.body.runs[0].id}`;
+    assert.equal((await request(app).delete(recordPath).set('x-person', 'reader')).status, 409);
+    assert.equal((await request(app).post(`${recordPath}/export`).set('x-person', 'other')).status, 404);
+    const exported = await request(app).post(`${recordPath}/export`).set('x-person', 'reader');
+    assert.equal(exported.status, 200);
+    assert.match(exported.body.run.output, /Reviewed prompt/);
+    assert.equal((await request(app).delete(recordPath).set('x-person', 'reader')).status, 200);
+    assert.equal(new AgentPreviewRuns(join(root, 'review-runs.json')).list('desk', 'reader').length, 0);
   } finally {
     await previews?.stop(); await host.stop();
     await new Promise<void>((resolve) => modelServer.close(() => resolve()));
