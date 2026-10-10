@@ -511,3 +511,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 신규 접수와 과거 작업 이관은 별개다. 24시간 이전의 기존 작업을 새 요청으로 위장해 등록하지 않는다. 기존 작업·페이지·승인을 보존하는 운영자 이관과 단일 실행자 전환은 여전히 남아 있다. 운영 profile/handler는 아직 활성화하지 않았다.
 - 같은 스레드에 두 후보가 이미 게시되어 있으면 검토 등록 여부와 무관하게 bare Teams 승인을 거부한다. 이 경우 특정 작업의 정본 Ainmem 페이지 승인은 계속 사용할 수 있다. 먼저 표시된 후보만 임의로 선택해 LGTM을 적용하지 않는다.
 - QA 타깃 98개 통과、실패/skip 0, 빌드 통과. 원본 요청 등록·재시작·중복 방지·변조 거부·게시 전 검사·handler 재개·스레드 승인 모호성 검증을 포함한다. 이 테스트는 운영 전환/서비스별 실제 배포 완료를 뜻하지 않는다.
+
+### 2026-10-10 최신 main 반영 및 검토 PR
+
+- Ainize branch에 main `5135f19`를 반영했다(merge `7301328`). 충돌 없이 합쳐졌으며 빌드와 QA/scheduler/locator/redirect/hosted-agent 테스트 122개가 통과했다(실패/skip 0). 전체 저장소/실제 운영 E2E 결과는 아니다.
+- Ainmem branch에도 최신 main을 반영했다(merge `360fbbe`). QA API 파일 변경 없이 MCP knowledge 변경만 합쳐졌고 앱 타입 검사가 통과했다. 직전 실제 DB/HTTP 검증 7 pass는 QA API 자체 증거로 유지한다.
+- 검토용 draft PR: Ainize https://github.com/ainblockchain/ainize-node/pull/70 ; Ainmem https://github.com/ainetwork-ai/ainmem/pull/76 . 둘 다 운영 전환이 끝났다는 의미가 아니며 병합/배포하지 않았다.
+- 실제 .41 운영 API는 `/mnt/newdata/ainize-node-releases/releases/20261010T130910Z-5135f19cde1d`를 실행 중이고 user unit `ainize-public-node`는 active였다. QA 관련 running user units는 `ainteams-qa.service`, `ainteams-qa-kanban.service`였다. 새 native opt-in 설정을 켜지 않았다.
+- 기존 23개 작업 상태를 읽기 전용으로 재확인했다: Teams 11, Ainmem 2, Aindrive 2, Ainize 웹 2/API 3, AINA 2, Ainspace 1. 승인 대기 4, completed 6, failed 10, blocked 3이다. Ainmem/Aindrive 각각 한 작업이 `failed / approved_release`로 남아 있으므로 이관 시 승인 기록과 실제 원격 릴리스 상태를 대조해야 한다. 실패를 곧바로 재실행하거나 completed로 바꾸지 않았다.
