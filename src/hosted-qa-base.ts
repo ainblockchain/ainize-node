@@ -10,6 +10,9 @@ const exec=promisify(execFile);
 const fullSha=(s:unknown):s is string=>typeof s==='string'&&/^[a-f0-9]{40}$/.test(s);
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export interface QaBaseProfile {validation:QaValidationProfile;branch:string}
+export interface QaRevalidationRequest {previousBase:string;sequence:number;sourceDigest:string}
+export interface QaRevalidationReceipt extends QaRevalidationRequest {jobId:string;repository:string;base:string}
+interface QaBaseRecord {agentId:string;jobId:string;policyDigest:string;base:string;attempts?:QaRevalidationReceipt[]}
 export interface QaBaseSource {
   /** Must read the operator-bound repository/branch from its authoritative remote. */
   head(repository:string,branch:string):Promise<string>;
@@ -41,8 +44,11 @@ export class HostedQaBases {
   private profiles:Record<string,QaBaseProfile>;
   private active=new Map<string,Promise<QaValidationProfile>>();
   private failures=new Map<string,number>();
+  private rebasing=new Map<string,{fingerprint:string;promise:Promise<QaRevalidationReceipt>}>();
   constructor(private root:string,profiles:Record<string,QaBaseProfile>,private source:QaBaseSource,
-    private requireIntake:(agentId:string,jobId:string)=>void) {
+    private requireIntake:(agentId:string,jobId:string)=>void,
+    // Host ledger authority only: must verify invalidation and refuse pending/finished releases.
+    private requireRevalidation?:(agentId:string,jobId:string,request:QaRevalidationRequest)=>void) {
     this.profiles=structuredClone(profiles);
     mkdirSync(root,{recursive:true,mode:0o700});
     const st=lstatSync(root);
@@ -70,15 +76,75 @@ export class HostedQaBases {
     void this.prepare(agentId,jobId).catch(()=>{this.failures.set(key,Date.now());});
     return {state:'running'};
   }
-  private read(agentId:string,jobId:string):QaValidationProfile|undefined {
+  private readRecord(agentId:string,jobId:string):QaBaseRecord|undefined {
     const {policy,file,policyDigest}=this.binding(agentId,jobId);
     try{
       const st=lstatSync(file);
       if(!st.isFile()||st.isSymbolicLink()||(st.mode&0o077)!==0||st.size>65536)throw new Error('Invalid QA base record');
       const record=JSON.parse(readFileSync(file,'utf8'));
       if(record.agentId!==agentId||record.jobId!==jobId||record.policyDigest!==policyDigest||!fullSha(record.base))throw new Error('QA base policy changed; reconciliation required');
-      return {...structuredClone(policy.validation),base:record.base};
+      if(record.attempts!==undefined){
+        if(!Array.isArray(record.attempts)||!record.attempts.length||record.attempts.length>20)throw new Error('Invalid QA base history');
+        for(const [index,attempt] of record.attempts.entries()){
+          if(!attempt||attempt.jobId!==jobId||attempt.repository!==policy.validation.repository||attempt.sequence!==index+1
+            ||!fullSha(attempt.previousBase)||!fullSha(attempt.base)||attempt.base===attempt.previousBase
+            ||typeof attempt.sourceDigest!=='string'||!/^[a-f0-9]{64}$/.test(attempt.sourceDigest)
+            ||(index>0&&attempt.previousBase!==record.attempts[index-1].base))throw new Error('Invalid QA base history');
+        }
+        if(record.attempts.at(-1).base!==record.base)throw new Error('Invalid QA base history');
+      }
+      return record;
     }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  }
+  private read(agentId:string,jobId:string):QaValidationProfile|undefined {
+    const record=this.readRecord(agentId,jobId);
+    return record?{...structuredClone(this.binding(agentId,jobId).policy.validation),base:record.base}:undefined;
+  }
+  /** Host-authorized attempt rollover. No gateway enables this until review invalidation is wired.
+   * Same-attempt retries return the durable receipt; a different request cannot race or reuse it.
+   */
+  prepareRevalidation(agentId:string,jobId:string,raw:QaRevalidationRequest):Promise<QaRevalidationReceipt> {
+    const request=structuredClone(raw);
+    if(!request||Object.keys(request).sort().join(',')!=='previousBase,sequence,sourceDigest'
+      ||!fullSha(request.previousBase)||!Number.isSafeInteger(request.sequence)||request.sequence<1||request.sequence>20
+      ||typeof request.sourceDigest!=='string'||!/^[a-f0-9]{64}$/.test(request.sourceDigest))throw new Error('Invalid revalidation request');
+    const authorize=()=>{
+      this.requireIntake(agentId,jobId);
+      if(!this.requireRevalidation)throw new Error('Host revalidation authority unavailable');
+      const authorization:unknown=this.requireRevalidation(agentId,jobId,structuredClone(request));
+      // The ledger check and subsequent state write must be synchronous. Accidentally passing
+      // an async callback must not turn a pending/rejected permission check into authorization.
+      if(authorization!==undefined){
+        if(authorization instanceof Promise)void authorization.catch(()=>{});
+        throw new Error('Host revalidation authority must be synchronous');
+      }
+    };
+    authorize();
+    const {policy,key,file}=this.binding(agentId,jobId),prior=this.readRecord(agentId,jobId);
+    if(!prior)throw new Error('Job base has not been prepared');
+    const attempts=prior.attempts??[],last=attempts.at(-1);
+    if(last?.sequence===request.sequence&&last.previousBase===request.previousBase&&last.sourceDigest===request.sourceDigest)return Promise.resolve(structuredClone(last));
+    if(prior.base!==request.previousBase||request.sequence!==attempts.length+1)throw new Error('Revalidation attempt changed');
+    const fingerprint=hash(request),running=this.rebasing.get(key);
+    if(running){
+      if(running.fingerprint!==fingerprint)throw new Error('Different revalidation already running');
+      return running.promise.then(receipt=>structuredClone(receipt));
+    }
+    if(this.active.has(key)||this.rebasing.size+this.active.size>=16)throw new Error('QA base capacity reached');
+    const run=(async()=>{
+      const base=await this.source.head(policy.validation.repository,policy.branch);
+      if(!fullSha(base)||base===request.previousBase)throw new Error('No new remote base');
+      await this.source.prepare(structuredClone(policy.validation),base);
+      authorize();
+      if(hash(this.readRecord(agentId,jobId))!==hash(prior))throw new Error('Prepared job changed during revalidation');
+      const receipt={jobId,repository:policy.validation.repository,...request,base};
+      const temp=join(this.root,`${key}.${randomUUID()}.tmp`);
+      writeFileSync(temp,JSON.stringify({...prior,base,attempts:[...attempts,receipt]}),{mode:0o600,flag:'wx'});
+      renameSync(temp,file);
+      return receipt;
+    })().finally(()=>this.rebasing.delete(key));
+    this.rebasing.set(key,{fingerprint,promise:run});
+    return run.then(receipt=>structuredClone(receipt));
   }
   /** Job identity is durable: retries/restarts return its original base even if main has moved. */
   prepare(agentId:string,jobId:string):Promise<QaValidationProfile> {
@@ -86,7 +152,7 @@ export class HostedQaBases {
     const {policy,key,file,policyDigest}=this.binding(agentId,jobId);
     const prior=this.read(agentId,jobId);if(prior)return Promise.resolve(prior);
     const running=this.active.get(key);if(running)return running.then(p=>structuredClone(p));
-    if(this.active.size>=16||readdirSync(this.root).length>=2000)throw new Error('QA base capacity reached');
+    if(this.active.size+this.rebasing.size>=16||readdirSync(this.root).length>=2000)throw new Error('QA base capacity reached');
     const run=(async()=>{
       const base=await this.source.head(policy.validation.repository,policy.branch);
       if(!fullSha(base))throw new Error('Invalid remote base');
@@ -107,5 +173,5 @@ export class HostedQaBases {
     if(!profile)throw new Error('Job base has not been prepared');
     validateQaProfile(profile,candidate);return profile;
   }
-  async drain(){await Promise.allSettled(this.active.values());}
+  async drain(){await Promise.allSettled([...this.active.values(),...Array.from(this.rebasing.values(),task=>task.promise)]);}
 }

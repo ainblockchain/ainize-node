@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,writeFileSync,mkdirSync,readdirSync,statSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync,mkdirSync,readdirSync,statSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
@@ -92,4 +92,49 @@ test('gateway base capability and validation receipts are bound to the prepared 
  assert.throws(()=>service.requirePassed('agent',c),/job required/);
  assert.throws(()=>service.requirePassed('agent',c,'unverified'),/no intake/);
  gateway.revoke(token);await assert.rejects(ctx.qa!.base!('verified'),/refused/);
+});
+
+test('host-authorized revalidation advances a durable attempt once and rejects old candidates', async t => {
+ const root=mkdtempSync(join(tmpdir(),'qa-base-next-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let main=old,prepares=0,authorized=true;
+ const source={head:async()=>main,prepare:async()=>{prepares++;}};
+ const authority=()=>{if(!authorized)throw new Error('review invalidation missing');};
+ const service=new HostedQaBases(root,profiles,source,()=>{},authority);
+ await service.prepare('agent','job');main=next;
+ const request={previousBase:old,sequence:1,sourceDigest:'e'.repeat(64)};
+ const [first,duplicate]=await Promise.all([service.prepareRevalidation('agent','job',request),service.prepareRevalidation('agent','job',request)]);
+ assert.deepEqual(first,{jobId:'job',repository:validation.repository,...request,base:next});assert.deepEqual(first,duplicate);
+ assert.equal(prepares,2);first.base=later;assert.equal(duplicate.base,next);
+ const restored=new HostedQaBases(root,profiles,source,()=>{},authority);main=later;
+ assert.deepEqual(await restored.prepareRevalidation('agent','job',request),duplicate);assert.equal(prepares,2);
+ assert.equal((await restored.prepare('agent','job')).base,next);
+ assert.throws(()=>restored.requireProfile('agent','job',{repository:validation.repository,base:old,changes:{'a.js':'old'}}),/binding/);
+ assert.equal(restored.requireProfile('agent','job',{repository:validation.repository,base:next,changes:{'a.js':'new'}}).base,next);
+ assert.throws(()=>restored.prepareRevalidation('agent','job',{...request,sourceDigest:'f'.repeat(64)}),/attempt changed/);
+ authorized=false;assert.throws(()=>restored.prepareRevalidation('agent','job',request),/invalidation/);
+ authorized=true;
+ const second=await restored.prepareRevalidation('agent','job',{previousBase:next,sequence:2,sourceDigest:'f'.repeat(64)});
+ assert.equal(second.base,later);assert.equal(second.sequence,2);
+ assert.throws(()=>restored.prepareRevalidation('agent','job',request),/attempt changed/);
+ const record=JSON.parse(readFileSync(join(root,readdirSync(root)[0]),'utf8'));
+ assert.deepEqual(record.attempts.map(attempt=>[attempt.previousBase,attempt.base]),[[old,next],[next,later]]);
+});
+
+test('revalidation checks authority after preparation and cannot overwrite the base on failure', async t => {
+ const root=mkdtempSync(join(tmpdir(),'qa-base-next-deny-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let main=old,allowed=true,release:()=>void=()=>{},started:()=>void=()=>{};
+ const began=new Promise<void>(resolve=>{started=resolve;});
+ const source={head:async()=>main,prepare:async()=>{if(main!==old){started();await new Promise<void>(resolve=>{release=resolve;});}}};
+ const service=new HostedQaBases(root,profiles,source,()=>{},()=>{if(!allowed)throw new Error('release now pending');});
+ await service.prepare('agent','job');
+ const request={previousBase:old,sequence:1,sourceDigest:'e'.repeat(64)};
+ assert.throws(()=>new HostedQaBases(root,profiles,source,()=>{}).prepareRevalidation('agent','job',request),/authority unavailable/);
+ assert.throws(()=>new HostedQaBases(root,profiles,source,()=>{},async()=>{throw new Error('denied');}).prepareRevalidation('agent','job',request),/must be synchronous/);
+ await assert.rejects(service.prepareRevalidation('agent','job',request),/No new remote base/);
+ main=next;
+ const pending=service.prepareRevalidation('agent','job',request);await began;
+ assert.throws(()=>service.prepareRevalidation('agent','job',{...request,sourceDigest:'f'.repeat(64)}),/already running/);
+ allowed=false;release();await assert.rejects(pending,/release now pending/);
+ assert.equal((await service.prepare('agent','job')).base,old);
+ const record=JSON.parse(readFileSync(join(root,readdirSync(root)[0]),'utf8'));assert.equal(record.attempts,undefined);
 });
