@@ -28,6 +28,24 @@
 
 ### 운영 연결에 필요한 다음 조치
 
+2026-10-11 최신 8b9f2b0 실제 .41 서버 회귀:
+`/mnt/newdata/qa-services/validation/native-current-20261011-ifJot9/`에 결과를 보존했다.
+- `hosted-qa-product-validation.log`: 실제 scheduled agent Docker→Unix gateway→
+  Ainspace 6bec65c의 lint, runtime restart 포함 1 pass/0 fail/0 skip, 18.4초.
+  이 프로필은 lint 한 개이며 최신 Ainspace main 전체 gate 검증은 아니다.
+- `hosted-qa-live-coding.log`: 실제 Qwen3.8-Flash-Next native 도구 수정과 실패 뒤
+  재수정, runtime restart, 고정 격리 산술 검사 2 pass/0 fail/0 skip, 64.7초.
+- `revalidation.log`: 서버 Node에서 실제 ledger/base/gateway/coordinator/handler를
+  사용한 20 pass/0 fail/0 skip, 1.3초. 외부 Teams/Ainmem/GitHub 읽기와 모델 출력은
+  fixture이며 실제 채널 승인·릴리스 검증은 아니다.
+- `summary.json`: 진단 runtime 결과와 source SHA. 진단용 internal network
+  `ainize-current-ifjot9` 제거를 실제 조회로 확인했다. 사용자 서비스
+  `ainize-public-node`와 `ainize-auto-deploy.timer`는 계속 active다.
+기존 운영 agent/profile/채널/페이지를 변경하지 않았다. ACL은 기존 추출 바이너리를
+진단 PATH에서 사용했으며 production 패키지 설치를 완료한 것으로 해석하지 않는다.
+다음 실제 운영 단계는 승인 대기 선행 PR 및 native runtime 배포, 자격증명/페이지 이관,
+단일 writer 전환 후 여섯 채널의 실제 요청→PR→LGTM→serving SHA 검증이다.
+
 2026-10-11 게시 전·반복 main 변경 재개 연결 완료(코드 통합 검증):
 재개 요청/응답에 선택적 candidateDigest를 추가했다. 게시 전 park는 검증한 후보 digest를
 보관하고 handler가 이를 전달한다. 호스트는 같은 agent/job/base/candidate의 영구 게시
