@@ -1031,3 +1031,21 @@ PR/페이지/승인/배포를 수행한 검사가 아니다. 전 제품 운영 E
 
 증거: /mnt/newdata/qa-services/validation/native-gateway-20261011-U9J3ZB/integration.log.
 ACL은 이 진단 PATH에 기존 추출 도구를 사용했다. 운영 ACL 패키지는 여전히 미설치다.
+
+### 실제 Ainize 모델의 native 코딩 재확인 — 2026-10-11
+
+최신 compiled runtime과 examples/qa-agent를 사용해 .41에서 hosted-qa-live-coding을
+실행했다. 진단 게이트웨이를 Unix socket으로 전환해 외부 TCP 포트가 필요 없도록 했고,
+운영 network 이름 거부도 추가했다. 전용 내부 network ainize-qa-model-u9j3zb만 생성하고
+검사 후 삭제했다. 운영 모델 설정은 호스트에서 읽었으며 비밀값을 출력하거나 저장소에
+넣지 않았다.
+
+Qwen3.8-Flash-Next 실제 호출: 1 test / 0 fail / 0 skip, 약 22.6초.
+모델이 테스트용 sum.mjs를 native read/replace 도구로 수정하고 중간 runtime restart
+후에도 같은 job ID와 coding checkpoint를 이어 갔다. 결과는 network=none인 별도
+컨테이너에서 양수·음수·영·소수 입력의 고정 산술 assertion 5개를 통과했다.
+제품 저장소/운영 채널/PR/페이지에는 쓰지 않았고 실제 제품 전체 E2E를 의미하지 않는다.
+
+증거: /mnt/newdata/qa-services/validation/native-gateway-20261011-U9J3ZB/live-coding.log.
+운영 ACL 설치 및 선행 PR 승인·배포, canonical page enrollment와 6개 채널/7개 제품
+profile의 단일 native writer 전환은 계속 남아 있다.

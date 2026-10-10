@@ -22,8 +22,8 @@ test('real Ainize model edits through native tools, resumes, and produces execut
   const model = process.env.AINIZE_QA_MODEL;
   assert.ok(model && registry.backendForModel(model));
   const network = process.env.AINIZE_CI_DOCKER_NETWORK;
-  const port = Number(process.env.AINIZE_CI_DOCKER_GATEWAY_PORT);
-  assert.ok(network && port > 0);
+  assert.ok(network);
+  assert.notEqual(network, 'ainize-hosted-agents', 'never use the production network');
   const internal = await hostedAgentDockerExec(['network', 'inspect', network, '--format', '{{.Internal}}']);
   assert.equal(internal.stdout.trim(), 'true');
   const dir = mkdtempSync(join(tmpdir(), 'native-qa-coding-'));
@@ -31,8 +31,8 @@ test('real Ainize model edits through native tools, resumes, and produces execut
   const secrets = new HostedAgentSecretStore(join(dir, 'secrets.json'), join(dir, 'secrets.key'));
   const gateway = new HostedAgentGateway({ registry: () => registry, spec: id => store.get(id), log: () => {} });
   const docker = new HostedAgentDocker({ memory: '256m', cpus: 1, pidsLimit: 128, network, buildTimeoutMs: 300_000,
-    stateDir: join(dir, 'state'), workDir: join(dir, 'work'), runtimeImage: 'ainize/hosted-agent-runtime-test' });
-  const host = new HostedAgentHost({ gateway, secrets, docker, dockerGatewayPort: port, idleStopMs: 600_000, maxRunning: 1, log: () => {} });
+    stateDir: join(dir, 'state'), gatewaySocketDir: join(dir, 'gateway'), workDir: join(dir, 'work'), runtimeImage: 'ainize/hosted-agent-runtime-test' });
+  const host = new HostedAgentHost({ gateway, secrets, docker, gatewaySocketPath: join(dir, 'gateway', 'gateway.sock'), idleStopMs: 600_000, maxRunning: 1, log: () => {} });
   await host.start([]);
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
