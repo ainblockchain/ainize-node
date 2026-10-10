@@ -102,3 +102,9 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - 미리보기 비교의 실제 UI를 테스트 응답과 연결해 두 기록 선택/입력·응답 비교, JSON 다운로드 파일 내용, 내보내기 전 삭제 비활성 및 삭제 후 갱신을 확인했다. 320/390/640/1280px에서 가로 넘침 없고 모바일 버튼/선택 높이 44px, 선택 글자 16px 이상이었다. 임시 화면과 개발 서버는 정리했다. 이는 운영 데이터 연동 검증이 아니다.
 - 미러 configure/detach를 fetch/apply/land와 같은 에이전트 대기열에 넣었다. 실제 Git 동기화를 apply 중 멈춰 두고 detach가 완료 응답을 기다리는지, 해제 뒤 대기하던 이전 sync가 적용하지 않는지, 재연결이 새 작업으로 적용하는지 검증했다. 미러 관련 9개 검사와 타입 검사 통과.
 - 저장소 삭제/내보내기/유지 관리, 카드 대상 전환, CLI/문서/이미지 및 전체 운영 배포를 포함한 미완료 범위는 계속 열려 있다.
+
+### 2026-10-10: 생성 API·CLI 참조
+
+- Node `50b3f2b`: streamed Run OpenAPI에 실제 head/commit/deployed 선택, SHA, 입력/env 한도, timeout, 실행 ID, 대기열/취소 및 재시작 동작을 반영했다. 필드/한도와 실제 repository 라우트의 문서 존재 검사 2개 및 타입 검사 통과.
+- Web `d795f5c`: 커밋된 node API와 실제 CLI 선언에서 HTTP API/CLI 참조를 생성해 Git transport, PR/댓글/포크, 자동 미러, 미리보기·개인 기록/내보내기/삭제, 실행 기록과 clone/pulls/mirror 명령을 포함했다. 해당 참조의 화면 데이터도 커밋했다. 다른 작업의 AINFT 문서와 화면 데이터는 작업 트리에 보존하고 이 커밋에 포함하지 않았다. `gen:check` 통과.
+- 문서 생성은 명시적인 sibling worktree 경로를 환경 변수로 받을 수 있으며 경로/누락 검사 2개가 통과했다. 전체 config/schema/error 참조의 생성 검사와 모든 운영 배포는 아직 미완료다.
