@@ -161,3 +161,8 @@ Real signed-in node tests prove owner isolation, pagination, actual tar extracti
 Owner restore now validates current model and organization access, restores the same address with a newer version and fresh PoP key, reinstalls Git hooks, retains reviews and execution history, and waits for readiness. Recorded last successful source/projection commits remain distinct; newer failed history is retained on an archive branch. Failed application rolls back attempted state while retaining the archive. Secret names are reported for re-entry; secret values are never restored.
 
 Shallow mirrors use a private bare-repository archive preserving original objects, refs and shallow boundaries, excluding configuration and hooks. Full repositories retain cloneable bundles. Real owner HTTP tests cover download, offline restoration, same-address runtime restoration and subsequent Git push: 19 tests pass. Recovery UI and production deployment remain pending.
+
+
+### Owner recovery controls
+
+Ainize My Agents now includes private paginated deleted-agent archives, complete download, same-address restore and export-gated permanent removal. Recovery opens the restored agent settings and names secrets that must be re-entered. Address collisions remain visible and never overwrite agents. The actual component passes browser checks at 320/390/640/1280px with no horizontal overflow and 44px controls; download, pagination, collision, secret notice and removal were verified with mocked HTTP responses. Web typecheck and focused hosted-agent/lifecycle regressions pass. Node recovery HTTP tests separately use a real signed-in server and Git. Production recovery and Teams service identity remain unverified.
