@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 164개 및 build 통과. 704ced1의 전체 API suite는
+- QA 회귀 167개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -27,6 +27,24 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+2026-10-11 이관된 실제 미완료 요청 재확인:
+`verifyHistoricalQaIntake`를 추가했다. operator 전용이며 gateway에 노출하지 않는다.
+보관본 digest/repository/workspace/channel, 미완료 상태, 원래 작성 시각(legacy Unix
+seconds), 수정 요청 문구를 검증한 뒤 Teams root/channel/전체 thread를 새로 읽는다.
+원래 작성자·내용·시각이 모두 같고 작성자가 현재 사람 멤버여야 한다. 새 요청의 24시간
+제한은 바꾸지 않으며 완료/실패 이력과 과거 승인 데이터는 재실행·배포 권한이 되지 않는다.
+QA 167 pass/0 fail/0 skip, build 통과.
+
+실제 .41의 `/mnt/newdata/qa-services/validation/native-historical-intake-20261011-28kzWT/`:
+- 현재 이관 snapshot 23건 중 waiting 7건을 운영 Teams MCP에서 읽기 전용 대조했다.
+- **7/7 검증 성공**: Teams 3, Ainize web 2/API 1, Ainspace 1.
+- `summary.json`은 결과만, `proofs.json`은 원문/binding/archiveDigest를 포함하며 mode 0600.
+  proof 내용을 Git이나 채널에 복사하지 않는다.
+- 기존 source DB·native job 상태·Teams 메시지·Ainmem 페이지는 변경하지 않았다.
+다음 단계는 이 검증을 operator 이관 경로에서 다시 실행해 host intake/공유 route에
+원자적으로 등록하고, 후보·정본 페이지 조정 후 native 작업을 재개하는 것이다. 보관한
+proof가 나중에도 현재 권한을 증명한다고 간주하거나 과거 LGTM을 승계하지 않는다.
 
 2026-10-11 최신 8b9f2b0 실제 .41 서버 회귀:
 `/mnt/newdata/qa-services/validation/native-current-20261011-ifJot9/`에 결과를 보존했다.
