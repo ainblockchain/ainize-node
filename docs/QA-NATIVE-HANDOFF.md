@@ -620,6 +620,8 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - ain-vault에 보관된 ainops SSH 키/관리 자격증명으로 .41을 경유해 .194에 접속했다. 기존 mTest3 키는 배포 명령 전용이므로 일반 조회에 사용하지 않았다. 비밀번호/키/토큰은 출력하거나 저장소에 기록하지 않았다.
 - 실제 Ainmem PostgreSQL에서 READ ONLY transaction으로 현재 23개 job의 canonical kanban_url을 대조했다. 원래 db row의 작업 ID 속성, 페이지 ID/부모 보드/workspace/creator, uuid5(job, qa-progress) paragraph, archive/lock 상태가 모두 일치했다. 페이지/행/블록/댓글은 수정하지 않았다.
 - 최초 네 작업에서 같은 페이지를 참조하는 행이 두 개씩 나왔다. 페이지의 실제 부모 보드와 database_id를 함께 확인하면 원본 행이 하나로 결정된다. 승인 모아보기의 별도 행을 원본 행으로 잘못 adoption하면 안 된다. 이 mirror 행의 상태 갱신/정리는 전환 시 별도 확인이 필요하다.
-- 검증 결과: Teams 11, Ainmem 2, Aindrive 2, Ainize 웹 2/API 3, AINA 2, Ainspace 1 = 23개. .194 private evidence: `/var/tmp/qa-native-page-adoption-3kephgru/evidence.json`, `bindings-without-agent.json`, `summary.json`. 이 파일은 기존 row/page/block/owner/jobProperty 매핑이며 **agentId가 없어 아직 활성화할 수 없다**.
+- 검증 결과: Teams 11, Ainmem 2, Aindrive 2, Ainize 웹 2/API 3, AINA 2, Ainspace 1 = 23개. .194 private evidence: `/var/tmp/qa-native-page-adoption-3kephgru/evidence.json`, `bindings-without-agent.json`. 이 파일은 기존 row/page/block/owner/jobProperty 매핑이며 **agentId가 없어 아직 활성화할 수 없다**.
 - 현재 ComCom Ainmem workspace `2c88615f-4a30-43f8-9608-6ac977919dc0`에는 `is_agent=true` workspace member가 0명이다. 이름이나 Teams agent ID를 임의로 Ainmem agent ID로 대입하면 안 된다. Ainize QA identity를 Ainmem에 정상 등록·workspace 연결하고 scoped token을 발급한 다음, 실제 발급된 Ainmem user ID로 23개 mapping을 완성해야 한다.
 - 운영 adoption 환경변수/새 token/페이지 쓰기는 아직 하지 않았다. PR76 배포 승인도 대기 중이다. 기존 작업 데이터가 준비됐다는 사실과 실제 native agent가 페이지를 갱신할 수 있다는 사실을 구분한다. 승인 모아보기와 페이지 댓글 LGTM을 포함한 실채널 E2E는 남아 있다.
+
+- 조회가 끝난 뒤 추가 summary 파일 저장 시도 때 vault 잠금이 만료되어 접속하지 못했다. 기존 evidence/bindings 파일은 앞선 성공한 조회에서 저장됐으며 summary 파일은 생성되지 않았다.
