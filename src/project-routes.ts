@@ -624,10 +624,15 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     headers.set('x-forwarded-prefix', `/svc/${c.projectId}`);
     headers.set('accept-encoding', 'identity');
     const hasBody = !['GET', 'HEAD'].includes(req.method);
+    // The site's JSON middleware has already read this stream. Its verify hook retains the exact bytes;
+    // forward those rather than an exhausted IncomingMessage or a reserialized, potentially signed payload.
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    const body = hasBody ? (Buffer.isBuffer(rawBody) ? rawBody : Readable.toWeb(req) as unknown as ReadableStream) : undefined;
+    if (Buffer.isBuffer(body)) headers.delete('content-length');
     try {
       const upstream = await fetch(`${c.upstream}/${rest}${q}`, {
         method: req.method, headers, redirect: 'manual', signal: AbortSignal.timeout(120_000),
-        ...(hasBody ? { body: Readable.toWeb(req) as unknown as ReadableStream, duplex: 'half' } : {}),
+        ...(hasBody ? { body, duplex: 'half' } : {}),
       } as RequestInit);
       res.status(upstream.status);
       upstream.headers.forEach((v, k) => { if (!DROP_RESPONSE.has(k)) res.setHeader(k, v); });
