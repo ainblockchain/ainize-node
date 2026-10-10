@@ -137,19 +137,35 @@ before cloning; status is read back by id.
 
 ## How the node reads the repository
 
-The repo is behind aindrive auth (viewer+). There is **no machine-to-machine path yet** from this node's AIN SSO app
-credentials to an aindrive read token (ainize-node talks to `auth.comcom.ai` only to verify ID tokens and sessions;
-aindrive accepts `Authorization: Bearer <session JWT | aind_aat_… account token>`). So, for now:
+The repo is behind aindrive auth (viewer+). The node reads it **as itself**, with its AIN SSO machine identity:
 
-* The owner may give a **deploy token** at creation (`deployToken`: an aindrive session JWT, or better an
-  `aind_aat_…` account token scoped `drives:read`). It is sealed with the hosted-agent secret store
-  (`<dataDir>/project-secrets.json`, key `hosted-agent-secrets.key`), write-only over HTTP, handed to git through
-  `GIT_CONFIG_*` environment entries (`http.extraHeader`) — never on the command line — and scrubbed from git's
-  error text before it reaches a log. A public repo needs none.
-* Limitation: a session JWT expires; then every deployment fails with `git clone failed: … 401` until the project is
-  re-created with a fresh token (no update endpoint yet — add `PATCH /api/projects/:id {deployToken}` when
-  aindrive's token lifetimes are settled). `TODO(projects-sso)` in `ProjectWorker.clone` marks where an
-  SSO-minted token goes once aindrive accepts one.
+* With `AIN_SSO_CLIENT_SECRET` set (next to `AIN_SSO_ISSUER` and `AIN_SSO_CLIENT_ID`, `docs/ain-sso.md` §5), the
+  worker asks AIN SSO for an OAuth 2.0 **`client_credentials`** token naming the repository's host as the resource
+  (`resource=<origin of the repo URL>`, e.g. `https://aindrive.ainetwork.ai`; `src/sso-service-token.ts`). AIN SSO
+  answers with a 5-minute RFC 9068 JWT (`aud` = that host, `sub` = `azp` = `ainize`, `orgs` = the organizations the
+  ainize app is assigned in). aindrive verifies it against AIN SSO's JWKS and, when `ainize` is in its
+  `AINDRIVE_SSO_SERVICE_APPS`, treats the node as a **viewer on the drives shared with one of those organizations**
+  — clone and fetch work, a push is refused, `.aindrive/` stays out of reach, and aindrive logs every read
+  (aindrive `web/lib/sso/service-principal.ts`). The token is cached per host until shortly before it expires and
+  shared by every project on the node; the next deployment after an expiry asks again.
+* The owner may still give a **deploy token** at creation (`deployToken`: an aindrive session JWT, or an
+  `aind_aat_…` account token scoped `drives:read`). When present it **overrides** the machine identity for that
+  project — for a drive that is not org-shared, or a node without SSO credentials. It is sealed with the
+  hosted-agent secret store (`<dataDir>/project-secrets.json`, key `hosted-agent-secrets.key`), write-only over
+  HTTP. A session JWT expires; the project must then be re-created with a fresh token (no update endpoint yet).
+* Without either, the clone is anonymous (a public repo).
+
+Either bearer is handed to git through `GIT_CONFIG_*` environment entries (`http.extraHeader`) — never on the
+command line — and scrubbed from git's error text before it reaches a log. The deployment log says which
+credential the clone used (`clone as this node …`, `clone with the project's deploy token`, `clone anonymously`);
+when AIN SSO refuses a token (the app not registered for the grant, the host not in AIN SSO's
+`AIN_SSO_SERVICE_RESOURCES`) the node logs the refusal and clones anonymously, so a private repo fails with
+aindrive's 401 in the deployment log.
+
+Set-up on the AIN side, once: AIN SSO lists aindrive's public URL in `AIN_SSO_SERVICE_RESOURCES`, the `ainize`
+application is **assigned** to the organization whose drives hold the repositories (that is what puts the org in the
+token), and aindrive lists `ainize` in `AINDRIVE_SSO_SERVICE_APPS`. The repository's drive must be shared with that
+organization (aindrive `docs/PERMISSIONS.md` "Organizations").
 
 Clone is `git clone --depth 1 --branch <branch> <repo>` into a temp dir; when the tip has moved past the pushed `sha`
 (a later push queued behind this one), the commit is fetched by id, or the clone deepened when the server will not

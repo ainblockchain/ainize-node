@@ -26,7 +26,7 @@ Some settings live in the `ainize-public-node` user unit rather than in `config.
 
 | Drop-in | Setting | Why |
 |---|---|---|
-| `ain-sso.conf` | `AIN_SSO_ISSUER`, `AIN_SSO_CLIENT_ID`, `AIN_SSO_ADAPTER_URL` | AIN SSO sign-in (`docs/ain-sso.md`) |
+| `ain-sso.conf` | `AIN_SSO_ISSUER`, `AIN_SSO_CLIENT_ID`, `AIN_SSO_ADAPTER_URL`, `AIN_SSO_CLIENT_SECRET` | AIN SSO sign-in (`docs/ain-sso.md`); the secret gives the node its machine identity for cloning project repos from aindrive (`docs/PROJECTS.md`) |
 | `preferred-chat.conf` | `AINIZE_PREFERRED_CHAT_PEERS={"Qwen3.8-Flash-Next":"0x951e1767f18c4317479bb460950b281a3e122b93"}` | `/v1` chat for Qwen3.8 goes to the GPU peer (`ainize-gpu-models`), not the local runtime |
 | `org-seed.conf` | `AINIZE_ORG_SEED=comcom=ComCom:comcom.ai` | the ComCom organization exists before anyone signs in; `@comcom.ai` people join at `domainRole` (write) |
 

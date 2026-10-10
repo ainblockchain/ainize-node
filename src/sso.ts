@@ -40,6 +40,12 @@ export interface SsoConfig {
   /** The adapter base URL registered at AIN SSO (public, e.g. `https://ainize.ai/api/sso/adapter`); null = adapter off. */
   adapterUrl: string | null;
   jwksUri: string;
+  /**
+   * This application's client secret at AIN SSO (`client_secret_basic`) — only for what the node does AS ITSELF:
+   * machine tokens (`client_credentials`, src/sso-service-token.ts) that let it clone project repositories from
+   * aindrive. Null = no machine identity (projects need a pasted deploy token). Nothing about sign-in needs it.
+   */
+  clientSecret: string | null;
 }
 
 const isLoopback = (host: string) => host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
@@ -64,7 +70,8 @@ export function readSsoConfig(env: NodeJS.ProcessEnv = process.env): SsoConfig |
     try { new URL(adapterUrl); } catch { console.error('[sso] AIN_SSO_ADAPTER_URL is not a URL — AIN SSO stays off'); return null; }
   }
   const jwksUri = env.AIN_SSO_JWKS_URI?.trim() || new URL('oidc/jwks', issuer.endsWith('/') ? issuer : `${issuer}/`).href;
-  return { issuer, clientId, adapterUrl, jwksUri };
+  const clientSecret = env.AIN_SSO_CLIENT_SECRET?.trim() || null;
+  return { issuer, clientId, adapterUrl, jwksUri, clientSecret };
 }
 
 // ------------------------------------------------------------------------------------------------ errors and principals
