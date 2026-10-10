@@ -56,7 +56,7 @@ export async function validateCandidate({ repository, base, changes, gates, run 
 /**
  * One bounded validation step under the SQLite lease, mirroring `advanceCoding`. The host schedules
  * this once a `needs_validation` job is woken; it loads the immutable coding checkpoint, runs the
- * gates, saves an immutable verdict, and parks the job in `waiting` at `awaiting_approval` (all gates
+ * gates, saves an immutable verdict, and parks the job in `waiting` at `needs_publication` (all gates
  * passed) or `validation_failed` (otherwise). It never publishes, deploys, or records an approval —
  * the candidate is preserved for a human-approved release path to pick up by the exact digest.
  */
@@ -82,7 +82,7 @@ export async function advanceValidation({ jobs, claim, checkpoints, gates, run }
     // Save before SQLite references it, so an interrupted write never leaves a broken reference.
     const updated = jobs.finish(job.id, lease, 'waiting', {
       ...job.checkpoint,
-      stage: result.passed ? 'awaiting_approval' : 'validation_failed',
+      stage: result.passed ? 'needs_publication' : 'validation_failed',
       validation,
     });
     return { job: updated, result };

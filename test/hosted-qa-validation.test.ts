@@ -50,7 +50,7 @@ test('gates run in order, stop at first failure, and a thrown gate counts as fai
   await assert.rejects(validateCandidate({ repository: REPO, base: BASE, changes, gates: [], run: async () => ({ passed: true }) }), /gate list/);
 });
 
-test('validation step parks a passing candidate at awaiting_approval without recording approval', async t => {
+test('validation step parks a passing candidate at needs_publication without recording approval', async t => {
   const root = mkdtempSync(join(tmpdir(), 'qa-validation-')); t.after(() => rmSync(root, { recursive: true, force: true }));
   const checkpoints = new Checkpoints(join(root, 'checkpoints'));
   const jobs = new Jobs(join(root, 'jobs.sqlite3'));
@@ -68,9 +68,9 @@ test('validation step parks a passing candidate at awaiting_approval without rec
     const out = await advanceValidation({ jobs, claim: jobs.claim(), checkpoints, gates: ['typecheck', 'test'], run });
     assert.equal(out.result.passed, true);
     assert.equal(out.job.state, 'waiting');
-    assert.equal(out.job.checkpoint.stage, 'awaiting_approval');
+    assert.equal(out.job.checkpoint.stage, 'needs_publication');
     assert.equal('approval' in out.job.checkpoint, false, 'validation never records a deployment approval');
-    assert.equal(jobs.claim(), null, 'an approved-pending candidate is not re-claimed');
+    assert.equal(jobs.claim(), null, 'an validated candidate is not re-claimed');
 
     // The stored verdict is bound to the exact candidate.
     const verdict = checkpoints.load(out.job.checkpoint.validation);

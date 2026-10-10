@@ -344,3 +344,17 @@ GitHub API를 직접 읽어 확인한 최신 상태이며 이전 승인 대기 �
 `verifyDeploymentCommit`은 serving SHA의 merge ancestry만 확인하고 featureRegressionVerified=false를
 명시한다. 이 함수는 실제 화면 검증이나 전체 채널 성공 판정을 대신하지 않는다.
 QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배포하지 않았다.
+
+### 2026-10-10 후속: 실제 제품 격리 검증 실행기
+
+- `src/hosted-qa-validator.ts` 추가. host가 exact Git base를 export하고 candidate 파일을
+  적용해 pinned dependency image에서 실제 product gate argv를 실행한다.
+  network none, read-only root, non-root, no capabilities/new privileges, 자원/시간 제한.
+  source/package lock과 dependency image 일치 확인. 코드/검증 digest 결합 및 실패 시 중단.
+- Ainspace PR #198의 실제 tree에 원래 README를 그대로 덮은 진단 candidate로 실행.
+  4GB에서 lint/test 통과, build exit 137(Killed). 전체 검증 통과가 아니다.
+  8GB build 재실행을 시작했다. 실행 증거/한계는 `docs/QA-PRODUCT-VALIDATOR.md` 참고.
+- 검증 통과 상태를 needs_publication으로 변경했다. 아직 게시된 PR이 없는 상태를
+  awaiting_approval로 표시하던 문제를 수정했다.
+- 로컬 QA suite 47개 및 typecheck 통과. 서버 실행기는 production gateway/tick에 아직
+  연결되지 않았다. 검증 runner 코드 존재를 모든 채널 자동 실행 완료로 간주하면 안 된다.

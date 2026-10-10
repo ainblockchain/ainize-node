@@ -87,7 +87,7 @@ Per-service binding comes from bundled `qa-config.json` next to `index.mjs` (a s
 gates in order (stopping at the first failure) through an injected runner and returns a verdict bound
 to a `candidateDigest` of the exact changed files on the pinned base, so a verdict can never be
 reattributed to a different candidate or an older commit. `advanceValidation` runs one such step under
-the SQLite lease and parks the job in `waiting` at `awaiting_approval` or `validation_failed`, never
+the SQLite lease and parks the job in `waiting` at `needs_publication` or `validation_failed`, never
 publishing, deploying, or recording an approval. The focused test is `test/hosted-qa-validation.test.ts`.
 What still belongs to the host and the maintainer: the real per-product gate runner (an isolated,
 credential-free container built from the base plus the candidate), the policy for waking a
