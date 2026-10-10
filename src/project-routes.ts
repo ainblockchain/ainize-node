@@ -9,12 +9,14 @@
  */
 import { Router, type Request, type Response } from 'express';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
+import type { ProjectContainers } from './project-containers.js';
 import type { AgentCaller } from './shared-agents.js';
 import {
   hookBody, hookSignatureOk, parseRepoUrl, projectInput, type Deployment, type DeploymentLogs, type Project, ProjectLimitError, ProjectRepoTakenError,
   type ProjectStore, type ProjectWorker, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN, PROJECT_SECRET_WEBHOOK,
 } from './projects.js';
 import { randomBytes } from 'node:crypto';
+import { Readable } from 'node:stream';
 
 export interface ProjectRoutesDeps {
   store: ProjectStore;
@@ -22,6 +24,8 @@ export interface ProjectRoutesDeps {
   secrets: Pick<HostedAgentSecretStore, 'set' | 'reveal' | 'dropAgent'>;
   logs: DeploymentLogs;
   worker: ProjectWorker;
+  /** Running service/nextjs containers, for `/svc/:id/*`. Absent → that path is 404. */
+  containers?: Pick<ProjectContainers, 'current'>;
   caller: (req: Request) => AgentCaller | null;
   publicBase: (req: Request) => string;
   /** Browser origins allowed to read status and (for aindrive's server) post the hook. */
@@ -65,7 +69,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
 
   const projectView = (req: Request, p: Project) => ({
     id: p.id, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, entry: p.entry, name: p.name, status: p.status,
-    owner: p.owner, url: `${base(req)}/${encodeURIComponent(p.org)}/${encodeURIComponent(p.repoName)}`,
+    owner: p.owner, url: `${base(req)}/${encodeURIComponent(p.org)}/${encodeURIComponent(p.repoName)}`, pageUrl: `${base(req)}/projects/${p.id}`,
     hookUrl: `${base(req)}/api/projects/${p.id}/hook`, lastDeploymentId: p.lastDeploymentId, createdAt: p.createdAt, updatedAt: p.updatedAt,
   });
   /** What aindrive's UI may show about a repo it serves — status, no owner, no hook address. */
@@ -73,15 +77,16 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const last = p.lastDeploymentId ? deps.store.deployment(p.lastDeploymentId) : null;
     return {
       id: p.id, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, status: p.status,
-      url: `${base(req)}/${encodeURIComponent(p.org)}/${encodeURIComponent(p.repoName)}`,
+      url: `${base(req)}/${encodeURIComponent(p.org)}/${encodeURIComponent(p.repoName)}`, pageUrl: `${base(req)}/projects/${p.id}`,
       lastDeployment: last ? deploymentView(req, last) : null,
     };
   };
   const deploymentView = (req: Request, d: Deployment) => ({
     id: d.id, projectId: d.projectId, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
     startedAt: d.startedAt, finishedAt: d.finishedAt, ms: d.ms, ...(d.exitCode === null ? {} : { exitCode: d.exitCode }), ...(d.error ? { error: d.error } : {}),
+    ...(d.kind ? { kind: d.kind } : {}),
     logUrl: `${base(req)}/api/deployments/${d.id}/log`,
-    ...(d.status === 'ready' ? { outputUrl: `${base(req)}/api/deployments/${d.id}/output` } : {}),
+    ...(d.status === 'ready' && d.outputUrl ? { outputUrl: d.outputUrl } : {}),
   });
 
   // ------------------------------------------------------------------------------------------ projects
@@ -97,16 +102,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const input = parsed.data;
     const repo = parseRepoUrl(input.repo);
     if (!repo) return refuse(res, 400, 'invalid_request', 'repo: an aindrive git URL — https://aindrive.ainetwork.ai/<org>/git/<repo> (https; no credentials in the URL)');
-    if (input.kind === 'agent') {
-      // TODO(projects-agent): build the repo as a hosted agent (see projects.ts ProjectWorker.build). agent-mirror.ts
-      // reads a repo folder into a HostedAgentSpec, so this is the next step once a per-project agent id and host
-      // wiring are decided; refused clearly until then rather than accepted and left idle.
-      return refuse(res, 501, 'not_implemented', 'kind "agent" is not implemented on this node yet; a script project runs its entry on every push');
-    }
-    if (!input.entry) return refuse(res, 400, 'invalid_request', 'entry: a script project names the file to run (e.g. "main.py")');
+    // `kind` and `entry` are hints for the row; the repository's ainize.json decides at every deploy.
     let project: Project;
     try {
-      project = deps.store.create({ repo, branch: input.branch, kind: input.kind, entry: input.entry, name: input.name }, who.subject);
+      project = deps.store.create({ repo, branch: input.branch, kind: input.kind ?? null, entry: input.entry ?? null, name: input.name }, who.subject);
     } catch (e) {
       if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
       if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
@@ -195,6 +194,42 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
   router.get('/api/deployments/:id', (req, res) => {
     const d = readable(req, res);
     if (d) res.json(deploymentView(req, d));
+  });
+
+  // ------------------------------------------------------------------------------------------ services
+
+  /**
+   * `/svc/<projectId>/…` → the project's running container, on the internal network. Streams both ways; drops
+   * hop-by-hop headers. The container sees the original path under `/`.
+   */
+  const HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate', 'host', 'content-length']);
+  // fetch inflates the body before handing it over, so the upstream's encoding header would lie to the browser.
+  const DROP_RESPONSE = new Set([...HOP, 'content-encoding']);
+  router.all(['/svc/:id', '/svc/:id/{*rest}'], async (req, res) => {
+    const c = deps.containers?.current(String(req.params.id));
+    if (!c) return refuse(res, 404, 'not_found', `no running service for project "${req.params.id}"`);
+    const rest = Array.isArray(req.params.rest) ? req.params.rest.join('/') : (req.params.rest ?? '');
+    const q = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k.toLowerCase()) && v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
+    headers.set('x-forwarded-host', req.get('host') ?? '');
+    headers.set('x-forwarded-proto', req.protocol);
+    headers.set('x-forwarded-prefix', `/svc/${c.projectId}`);
+    headers.set('accept-encoding', 'identity');
+    const hasBody = !['GET', 'HEAD'].includes(req.method);
+    try {
+      const upstream = await fetch(`${c.upstream}/${rest}${q}`, {
+        method: req.method, headers, redirect: 'manual', signal: AbortSignal.timeout(120_000),
+        ...(hasBody ? { body: Readable.toWeb(req) as unknown as ReadableStream, duplex: 'half' } : {}),
+      } as RequestInit);
+      res.status(upstream.status);
+      upstream.headers.forEach((v, k) => { if (!DROP_RESPONSE.has(k)) res.setHeader(k, v); });
+      if (!upstream.body) { res.end(); return; }
+      Readable.fromWeb(upstream.body as unknown as import('node:stream/web').ReadableStream).pipe(res);
+    } catch (e) {
+      if (!res.headersSent) refuse(res, 502, 'service_unreachable', `the service did not answer: ${(e as Error).message}`);
+      else res.end();
+    }
   });
 
   router.get('/api/deployments/:id/output', (req, res) => {

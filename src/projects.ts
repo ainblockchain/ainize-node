@@ -3,9 +3,12 @@
  *
  * "ainize git = aindrive git": this node keeps NO repositories of its own for projects. A project names a repo by
  * its aindrive URL (`https://aindrive.ainetwork.ai/<org>/git/<repo>`, or `/api/drives/<driveId>/git/<path>`), a
- * branch and a kind; aindrive calls `POST /api/projects/:id/hook` after a successful `git-receive-pack`, and the
- * worker here clones THAT commit, runs it (`kind: 'script'` → the `/api/run` sandbox) and keeps the output as a
- * Deployment. The owner is the signed-in account (AIN SSO or wallet session) that created the project.
+ * branch; aindrive calls `POST /api/projects/:id/hook` after a successful `git-receive-pack`, and the worker here
+ * clones THAT commit, reads its `ainize.json` (project-manifest.ts — the one source of truth for how it deploys)
+ * and does what the kind says: `nextjs`/`service` build and run a container behind the node
+ * (project-containers.ts), `script` runs the entry once in the /api/run sandbox, `agent` becomes a hosted A2A
+ * agent (project-agents.ts). Each push is a Deployment with a log. The owner is the signed-in account (AIN SSO or
+ * wallet session) that created the project.
  *
  * Persistence is the hosted-agent bargain (hosted-agent-store.ts): one JSON file, written atomically, a few
  * hundred records. Secrets (the webhook secret aindrive signs with, the deploy token the clone presents) live in
@@ -28,13 +31,17 @@ import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
+import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
+import type { ProjectContainers } from './project-containers.js';
+import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestKind } from './project-manifest.js';
+import type { RunSandbox } from './run-sandbox.js';
 
 const exec = promisify(execFile);
 
 // ------------------------------------------------------------------------------------------------ types
 
-export const PROJECT_KINDS = ['script', 'agent'] as const;
-export type ProjectKind = (typeof PROJECT_KINDS)[number];
+export const PROJECT_KINDS = PROJECT_MANIFEST_KINDS;
+export type ProjectKind = ProjectManifestKind;
 export type ProjectStatus = 'idle' | 'queued' | 'building' | 'ready' | 'error';
 export type DeploymentStatus = 'queued' | 'building' | 'ready' | 'error';
 
@@ -47,7 +54,9 @@ export interface Project {
   org: string;
   repoName: string;
   branch: string;
-  kind: ProjectKind;
+  /** What the last deployed `ainize.json` said (or the hint given at creation, until the first push). */
+  kind: ProjectKind | null;
+  /** A fallback entry for a `script` whose ainize.json names none. */
   entry: string | null;
   name: string;
   /** The last deployment's status, or `idle` before the first push. */
@@ -72,6 +81,10 @@ export interface Deployment {
   exitCode: number | null;
   /** Why it ended in `error` when there is no exit code to say so (clone failed, too many files, …). */
   error: string | null;
+  /** The kind the commit's ainize.json resolved to; null until it was read. */
+  kind?: ProjectKind | null;
+  /** Where the result lives once `ready`: the service's public URL, the agent's A2A URL, a script's stdout. */
+  outputUrl?: string | null;
 }
 
 /** `POST /api/run`'s request, as deploy/run-runtime/README.md describes it. */
@@ -125,7 +138,8 @@ export function parseRepoUrl(input: string): RepoRef | null {
 export const projectInput = z.object({
   repo: z.string().min(1).max(1024),
   branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).default(PROJECT_DEFAULT_BRANCH),
-  kind: z.enum(PROJECT_KINDS),
+  /** A hint for the project row; the deployed kind is always the repository's ainize.json. */
+  kind: z.enum(PROJECT_KINDS).optional(),
   entry: z.string().regex(/^(?!\.\.)(?!.*\/\.\.)[^\0]+$/).max(200).optional(),
   name: z.string().min(1).max(100).optional(),
   deployToken: z.string().min(1).max(8192).optional(),
@@ -189,7 +203,7 @@ export class ProjectStore {
     return this.list().find((p) => p.repo === ref.url) ?? null;
   }
 
-  create(input: { repo: RepoRef; branch: string; kind: ProjectKind; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
+  create(input: { repo: RepoRef; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
     if (this.list().some((p) => p.repo === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
     if (this.listByOwner(owner).length >= this.limits.perOwner) throw new ProjectLimitError(`an account may have ${this.limits.perOwner} projects on this node`);
     if (this.projects.size >= this.limits.total) throw new ProjectLimitError(`this node holds its maximum of ${this.limits.total} projects`);
@@ -235,7 +249,7 @@ export class ProjectStore {
     this.deployments.set(id, next);
     const project = this.projects.get(prior.projectId);
     // The project's status is its newest deployment's: an older one finishing must not overwrite a newer one's state.
-    if (project && project.lastDeploymentId === id && fields.status) this.projects.set(project.id, { ...project, status: fields.status, updatedAt: now });
+    if (project && project.lastDeploymentId === id && (fields.status || fields.kind)) this.projects.set(project.id, { ...project, ...(fields.status ? { status: fields.status } : {}), ...(fields.kind ? { kind: fields.kind } : {}), updatedAt: now });
     this.save();
     return next;
   }
@@ -284,7 +298,12 @@ export class DeploymentLogs extends EventEmitter {
 export interface ProjectWorkerDeps {
   store: ProjectStore;
   logs: DeploymentLogs;
+  /** `kind: script` — the /api/run sandbox (`runScriptViaSandbox`), or its HTTP contract (`runScriptOverHttp`). */
   run: RunScript;
+  /** `kind: service` / `nextjs`. Absent → those kinds fail with a clear error. */
+  containers?: ProjectContainers;
+  /** `kind: agent`. Absent → that kind fails with a clear error. */
+  agents?: ProjectAgentDeps;
   /** The deploy token for a project, or null for an anonymous clone (a public repo). */
   deployToken: (projectId: string) => string | null;
   /** This node's public base URL — what `AINIZE_DECIDE_URL` is built from. */
@@ -313,14 +332,24 @@ export class ProjectWorker extends EventEmitter {
     this.retain = deps.retainPerProject ?? PROJECT_RETAIN_PER_PROJECT;
   }
 
-  /** Re-queue what a previous process left unfinished. */
+  /**
+   * Re-queue what a previous process left unfinished, and bring back the services it was running: a container's
+   * gateway token died with the process, so a `ready` service/nextjs deployment is deployed again from its commit.
+   */
   recover(): void {
     for (const p of this.deps.store.list()) {
-      for (const d of this.deps.store.deploymentsOf(p.id).reverse()) {
+      const all = this.deps.store.deploymentsOf(p.id);
+      for (const d of [...all].reverse()) {
         if (d.status === 'queued' || d.status === 'building') {
           if (d.status === 'building') this.deps.store.updateDeployment(d.id, { status: 'queued', startedAt: null });
           this.enqueue(d.id);
         }
+      }
+      const last = all[0];
+      if (last && last.status === 'ready' && (last.kind === 'service' || last.kind === 'nextjs') && this.deps.containers && !this.deps.containers.current(p.id)) {
+        this.deps.store.updateDeployment(last.id, { status: 'queued', startedAt: null, finishedAt: null, ms: null, error: null });
+        this.deps.logs.append(last.id, `[ainize] node restarted — deploying ${last.sha.slice(0, 12)} again\n`);
+        this.enqueue(last.id);
       }
     }
   }
@@ -375,26 +404,51 @@ export class ProjectWorker extends EventEmitter {
     const work = mkdtempSync(join(tmpdir(), 'ainize-project-'));
     try {
       say(`[ainize] ${project.org}/${project.repoName}@${d.sha.slice(0, 12)} (${d.ref})`);
+      // A re-run of a finished deployment (recover) starts from a clean record.
+      if (d.outputUrl) store.updateDeployment(d.id, { outputUrl: null });
       say(`[ainize] clone ${project.repo}`);
       await this.clone(project, d.sha, work);
-      if (project.kind !== 'script') {
-        // TODO(projects-agent): build the tree as a hosted agent — agent-mirror.ts already reads a folder of a repo
-        // into a HostedAgentSpec; wiring that here needs the host and a per-project agent id.
-        finish({ status: 'error', error: `kind "${project.kind}" is not implemented on this node` });
-        say(`[ainize] error: kind "${project.kind}" is not implemented`);
+      let manifest: ProjectManifest;
+      try { manifest = resolveProjectManifest(work, { entry: project.entry }); }
+      catch (e) {
+        const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
+        say(`[ainize] error: ${message}`);
+        finish({ status: 'error', error: message });
         return;
       }
-      const entry = project.entry ?? '';
-      const language = languageOf(entry);
-      if (!language) { say(`[ainize] error: no runnable entry ("${entry}")`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file` }); return; }
+      store.updateDeployment(d.id, { kind: manifest.kind });
+      say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
+      const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
+      const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: d.sha };
+
+      if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
+        if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
+        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, work, manifest, env, say);
+        const outputUrl = `${publicUrl}/svc/${project.id}/`;
+        say(`[ainize] ready at ${outputUrl}`);
+        finish({ status: 'ready', exitCode: null, error: null, outputUrl });
+        return;
+      }
+
+      if (manifest.kind === 'agent') {
+        if (!this.deps.agents) { say('[ainize] error: this node hosts no agents'); finish({ status: 'error', error: 'this node hosts no agents' }); return; }
+        const spec = await deployProjectAgent(this.deps.agents, project, work, manifest, say);
+        const outputUrl = `${publicUrl}/agents/${spec.id}`;
+        say(`[ainize] ready at ${outputUrl} (A2A, v${spec.version})`);
+        finish({ status: 'ready', exitCode: null, error: null, outputUrl });
+        return;
+      }
+
+      const entry = manifest.entry!;
+      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(entry);
+      if (!language) { say(`[ainize] error: no runtime for "${entry}"`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file and ainize.json names no runtime` }); return; }
       let files: Record<string, string>;
       try { files = readTree(work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
       if (!(entry in files)) { say(`[ainize] error: entry "${entry}" is not in the repository`); finish({ status: 'error', error: `entry "${entry}" not found` }); return; }
-      const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;
       let runError: string | null = null;
-      await this.deps.run({ language, entry, files, env: { AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, AINIZE_PROJECT: project.id, AINIZE_COMMIT: d.sha }, timeoutMs: this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
+      await this.deps.run({ language, entry, files, env: { ...manifest.env, AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
         if (ev.event === 'stdout') { logs.append(d.id, ev.data); logs.append(d.id, ev.data, 'out'); }
         else if (ev.event === 'stderr') logs.append(d.id, ev.data);
         else if (ev.event === 'error') { runError = ev.data; say(`[ainize] error: ${ev.data}`); }
@@ -403,7 +457,7 @@ export class ProjectWorker extends EventEmitter {
       if (!exit) { finish({ status: 'error', error: runError ?? 'the run ended without an exit event' }); return; }
       const { code, ms } = exit as { code: number; ms: number };
       say(`[ainize] exit ${code} after ${ms}ms`);
-      finish({ status: code === 0 ? 'ready' : 'error', exitCode: code, error: code === 0 ? null : (runError ?? `exit ${code}`) });
+      finish({ status: code === 0 ? 'ready' : 'error', exitCode: code, error: code === 0 ? null : (runError ?? `exit ${code}`), outputUrl: code === 0 ? `${publicUrl}/api/deployments/${d.id}/output` : null });
     } catch (e) {
       const message = (e as Error).message ?? String(e);
       say(`[ainize] error: ${message}`);
@@ -466,6 +520,24 @@ export function readTree(root: string): Record<string, string> {
   };
   walk(root);
   return files;
+}
+
+// ------------------------------------------------------------------------------------------------ the sandbox
+
+/** The run sandbox in this process (run-sandbox.ts) as a `RunScript` — what server.ts wires when Docker is on. */
+export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId = 'project'): RunScript {
+  return async (req, onEvent) => {
+    try {
+      const outcome = await sandbox.run({ ...req, bytes: Object.values(req.files).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0) }, { id: `project:${callerId}`, keyed: true }, {
+        stdout: (chunk) => onEvent({ event: 'stdout', data: chunk }),
+        stderr: (chunk) => onEvent({ event: 'stderr', data: chunk }),
+      });
+      if (outcome.error) onEvent({ event: 'error', data: outcome.error });
+      onEvent({ event: 'exit', data: { code: outcome.code, ms: outcome.ms } });
+    } catch (e) {
+      onEvent({ event: 'error', data: (e as Error).message });
+    }
+  };
 }
 
 // ------------------------------------------------------------------------------------------------ run over HTTP

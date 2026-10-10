@@ -260,6 +260,11 @@ export class RunSandbox {
     return this.ready;
   }
 
+  /** The gateway's bridge URL once `start()` succeeded — project containers (project-containers.ts) use the same door. */
+  get gatewayBase(): string | null {
+    return this.ready && this.gatewayUrl ? this.gatewayUrl : null;
+  }
+
   /** How many runs are in flight — for a status page, and for tests. */
   get inFlight(): number {
     return this.running;
