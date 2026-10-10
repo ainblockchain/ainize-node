@@ -849,3 +849,19 @@ base 변경으로 처리한다. 변조/불완전한 조회/복수 PR/동시 ref 
 QA 회귀 137 tests / 0 skip 및 TypeScript production build 통과. 재시작 후 같은 PR 복구와 추가 GitHub 쓰기 0건,
 파일 트리·부모·digest·PR 저장소 변조, 복수 PR, 조회 중 ref 변경 거부를 검증했다.
 새 시도 발급과 자동 재수정 연결, 실제 운영 채널 E2E 및 배포는 여전히 남아 있다.
+
+### 캐시된 게시 결과의 현재 권한 재확인 — 2026-10-11
+
+재수정 연결을 점검하며 publication service의 캐시 응답이 beforePublish 검사를
+건너뛰는 것을 확인했다. 이제 실행 중/완료/실패 캐시 조회에도 현재 접수와 검증 조건을
+확인한다. 서버 callback은 정확한 job/candidate의 `requirePassed`를 호출하므로 새 base나
+검증 profile로 바뀐 뒤 예전 성공 receipt가 그대로 반환되지 않는다.
+
+비동기 publication이 끝난 순간에도 같은 검사를 수행한 뒤 review ledger에 등록한다.
+진행 중 권한이 철회되면 성공 등록/응답을 거부한다. 그 전에 GitHub에 이미 생성된
+브랜치/PR을 되돌린다는 뜻은 아니며, 원격 조회로 복구해야 한다. 캐시 응답도 복사해
+호출자가 객체를 바꿔 다음 응답을 오염시키지 못하게 했다.
+
+전체 QA 139 tests / 0 skip 및 TypeScript production build 통과. 캐시된 성공 뒤 정책 철회, 게시 중 철회, 완료/실행 중
+반환 객체 변조를 검증했다. 마지막 실행 중 객체 복사 보완은 publication-flow 검증으로
+재확인했다. 호스트의 새 시도 발급/자동 재수정은 아직 연결하지 않았고 운영 배포도 없다.

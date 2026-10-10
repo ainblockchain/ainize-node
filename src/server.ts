@@ -575,7 +575,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       }
       qaReviewLoop=new HostedQaReviewLoop(qaReviewStore,coordinator,profiles,readers,message=>market.log('info','agents',message),release,deployments?{profiles:deployments,github:path=>github('GET',path)}:undefined);
     }
-    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');});
+    qaPublication=new HostedQaPublicationService(new HostedQaPublisher(JSON.parse(readFileSync(publicationPath,'utf8')) as Record<string,QaPublicationProfile>,qaValidation,github),qaReviewStore?(id,job,result,candidate)=>qaReviewStore!.enqueuePublication(id,job,{...(result as Record<string,unknown>),candidate,...(qaReviewStore!.intake(id,job)?{teamsRequest:qaReviewStore!.intake(id,job)}:{})}):undefined,(id,job,candidate)=>{if(intakeRequired.has(id)&&!qaReviewStore?.intake(id,job))throw new Error('Verified QA intake required');qaValidation!.requirePassed(id,candidate,job);});
   }
   const hostedGateway = new HostedAgentGateway({
     ...scopedQaCapabilities(qaRoutes,{

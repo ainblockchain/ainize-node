@@ -129,3 +129,26 @@ test('mismatched revalidation responses cannot archive or replace a pending publ
   assert.deepEqual(jobs.revalidationHistory(job.id),[]);assert.deepEqual(jobs.get(job.id).checkpoint,checkpoint);jobs.finish(job.id,claim.lease,'queued',checkpoint);
  }
 });
+
+
+test('cached publication cannot bypass a revoked intake or changed validation policy',async()=>{
+ const candidate={repository:'test/product',base:'a'.repeat(40),changes:{file:'fixed'}};
+ const receipt={repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),sha:'b'.repeat(40),number:1,url:'https://github.com/test/product/pull/1'};
+ let allowed=true,calls=0,checks=0;const recorded:unknown[]=[];
+ const service=new HostedQaPublicationService({publish:async()=>{calls++;return receipt;}} as any,(_id,_job,r)=>recorded.push(r),(id,job,c)=>{
+  checks++;assert.equal(id,'agent');assert.equal(job,'job');assert.deepEqual(c,candidate);if(!allowed)throw Error('current policy refused');
+ });
+ const input={jobId:'job',candidate};assert.equal(service.submit('agent',input).state,'running');await new Promise(r=>setImmediate(r));
+ const cached:any=service.submit('agent',input);assert.equal(cached.state,'done');cached.result.sha='f'.repeat(40);
+ assert.equal((service.submit('agent',input) as any).result.sha,receipt.sha);
+ allowed=false;assert.throws(()=>service.submit('agent',input),/current policy refused/);assert.equal(calls,1);assert.equal(recorded.length,1);assert.ok(checks>=4);
+});
+
+test('revocation while publication is in flight prevents success registration and acknowledgement',async()=>{
+ const candidate={repository:'test/product',base:'a'.repeat(40),changes:{file:'fixed'}};
+ let allowed=true,resolve!:(r:unknown)=>void,registrations=0;
+ const service=new HostedQaPublicationService({publish:()=>new Promise(r=>{resolve=r;})} as any,()=>{registrations++;},()=>{if(!allowed)throw Error('revoked');});
+ const input={jobId:'job',candidate};const running:any=service.submit('agent',input);assert.equal(running.state,'running');running.state='done';assert.equal(service.submit('agent',input).state,'running');allowed=false;resolve({sha:'b'.repeat(40)});await new Promise(r=>setImmediate(r));
+ assert.equal(registrations,0);assert.throws(()=>service.submit('agent',input),/revoked/);
+ allowed=true;assert.equal(service.submit('agent',input).state,'failed');
+});
