@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { at, requireSiblings } from '../scripts/docs-gen/paths.mjs';
+import { at, requireSiblings, sourceLabel } from '../scripts/docs-gen/paths.mjs';
 
 test('documentation uses this checkout when its directory is not named ainize-node', () => {
   const root = mkdtempSync(join(tmpdir(), 'ainize-doc-paths-'));
@@ -21,5 +21,35 @@ test('documentation uses this checkout when its directory is not named ainize-no
     assert.throws(() => requireSiblings(repo), /ainize-cli/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('explicit sibling worktrees are validated and receive generated documentation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ainize-doc-worktrees-'));
+  const previous = process.env.AINIZE_DOCS_WEB_DIR;
+  try {
+    const web = join(root, 'web-review');
+    mkdirSync(web);
+    process.env.AINIZE_DOCS_WEB_DIR = web;
+    assert.equal(at(join(root, 'node-review'), 'docs/en/reference/api.md'), join(web, 'docs/en/reference/api.md'));
+    assert.doesNotThrow(() => requireSiblings(join(root, 'node-review'), ['web']));
+    rmSync(web, { recursive: true });
+    assert.throws(() => requireSiblings(join(root, 'node-review'), ['web']), /ainize-web/);
+  } finally {
+    if (previous === undefined) delete process.env.AINIZE_DOCS_WEB_DIR;
+    else process.env.AINIZE_DOCS_WEB_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('generated error source links are stable across explicit temporary checkouts', () => {
+  const previous = process.env.AINIZE_DOCS_CORE_DIR;
+  try {
+    process.env.AINIZE_DOCS_CORE_DIR = '/tmp/release-core';
+    assert.equal(sourceLabel('/tmp/release-node', '/tmp/release-core/src/catalog.ts'), '../ainize-core/src/catalog.ts');
+    assert.equal(sourceLabel('/tmp/release-node', '/tmp/release-node/src/server.ts'), 'src/server.ts');
+  } finally {
+    if (previous === undefined) delete process.env.AINIZE_DOCS_CORE_DIR; else process.env.AINIZE_DOCS_CORE_DIR = previous;
   }
 });

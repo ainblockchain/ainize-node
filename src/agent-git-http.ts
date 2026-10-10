@@ -28,6 +28,7 @@ import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 const NO_REF = '0'.repeat(40);
 
 export interface AgentGitHttpDeps {
+  serialize?: import('./agent-repository-queue.js').RepositorySerialize;
   git: AgentGit;
   /** Where the internal hook endpoint lives, for the hook script to call back on. */
   loopbackPort: () => number;
@@ -46,6 +47,8 @@ export interface AgentGitHttpDeps {
    * push — by then the commit is the truth — so it logs and the state the page shows says it failed.
    */
   apply: (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => Promise<void>;
+  /** Server-owned sharing policy must pass before the deployed ref moves. */
+  validate?: (id: string, input: HostedAgentSpecInput) => void | Promise<void>;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -154,13 +157,19 @@ process.stdin.on('end', async () => {
    * are for. Deleting `main` is refused — an agent without a main branch has nothing to serve.
    */
   async check(id: string, updates: AgentGitRefUpdate[], quarantine?: AgentGitQuarantine): Promise<{ ok: boolean; message?: string }> {
+    if (updates.some((update) => /^(refs\/runtime-retained\/|refs\/pull-proposals\/)/.test(update.ref))) return { ok: false, message: 'internal runtime and proposal retention refs are node-managed' };
+    if (updates.some((update) => update.after !== NO_REF)) {
+      try { await this.deps.git.assertStorageLimit(id, quarantine); }
+      catch (error) { return { ok: false, message: (error as Error).message }; }
+    }
     for (const u of updates) {
       if (u.ref !== `refs/heads/${AGENT_GIT_DEFAULT_BRANCH}`) continue;
       if (u.after === NO_REF) {
         return { ok: false, message: `${AGENT_GIT_DEFAULT_BRANCH} is the branch this agent serves from — it cannot be deleted.` };
       }
       try {
-        await this.deps.git.readSpec(id, u.after, quarantine);
+        const read = await this.deps.git.readSpec(id, u.after, quarantine);
+        await this.deps.validate?.(id, read.input);
       } catch (e) {
         const why = e instanceof AgentGitError ? e.message : (e as Error).message;
         return {
@@ -191,6 +200,20 @@ process.stdin.on('end', async () => {
   }
 
   private async serve(req: Request, res: Response): Promise<void> {
+    const id = /^\/git\/([a-z0-9][a-z0-9-]{0,39})\.git(?:\/.*)?$/.exec(req.path)?.[1];
+    if (!id) { this.refuse(res, 404, 'not a repository'); return; }
+    try {
+      const operation = () => this.serveUnlocked(req, res);
+      if (this.deps.serialize) await this.deps.serialize(id, operation);
+      else await operation();
+    } catch (error) {
+      this.deps.log('warn', `agent ${id}: repository request failed: ${(error as Error).message}`);
+      if (!res.headersSent) this.refuse(res, 500, 'repository request failed');
+      else res.end();
+    }
+  }
+
+  private async serveUnlocked(req: Request, res: Response): Promise<void> {
     const m = /^\/git\/([a-z0-9][a-z0-9-]{0,39})\.git(\/.*)?$/.exec(req.path);
     if (!m) { res.status(404).end(); return; }
     const id = m[1]!;
@@ -249,7 +272,7 @@ process.stdin.on('end', async () => {
         ...(req.header('git-protocol') ? { GIT_PROTOCOL: req.header('git-protocol')! } : {}),
         ...(writing ? { AINIZE_AGENT_GIT_PORT: String(this.deps.loopbackPort()), AINIZE_AGENT_GIT_SECRET: this.hookSecret } : {}),
       };
-      const child = spawn('git', ['http-backend'], { env });
+      const child = spawn('git', ['-c', 'receive.maxInputSize=67108864', '-c', 'receive.autogc=false', '-c', 'maintenance.auto=false', 'http-backend'], { env });
       let header = Buffer.alloc(0);
       let headersDone = false;
       let stderr = '';

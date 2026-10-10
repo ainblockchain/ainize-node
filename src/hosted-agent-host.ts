@@ -60,6 +60,7 @@ export class HostedAgentHost {
   private loopbackBase = '';
   private loopbackGateway = '';
   private dockerGateway = '';
+  private readonly builds = new Map<string, Set<Promise<void>>>();
   private sweeper: NodeJS.Timeout | null = null;
 
   constructor(private readonly o: HostedAgentHostOptions) {}
@@ -106,7 +107,7 @@ export class HostedAgentHost {
   }
 
   /** Create or update. Prompt agents are live on return; code agents build in the background. */
-  apply(spec: HostedAgentSpec, opts: { boot?: boolean } = {}): void {
+  apply(spec: HostedAgentSpec, opts: { boot?: boolean; ephemeral?: boolean } = {}): void {
     this.specs.set(spec.id, spec);
     const prior = this.state.get(spec.id);
     const st: HostedAgentState = prior ?? { status: 'building', error: null, liveVersion: null, buildLog: [], upstream: null, token: null, lastUsed: 0, starting: null };
@@ -126,7 +127,7 @@ export class HostedAgentHost {
         module: null,
         cardUrl: `${this.loopbackBase}/a/${spec.id}`,
         // The same store for every router this agent gets in this process: an update keeps its tasks.
-        taskStore: this.o.tasks?.forAgent(spec.id),
+        taskStore: opts.ephemeral ? undefined : this.o.tasks?.forAgent(spec.id),
         log: (...args) => this.o.log('info', `agent ${spec.id}: ${args.map(String).join(' ')}`),
       }));
       Object.assign(st, { status: 'ready', error: null, liveVersion: spec.version, upstream: `${this.loopbackBase}/a/${spec.id}` });
@@ -141,7 +142,10 @@ export class HostedAgentHost {
     }
     st.status = st.liveVersion === null ? 'building' : st.status;
     st.error = null;
-    void this.build(spec, opts.boot === true);
+    const build = this.build(spec, opts.boot === true);
+    const builds = this.builds.get(spec.id) ?? new Set<Promise<void>>();
+    builds.add(build); this.builds.set(spec.id, builds);
+    void build.finally(() => { builds.delete(build); if (!builds.size) this.builds.delete(spec.id); });
   }
 
   private async build(spec: HostedAgentSpec, boot: boolean): Promise<void> {
@@ -186,6 +190,7 @@ export class HostedAgentHost {
     this.o.tasks?.removeAgent(id);
     this.o.gateway.revokeAgent(id);
     if (st && this.o.docker) {
+      await Promise.allSettled([...(this.builds.get(id) ?? [])]);
       await this.o.docker.stop(id);
       await this.o.docker.removeImages(id);
     }

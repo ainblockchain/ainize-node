@@ -116,6 +116,8 @@ let host: HostedAgentHost;
 const MODEL = 'Test-Chat-1';
 const applied: string[] = [];
 
+
+
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'ainize-projects-'));
   repoRoot = join(tmp, 'drives');
@@ -661,4 +663,33 @@ test('a project keeps its newest deployments, and removing it takes its deployme
   const left = await request(app).get('/api/projects/by-repo').query({ repo: repoUrl() });
   assert.equal(left.status, 200);
   assert.equal(left.body.branch, 'other');
+});
+
+test('a project that became a service can still run a selected historical script commit', async () => {
+  const bare = join(repoRoot, 'transition.git');
+  await git(tmp, ['clone', '--quiet', '--bare', join(repoRoot, 'demo.git'), bare]);
+  const source = join(tmp, 'transition-work');
+  await git(tmp, ['clone', '--quiet', bare, source]);
+  await git(source, ['config', 'user.name', 'Transition author']);
+  await git(source, ['config', 'user.email', 'transition@example.com']);
+  const serviceSha = await commit(source, 'ainize.json', JSON.stringify({ kind: 'service', port: 8080, healthcheck: '/health' }), 'Become a service');
+  const made = await request(app).post('/api/projects').set(as(ALICE)).send({ repo: `${aindriveBase}/testorg/git/transition`, kind: 'service', deployToken: TOKEN });
+  assert.equal(made.status, 201, made.text);
+  const id = made.body.id as string;
+  assert.equal((await request(app).post(`/api/projects/${id}/runs`).set(as(ALICE)).send({ target: 'head' })).status, 409);
+  const selected = await request(app).post(`/api/projects/${id}/runs`).set(as(ALICE)).send({ target: 'commit', sha: sha1 });
+  assert.equal(selected.status, 202, selected.text);
+  await worker.idle();
+  const run = store.deployment(selected.body.runId)!;
+  assert.equal(run.status, 'ready', JSON.stringify(run));
+  assert.equal(run.sha, sha1);
+  assert.equal(run.kind, 'script');
+  assert.equal(store.get(id)?.kind, 'service', 'historical runs never change the project kind');
+  assert.equal(store.get(id)?.activeCommit, null, 'a historical run never becomes the deployed runtime');
+  const service = await request(app).post(`/api/projects/${id}/runs`).set(as(ALICE)).send({ target: 'commit', sha: serviceSha });
+  assert.equal(service.status, 202);
+  await worker.idle();
+  assert.equal(store.deployment(service.body.runId)?.status, 'error');
+  assert.match(store.deployment(service.body.runId)?.error ?? '', /service project is deployed by a push/);
+  assert.equal(store.get(id)?.activeCommit, null, 'a commit selector cannot deploy or run a service as a script');
 });

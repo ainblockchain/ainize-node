@@ -10,6 +10,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH } from './agent-git.js';
+import type { RuntimeExecution } from './repository-runtime.js';
 
 export interface AgentGitRoutesDeps {
   git: AgentGit;
@@ -17,6 +18,7 @@ export interface AgentGitRoutesDeps {
   canRead: (req: Request, id: string) => boolean;
   /** Where to tell a person to clone from. */
   cloneBase: (req: Request) => string;
+  executions?: (id: string) => RuntimeExecution[];
 }
 
 const refuse = (res: Response, status: number, code: string, message: string) => {
@@ -55,6 +57,16 @@ export function agentGitRoutes(deps: AgentGitRoutesDeps): Router {
     const message = e instanceof AgentGitError ? e.message : (e as Error).message;
     refuse(res, 400, 'git_error', message);
   };
+
+  router.get('/api/hosted-agents/:id/executions', (req, res) => {
+    const id = open(req, res); if (!id) return;
+    const rawLimit = String(req.query.limit ?? '50'), rawOffset = String(req.query.offset ?? '0');
+    if (!/^\d+$/.test(rawLimit) || !/^\d+$/.test(rawOffset)) { refuse(res, 400, 'invalid_page', 'limit and offset must be non-negative integers'); return; }
+    const limit = Math.min(Math.max(Number(rawLimit), 1), 200), offset = Number(rawOffset);
+    if (!Number.isSafeInteger(offset)) { refuse(res, 400, 'invalid_page', 'offset is too large'); return; }
+    const records = (deps.executions?.(id) ?? []).reverse();
+    res.set('cache-control', 'private, no-store').json({ executions: records.slice(offset, offset + limit), total: records.length, offset, limit });
+  });
 
   router.get('/api/hosted-agents/:id/commits', async (req, res) => {
     const id = open(req, res); if (!id) return;

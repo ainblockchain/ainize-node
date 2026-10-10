@@ -1,3 +1,5 @@
+import { AgentArchives } from '../src/agent-archives.js';
+import { AgentRepositoryQueue } from '../src/agent-repository-queue.js';
 /**
  * An agent that already lives somewhere else, followed rather than moved.
  *
@@ -9,9 +11,11 @@
  *
  *   node --test --import tsx test/agent-mirror.test.ts
  */
+import { createHmac, randomBytes } from 'node:crypto';
+import { AgentMirrorSyncer } from '../src/agent-mirror-sync.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -173,4 +177,177 @@ test('an unreachable upstream is an error on the mirror, not an exception out of
   const r = await put({ url: 'http://127.0.0.1:9/nothing.git', branch: 'main', path: '' });
   assert.equal(r.status, 200, 'the route answers; the mirror carries the failure');
   assert.match((r.body as unknown as { mirror: { error: string } }).mirror.error, /could not fetch/);
+});
+
+
+test('periodic mirror reconciliation follows without a manual Sync and refuses reserved fields', async () => {
+  await upstreamCommit('Recover valid source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Automatically followed.' });
+  mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, apply: async (_id, input, commit) => { applied.push({ input, commit }); }, land: async (_id, commit) => { landed = commit; }, log: () => {} });
+  const before = applied.length;
+  await Promise.all([syncer.sweep(), syncer.sweep()]);
+  assert.equal(applied.length, before + 1, 'concurrent reconciliation cannot deploy twice');
+  assert.equal(applied.at(-1)!.input.systemPrompt, 'Automatically followed.');
+  await upstreamCommit('Attempt server-owned field', { 'news-agent/agent.json': AGENT({ owner: 'attacker' }) });
+  await syncer.sweep();
+  assert.match(mirrors.get('news-review')!.error!, /server-owned/);
+  assert.equal(applied.length, before + 1);
+  await syncer.stop();
+});
+
+test('webhook verifies original bytes even after the global JSON parser, and ignores tags', async () => {
+  const app = express();
+  app.use(express.json({ verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
+  app.use(agentMirrorRoutes({ git: repos, mirrors, canRead: () => true, canManage: () => true, principal: () => null, apply: async () => { throw new Error('tag must not apply'); }, land: async () => {}, log: () => {}, webhookSecret: () => 'secret' }));
+  const request = (await import('supertest')).default;
+  const body = '{ "ref": "refs/tags/v1", "repository": { "html_url": "https://github.com/a/b" } }';
+  const signature = `sha256=${createHmac('sha256', 'secret').update(body).digest('hex')}`;
+  const res = await request(app).post('/api/agent-mirrors/webhook').set('content-type', 'application/json').set('x-hub-signature-256', signature).send(body);
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.body, { synced: [] });
+  const refused = await request(app).post('/api/agent-mirrors/webhook').set('content-type', 'application/json').set('x-hub-signature-256', signature).send(body + ' ');
+  assert.equal(refused.status, 401);
+});
+
+test('detach waits for an in-flight apply, and queued stale synchronization cannot change the detached agent', async () => {
+  await upstreamCommit('Detach race source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Reviewed before detach.' });
+  const mirror = mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let release!: () => void, started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let applies = 0, lands = 0;
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, apply: async () => { applies++; if (applies === 1) { started(); await gate; } }, land: async () => { lands++; }, log: () => {} });
+  const fetching = syncer.sync(mirror);
+  try {
+    await began;
+    let detached = false;
+    const removing = syncer.detach(mirror.agent).then((value) => { detached = true; return value; });
+    const stale = syncer.sync(mirror);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(detached, false, 'detach cannot acknowledge while an older apply is still running');
+    release(); await fetching;
+    assert.equal(await removing, true);
+    assert.equal(await stale, null);
+    assert.equal(mirrors.get(mirror.agent), null);
+    assert.equal(applies, 1); assert.equal(lands, 1);
+    const configured = await syncer.configure({ ...mirror, lastCommit: undefined });
+    assert.ok(configured?.lastCommit);
+    assert.equal(applies, 2, 'a subsequent configure owns its own serialized apply');
+  } finally { release(); await syncer.stop(); }
+});
+
+test('agent deletion drains mirror apply before removing state and rejects a queued reconfiguration', async () => {
+  await upstreamCommit('Delete race source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Pending deletion.' });
+  const mirror = mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let available = true, applied = 0, landed = 0, removed = false;
+  let release!: () => void, started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, available: () => available,
+    apply: async () => { applied++; started(); await gate; }, land: async () => { landed++; }, log: () => {} });
+  const fetching = syncer.sync(mirror);
+  try {
+    await began;
+    const deleting = syncer.removeAgent(mirror.agent, async () => {
+      assert.equal(landed, 1, 'the in-flight apply lands before destructive cleanup');
+      available = false;
+      await repos.deleteRepo(mirror.agent);
+      removed = true;
+    });
+    const reconfiguring = assert.rejects(syncer.configure({ ...mirror, lastCommit: undefined }), /no longer exists/);
+    const stale = syncer.sync(mirror);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(removed, false);
+    release(); await fetching; await deleting; await reconfiguring;
+    assert.equal(await stale, null);
+    assert.equal(mirrors.get(mirror.agent), null);
+    assert.equal(repos.exists(mirror.agent), false);
+    assert.equal(applied, 1); assert.equal(landed, 1);
+  } finally { release(); await syncer.stop(); }
+});
+
+test('mirror mutations recheck permission inside the common queue after ownership or source policy changes', async () => {
+  const queue = new AgentRepositoryQueue();
+  const mirror = mirrors.set({ agent: 'permission-test', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let allowed = true, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const began = new Promise<void>((resolve) => { entered = resolve; });
+  const blocking = queue.run(mirror.agent, async () => { entered(); await gate; });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, serialize: (id, operation) => queue.run(id, operation), apply: async () => { assert.fail('revoked request must not apply'); }, land: async () => {}, log: () => {} });
+  try {
+    await began;
+    const configured = assert.rejects(syncer.configure({ ...mirror, path: 'another-folder' }, 'old-owner', () => allowed), /permission changed/);
+    const synced = assert.rejects(syncer.sync(mirror, 'old-owner', () => allowed), /permission changed/);
+    const detached = assert.rejects(syncer.detach(mirror.agent, () => allowed), /permission changed/);
+    allowed = false;
+    release(); await blocking; await Promise.all([configured, synced, detached]);
+    assert.equal(mirrors.get(mirror.agent)?.path, 'news-agent');
+    assert.equal(repos.exists(mirror.agent), false);
+  } finally { release(); await syncer.stop(); mirrors.remove(mirror.agent); }
+});
+
+
+test('a real fetched shallow mirror archive retains its source SHA and boundaries without exporting config or hooks', async () => {
+  await upstreamCommit('Archive fetched source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Fetched source to preserve.' });
+  const mirror = { agent: 'archive-mirror-probe', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' };
+  await repos.init(mirror.agent);
+  const fetched = await fetchMirror(repos, mirror);
+  assert.equal(fetched.error, undefined);
+  await repos.setRef(mirror.agent, 'main', fetched.commit);
+  assert.equal(repos.isShallow(mirror.agent), true);
+  await git(['--git-dir', repos.dir(mirror.agent), 'config', 'http.extraHeader', 'Authorization: Bearer test-config-value']);
+  const path = join(tmp, 'fetched-archives.json'), directory = join(tmp, 'fetched-archives');
+  const archives = new AgentArchives(path, directory);
+  const record = await archives.create(repos, { spec: { ...fetched.input!, owner: 'sso:owner', version: 1, createdAt: 1, updatedAt: 1 }, pulls: [], mirror });
+  assert.equal(record.repositoryFormat, 'bare-tar');
+  const artifact = new AgentArchives(path, directory).repositoryFile(record.id, 'sso:owner')!;
+  const listing = (await exec('tar', ['-tzf', artifact.path])).stdout.split('\n');
+  assert.ok(listing.includes('shallow'));
+  assert.ok(!listing.some((entry) => entry === 'config' || entry.startsWith('hooks/')));
+  await repos.deleteRepo(mirror.agent);
+  await repos.restoreBareArchive('archive-mirror-copy', artifact.path);
+  assert.equal(await repos.resolve('archive-mirror-copy', 'main'), fetched.commit);
+  assert.equal(repos.isShallow('archive-mirror-copy'), true);
+  assert.equal((await repos.readSpec('archive-mirror-copy', 'main', undefined, mirror.path)).input.systemPrompt, 'Fetched source to preserve.');
+  await assert.rejects(git(['--git-dir', repos.dir('archive-mirror-copy'), 'config', '--get', 'http.extraHeader']));
+});
+
+test('an oversized mirror update preserves the running agent and its landed source', async () => {
+  const limited = new AgentGit(join(tmp, 'quota-repositories'), 32 * 1024);
+  await limited.init('quota-agent');
+  const store = new AgentMirrorStore(join(tmp, 'quota-mirrors.json'));
+  const mirror = store.set({ agent: 'quota-agent', url: `${base}/donga-science-admin.git`, path: 'news-agent', branch: 'main' });
+  const releases: string[] = [];
+  const syncer = new AgentMirrorSyncer({
+    git: limited, mirrors: store,
+    apply: async (_id, _input, commit) => { releases.push(commit); },
+    land: async (id, commit) => { await limited.setRef(id, 'main', commit); },
+    log: () => {},
+  });
+  const initial = await syncer.sync(mirror);
+  assert.equal(initial?.error, null);
+  assert.equal(releases.length, 1);
+  const active = await limited.resolve('quota-agent', 'main');
+  const retainedBytes = await limited.storageBytes('quota-agent');
+  const shallowPath = join(limited.dir('quota-agent'), 'shallow');
+  const boundaries = readFileSync(shallowPath, 'utf8');
+  await upstreamCommit('Oversized mirror source', {
+    'news-agent/agent.json': AGENT(),
+    'news-agent/prompt.md': 'This update must not replace the running prompt.',
+    'large-source.bin': randomBytes(96 * 1024).toString('hex'),
+  });
+  const failed = await syncer.sync(store.get('quota-agent')!);
+  assert.match(failed?.error ?? '', /repository storage limit exceeded/);
+  assert.equal(releases.length, 1);
+  assert.equal(failed?.lastCommit, active);
+  assert.equal(await limited.resolve('quota-agent', 'main'), active);
+  assert.equal(await limited.storageBytes('quota-agent'), retainedBytes, 'rejected objects do not remain in the repository');
+  assert.equal(readFileSync(shallowPath, 'utf8'), boundaries);
+  rmSync(join(UPSTREAM, 'large-source.bin'));
+  await upstreamCommit('Recover with a source that fits quota', { 'news-agent/prompt.md': 'Recovered source.' });
+  const recovered = await syncer.sync(store.get('quota-agent')!);
+  assert.equal(recovered?.error, null);
+  assert.equal(releases.length, 2);
+  assert.notEqual(recovered?.lastCommit, active);
+  assert.equal(await limited.resolve('quota-agent', 'main'), recovered?.lastCommit);
 });

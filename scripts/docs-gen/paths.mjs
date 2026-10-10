@@ -13,17 +13,22 @@
  * sources absent is not a smaller page, it is a page that says a command or an error code does not exist.
  */
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, isAbsolute } from 'node:path';
 
 /** The directory the repositories sit in — `ainize-node`'s parent, wherever it has been checked out. */
 export function workspaceRoot(repo) { return dirname(repo); }
+
+/** Explicit source checkouts let documentation generation work in named Git worktrees. */
+function sourceRepo(repo, name) {
+  return name === 'node' ? repo : process.env[`AINIZE_DOCS_${name.toUpperCase()}_DIR`] || join(workspaceRoot(repo), `ainize-${name}`);
+}
 
 /** Node sources belong to this checkout; the other repositories remain siblings. */
 export function at(repo, logical) {
   const root = workspaceRoot(repo);
   const m = /^packages\/([a-z]+)(\/.*)?$/.exec(logical);
-  if (m) return join(m[1] === 'node' ? repo : join(root, `ainize-${m[1]}`), m[2] ? m[2].slice(1) : '');
-  return join(root, 'ainize-web', logical);
+  if (m) return join(sourceRepo(repo, m[1]), m[2] ? m[2].slice(1) : '');
+  return join(sourceRepo(repo, 'web'), logical);
 }
 
 /** What the generated banner should call a source, so a reader can actually open it. */
@@ -34,11 +39,22 @@ export function label(logical) {
 
 /** Checked once, up front: every repository this generator reads from has to be here. */
 export function requireSiblings(repo, names = ['core', 'node', 'cli', 'web']) {
-  const missing = names.filter((n) => !existsSync(n === 'node' ? repo : join(workspaceRoot(repo), `ainize-${n}`)));
+  const missing = names.filter((n) => !existsSync(sourceRepo(repo, n)));
   if (missing.length) {
     throw new Error(
       `docs-gen needs the sibling repositories checked out beside this one: ${missing.map((n) => `ainize-${n}`).join(', ')} `
       + `not found in ${workspaceRoot(repo)}. The reference pages are generated from all four, and one missing source does not `
       + `make a shorter page — it makes a page that says a command does not exist.`);
   }
+}
+
+/** Stable reference links must not expose the temporary checkout used to build a release. */
+export function sourceLabel(repo, file) {
+  for (const name of ['node', 'core', 'cli', 'web']) {
+    const path = relative(sourceRepo(repo, name), file);
+    if (!isAbsolute(path) && path !== '..' && !path.startsWith('../') && !path.startsWith('..\\')) {
+      return `${name === 'node' ? '' : `../ainize-${name}/`}${path.replaceAll('\\', '/')}`;
+    }
+  }
+  return relative(repo, file);
 }

@@ -1,3 +1,7 @@
+import { HostedAgentStore } from '../src/hosted-agent-store.js';
+import { randomBytes } from 'node:crypto';
+import { AgentArchives } from '../src/agent-archives.js';
+import { AgentGit } from '../src/agent-git.js';
 /**
  * The feature as a person meets it: create an agent, clone it, edit the prompt, push, and the agent that
  * answers is the one you pushed.
@@ -11,7 +15,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -28,6 +32,7 @@ const url = `http://127.0.0.1:${PORT}`;
 const PERSON = createIdentity();
 const MODEL = 'test-model';
 
+let dataDirectory = '';
 let N: RunningNode;
 let session = '';
 let apiKey = '';
@@ -48,6 +53,7 @@ const call = async (method: string, path: string, body?: unknown, token = sessio
 
 before(async () => {
   const cfg: NodeConfig = defaultConfig({ home: HOME, name: 'git-node', port: PORT, peers: [], roles: ['seller'], ledger: 'local' });
+  dataDirectory = cfg.dataDir;
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1', hookApi: 'http://127.0.0.1:1' };
   cfg.host = '127.0.0.1'; cfg.publicUrl = url;
   cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300_000, auto: false };
@@ -149,6 +155,12 @@ test('a page can read the history, the branches and a diff without cloning', asy
   assert.deepEqual(body.commits.map((c) => c.subject), ['Update desk (v3)', 'Be careful', 'Create desk']);
   assert.match(body.commits[0]!.short, /^[0-9a-f]{7,}$/);
 
+  const executions = await call('GET', '/api/hosted-agents/desk/executions?limit=1');
+  assert.equal(executions.status, 200);
+  const records = executions.body as unknown as { executions: { agentId: string }[]; total: number };
+  assert.equal(records.executions.length, 1);
+  assert.ok(records.total >= 1);
+  assert.equal(records.executions[0].agentId, 'desk');
   const refs = await call('GET', '/api/hosted-agents/desk/refs');
   assert.deepEqual((refs.body as unknown as { branches: { name: string }[] }).branches.map((b) => b.name), ['main']);
 
@@ -180,6 +192,8 @@ test('the history is no more public than the agent it belongs to', async () => {
   await call('PUT', '/api/hosted-agents/desk', { id: 'desk', name: 'Desk', description: 'A desk.', model: MODEL, systemPrompt: 'Edited in the browser.', visibility: 'private' });
   const r = await call('GET', '/api/hosted-agents/desk/commits', undefined, theirs);
   assert.equal(r.status, 404, 'a private agent\'s history is its owner\'s alone');
+  assert.equal((await call('GET', '/api/hosted-agents/desk/executions', undefined, theirs)).status, 404);
+  assert.equal((await call('GET', '/api/hosted-agents/desk/executions?offset=-1')).status, 400);
   const mine = await call('GET', '/api/hosted-agents/desk/commits');
   assert.equal(mine.status, 200);
 });
@@ -293,4 +307,249 @@ test('every agent row says where to clone it and which commit is live', async ()
   // And it is the commit the repository actually has, not a number that happens to look like one.
   const head = (await git(['--git-dir', join(HOME, 'data', 'agent-git', 'desk.git'), 'rev-parse', 'main'])).trim();
   assert.equal(agent.git.commit, head);
+});
+
+test('a reader proposes from a private fork, and merging uses the recorded commit after the fork changes or is deleted', async () => {
+  const person = createIdentity();
+  const challenge = (await call('POST', '/api/auth/challenge', { scheme: 'eip191' })).body as unknown as { nonce: string; message: string };
+  const login = await call('POST', '/api/auth/wallet', { nonce: challenge.nonce, address: person.address, signature: personalSign(challenge.message, person.privateKey) });
+  assert.equal(login.status, 200, JSON.stringify(login.body));
+  const token = (login.body as unknown as { token: string }).token;
+  const keyed = await call('POST', '/api/keys', { label: 'fork' }, token);
+  const key = (keyed.body as unknown as { api_key: string }).api_key;
+  const made = await call('POST', '/api/hosted-agents/desk/forks', {}, token);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const fork = (made.body as unknown as { fork: { id: string; owner: string; baseCommit: string } }).fork;
+  assert.equal(fork.owner, person.address.toLowerCase());
+  assert.equal((await call('POST', '/api/hosted-agents', { id: fork.id, name: 'Replace private fork', model: MODEL }, token)).status, 409, 'an agent cannot take a private repository id');
+  assert.equal((await call('GET', `/api/hosted-agents/${fork.id}`)).status, 404, 'forks never create a running agent');
+  assert.equal((await call('GET', `/api/hosted-agents/${fork.id}/refs`)).status, 404, 'a fork is private even to the original owner');
+  assert.equal((await call('GET', `/api/hosted-agents/${fork.id}/refs`, undefined, token)).status, 200);
+  const previewResponse = await call('POST', '/api/hosted-agents/desk/previews', { ref: fork.baseCommit }, token);
+  assert.equal(previewResponse.status, 202, JSON.stringify(previewResponse.body));
+  const previewId = (previewResponse.body as unknown as { preview: { id: string } }).preview.id;
+  assert.equal((await call('GET', `/api/agent-previews/${previewId}`, undefined, token)).status, 200);
+  assert.equal((await call('GET', `/api/agent-previews/${previewId}`)).status, 404);
+  assert.equal((await call('POST', '/api/hosted-agents', { id: previewId, name: 'Replace preview', model: MODEL }, token)).status, 409);
+  assert.equal((await call('DELETE', `/api/agent-previews/${previewId}`, undefined, token)).status, 200);
+  const remote = `http://x:${key}@127.0.0.1:${PORT}/git/${fork.id}.git`;
+  const dir = join(tmp, 'private-fork');
+  await git(['clone', '--quiet', remote, dir]);
+  await git(['-C', dir, 'config', 'user.name', 'Reviewer']);
+  await git(['-C', dir, 'config', 'user.email', 'reviewer@example.com']);
+  writeFileSync(join(dir, 'prompt.md'), 'The reviewed proposal.');
+  await git(['-C', dir, 'commit', '-qam', 'Proposed change']);
+  await git(['-C', dir, 'push', '--quiet', 'origin', 'main']);
+  const snapshot = (await git(['-C', dir, 'rev-parse', 'HEAD'])).trim();
+  assert.equal((await call('POST', '/api/hosted-agents/desk/pulls', { title: 'Steal fork', headAgent: fork.id, head: 'main' })).status, 403);
+  const opened = await call('POST', '/api/hosted-agents/desk/pulls', { title: 'Proposal from a reader', headAgent: fork.id, head: 'main' }, token);
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const pull = (opened.body as unknown as { pull: { number: number; headCommit: string } }).pull;
+  assert.equal(pull.headCommit, snapshot);
+  writeFileSync(join(dir, 'prompt.md'), 'A later, unreviewed change.');
+  await git(['-C', dir, 'commit', '-qam', 'Later change']);
+  await git(['-C', dir, 'push', '--quiet', 'origin', 'main']);
+  assert.equal((await call('DELETE', `/api/agent-forks/${fork.id}`, undefined, token)).status, 200);
+  assert.equal((await call('POST', `/api/hosted-agents/desk/pulls/${pull.number}/merge`, {}, token)).status, 403);
+  const merged = await call('POST', `/api/hosted-agents/desk/pulls/${pull.number}/merge`, {});
+  assert.equal(merged.status, 200, JSON.stringify(merged.body));
+  const live = (await call('GET', '/api/hosted-agents/desk')).body as unknown as { agent: { systemPrompt: string } };
+  assert.equal(live.agent.systemPrompt, 'The reviewed proposal.');
+});
+
+test('deleting an agent over the real node API first preserves its repository, reviews and execution history', async () => {
+  const refs = (await git(['--git-dir', join(dataDirectory, 'agent-git/desk.git'), 'show-ref'])).trim();
+  const deleted = await call('DELETE', '/api/hosted-agents/desk');
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const id = (deleted.body as unknown as { archiveId: string }).archiveId;
+  assert.match(id, /^archive_[0-9a-f]+$/);
+  const archives = new AgentArchives(join(dataDirectory, 'agent-archives.json'), join(dataDirectory, 'agent-archives'));
+  const archived = archives.get(id, PERSON.address)!;
+  assert.equal(archived.spec.systemPrompt, 'The reviewed proposal.');
+  assert.ok(archived.pulls.length > 0);
+  assert.ok(archived.executions!.length > 0);
+  assert.ok(archived.runtime?.activeCommit);
+  assert.equal((await call('GET', '/api/hosted-agents/desk')).status, 404);
+  const restored = new AgentGit(join(tmp, 'offline-restore'));
+  await restored.restoreBundle('desk', archives.bundle(id, PERSON.address)!);
+  assert.equal((await git(['--git-dir', restored.dir('desk'), 'show-ref'])).trim(), refs);
+  assert.equal((await restored.readSpec('desk', 'main')).input.systemPrompt, 'The reviewed proposal.');
+});
+
+test('archive quota refuses deletion before touching the agent or its Git repository', async () => {
+  // The previous test retained one archive; fill the remaining owner capacity through the real API.
+  for (let n = 0; n < 19; n++) {
+    const id = `archive-quota-${n}`;
+    const created = await call('POST', '/api/hosted-agents', { id, name: 'Archive quota test', model: MODEL, systemPrompt: 'Preserve me.' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal((await call('DELETE', `/api/hosted-agents/${id}`)).status, 200);
+  }
+  const id = 'archive-quota-last';
+  assert.equal((await call('POST', '/api/hosted-agents', { id, name: 'Must remain available', model: MODEL, systemPrompt: 'Do not lose me.' })).status, 201);
+  const deleted = await call('DELETE', `/api/hosted-agents/${id}`);
+  assert.equal(deleted.status, 502);
+  assert.match(JSON.stringify(deleted.body), /archive quota reached/);
+  assert.equal((await call('GET', `/api/hosted-agents/${id}`)).status, 200);
+  const repository = new AgentGit(join(dataDirectory, 'agent-git'));
+  assert.equal((await repository.readSpec(id, 'main')).input.systemPrompt, 'Do not lose me.');
+});
+
+test('owner archive APIs paginate, conceal other owners, export a cloneable download, and require export before removal', async () => {
+  assert.equal((await call('GET', '/api/agent-archives', undefined, '')).status, 401);
+  const list = await call('GET', '/api/agent-archives?limit=50');
+  assert.equal(list.status, 200);
+  const rows = (list.body as unknown as { archives: { id: string; agent: string }[]; total: number }).archives;
+  assert.equal(rows.length, 20);
+  assert.equal((await call('GET', '/api/agent-archives?limit=0')).status, 400);
+  assert.equal((await call('GET', '/api/agent-archives?offset=-1')).status, 400);
+  const page = (await call('GET', '/api/agent-archives?limit=2&offset=2')).body as unknown as { archives: { id: string }[] };
+  assert.deepEqual(page.archives.map((r) => r.id), rows.slice(2, 4).map((r) => r.id));
+  const record = rows.find((r) => r.agent === 'desk')!;
+  const stranger = createIdentity();
+  const challenge = (await call('POST', '/api/auth/challenge', { scheme: 'eip191' })).body as unknown as { nonce: string; message: string };
+  const signed = await call('POST', '/api/auth/wallet', { address: stranger.address, nonce: challenge.nonce, signature: personalSign(challenge.message, stranger.privateKey) });
+  const token = (signed.body as unknown as { token: string }).token;
+  const other = (await call('GET', '/api/agent-archives', undefined, token)).body as unknown as { total: number };
+  assert.equal(other.total, 0);
+  for (const [method, suffix] of [['GET', ''], ['POST', '/export'], ['DELETE', '']]) assert.equal((await call(method!, `/api/agent-archives/${record.id}${suffix}`, undefined, token)).status, 404);
+  assert.equal((await call('DELETE', `/api/agent-archives/${record.id}`)).status, 409);
+  const downloaded = await fetch(`${url}/api/agent-archives/${record.id}/export`, { method: 'POST', headers: { authorization: `Bearer ${session}` } });
+  assert.equal(downloaded.status, 200);
+  assert.match(downloaded.headers.get('content-type')!, /application\/gzip/);
+  assert.equal(downloaded.headers.get('cache-control'), 'private, no-store');
+  const directory = join(tmp, 'downloaded-archive'); mkdirSync(directory);
+  const path = join(tmp, 'download.tar.gz'); writeFileSync(path, Buffer.from(await downloaded.arrayBuffer()));
+  await exec('tar', ['-xzf', path, '-C', directory]);
+  const metadata = JSON.parse(readFileSync(join(directory, 'metadata.json'), 'utf8'));
+  assert.equal(metadata.format, 'ainize.agent-archive');
+  assert.equal(metadata.archive.spec.systemPrompt, 'The reviewed proposal.');
+  assert.ok(metadata.archive.pulls.length > 0 && metadata.archive.executions.length > 0);
+  assert.equal(metadata.archive.secrets, undefined);
+  const offline = new AgentGit(join(tmp, 'downloaded-restoration'));
+  await offline.restoreBundle('desk', join(directory, 'repository.bundle'));
+  assert.equal((await offline.readSpec('desk', 'main')).input.systemPrompt, 'The reviewed proposal.');
+  assert.equal((await call('DELETE', `/api/agent-archives/${record.id}`)).status, 200);
+  assert.equal((await call('GET', `/api/agent-archives/${record.id}`)).status, 404);
+  assert.equal((await offline.readSpec('desk', 'main')).input.systemPrompt, 'The reviewed proposal.');
+});
+
+test('a legacy agent without a repository still exports its preserved metadata instead of losing the spec', async () => {
+  const id = 'legacy-no-repository';
+  assert.equal((await call('POST', '/api/hosted-agents', { id, name: 'Legacy agent', model: MODEL, systemPrompt: 'Legacy prompt' })).status, 201);
+  await new AgentGit(join(dataDirectory, 'agent-git')).deleteRepo(id);
+  const deleted = await call('DELETE', `/api/hosted-agents/${id}`);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const archiveId = (deleted.body as unknown as { archiveId: string }).archiveId;
+  const downloaded = await fetch(`${url}/api/agent-archives/${archiveId}/export`, { method: 'POST', headers: { authorization: `Bearer ${session}` } });
+  assert.equal(downloaded.status, 200);
+  const path = join(tmp, 'legacy.tar.gz'); writeFileSync(path, Buffer.from(await downloaded.arrayBuffer()));
+  assert.equal((await exec('tar', ['-tzf', path])).stdout.trim(), 'metadata.json');
+  const detail = (await call('GET', `/api/agent-archives/${archiveId}`)).body as unknown as { archive: { repository: boolean; spec: { systemPrompt: string } } };
+  assert.equal(detail.archive.repository, false);
+  assert.equal(detail.archive.spec.systemPrompt, 'Legacy prompt');
+});
+
+test('an interrupted large archive download does not authorize permanent removal', async () => {
+  const rows = (await call('GET', '/api/agent-archives?limit=50')).body as unknown as { archives: { id: string; agent: string }[] };
+  const legacy = rows.archives.find((r) => r.agent === 'legacy-no-repository')!;
+  assert.equal((await call('DELETE', `/api/agent-archives/${legacy.id}`)).status, 200);
+  const id = 'interrupted-archive';
+  assert.equal((await call('POST', '/api/hosted-agents', { id, name: 'Interrupted export', model: MODEL })).status, 201);
+  const directory = join(tmp, 'large-archive-clone');
+  await git(['clone', '--quiet', `${url}/git/${id}.git`, directory]);
+  await git(['-C', directory, 'config', 'user.name', 'Archive test']);
+  await git(['-C', directory, 'config', 'user.email', 'archive@example.test']);
+  writeFileSync(join(directory, 'large-proposal.bin'), randomBytes(8 * 1024 * 1024));
+  await git(['-C', directory, 'add', '.']);
+  await git(['-C', directory, 'commit', '-m', 'Retained proposal payload']);
+  await git(['-C', directory, 'push', '--quiet', 'origin', 'HEAD:refs/heads/proposal'], {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x:${apiKey}`).toString('base64')}`,
+  });
+  const deleted = await call('DELETE', `/api/hosted-agents/${id}`);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const archiveId = (deleted.body as unknown as { archiveId: string }).archiveId;
+  const response = await fetch(`${url}/api/agent-archives/${archiveId}/export`, { method: 'POST', headers: { authorization: `Bearer ${session}` } });
+  assert.equal(response.status, 200);
+  const reader = response.body!.getReader();
+  assert.equal((await reader.read()).done, false);
+  await reader.cancel();
+  // This removal waits behind export cleanup in the shared queue.
+  assert.equal((await call('DELETE', `/api/agent-archives/${archiveId}`)).status, 409);
+  const detail = (await call('GET', `/api/agent-archives/${archiveId}`)).body as unknown as { archive: { exportedAt?: number } };
+  assert.equal(detail.archive.exportedAt, undefined);
+});
+
+test('the owner restores a deleted agent at the same address with a newer release and fresh PoP key, and can push again', async () => {
+  const rows = (await call('GET', '/api/agent-archives?limit=50')).body as unknown as { archives: { id: string; agent: string }[] };
+  const record = rows.archives.find((r) => r.agent === 'archive-quota-0')!;
+  const archive = new AgentArchives(join(dataDirectory, 'agent-archives.json'), join(dataDirectory, 'agent-archives')).get(record.id, PERSON.address)!;
+  assert.equal((await call('POST', `/api/agent-archives/${record.id}/restore`, undefined, '')).status, 401);
+  assert.equal((await call('POST', `/api/agent-archives/${record.id}/restore`, { model: 'override' })).status, 400);
+  const restored = await call('POST', `/api/agent-archives/${record.id}/restore`, {});
+  assert.equal(restored.status, 201, JSON.stringify(restored.body));
+  const result = restored.body as unknown as { agentId: string; status: string; version: number; commit: string; secretsRequired: string[] };
+  assert.equal(result.agentId, record.agent); assert.equal(result.status, 'ready');
+  assert.equal(result.version, archive.spec.version + 2);
+  const store = new HostedAgentStore(join(dataDirectory, 'hosted-agents.json'));
+  const current = store.get(record.agent)!;
+  assert.equal(current.createdAt, archive.spec.createdAt);
+  assert.notEqual(current.popJwk?.kid, archive.spec.popJwk?.kid);
+  assert.deepEqual(result.secretsRequired, archive.spec.secretNames);
+  assert.equal((await fetch(`${url}/agents/${record.agent}/.well-known/agent-card.json`)).status, 200);
+  const history = (await call('GET', `/api/hosted-agents/${record.agent}/executions`)).body as unknown as { executions: { trigger: string; status: string; version: number }[] };
+  assert.equal(history.executions[0]!.trigger, 'api');
+  assert.equal(history.executions[0]!.status, 'ready');
+  const detail = (await call('GET', `/api/agent-archives/${record.id}`)).body as unknown as { archive: { restoredAt: number } };
+  assert.ok(detail.archive.restoredAt);
+  assert.equal((await call('POST', `/api/agent-archives/${record.id}/restore`, {})).status, 409);
+  const directory = join(tmp, 'restored-agent-clone');
+  await git(['clone', '--quiet', `${url}/git/${record.agent}.git`, directory]);
+  await git(['-C', directory, 'config', 'user.name', 'Restored owner']);
+  await git(['-C', directory, 'config', 'user.email', 'restored@example.test']);
+  writeFileSync(join(directory, 'prompt.md'), 'A new version after restore.');
+  await git(['-C', directory, 'commit', '-qam', 'Edit restored agent']);
+  await git(['-C', directory, 'push', '--quiet', 'origin', 'main'], {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x:${apiKey}`).toString('base64')}`,
+  });
+  const live = (await call('GET', `/api/hosted-agents/${record.agent}`)).body as unknown as { agent: { systemPrompt: string; live_version: number } };
+  assert.equal(live.agent.systemPrompt, 'A new version after restore.');
+  assert.ok(live.agent.live_version > result.version);
+});
+
+test('a shallow mirrored agent exports and restores through the real owner APIs with its original source SHA', async () => {
+  const rows = (await call('GET', '/api/agent-archives?limit=50')).body as unknown as { archives: { id: string; agent: string }[] };
+  const previous = rows.archives.find((record) => record.agent === 'archive-quota-0')!;
+  const exported = await fetch(`${url}/api/agent-archives/${previous.id}/export`, { method: 'POST', headers: { authorization: `Bearer ${session}` } });
+  assert.equal(exported.status, 200); await exported.arrayBuffer();
+  assert.equal((await call('DELETE', `/api/agent-archives/${previous.id}`)).status, 200);
+  const id = 'shallow-mirror-agent', sourceAgent = 'archive-quota-0';
+  assert.equal((await call('POST', '/api/hosted-agents', { id, name: 'Mirror target', model: MODEL })).status, 201);
+  const configured = await call('PUT', `/api/hosted-agents/${id}/mirror`, { url: `${url}/git/${sourceAgent}.git`, branch: 'main', path: '' });
+  assert.equal(configured.status, 200, JSON.stringify(configured.body));
+  const repository = new AgentGit(join(dataDirectory, 'agent-git'));
+  assert.equal(repository.isShallow(id), true);
+  const sourceSha = await repository.resolve(sourceAgent, 'main');
+  const deleted = await call('DELETE', `/api/hosted-agents/${id}`);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const archiveId = (deleted.body as unknown as { archiveId: string }).archiveId;
+  const download = await fetch(`${url}/api/agent-archives/${archiveId}/export`, { method: 'POST', headers: { authorization: `Bearer ${session}` } });
+  assert.equal(download.status, 200);
+  const path = join(tmp, 'shallow-download.tar.gz'); writeFileSync(path, Buffer.from(await download.arrayBuffer()));
+  const directory = join(tmp, 'shallow-download'); mkdirSync(directory);
+  await exec('tar', ['-xzf', path, '-C', directory]);
+  const metadata = JSON.parse(readFileSync(join(directory, 'metadata.json'), 'utf8'));
+  assert.equal(metadata.archive.repositoryFormat, 'bare-tar');
+  const offline = new AgentGit(join(tmp, 'shallow-offline'));
+  await offline.restoreBareArchive(id, join(directory, 'repository.tar.gz'));
+  assert.equal(await offline.resolve(id, 'main'), sourceSha);
+  assert.equal(offline.isShallow(id), true);
+  const restored = await call('POST', `/api/agent-archives/${archiveId}/restore`, {});
+  assert.equal(restored.status, 201, JSON.stringify(restored.body));
+  const result = restored.body as unknown as { sourceCommit: string; status: string };
+  assert.equal(result.status, 'ready'); assert.equal(result.sourceCommit, sourceSha);
+  assert.equal(await repository.resolve(id, 'main'), sourceSha);
+  const live = (await call('GET', `/api/hosted-agents/${id}`)).body as unknown as { agent: { systemPrompt: string; runtime: { source: { writable: boolean } } } };
+  assert.equal(live.agent.systemPrompt, 'A new version after restore.');
+  assert.equal(live.agent.runtime.source.writable, false);
+  assert.equal((await call('PUT', `/api/hosted-agents/${id}`, { id, name: 'Forbidden local edit', model: MODEL })).status, 409);
 });

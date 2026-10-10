@@ -8,11 +8,11 @@
  * Skipping by content type covers every stream, including ones added later.
  */
 import compression from 'compression';
-import type { Request, Response } from 'express';
+import type { Request, Response, RequestHandler } from 'express';
 
 export function sseAwareCompressionFilter(req: Request, res: Response): boolean {
   if (/text\/event-stream/i.test(String(res.getHeader('content-type') ?? ''))) return false;
   return compression.filter(req, res);
 }
 
-export const sseAwareCompression = () => compression({ filter: sseAwareCompressionFilter });
+export const sseAwareCompression = (): RequestHandler => compression({ filter: sseAwareCompressionFilter });

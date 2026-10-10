@@ -15,9 +15,11 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH } from './agent-git.js';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH, AGENT_GIT_RESERVED_FIELDS } from './agent-git.js';
 import { hostedAgentSpecInput, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
 const run = promisify(execFile);
@@ -122,24 +124,51 @@ export interface MirrorFetchResult {
 export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs = 60_000): Promise<MirrorFetchResult> {
   const dir = git.dir(mirror.agent);
   const remoteRef = `refs/remotes/upstream/${mirror.branch}`;
+  let incoming: { GIT_OBJECT_DIRECTORY: string; GIT_ALTERNATE_OBJECT_DIRECTORIES: string } | null = null;
   const g = async (args: string[]) => {
-    const { stdout } = await run('git', ['--git-dir', dir, ...args], {
+    const { stdout } = await run('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '--git-dir', dir, ...args], {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
       // No prompting, ever: a private repository must fail fast rather than hang a fetch loop on a password.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', ...incoming },
     });
     return stdout;
   };
 
+  await git.assertStorageLimit(mirror.agent);
+  const objects = mkdtempSync(join(tmpdir(), 'ainize-mirror-objects-'));
+  const shallowPath = join(dir, 'shallow'), fetchHeadPath = join(dir, 'FETCH_HEAD');
+  const shallow = existsSync(shallowPath) ? readFileSync(shallowPath) : null;
+  const fetchHead = existsSync(fetchHeadPath) ? readFileSync(fetchHeadPath) : null;
+  incoming = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(dir, 'objects') };
+  let promoted = false;
   try {
-    await g(['fetch', '--quiet', '--depth', '1', mirror.url, `+${mirror.branch}:${remoteRef}`]);
+    // Download into disposable objects, with existing objects available for
+    // negotiation. No repository ref points at incoming objects until quota passes.
+    await g(['fetch', '--quiet', '--no-tags', '--depth', '1', mirror.url, mirror.branch]);
+    await git.assertStorageLimit(mirror.agent, incoming);
+    const fetched = (await g(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'])).trim();
+    await cp(objects, join(dir, 'objects'), { recursive: true, force: false });
+    await g(['update-ref', remoteRef, fetched]);
+    promoted = true;
   } catch (e) {
     const why = ((e as { stderr?: string }).stderr || (e as Error).message).trim();
     throw new AgentGitError(`could not fetch ${mirror.url}: ${why.split('\n').slice(0, 3).join(' ')}`);
+  } finally {
+    incoming = null;
+    if (!promoted) {
+      // A shallow fetch updates these even without a destination ref. Retain the
+      // old boundaries so a rejected update cannot damage active-source history.
+      if (shallow) writeFileSync(shallowPath, shallow); else rmSync(shallowPath, { force: true });
+      if (fetchHead) writeFileSync(fetchHeadPath, fetchHead); else rmSync(fetchHeadPath, { force: true });
+    }
+    rmSync(objects, { recursive: true, force: true });
   }
 
+  // Reject before reading or applying the new tree. Landing performs the same check,
+  // but that is too late once the live runtime has already been replaced.
+  await git.assertStorageLimit(mirror.agent);
   const commit = (await g(['rev-parse', '--verify', `${remoteRef}^{commit}`])).trim();
   if (mirror.lastCommit === commit) return { changed: false, commit };
 
@@ -156,6 +185,8 @@ export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs 
   try { json = JSON.parse(raw) as Record<string, unknown>; }
   catch (e) { return { changed: true, commit, error: `${prefix}agent.json is not valid JSON: ${(e as Error).message}` }; }
 
+  const reserved = AGENT_GIT_RESERVED_FIELDS.filter((f) => f in json);
+  if (reserved.length) return { changed: true, commit, error: `agent.json sets server-owned fields: ${reserved.join(', ')}` };
   const files: Record<string, string> = {};
   const listed = await g(['ls-tree', '-r', '--name-only', commit, ...(prefix ? [prefix] : [])]).catch(() => '');
   for (const full of listed.split('\n').map((l) => l.trim()).filter(Boolean)) {

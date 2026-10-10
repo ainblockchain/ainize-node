@@ -179,3 +179,18 @@ test('ainize.json inputs: the GitHub Actions workflow_dispatch shape, limits, an
   bad([{ name: 'A' }]);                                      // the array shape is not accepted
   bad(Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`I${i}`, {}])));
 });
+
+test('a lost auto-binding response is recoverable only with the same authenticated application and receipt', async () => {
+  const body = { repo: `${AINDRIVE}/comcom/git/recoverable`, bindRequestId: 'a'.repeat(64), pusher: { subject: 'acc_alice' } };
+  const first = await auto(body, await token());
+  assert.equal(first.status, 201);
+  const replay = await auto(body, await token());
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.id, first.body.id);
+  assert.equal(replay.body.webhookSecret, first.body.webhookSecret);
+  const other = await auto({ ...body, bindRequestId: 'b'.repeat(64) }, await token());
+  assert.equal(other.status, 200);
+  assert.equal(other.body.webhookSecret, undefined);
+  const legacy = await auto({ repo: body.repo }, await token());
+  assert.equal(legacy.body.webhookSecret, undefined);
+});

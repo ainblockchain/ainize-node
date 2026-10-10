@@ -1,3 +1,5 @@
+import { AgentGitStorageLimitError } from './agent-git.js';
+import { serializedWrites, type RepositorySerialize } from './agent-repository-queue.js';
 /**
  * `/api/hosted-agents` — create, read, change and remove agents this node runs.
  *
@@ -7,6 +9,7 @@
  * creator may remove it or change who sees it. Limits are the store's. Errors are `{ error: { code,
  * message } }`, the codes being what the web page switches on.
  */
+import type { AgentRuntime } from './repository-runtime.js';
 import { Router, type Request, type Response } from 'express';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { HostedAgentHost } from './hosted-agent-host.js';
@@ -43,9 +46,14 @@ export interface HostedAgentRoutesDeps {
    * door a change came through.
    */
   repo?: {
+    serialize?: RepositorySerialize;
+    readOnlySource?: (id: string) => string | null;
+    runtime?: (id: string) => AgentRuntime | null;
     create: (spec: HostedAgentSpec) => Promise<void>;
     commit: (spec: HostedAgentSpec, message: string, by: string) => Promise<void>;
+    archive?: (spec: HostedAgentSpec) => Promise<{ id: string }>;
     remove: (id: string) => Promise<void>;
+    deleting?: (id: string, remove: () => Promise<void>) => Promise<void>;
     /**
      * Where to clone it, which commit is live, and whether it follows a repository elsewhere.
      *
@@ -72,6 +80,7 @@ const refuse = (res: Response, status: number, code: string, message: string) =>
 
 export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
   const router = Router();
+  const writes = serializedWrites(router, deps.repo?.serialize);
 
   const callerOf = (req: Request): AgentCaller | null => {
     if (deps.caller) return deps.caller(req);
@@ -177,6 +186,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       status: st?.status ?? 'failed', error: st?.error ?? null, live_version: st?.liveVersion ?? null,
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
       ...(deps.repo?.info ? { git: deps.repo.info(spec.id) } : {}),
+      ...(deps.repo?.runtime ? { runtime: deps.repo.runtime(spec.id) } : {}),
       ...(full ? {
         systemPrompt: spec.systemPrompt, files: spec.files, a2ui: spec.a2ui, allowedHosts: spec.allowedHosts,
         secretNames: spec.secretNames, skills: spec.skills, media: hostedAgentMediaOf(spec),
@@ -211,7 +221,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     res.json({ agents: deps.store.list().filter((s) => listsHostedAgentFor(s, who)).map((s) => view(req, s, false)) });
   });
 
-  router.post('/api/hosted-agents', async (req, res) => {
+  writes.post('/api/hosted-agents', async (req, res) => {
     const who = signedIn(req, res);
     if (!who) return;
     const input = parse(req, res, who);
@@ -219,12 +229,14 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     try {
       // The agent's PoP key is minted with it (hosted-agent-pop.ts), before the runtime that will sign with it starts.
       const spec = issueHostedAgentPopKey(deps.store, deps.secrets, deps.store.create(input, who.subject, deps.reserved));
+      try { await deps.repo?.create(spec); }
+      catch (error) { deps.store.delete(spec.id); deps.secrets.dropAgent(spec.id); throw error; }
       deps.host.apply(spec);
-      await deps.repo?.create(spec).catch(() => { /* an agent that runs but cannot be cloned is still an agent */ });
       deps.events?.append({ type: 'agent.published', registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
       deps.orgAudit?.([spec.orgId], who.subject, 'agent.create', spec.id, { kind: 'hosted', visibility: hostedAgentVisibilityOf(spec) });
       res.status(201).json({ agent: view(req, spec, false), a2a_url: view(req, spec, false).a2a_url, card_url: view(req, spec, false).card_url });
     } catch (e) {
+      if (e instanceof AgentGitStorageLimitError) return refuse(res, 413, 'repository_storage_limit', e.message);
       if (e instanceof HostedAgentIdTakenError) return refuse(res, 409, 'id_taken', e.message);
       if (e instanceof HostedAgentLimitError) return refuse(res, 429, 'limit_reached', e.message);
       throw e;
@@ -240,10 +252,12 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (hit) res.json({ agent: view(req, hit.spec, hit.owner, callerOf(req)) });
   });
 
-  router.put('/api/hosted-agents/:id', async (req, res) => {
+  writes.put('/api/hosted-agents/:id', async (req, res) => {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec: prior, who } = hit;
+    const source = deps.repo?.readOnlySource?.(prior.id);
+    if (source) return refuse(res, 409, 'read_only_source', `edit ${source} and deploy its commit; this agent is a runtime projection`);
     const expected = req.headers['if-match'];
     if (expected !== undefined && expected !== String(prior.version)) return refuse(res, 409, 'version_conflict', 'agent changed; pull its latest version before editing');
     const input = parse(req, res, who);
@@ -254,18 +268,22 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     if (sharingChanged && !canAdministerAgent(prior, who)) {
       return refuse(res, 403, 'not_owner', 'only the agent\'s creator or an admin of its organization can change its visibility or organization');
     }
-    const spec = deps.store.update(prior.id, input, who.subject);
+    const now = Date.now();
+    const candidate: HostedAgentSpec = { ...input, id: prior.id, owner: prior.owner, version: prior.version + 1, createdAt: prior.createdAt, updatedAt: now, updatedBy: who.subject.toLowerCase(), ...(prior.popJwk ? { popJwk: prior.popJwk } : {}) };
+    try { await deps.repo?.commit(candidate, `Update ${candidate.id} (v${candidate.version})`, who.subject); }
+    catch (error) {
+      if (error instanceof AgentGitStorageLimitError) return refuse(res, 413, 'repository_storage_limit', error.message);
+      throw error;
+    }
+    const spec = deps.store.update(prior.id, input, who.subject, now);
     deps.host.apply(spec);
-    // The same change, as a commit. An edit made in the browser is as much a part of the history as a push —
-    // otherwise "what changed" has two answers and a reader has to know which door the change came through.
-    await deps.repo?.commit(spec, `Update ${spec.id} (v${spec.version})`, who.subject).catch(() => {});
     deps.orgAudit?.([prior.orgId, spec.orgId], who.subject, sharingChanged ? 'agent.sharing' : 'agent.update', spec.id,
       { kind: 'hosted', version: spec.version, ...(sharingChanged ? { from: { visibility: hostedAgentVisibilityOf(prior), orgId: prior.orgId ?? null }, to: { visibility: hostedAgentVisibilityOf(spec), orgId: spec.orgId ?? null } } : {}) });
     deps.events?.append({ type: hostedAgentChangeType(prior, spec), registryIssuer: issuer(req), agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: widerAudience(audienceOf(prior), audienceOf(spec)) });
     res.json({ agent: view(req, spec, true, who) });
   });
 
-  router.post('/api/hosted-agents/:id/builder', async (req, res) => {
+  writes.post('/api/hosted-agents/:id/builder', async (req, res) => {
     const hit = administered(req, res);
     if (!hit) return;
     const action = req.body?.action;
@@ -278,22 +296,30 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     } catch { refuse(res, 502, 'builder_unavailable', 'builder operation failed'); }
   });
 
-  router.delete('/api/hosted-agents/:id' , async (req, res) => {
+  writes.delete('/api/hosted-agents/:id' , async (req, res) => {
     const hit = administered(req, res);
     if (!hit) return;
     const { spec, who } = hit;
-    deps.store.delete(spec.id);
-    deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
-    deps.secrets.dropAgent(spec.id);
-    await deps.host.remove(spec.id);
-    await deps.repo?.remove(spec.id).catch(() => {});
+    let archiveId: string | undefined;
+    const remove = async () => {
+      archiveId = (await deps.repo?.archive?.(spec))?.id;
+      deps.store.delete(spec.id);
+      deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
+      deps.secrets.dropAgent(spec.id);
+      await deps.host.remove(spec.id);
+      await deps.repo?.remove(spec.id);
+    };
+    try {
+      if (deps.repo?.deleting && !deps.repo.serialize) await deps.repo.deleting(spec.id, remove);
+      else await remove();
+    } catch (error) { return refuse(res, 502, 'delete_failed', (error as Error).message); }
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
     deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: spec.id, version: spec.version + 1, audience: audienceOf(spec) });
-    res.json({ deleted: spec.id });
+    res.json({ deleted: spec.id, ...(archiveId ? { archiveId } : {}) });
   });
 
   /** Write-only: set with `{ value }`, clear with `{ value: null }`. There is no route that reads a value back. */
-  router.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
+  writes.put('/api/hosted-agents/:id/secrets/:name', async (req, res) => {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec, who } = hit;

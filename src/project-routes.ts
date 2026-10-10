@@ -25,9 +25,10 @@ import type { AgentCaller } from './shared-agents.js';
 import {
   hookBody, hookSignatureOk, parseRepoUrl, projectInput, runInput, type Deployment, type DeploymentLogs, type Project, ProjectLimitError, ProjectRepoTakenError,
   type ProjectStore, type ProjectWorker, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN, PROJECT_SECRET_WEBHOOK,
-  languageOf, readTree, PROJECT_RUN_TIMEOUT_MS,
+  languageOf, readTree, projectRoot, PROJECT_RUN_TIMEOUT_MS,
 } from './projects.js';
-import { randomBytes } from 'node:crypto';
+import { repositoryId } from './repository-runtime.js';
+import { randomBytes, createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,6 +107,7 @@ type Viewer =
 
 /** `POST /api/projects/auto` body: the pushed repo and what aindrive knows about it. */
 export const autoBindInput = z.object({
+  bindRequestId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   repo: z.string().min(1).max(1024),
   branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).optional(),
   pusher: z.object({ subject: z.string().min(1).max(300).nullable().optional(), email: z.string().max(300).nullable().optional() }).optional(),
@@ -172,7 +174,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const last = p.lastDeploymentId ? deps.store.deployment(p.lastDeploymentId) : null;
     const described = last?.manifest ? last : deps.store.deploymentsOf(p.id).find((d) => d.manifest) ?? null;
     return {
-      id: p.id, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, entry: p.entry, name: p.name, status: p.status,
+      id: p.id, repoId: repositoryId(p.repo), sourcePath: p.sourcePath ?? '', sourceCommit: p.sourceCommit ?? null, activeCommit: p.activeCommit ?? null, activeDeploymentId: p.activeDeploymentId ?? null, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, entry: p.entry, name: p.name, status: p.status,
       url: pageUrlOf(req, p), pageUrl: pageUrlOf(req, p), lastDeploymentId: p.lastDeploymentId, createdAt: p.createdAt, updatedAt: p.updatedAt,
       lastDeployment: last ? deploymentView(req, last) : null,
       manifest: described?.manifest ?? null, runnable: described?.runnable ?? [],
@@ -188,10 +190,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     };
   };
   const deploymentView = (req: Request, d: Deployment) => ({
-    id: d.id, projectId: d.projectId, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
+    id: d.id, projectId: d.projectId, repoId: repositoryId(deps.store.get(d.projectId)?.repo ?? ''), sourceCommit: d.sha || null, actor: d.pusher?.subject ?? null, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
     startedAt: d.startedAt, finishedAt: d.finishedAt, ms: d.ms, ...(d.exitCode === null ? {} : { exitCode: d.exitCode }), ...(d.error ? { error: d.error } : {}),
     ...(d.kind ? { kind: d.kind } : {}), trigger: d.trigger ?? 'push', ...(d.subject ? { subject: d.subject } : {}),
-    ...(d.trigger === 'run' ? { entry: d.entry ?? null, inputs: d.inputs ?? {}, env: d.env ?? {} } : {}),
+    ...(d.trigger === 'run' ? { target: d.target ?? 'head', entry: d.entry ?? null, inputs: d.inputs ?? {}, env: d.env ?? {} } : {}),
     logUrl: `${base(req)}/api/deployments/${d.id}/log`,
     ...(d.status === 'ready' && d.outputUrl ? { outputUrl: d.outputUrl } : {}),
   });
@@ -240,6 +242,17 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
 
   const snippetHeaders = (res: Response) => res.set({ 'content-type': AINUI_MEDIA_TYPE, 'cache-control': 'private, no-store', vary: 'Accept, Authorization, X-AIN-Actor' });
 
+  const resolveSource = async (project: Project, sha: string) => {
+    const work = mkdtempSync(join(tmpdir(), 'ainize-project-source-'));
+    try {
+      const resolved = await deps.worker.checkout(project, sha, work);
+      const manifest = resolveProjectManifest(projectRoot(work, project.sourcePath), { entry: project.entry });
+      return { sha: resolved, manifest };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  };
+
   /**
    * `GET /api/ainui/snippet?url=<pasted URL>` (or `?path=/<org>/<repo>`): the project's AIN-UI snippet for the
    * viewer. ainize-web's middleware sends a page request with `Accept: application/vnd.ain.ui+json` here. An
@@ -257,11 +270,32 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     snippetHeaders(res);
     if (!canSee(project, viewer)) return res.status(403).send(JSON.stringify(deniedSnippet(new URL(base(req)).host, `${project.org}/${project.repoName}`, pageUrlOf(req, project))));
     const deployments = deps.store.deploymentsOf(project.id);
-    const last = deployments[0] ?? null;
-    const kind = last?.kind ?? project.kind;
-    const entry = last?.manifest?.entry ?? project.entry;
-    const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs) } : null;
-    res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: pageUrlOf(req, project), run, canRedeploy: canEdit(project, viewer) })));
+    const last = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
+    const pasted = new URL(raw, base(req));
+    const selection = pasted.searchParams.get('runTarget') ?? 'deployed';
+    const requestedSha = pasted.searchParams.get('runSha');
+    if (!['head', 'deployed', 'commit'].includes(selection) ||
+        (selection === 'commit' ? !requestedSha || !/^[0-9a-f]{40,64}$/i.test(requestedSha) : requestedSha !== null)) {
+      return refuse(res, 400, 'invalid_request', 'invalid snippet source target');
+    }
+    let selected = last ? { sha: last.sha, manifest: last.manifest } : null;
+    if (selection !== 'deployed') {
+      try { selected = await resolveSource(project, selection === 'commit' ? requestedSha! : ''); }
+      catch (error) { return refuse(res, 502, 'source_failed', (error as Error).message); }
+    } else if (!last && pasted.searchParams.has('runTarget')) {
+      return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
+    }
+    const kind = selected?.manifest?.kind ?? last?.kind ?? project.kind;
+    const entry = selected?.manifest?.entry ?? project.entry;
+    const run = kind === 'script' && selected && entry ? { entry, inputs: snippetInputsOf(selected.manifest?.inputs), sha: selected.sha } : null;
+    const page = new URL(pageUrlOf(req, project));
+    if (selected) {
+      page.searchParams.set('runTarget', 'commit');
+      page.searchParams.set('runSha', selected.sha);
+    }
+    res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: page.toString(), run,
+      source: { selected: selected ? `Commit ${selected.sha}` : 'No deployed version', baseUrl: pageUrlOf(req, project) },
+      canRedeploy: canEdit(project, viewer) })));
   });
 
   /** The project when the viewer may see it; 404 otherwise (never a hint that it exists). */
@@ -274,6 +308,25 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     return { project, viewer };
   };
 
+  /** A form always comes from the same immutable source its Run button will execute. */
+  router.get('/api/projects/:id/source', async (req, res) => {
+    const hit = await seen(req, res);
+    if (!hit) return;
+    const parsed = runInput.safeParse({ target: req.query.target ?? 'head', ...(req.query.sha ? { sha: req.query.sha } : {}) });
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', 'invalid source target');
+    const { target, sha } = parsed.data;
+    if ((target === 'commit' && !sha) || (target !== 'commit' && sha)) return refuse(res, 400, 'invalid_request', 'sha is required only for a commit target');
+    const project = hit.project;
+    const active = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
+    if (target === 'deployed' && !active?.sha) return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
+    try {
+      const resolved = await resolveSource(project, target === 'deployed' ? active!.sha : sha ?? '');
+      res.set('cache-control', 'private, no-store').json({ repoId: repositoryId(project.repo), target, ...resolved, sourcePath: project.sourcePath ?? '' });
+    } catch (error) {
+      refuse(res, 502, 'source_failed', (error as Error).message);
+    }
+  });
+
   /**
    * `POST /api/projects/:id/run { env? }` → `text/event-stream` (`stdout` / `stderr` / `error` / `exit`, the shape of
    * `/api/run`): the deployed commit of a `script` project, run again with the person's answers to the manifest's
@@ -283,11 +336,16 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const hit = await seen(req, res);
     if (!hit) return;
     const { project, viewer } = hit;
-    const env = validateRunEnv((req.body ?? {}).env);
-    if (env === null) return refuse(res, 400, 'invalid_request', 'env: at most 16 entries named like ^[A-Za-z_][A-Za-z0-9_]*$, values up to 2 KiB');
-    const last = project.lastDeploymentId ? deps.store.deployment(project.lastDeploymentId) : null;
-    if (!last) return refuse(res, 409, 'no_deployment', 'nothing has been deployed yet — push to the project\'s branch first');
-    if ((last.kind ?? project.kind) !== 'script') return refuse(res, 409, 'not_a_script', `a ${last.kind ?? project.kind ?? 'project of unknown kind'} is not run on demand`);
+    const parsed = runInput.safeParse({ ...(req.body ?? {}), target: req.body?.target ?? 'deployed' });
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid run');
+    const input = parsed.data;
+    const env = validateRunEnv(input.env);
+    if (env === null) return refuse(res, 400, 'invalid_request', 'invalid environment variables');
+    if (input.target === 'commit' && !input.sha) return refuse(res, 400, 'invalid_request', 'sha is required for a commit run');
+    if (input.target !== 'commit' && input.sha) return refuse(res, 400, 'invalid_request', 'sha is only used for a commit run');
+    if (input.entry && input.entry.split('/').some((part) => part === '' || part === '.' || part === '..')) return refuse(res, 400, 'invalid_request', 'entry is a repository-relative file');
+    const active = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
+    if (input.target === 'deployed' && !active?.sha) return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
     let apiKey: string | undefined;
     if (viewer.subject && deps.actor?.keyFor) {
       try { apiKey = deps.actor.keyFor(viewer.subject); }
@@ -296,6 +354,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
         throw e;
       }
     }
+    const record = deps.store.createRun(project, input, viewer.subject ? { subject: viewer.subject } : { subject: viewer.principal });
+    const startedAt = Date.now();
+    let releaseSlot: (() => void) | undefined;
+    res.setHeader('X-Ainize-Execution', record.id);
     const work = mkdtempSync(join(tmpdir(), 'ainize-snippet-run-'));
     const abort = new AbortController();
     res.on('close', () => abort.abort());
@@ -306,30 +368,53 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' });
       res.flushHeaders();
     };
-    const send = (event: string, data: unknown) => { open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+    const send = (event: string, data: unknown) => { if (abort.signal.aborted) return; open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
     try {
-      await deps.worker.checkout(project, last.sha, work);
-      const manifest = resolveProjectManifest(work, { entry: project.entry });
-      if (manifest.kind !== 'script' || !manifest.entry) return refuse(res, 409, 'not_a_script', `the deployed commit's ainize.json is a ${manifest.kind}`);
-      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(manifest.entry);
-      if (!language) return refuse(res, 409, 'no_runtime', `no runtime for "${manifest.entry}"`);
-      const files = readTree(work);
-      if (!(manifest.entry in files)) return refuse(res, 409, 'no_entry', `entry "${manifest.entry}" is not in the repository`);
-      deps.log?.('info', `project ${project.id}: run ${manifest.entry}@${last.sha.slice(0, 12)} for ${viewer.principal}${viewer.kind === 'actor' ? ` via ${viewer.app}` : ''}`);
+      releaseSlot = await deps.worker.acquireRunSlot(record.id, abort.signal);
+      abort.signal.throwIfAborted();
+      deps.store.updateDeployment(record.id, { status: 'building', startedAt: Date.now() });
+      const sha = await deps.worker.checkout(project, record.sha, work);
+      abort.signal.throwIfAborted();
+      const root = projectRoot(work, project.sourcePath);
+      const manifest = resolveProjectManifest(root, { entry: project.entry });
+      const entry = input.entry ?? manifest.entry;
+      if (manifest.kind !== 'script' || !entry) throw new Error(`the selected commit's ainize.json is a ${manifest.kind}`);
+      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(entry);
+      if (!language) throw new Error(`no runtime for "${entry}"`);
+      const files = readTree(root);
+      if (!(entry in files)) throw new Error(`entry "${entry}" is not in the repository`);
+      deps.store.updateDeployment(record.id, { sha, kind: manifest.kind, entry, manifest });
+      deps.log?.('info', `project ${project.id}: run ${entry}@${sha.slice(0, 12)} for ${viewer.principal}${viewer.kind === 'actor' ? ` via ${viewer.app}` : ''}`);
+      deps.logs.append(record.id, `[ainize] ${input.target}: ${entry}@${sha}\n`);
+      let exit: { code: number; ms: number } | null = null;
       await deps.worker.runScript({
-        language, entry: manifest.entry, files,
-        env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...env, AINIZE_PROJECT: project.id, AINIZE_COMMIT: last.sha },
-        timeoutMs: manifest.timeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
-      }, (ev) => send(ev.event, ev.data));
+        language, entry, files,
+        env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...Object.fromEntries(Object.entries(input.inputs ?? {}).map(([key, value]) => [`INPUT_${key}`, String(value)])), ...env, AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha },
+        timeoutMs: input.timeoutMs ?? manifest.timeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
+      }, (ev) => {
+        if (ev.event === 'exit') exit = ev.data;
+        else {
+          deps.logs.append(record.id, ev.data);
+          if (ev.event === 'stdout') deps.logs.append(record.id, ev.data, 'out');
+        }
+        send(ev.event, ev.data);
+      }, abort.signal);
+      const result = exit as { code: number; ms: number } | null;
+      if (!result) throw new Error('runner ended without an exit code');
+      deps.store.updateDeployment(record.id, { status: result.code === 0 ? 'ready' : 'error', exitCode: result.code, ms: result.ms, finishedAt: Date.now(), error: result.code === 0 ? null : `exit ${result.code}` });
       if (!res.writableEnded) res.end();
     } catch (e) {
       const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
+      deps.logs.append(record.id, `[ainize] ${message}\n`);
+      deps.store.updateDeployment(record.id, { status: 'error', error: message, ms: Date.now() - startedAt, finishedAt: Date.now() });
+      if (abort.signal.aborted) return;
       if (!streaming) return refuse(res, 502, 'run_failed', message);
       send('error', message);
       send('exit', { code: 1, ms: 0 });
       res.end();
     } finally {
       rmSync(work, { recursive: true, force: true });
+      releaseSlot?.();
     }
   });
 
@@ -363,7 +448,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     // `kind` and `entry` are hints for the row; the repository's ainize.json decides at every deploy.
     let project: Project;
     try {
-      project = deps.store.create({ repo, branch: input.branch, kind: input.kind ?? null, entry: input.entry ?? null, name: input.name }, who.subject);
+      project = deps.store.create({ repo, sourcePath: input.sourcePath, branch: input.branch, kind: input.kind ?? null, entry: input.entry ?? null, name: input.name }, who.subject);
     } catch (e) {
       if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
       if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
@@ -409,14 +494,23 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const existing = deps.store.byRepo(repo.url);
     if (existing) {
       if (existing.branch !== branch) return refuse(res, 409, 'repo_taken', `${repo.url} is bound to branch ${existing.branch} on this node`);
-      return res.status(200).json({ id: existing.id, pageUrl: pageUrlOf(req, existing), created: false });
+      // Recover a lost creation response only for the same authenticated application and request.
+      let webhookSecret: string | undefined;
+      if (input.bindRequestId && existing.bindingReceipt?.clientId === who.clientId && existing.bindingReceipt.requestId === input.bindRequestId) {
+        webhookSecret = deps.secrets.reveal(existing.id, [PROJECT_SECRET_WEBHOOK])[PROJECT_SECRET_WEBHOOK];
+        if (!webhookSecret) {
+          webhookSecret = `whsec_${randomBytes(24).toString('hex')}`;
+          deps.secrets.set(existing.id, PROJECT_SECRET_WEBHOOK, webhookSecret);
+        }
+      }
+      return res.status(200).json({ id: existing.id, pageUrl: pageUrlOf(req, existing), created: false, ...(webhookSecret ? { webhookSecret } : {}) });
     }
     const subject = input.pusher?.subject ?? null;
     const owner = subject ? deps.auto.principalForSubject(subject) : `org:${orgIds[0]}`;
     const kind = input.manifest?.kind ?? null;
     let project: Project;
     try {
-      project = deps.store.create({ repo, branch, kind: kind && (['nextjs', 'script', 'service', 'agent'] as const).includes(kind as 'script') ? (kind as Project['kind']) : null, entry: null, name: input.manifest?.name ?? undefined }, owner);
+      project = deps.store.create({ bindingReceipt: input.bindRequestId ? { clientId: who.clientId, requestId: input.bindRequestId } : undefined, repo, branch, kind: kind && (['nextjs', 'script', 'service', 'agent'] as const).includes(kind as 'script') ? (kind as Project['kind']) : null, entry: null, name: input.manifest?.name ?? undefined }, owner);
     } catch (e) {
       if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
       if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
@@ -539,7 +633,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const body = parsed.data;
     if (body.ref !== `refs/heads/${project.branch}`) return res.status(202).json({ ignored: true, reason: `this project deploys refs/heads/${project.branch}` });
     if (/^0+$/.test(body.after)) return res.status(202).json({ ignored: true, reason: 'branch deleted' });
-    const d = deps.store.createDeployment(project, body);
+    const deliveryId = body.deliveryId ?? createHash('sha256').update(raw).digest('hex');
+    const prior = deps.store.delivery(project.id, deliveryId);
+    if (prior) return res.status(202).json({ ...prior, duplicate: true });
+    const d = deps.store.createDeployment(project, { ...body, deliveryId });
     deps.worker.enqueue(d.id);
     deps.log?.('info', `project ${project.id}: push ${body.after.slice(0, 12)} by ${body.pusher?.subject ?? '?'} → deployment ${d.id}`);
     res.status(202).json({ deploymentId: d.id, status: d.status });
@@ -570,7 +667,11 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       const issue = parsed.error.issues[0];
       return refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
     }
-    if (ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
+    if (parsed.data.target !== 'commit' && ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
+    if (parsed.data.target !== 'commit' && parsed.data.sha) return refuse(res, 400, 'invalid_request', 'sha is only used for a commit run');
+    if (parsed.data.entry && parsed.data.entry.split('/').some((part) => part === '' || part === '.' || part === '..')) return refuse(res, 400, 'invalid_request', 'entry is a repository-relative file');
+    if (parsed.data.target === 'commit' && !parsed.data.sha) return refuse(res, 400, 'invalid_request', 'a commit run requires sha');
+    if (parsed.data.target === 'deployed' && !ctx.project.activeCommit) return refuse(res, 409, 'no_deployment', 'there is no successful deployment to run');
     const d = deps.store.createRun(ctx.project, parsed.data, actorOf(ctx.who));
     deps.log?.('info', `project ${ctx.project.id}: run ${d.id} (${d.entry ?? 'manifest entry'}) by ${ctx.who.subject}`);
     res.status(202).json({ runId: d.id, ...queued(d) });

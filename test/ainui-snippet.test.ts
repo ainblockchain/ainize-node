@@ -180,7 +180,7 @@ function checkSurface(s: AinuiSnippet): A2uiComponent[] {
   assert.equal(new Set(ids).size, ids.length, 'ids are unique');
   assert.ok(ids.includes('root'));
   for (const c of comps) {
-    assert.ok(['Column', 'Row', 'Card', 'Text', 'Divider', 'TextField', 'Button'].includes(c.component), `${c.id}: ${c.component} is in the shared vocabulary`);
+    assert.ok(['Column', 'Row', 'Card', 'Text', 'Divider', 'TextField', 'ChoicePicker', 'Button'].includes(c.component), `${c.id}: ${c.component} is in the shared vocabulary`);
     const refs = [...(Array.isArray(c.children) ? (c.children as string[]) : []), ...(typeof c.child === 'string' ? [c.child] : [])];
     for (const r of refs) assert.ok(ids.includes(r), `${c.id} → ${r} resolves`);
     if (c.component === 'Button') {
@@ -240,7 +240,7 @@ test('projectSnippet: header, three deployment rows, the Run form from the manif
   assert.match(comps.find((c) => c.id === 'deployments.1.text')!.text as string, /^● error {2}1111111 \(exit 2\) · /);
   assert.deepEqual(s.actions['open:visit:0'], { method: 'GET', url: `${NODE}/api/deployments/dep_0/output`, navigate: true });
   assert.equal(s.actions['open:visit:1'], undefined);
-  assert.deepEqual(s.actions.run, { method: 'POST', url: `${NODE}/api/projects/${p.id}/run`, body: { env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } });
+  assert.deepEqual(s.actions.run, { method: 'POST', url: `${NODE}/api/projects/${p.id}/run`, body: { target: 'deployed', env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } });
   assert.deepEqual(comps.find((c) => c.id === 'run.button')!.action, { event: { name: 'run', context: { INPUT_DESC: { path: '/inputs/DESC' } } } });
   assert.deepEqual(comps.find((c) => c.id === 'run.input.DESC'), { id: 'run.input.DESC', component: 'TextField', label: '묘사 *', value: { path: '/inputs/DESC' } });
   assert.deepEqual((s.surface[2] as { updateDataModel: { value: unknown } }).updateDataModel.value, { inputs: { DESC: 'a boat' }, run: { status: 'idle', output: '' } });
@@ -283,12 +283,14 @@ test('GET /api/ainui/snippet: the project page URL → the snippet for the viewe
     assert.equal(s.kind, 'ainize.project');
     assert.equal(s.title, 'Demo');
     assert.match(s.subtitle!, new RegExp(`^testorg/demo · main · ● ready ${sha1.slice(0, 7)}$`));
-    assert.equal(s.url, `${NODE}/testorg/demo`);
+    assert.equal(s.url, `${NODE}/testorg/demo?runTarget=commit&runSha=${sha1}`);
     const ids = comps.map((c) => c.id);
     for (const id of ['deployments.0', 'run.input.DESC', 'run.input.TOP_K', 'run.input.MODEL', 'run.button']) assert.ok(ids.includes(id), `${who}: ${id}`);
     assert.equal(comps.find((c) => c.id === 'run.input.MODEL')!.label, 'MODEL (clef-flash | clef)');
     assert.equal((s.surface[2] as { updateDataModel: { value: { inputs: unknown } } }).updateDataModel.value.inputs && (s.surface[2] as { updateDataModel: { value: { inputs: Record<string, string> } } }).updateDataModel.value.inputs.DESC, 'a boat at dusk');
     assert.equal(s.actions.run!.url, `${NODE}/api/projects/${p.id}/run`);
+    assert.deepEqual(s.actions.run!.method === 'POST' && s.actions.run.body, { target: 'commit', sha: sha1, env: { $context: true } });
+    assert.equal(comps.find((c) => c.id === 'run.input.MODEL')!.component, 'ChoicePicker');
     assert.equal('redeploy' in s.actions, who !== 'member actor', `${who}: redeploy is the owner's`);
   }
   // By id, and by path.
@@ -373,4 +375,79 @@ test('POST /api/projects/:id/redeploy: the owner (session or actor) queues the n
   const session = await request(app).post(`/api/projects/${projectId}/redeploy`).set('x-test-user', OWNER).send({});
   assert.equal(session.status, 202);
   await worker.idle();
+});
+
+test('streamed runs pin the selected source and deployed runs survive a newer failed deployment', async () => {
+  const work = join(tmp, 'work');
+  writeFileSync(join(work, 'main.py'), 'print("v2")\n');
+  await git(work, ['add', '.']);
+  await git(work, ['commit', '-qm', 'Second source']);
+  await git(work, ['push', '-q', 'origin', 'main']);
+  const second = (await git(work, ['rev-parse', 'HEAD'])).trim();
+  const p = store.get(projectId)!;
+  const failed = store.createDeployment(p, { ref: 'refs/heads/main', after: second });
+  store.updateDeployment(failed.id, { status: 'error', error: 'replacement failed' });
+  const invoke = async (body: Record<string, unknown>) => {
+    const res = await request(app).post(`/api/projects/${projectId}/run`).set(await asActor('acc_member')).send(body);
+    assert.equal(res.status, 200, res.text);
+    const record = store.deployment(res.headers['x-ainize-execution'])!;
+    assert.equal(record.status, 'ready');
+    assert.equal(record.pusher?.subject, 'acc_member');
+    return record;
+  };
+  const deployed = await invoke({ target: 'deployed', inputs: { MODEL: 'clef', DESC: 'a harbour' } });
+  assert.equal(deployed.sha, sha1);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v1")\n');
+  assert.equal(deployed.inputs?.MODEL, 'clef');
+  assert.equal(runs.at(-1)!.env.INPUT_MODEL, 'clef');
+  const head = await invoke({ target: 'head' });
+  assert.equal(head.sha, second);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v2")\n');
+  const commit = await invoke({ target: 'commit', sha: sha1 });
+  assert.equal(commit.sha, sha1);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v1")\n');
+  for (const [target, expected] of [['head', second], ['commit', sha1], ['deployed', sha1]]) {
+    const source = await request(app).get(`/api/projects/${projectId}/source`).query({ target, ...(target === 'commit' ? { sha: sha1 } : {}) }).set(await asActor('acc_member'));
+    assert.equal(source.status, 200, source.text);
+    assert.equal(source.body.sha, expected);
+    assert.equal(source.body.manifest.entry, 'main.py');
+    assert.equal(source.headers['cache-control'], 'private, no-store');
+  }
+  assert.equal(store.get(projectId)!.activeCommit, sha1, 'runs do not replace production');
+  assert.equal(store.get(projectId)!.lastDeploymentId, failed.id, 'runs do not hide failed deployment status');
+  for (const body of [{ target: 'commit' }, { target: 'head', sha: sha1 }, { entry: 'sub/../main.py' }]) {
+    assert.equal((await request(app).post(`/api/projects/${projectId}/run`).set(await asActor('acc_member')).send(body)).status, 400);
+  }
+});
+
+test('snippet source selection pins the form and replacement actions to the resolved Git commit', async () => {
+  const head = (await request(app).get(`/api/projects/${projectId}/source`).query({ target: 'head' }).set('x-test-user', OWNER)).body.sha;
+  for (const target of ['head', 'deployed', 'commit']) {
+    const expected = target === 'head' ? head : sha1;
+    const url = new URL(`${NODE}/testorg/demo`);
+    url.searchParams.set('runTarget', target);
+    if (target === 'commit') url.searchParams.set('runSha', sha1);
+    const res = await request(app).get('/api/ainui/snippet').query({ url: url.toString() }).set('x-test-user', OWNER);
+    assert.equal(res.status, 200, res.text);
+    const snippet = JSON.parse(res.text) as AinuiSnippet;
+    checkSurface(snippet);
+    const canonical = new URL(snippet.url);
+    assert.equal(canonical.searchParams.get('runTarget'), 'commit');
+    assert.equal(canonical.searchParams.get('runSha'), expected);
+    const run = snippet.actions.run;
+    assert.ok(run && run.method === 'POST');
+    assert.equal(run.body.sha, expected);
+    for (const choice of ['head', 'deployed']) {
+      const action = snippet.actions[`source.${choice}`];
+      assert.ok(action && action.method === 'GET' && action.navigate === false && action.replace);
+      assert.equal(new URL(action.url).searchParams.get('runTarget'), choice);
+      assert.equal(new URL(action.url).searchParams.has('runSha'), false);
+    }
+  }
+  for (const suffix of ['?runTarget=working-tree', '?runTarget=commit', '?runTarget=head&runSha=' + sha1]) {
+    const res = await request(app).get('/api/ainui/snippet').query({ url: `${NODE}/testorg/demo${suffix}` }).set('x-test-user', OWNER);
+    assert.equal(res.status, 400);
+  }
+  const missing = await request(app).get('/api/ainui/snippet').query({ url: `${NODE}/testorg/demo?runTarget=commit&runSha=${'f'.repeat(40)}` }).set('x-test-user', OWNER);
+  assert.equal(missing.status, 502, 'a missing commit never falls back to the deployed form');
 });

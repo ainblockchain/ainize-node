@@ -10,8 +10,8 @@
  * instead — so the merge commit is validated exactly as a push is, and a conflict is refused with the paths
  * that conflicted rather than a merge commit nobody reviewed.
  *
- * Branches, not forks: the proposer can already push a branch, and a fork across owners needs a second
- * repository and a cross-repository permission model that nothing here asks for yet.
+ * A reader can propose from a private repository fork. Its commit is imported and pinned when the proposal
+ * opens, so later pushes or deletion of the fork cannot silently change what reviewers will merge.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -27,6 +27,8 @@ export interface AgentPull {
   /** Branch names in the agent's own repository. */
   base: string;
   head: string;
+  headAgent?: string;
+  headCommit?: string;
   /** Who opened it, as an agent's `owner` field spells a principal. */
   author: string;
   state: AgentPullState;
@@ -36,6 +38,19 @@ export interface AgentPull {
   mergedAt?: number;
   mergedBy?: string;
   mergeCommit?: string;
+  comments?: AgentReviewComment[];
+}
+
+export interface AgentReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  commit?: string;
+  path?: string;
+  line?: number;
+  deletedAt?: number;
 }
 
 export class AgentPullStore {
@@ -58,7 +73,7 @@ export class AgentPullStore {
   }
 
   /** Numbers never repeat, even after a close: `#3` has to keep meaning one thing in a conversation. */
-  open(input: { agent: string; title: string; body: string; base: string; head: string; author: string }, now = Date.now()): AgentPull {
+  open(input: { agent: string; title: string; body: string; base: string; head: string; author: string; headAgent?: string; headCommit?: string }, now = Date.now()): AgentPull {
     const rows = this.pulls.get(input.agent) ?? [];
     const pull: AgentPull = {
       ...input,
@@ -81,6 +96,32 @@ export class AgentPullStore {
     this.pulls.set(agent, rows);
     this.save();
     return next;
+  }
+
+  addComment(agent: string, number: number, input: Omit<AgentReviewComment, 'id' | 'createdAt' | 'updatedAt'>, now = Date.now()): AgentReviewComment {
+    const pull = this.get(agent, number);
+    if (!pull) throw new Error('no pull request');
+    const comments = pull.comments ?? [];
+    const comment = { ...input, id: comments.reduce((n, row) => Math.max(n, row.id), 0) + 1, createdAt: now, updatedAt: now };
+    this.update(agent, number, { comments: [...comments, comment] }, now);
+    return comment;
+  }
+
+  updateComment(agent: string, number: number, id: number, patch: Pick<AgentReviewComment, 'body'> & { deletedAt?: number }, now = Date.now()): AgentReviewComment {
+    const pull = this.get(agent, number);
+    const comments = pull?.comments ?? [];
+    const comment = comments.find((row) => row.id === id);
+    if (!comment) throw new Error('no review comment');
+    const next = { ...comment, ...patch, updatedAt: now };
+    this.update(agent, number, { comments: comments.map((row) => row.id === id ? next : row) }, now);
+    return next;
+  }
+
+  restoreAgent(agent: string, records: AgentPull[]): void {
+    if (this.pulls.has(agent)) throw new Error('review records already exist for this agent');
+    if (records.some((pull) => pull.agent !== agent) || new Set(records.map((pull) => pull.number)).size !== records.length) throw new Error('invalid archived review records');
+    this.pulls.set(agent, structuredClone(records));
+    try { this.save(); } catch (error) { this.pulls.delete(agent); throw error; }
   }
 
   /** An agent that is gone takes its proposals with it. */

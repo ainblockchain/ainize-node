@@ -16,7 +16,8 @@
  * there is no other route out of the container anyway.
  */
 import express from 'express';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { hostedAgentGlobalFetch } from './hostedAgentContext.js';
 import { createHostedAgentRuntimeRouter } from './hostedAgentRuntimeApp.js';
 import type { HostedAgentModule, HostedAgentRuntimeSpec } from './hostedAgentRuntimeTypes.js';
@@ -71,6 +72,6 @@ async function main() {
   app.listen(8080, '0.0.0.0', () => log(`hosted agent v${spec.version} (${spec.mode}, ${spec.model}) on :8080`));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }

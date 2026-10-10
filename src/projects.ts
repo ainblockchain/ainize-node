@@ -26,13 +26,13 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, lstatSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
-import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
+import { deployProjectAgent, projectAgentId, type ProjectAgentDeps } from './project-agents.js';
 import type { ProjectContainers } from './project-containers.js';
 import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, INPUTS_MAX, INPUT_VALUE_MAX, type ProjectManifest, type ProjectManifestInput, type ProjectManifestKind, inputDefaults, inputEnvName } from './project-manifest.js';
 import type { RunSandbox } from './run-sandbox.js';
@@ -47,11 +47,16 @@ export type ProjectStatus = 'idle' | 'queued' | 'building' | 'ready' | 'error';
 export type DeploymentStatus = 'queued' | 'building' | 'ready' | 'error';
 
 export interface Project {
+  bindingReceipt?: { clientId: string; requestId: string };
   id: string;
   /** The account that created it — `AgentCaller.subject` (shared-agents.ts). */
   owner: string;
   /** The repo URL exactly as given, normalized (no trailing slash, no `.git`). */
   repo: string;
+  sourcePath?: string;
+  sourceCommit?: string | null;
+  activeCommit?: string | null;
+  activeDeploymentId?: string | null;
   org: string;
   repoName: string;
   branch: string;
@@ -71,6 +76,7 @@ export interface Deployment {
   id: string;
   projectId: string;
   sha: string;
+  deliveryId?: string;
   ref: string;
   status: DeploymentStatus;
   /** Who pushed, as aindrive reported it. */
@@ -93,6 +99,7 @@ export interface Deployment {
   trigger?: DeploymentTrigger;
   /** `run` only: the file to run instead of the manifest's entry, and the answers to its `inputs` / extra env. */
   entry?: string | null;
+  target?: RunInput['target'];
   inputs?: Record<string, string>;
   env?: Record<string, string>;
   /** The commit's subject line, read after the clone. */
@@ -120,6 +127,8 @@ export interface DeploymentManifest {
 
 /** `POST /api/projects/:id/runs` body. Inputs and env values travel as text (`INPUT_<NAME>`); ≤ 2 KiB each. */
 export const runInput = z.object({
+  sha: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+  target: z.enum(['head', 'commit', 'deployed']).default('head'),
   entry: z.string().regex(/^(?!\.\.?(\/|$))[^\0\n]{1,200}$/, 'a repository-relative file').optional(),
   inputs: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an input name'), z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()])).refine((r) => Object.keys(r).length <= INPUTS_MAX, `at most ${INPUTS_MAX} inputs`).optional(),
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name'), z.string().max(4096)).refine((e) => Object.keys(e).length <= 32, 'at most 32 env entries').optional(),
@@ -139,7 +148,7 @@ export interface RunRequest {
 }
 export type RunEvent = { event: 'stdout' | 'stderr' | 'error'; data: string } | { event: 'exit'; data: { code: number; ms: number } };
 /** Run one script; every event the sandbox emits goes to `onEvent`, `exit` last. */
-export type RunScript = (req: RunRequest, onEvent: (ev: RunEvent) => void) => Promise<void>;
+export type RunScript = (req: RunRequest, onEvent: (ev: RunEvent) => void, signal?: AbortSignal) => Promise<void>;
 
 // The same caps as /api/run — refused here so a repo over them fails with a reason, not a 413 from the sandbox.
 export const PROJECT_MAX_FILES = 32;
@@ -182,6 +191,7 @@ export function parseRepoUrl(input: string): RepoRef | null {
 
 export const projectInput = z.object({
   repo: z.string().min(1).max(1024),
+  sourcePath: z.string().max(200).regex(/^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*)(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/).optional(),
   branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).default(PROJECT_DEFAULT_BRANCH),
   /** A hint for the project row; the deployed kind is always the repository's ainize.json. */
   kind: z.enum(PROJECT_KINDS).optional(),
@@ -192,6 +202,7 @@ export const projectInput = z.object({
 export type ProjectInput = z.infer<typeof projectInput>;
 
 export const hookBody = z.object({
+  deliveryId: z.string().regex(/^[A-Za-z0-9._:-]{1,150}$/).optional(),
   ref: z.string().min(1).max(300),
   before: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
   after: z.string().regex(/^[0-9a-f]{40,64}$/),
@@ -230,12 +241,19 @@ export const PROJECT_DEFAULT_LIMITS: ProjectStoreLimits = { perOwner: 20, total:
 export class ProjectStore {
   private readonly projects = new Map<string, Project>();
   private readonly deployments = new Map<string, Deployment>();
+  private readonly deliveries = new Map<string, { deploymentId: string; status: DeploymentStatus }>();
 
   constructor(private readonly file: string, private readonly limits: ProjectStoreLimits = PROJECT_DEFAULT_LIMITS) {
     if (existsSync(file)) {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { projects?: Project[]; deployments?: Deployment[] };
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { projects?: Project[]; deployments?: Deployment[]; deliveries?: [string, { deploymentId: string; status: DeploymentStatus }][] };
       for (const p of parsed.projects ?? []) if (p?.id) this.projects.set(p.id, p);
       for (const d of parsed.deployments ?? []) if (d?.id) this.deployments.set(d.id, d);
+      for (const [key, receipt] of parsed.deliveries ?? []) this.deliveries.set(key, receipt);
+      for (const p of this.projects.values()) {
+        const ready = this.deploymentsOf(p.id).find((d) => d.status === 'ready');
+        const latest = p.lastDeploymentId ? this.deployment(p.lastDeploymentId) : null;
+        this.projects.set(p.id, { ...p, sourceCommit: p.sourceCommit ?? latest?.sha ?? null, activeCommit: p.activeCommit ?? ready?.sha ?? null, activeDeploymentId: p.activeDeploymentId ?? ready?.id ?? null });
+      }
     }
   }
 
@@ -260,13 +278,15 @@ export class ProjectStore {
     return this.list().filter((p) => p.org.toLowerCase() === o);
   }
 
-  create(input: { repo: RepoRef; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
+  create(input: { bindingReceipt?: Project['bindingReceipt']; repo: RepoRef; sourcePath?: string; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
     if (this.list().some((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
     if (this.listByOwner(owner).length >= this.limits.perOwner) throw new ProjectLimitError(`an account may have ${this.limits.perOwner} projects on this node`);
     if (this.projects.size >= this.limits.total) throw new ProjectLimitError(`this node holds its maximum of ${this.limits.total} projects`);
     const project: Project = {
       id: `prj_${randomBytes(8).toString('hex')}`, owner, repo: input.repo.url, org: input.repo.org, repoName: input.repo.repoName,
       branch: input.branch, kind: input.kind, entry: input.entry, name: input.name ?? input.repo.repoName,
+      bindingReceipt: input.bindingReceipt,
+      sourcePath: input.sourcePath ?? '', sourceCommit: null, activeCommit: null, activeDeploymentId: null,
       status: 'idle', lastDeploymentId: null, createdAt: now, updatedAt: now,
     };
     this.projects.set(project.id, project);
@@ -278,10 +298,17 @@ export class ProjectStore {
     const had = this.projects.delete(id);
     if (!had) return false;
     for (const d of [...this.deployments.values()]) if (d.projectId === id) this.deployments.delete(d.id);
+    for (const key of this.deliveries.keys()) if (key.startsWith(`${id}:`)) this.deliveries.delete(key);
     this.save();
     return true;
   }
 
+  delivery(projectId: string, deliveryId: string): { deploymentId: string; status: DeploymentStatus } | null {
+    return this.deliveries.get(`${projectId}:${deliveryId}`) ?? null;
+  }
+  forAgent(id: string): Project | null {
+    return this.list().find((p) => p.kind === 'agent' && projectAgentId(p.org, p.repoName) === id) ?? null;
+  }
   deployment(id: string): Deployment | null { return this.deployments.get(id) ?? null; }
   /** Deployments (pushes and redeploys) of a project, newest first — ad-hoc runs are `runsOf`. */
   deploymentsOf(projectId: string): Deployment[] {
@@ -296,13 +323,16 @@ export class ProjectStore {
   }
 
   createDeployment(project: Project, body: HookBody, now = Date.now(), trigger: Exclude<DeploymentTrigger, 'run'> = 'push'): Deployment {
+    project = this.get(project.id) ?? project;
     const d: Deployment = {
       id: `dep_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: body.after, ref: body.ref, status: 'queued',
+      ...(body.deliveryId ? { deliveryId: body.deliveryId } : {}),
       pusher: body.pusher ?? null, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null,
       ...(trigger === 'push' ? {} : { trigger }),
     };
     this.deployments.set(d.id, d);
-    this.projects.set(project.id, { ...project, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    this.projects.set(project.id, { ...project, sourceCommit: d.sha, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    if (d.deliveryId) this.deliveries.set(`${project.id}:${d.deliveryId}`, { deploymentId: d.id, status: d.status });
     this.save();
     return d;
   }
@@ -320,9 +350,9 @@ export class ProjectStore {
     const inputs: Record<string, string> = {};
     for (const [k, v] of Object.entries(input.inputs ?? {})) inputs[k] = String(v);
     const d: Deployment = {
-      id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: '', ref: `refs/heads/${project.branch}`, status: 'queued',
+      id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: input.target === 'deployed' ? project.activeCommit ?? '' : input.sha ?? '', ref: `refs/heads/${project.branch}`, status: 'queued',
       pusher: actor, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null, trigger: 'run',
-      entry: input.entry ?? null, inputs, env: input.env ?? {},
+      target: input.target, entry: input.entry ?? null, inputs, env: input.env ?? {},
     };
     this.deployments.set(d.id, d);
     this.save();
@@ -334,16 +364,21 @@ export class ProjectStore {
     if (!prior) return null;
     const next = { ...prior, ...fields };
     this.deployments.set(id, next);
+    if (next.deliveryId) this.deliveries.set(`${next.projectId}:${next.deliveryId}`, { deploymentId: id, status: next.status });
     const project = this.projects.get(prior.projectId);
     // The project's status is its newest deployment's: an older one finishing must not overwrite a newer one's state.
     if (project && project.lastDeploymentId === id && (fields.status || fields.kind)) this.projects.set(project.id, { ...project, ...(fields.status ? { status: fields.status } : {}), ...(fields.kind ? { kind: fields.kind } : {}), updatedAt: now });
+    if (project && next.trigger !== 'run' && fields.status === 'ready') {
+      const current = this.projects.get(project.id)!;
+      this.projects.set(project.id, { ...current, activeCommit: next.sha, activeDeploymentId: next.id, updatedAt: now });
+    }
     this.save();
     return next;
   }
 
   /** Drop the deployments beyond the newest `keep` of a project; returns the ids that went (for their logs). */
   prune(projectId: string, keep: number): string[] {
-    const over = (list: Deployment[]) => list.slice(keep).filter((d) => d.status === 'ready' || d.status === 'error');
+    const over = (list: Deployment[]) => list.slice(keep).filter((d) => (d.status === 'ready' || d.status === 'error') && d.id !== this.get(projectId)?.activeDeploymentId);
     const gone = [...over(this.deploymentsOf(projectId)), ...over(this.runsOf(projectId))];
     for (const d of gone) this.deployments.delete(d.id);
     if (gone.length) this.save();
@@ -353,7 +388,7 @@ export class ProjectStore {
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ projects: this.list(), deployments: [...this.deployments.values()] }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ projects: this.list(), deployments: [...this.deployments.values()], deliveries: [...this.deliveries.entries()] }), { mode: 0o600 });
     renameSync(tmp, this.file);
   }
 }
@@ -424,6 +459,7 @@ export class ProjectWorker extends EventEmitter {
   private readonly maxConcurrent: number;
   private readonly retain: number;
   private stopped = false;
+  private readonly streamed = new Map<string, { start: () => Promise<void>; cancel: (reason: Error) => void }>();
 
   constructor(private readonly deps: ProjectWorkerDeps) {
     super();
@@ -437,6 +473,9 @@ export class ProjectWorker extends EventEmitter {
    */
   recover(): void {
     for (const p of this.deps.store.list()) {
+      for (const run of this.deps.store.runsOf(p.id)) {
+        if (run.status === 'queued' || run.status === 'building') this.deps.store.updateDeployment(run.id, { status: 'error', error: 'node restarted before the streamed run completed', finishedAt: Date.now() });
+      }
       const all = this.deps.store.deploymentsOf(p.id);
       for (const d of [...all].reverse()) {
         if (d.status === 'queued' || d.status === 'building') {
@@ -444,7 +483,7 @@ export class ProjectWorker extends EventEmitter {
           this.enqueue(d.id);
         }
       }
-      const last = all[0];
+      const last = p.activeDeploymentId ? this.deps.store.deployment(p.activeDeploymentId) : all.find((d) => d.status === 'ready');
       if (last && last.status === 'ready' && (last.kind === 'service' || last.kind === 'nextjs') && this.deps.containers && !this.deps.containers.current(p.id)) {
         this.deps.store.updateDeployment(last.id, { status: 'queued', startedAt: null, finishedAt: null, ms: null, error: null });
         this.deps.logs.append(last.id, `[ainize] node restarted — deploying ${last.sha.slice(0, 12)} again\n`);
@@ -462,10 +501,45 @@ export class ProjectWorker extends EventEmitter {
     this.pump();
   }
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    for (const job of this.streamed.values()) job.cancel(new Error('project worker stopped'));
+  }
+
+  /** Hold the same FIFO/concurrency slot as deployments until the caller finishes its streamed run. */
+  acquireRunSlot(id: string, signal: AbortSignal): Promise<() => void> {
+    const record = this.deps.store.deployment(id);
+    if (!record || record.trigger !== 'run') return Promise.reject(new Error('unknown streamed run'));
+    if (this.stopped) return Promise.reject(new Error('project worker stopped'));
+    if (this.streamed.has(id)) return Promise.reject(new Error('run is already queued'));
+    if (signal.aborted) return Promise.reject(signal.reason ?? new Error('run cancelled'));
+    return new Promise((resolve, reject) => {
+      let started = false;
+      const cancel = (reason: Error) => {
+        if (started) return;
+        this.streamed.delete(id);
+        const q = this.perProject.get(record.projectId);
+        if (q) { const index = q.indexOf(id); if (index >= 0) q.splice(index, 1); }
+        signal.removeEventListener('abort', onAbort);
+        reject(reason);
+      };
+      const onAbort = () => cancel(signal.reason ?? new Error('run cancelled'));
+      this.streamed.set(id, {
+        cancel,
+        start: () => new Promise<void>((release) => {
+          started = true;
+          signal.removeEventListener('abort', onAbort);
+          let released = false;
+          resolve(() => { if (released) return; released = true; this.streamed.delete(id); release(); });
+        }),
+      });
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.enqueue(id);
+    });
+  }
 
   /** The `RunScript` this worker deploys scripts with, for a run pressed from a link snippet (project-routes.ts). */
-  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void): Promise<void> { return this.deps.run(req, onEvent); }
+  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void, signal?: AbortSignal): Promise<void> { return this.deps.run(req, onEvent, signal); }
 
   /** Resolves when nothing is queued or building (tests). */
   idle(): Promise<void> {
@@ -493,7 +567,7 @@ export class ProjectWorker extends EventEmitter {
       if (!q.length || this.active.has(projectId)) continue;
       const id = q.shift()!;
       this.active.add(projectId);
-      void this.build(id).catch((e) => this.deps.log?.('error', `project ${projectId}: deployment ${id} crashed: ${(e as Error).message}`)).finally(() => {
+      void (this.streamed.get(id)?.start() ?? this.build(id)).catch((e) => this.deps.log?.('error', `project ${projectId}: deployment ${id} crashed: ${(e as Error).message}`)).finally(() => {
         this.active.delete(projectId);
         if (!q.length) this.perProject.delete(projectId);
         this.emit('done', id);
@@ -530,7 +604,7 @@ export class ProjectWorker extends EventEmitter {
       store.updateDeployment(d.id, { sha, subject });
       if (isRun) say(`[ainize] at ${sha.slice(0, 12)}${subject ? ` — ${subject}` : ''}`);
       let manifest: ProjectManifest;
-      try { manifest = resolveProjectManifest(work, { entry: d.entry ?? project.entry }); }
+      try { manifest = resolveProjectManifest(projectRoot(work, project.sourcePath), { entry: d.entry ?? project.entry }); }
       catch (e) {
         const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
         say(`[ainize] error: ${message}`);
@@ -543,7 +617,7 @@ export class ProjectWorker extends EventEmitter {
         ...(manifest.name ? { name: manifest.name } : {}), ...(manifest.entry ? { entry: manifest.entry } : {}),
         ...(manifest.runtime ? { runtime: manifest.runtime } : {}), ...(manifest.timeoutMs ? { timeoutMs: manifest.timeoutMs } : {}),
       };
-      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(work) });
+      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(projectRoot(work, project.sourcePath)) });
       say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
       const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
       const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha };
@@ -555,7 +629,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
         if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
-        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, work, manifest, env, say, this.actorKey(d, say));
+        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, projectRoot(work, project.sourcePath), manifest, env, say, this.actorKey(d, say));
         const outputUrl = `${publicUrl}/svc/${project.id}/`;
         say(`[ainize] ready at ${outputUrl}`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -564,7 +638,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'agent') {
         if (!this.deps.agents) { say('[ainize] error: this node hosts no agents'); finish({ status: 'error', error: 'this node hosts no agents' }); return; }
-        const spec = await deployProjectAgent(this.deps.agents, project, work, manifest, say);
+        const spec = await deployProjectAgent(this.deps.agents, project, projectRoot(work, project.sourcePath), manifest, say, sha);
         const outputUrl = `${publicUrl}/agents/${spec.id}`;
         say(`[ainize] ready at ${outputUrl} (A2A, v${spec.version})`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -575,7 +649,7 @@ export class ProjectWorker extends EventEmitter {
       const language = manifest.runtime === 'python3.11' && !d.entry ? 'python' : manifest.runtime === 'node20' && !d.entry ? 'node' : languageOf(entry);
       if (!language) { say(`[ainize] error: no runtime for "${entry}"`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file and ainize.json names no runtime` }); return; }
       let files: Record<string, string>;
-      try { files = readTree(work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
+      try { files = readTree(projectRoot(work, project.sourcePath)); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
       if (!(entry in files)) { say(`[ainize] error: entry "${entry}" is not in the repository`); finish({ status: 'error', error: `entry "${entry}" not found` }); return; }
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;
@@ -620,8 +694,8 @@ export class ProjectWorker extends EventEmitter {
    * link snippet (`POST /api/projects/:id/run`, project-routes.ts), which executes the deployed commit again with
    * a person's answers. The caller owns `dir` and removes it.
    */
-  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
-    await this.clone(project, sha, dir, say);
+  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<string> {
+    return this.clone(project, sha, dir, say);
   }
 
   /** Returns the commit the tree is at — `sha`, or the branch tip when `sha` is empty (an ad-hoc run of HEAD). */
@@ -660,6 +734,16 @@ export class ProjectWorker extends EventEmitter {
   }
 }
 
+/** A configured source folder must remain inside its checked-out repository, including after resolving symlinks. */
+export function projectRoot(work: string, sourcePath?: string): string {
+  const checkout = realpathSync(work);
+  const root = realpathSync(sourcePath ? join(checkout, sourcePath) : checkout);
+  const rel = relative(checkout, root);
+  if (rel === '..' || rel.startsWith('../') || rel.startsWith('..\\')) throw new Error('sourcePath escapes the repository');
+  if (!statSync(root).isDirectory()) throw new Error('sourcePath is not a directory');
+  return root;
+}
+
 /** The repository's runnable files (what the Run panel offers as `entry`), `main.*`/`index.*` first, ≤ 64. */
 export function runnableFiles(root: string): string[] {
   const out: string[] = [];
@@ -668,7 +752,7 @@ export function runnableFiles(root: string): string[] {
     for (const name of readdirSync(dir).sort()) {
       if (name === '.git' || name === 'node_modules' || name.startsWith('.')) continue;
       const full = join(dir, name);
-      let st; try { st = statSync(full); } catch { continue; }
+      let st; try { st = lstatSync(full); } catch { continue; }
       if (st.isDirectory()) { walk(full, depth + 1); continue; }
       if (st.isFile() && languageOf(name) && out.length < 64) out.push(relative(root, full).split('\\').join('/'));
     }
@@ -686,7 +770,8 @@ export function readTree(root: string): Record<string, string> {
     for (const name of readdirSync(dir).sort()) {
       if (name === '.git') continue;
       const full = join(dir, name);
-      const st = statSync(full);
+      const st = lstatSync(full);
+      if (st.isSymbolicLink()) throw new Error(`repository symlinks cannot be run: ${relative(root, full)}`);
       if (st.isDirectory()) { walk(full); continue; }
       if (!st.isFile()) continue;
       if (Object.keys(files).length >= PROJECT_MAX_FILES) throw new Error(`the repository has more than ${PROJECT_MAX_FILES} files; a script project runs a tree of at most ${PROJECT_MAX_FILES}`);
@@ -703,13 +788,13 @@ export function readTree(root: string): Record<string, string> {
 
 /** The run sandbox in this process (run-sandbox.ts) as a `RunScript` — what server.ts wires when Docker is on. */
 export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId = 'project'): RunScript {
-  return async (req, onEvent) => {
+  return async (req, onEvent, signal) => {
     try {
       const { apiKey, ...rest } = req;
       const outcome = await sandbox.run({ ...rest, bytes: Object.values(req.files).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0) }, { id: `project:${callerId}`, keyed: true, ...(apiKey ? { key: apiKey } : {}) }, {
         stdout: (chunk) => onEvent({ event: 'stdout', data: chunk }),
         stderr: (chunk) => onEvent({ event: 'stderr', data: chunk }),
-      });
+      }, signal);
       if (outcome.error) onEvent({ event: 'error', data: outcome.error });
       onEvent({ event: 'exit', data: { code: outcome.code, ms: outcome.ms } });
     } catch (e) {
@@ -725,11 +810,11 @@ export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId =
  * API is another module's (deploy/run-runtime/README.md) and this is its contract, not its code.
  */
 export function runScriptOverHttp(base: () => string, headers: () => Record<string, string> = () => ({})): RunScript {
-  return async (req, onEvent) => {
+  return async (req, onEvent, signal) => {
     // Over HTTP the key is the caller's bearer, never a body field: the pusher's key rides as `authorization`.
     const { apiKey, ...body } = req;
     const res = await fetch(`${base().replace(/\/+$/, '')}/api/run`, {
-      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers(), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers(), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify(body), signal,
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');

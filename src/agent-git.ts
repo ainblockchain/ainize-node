@@ -19,6 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { lstat, readdir } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { hostedAgentSpecInput, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
@@ -60,6 +61,7 @@ export const AGENT_GIT_FILES_DIR = 'files';
 export const AGENT_GIT_RESERVED_FIELDS = ['id', 'owner', 'version', 'createdAt', 'updatedAt', 'popJwk', 'updatedBy'] as const;
 
 export class AgentGitError extends Error {}
+export class AgentGitStorageLimitError extends AgentGitError {}
 
 export interface AgentCommit {
   sha: string;
@@ -104,7 +106,52 @@ export interface AgentGitQuarantine {
 export const AGENT_GIT_QUARANTINE_VARS = ['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_QUARANTINE_PATH'] as const;
 
 export class AgentGit {
-  constructor(private readonly repoRoot: string) {}
+  constructor(private readonly repoRoot: string, readonly storageLimitBytes = 256 * 1024 * 1024) {
+    if (!Number.isSafeInteger(storageLimitBytes) || storageLimitBytes < 1) throw new AgentGitError('invalid repository storage limit');
+  }
+
+  async repositoryIds(): Promise<string[]> {
+    if (!existsSync(this.repoRoot)) return [];
+    return (await readdir(this.repoRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-z0-9][a-z0-9-]{0,39}\.git$/.test(entry.name)).map((entry) => entry.name.slice(0, -4));
+  }
+
+  /** Physical Git objects, including the incoming pack before any ref may move. */
+  async storageBytes(id: string, quarantine?: AgentGitQuarantine): Promise<number> {
+    const size = async (path: string): Promise<number> => {
+      const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (!stat) return 0;
+      if (stat.isSymbolicLink()) throw new AgentGitError('repository objects must not be symlinks');
+      if (!stat.isDirectory()) return stat.size;
+      let bytes = 0;
+      for (const entry of await readdir(path)) bytes += await size(join(path, entry));
+      return bytes;
+    };
+    let bytes = await size(join(this.dir(id), 'objects'));
+    const incoming = quarantine?.GIT_OBJECT_DIRECTORY;
+    if (incoming && !incoming.startsWith(join(this.dir(id), 'objects') + '/')) bytes += await size(incoming);
+    return bytes;
+  }
+
+  async assertStorageLimit(id: string, quarantine?: AgentGitQuarantine): Promise<void> {
+    const bytes = await this.storageBytes(id, quarantine);
+    if (bytes > this.storageLimitBytes) throw new AgentGitStorageLimitError(`repository storage limit exceeded (${bytes} > ${this.storageLimitBytes} bytes); export history or ask the operator to raise the limit`);
+  }
+
+  /** Caller holds the repository queue. Retained runtime commits stay reachable through private refs. */
+  async maintain(id: string, commits: string[] = []): Promise<void> {
+    if (!this.exists(id)) return;
+    await this.git(id, ['config', 'gc.auto', '0']);
+    await this.git(id, ['config', 'receive.autogc', 'false']);
+    for (const commit of new Set(commits)) {
+      if (!/^[a-f0-9]{40,64}$/.test(commit)) continue;
+      try { await this.resolve(id, commit); } catch { continue; }
+      await this.git(id, ['update-ref', `refs/runtime-retained/${commit}`, commit]);
+    }
+    const wanted = new Set(commits);
+    const refs = (await this.git(id, ['for-each-ref', '--format=%(refname)', 'refs/runtime-retained/'])).trim().split('\n').filter(Boolean);
+    for (const ref of refs) if (!wanted.has(ref.split('/').at(-1)!)) await this.git(id, ['update-ref', '-d', ref]);
+    await this.git(id, ['gc', '--prune=2.weeks.ago']);
+  }
 
   /** Where the repositories live — `git http-backend` is scoped to it (GIT_PROJECT_ROOT). */
   get root(): string {
@@ -128,7 +175,7 @@ export class AgentGit {
    */
   private async git(id: string, args: string[], opts: { cwd?: string; quarantine?: AgentGitQuarantine } = {}): Promise<string> {
     try {
-      const { stdout } = await run('git', ['--git-dir', this.dir(id), ...args], {
+      const { stdout } = await run('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '--git-dir', this.dir(id), ...args], {
         maxBuffer: 32 * 1024 * 1024,
         encoding: 'utf8',
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
@@ -148,6 +195,21 @@ export class AgentGit {
     await run('git', ['init', '--bare', `--initial-branch=${AGENT_GIT_DEFAULT_BRANCH}`, this.dir(id)], { encoding: 'utf8' });
     // A bare repo refuses `receive-pack` into the checked-out branch unless it is told it has no working tree.
     await this.git(id, ['config', 'core.logAllRefUpdates', 'true']);
+  }
+
+  /** An independent object store: deleting or collecting the source cannot break the fork. */
+  async fork(source: string, id: string, commit: string): Promise<void> {
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    await run('git', ['clone', '--bare', '--no-hardlinks', this.dir(source), this.dir(id)], { encoding: 'utf8' });
+    try { await this.setRef(id, AGENT_GIT_DEFAULT_BRANCH, commit); }
+    catch (error) { await this.deleteRepo(id); throw error; }
+  }
+
+  /** Import only the commit explicitly proposed by an authorized fork owner, retained under an internal ref. */
+  async importProposal(id: string, source: string, commit: string, ref: string): Promise<void> {
+    await this.git(id, ['fetch', '--no-tags', '--', this.dir(source), commit]);
+    await this.assertStorageLimit(id);
+    await this.git(id, ['update-ref', `refs/pull-proposals/${ref}`, commit]);
   }
 
   async hasCommits(id: string): Promise<boolean> {
@@ -190,6 +252,7 @@ export class AgentGit {
       },
     });
     const commit = stdout.trim();
+    await this.assertStorageLimit(id);
     await this.git(id, ['update-ref', `refs/heads/${AGENT_GIT_DEFAULT_BRANCH}`, commit]);
     return commit;
   }
@@ -228,7 +291,7 @@ export class AgentGit {
    * definition of what an agent is and a tree cannot be valid here and invalid there. Reserved fields are a
    * refusal, not a silent drop (see AGENT_GIT_RESERVED_FIELDS).
    */
-  async readSpec(id: string, ref: string, quarantine?: AgentGitQuarantine): Promise<AgentTreeRead> {
+  async readSpec(id: string, ref: string, quarantine?: AgentGitQuarantine, sourcePath = ''): Promise<AgentTreeRead> {
     let commit: string;
     try {
       commit = await this.resolve(id, ref, quarantine);
@@ -240,7 +303,10 @@ export class AgentGit {
         ? `this agent's repository has no commits yet — push one to ${AGENT_GIT_DEFAULT_BRANCH}`
         : `no such ref "${ref}" in this agent's repository (${(e as Error).message})`);
     }
-    const raw = await this.show(id, commit, AGENT_GIT_SPEC_FILE, quarantine);
+    sourcePath = sourcePath.replace(/^\/+|\/+$/g, '');
+    if (sourcePath && (!/^[A-Za-z0-9_.\/-]+$/.test(sourcePath) || sourcePath.split('/').some((part) => !part || part === '.' || part === '..'))) throw new AgentGitError('invalid agent source path');
+    const prefix = sourcePath ? `${sourcePath}/` : '';
+    const raw = await this.show(id, commit, prefix + AGENT_GIT_SPEC_FILE, quarantine);
     if (raw === null) throw new AgentGitError(`${AGENT_GIT_SPEC_FILE} is missing — an agent's repository has one at its root`);
     let json: Record<string, unknown>;
     try {
@@ -255,11 +321,11 @@ export class AgentGit {
         `An agent's id is its public address and cannot be changed by editing a file.`,
       );
     }
-    const prompt = await this.show(id, commit, AGENT_GIT_PROMPT_FILE, quarantine);
+    const prompt = await this.show(id, commit, prefix + AGENT_GIT_PROMPT_FILE, quarantine);
     const files: Record<string, string> = {};
     for (const path of await this.lsFiles(id, commit, quarantine)) {
-      if (!path.startsWith(`${AGENT_GIT_FILES_DIR}/`)) continue;
-      files[path.slice(AGENT_GIT_FILES_DIR.length + 1)] = (await this.show(id, commit, path, quarantine)) ?? '';
+      if (!path.startsWith(`${prefix}${AGENT_GIT_FILES_DIR}/`)) continue;
+      files[path.slice(prefix.length + AGENT_GIT_FILES_DIR.length + 1)] = (await this.show(id, commit, path, quarantine)) ?? '';
     }
     const parsed = hostedAgentSpecInput.safeParse({ ...json, id, systemPrompt: prompt ?? '', files });
     if (!parsed.success) {
@@ -378,6 +444,7 @@ export class AgentGit {
 
   /** Move a branch to a commit — the last step of a merge, after the result has been validated. */
   async setRef(id: string, branch: string, commit: string): Promise<void> {
+    await this.assertStorageLimit(id);
     await this.git(id, ['update-ref', `refs/heads/${branch}`, commit]);
   }
 
@@ -407,6 +474,60 @@ export class AgentGit {
   async deleteRepo(id: string): Promise<void> {
     const { rm } = await import('node:fs/promises');
     await rm(this.dir(id), { recursive: true, force: true });
+  }
+
+  /** A self-contained copy of every retained ref, suitable for ordinary `git clone`. */
+  async exportBundle(id: string, path: string): Promise<void> {
+    await this.git(id, ['bundle', 'create', path, '--all']);
+    await this.git(id, ['bundle', 'verify', path]);
+    const { chmod } = await import('node:fs/promises');
+    await chmod(path, 0o600);
+  }
+
+  /** Shallow boundaries are repository metadata, which ordinary bundles cannot carry. */
+  isShallow(id: string): boolean { return existsSync(join(this.dir(id), 'shallow')); }
+
+  async exportBareArchive(id: string, path: string): Promise<void> {
+    if (existsSync(join(this.dir(id), 'objects/info/alternates'))) throw new AgentGitError('a self-contained archive cannot depend on an external object store');
+    const files = ['HEAD', 'objects', 'refs', ...['packed-refs', 'shallow'].filter((file) => existsSync(join(this.dir(id), file)))];
+    // Configuration and hooks are omitted: restoration initializes trusted configuration and reinstalls hooks.
+    await run('tar', ['-czf', path, '-C', this.dir(id), ...files], { encoding: 'utf8' });
+    const { chmod } = await import('node:fs/promises');
+    await chmod(path, 0o600);
+  }
+
+  async restoreBareArchive(id: string, path: string): Promise<void> {
+    const { mkdtemp, rename, rm } = await import('node:fs/promises');
+    mkdirSync(this.repoRoot, { recursive: true });
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    const temporary = await mkdtemp(join(this.repoRoot, '.restore-'));
+    const repo = join(temporary, 'repository.git');
+    try {
+      await run('git', ['init', '--bare', '--initial-branch=main', repo], { encoding: 'utf8' });
+      await run('tar', ['-xzf', path, '-C', repo], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'fsck', '--full'], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'config', 'core.logAllRefUpdates', 'true'], { encoding: 'utf8' });
+      if (this.exists(id)) throw new AgentGitError('repository id already exists');
+      await rename(repo, this.dir(id));
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  }
+
+  /** Restore through a temporary bare clone; never overwrite an existing agent. */
+  async restoreBundle(id: string, path: string): Promise<void> {
+    const { mkdtemp, rename, rm } = await import('node:fs/promises');
+    mkdirSync(this.repoRoot, { recursive: true });
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    const temporary = await mkdtemp(join(this.repoRoot, '.restore-'));
+    const repo = join(temporary, 'repository.git');
+    try {
+      await run('git', ['clone', '--mirror', '--', path, repo], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'fsck', '--full'], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'config', 'core.logAllRefUpdates', 'true'], { encoding: 'utf8' });
+      // A local archive is not an upstream and must not become a credential-bearing remote.
+      await run('git', ['--git-dir', repo, 'remote', 'remove', 'origin'], { encoding: 'utf8' });
+      if (this.exists(id)) throw new AgentGitError('repository id already exists');
+      await rename(repo, this.dir(id));
+    } finally { await rm(temporary, { recursive: true, force: true }); }
   }
 }
 
