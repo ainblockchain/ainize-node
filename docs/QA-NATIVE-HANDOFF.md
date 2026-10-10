@@ -695,3 +695,19 @@ Ainmem PR #76 head `b716271`은 QA token을 쓸 때 현재 Ainize 조직 목록�
 이 변경 이후 전체 Chromium UI 시나리오는 아직 재실행하지 않았다.
 다음은 새 registry/권한 경로를 포함한 브라우저 확인, 통합 배포 승인 mirror 갱신,
 실제 관리자 등록/23개 page 권한/토큰 전달, 단일 작업기 전환과 전 제품 E2E다.
+
+## 새 registry 경로를 포함한 브라우저 검증 완료 — 2026-10-11
+
+Ainmem PR #76 head `a52a073`은 runtime `b716271`에 테스트 캡처 보강과 증거 문서만
+추가한다. 실제 서버 production build/PostgreSQL/loopback registry와 Mac Chromium으로
+데스크톱·모바일 칸반 카드, 카드 열기, 작업 본문, 같은 page ID 재시도·갱신,
+검토 SHA 표시, 배포 승인→완료 열 이동을 확인했다. 첫 mobile screenshot이 로딩
+placeholder였으므로 카드 자체 visible 확인을 추가해 전체를 다시 통과했다.
+캡처를 직접 검토했고 증거를 `native-ainmem-registry-ui-51dggdi4/results/`에 저장했다.
+테스트 Next/registry/DB/포워드 종료 및 임시 token/session fixture 삭제를 확인했다.
+
+실제 사용자 관리자 등록 API/SSO 세션과 운영 채널 전체 E2E는 아직 미검증이다.
+배포는 승인되지 않았고 실행하지 않았다. 운영 등록을 막는 registry orgRef 응답 수정은
+PR #70의 큰 네이티브 QA 변경과 함께 들어 있다. 이를 현재 main 기준의 작은 별도 PR로
+분리해 검증·승인받으면, 전체 native runtime 전환 전에 Ainmem 등록 경로를 검증할 수 있다.
+이후 원본 23개 페이지 권한 및 승인 mirror를 연결하고 단일 작업기 전환을 진행해야 한다.
