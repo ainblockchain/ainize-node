@@ -42,10 +42,6 @@ export function parseConfig(raw) {
   return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit };
 }
 
-/** A stable key folds in the pinned base SHA: a new base is a new job, and an old approval cannot ride along. */
-const requestKey = (config, verified) =>
-  `${config.service}:${config.workspaceId}:${config.channelId}:${verified.parentId}:${verified.messageId}:${config.baseCommit}`;
-
 /**
  * Build a handler. Dependencies are injectable so the composition can be tested without a live
  * Teams node, a real repository, or the production model; production uses the defaults.
@@ -94,7 +90,7 @@ export function createHandler({
     }
     const jobs = new JobsClass(jobsFile);
     try {
-      const job = jobs.enqueue(requestKey(config, verified), {
+      const job = jobs.enqueueTeamsRequest({
         service: config.service, repository: config.repository, base: config.baseCommit,
         text: verified.text,
         teams: { workspaceId: verified.workspaceId, channelId: verified.channelId, messageId: verified.messageId, parentId: verified.parentId },

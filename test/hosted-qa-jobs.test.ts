@@ -54,3 +54,24 @@ test('renewed lease stays exclusive and invalid, oversized, or over-capacity inp
   assert.throws(() => a.claim(Infinity), /duration/);
   assert.equal(a.get(job.id).state, 'running');
 });
+
+test('canonical intake reconciles old keys without changing candidate, approval or page references', t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-legacy-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const jobs = new Jobs(join(root, 'jobs.sqlite3'));
+  try {
+    const input = { service: 'ainteams', repository: 'test/product', base: 'a'.repeat(40), text: '여백 고쳐줘.',
+      teams: { workspaceId: 'w', channelId: 'c', parentId: 'm', messageId: 'm' } };
+    const old = jobs.enqueue('legacy:base:a', input);
+    const claim = jobs.claim();
+    const checkpoint = { stage: 'awaiting_approval', coding: 'original-candidate', pageId: 'original-page', approval: { sha: 'original-sha' } };
+    jobs.finish(old.id, claim.lease, 'waiting', checkpoint);
+    const replay = jobs.enqueueTeamsRequest({ ...input, base: 'b'.repeat(40) });
+    assert.equal(replay.id, old.id);
+    assert.equal(replay.requestKey, old.requestKey);
+    assert.equal(replay.input.base, input.base);
+    assert.deepEqual(replay.checkpoint, checkpoint);
+    assert.throws(() => jobs.enqueueTeamsRequest({ ...input, text: 'edited request' }), /changed/);
+    jobs.enqueue('legacy:base:b', { ...input, base: 'b'.repeat(40) });
+    assert.throws(() => jobs.enqueueTeamsRequest(input), /multiple historical/);
+  } finally { jobs.close(); }
+});

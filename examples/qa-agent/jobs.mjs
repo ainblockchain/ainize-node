@@ -3,7 +3,7 @@
  * GitHub/Ainmem writes must also use the stable job id and reconcile before retry.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, openSync } from 'node:fs';
 
 const states = new Set(['queued', 'waiting', 'completed', 'failed']);
@@ -39,20 +39,46 @@ export class Jobs {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   enqueue(key, input) {
-    if (typeof key !== 'string' || !/^[a-zA-Z0-9._:-]{1,200}$/.test(key)) throw new Error('invalid request key');
-    // Serialize first to reject circular/oversized values before canonicalization.
-    const body = json(canonical(JSON.parse(json(input))));
+    return this.transaction(() => this.insert(key, input));
+  }
+  /** Match canonical Teams identity across historical base-dependent keys without rewriting jobs.
+   * Re-delivery never rebases a candidate or carries an approval to a newly generated commit.
+   */
+  enqueueTeamsRequest(input) {
+    const identity = value => [value.service, value.teams?.workspaceId, value.teams?.channelId,
+      value.teams?.parentId, value.teams?.messageId];
+    const parts = identity(input);
+    if (!parts.every(v => typeof v === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(v))) {
+      throw new Error('invalid Teams request identity');
+    }
+    const key = JSON.stringify(parts);
     return this.transaction(() => {
-      const prior = this.db.prepare('SELECT * FROM jobs WHERE request_key=?').get(key);
-      if (prior) {
-        if (prior.input !== body) throw new Error('request key reused with different input');
-        return this.decode(prior);
+      const matches = this.db.prepare('SELECT * FROM jobs').all().filter(row =>
+        JSON.stringify(identity(JSON.parse(row.input))) === key);
+      // Do not choose arbitrarily between historical duplicates with different candidates/approvals.
+      if (matches.length > 1) throw new Error('multiple historical jobs for Teams request; reconciliation required');
+      if (matches.length) {
+        const prior = this.decode(matches[0]);
+        if (prior.input.text !== input.text || prior.input.repository !== input.repository) {
+          throw new Error('canonical Teams request changed; reconciliation required');
+        }
+        return prior;
       }
-      if (this.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n >= this.limit) throw new Error('job capacity reached');
-      const id = randomUUID(), now = this.now();
-      this.db.prepare("INSERT INTO jobs VALUES(?,?,?,'queued','{}',NULL,NULL,?,?)").run(id, key, body, now, now);
-      return this.get(id);
+      return this.insert('teams:' + createHash('sha256').update(key).digest('hex'), input);
     });
+  }
+  insert(key, input) {
+    if (typeof key !== 'string' || !/^[a-zA-Z0-9._:-]{1,200}$/.test(key)) throw new Error('invalid request key');
+    const body = json(canonical(JSON.parse(json(input))));
+    const prior = this.db.prepare('SELECT * FROM jobs WHERE request_key=?').get(key);
+    if (prior) {
+      if (prior.input !== body) throw new Error('request key reused with different input');
+      return this.decode(prior);
+    }
+    if (this.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n >= this.limit) throw new Error('job capacity reached');
+    const id = randomUUID(), now = this.now();
+    this.db.prepare("INSERT INTO jobs VALUES(?,?,?,'queued','{}',NULL,NULL,?,?)").run(id, key, body, now, now);
+    return this.get(id);
   }
   get(id) { return this.decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id)); }
   decode(row) {

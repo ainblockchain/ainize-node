@@ -266,3 +266,15 @@ node --test --import tsx \
    내부 상태만으로 실제 승인 가능한 PR이 존재한다고 표시하지 않는다.
 5. 기존 runner의 진행 중 작업과 상태를 대조하여 중복 writer 없이 한 제품부터 전환한다.
    전체 qa 채널 E2E 완료 또는 운영 migration 완료라고 보고하면 안 된다.
+
+### 2026-10-10 추가 진행: canonical 메시지 중복 방지
+
+위 남은 항목 1의 코드 수정 완료. `Jobs.enqueueTeamsRequest`는 service/workspace/channel/
+parent/message identity를 SQLite transaction 안에서 대조한다. 기존 base-dependent key를 가진
+작업도 그대로 반환하여 ID, 원래 base, checkpoint, 승인 및 Ainmem 참조를 보존한다. 신규 작업은
+해당 identity의 SHA-256 key를 사용한다. SHA 변경만으로 새 작업을 만들지 않는다.
+
+원문이나 repository가 달라졌거나 과거 작업이 여러 개 일치하면 자동 선택/병합하지 않는다.
+운영 전환 시 이 충돌은 별도 대조가 필요하다. 회귀 테스트는 base 변경 후 재수신,
+기존 key/승인/card 보존, 수정된 원문 거부, 과거 중복 작업 거부를 포함한다.
+로컬 QA 테스트 34개 통과(실패/skip 0). 운영 writer 전환은 아직 수행하지 않았다.

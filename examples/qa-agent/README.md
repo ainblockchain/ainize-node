@@ -123,6 +123,7 @@ QA agent. No external registration or deployment is performed by these files.
 Three consecutive thrown steps park the job in `waiting` with `holdReason: step_retry_limit`, preserving
 its candidate. A successful coding step resets the failure count. Investigate before waking it;
 waking does not approve release. Jobs with changed repository/base configuration are parked with
-`holdReason: configuration_changed` instead of repeatedly occupying a lease. Config changes still
-require reconciliation before replaying old channel messages: the current intake key includes the
-base SHA, so replay across a base change can create another job. This remains a cutover blocker.
+`holdReason: configuration_changed` instead of repeatedly occupying a lease. Canonical Teams intake now reuses the existing job across base changes, including historical
+base-dependent keys. It keeps that job's original base, candidate, approvals and page references.
+Changed canonical text/repository or multiple historical matches require explicit reconciliation;
+intake never silently replaces a candidate. New message identities use a bounded SHA-256 key.

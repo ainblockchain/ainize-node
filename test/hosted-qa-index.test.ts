@@ -124,3 +124,12 @@ test('hosted entry loads bundled config without an unsupported host environment 
     "const {tick} = await import('./index.mjs'); await tick({log(){}});"], { cwd: root, env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test('re-delivery after a base change reuses the existing candidate and job ID', async t => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'qa-dedupe-')); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const make = baseCommit => createHandler({ config: { ...CONFIG, baseCommit }, stateDir, verifyIntake: async () => verified });
+  const input = locatorInput({ teamsMessage: { messageId: 'm1' } });
+  const first = await make(CONFIG.baseCommit).execute('', input);
+  const second = await make('b'.repeat(40)).execute('', input);
+  assert.equal(second.metadata.jobId, first.metadata.jobId);
+});
