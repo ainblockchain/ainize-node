@@ -26,3 +26,9 @@ test('operator process limits remain bounded and cannot come from a candidate',(
  for(const pidsLimit of [0,-1,63,1025,Infinity,1.5])assert.throws(()=>validateQaProfile({...profile,pidsLimit},candidate),/process limit/);
  assert.throws(()=>validateQaProfile(profile,{...candidate,pidsLimit:512} as any),/shape/);
 });
+
+test('Git inventory is an operator option and cannot be requested by candidate code',()=>{
+ for(const gitInventory of [true,false])assert.doesNotThrow(()=>validateQaProfile({...profile,gitInventory},candidate));
+ for(const gitInventory of ['true',1,{}])assert.throws(()=>validateQaProfile({...profile,gitInventory} as any,candidate),/Git inventory/);
+ assert.throws(()=>validateQaProfile(profile,{...candidate,gitInventory:true} as any),/shape/);
+});

@@ -355,3 +355,22 @@ in the user service PATH. Read-only checks on .41 confirmed that both are absent
 `systemctl --user is-active ainize-public-node` and `ainize-auto-deploy.timer` are active.
 The isolated validation copy of ACL tools is not an installation for the production
 service. Do not change agent ownership to bypass this dependency.
+
+## Git file inventory in isolated product checks
+
+`gitInventory: true` is an optional operator profile setting. Before copying dependencies,
+the container initializes an empty Git repository and stages only the exported candidate.
+It uses empty templates, no hooks, and disabled global/system Git configuration. No host
+`.git`, remote, credentials, commit history or alternates are mounted. This supports tests
+that use `git ls-files`, including untracked probe files created during the test. It does
+not provide a fake HEAD or pretend to preserve repository history.
+
+The option defaults to false and cannot be supplied by a candidate. Validator policy
+version `5-isolated-git-inventory` invalidates receipts from older execution policies.
+An image opting in must contain Git. Failure to initialize the inventory fails the gate.
+
+Real .41 regression at Teams f118bbfe: inventory isolation assertions passed and
+`web/src/lib/deployment/docker-context.test.ts` passed all 4 tests, 0 skips, without changing
+product source. Evidence: `native-git-inventory-fctn5u_l/result.json` and `evidence/`.
+`full-profile.json` there preserves all original gates and adds the option; its complete
+suite has not yet run. The two-gate diagnostic profile must not be used as a release profile.

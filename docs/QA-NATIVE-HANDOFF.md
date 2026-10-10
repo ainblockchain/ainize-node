@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 173개 및 build 통과. 4ec1c69의 전체 API suite는
+- QA 회귀 174개 및 build 통과. 4ec1c69의 전체 API suite는
   950 tests, 932 pass/0 fail/18 skip, 34.3초다. skip은 통과로 계산하지 않는다.
   704ced1의 919 pass 결과는 이전 기록이다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
@@ -1418,3 +1418,25 @@ protected=false임을 확인했다. 현재 fast-forward-unprotected adapter의 �
 Teams f118bbfe 검증은 현재 typecheck 전체 통과, backend lint 통과, web lint 실행 중이다.
 동일한 실행 handle 47038과 native-teams-refresh-61qaqajj 결과를 계속 추적한다.
 실행 중인 검사를 중단하거나 새 실행으로 대체하지 않았다.
+
+
+### Git 파일 목록 검사 환경 복구 — 2026-10-11
+
+Teams f118bbfe의 현재 전체 테스트에서 docker-context.test.ts가 Git 저장소 부재로
+3개 실패하는 것을 확인했다. exported source만 전달하는 validator에는 .git이 없었다.
+운영자 opt-in `gitInventory`를 추가해 컨테이너 안에서 후보 파일만 빈 Git 인덱스에
+등록한다. dependency 복사 전에 수행하며 호스트 Git 이력/config/remote/credential/hooks를
+전달하지 않는다. 모델은 이 옵션을 켜거나 .git 파일을 후보로 추가할 수 없다.
+정책 버전은 5-isolated-git-inventory로 올려 이전 receipt 재사용을 차단한다.
+
+QA 174 pass/0 fail/0 skip, TypeScript build 통과. .41 실제 Docker에서 격리 조건
+assertion(원격/HEAD/훅/alternates 없음, README 추적, node_modules 미추적)을 통과했다.
+같은 Teams source의 docker-context.test.ts 4개가 모두 통과했다(0 skip, 약 1.03초).
+증거: `/mnt/newdata/qa-services/validation/native-git-inventory-fctn5u_l/`.
+제품 코드를 수정하거나 테스트를 제거하지 않았다. `full-profile.json`은 원래 전체
+gate 목록을 유지한 차기 재검증용이며, 짧은 진단용 profile을 release에 사용하지 않는다.
+
+기존 전체 검사 handle 47038은 중단/대체하지 않았다. typecheck/lint 통과 후 test 진행 중이며,
+아직 전체 결과가 없다. 현재 관측한 backend 부분 결과는 1523 pass/1 fail/77 skip,
+4 failed suites이고 desktop은 126 pass/2 skip이다. 원인/최종 결과는 완료 로그로 확인해야 한다.
+새 인덱스 지원이 나머지 실패까지 해결했다는 증거는 없고 운영 활성화/배포도 하지 않았다.

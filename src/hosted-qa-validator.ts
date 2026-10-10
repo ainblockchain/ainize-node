@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
 // Bump when execution semantics change so old receipts cannot authorize a new validator policy.
-export const QA_VALIDATOR_VERSION = '4-bounded-process-limits';
+export const QA_VALIDATOR_VERSION = '5-isolated-git-inventory';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
   dependencyPath: string; cwd: string; dependencies?:{cwd:string;dependencyPath:string}[]; gates: { name: string; argv: string[]; cwd?:string }[];
-  timeoutMs?: number; memory?: string; workspaceMiB?: number; pidsLimit?: number;
+  timeoutMs?: number; memory?: string; workspaceMiB?: number; pidsLimit?: number; gitInventory?: boolean;
 }
 export interface QaCandidate { repository: string; base: string; changes: Record<string, string> }
 const canonical = (value: unknown): unknown => value && typeof value === 'object'
@@ -38,6 +38,7 @@ export function validateQaProfile(profile: QaValidationProfile, candidate: QaCan
     || Buffer.byteLength(JSON.stringify(candidate.changes)) > 2*1024*1024) throw new Error('Invalid candidate changes');
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1000 || profile.timeoutMs > 1800000)) throw new Error('Invalid validation timeout');
   if (profile.memory !== undefined && !/^[1-8]g$/.test(profile.memory)) throw new Error('Invalid memory limit');
+  if(profile.gitInventory!==undefined&&typeof profile.gitInventory!=='boolean')throw new Error('Invalid Git inventory policy');
   if(profile.pidsLimit!==undefined&&(!Number.isSafeInteger(profile.pidsLimit)||profile.pidsLimit<64||profile.pidsLimit>1024))throw new Error('Invalid process limit');
   if(profile.workspaceMiB!==undefined&&(!Number.isSafeInteger(profile.workspaceMiB)||profile.workspaceMiB<512||profile.workspaceMiB>Number.parseInt(profile.memory??'4g')*1024))throw new Error('Invalid workspace size');
 }
@@ -53,6 +54,15 @@ const fs=require('node:fs'),cp=require('node:child_process');
 const p=JSON.parse(fs.readFileSync('/input/profile.json','utf8'));
 fs.mkdirSync('/tmp/work',{recursive:true});
 fs.cpSync('/input/source','/tmp/work',{recursive:true});
+if(p.gitInventory){
+ // Build only an index of this exported candidate, before dependencies are copied.
+ // Never expose host .git, remotes, history, hooks, credentials or Git configuration.
+ const env={PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_ATTR_NOSYSTEM:'1'};
+ for(const args of [['init','--template=','.'],['add','--force','--all','--','.']]){
+  const r=cp.spawnSync('git',['-c','core.hooksPath=/dev/null',...args],{cwd:'/tmp/work',env,stdio:'inherit'});
+  if(r.status!==0)throw new Error('Isolated Git inventory preparation failed');
+ }
+}
 for(const scope of p.dependencies){
 const project='/tmp/work/'+scope.cwd;
 if(!fs.existsSync(project+'/package.json'))throw new Error('Dependency scope has no package manifest');
@@ -101,7 +111,7 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       await writeFile(join(source,path),content);
     }
     for (const gate of profile.gates) {
-      await writeFile(join(dir,'profile.json'),JSON.stringify({dependencies:profile.dependencies??[{cwd:profile.cwd,dependencyPath:profile.dependencyPath}],cwd:gate.cwd??profile.cwd,argv:gate.argv}));
+      await writeFile(join(dir,'profile.json'),JSON.stringify({dependencies:profile.dependencies??[{cwd:profile.cwd,dependencyPath:profile.dependencyPath}],cwd:gate.cwd??profile.cwd,argv:gate.argv,gitInventory:profile.gitInventory===true}));
       // Only non-secret exported Git source and fixed gate config are visible in the mount.
       const name=`ainize-qa-validation-${randomUUID()}`;
       let passed=false, stdout='',stderr='';
