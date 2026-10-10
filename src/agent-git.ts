@@ -421,6 +421,31 @@ export class AgentGit {
     const { rm } = await import('node:fs/promises');
     await rm(this.dir(id), { recursive: true, force: true });
   }
+
+  /** A self-contained copy of every retained ref, suitable for ordinary `git clone`. */
+  async exportBundle(id: string, path: string): Promise<void> {
+    await this.git(id, ['bundle', 'create', path, '--all']);
+    await this.git(id, ['bundle', 'verify', path]);
+    const { chmod } = await import('node:fs/promises');
+    await chmod(path, 0o600);
+  }
+
+  /** Restore through a temporary bare clone; never overwrite an existing agent. */
+  async restoreBundle(id: string, path: string): Promise<void> {
+    const { mkdtemp, rename, rm } = await import('node:fs/promises');
+    mkdirSync(this.repoRoot, { recursive: true });
+    if (this.exists(id)) throw new AgentGitError('repository id already exists');
+    const temporary = await mkdtemp(join(this.repoRoot, '.restore-'));
+    const repo = join(temporary, 'repository.git');
+    try {
+      await run('git', ['clone', '--mirror', '--', path, repo], { encoding: 'utf8' });
+      await run('git', ['--git-dir', repo, 'fsck', '--full'], { encoding: 'utf8' });
+      // A local archive is not an upstream and must not become a credential-bearing remote.
+      await run('git', ['--git-dir', repo, 'remote', 'remove', 'origin'], { encoding: 'utf8' });
+      if (this.exists(id)) throw new AgentGitError('repository id already exists');
+      await rename(repo, this.dir(id));
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  }
 }
 
 /**

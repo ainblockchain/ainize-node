@@ -126,3 +126,9 @@ Browser verification now passed against both actual producer builders rendered b
 ### Mirrored agent deletion ordering
 
 Hosted-agent deletion now executes its store, secret, runtime and repository cleanup inside the mirror synchronization queue, after any in-flight apply/land. Queued configure rechecks agent existence before creating mirror state, and stale sync skips deleted agents. Repository cleanup errors are returned rather than swallowed. A real Git deletion race proves no post-deletion repository resurrection; 27 mirror/hosted-agent tests and typecheck passed. This covers mirror/deletion ordering only: export, undo, growth maintenance and concurrent push/CRUD deletion ordering remain open.
+
+### Agent archive and restore foundation
+
+Added owner-private durable archive records with bounded owner/count/storage quotas, immutable metadata copies, encrypted-secret exclusion, export-before-permanent-removal checks, and 0600 files. Git bundles contain every retained ref; restoration uses a temporary mirror clone, validates objects, removes the archive remote, and refuses to overwrite an existing repository. Real-Git tests delete the source, restart the archive store, and restore branches, tags, internal PR refs, ancestors and code files. Concurrent archive quota, corrupt bundle and independent restored-repository checks also pass: 9 archive/Git tests and typecheck.
+
+This foundation is not yet connected to deletion or owner UI. Remaining archive work: coordinate concurrent pushes/CRUD and snapshot consistency, wire pre-deletion archive and owner export/restore APIs, restore review/runtime metadata, validate runtime application, add user-facing recovery controls and document the contract. No production archive deployment is claimed.
