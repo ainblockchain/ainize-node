@@ -1530,3 +1530,18 @@ public-fetch 테스트와 건너뜀 항목이 남아 있어 릴리스 성공 rec
 이어가야 한다. 제품 수정은 사용자 요청대로 실제 QA 에이전트 경로에서 실행한다.
 승인 대기 중 임의 서비스 배포/중복 worker 활성화/기존 승인 승계를 하지 않았다.
 전체 목표는 미완료이며 운영 승인 없이는 다음 실제 연결 단계로 진행할 수 없다.
+
+
+### 선행 배포 승인 및 PR71 병합 — 2026-10-11
+
+사용자가 PR71(403860f), PR76(88ee41d)의 병합·배포와 Ainmem 전용 DB 변경을
+명시적으로 승인했다. 기존 승인 대기는 해소되었다. PR71은 exact head를 확인하고
+병합했으며 merge SHA는 4d97e95e70c07e1bb841185a2e3950e75865b7b3이다.
+실제 serving SHA는 아직 확인하지 않았으므로 배포 완료로 취급하지 않는다.
+
+Vault는 unlocked임을 확인했지만 기존 ainize SSH multiplex는 현재 종료되어 있다.
+새 OTP를 요청했다. PR76은 자동 배포 전에 운영 DB 백업 및
+app/drizzle/0005_qa_agent_credentials.sql만 적용하기 위해 아직 병합하지 않았다.
+연결 복구 뒤 .194의 배포 adapter/DB 현황 확인 → 백업 → 전용 SQL transaction 적용
+→ PR76 exact head 병합 → 자동 배포와 schema health 확인 순서로 계속한다.
+PR70 운영 전환 승인과 실제 전체 채널 E2E는 별도 미완료다.
