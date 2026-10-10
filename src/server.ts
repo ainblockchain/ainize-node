@@ -557,7 +557,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         qaBases=new HostedQaBases(join(cfg.dataDir,'qa-bases'),baseProfiles,{
           head:async(repo,branch)=>{const ref=await github('GET',`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);return ref?.object?.sha;},
           prepare:(profile,base)=>prepareQaCheckout(profile,base,readQaToken(tokenPath)),
-        },(id,job)=>{if(!qaReviewStore?.intake(id,job))throw new Error('Verified intake required for job base');});
+        },(id,job)=>{if(!qaReviewStore?.intake(id,job))throw new Error('Verified intake required for job base');},
+        (id,job,request)=>qaReviewStore!.authorizeRevalidation(id,job,request));
       }
       const coordinator=new HostedQaReviewCoordinator(qaReviewStore,profiles,readers);
       let release:HostedQaRelease|undefined;

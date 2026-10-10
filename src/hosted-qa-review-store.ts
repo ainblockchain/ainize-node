@@ -5,6 +5,7 @@ import {mkdirSync,lstatSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
+import type {QaRevalidationRequest} from './hosted-qa-base.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
 export interface QaRepositoryRoutes {web:{scope:string;repository:string};api:{scope:string;repository:string}}
 export interface QaRoutedIntake {scope:string;repository:string;route:'web'|'api';policyDigest:string;binding:QaTeamsThreadBinding}
@@ -26,6 +27,7 @@ export class HostedQaReviewStore {
    CREATE TABLE IF NOT EXISTS review_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS review_historical_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS review_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,review_key TEXT NOT NULL,observed_base TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
+   CREATE TABLE IF NOT EXISTS review_revalidations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,sequence INTEGER NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,sequence));
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
@@ -58,6 +60,38 @@ export class HostedQaReviewStore {
    this.db.prepare('INSERT INTO review_releases(agent_id,job_id,generation,intent) VALUES(?,?,?,?)').run(expected.agentId,expected.jobId,expected.generation,json(intent));
    return {intent,receipt:null};
   });
+ }
+ /** Reserve an invalidated review for a new coding attempt. Historical publications and review
+  * keys are immutable evidence, not release authority. Safe to repeat before/after host I/O.
+  */
+ authorizeRevalidation(agentId:string,jobId:string,request:QaRevalidationRequest):void {
+  if(!request||Object.keys(request).sort().join(',')!=='previousBase,sequence,sourceDigest'
+   ||typeof request.previousBase!=='string'||!/^[a-f0-9]{40}$/.test(request.previousBase)
+   ||!Number.isSafeInteger(request.sequence)||request.sequence<1||request.sequence>20
+   ||typeof request.sourceDigest!=='string'||!/^[a-f0-9]{64}$/.test(request.sourceDigest))throw new Error('Invalid revalidation request');
+  this.transaction(()=>{
+   const intake=this.intake(agentId,jobId),publication=this.publication(agentId,jobId),review=this.current(agentId,jobId);
+   if(!intake||!publication||!review||publication.base!==request.previousBase
+    ||['repository','base','sha','candidateDigest'].some(key=>publication[key]!==review.presentation.target[key as keyof typeof review.presentation.target])
+    ||!publication.teamsRequest||!review.presentation.target.teamsRequest
+    ||json(publication.teamsRequest)!==json(intake)||json(review.presentation.target.teamsRequest)!==json(intake)||!this.baseChange(review))throw new Error('Invalidated published review required');
+   // Even an intent without a receipt can already be merging remotely. Never race it.
+   if(this.releaseRecord(review))throw new Error('Release reconciliation required before revalidation');
+   const rows=this.revalidationHistory(agentId,jobId),prior=rows.at(-1);
+   if(prior?.request.sequence===request.sequence){
+    if(json(prior.request)!==json(request)||prior.reviewKey!==review.key||prior.generation!==review.generation
+      ||json(prior.publication)!==json(publication))throw new Error('Revalidation reservation changed');
+    return;
+   }
+   if(request.sequence!==rows.length+1)throw new Error('Revalidation sequence changed');
+   if(prior?.generation===review.generation)throw new Error('Review already reserved for revalidation');
+   const record={request:structuredClone(request),generation:review.generation,reviewKey:review.key,
+    publication,observedBase:this.baseChange(review)};
+   this.db.prepare('INSERT INTO review_revalidations VALUES(?,?,?,?)').run(agentId,jobId,request.sequence,json(record,4*1024*1024));
+  });
+ }
+ revalidationHistory(agentId:string,jobId:string):Array<{request:QaRevalidationRequest;generation:number;reviewKey:string;publication:any;observedBase:string}> {
+  return this.db.prepare('SELECT record FROM review_revalidations WHERE agent_id=? AND job_id=? ORDER BY sequence').all(agentId,jobId).map(row=>JSON.parse(String(row.record)));
  }
  releaseRecord(expected:StoredReview):{intent:any;receipt:any}|null {
   const row=this.db.prepare('SELECT intent,receipt FROM review_releases WHERE agent_id=? AND job_id=? AND generation=?').get(expected.agentId,expected.jobId,expected.generation);
@@ -190,6 +224,8 @@ export class HostedQaReviewStore {
   const key=fingerprint(p);
   return this.transaction(()=>{
    const prior=this.current(agentId,jobId);
+   const reserved=this.revalidationHistory(agentId,jobId).at(-1);
+   if(reserved&&reserved.generation===prior?.generation)throw new Error('Prior review is reserved for revalidation');
    if(prior?.key===key)return prior; // Preserve the first server observation across replay/restart.
    if((prior?.generation??0)!==expectedGeneration)throw new Error('Review changed while capturing presentation');
    if(prior&&Date.parse(p.presentedAt)<=Date.parse(prior.presentation.presentedAt))throw new Error('New review must have a later observation');

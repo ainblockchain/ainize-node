@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 155개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
+- QA 회귀 157개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
   그 이후 공통 QA 변경에는 QA 회귀와 build를 실행했으며 전체 API suite 수치를
   새 head 전체 검증으로 확대해 해석하지 않는다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -28,6 +28,19 @@
 
 ### 운영 연결에 필요한 다음 조치
 
+2026-10-11 검토 ledger와 호스트 재준비 권한 연결:
+`HostedQaReviewStore.authorizeRevalidation`이 verified intake·원래 Teams 요청·현재
+publication·review generation·영구 base invalidation을 확인하고 이전 publication,
+review key/generation, 시도 번호, source digest를 `review_revalidations`에 보존한다.
+release intent가 있으면 receipt가 없어도 거부한다(원격 merge 진행 중일 수 있음).
+재시작과 동일 요청 재호출은 보존된 예약을 확인하며, 다른 digest/시도/agent는 거부한다.
+예약된 이전 generation의 `bind`도 거부해 presentation 갱신으로 이전 승인을 되살리지
+못하게 했다. server의 HostedQaBases 권한 콜백을 이 메서드로 연결했고, 실제 store와
+base service를 함께 사용한 준비 테스트를 포함해 QA 157 pass/0 fail/0 skip, build 통과.
+**재수정 gateway와 handler 호출은 아직 없으며 활성화하지 않았다.** 새 base 준비 결과를
+ledger에 확정하고 새 publication으로 교체하는 경로, review loop의 새 generation 등록이
+다음 단계다. 현재 예약된 generation은 의도적으로 다시 bind할 수 없다.
+
 2026-10-11 호스트 기준 커밋 재준비:
 `HostedQaBases.prepareRevalidation`을 추가했다. 호스트 전용 동기 권한 콜백을
 준비 전후에 호출하며 콜백이 없거나 async이면 거부한다. 이전 base·시도 번호·이력 digest를
@@ -35,7 +48,8 @@
 응답을 하나의 private 파일에 원자적으로 보존한다. 중복 동시 요청·재시작은 같은 응답을
 반환하고, 다른 동시 요청·지난 시도 재사용·준비 중 권한 철회는 기존 base를 유지한다.
 새 base 적용 후 기존 후보의 `requireProfile`은 실패한다. QA 155 pass/0 fail/0 skip,
-build 통과. **실제 review ledger 권한 콜백과 gateway는 아직 연결하지 않았다.**
+build 통과. 당시 미연결이던 review ledger 권한 콜백은 위 후속 작업에서 연결했다.
+gateway는 아직 연결하지 않았다.
 
 2026-10-11 main 변경 재개 상태 전환:
 `Jobs.claimRevalidation`/`bindRevalidation`을 추가했다. ordinary claim은 만료된
@@ -47,8 +61,8 @@ build 통과. **실제 review ledger 권한 콜백과 gateway는 아직 연결�
 잘못된 준비 응답, 중복 재개 거부를 포함해 QA 153 pass/0 fail/0 skip, build 통과.
 
 **아직 이 API를 handler에서 호출하지 않는다.** 자동 main 재수정은 다음 연결까지 미완료:
-1. `HostedQaBases.prepareRevalidation`의 권한 콜백을 실제 review ledger의 이전 시도
-   무효화와 연결한다. 저장된 원래 base를 직접 삭제해서 재준비를 우회하지 않는다.
+1. 호스트 base와 review ledger의 준비 완료 응답을 연결한다. 권한 콜백은 연결되어 있다.
+   저장된 원래 base를 직접 삭제해서 재준비를 우회하지 않는다.
 2. 검토 ledger의 원래 publication을 보관하고 새 publication/review generation을 연결한다.
    진행 중인 release intent와 경합하면 재개를 거부하고 상태를 조정해야 한다.
 3. gateway/runtime capability와 공유 web/API route에 준비 응답을 연결한 뒤 handler에서

@@ -131,3 +131,44 @@ test('main advancement durably invalidates only the matching generation and neve
  assert.equal(store.baseChange(next),null);assert.throws(()=>store.invalidateBase(review,'f'.repeat(40)),/Review changed/);
  assert.equal(store.baseChange(next),null);
 });
+
+test('revalidation reservation preserves invalidated review and publication across restart', async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-revalidation-'));let store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'request',requestAuthorId:'human',requestDigest:'e'.repeat(64),requestCreatedAt:'2026-10-09T00:00:00Z'};
+ const scoped={...target,teamsRequest:binding},publication={...target,teamsRequest:binding,url:'https://github.com/test/product/pull/1'};
+ store.registerIntake('agent','job',binding);store.enqueuePublication('agent','job',publication);
+ const review=store.bind('agent',captureReview(scoped,snapshot,body),0);
+ const request={previousBase:target.base,sequence:1,sourceDigest:'f'.repeat(64)};
+ assert.throws(()=>store.authorizeRevalidation('agent','job',request),/Invalidated/);
+ store.invalidateBase(review,'d'.repeat(40));store.authorizeRevalidation('agent','job',request);
+ store.authorizeRevalidation('agent','job',request);
+ assert.equal(store.revalidationHistory('agent','job').length,1);
+ assert.deepEqual(store.revalidationHistory('agent','job')[0].publication,publication);
+ store.close();store=new HostedQaReviewStore(root);store.authorizeRevalidation('agent','job',request);
+ assert.equal(store.current('agent','job')?.generation,1);assert.deepEqual(store.publication('agent','job'),publication);
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{...request,sourceDigest:'1'.repeat(64)}),/reservation changed/);
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{...request,sequence:2}),/already reserved/);
+ assert.throws(()=>store.authorizeRevalidation('other','job',request),/Invalidated/);
+ assert.throws(()=>store.bind('agent',captureReview(scoped,{...snapshot,revision:2,digest:'a'.repeat(64),observedAt:'2026-10-10T00:00:30Z'},body),1),/reserved/);
+ assert.equal(store.baseChange(review),'d'.repeat(40));
+ const {HostedQaBases}=await import('../src/hosted-qa-base.js');
+ const validation={repository:target.repository,base:target.base,checkout:'/operator/repo',image:'sha256:'+'d'.repeat(64),dependencyPath:'/seed',cwd:'.',gates:[{name:'test',argv:['node','test']}]};
+ let main=target.base;
+ const bases=new HostedQaBases(join(root,'bases'),{agent:{branch:'main',validation}}, {head:async()=>main,prepare:async()=>{}},()=>{assert(store.intake('agent','job'));},(id,job,request)=>store.authorizeRevalidation(id,job,request));
+ await bases.prepare('agent','job');main='d'.repeat(40);
+ const receipt=await bases.prepareRevalidation('agent','job',request);assert.equal(receipt.base,main);
+ assert.deepEqual(await bases.prepareRevalidation('agent','job',request),receipt);
+});
+
+test('a pending release intent prevents reservation even after base invalidation', t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-review-release-race-'));const store=new HostedQaReviewStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const binding={workspaceId:'teams',channelId:'qa',rootId:'root',requestId:'request',requestAuthorId:'human',requestDigest:'e'.repeat(64),requestCreatedAt:'2026-10-09T00:00:00Z'};
+ store.registerIntake('agent','job',binding);store.enqueuePublication('agent','job',{...target,teamsRequest:binding});
+ const review=store.bind('agent',captureReview({...target,teamsRequest:binding},snapshot,body),0);
+ store.releaseIntent(review,{...target,source:'ainmem',subject:'admin',commentId:'comment',approvedAt:'2026-10-10T00:00:10Z',checkedAt:'2026-10-10T00:00:20Z',presentationDigest:review.presentation.bodyDigest} as any);
+ store.invalidateBase(review,'d'.repeat(40));
+ assert.throws(()=>store.authorizeRevalidation('agent','job',{previousBase:target.base,sequence:1,sourceDigest:'f'.repeat(64)}),/Release reconciliation/);
+ assert.deepEqual(store.revalidationHistory('agent','job'),[]);
+});
