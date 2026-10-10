@@ -34,7 +34,7 @@ import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
 import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
 import type { ProjectContainers } from './project-containers.js';
-import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestKind, inputDefaults } from './project-manifest.js';
+import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, INPUTS_MAX, INPUT_VALUE_MAX, type ProjectManifest, type ProjectManifestInput, type ProjectManifestKind, inputDefaults, inputEnvName } from './project-manifest.js';
 import type { RunSandbox } from './run-sandbox.js';
 
 const exec = promisify(execFile);
@@ -86,7 +86,46 @@ export interface Deployment {
   kind?: ProjectKind | null;
   /** Where the result lives once `ready`: the service's public URL, the agent's A2A URL, a script's stdout. */
   outputUrl?: string | null;
+  /**
+   * What started it: aindrive's push hook (`push`, the default), a person pressing Redeploy on a deployment (`redeploy`),
+   * or an ad-hoc run from the project console (`run` — listed under `/runs`, never the project's status).
+   */
+  trigger?: DeploymentTrigger;
+  /** `run` only: the file to run instead of the manifest's entry, and the answers to its `inputs` / extra env. */
+  entry?: string | null;
+  inputs?: Record<string, string>;
+  env?: Record<string, string>;
+  /** The commit's subject line, read after the clone. */
+  subject?: string | null;
+  /** Snapshot of the commit's `ainize.json` as resolved (the console's Settings and Run panel read it). */
+  manifest?: DeploymentManifest | null;
+  /** script: the repository's runnable files (`.py`, `.js`, `.mjs`, `.cjs`), the Run panel's entry choices. */
+  runnable?: string[];
 }
+
+export type DeploymentTrigger = 'push' | 'redeploy' | 'run';
+
+/** The parts of a resolved manifest a page needs — never `env` values beyond their names? They are in the repo anyway. */
+export interface DeploymentManifest {
+  kind: ProjectKind;
+  name?: string;
+  entry?: string;
+  runtime?: string;
+  timeoutMs?: number;
+  env: Record<string, string>;
+  inputs: ProjectManifestInput['inputs'];
+  examples: ProjectManifestInput['examples'];
+  detected: 'ainize.json' | 'package.json';
+}
+
+/** `POST /api/projects/:id/runs` body. Inputs and env values travel as text (`INPUT_<NAME>`); ≤ 2 KiB each. */
+export const runInput = z.object({
+  entry: z.string().regex(/^(?!\.\.?(\/|$))[^\0\n]{1,200}$/, 'a repository-relative file').optional(),
+  inputs: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an input name'), z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()])).refine((r) => Object.keys(r).length <= INPUTS_MAX, `at most ${INPUTS_MAX} inputs`).optional(),
+  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name'), z.string().max(4096)).refine((e) => Object.keys(e).length <= 32, 'at most 32 env entries').optional(),
+  timeoutMs: z.number().int().min(1000).max(300_000).optional(),
+});
+export type RunInput = z.infer<typeof runInput>;
 
 /** `POST /api/run`'s request, as deploy/run-runtime/README.md describes it. */
 export interface RunRequest {
@@ -210,6 +249,16 @@ export class ProjectStore {
     // carry the folder in their URL and must still resolve.
     return this.list().find((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === ref.url) ?? null;
   }
+  /** `/<org>/<repo>` — the GitHub-shaped address. Case-insensitive; the first-bound project when two branches of a repo are bound (as `byRepo`). */
+  byName(org: string, repoName: string): Project | null {
+    const o = org.toLowerCase(); const r = repoName.toLowerCase();
+    return this.list().find((p) => p.org.toLowerCase() === o && p.repoName.toLowerCase() === r) ?? null;
+  }
+  /** Every project of an organization slug (`/<org>`), case-insensitive, oldest first. */
+  byOrg(org: string): Project[] {
+    const o = org.toLowerCase();
+    return this.list().filter((p) => p.org.toLowerCase() === o);
+  }
 
   create(input: { repo: RepoRef; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
     if (this.list().some((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
@@ -234,18 +283,48 @@ export class ProjectStore {
   }
 
   deployment(id: string): Deployment | null { return this.deployments.get(id) ?? null; }
-  /** Newest first. */
+  /** Deployments (pushes and redeploys) of a project, newest first — ad-hoc runs are `runsOf`. */
   deploymentsOf(projectId: string): Deployment[] {
+    return this.ofProject(projectId).filter((d) => d.trigger !== 'run');
+  }
+  /** Ad-hoc runs of a project (the console's Run panel), newest first. */
+  runsOf(projectId: string): Deployment[] {
+    return this.ofProject(projectId).filter((d) => d.trigger === 'run');
+  }
+  private ofProject(projectId: string): Deployment[] {
     return [...this.deployments.values()].filter((d) => d.projectId === projectId).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
   }
 
-  createDeployment(project: Project, body: HookBody, now = Date.now()): Deployment {
+  createDeployment(project: Project, body: HookBody, now = Date.now(), trigger: Exclude<DeploymentTrigger, 'run'> = 'push'): Deployment {
     const d: Deployment = {
       id: `dep_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: body.after, ref: body.ref, status: 'queued',
       pusher: body.pusher ?? null, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null,
+      ...(trigger === 'push' ? {} : { trigger }),
     };
     this.deployments.set(d.id, d);
     this.projects.set(project.id, { ...project, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    this.save();
+    return d;
+  }
+
+  /** The same commit again, as a new deployment started by `actor` (Redeploy; also "roll back to this one" for a service). */
+  redeploy(project: Project, of: Deployment, actor: { subject: string; email?: string } | null, now = Date.now()): Deployment {
+    return this.createDeployment(project, { ref: of.ref, after: of.sha, pusher: actor ?? undefined }, now, 'redeploy');
+  }
+
+  /**
+   * An ad-hoc run of the branch's HEAD (`sha` is filled in after the clone) with the person's entry, inputs and env.
+   * Runs queue behind the project's deployments but never become its status or `lastDeploymentId`.
+   */
+  createRun(project: Project, input: RunInput, actor: { subject: string; email?: string } | null, now = Date.now()): Deployment {
+    const inputs: Record<string, string> = {};
+    for (const [k, v] of Object.entries(input.inputs ?? {})) inputs[k] = String(v);
+    const d: Deployment = {
+      id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: '', ref: `refs/heads/${project.branch}`, status: 'queued',
+      pusher: actor, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null, trigger: 'run',
+      entry: input.entry ?? null, inputs, env: input.env ?? {},
+    };
+    this.deployments.set(d.id, d);
     this.save();
     return d;
   }
@@ -264,7 +343,8 @@ export class ProjectStore {
 
   /** Drop the deployments beyond the newest `keep` of a project; returns the ids that went (for their logs). */
   prune(projectId: string, keep: number): string[] {
-    const gone = this.deploymentsOf(projectId).slice(keep).filter((d) => d.status === 'ready' || d.status === 'error');
+    const over = (list: Deployment[]) => list.slice(keep).filter((d) => d.status === 'ready' || d.status === 'error');
+    const gone = [...over(this.deploymentsOf(projectId)), ...over(this.runsOf(projectId))];
     for (const d of gone) this.deployments.delete(d.id);
     if (gone.length) this.save();
     return gone.map((d) => d.id);
@@ -435,25 +515,40 @@ export class ProjectWorker extends EventEmitter {
     };
     const work = mkdtempSync(join(tmpdir(), 'ainize-project-'));
     try {
-      say(`[ainize] ${project.org}/${project.repoName}@${d.sha.slice(0, 12)} (${d.ref})`);
+      const isRun = d.trigger === 'run';
+      say(isRun ? `[ainize] run ${project.org}/${project.repoName} (${d.ref} HEAD)` : `[ainize] ${project.org}/${project.repoName}@${d.sha.slice(0, 12)} (${d.ref})`);
       // A re-run of a finished deployment (recover) starts from a clean record.
       if (d.outputUrl) store.updateDeployment(d.id, { outputUrl: null });
       // Records bound before the `repositories/` normalisation keep the folder in their URL; clone the canonical form.
       const cloneUrl = parseRepoUrl(project.repo)?.url ?? project.repo;
       say(`[ainize] clone ${cloneUrl}`);
-      await this.clone(project, d.sha, work, say);
+      const sha = await this.clone(project, d.sha, work, say);
+      const subject = await this.subjectOf(work);
+      store.updateDeployment(d.id, { sha, subject });
+      if (isRun) say(`[ainize] at ${sha.slice(0, 12)}${subject ? ` — ${subject}` : ''}`);
       let manifest: ProjectManifest;
-      try { manifest = resolveProjectManifest(work, { entry: project.entry }); }
+      try { manifest = resolveProjectManifest(work, { entry: d.entry ?? project.entry }); }
       catch (e) {
         const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
         say(`[ainize] error: ${message}`);
         finish({ status: 'error', error: message });
         return;
       }
-      store.updateDeployment(d.id, { kind: manifest.kind });
+      // The console reads the manifest from the newest deployment rather than cloning again.
+      const snapshot: DeploymentManifest = {
+        kind: manifest.kind, env: manifest.env, inputs: manifest.inputs, examples: manifest.examples, detected: manifest.detected,
+        ...(manifest.name ? { name: manifest.name } : {}), ...(manifest.entry ? { entry: manifest.entry } : {}),
+        ...(manifest.runtime ? { runtime: manifest.runtime } : {}), ...(manifest.timeoutMs ? { timeoutMs: manifest.timeoutMs } : {}),
+      };
+      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(work) });
       say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
       const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
-      const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: d.sha };
+      const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha };
+      if (isRun && manifest.kind !== 'script') {
+        say(`[ainize] error: an ad-hoc run needs a script project; this commit's ainize.json says ${manifest.kind}`);
+        finish({ status: 'error', error: `a ${manifest.kind} project is deployed by a push, not run` });
+        return;
+      }
 
       if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
         if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
@@ -473,8 +568,8 @@ export class ProjectWorker extends EventEmitter {
         return;
       }
 
-      const entry = manifest.entry!;
-      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(entry);
+      const entry = d.entry ?? manifest.entry!;
+      const language = manifest.runtime === 'python3.11' && !d.entry ? 'python' : manifest.runtime === 'node20' && !d.entry ? 'node' : languageOf(entry);
       if (!language) { say(`[ainize] error: no runtime for "${entry}"`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file and ainize.json names no runtime` }); return; }
       let files: Record<string, string>;
       try { files = readTree(work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
@@ -483,7 +578,9 @@ export class ProjectWorker extends EventEmitter {
       let exit: { code: number; ms: number } | null = null;
       let runError: string | null = null;
       const apiKey = this.actorKey(d, say);
-      await this.deps.run({ language, entry, files, env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}) }, (ev) => {
+      const answers: Record<string, string> = {};
+      for (const [name, value] of Object.entries(d.inputs ?? {})) answers[inputEnvName(name)] = value;
+      await this.deps.run({ language, entry, files, env: { ...manifest.env, ...(d.env ?? {}), ...inputDefaults(manifest.inputs), ...answers, ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}) }, (ev) => {
         if (ev.event === 'stdout') { logs.append(d.id, ev.data); logs.append(d.id, ev.data, 'out'); }
         else if (ev.event === 'stderr') logs.append(d.id, ev.data);
         else if (ev.event === 'error') { runError = ev.data; say(`[ainize] error: ${ev.data}`); }
@@ -499,7 +596,7 @@ export class ProjectWorker extends EventEmitter {
       finish({ status: 'error', error: message });
     } finally {
       rmSync(work, { recursive: true, force: true });
-      this.deps.log?.('info', `project ${project.id}: deployment ${d.id} ${store.deployment(d.id)?.status ?? '?'} (${d.sha.slice(0, 12)})`);
+      this.deps.log?.('info', `project ${project.id}: ${d.trigger === 'run' ? 'run' : 'deployment'} ${d.id} ${store.deployment(d.id)?.status ?? '?'} (${(store.deployment(d.id)?.sha ?? d.sha).slice(0, 12)})`);
     }
   }
 
@@ -509,7 +606,14 @@ export class ProjectWorker extends EventEmitter {
    * the server will not serve a bare sha). The token (pasted or the node's own) travels in the environment as a
    * git config entry, so a process listing never shows it.
    */
-  private async clone(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
+  /** The HEAD commit's subject line, or null when git will not say. */
+  private async subjectOf(dir: string): Promise<string | null> {
+    try { return (await exec('git', ['-C', dir, 'log', '-1', '--format=%s'], { timeout: 10_000 })).stdout.trim().slice(0, 200) || null; }
+    catch { return null; }
+  }
+
+  /** Returns the commit the tree is at — `sha`, or the branch tip when `sha` is empty (an ad-hoc run of HEAD). */
+  private async clone(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<string> {
     // Credential order: a pasted deploy token (the owner's explicit choice) wins; else the node's own machine identity
     // at AIN SSO for this repository's host (aindrive makes it a viewer on the drives shared with the organizations
     // the app is assigned in); else anonymous (a public repo).
@@ -536,11 +640,30 @@ export class ProjectWorker extends EventEmitter {
     };
     await git(['clone', '--quiet', '--depth', '1', '--branch', project.branch, '--', parseRepoUrl(project.repo)?.url ?? project.repo, dir]);
     const head = (await git(['-C', dir, 'rev-parse', 'HEAD'])).stdout.trim();
-    if (head === sha) return;
+    if (!sha || head === sha) return head;
     try { await git(['-C', dir, 'fetch', '--quiet', '--depth', '1', 'origin', sha]); }
     catch { await git(['-C', dir, 'fetch', '--quiet', '--unshallow', 'origin', project.branch]); }
     await git(['-C', dir, 'checkout', '--quiet', '--detach', sha]);
+    return sha;
   }
+}
+
+/** The repository's runnable files (what the Run panel offers as `entry`), `main.*`/`index.*` first, ≤ 64. */
+export function runnableFiles(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    for (const name of readdirSync(dir).sort()) {
+      if (name === '.git' || name === 'node_modules' || name.startsWith('.')) continue;
+      const full = join(dir, name);
+      let st; try { st = statSync(full); } catch { continue; }
+      if (st.isDirectory()) { walk(full, depth + 1); continue; }
+      if (st.isFile() && languageOf(name) && out.length < 64) out.push(relative(root, full).split('\\').join('/'));
+    }
+  };
+  walk(root, 0);
+  const rank = (n: string) => (/^main\./i.test(n) ? 0 : /^index\./i.test(n) ? 1 : n.includes('/') ? 3 : 2);
+  return out.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 /** The working tree as `/api/run` files: every regular file but `.git`, ≤ 32 of them, ≤ 2 MiB, utf-8. */

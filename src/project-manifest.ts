@@ -58,6 +58,15 @@ export const projectManifestSchema = z.object({
     options: z.array(z.string().max(INPUT_VALUE_MAX)).max(64).optional(),
     default: z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()]).optional(),
   }).strict()).refine((r) => Object.keys(r).length <= INPUTS_MAX, `at most ${INPUTS_MAX} inputs`).default({}),
+  /**
+   * Named presets of `inputs` the Run panel offers as one click ("노을 바다 유화", "인물 초상", …): each `inputs` is a
+   * partial answer sheet — names not in `inputs` above are refused at resolve time, values travel as text. ≤ 16.
+   */
+  examples: z.array(z.object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().trim().max(300).optional(),
+    inputs: z.record(z.string().regex(envName, 'an input name'), z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()])),
+  }).strict()).max(16).default([]),
   /** service only. */
   build: z.object({
     dockerfile: relPath.default('Dockerfile'),
@@ -130,6 +139,10 @@ export function resolveProjectManifest(dir: string, fallback: { entry?: string |
     if (isNext) kind = 'nextjs';
     else if (input.entry || fallback.entry) kind = 'script';
     else throw new ProjectManifestError(`${PROJECT_MANIFEST_FILE} has no "kind" and package.json does not depend on next — set kind to nextjs, service, script or agent`);
+  }
+  for (const ex of input.examples) {
+    const unknown = Object.keys(ex.inputs).find((k) => !(k in input.inputs));
+    if (unknown) throw new ProjectManifestError(`${PROJECT_MANIFEST_FILE}: examples."${ex.name}" answers an input that does not exist: ${unknown}`);
   }
   const entry = input.entry ?? fallback.entry ?? undefined;
   if (kind === 'script' && !entry) throw new ProjectManifestError(`${PROJECT_MANIFEST_FILE}: a script names its "entry"`);

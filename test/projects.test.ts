@@ -35,6 +35,7 @@ const git = async (dir: string, args: string[]) => (await exec('git', ['-C', dir
 
 const ALICE = 'sso:alice';
 const BOB = 'sso:bob';
+const CAROL = 'sso:carol';
 const TOKEN = 'aind_aat_test_token_do_not_leak';
 
 let tmp: string;
@@ -54,9 +55,17 @@ let runBehaviour: RunScript = async (req, on) => {
   on({ event: 'exit', data: { code: 0, ms: 5 } });
 };
 
-/** aindrive's side: `git http-backend` behind a bearer check, at /<org>/git/<repo>[.git]. */
+/** Every Authorization header the fake aindrive saw on its repositories listing. */
+const repoListingAuth: (string | undefined)[] = [];
+/** aindrive's side: `git http-backend` behind a bearer check, at /<org>/git/<repo>[.git]; and the org's repositories listing. */
 function fakeAindrive(): express.Express {
   const srv = express();
+  srv.get('/api/orgs/:org/repositories', (req, res) => {
+    repoListingAuth.push(req.header('authorization'));
+    if (req.header('authorization') !== 'Bearer machine-token') { res.status(401).json({ error: 'invalid service token' }); return; }
+    if (req.params.org !== 'testorg') { res.status(404).json({ error: 'not found' }); return; }
+    res.json({ driveId: 'drv1', driveUrl: 'https://aindrive.example/d/drv1?path=repositories', repositories: [{ name: 'demo', cloneUrl: `${aindriveBase}/testorg/git/demo`, headSha: 'a'.repeat(40), headSubject: 'v1', updatedAt: 1, hasManifest: true }, { name: 'unbound', cloneUrl: `${aindriveBase}/testorg/git/unbound`, headSha: null, headSubject: null, updatedAt: 2, hasManifest: false }] });
+  });
   srv.all(/^\/testorg\/git\/([A-Za-z0-9_-]+)(?:\.git)?(\/.*)?$/, (req, res) => {
     authSeen.push(req.header('authorization'));
     if (req.header('authorization') !== `Bearer ${TOKEN}`) { res.status(401).type('text/plain').send('sign in'); return; }
@@ -120,7 +129,7 @@ before(async () => {
   await git(work, ['config', 'user.email', 'person@example.com']);
   await git(work, ['remote', 'add', 'origin', join(repoRoot, 'demo.git')]);
   writeFileSync(join(work, 'README.md'), '# demo\n');
-  writeFileSync(join(work, 'ainize.json'), JSON.stringify({ kind: 'script', entry: 'main.py', env: { GREETING: 'hi' }, inputs: { desc: { description: '묘사', default: 'a boat at dusk' }, TOP_K: { type: 'number', default: 5 }, verbose: { type: 'boolean', default: false }, MODEL: { type: 'choice', options: ['clef-flash', 'clef'] } } }, null, 2));
+  writeFileSync(join(work, 'ainize.json'), JSON.stringify({ kind: 'script', entry: 'main.py', env: { GREETING: 'hi' }, inputs: { desc: { description: '묘사', default: 'a boat at dusk' }, TOP_K: { type: 'number', default: 5 }, verbose: { type: 'boolean', default: false }, MODEL: { type: 'choice', options: ['clef-flash', 'clef'] } }, examples: [{ name: '노을 바다 유화', inputs: { desc: '노을 바다 유화', TOP_K: 3 } }] }, null, 2));
   sha1 = await commit(work, 'main.py', 'print("v1")\n', 'v1');
 
   // A fake chat model behind a real hosted-agent host, for `kind: agent` (prompt mode needs no Docker).
@@ -158,8 +167,11 @@ before(async () => {
   app.use(express.json({ verify: (req, _res, buf) => { (req as Request & { rawBody?: Buffer }).rawBody = buf; } }));
   app.use(projectRoutes({
     store, secrets, logs, worker,
-    caller: (req) => { const u = req.header('x-test-user'); return u ? principalCaller(u) : null; },
+    // CAROL is no owner but a member of testorg's organization (org_t); everyone else is a plain principal.
+    caller: (req) => { const u = req.header('x-test-user'); return u ? (u === CAROL ? { ...principalCaller(u), orgMember: (id) => id === 'org_t' } : principalCaller(u)) : null; },
     publicBase: () => 'https://node.example',
+    orgIdsForSlug: (slug) => (slug === 'testorg' ? ['org_t'] : []),
+    aindrive: { origin: aindriveBase, token: async () => 'machine-token', cacheMs: 60_000 },
   }));
   const cfg = { identity: { address: '0x1111111111111111111111111111111111111111' }, agents: [], publicUrl: 'https://node.example' } as unknown as NodeConfig;
   app.use(buildAgents(cfg, { hosted: { host, store: hostedStore } }));
@@ -271,7 +283,17 @@ test('creating a project needs a sign-in, a git URL and (for a script) an entry;
   const again = await request(app).get(`/api/projects/${project.id}`).set(as(ALICE));
   assert.equal(again.status, 200);
   assert.equal(again.body.webhookSecret, undefined, 'the secret is never read back');
-  assert.equal((await request(app).get(`/api/projects/${project.id}`).set(as(BOB))).status, 404, 'another account\'s project is not confirmed to exist');
+  assert.equal(again.body.owner, ALICE);
+  assert.equal(again.body.canManage, true);
+  assert.equal(again.body.pageUrl, 'https://node.example/testorg/demo', 'the page is the GitHub-shaped address, like the repo\'s aindrive URL');
+  // A project is an organization's repository: anyone reads its public view, and only the owner sees owner + hook address.
+  const bobs = await request(app).get(`/api/projects/${project.id}`).set(as(BOB));
+  assert.equal(bobs.status, 200);
+  assert.equal(bobs.body.owner, undefined); assert.equal(bobs.body.hookUrl, undefined); assert.equal(bobs.body.canManage, false); assert.equal(bobs.body.canOperate, false);
+  const anon = await request(app).get(`/api/projects/${project.id}`);
+  assert.equal(anon.status, 200); assert.equal(anon.body.owner, undefined); assert.equal(anon.body.canManage, false);
+  assert.equal((await request(app).get(`/api/projects/${project.id}/deployments`)).status, 200, 'deployments read without a session');
+  assert.equal((await request(app).get('/api/projects/prj_nope')).status, 404);
   const mine = await request(app).get('/api/projects').set(as(ALICE));
   assert.deepEqual(mine.body.projects.map((p: { id: string }) => p.id), [project.id]);
   assert.deepEqual((await request(app).get('/api/projects').set(as(BOB))).body.projects, []);
@@ -327,10 +349,16 @@ test('a push clones that commit with the deploy token, runs the entry, and the d
   assert.match(log.text, /\[ainize\] exit 0/);
   const out = await request(app).get(`/api/deployments/${d.id}/output`).set(as(ALICE));
   assert.equal(out.text, 'hello from main.py: print("v1")\n');
-  assert.equal((await request(app).get(`/api/deployments/${d.id}`).set(as(BOB))).status, 404);
+  assert.equal((await request(app).get(`/api/deployments/${d.id}`).set(as(BOB))).status, 200, 'a deployment reads like its project: by anyone');
+  assert.equal((await request(app).get(`/api/deployments/${d.id}/log`)).status, 200, 'and so does its log');
+  assert.equal(view.body.trigger, 'push');
+  assert.equal(view.body.subject, 'v1', 'the commit subject is read after the clone');
   const p = (await request(app).get(`/api/projects/${project.id}`).set(as(ALICE))).body;
   assert.equal(p.status, 'ready');
   assert.equal(p.kind, 'script', 'the project row learns its kind from the deploy');
+  assert.equal(p.manifest.kind, 'script'); assert.equal(p.manifest.entry, 'main.py');
+  assert.deepEqual(p.manifest.examples, [{ name: '노을 바다 유화', inputs: { desc: '노을 바다 유화', TOP_K: 3 } }], 'the console reads examples from the newest deployment');
+  assert.deepEqual(p.runnable, ['main.py'], 'the Run panel\'s entry choices');
 });
 
 test('two pushes queue in order per project, each on its own commit; a failing exit ends in error', async () => {
@@ -498,7 +526,7 @@ test('by-repo answers aindrive with the project status and CORS for its origin, 
   assert.equal(res.body.status, 'ready');
   assert.equal(res.body.lastDeployment.status, 'ready');
   assert.equal(res.body.kind, 'script');
-  assert.equal(res.body.pageUrl, `https://node.example/projects/${project.id}`, 'what aindrive\'s "Inspect" links to');
+  assert.equal(res.body.pageUrl, 'https://node.example/testorg/demo', 'what aindrive\'s "Inspect" links to: /<org>/<repo>');
   assert.equal(res.body.owner, undefined);
   assert.equal(res.headers['access-control-allow-origin'], 'https://aindrive.ainetwork.ai');
   const other = await request(app).get('/api/projects/by-repo').query({ repo: repoUrl() }).set('origin', 'https://evil.example');
@@ -508,6 +536,106 @@ test('by-repo answers aindrive with the project status and CORS for its origin, 
   assert.equal(pre.status, 204);
   assert.match(pre.headers['access-control-allow-headers'], /X-Ainize-Signature/);
 });
+
+// ───────────────────────────────────────────── by-name, the org page, runs, redeploy, rotate
+
+test('by-name finds /<org>/<repo> case-insensitively, and the org listing shows every project of a slug', async () => {
+  const res = await request(app).get('/api/projects/by-name').query({ org: 'TestOrg', repo: 'DEMO' }).set('origin', 'https://aindrive.ainetwork.ai');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.id, project.id, 'the first-bound project of the repo, as by-repo answers');
+  assert.equal(res.body.pageUrl, 'https://node.example/testorg/demo');
+  assert.equal(res.body.owner, undefined, 'anonymous: the public view');
+  assert.equal(res.headers['access-control-allow-origin'], 'https://aindrive.ainetwork.ai');
+  assert.equal((await request(app).get('/api/projects/by-name').query({ org: 'testorg', repo: 'nope' })).body.error.code, 'not_found');
+  assert.equal((await request(app).get('/api/projects/by-name').query({ org: 'testorg' })).status, 400);
+  const mine = await request(app).get('/api/projects/by-name').query({ org: 'testorg', repo: 'demo' }).set(as(ALICE));
+  assert.equal(mine.body.owner, ALICE, 'the owner gets the owner\'s view through by-name too');
+
+  const org = await request(app).get('/api/orgs/TESTORG/projects');
+  assert.equal(org.status, 200);
+  assert.ok(org.body.projects.some((p: { id: string }) => p.id === project.id), 'the slug\'s projects include this one');
+  assert.ok(org.body.projects.every((p: { org: string; owner?: string }) => p.org === 'testorg' && p.owner === undefined), 'all of the org, none with an owner');
+  assert.deepEqual((await request(app).get('/api/orgs/nobody-here/projects')).body, { org: 'nobody-here', projects: [] }, 'an unknown org is an empty list, not 404');
+  assert.equal((await request(app).get('/api/orgs/%2Fetc/projects')).status, 404, 'a malformed slug is 404');
+});
+
+test('the org repositories listing is read from aindrive with the machine token and cached', async () => {
+  repoListingAuth.length = 0;
+  const res = await request(app).get('/api/orgs/testorg/repositories');
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.body.known, true);
+  assert.equal(res.body.driveId, 'drv1');
+  assert.deepEqual(res.body.repositories.map((r: { name: string }) => r.name), ['demo', 'unbound']);
+  assert.deepEqual(repoListingAuth, ['Bearer machine-token']);
+  const again = await request(app).get('/api/orgs/TESTORG/repositories');
+  assert.equal(again.headers['x-cache'], 'hit');
+  assert.equal(repoListingAuth.length, 1, 'cached: aindrive was not asked again');
+  const unknown = await request(app).get('/api/orgs/elsewhere/repositories');
+  assert.deepEqual(unknown.body, { org: 'elsewhere', repositories: [], known: false }, 'aindrive\'s 404 is an empty, unknown org');
+});
+
+test('an ad-hoc run clones HEAD with the person\'s inputs and entry; owner or org member only; runs are not deployments', async () => {
+  assert.equal((await request(app).post(`/api/projects/${project.id}/runs`).send({})).status, 401);
+  const refused = await request(app).post(`/api/projects/${project.id}/runs`).set(as(BOB)).send({});
+  assert.equal(refused.status, 403); assert.equal(refused.body.error.code, 'not_member');
+  assert.equal((await request(app).post(`/api/projects/${project.id}/runs`).set(as(ALICE)).send({ inputs: { 'bad name': 'x' } })).status, 400);
+  const before = store.deploymentsOf(project.id).length;
+  runs.length = 0;
+  const res = await request(app).post(`/api/projects/${project.id}/runs`).set(as(CAROL)).send({ inputs: { desc: '노을 바다 유화', TOP_K: 3, verbose: true }, env: { EXTRA: 'yes' } });
+  assert.equal(res.status, 202, res.text);
+  assert.match(res.body.runId, /^run_/);
+  await worker.idle();
+  const run = store.deployment(res.body.runId)!;
+  assert.equal(run.status, 'ready', JSON.stringify(run));
+  assert.equal(run.trigger, 'run');
+  assert.equal(run.sha, await git(work, ['rev-parse', 'HEAD']), 'HEAD of the branch, filled in after the clone');
+  assert.deepEqual(run.pusher, { subject: CAROL });
+  const r = runs[0]!;
+  assert.equal(r.entry, 'main.py', 'the manifest\'s entry when none is given');
+  assert.equal(r.env.INPUT_DESC, '노을 바다 유화'); assert.equal(r.env.INPUT_TOP_K, '3'); assert.equal(r.env.INPUT_VERBOSE, 'true'); assert.equal(r.env.EXTRA, 'yes');
+  assert.equal(store.deploymentsOf(project.id).length, before, 'a run is not a deployment');
+  assert.equal(store.get(project.id)!.lastDeploymentId !== run.id, true, 'and never the project\'s status');
+  const list = await request(app).get(`/api/projects/${project.id}/runs`);
+  assert.equal(list.body.runs[0].id, run.id);
+  assert.deepEqual(list.body.runs[0].inputs, { desc: '노을 바다 유화', TOP_K: '3', verbose: 'true' });
+  assert.equal((await request(app).get(`/api/projects/${project.id}/deployments`)).body.deployments.some((d: { id: string }) => d.id === run.id), false);
+  // Another entry: a file that is not in the repository ends in error, cleanly.
+  const missing = await request(app).post(`/api/projects/${project.id}/runs`).set(as(ALICE)).send({ entry: 'other.py' });
+  await worker.idle();
+  assert.equal(store.deployment(missing.body.runId)!.status, 'error');
+  assert.match(store.deployment(missing.body.runId)!.error!, /other\.py/);
+});
+
+test('redeploy starts the same commit again as a new deployment, and rotate-secret retires the old webhook secret', async () => {
+  const latest = store.deploymentsOf(project.id)[0]!;
+  assert.equal((await request(app).post(`/api/deployments/${latest.id}/redeploy`)).status, 401);
+  assert.equal((await request(app).post(`/api/deployments/${latest.id}/redeploy`).set(as(BOB))).status, 403);
+  const res = await request(app).post(`/api/deployments/${latest.id}/redeploy`).set(as(ALICE));
+  assert.equal(res.status, 202, res.text);
+  await worker.idle();
+  const d = store.deployment(res.body.deploymentId)!;
+  assert.equal(d.trigger, 'redeploy'); assert.equal(d.sha, latest.sha); assert.equal(d.status, 'ready');
+  assert.deepEqual(d.pusher, { subject: ALICE });
+  assert.equal(store.get(project.id)!.lastDeploymentId, d.id, 'a redeploy IS the project\'s newest deployment');
+  assert.equal((await request(app).post('/api/deployments/dep_nope/redeploy').set(as(ALICE))).status, 404);
+
+  assert.equal((await request(app).patch(`/api/projects/${project.id}/rotate-secret`).set(as(BOB))).status, 404, 'not the owner: not confirmed to exist');
+  const rotated = await request(app).patch(`/api/projects/${project.id}/rotate-secret`).set(as(ALICE));
+  assert.equal(rotated.status, 200);
+  assert.match(rotated.body.webhookSecret, /^whsec_[0-9a-f]{48}$/);
+  assert.notEqual(rotated.body.webhookSecret, project.webhookSecret);
+  assert.equal((await hook({ ref: 'refs/heads/main', after: sha1 }, project.webhookSecret)).status, 401, 'the old secret is dead');
+  project.webhookSecret = rotated.body.webhookSecret;
+  assert.equal((await hook({ ref: 'refs/heads/feature', after: sha1 })).status, 202, 'the new one works');
+});
+
+test('manifest examples are checked against the inputs they answer', () => {
+  assert.throws(() => resolveProjectManifest(writeManifest({ kind: 'script', entry: 'a.py', inputs: { q: {} }, examples: [{ name: 'x', inputs: { nope: '1' } }] })), /examples\."x" answers an input that does not exist: nope/);
+  const ok = resolveProjectManifest(writeManifest({ kind: 'script', entry: 'a.py', inputs: { q: {} }, examples: [{ name: 'x', inputs: { q: 'hello' } }] }));
+  assert.deepEqual(ok.examples, [{ name: 'x', inputs: { q: 'hello' } }]);
+  assert.deepEqual(resolveProjectManifest(writeManifest({ kind: 'script', entry: 'a.py' })).examples, []);
+});
+const writeManifest = (m: unknown): string => { const dir = mkdtempSync(join(tmp, 'm-')); writeFileSync(join(dir, 'ainize.json'), JSON.stringify(m)); return dir; };
 
 // ───────────────────────────────────────────── retention + delete
 
