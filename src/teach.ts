@@ -566,7 +566,17 @@ export class TeachWorker {
       const r = await this.execFn('docker', ['inspect', '-f', '{{.State.Running}}', c.trainer.container], 10_000).catch(() => ({ code: 127, out: '', err: 'docker unavailable' }));
       if (r.code !== 0) value = { state: 'paused', reason: r.err.includes('ENOENT') || r.code === 127 ? 'docker is not available to the node' : `trainer container ${c.trainer.container} is not running` };
       else if (r.out.trim() !== 'true') value = { state: 'paused', reason: `trainer container ${c.trainer.container} is not running` };
-      else value = { state: this.current || this.lastBlockedReason ? 'busy' : 'ready' };
+      else if (this.current || this.lastBlockedReason) value = { state: 'busy' };
+      else if (!c.trainer.gpus.trim()) value = { state: 'paused', reason: 'trainer GPUs are not configured on this node' };
+      else {
+        // A running container can lose GPU device access after a host cgroup reload.
+        // Do not advertise readiness or accept a lesson based only on its running flag.
+        const gpu = await this.execFn('docker', ['exec', c.trainer.container, 'nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'], 10_000)
+          .catch(() => ({ code: 127, out: '', err: '' }));
+        value = gpu.code === 0 && gpu.out.split('\n').some(line => /^GPU-[a-zA-Z0-9-]+$/.test(line.trim()))
+          ? { state: 'ready' }
+          : { state: 'paused', reason: `trainer container ${c.trainer.container} cannot access its configured GPUs` };
+      }
     }
     this.trainerCache = { at: Date.now(), value };
     return value;
