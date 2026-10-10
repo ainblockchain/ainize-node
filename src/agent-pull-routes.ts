@@ -64,6 +64,8 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
 
   router.post('/api/hosted-agents/:id/pulls', json, async (req, res) => {
     const id = open(req, res); if (!id) return;
+    const source = deps.readOnlySource?.(id);
+    if (source) return refuse(res, 409, 'read_only_source', `propose changes at ${source}`);
     const who = deps.principal(req);
     if (!who) { refuse(res, 401, 'not_signed_in', 'sign in to propose a change'); return; }
     const parsed = openPull.safeParse(req.body ?? {});
@@ -79,6 +81,56 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
       return;
     }
     res.status(201).json({ pull: deps.pulls.open({ agent: id, title, body, head, base, author: who }) });
+  });
+
+  const commentBody = z.object({ body: z.string().trim().min(1).max(8000) });
+  router.get('/api/hosted-agents/:id/pulls/:number/comments', (req, res) => {
+    const id = open(req, res); if (!id) return;
+    const pull = deps.pulls.get(id, Number(req.params.number));
+    if (!pull) return refuse(res, 404, 'not_found', 'no pull request');
+    res.json({ comments: pull.comments ?? [] });
+  });
+  router.post('/api/hosted-agents/:id/pulls/:number/comments', json, async (req, res) => {
+    const id = open(req, res); if (!id) return;
+    const author = deps.principal(req);
+    if (!author) return refuse(res, 401, 'not_signed_in', 'sign in to review a proposal');
+    const pull = deps.pulls.get(id, Number(req.params.number));
+    if (!pull) return refuse(res, 404, 'not_found', 'no pull request');
+    const parsed = commentBody.extend({ commit: z.string().regex(/^[a-f0-9]{40,64}$/).optional(), path: z.string().max(512).optional(), line: z.number().int().positive().optional() }).safeParse(req.body);
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', 'a comment needs text and an optional commit, path and line');
+    const { body, commit, path, line } = parsed.data;
+    if ((path === undefined) !== (line === undefined) || (path !== undefined && (!commit || path.split('/').some((part) => !part || part === '.' || part === '..')))) return refuse(res, 400, 'invalid_request', 'an inline comment needs a commit, repository path and line');
+    if (commit) {
+      try {
+        const resolved = await deps.git.resolve(id, commit);
+        if (resolved !== commit) throw new Error('invalid commit');
+        if (path !== undefined) {
+          const content = await deps.git.show(id, commit, path);
+          if (content === null || line! > content.split('\n').length) throw new Error('line is outside the file');
+        }
+      } catch (error) { return refuse(res, 400, 'invalid_anchor', (error as Error).message); }
+    }
+    res.status(201).json({ comment: deps.pulls.addComment(id, pull.number, { author, body, ...(commit ? { commit } : {}), ...(path ? { path, line } : {}) }) });
+  });
+  router.patch('/api/hosted-agents/:id/pulls/:number/comments/:comment', json, (req, res) => {
+    const id = open(req, res); if (!id) return;
+    const pull = deps.pulls.get(id, Number(req.params.number));
+    const comment = pull?.comments?.find((row) => row.id === Number(req.params.comment));
+    if (!pull || !comment || comment.deletedAt) return refuse(res, 404, 'not_found', 'no review comment');
+    const author = deps.principal(req);
+    if (!author || author !== comment.author) return refuse(res, 403, 'not_allowed', 'only the author can edit a review comment');
+    const parsed = commentBody.safeParse(req.body);
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', 'a comment needs text');
+    res.json({ comment: deps.pulls.updateComment(id, pull.number, comment.id, { body: parsed.data.body }) });
+  });
+  router.delete('/api/hosted-agents/:id/pulls/:number/comments/:comment', (req, res) => {
+    const id = open(req, res); if (!id) return;
+    const pull = deps.pulls.get(id, Number(req.params.number));
+    const comment = pull?.comments?.find((row) => row.id === Number(req.params.comment));
+    if (!pull || !comment || comment.deletedAt) return refuse(res, 404, 'not_found', 'no review comment');
+    const author = deps.principal(req);
+    if (!author || (author !== comment.author && !deps.canMerge(req, id))) return refuse(res, 403, 'not_allowed', 'only the author or an agent maintainer can delete a review comment');
+    res.json({ comment: deps.pulls.updateComment(id, pull.number, comment.id, { body: '', deletedAt: Date.now() }) });
   });
 
   router.post('/api/hosted-agents/:id/pulls/:number/merge', json, async (req, res) => {

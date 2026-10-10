@@ -36,6 +36,19 @@ export interface AgentPull {
   mergedAt?: number;
   mergedBy?: string;
   mergeCommit?: string;
+  comments?: AgentReviewComment[];
+}
+
+export interface AgentReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  commit?: string;
+  path?: string;
+  line?: number;
+  deletedAt?: number;
 }
 
 export class AgentPullStore {
@@ -80,6 +93,25 @@ export class AgentPullStore {
     rows[at] = next;
     this.pulls.set(agent, rows);
     this.save();
+    return next;
+  }
+
+  addComment(agent: string, number: number, input: Omit<AgentReviewComment, 'id' | 'createdAt' | 'updatedAt'>, now = Date.now()): AgentReviewComment {
+    const pull = this.get(agent, number);
+    if (!pull) throw new Error('no pull request');
+    const comments = pull.comments ?? [];
+    const comment = { ...input, id: comments.reduce((n, row) => Math.max(n, row.id), 0) + 1, createdAt: now, updatedAt: now };
+    this.update(agent, number, { comments: [...comments, comment] }, now);
+    return comment;
+  }
+
+  updateComment(agent: string, number: number, id: number, patch: Pick<AgentReviewComment, 'body'> & { deletedAt?: number }, now = Date.now()): AgentReviewComment {
+    const pull = this.get(agent, number);
+    const comments = pull?.comments ?? [];
+    const comment = comments.find((row) => row.id === id);
+    if (!comment) throw new Error('no review comment');
+    const next = { ...comment, ...patch, updatedAt: now };
+    this.update(agent, number, { comments: comments.map((row) => row.id === id ? next : row) }, now);
     return next;
   }
 
