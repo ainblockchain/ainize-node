@@ -1440,3 +1440,33 @@ gate 목록을 유지한 차기 재검증용이며, 짧은 진단용 profile을 
 아직 전체 결과가 없다. 현재 관측한 backend 부분 결과는 1523 pass/1 fail/77 skip,
 4 failed suites이고 desktop은 126 pass/2 skip이다. 원인/최종 결과는 완료 로그로 확인해야 한다.
 새 인덱스 지원이 나머지 실패까지 해결했다는 증거는 없고 운영 활성화/배포도 하지 않았다.
+
+### Teams f118bbfe 전체 테스트 결과와 실행 부담 분리 — 2026-10-11
+
+`native-teams-refresh-61qaqajj` 전체 실행(handle 47038)은 종료됐다.
+Typecheck/lint PASS, test FAIL, 이후 build는 실행되지 않았다. OOM/oom_kill 모두 0.
+- Backend: 1523 pass / 1 fail / 77 skip, 4 failed suites. 3개 PGlite suite의
+  beforeAll 10초 초과와 public-fetch.spec.ts의 실제 example.com DNS 의존 실패.
+- Web: 7042 pass / 3 fail / 114 skip, 2 failed suites. Git 목록 검사 3개 실패와
+  thumbnail.test.ts의 fixture 생성 beforeAll 60초 초과.
+- Desktop: 126 pass / 2 skip. 건너뜀을 성공으로 계산하지 않는다.
+전체 suite에 대한 후속 통과 결과는 아직 없다.
+
+실행기 Git inventory 보완 후 Git 목록 검사 4/4 통과는 직전 기록을 참조한다.
+추가로 기존 시간 제한/제품 코드/테스트 내용은 유지하고 Vitest --maxWorkers=1로 검사했다.
+- `native-db-concurrency-i7zu14t9`: PGlite 3개 파일 9 pass / 0 skip, 14.26초.
+- `native-thumbnail-concurrency-j9mwp1dz`: thumbnail 18 pass / 0 skip, 22.52초.
+두 경우 모두 같은 2 CPU/8GiB 격리 컨테이너에서 통과했다. 각 evidence/와 result.json 보존.
+
+차기 전체 profile은 `native-db-concurrency-i7zu14t9/full-profile.json`에 보존했다.
+원래 전체 gates를 유지하며 gitInventory=true 및 테스트 명령에 workspace-concurrency=1,
+maxWorkers=1을 적용한다. pinned source의 backend/web/desktop test script가 모두
+vitest run인 것을 확인했으며 원래 test script를 통해 실행한다. 전체 재검증은 아직 안 했다.
+외부 DNS에 의존하는 public-fetch 검사는 여전히 실패하므로 단독 통과 결과를 합쳐
+전체 제품 PASS로 표시하지 않는다. 이 DNS 의존은 native qa-ainteams 전환 후 실제 수정
+요청으로 다루고, 네트워크를 열거나 assertion을 건너뛰지 않는다.
+
+현재 main의 build를 별도 확인 중:
+`/mnt/newdata/qa-services/validation/native-teams-current-build-4bq_b1k6`, handle 25187.
+원본 전체 실행을 재시작한 것이 아니라 이전 실패 때문에 미실행된 build gate 진단이다.
+운영 writer/채널/PR/페이지/배포에는 쓰지 않았다.
