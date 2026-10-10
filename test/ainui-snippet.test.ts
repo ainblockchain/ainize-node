@@ -404,6 +404,13 @@ test('streamed runs pin the selected source and deployed runs survive a newer fa
   const commit = await invoke({ target: 'commit', sha: sha1 });
   assert.equal(commit.sha, sha1);
   assert.equal(runs.at(-1)!.files['main.py'], 'print("v1")\n');
+  for (const [target, expected] of [['head', second], ['commit', sha1], ['deployed', sha1]]) {
+    const source = await request(app).get(`/api/projects/${projectId}/source`).query({ target, ...(target === 'commit' ? { sha: sha1 } : {}) }).set(await asActor('acc_member'));
+    assert.equal(source.status, 200, source.text);
+    assert.equal(source.body.sha, expected);
+    assert.equal(source.body.manifest.entry, 'main.py');
+    assert.equal(source.headers['cache-control'], 'private, no-store');
+  }
   assert.equal(store.get(projectId)!.activeCommit, sha1, 'runs do not replace production');
   assert.equal(store.get(projectId)!.lastDeploymentId, failed.id, 'runs do not hide failed deployment status');
   for (const body of [{ target: 'commit' }, { target: 'head', sha: sha1 }, { entry: 'sub/../main.py' }]) {

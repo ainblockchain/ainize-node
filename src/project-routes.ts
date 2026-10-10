@@ -276,6 +276,30 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     return { project, viewer };
   };
 
+  /** A form always comes from the same immutable source its Run button will execute. */
+  router.get('/api/projects/:id/source', async (req, res) => {
+    const hit = await seen(req, res);
+    if (!hit) return;
+    const parsed = runInput.safeParse({ target: req.query.target ?? 'head', ...(req.query.sha ? { sha: req.query.sha } : {}) });
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', 'invalid source target');
+    const { target, sha } = parsed.data;
+    if ((target === 'commit' && !sha) || (target !== 'commit' && sha)) return refuse(res, 400, 'invalid_request', 'sha is required only for a commit target');
+    const project = hit.project;
+    const active = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
+    if (target === 'deployed' && !active?.sha) return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
+    const work = mkdtempSync(join(tmpdir(), 'ainize-project-source-'));
+    try {
+      const resolved = await deps.worker.checkout(project, target === 'deployed' ? active!.sha : sha ?? '', work);
+      const root = projectRoot(work, project.sourcePath);
+      const manifest = resolveProjectManifest(root, { entry: project.entry });
+      res.set('cache-control', 'private, no-store').json({ repoId: repositoryId(project.repo), target, sha: resolved, sourcePath: project.sourcePath ?? '', manifest });
+    } catch (error) {
+      refuse(res, 502, 'source_failed', (error as Error).message);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   /**
    * `POST /api/projects/:id/run { env? }` → `text/event-stream` (`stdout` / `stderr` / `error` / `exit`, the shape of
    * `/api/run`): the deployed commit of a `script` project, run again with the person's answers to the manifest's
