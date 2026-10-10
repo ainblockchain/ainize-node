@@ -102,7 +102,10 @@ Errors are `{ error: { code, message } }`.
 | `GET /api/projects/:id`, `DELETE /api/projects/:id` | owner only; anyone else sees 404. Delete removes deployments, logs and secrets (a running service container is stopped). |
 | `GET /api/projects/by-repo?repo=<url>` | **no auth, CORS for `https://aindrive.ainetwork.ai`** — `{ id, org, repoName, repo, branch, kind, status, url, pageUrl, lastDeployment }`; no owner, no hook address. 404 when none. aindrive's "Inspect" links to `pageUrl`. |
 | `POST /api/projects/:id/hook` | **the push webhook** (below). 202 `{ deploymentId, status: "queued" }`, or 202 `{ ignored: true, reason }` for another branch / a deleted branch. 401 `bad_signature`, 404 unknown project. |
-| `GET /api/projects/:id/deployments` | newest first. |
+| `GET /api/projects/:id/deployments` | newest first. The owner — or a person a trusted application names (link snippets, below); anyone else 404. |
+| `POST /api/projects/:id/run` | **link snippets**: the deployed commit of a `script` project run again, for the viewer, with `{ env?: { INPUT_<NAME>: value } }` over the manifest's defaults; `text/event-stream` like `/api/run`. Viewer+. 409 `no_deployment` / `not_a_script`. |
+| `POST /api/projects/:id/redeploy` | **link snippets**: the owner deploys the newest commit again. 202 `{ deploymentId, status: "queued" }`; 403 for a member. |
+| `GET /api/ainui/snippet?url=<pasted URL>` | **link snippets**: the project's AIN-UI snippet (`application/vnd.ain.ui+json`) for the viewer; 403 with a sign-in surface, 404 unknown. |
 | `GET /api/deployments/:id` | `{ id, projectId, sha, ref, kind, status: queued\|building\|ready\|error, pusher, startedAt, finishedAt, ms, exitCode?, error?, logUrl, outputUrl? }`. |
 | `GET /api/deployments/:id/log` | `text/plain` once over; **SSE while queued/building** (`event: log` chunks, then `event: done` with the final deployment). `Accept: text/plain` forces text. Build output lines are prefixed `[build]`, the node's own `[ainize]`, a failed container's last lines `[run]`. |
 | `GET /api/deployments/:id/output` | a script's stdout alone. |
@@ -202,3 +205,37 @@ newest `ready` service/nextjs deployment of each project is deployed again from 
 Containers need `agentHost.docker.enabled` (the same switch as code agents and `/api/run`); without it those kinds
 end in `error` saying so, while `script` falls back to the `/api/run` HTTP contract and `agent` prompt-mode agents
 need no Docker at all.
+
+## Link snippets (AIN-UI)
+
+*The contract is aindrive's `docs/AINUI-LINK-SNIPPETS.md`; this is the ainize half. Code: `src/ainui-snippet.ts`
+(pure builders), `src/project-routes.ts` (the four doors), ainize-web `middleware.ts` (negotiation). Tests:
+`test/ainui-snippet.test.ts`.*
+
+When `https://ainize.ai/<org>/<repo>` or `https://ainize.ai/projects/<id>` is pasted into a chat (AIN Teams), the
+consumer asks **that URL** with `Accept: application/vnd.ain.ui+json` and the two identity headers it already uses
+for runs — `Authorization: Bearer <its AIN SSO client_credentials token, aud = https://ainize.ai>` and
+`X-AIN-Actor: <the viewer's AIN SSO subject>`. ainize-web's middleware relays such a request to the node's
+`GET /api/ainui/snippet?url=…`; a request without that media type is the page as before. The node verifies the
+application (`verifyServiceToken`, `AIN_SSO_SERVICE_APPS` must list it, e.g. `ainteams`) and answers **for the
+person**: owner, or an active member of an AIN organization this node knows under the project's `<org>` slug
+(`store.ssoMemberships`). A session of this node is a viewer too.
+
+The answer is `{ ainui: 1, kind: "ainize.project", title, subtitle, icon, url, surface, actions, refresh }`:
+
+* `surface` — A2UI v0.9 messages (basic catalog; only Column/Row/Card/Text/Divider/TextField/Button, the
+  vocabulary hosted agents already emit): `header`, the `deployments` card (newest three: `● ready|building|error`,
+  short sha, when, `Inspect` → the project page, `Visit` → `outputUrl`), the `run` card for a `script` project
+  (one `TextField` per `ainize.json` input, bound to `/inputs/<NAME>`, prefilled with `default`; `run.output` /
+  `run.status` bound to `/run/*`), and `links` (`Open on ainize`, `Repository`, and `Redeploy` for the owner).
+* `actions` — what each button does: `run` = `POST /api/projects/<id>/run` with `{ env: {$context} }` (the
+  resolved button context, keys `INPUT_<NAME>`), streaming SSE the consumer appends into `/run/output`;
+  `redeploy` = `POST /api/projects/<id>/redeploy`; `open:*` = navigation. Actions carry the same two headers and
+  re-check access on every call.
+* 403: the same envelope with `kind: "denied"`, one sentence and a link; 404 for an unknown project.
+
+To draw the Run form without a clone, a deployment records the commit's `ainize.json` `entry` and `inputs`
+(`Deployment.manifest`); the run endpoint checks the deployed commit out again (`ProjectWorker.checkout`) and runs
+it through the same `RunScript` the worker deploys with, the person's `aindrive run` key in `AINIZE_API_KEY`
+(`RunKeyIssuer.keyFor`). Nothing secret is in a snippet: no webhook secret, no deploy token, no key, no manifest
+`env` values.

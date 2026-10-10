@@ -727,6 +727,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       orgIdsForSlug: (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug),
       principalForSubject: (subject) => store.ssoIdentity(ssoConfig.issuer, subject)?.principal ?? ssoPrincipal(subject),
     } : undefined,
+    // Link snippets (docs/PROJECTS.md "Link snippets"): a consumer application's machine token + X-AIN-Actor is the
+    // person it asks for; their access is their ownership or an active membership in the project's organization.
+    actor: ssoConfig && ssoConfig.serviceApps.length > 0 && sso.jwks ? {
+      servicePrincipal: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      principalForSubject: (subject) => store.ssoIdentity(ssoConfig.issuer, subject)?.principal ?? ssoPrincipal(subject),
+      orgIdsForSlug: (slug) => store.ssoOrgIdsBySlug(ssoConfig.issuer, slug),
+      memberOrgs: (subject) => store.ssoMemberships(ssoConfig.issuer, subject).filter((m) => m.status === 'active').map((m) => m.org_id),
+      keyFor: runKeys ? (subject) => runKeys.keyFor(subject).key : undefined,
+    } : undefined,
   }));
   projectWorker.recover();
   app.use(hostedAgentRoutes({

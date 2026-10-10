@@ -34,7 +34,7 @@ import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
 import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
 import type { ProjectContainers } from './project-containers.js';
-import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestKind, inputDefaults } from './project-manifest.js';
+import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, type ProjectManifest, type ProjectManifestInput, type ProjectManifestKind, inputDefaults } from './project-manifest.js';
 import type { RunSandbox } from './run-sandbox.js';
 
 const exec = promisify(execFile);
@@ -86,6 +86,11 @@ export interface Deployment {
   kind?: ProjectKind | null;
   /** Where the result lives once `ready`: the service's public URL, the agent's A2A URL, a script's stdout. */
   outputUrl?: string | null;
+  /**
+   * What the commit's `ainize.json` said a person can run (ainui-snippet.ts draws the Run form from it without a
+   * clone): the entry and the `inputs` declarations. Absent until the manifest was read, or on older records.
+   */
+  manifest?: { entry: string | null; inputs: ProjectManifestInput['inputs'] } | null;
 }
 
 /** `POST /api/run`'s request, as deploy/run-runtime/README.md describes it. */
@@ -384,6 +389,9 @@ export class ProjectWorker extends EventEmitter {
 
   stop(): void { this.stopped = true; }
 
+  /** The `RunScript` this worker deploys scripts with, for a run pressed from a link snippet (project-routes.ts). */
+  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void): Promise<void> { return this.deps.run(req, onEvent); }
+
   /** Resolves when nothing is queued or building (tests). */
   idle(): Promise<void> {
     if (!this.active.size && ![...this.perProject.values()].some((q) => q.length)) return Promise.resolve();
@@ -450,7 +458,7 @@ export class ProjectWorker extends EventEmitter {
         finish({ status: 'error', error: message });
         return;
       }
-      store.updateDeployment(d.id, { kind: manifest.kind });
+      store.updateDeployment(d.id, { kind: manifest.kind, manifest: { entry: manifest.entry ?? null, inputs: manifest.inputs } });
       say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
       const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
       const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: d.sha };
@@ -510,6 +518,15 @@ export class ProjectWorker extends EventEmitter {
    * git config entry, so a process listing never shows it.
    */
   private async clone(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
+    return this.checkout(project, sha, dir, say);
+  }
+
+  /**
+   * The repository at `sha` in `dir`, with the same credentials a deployment clones with — for a run pressed from a
+   * link snippet (`POST /api/projects/:id/run`, project-routes.ts), which executes the deployed commit again with
+   * a person's answers. The caller owns `dir` and removes it.
+   */
+  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
     // Credential order: a pasted deploy token (the owner's explicit choice) wins; else the node's own machine identity
     // at AIN SSO for this repository's host (aindrive makes it a viewer on the drives shared with the organizations
     // the app is assigned in); else anonymous (a public repo).
