@@ -978,3 +978,22 @@ Ainmem reporter는 validation_failed를 failed 칼럼으로 매핑하고 후보�
 보존했음을 설명한다. coding/needs_validation에서 재수정 이력이 있으면 현재 회차를
 표시한다. 이 과정에서 approvalPending은 false이며 승인 대기 문구를 내보내지 않는다.
 공통 QA 147 tests/0 skip, TypeScript build 및 diff check 통과. 운영 배포는 하지 않았다.
+
+### 최신 main 통합과 API 전체 검사 — 2026-10-11
+
+origin/main c8a6176을 hosted-qa-execution에 merge했다(충돌 없음, HANDOFF.md 변경).
+전체 npm test 최초 실행은 924개 중 904 pass / 2 fail / 18 skip였다. 빌드는 통과했다.
+실패 원인과 조치:
+- hosted runtime의 실행 파일 비교가 심볼릭 링크 경로를 정규화하지 않아, Mac 임시
+  경로에서 main이 실행되지 않았다. 실제 경로를 비교하도록 수정하고 명시적 runtime
+  alias를 통한 두 프로세스의 상태 보존·토큰 비노출 회귀 검사를 추가했다.
+- cluster fixture는 구/신 버전을 함께 seed한다. 구 버전이 VERIFIED를 거쳐 이미
+  SUPERSEDED가 된 경우도 검증 정족수와 서명이 유효한데 순간 상태만 기다리며 실패했다.
+  quorum_ok와 허용된 검증 완료 상태를 검사하고 기존 supersede 검사는 유지했다.
+수정 후 두 파일의 13 tests/0 skip 및 build 통과. 전체 suite 재실행 결과는 아직 아니다.
+
+cluster 테스트의 큰 blob 다운로드는 HTTP status만 검사하고 본문을 읽지 않아 종료 시
+연결이 남는 것을 실제 소켓 조회로 확인했다. arrayBuffer를 소비하고 비어 있지 않음을
+검사하도록 보완했으며 별도 cluster 재실행 결과를 확인한다.
+
+다운로드 본문 처리 후 cluster 재실행은 8 pass / 0 skip, 18.6초에 정상 종료했다.

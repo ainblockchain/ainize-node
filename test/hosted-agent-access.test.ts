@@ -105,6 +105,8 @@ test('runtime exposes decoded state before import and preserves data across fres
     await prepareHostedAgentRuntimeContext(join(dir, 'runtime'));
     // Compiled runtime resolves dependencies through this explicit test symlink.
     symlinkSync(join(process.cwd(), 'node_modules'), join(dir, 'runtime/node_modules'), 'dir');
+    const alias = join(dir, 'runtime-alias');
+    symlinkSync(join(dir, 'runtime'), alias, 'dir');
     const entry = join(dir, 'agent.mjs');
     writeFileSync(entry, `import {readFileSync,writeFileSync} from 'node:fs';
 const path=process.env.AINIZE_AGENT_STATE_DIR+'/counter';
@@ -112,7 +114,7 @@ if(process.env.AINIZE_AGENT_TOKEN) throw Error('token exposed');
 let n=0;try{n=Number(readFileSync(path,'utf8'))}catch{}
 writeFileSync(path,String(n+1));throw Error('import-completed');`);
     for (let i = 1; i <= 2; i++) {
-      await assert.rejects(promisify(execFile)(process.execPath, [join(dir, 'runtime/hostedAgentRuntimeMain.js')], {
+      await assert.rejects(promisify(execFile)(process.execPath, [join(alias, 'hostedAgentRuntimeMain.js')], {
         env: { ...process.env, AINIZE_AGENT_SPEC: '{}', AINIZE_AGENT_ENTRY: entry, AINIZE_AGENT_TOKEN: 'test-only',
           AINIZE_AGENT_STATE_DIR: 'b64:' + Buffer.from(dir).toString('base64') },
       }), { code: 1 });

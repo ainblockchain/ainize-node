@@ -329,3 +329,29 @@ regular session cookie. The skip remains a product coverage gap; it is not a pas
 The web production build's offline Google Fonts failure and existing PR199 remain
 separate unresolved work. These results do not prove a live QA channel/model/approval/
 production release, and the profile has not been enabled for production jobs.
+
+## Current resource limits and validation repair (2026-10-11)
+
+Operator profiles may set `pidsLimit` to an integer from 64 to 1024 (default 256).
+Candidates cannot supply it. Validator policy version `4-bounded-process-limits`
+invalidates earlier receipts. The profile also remains part of the receipt identity.
+Teams production layout validation uses 512 PIDs, 8 GiB memory and a 4 GiB temporary
+workspace. `e2e/fixtures/teams-product.mjs` builds the app and starts a production
+server plus a disposable loopback PostgreSQL database. It requires all four layout
+scenarios to pass with no skips or retries. See the handoff for the pinned image and
+exact source SHA; this is not a validation of arbitrary later commits.
+
+On a bound host validation failure, the handler resumes native coding up to twice,
+only before publication. It preserves job/page identity and immutable failed candidate
+and verdict references in `validationAttempts`. Diagnostics are untrusted model input,
+not executable instructions. The original request/base and total model round budget
+remain unchanged. Every revised candidate needs a fresh passing host receipt before
+publication. A third failure remains `validation_failed`, shown in Ainmem's failed
+column; it never becomes an approval request. Remote base changes still require the
+separate, unfinished revalidation workflow.
+
+Production enablement still needs POSIX ACL utilities (`setfacl`, `getfacl`) available
+in the user service PATH. Read-only checks on .41 confirmed that both are absent while
+`systemctl --user is-active ainize-public-node` and `ainize-auto-deploy.timer` are active.
+The isolated validation copy of ACL tools is not an installation for the production
+service. Do not change agent ownership to bypass this dependency.
