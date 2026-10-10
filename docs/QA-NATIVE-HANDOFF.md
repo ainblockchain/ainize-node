@@ -580,3 +580,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 이 동작을 읽은 실제 운영 소스는 `/mnt/newdata/qa-services/releases/8b654ff/ainteams-qa/qa_agent/routing.py`다. a2a-agents에는 수정/커밋하지 않았다. Native handler/host profiles는 현재 단일 저장소 기준이므로, **Ainize 공유 채널의 저장소 선택·중복 방지·승인 범위를 이관하기 전 전환하면 안 된다.** 두 profile을 별도 Teams 봇으로 복제하는 방식도 요구사항을 만족하지 않는다.
 - Aindrive 4GiB full E2E는 #178 전송 실패 뒤 서버 연결 거부로 실패했다. #178 단독은 1 pass/173 제외로 통과했으므로 제품 전송 자체의 결함이나 OOM으로 단정하지 않는다. private 로그가 잘리지 않게 stdout/stderr 별도 저장과 실패 시 cgroup memory.events 기록을 추가했고 QA 110 pass/0 skip 및 build pass다.
 - 같은 Aindrive 증거 디렉터리에서 `run-full-evidence.mjs`로 full E2E를 재실행 중이다. 다음에는 실제 실행 상태와 `full-evidence-result.json`, `full-evidence/*.log`를 확인한다. 기존 실행을 단순 관측 시간 초과로 재시작하지 않는다. 운영 배포/전환은 계속 미실행이며 PR76 승인 질문도 대기 중이다.
+
+### 2026-10-10 공유 채널의 영구 저장소 선택 코어
+
+- `examples/qa-agent/routing.mjs`에 정본 Teams 수정 요청용 `enqueueSharedTeamsRequest`를 추가했다. web/API를 같은 Jobs DB와 SQLite transaction에서 선택·접수한다. API/백엔드 또는 web/웹 접두어는 기존 의미를 유지하고, 새 미지정 요청은 웹으로 보낸다. 스레드 답글은 최초 저장소를 유지한다.
+- 재시작·재전송은 기존 job ID/base/checkpoint/과거 승인 데이터를 그대로 반환한다. 요청 본문/부모 변경, 스레드의 두 저장소 작업 혼재, 설정에서 사라진 기존 저장소는 새 작업을 만들지 않고 재조정을 요구한다. 두 DB 연결에서도 중복 접수되지 않음을 확인했다.
+- 반드시 canonical verifier 결과만 전달하는 내부 코어다. webhook 본문/metadata는 저장소 선택 권한이 아니다. 코어 자체는 실행·검증·게시·승인 권한을 만들지 않는다.
+- 공유 경로 테스트 5개 pass/0 skip. 전체 QA 114 pass/0 skip 후, 조회 범위 제한 및 두 DB 연결 테스트 추가분을 포함한 routing 테스트 5개를 다시 통과했다.
+- **아직 handler와 호스트 다중 저장소 capability에 연결하지 않았다.** 기존 단일 저장소 handler를 운영에서 이 코어로 임의 교체하지 않는다. 다음 작업은 한 Teams 봇의 웹/API scope를 host intake→base→validation→publication→review/release까지 일관되게 바인딩하고, 같은 스레드 LGTM이 두 후보를 승인하지 않도록 검증하는 것이다. 기존 페이지/job/승인 이관도 함께 필요하다.
+- Aindrive `run-full-evidence.mjs`는 실행 중이다(마지막 실제 컨테이너 관측: 실행 약 6분). 프로세스/결과를 확인하기 전 재시작하지 않는다. 운영 전환/배포는 수행하지 않았다.
