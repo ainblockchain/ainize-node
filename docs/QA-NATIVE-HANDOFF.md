@@ -1374,3 +1374,30 @@ prepared base에서 일반 tick이 코딩 단계를 이어받는 통합 테스�
 외부 verify/prepare/coding은 fixture이며 실제 제품 모델 수정·배포 증거가 아니다.
 운영 cutover에서는 writer 정지/페이지 등록/host profile 배포 후 이 adapter들을 연결해
 재개해야 한다. 운영 두 작업을 실제로 queued로 바꾸거나 중복 실행하지 않았다.
+
+
+### 실제 작업 복사본의 native 재개 준비 — 2026-10-11
+
+`/mnt/newdata/qa-services/validation/native-unpublished-resume-g9vc6xgd`에서 기존 두 작업을
+복사한 jobs DB로 resumeUnpublishedLegacy를 실행했다. Teams 원본/현재 사람 멤버 확인,
+실제 host intake ledger(웹/API 공유 route 포함), HostedQaBases 및 prepareQaCheckout를
+연결했다. 모델/제품 코딩/PR/페이지/운영 worker 쓰기는 수행하지 않았다.
+
+- Ainize web 6c05b474: 현재 main 2c493a2880032adfe73ead7f32150505cd835f05로 queued,
+  원래 ID/요청/정본 페이지 archive 보존. `summary.json` 참조.
+- Teams 2e7f6dd3: 최초 진단에는 GitHub 인증을 전달하지 않아 fetch가 실패했다.
+  운영 server.ts는 readQaToken(tokenPath)를 prepareQaCheckout에 전달하는 것을 확인했다.
+  진단에는 로컬 인증 Git에서 가져온 정확한 commit을 bundle로 옮겨 재시도했다.
+- 그 뒤 기존 0e6dfedd 이미지와 현재 f118bbfea579984dabb6d652a2d5219bdce8708a의
+  package/lock/workspace 파일 차이를 감지해 `Dependency image refresh required`로
+  다시 거부했다. 두 실패 모두 copied job unchanged=true였다.
+- 새 격리 이미지 빌드를 완료하고 새 profile로 다시 실행해 Teams도 같은 ID로 queued가
+  됐다. `teams-refreshed-summary.json` 참조. 기존 실패 기록도 보존했다.
+
+새 Teams 준비 경로: `/mnt/newdata/qa-services/validation/native-teams-refresh-61qaqajj`.
+image: `sha256:fa5f1248c066ad9244edaffef4062dc20e4f4d3580f5a4f200ddb21ed42c3fd4`.
+현재 main의 전체 typecheck/lint/test/build 게이트가 별도 진단으로 실행 중이다.
+원본 README와 동일한 overlay를 사용해 제품 수정 없이 환경/현재 gate를 검사한다.
+`validation.log`, `result.json`, `evidence/`가 결과 정본이고 로컬 process handle은 47038이다.
+컨테이너 실행 및 backend/desktop typecheck 성공을 확인했으며 web typecheck는 아직 진행 중.
+이 상태를 전체 gate 통과나 실제 채널 E2E 완료로 해석하지 않는다.
