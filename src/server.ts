@@ -23,6 +23,9 @@ import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { AgentGit } from './agent-git.js';
 import { AgentGitHttp } from './agent-git-http.js';
 import { agentGitRoutes } from './agent-git-routes.js';
+import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, runScriptViaSandbox, PROJECT_SECRET_DEPLOY_TOKEN } from './projects.js';
+import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-containers.js';
+import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
 import { AgentMirrorStore } from './agent-mirror.js';
@@ -643,6 +646,60 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return own + peers;
     },
   }));
+  // Projects bound to aindrive git repositories (projects.ts, docs/PROJECTS.md): no repository lives here; a push
+  // there calls the hook here, and the worker clones that commit and runs it through this node's /api/run.
+  const projectStore = new ProjectStore(join(cfg.dataDir, 'projects.json'));
+  const projectSecrets = new HostedAgentSecretStore(join(cfg.dataDir, 'project-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  const projectLogs = new DeploymentLogs(join(cfg.dataDir, 'projects', 'logs'));
+  // Service / Next.js containers: the hosted-agent network and the run sandbox's gateway door, when Docker is on.
+  const projectContainers = runSandbox && dockerCfg?.enabled ? new ProjectContainers({
+    network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
+    gateway: hostedGateway,
+    gatewayUrl: () => runSandbox.gatewayBase,
+    selfUrl: () => `http://127.0.0.1:${(server.address() as { port?: number } | null)?.port ?? cfg.port}`,
+    publicUrl: () => market.publicUrl,
+    workDir: join(cfg.dataDir, 'projects', 'work'),
+    runtime: dockerCfg.runtime,
+    memory: dockerCfg.memory ?? PROJECT_CONTAINER_DEFAULTS.memory,
+    cpus: dockerCfg.cpus ?? PROJECT_CONTAINER_DEFAULTS.cpus,
+    pidsLimit: dockerCfg.pidsLimit ?? PROJECT_CONTAINER_DEFAULTS.pidsLimit,
+    buildTimeoutMs: PROJECT_CONTAINER_DEFAULTS.buildTimeoutMs,
+    log: (level, message) => market.log(level, 'projects', message),
+  }) : undefined;
+  if (projectContainers) await projectContainers.removeOrphans().catch((e: Error) => market.log('warn', 'projects', `could not remove leftover project containers: ${e.message}`));
+  const projectWorker = new ProjectWorker({
+    store: projectStore,
+    logs: projectLogs,
+    run: runSandbox ? runScriptViaSandbox(runSandbox) : runScriptOverHttp(() => `http://127.0.0.1:${cfg.port}`),
+    containers: projectContainers,
+    agents: {
+      store: hostedStore,
+      host: hostedHost,
+      reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
+      // The same repository-side record a hosted agent gets from the API (below): one history per agent.
+      onApplied: async (spec, created) => {
+        if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
+        agentGitHttp.installHooks(spec.id);
+        const parent = (await agentGit.hasCommits(spec.id)) ? await agentGit.resolve(spec.id, 'main') : null;
+        await agentGit.commitSpec(spec.id, spec, { message: created ? `Create ${spec.id} (ainize project)` : `v${spec.version} (ainize project push)`, parent, author: { name: spec.owner, email: `${spec.owner}@ainize` } });
+        agentEvents?.append({ type: created ? 'agent.published' : 'agent.updated', registryIssuer: market.publicUrl, agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+      },
+    },
+    deployToken: (id) => projectSecrets.reveal(id, [PROJECT_SECRET_DEPLOY_TOKEN])[PROJECT_SECRET_DEPLOY_TOKEN] ?? null,
+    publicUrl: () => market.publicUrl ?? selfUrl,
+    log: (level, message) => market.log(level, 'projects', message),
+  });
+  app.use(projectRoutes({
+    store: projectStore,
+    secrets: projectSecrets,
+    logs: projectLogs,
+    worker: projectWorker,
+    containers: projectContainers,
+    caller: agentCaller,
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    log: (level, message) => market.log(level, 'projects', message),
+  }));
+  projectWorker.recover();
   app.use(hostedAgentRoutes({
     store: hostedStore,
     secrets: hostedSecrets,
