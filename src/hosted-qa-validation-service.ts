@@ -2,7 +2,7 @@
 import { mkdirSync, lstatSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { runQaValidation, validateQaProfile, qaCandidateDigest, type QaCandidate, type QaValidationProfile } from './hosted-qa-validator.js';
+import { QA_VALIDATOR_VERSION, runQaValidation, validateQaProfile, qaCandidateDigest, type QaCandidate, type QaValidationProfile } from './hosted-qa-validator.js';
 type Result = Awaited<ReturnType<typeof runQaValidation>>;
 export type QaValidationStatus = { state: 'running' | 'busy' } | { state: 'done'; result: Result } | { state: 'failed' };
 export class HostedQaValidationService {
@@ -19,7 +19,7 @@ export class HostedQaValidationService {
     const profile=this.profiles[agentId]!;
     const candidate=structuredClone(raw) as QaCandidate;
     validateQaProfile(profile,candidate);
-    const key=createHash('sha256').update(JSON.stringify([agentId,profile,qaCandidateDigest(candidate)])).digest('hex');
+    const key=createHash('sha256').update(JSON.stringify([QA_VALIDATOR_VERSION,agentId,profile,qaCandidateDigest(candidate)])).digest('hex');
     const file=join(this.root,`${key}.json`);
     return {profile,candidate,key,file};
   }

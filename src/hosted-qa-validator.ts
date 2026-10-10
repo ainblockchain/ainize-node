@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
+// Bump when execution semantics change so old receipts cannot authorize a new validator policy.
+export const QA_VALIDATOR_VERSION = '2-copied-dependencies';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
   dependencyPath: string; cwd: string; gates: { name: string; argv: string[] }[];
@@ -53,7 +55,9 @@ for(const file of ['package.json','yarn.lock','package-lock.json','pnpm-lock.yam
   console.error('Dependency snapshot mismatch: '+file);process.exit(1);
  }
 }
-fs.symlinkSync(p.dependencyPath+'/node_modules','/tmp/work/'+(p.cwd==='.'?'':p.cwd+'/')+'node_modules','dir');
+// Keep package paths inside the disposable checkout: TypeScript declaration inference follows realpaths.
+// Preserve relative .bin links so compilers resolve the copied dependency tree.
+fs.cpSync(p.dependencyPath+'/node_modules',project+'/node_modules',{recursive:true,verbatimSymlinks:true});
 const r=cp.spawnSync(p.argv[0],p.argv.slice(1),{cwd:'/tmp/work/'+p.cwd,stdio:'inherit',env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',CI:'1',NEXT_TELEMETRY_DISABLED:'1'}});
 process.exit(r.status===null?1:r.status);
 `;
@@ -90,7 +94,7 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       try {
         await exec('docker',['run','--rm','--name',name,'--network','none','--read-only','--user',`${uid}:${gid}`,
           '--cap-drop','ALL','--security-opt','no-new-privileges','--memory',profile.memory??'4g','--cpus','2','--pids-limit','256',
-          '--tmpfs','/tmp:rw,nosuid,nodev,size=2147483648','--mount',`type=bind,src=${dir},dst=/input,readonly`,
+          '--tmpfs','/tmp:rw,exec,nosuid,nodev,size=2147483648','--mount',`type=bind,src=${dir},dst=/input,readonly`,
           '--entrypoint','node',profile.image,'-e',bootstrap],{timeout:profile.timeoutMs??300000,maxBuffer:4*1024*1024});
         passed=true;
       } catch (error) {

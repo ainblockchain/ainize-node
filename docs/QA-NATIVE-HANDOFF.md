@@ -408,3 +408,14 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - Ainmem 상태 보고에 검토 PR과 정확한 커밋을 추가했다. 실제 Ainmem 서버에서 승인 댓글을 수신하는 경로는 여전히 남아 있다.
 - 실제 private HTTP gateway + SQLite/checkpoint + Ainmem outbox 통합 테스트 및 handler tick 테스트 통과. GitHub 응답은 테스트 대체 구현이며 실제 PR 쓰기 실증은 아니다. 관련 QA 테스트 57개 pass / 0 skip, 타입 검사·빌드 통과.
 - 다음: 실제 GitHub 게시 실증, 게시된 SHA에 결합된 사람 승인 확인, 릴리스/serving SHA 확인, 운영 상태 보존 전환과 전 채널 E2E. 게시 polling의 host 완료 캐시는 60초이며 재시작 시 원격 ref/PR을 재대조한다. 실패 작업은 후보를 보존한 채 대기하므로 운영 재개 정책이 필요하다.
+
+### 2026-10-10 실제 GitHub 게시 검증
+
+- 실제 .41 Docker에서 기준 `33261b2ba0ba330749130a5b07b80958fa595813` + 진단 문서 1개 후보를 검증했다. `npm run typecheck`와 게시/게이트웨이/검증 기록 관련 테스트 게이트가 모두 통과했다. 실제 제품 수정 요청 E2E를 대신하는 결과는 아니다.
+- 기존 API seed에는 개발 의존성이 없어 `tsc`가 없었다. 같은 package-lock으로 `npm ci --include=dev --ignore-scripts`를 실행한 검증 전용 이미지를 만들었다. 설치는 이미지 준비 단계이고 제품 게이트 실행은 network none이다.
+- 의존성을 seed로 symlink하면 TS2742가 발생했다. 각 격리 작업 폴더에 의존성을 복사하고 상대 .bin 링크를 보존하도록 수정했다. Docker tmpfs 기본 noexec 때문에 복사된 도구 실행이 거부되어 해당 임시 작업 공간에만 exec를 명시했다. root filesystem read-only, 비root 사용자, network none, cap-drop ALL은 유지한다. 검증기 정책 버전도 receipt 키에 포함해 이전 실행 정책의 성공/실패 기록을 재사용하지 않는다.
+- 실제 게시기는 [초안 PR #69](https://github.com/ainblockchain/ainize-node/pull/69)를 만들었다. base는 개발 브랜치 `hosted-qa-execution`, 변경은 `docs/QA-PUBLICATION-LIVE-CHECK.md` 1개뿐이다. main 변경/merge/배포는 없다.
+- 게시기 인스턴스를 새로 만든 뒤 같은 후보를 재게시해 동일 PR 번호·브랜치·커밋 `81ea77434b40c65f1166afedc0de8956d91edfff`를 반환함을 확인했다. PR을 별도 조회해 draft/open/base/head/파일 목록을 대조했다.
+- 서버 증거: `/mnt/newdata/qa-services/validation/native-publication-20261010-7vIY21` (`profile.json`, `candidate.json`, `result.json`, `published.json`, `retry.json`, `run.mjs`, Dockerfile/빌드 로그). 검증 컨테이너가 남지 않았음을 확인했다.
+- 검증 이미지: `sha256:457897dc8ad84cac7fa3feebe1b81032d96b84b5ed0acc7456e1c6ee2796b6ba`. 개발용 이미지 준비 변경은 운영 실행 이미지나 에이전트 설정을 바꾸지 않았다.
+- 로컬 관련 QA 테스트 57개 통과, 빌드 통과. 승인 댓글 연결·릴리스·라이브 전환·전 채널 E2E는 여전히 미완료다.

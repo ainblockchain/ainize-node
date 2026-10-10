@@ -17,7 +17,7 @@ an ephemeral work directory. Repository commands receive a fixed environment wit
 release credentials. No package install runs: package.json and every source lockfile must exactly
 match the dependency image or validation fails. Updating dependencies needs a rebuilt, pinned image.
 
-Each gate receives a fresh copy of source and a read-only node_modules link. The first failed gate
+Each gate receives a fresh copy of source and a private copy of the image’s node_modules (relative package links preserved). The first failed gate
 stops the sequence. Container cleanup runs on success, error or timeout; temporary source is deleted.
 Host crash recovery/orphan reconciliation remains necessary before production activation.
 Private diagnostics are returned separately; never copy arbitrary gate output into public cards.
