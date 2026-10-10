@@ -15,6 +15,7 @@ import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentPullRoutesDeps {
   git: AgentGit;
+  readOnlySource?: (id: string) => string | null;
   pulls: AgentPullStore;
   /** Who is asking, as an agent's `owner` spells a principal; null when nobody is signed in. */
   principal: (req: Request) => string | null;
@@ -82,6 +83,8 @@ export function agentPullRoutes(deps: AgentPullRoutesDeps): Router {
 
   router.post('/api/hosted-agents/:id/pulls/:number/merge', json, async (req, res) => {
     const id = open(req, res); if (!id) return;
+    const source = deps.readOnlySource?.(id);
+    if (source) return refuse(res, 409, 'read_only_source', `merge proposals at ${source}`);
     const who = deps.principal(req);
     if (!deps.canMerge(req, id) || !who) {
       refuse(res, 403, 'not_allowed', 'merging changes what this agent runs — only the people who may push to it can');

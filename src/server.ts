@@ -29,6 +29,8 @@ import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
 import { AgentMirrorStore } from './agent-mirror.js';
+import { AgentMirrorSyncer } from './agent-mirror-sync.js';
+import { AgentRuntimeStore, repositoryId, waitForAgentVersion } from './repository-runtime.js';
 import { agentMirrorRoutes } from './agent-mirror-routes.js';
 import { LinkedAgentStore } from './linked-agent-store.js';
 import { linkedAgentRoutes } from './linked-agent-routes.js';
@@ -298,13 +300,42 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * Two copies of this would be two definitions of what "deployed" means, and the one that drifted would be
    * the one nobody was reading.
    */
-  const applyPushedTree = async (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => {
+  const agentRuntimes = new AgentRuntimeStore(join(cfg.dataDir, 'agent-runtimes.json'));
+  const agentApplyQueue = new Map<string, Promise<void>>();
+  const validateRepositoryPolicy = (id: string, input: HostedAgentSpecInput) => {
     const prior = hostedStore.get(id);
     if (!prior) throw new Error(`no hosted agent "${id}"`);
-    const spec = hostedStore.update(id, input, by ?? undefined);
-    hostedHost.apply(spec);
-    agentEvents?.append({ type: 'agent.updated', registryIssuer: market.publicUrl, agentId: id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
-    market.log('info', 'agents', `agent ${id}: ${commit.slice(0, 7)} → v${spec.version}, live now`);
+    if ((input.visibility ?? 'public') !== (prior.visibility ?? 'public') || (input.orgId ?? null) !== (prior.orgId ?? null)) throw new Error('a repository cannot change agent visibility or organization');
+  };
+  const applyPushedTree = (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => {
+    const priorTask = agentApplyQueue.get(id) ?? Promise.resolve();
+    const task = priorTask.catch(() => {}).then(async () => {
+      const prior = hostedStore.get(id);
+      if (!prior) throw new Error(`no hosted agent "${id}"`);
+      // Sharing is server-side policy, changed through the authorized sharing API, never by a repository tree.
+      validateRepositoryPolicy(id, input);
+      const mirror = agentMirrors.get(id);
+      const url = mirror?.url ?? `${(market.publicUrl ?? '').replace(/\/+$/, '')}/git/${id}.git`;
+      const source = { repoId: repositoryId(url), provider: mirror ? 'github' as const : 'agent-git' as const, url, path: mirror?.path ?? '', branch: mirror?.branch ?? 'main', sourceCommit: commit, projectId: null, writable: !mirror };
+      if (agentRuntimes.get(id)?.activeCommit === commit && hostedHost.status(id)?.liveVersion === prior.version) return;
+      const execution = agentRuntimes.begin(id, source, mirror ? 'mirror' : 'push', by);
+      let version: number | null = null;
+      try {
+        const spec = hostedStore.update(id, input, by ?? undefined);
+        version = spec.version;
+        hostedHost.apply(spec);
+        await waitForAgentVersion(hostedHost, id, spec.version);
+        agentRuntimes.finish(id, execution.id, { status: 'ready', version, error: null, projectionCommit: mirror ? null : commit });
+        agentEvents?.append({ type: 'agent.updated', registryIssuer: market.publicUrl, agentId: id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+        market.log('info', 'agents', `agent ${id}: ${commit.slice(0, 7)} → v${spec.version}, live now`);
+      } catch (e) {
+        agentRuntimes.finish(id, execution.id, { status: 'error', version, error: (e as Error).message, projectionCommit: null });
+        throw e;
+      }
+    });
+    agentApplyQueue.set(id, task);
+    void task.finally(() => { if (agentApplyQueue.get(id) === task) agentApplyQueue.delete(id); }).catch(() => {});
+    return task;
   };
 
   const agentGit = new AgentGit(join(cfg.dataDir, 'agent-git'));
@@ -331,7 +362,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     },
     // One writable copy. A mirrored agent is pushed to on GitHub, and this is what says so to the person
     // whose push just bounced, instead of letting the two copies diverge.
-    mirrorOf: (id) => { const m = agentMirrors.get(id); return m ? { url: m.url } : null; },
+    mirrorOf: (id) => { const p = projectStore.forAgent(id); const m = agentMirrors.get(id); return p ? { url: p.repo } : m ? { url: m.url } : null; },
+    validate: validateRepositoryPolicy,
     apply: (id, input, commit, by) => applyPushedTree(id, input, commit, by),
     log: (level, message) => market.log(level, 'agents', message),
   });
@@ -691,12 +723,24 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       host: hostedHost,
       reserved: (id) => (cfg.agents ?? []).some((a) => a?.id === id) || linkedStore.has(id),
       // The same repository-side record a hosted agent gets from the API (below): one history per agent.
-      onApplied: async (spec, created) => {
+      onApplied: async (spec, created, source) => {
         if (!agentGit.exists(spec.id)) await agentGit.init(spec.id);
         agentGitHttp.installHooks(spec.id);
         const parent = (await agentGit.hasCommits(spec.id)) ? await agentGit.resolve(spec.id, 'main') : null;
-        await agentGit.commitSpec(spec.id, spec, { message: created ? `Create ${spec.id} (ainize project)` : `v${spec.version} (ainize project push)`, parent, author: { name: spec.owner, email: `${spec.owner}@ainize` } });
-        agentEvents?.append({ type: created ? 'agent.published' : 'agent.updated', registryIssuer: market.publicUrl, agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+        const projectionCommit = await agentGit.commitSpec(spec.id, spec, { message: created ? `Create ${spec.id} (ainize project)` : `v${spec.version} (ainize project push)`, parent, author: { name: spec.owner, email: `${spec.owner}@ainize` } });
+        if (source) {
+          const execution = agentRuntimes.begin(spec.id, source, 'push', spec.updatedBy ?? spec.owner);
+          agentRuntimes.finish(spec.id, execution.id, { status: 'building', version: spec.version, error: null, projectionCommit });
+        }
+      },
+      onReady: (spec) => {
+        agentEvents?.append({ type: spec.version === 1 ? 'agent.published' : 'agent.updated', registryIssuer: market.publicUrl, agentId: spec.id, version: spec.version, releaseId: `v${spec.version}`, audience: audienceOf(spec) });
+        const execution = agentRuntimes.get(spec.id)?.execution;
+        if (execution) agentRuntimes.finish(spec.id, execution.id, { status: 'ready', version: spec.version, error: null, projectionCommit: execution.projectionCommit });
+      },
+      onFailed: (spec, error) => {
+        const execution = agentRuntimes.get(spec.id)?.execution;
+        if (execution) agentRuntimes.finish(spec.id, execution.id, { status: 'error', version: spec.version, error, projectionCommit: execution.projectionCommit });
       },
     },
     deployToken: (id) => projectSecrets.reveal(id, [PROJECT_SECRET_DEPLOY_TOKEN])[PROJECT_SECRET_DEPLOY_TOKEN] ?? null,
@@ -762,6 +806,8 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
      * push would have made, so there is one history rather than one per door.
      */
     repo: {
+      readOnlySource: (id) => projectStore.forAgent(id)?.repo ?? agentMirrors.get(id)?.url ?? null,
+      runtime: (id) => agentRuntimes.get(id),
       create: async (spec) => {
         await agentGit.init(spec.id);
         agentGitHttp.installHooks(spec.id);
@@ -774,7 +820,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         // The person who made the change is the author, so `git log` names them and not the node.
         await agentGit.commitSpec(spec.id, spec, { message, parent, author: { name: by, email: `${by}@ainize` } });
       },
-      remove: async (id) => { await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
+      remove: async (id) => { agentRuntimes.remove(id); await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
       info: (id) => {
         if (!agentGit.exists(id)) return null;
         const m = agentMirrors.get(id);
@@ -804,7 +850,10 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * push on this side and name GitHub instead.
    */
   const agentMirrors = new AgentMirrorStore(join(hostedHome, 'agent-mirrors.json'));
+  const mirrorSyncer = new AgentMirrorSyncer({ git: agentGit, mirrors: agentMirrors, apply: applyPushedTree, land: (id, commit) => agentGit.setRef(id, 'main', commit), log: (level, message) => market.log(level, 'agents', message) });
   app.use(agentMirrorRoutes({
+    syncer: mirrorSyncer,
+    webhookSecret: () => process.env.AINIZE_AGENT_MIRROR_WEBHOOK_SECRET || null,
     git: agentGit,
     mirrors: agentMirrors,
     canRead: (req, id) => {
@@ -817,15 +866,19 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return !!spec && !!who && canManageHostedAgent(spec, who);
     },
     principal: (req) => agentCaller(req)?.subject ?? null,
+    writableSource: (id) => projectStore.forAgent(id)?.repo ?? null,
     apply: applyPushedTree,
     land: (id, commit) => agentGit.setRef(id, 'main', commit),
     log: (level, message) => market.log(level, 'agents', message),
   }));
 
+  mirrorSyncer.start(Math.max(10_000, Number(process.env.AINIZE_AGENT_MIRROR_INTERVAL_MS) || 60_000));
+
   const agentPulls = new AgentPullStore(join(hostedHome, 'agent-pulls.json'));
   app.use(agentPullRoutes({
     git: agentGit,
     pulls: agentPulls,
+    readOnlySource: (id) => projectStore.forAgent(id)?.repo ?? agentMirrors.get(id)?.url ?? null,
     principal: (req) => agentCaller(req)?.subject ?? null,
     canRead: (req, id) => {
       const spec = hostedStore.get(id);
@@ -1200,6 +1253,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(uploadSweep);
       clearInterval(driveSync);
       market.payouts.stop();
+      projectWorker.stop();
+      await mirrorSyncer.stop();
+      await Promise.allSettled([...agentApplyQueue.values()]);
       await runSandbox?.stop().catch(() => {});
       await hostedHost.stop().catch(() => {});
       if (stakeIdleSweep) clearInterval(stakeIdleSweep);

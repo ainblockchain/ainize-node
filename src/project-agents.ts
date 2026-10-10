@@ -19,6 +19,7 @@ import { AGENT_GIT_FILES_DIR, AGENT_GIT_PROMPT_FILE, AGENT_GIT_RESERVED_FIELDS, 
 import type { HostedAgentHost } from './hosted-agent-host.js';
 import type { HostedAgentStore } from './hosted-agent-store.js';
 import { hostedAgentSpecInput, type HostedAgentSpec, type HostedAgentSpecInput } from './hosted-agent-types.js';
+import { waitForAgentVersion, repositoryId, type RuntimeSource } from './repository-runtime.js';
 import type { ProjectManifest } from './project-manifest.js';
 
 export class ProjectAgentError extends Error {}
@@ -81,14 +82,16 @@ export interface ProjectAgentDeps {
   /** How long a code agent's image build may take before the deployment is called failed. */
   buildTimeoutMs?: number;
   /** After every create/update — the repo hook and change feed server.ts wires for hosted agents. */
-  onApplied?: (spec: HostedAgentSpec, created: boolean) => Promise<void> | void;
+  onReady?: (spec: HostedAgentSpec) => void;
+  onFailed?: (spec: HostedAgentSpec, error: string) => void;
+  onApplied?: (spec: HostedAgentSpec, created: boolean, source?: RuntimeSource) => Promise<void> | void;
 }
 
 /**
  * Create or update the project's agent from the tree and wait for the host to call it ready. Resolves with the
  * spec that is live; rejects with the host's error (the previous version, if any, keeps serving).
  */
-export async function deployProjectAgent(deps: ProjectAgentDeps, p: { org: string; repoName: string; owner: string }, dir: string, manifest: ProjectManifest, say: (line: string) => void): Promise<HostedAgentSpec> {
+export async function deployProjectAgent(deps: ProjectAgentDeps, p: { id?: string; repo?: string; sourcePath?: string; branch?: string; org: string; repoName: string; owner: string }, dir: string, manifest: ProjectManifest, say: (line: string) => void, sourceCommit?: string): Promise<HostedAgentSpec> {
   const id = projectAgentId(p.org, p.repoName);
   const input = projectAgentSpecOf(dir, id, manifest);
   const prior = deps.store.get(id);
@@ -101,18 +104,16 @@ export async function deployProjectAgent(deps: ProjectAgentDeps, p: { org: strin
     spec = deps.store.create(input, p.owner, deps.reserved);
     say(`[ainize] agent ${id}: created (${input.mode}, model ${input.model})`);
   }
-  await deps.onApplied?.(spec, !prior);
+  const source: RuntimeSource | undefined = p.repo ? { repoId: repositoryId(p.repo), provider: 'aindrive', url: p.repo, path: p.sourcePath ?? '', branch: p.branch ?? 'main', sourceCommit: sourceCommit ?? null, projectId: p.id ?? null, writable: false } : undefined;
+  await deps.onApplied?.(spec, !prior, source);
   deps.host.apply(spec);
-  const deadline = Date.now() + (deps.buildTimeoutMs ?? 600_000);
-  for (;;) {
-    const st = deps.host.status(id);
-    if (!st) throw new ProjectAgentError(`the host does not know agent "${id}"`);
-    if (st.status === 'ready' && st.liveVersion === spec.version) return spec;
-    if (st.status === 'failed' && (st.liveVersion ?? 0) < spec.version) {
-      for (const line of await deps.host.logs(id).catch(() => [] as string[])) say(line);
-      throw new ProjectAgentError(st.error ?? 'the agent build failed');
-    }
-    if (Date.now() > deadline) throw new ProjectAgentError(`agent ${id} v${spec.version} was not ready in time`);
-    await new Promise((r) => setTimeout(r, 500));
+  try {
+    await waitForAgentVersion(deps.host, id, spec.version, deps.buildTimeoutMs);
+    deps.onReady?.(spec);
+    return spec;
+  } catch (e) {
+    deps.onFailed?.(spec, (e as Error).message);
+    for (const line of await deps.host.logs(id).catch(() => [] as string[])) say(line);
+    throw new ProjectAgentError((e as Error).message);
   }
 }

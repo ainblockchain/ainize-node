@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { mirrorUrlOk } from './agent-mirror.js';
-import { deployProjectAgent, type ProjectAgentDeps } from './project-agents.js';
+import { deployProjectAgent, projectAgentId, type ProjectAgentDeps } from './project-agents.js';
 import type { ProjectContainers } from './project-containers.js';
 import { ProjectManifestError, resolveProjectManifest, PROJECT_MANIFEST_KINDS, INPUTS_MAX, INPUT_VALUE_MAX, type ProjectManifest, type ProjectManifestInput, type ProjectManifestKind, inputDefaults, inputEnvName } from './project-manifest.js';
 import type { RunSandbox } from './run-sandbox.js';
@@ -47,11 +47,16 @@ export type ProjectStatus = 'idle' | 'queued' | 'building' | 'ready' | 'error';
 export type DeploymentStatus = 'queued' | 'building' | 'ready' | 'error';
 
 export interface Project {
+  bindingReceipt?: { clientId: string; requestId: string };
   id: string;
   /** The account that created it — `AgentCaller.subject` (shared-agents.ts). */
   owner: string;
   /** The repo URL exactly as given, normalized (no trailing slash, no `.git`). */
   repo: string;
+  sourcePath?: string;
+  sourceCommit?: string | null;
+  activeCommit?: string | null;
+  activeDeploymentId?: string | null;
   org: string;
   repoName: string;
   branch: string;
@@ -71,6 +76,7 @@ export interface Deployment {
   id: string;
   projectId: string;
   sha: string;
+  deliveryId?: string;
   ref: string;
   status: DeploymentStatus;
   /** Who pushed, as aindrive reported it. */
@@ -120,6 +126,8 @@ export interface DeploymentManifest {
 
 /** `POST /api/projects/:id/runs` body. Inputs and env values travel as text (`INPUT_<NAME>`); ≤ 2 KiB each. */
 export const runInput = z.object({
+  sha: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+  target: z.enum(['head', 'commit', 'deployed']).default('head'),
   entry: z.string().regex(/^(?!\.\.?(\/|$))[^\0\n]{1,200}$/, 'a repository-relative file').optional(),
   inputs: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an input name'), z.union([z.string().max(INPUT_VALUE_MAX), z.number(), z.boolean()])).refine((r) => Object.keys(r).length <= INPUTS_MAX, `at most ${INPUTS_MAX} inputs`).optional(),
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name'), z.string().max(4096)).refine((e) => Object.keys(e).length <= 32, 'at most 32 env entries').optional(),
@@ -182,6 +190,7 @@ export function parseRepoUrl(input: string): RepoRef | null {
 
 export const projectInput = z.object({
   repo: z.string().min(1).max(1024),
+  sourcePath: z.string().max(200).regex(/^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*)(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/).optional(),
   branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).default(PROJECT_DEFAULT_BRANCH),
   /** A hint for the project row; the deployed kind is always the repository's ainize.json. */
   kind: z.enum(PROJECT_KINDS).optional(),
@@ -192,6 +201,7 @@ export const projectInput = z.object({
 export type ProjectInput = z.infer<typeof projectInput>;
 
 export const hookBody = z.object({
+  deliveryId: z.string().regex(/^[A-Za-z0-9._:-]{1,150}$/).optional(),
   ref: z.string().min(1).max(300),
   before: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
   after: z.string().regex(/^[0-9a-f]{40,64}$/),
@@ -230,12 +240,19 @@ export const PROJECT_DEFAULT_LIMITS: ProjectStoreLimits = { perOwner: 20, total:
 export class ProjectStore {
   private readonly projects = new Map<string, Project>();
   private readonly deployments = new Map<string, Deployment>();
+  private readonly deliveries = new Map<string, { deploymentId: string; status: DeploymentStatus }>();
 
   constructor(private readonly file: string, private readonly limits: ProjectStoreLimits = PROJECT_DEFAULT_LIMITS) {
     if (existsSync(file)) {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { projects?: Project[]; deployments?: Deployment[] };
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { projects?: Project[]; deployments?: Deployment[]; deliveries?: [string, { deploymentId: string; status: DeploymentStatus }][] };
       for (const p of parsed.projects ?? []) if (p?.id) this.projects.set(p.id, p);
       for (const d of parsed.deployments ?? []) if (d?.id) this.deployments.set(d.id, d);
+      for (const [key, receipt] of parsed.deliveries ?? []) this.deliveries.set(key, receipt);
+      for (const p of this.projects.values()) {
+        const ready = this.deploymentsOf(p.id).find((d) => d.status === 'ready');
+        const latest = p.lastDeploymentId ? this.deployment(p.lastDeploymentId) : null;
+        this.projects.set(p.id, { ...p, sourceCommit: p.sourceCommit ?? latest?.sha ?? null, activeCommit: p.activeCommit ?? ready?.sha ?? null, activeDeploymentId: p.activeDeploymentId ?? ready?.id ?? null });
+      }
     }
   }
 
@@ -260,13 +277,15 @@ export class ProjectStore {
     return this.list().filter((p) => p.org.toLowerCase() === o);
   }
 
-  create(input: { repo: RepoRef; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
+  create(input: { bindingReceipt?: Project['bindingReceipt']; repo: RepoRef; sourcePath?: string; branch: string; kind: ProjectKind | null; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
     if (this.list().some((p) => (parseRepoUrl(p.repo)?.url ?? p.repo) === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
     if (this.listByOwner(owner).length >= this.limits.perOwner) throw new ProjectLimitError(`an account may have ${this.limits.perOwner} projects on this node`);
     if (this.projects.size >= this.limits.total) throw new ProjectLimitError(`this node holds its maximum of ${this.limits.total} projects`);
     const project: Project = {
       id: `prj_${randomBytes(8).toString('hex')}`, owner, repo: input.repo.url, org: input.repo.org, repoName: input.repo.repoName,
       branch: input.branch, kind: input.kind, entry: input.entry, name: input.name ?? input.repo.repoName,
+      bindingReceipt: input.bindingReceipt,
+      sourcePath: input.sourcePath ?? '', sourceCommit: null, activeCommit: null, activeDeploymentId: null,
       status: 'idle', lastDeploymentId: null, createdAt: now, updatedAt: now,
     };
     this.projects.set(project.id, project);
@@ -278,10 +297,17 @@ export class ProjectStore {
     const had = this.projects.delete(id);
     if (!had) return false;
     for (const d of [...this.deployments.values()]) if (d.projectId === id) this.deployments.delete(d.id);
+    for (const key of this.deliveries.keys()) if (key.startsWith(`${id}:`)) this.deliveries.delete(key);
     this.save();
     return true;
   }
 
+  delivery(projectId: string, deliveryId: string): { deploymentId: string; status: DeploymentStatus } | null {
+    return this.deliveries.get(`${projectId}:${deliveryId}`) ?? null;
+  }
+  forAgent(id: string): Project | null {
+    return this.list().find((p) => p.kind === 'agent' && projectAgentId(p.org, p.repoName) === id) ?? null;
+  }
   deployment(id: string): Deployment | null { return this.deployments.get(id) ?? null; }
   /** Deployments (pushes and redeploys) of a project, newest first — ad-hoc runs are `runsOf`. */
   deploymentsOf(projectId: string): Deployment[] {
@@ -296,13 +322,16 @@ export class ProjectStore {
   }
 
   createDeployment(project: Project, body: HookBody, now = Date.now(), trigger: Exclude<DeploymentTrigger, 'run'> = 'push'): Deployment {
+    project = this.get(project.id) ?? project;
     const d: Deployment = {
       id: `dep_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: body.after, ref: body.ref, status: 'queued',
+      ...(body.deliveryId ? { deliveryId: body.deliveryId } : {}),
       pusher: body.pusher ?? null, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null,
       ...(trigger === 'push' ? {} : { trigger }),
     };
     this.deployments.set(d.id, d);
-    this.projects.set(project.id, { ...project, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    this.projects.set(project.id, { ...project, sourceCommit: d.sha, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    if (d.deliveryId) this.deliveries.set(`${project.id}:${d.deliveryId}`, { deploymentId: d.id, status: d.status });
     this.save();
     return d;
   }
@@ -320,7 +349,7 @@ export class ProjectStore {
     const inputs: Record<string, string> = {};
     for (const [k, v] of Object.entries(input.inputs ?? {})) inputs[k] = String(v);
     const d: Deployment = {
-      id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: '', ref: `refs/heads/${project.branch}`, status: 'queued',
+      id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: input.target === 'deployed' ? project.activeCommit ?? '' : input.sha ?? '', ref: `refs/heads/${project.branch}`, status: 'queued',
       pusher: actor, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null, trigger: 'run',
       entry: input.entry ?? null, inputs, env: input.env ?? {},
     };
@@ -334,16 +363,21 @@ export class ProjectStore {
     if (!prior) return null;
     const next = { ...prior, ...fields };
     this.deployments.set(id, next);
+    if (next.deliveryId) this.deliveries.set(`${next.projectId}:${next.deliveryId}`, { deploymentId: id, status: next.status });
     const project = this.projects.get(prior.projectId);
     // The project's status is its newest deployment's: an older one finishing must not overwrite a newer one's state.
     if (project && project.lastDeploymentId === id && (fields.status || fields.kind)) this.projects.set(project.id, { ...project, ...(fields.status ? { status: fields.status } : {}), ...(fields.kind ? { kind: fields.kind } : {}), updatedAt: now });
+    if (project && next.trigger !== 'run' && fields.status === 'ready') {
+      const current = this.projects.get(project.id)!;
+      this.projects.set(project.id, { ...current, activeCommit: next.sha, activeDeploymentId: next.id, updatedAt: now });
+    }
     this.save();
     return next;
   }
 
   /** Drop the deployments beyond the newest `keep` of a project; returns the ids that went (for their logs). */
   prune(projectId: string, keep: number): string[] {
-    const over = (list: Deployment[]) => list.slice(keep).filter((d) => d.status === 'ready' || d.status === 'error');
+    const over = (list: Deployment[]) => list.slice(keep).filter((d) => (d.status === 'ready' || d.status === 'error') && d.id !== this.get(projectId)?.activeDeploymentId);
     const gone = [...over(this.deploymentsOf(projectId)), ...over(this.runsOf(projectId))];
     for (const d of gone) this.deployments.delete(d.id);
     if (gone.length) this.save();
@@ -353,7 +387,7 @@ export class ProjectStore {
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ projects: this.list(), deployments: [...this.deployments.values()] }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ projects: this.list(), deployments: [...this.deployments.values()], deliveries: [...this.deliveries.entries()] }), { mode: 0o600 });
     renameSync(tmp, this.file);
   }
 }
@@ -444,7 +478,7 @@ export class ProjectWorker extends EventEmitter {
           this.enqueue(d.id);
         }
       }
-      const last = all[0];
+      const last = p.activeDeploymentId ? this.deps.store.deployment(p.activeDeploymentId) : all.find((d) => d.status === 'ready');
       if (last && last.status === 'ready' && (last.kind === 'service' || last.kind === 'nextjs') && this.deps.containers && !this.deps.containers.current(p.id)) {
         this.deps.store.updateDeployment(last.id, { status: 'queued', startedAt: null, finishedAt: null, ms: null, error: null });
         this.deps.logs.append(last.id, `[ainize] node restarted — deploying ${last.sha.slice(0, 12)} again\n`);
@@ -530,7 +564,7 @@ export class ProjectWorker extends EventEmitter {
       store.updateDeployment(d.id, { sha, subject });
       if (isRun) say(`[ainize] at ${sha.slice(0, 12)}${subject ? ` — ${subject}` : ''}`);
       let manifest: ProjectManifest;
-      try { manifest = resolveProjectManifest(work, { entry: d.entry ?? project.entry }); }
+      try { manifest = resolveProjectManifest(project.sourcePath ? join(work, project.sourcePath) : work, { entry: d.entry ?? project.entry }); }
       catch (e) {
         const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
         say(`[ainize] error: ${message}`);
@@ -543,7 +577,7 @@ export class ProjectWorker extends EventEmitter {
         ...(manifest.name ? { name: manifest.name } : {}), ...(manifest.entry ? { entry: manifest.entry } : {}),
         ...(manifest.runtime ? { runtime: manifest.runtime } : {}), ...(manifest.timeoutMs ? { timeoutMs: manifest.timeoutMs } : {}),
       };
-      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(work) });
+      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(project.sourcePath ? join(work, project.sourcePath) : work) });
       say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
       const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
       const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha };
@@ -555,7 +589,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
         if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
-        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, work, manifest, env, say, this.actorKey(d, say));
+        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, project.sourcePath ? join(work, project.sourcePath) : work, manifest, env, say, this.actorKey(d, say));
         const outputUrl = `${publicUrl}/svc/${project.id}/`;
         say(`[ainize] ready at ${outputUrl}`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -564,7 +598,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'agent') {
         if (!this.deps.agents) { say('[ainize] error: this node hosts no agents'); finish({ status: 'error', error: 'this node hosts no agents' }); return; }
-        const spec = await deployProjectAgent(this.deps.agents, project, work, manifest, say);
+        const spec = await deployProjectAgent(this.deps.agents, project, project.sourcePath ? join(work, project.sourcePath) : work, manifest, say, sha);
         const outputUrl = `${publicUrl}/agents/${spec.id}`;
         say(`[ainize] ready at ${outputUrl} (A2A, v${spec.version})`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -575,7 +609,7 @@ export class ProjectWorker extends EventEmitter {
       const language = manifest.runtime === 'python3.11' && !d.entry ? 'python' : manifest.runtime === 'node20' && !d.entry ? 'node' : languageOf(entry);
       if (!language) { say(`[ainize] error: no runtime for "${entry}"`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file and ainize.json names no runtime` }); return; }
       let files: Record<string, string>;
-      try { files = readTree(work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
+      try { files = readTree(project.sourcePath ? join(work, project.sourcePath) : work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
       if (!(entry in files)) { say(`[ainize] error: entry "${entry}" is not in the repository`); finish({ status: 'error', error: `entry "${entry}" not found` }); return; }
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;

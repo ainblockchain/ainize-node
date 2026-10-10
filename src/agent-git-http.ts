@@ -46,6 +46,8 @@ export interface AgentGitHttpDeps {
    * push — by then the commit is the truth — so it logs and the state the page shows says it failed.
    */
   apply: (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => Promise<void>;
+  /** Server-owned sharing policy must pass before the deployed ref moves. */
+  validate?: (id: string, input: HostedAgentSpecInput) => void | Promise<void>;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -160,7 +162,8 @@ process.stdin.on('end', async () => {
         return { ok: false, message: `${AGENT_GIT_DEFAULT_BRANCH} is the branch this agent serves from — it cannot be deleted.` };
       }
       try {
-        await this.deps.git.readSpec(id, u.after, quarantine);
+        const read = await this.deps.git.readSpec(id, u.after, quarantine);
+        await this.deps.validate?.(id, read.input);
       } catch (e) {
         const why = e instanceof AgentGitError ? e.message : (e as Error).message;
         return {

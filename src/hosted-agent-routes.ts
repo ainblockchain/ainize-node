@@ -7,6 +7,7 @@
  * creator may remove it or change who sees it. Limits are the store's. Errors are `{ error: { code,
  * message } }`, the codes being what the web page switches on.
  */
+import type { AgentRuntime } from './repository-runtime.js';
 import { Router, type Request, type Response } from 'express';
 import type { InferenceBackendRegistry } from './inference-backends.js';
 import type { HostedAgentHost } from './hosted-agent-host.js';
@@ -43,6 +44,8 @@ export interface HostedAgentRoutesDeps {
    * door a change came through.
    */
   repo?: {
+    readOnlySource?: (id: string) => string | null;
+    runtime?: (id: string) => AgentRuntime | null;
     create: (spec: HostedAgentSpec) => Promise<void>;
     commit: (spec: HostedAgentSpec, message: string, by: string) => Promise<void>;
     remove: (id: string) => Promise<void>;
@@ -177,6 +180,7 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
       status: st?.status ?? 'failed', error: st?.error ?? null, live_version: st?.liveVersion ?? null,
       a2a_url: base, card_url: `${base}/.well-known/agent-card.json`,
       ...(deps.repo?.info ? { git: deps.repo.info(spec.id) } : {}),
+      ...(deps.repo?.runtime ? { runtime: deps.repo.runtime(spec.id) } : {}),
       ...(full ? {
         systemPrompt: spec.systemPrompt, files: spec.files, a2ui: spec.a2ui, allowedHosts: spec.allowedHosts,
         secretNames: spec.secretNames, skills: spec.skills, media: hostedAgentMediaOf(spec),
@@ -244,6 +248,8 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const hit = managed(req, res);
     if (!hit) return;
     const { spec: prior, who } = hit;
+    const source = deps.repo?.readOnlySource?.(prior.id);
+    if (source) return refuse(res, 409, 'read_only_source', `edit ${source} and deploy its commit; this agent is a runtime projection`);
     const expected = req.headers['if-match'];
     if (expected !== undefined && expected !== String(prior.version)) return refuse(res, 409, 'version_conflict', 'agent changed; pull its latest version before editing');
     const input = parse(req, res, who);

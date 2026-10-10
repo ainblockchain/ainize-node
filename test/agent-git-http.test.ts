@@ -30,6 +30,7 @@ let base = '';
 /** What the node would have stored and applied: the test's stand-in for store.update + host.apply. */
 const applied: { input: HostedAgentSpecInput; commit: string; by: string | null }[] = [];
 let mayPush = true;
+let policyError: string | null = null;
 let mirror: { url: string } | null = null;
 
 /**
@@ -66,6 +67,7 @@ before(async () => {
     canPush: () => mayPush,
     canRead: () => true,
     mirrorOf: () => mirror,
+    validate: () => { if (policyError) throw new Error(policyError); },
     apply: async (id, input, commit, by) => { applied.push({ input, commit, by }); },
     log: () => {},
   });
@@ -171,4 +173,20 @@ test('the hook endpoint belongs to this node alone', async () => {
     body: JSON.stringify({ id: 'news-review', updates: [{ ref: 'refs/heads/main', before: '0'.repeat(40), after: '0'.repeat(40) }] }),
   });
   assert.equal(res.status, 403, 'approving a push is not something a stranger gets to do');
+});
+
+
+test('server policy rejects a push before its deployed ref moves', async () => {
+  const dir = join(tmp, 'policy-clone');
+  await clone('news-review', dir);
+  const before = await git.resolve('news-review', 'main');
+  writeFileSync(join(dir, 'prompt.md'), 'A policy change must not land.');
+  await gitIn(dir, ['add', '.']);
+  await gitIn(dir, ['commit', '-m', 'Policy rejection']);
+  policyError = 'a repository cannot change agent visibility or organization';
+  try {
+    const message = await failure(gitIn(dir, ['push', 'origin', 'main']));
+    assert.match(message, /cannot change agent visibility/);
+    assert.equal(await git.resolve('news-review', 'main'), before);
+  } finally { policyError = null; }
 });

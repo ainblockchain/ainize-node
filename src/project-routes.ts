@@ -27,7 +27,8 @@ import {
   type ProjectStore, type ProjectWorker, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN, PROJECT_SECRET_WEBHOOK,
   languageOf, readTree, PROJECT_RUN_TIMEOUT_MS,
 } from './projects.js';
-import { randomBytes } from 'node:crypto';
+import { repositoryId } from './repository-runtime.js';
+import { randomBytes, createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,6 +107,7 @@ type Viewer =
 
 /** `POST /api/projects/auto` body: the pushed repo and what aindrive knows about it. */
 export const autoBindInput = z.object({
+  bindRequestId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   repo: z.string().min(1).max(1024),
   branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).optional(),
   pusher: z.object({ subject: z.string().min(1).max(300).nullable().optional(), email: z.string().max(300).nullable().optional() }).optional(),
@@ -172,7 +174,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const last = p.lastDeploymentId ? deps.store.deployment(p.lastDeploymentId) : null;
     const described = last?.manifest ? last : deps.store.deploymentsOf(p.id).find((d) => d.manifest) ?? null;
     return {
-      id: p.id, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, entry: p.entry, name: p.name, status: p.status,
+      id: p.id, repoId: repositoryId(p.repo), sourcePath: p.sourcePath ?? '', sourceCommit: p.sourceCommit ?? null, activeCommit: p.activeCommit ?? null, activeDeploymentId: p.activeDeploymentId ?? null, org: p.org, repoName: p.repoName, repo: p.repo, branch: p.branch, kind: p.kind, entry: p.entry, name: p.name, status: p.status,
       url: pageUrlOf(req, p), pageUrl: pageUrlOf(req, p), lastDeploymentId: p.lastDeploymentId, createdAt: p.createdAt, updatedAt: p.updatedAt,
       lastDeployment: last ? deploymentView(req, last) : null,
       manifest: described?.manifest ?? null, runnable: described?.runnable ?? [],
@@ -188,7 +190,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     };
   };
   const deploymentView = (req: Request, d: Deployment) => ({
-    id: d.id, projectId: d.projectId, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
+    id: d.id, projectId: d.projectId, repoId: repositoryId(deps.store.get(d.projectId)?.repo ?? ''), sourceCommit: d.sha || null, actor: d.pusher?.subject ?? null, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
     startedAt: d.startedAt, finishedAt: d.finishedAt, ms: d.ms, ...(d.exitCode === null ? {} : { exitCode: d.exitCode }), ...(d.error ? { error: d.error } : {}),
     ...(d.kind ? { kind: d.kind } : {}), trigger: d.trigger ?? 'push', ...(d.subject ? { subject: d.subject } : {}),
     ...(d.trigger === 'run' ? { entry: d.entry ?? null, inputs: d.inputs ?? {}, env: d.env ?? {} } : {}),
@@ -363,7 +365,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     // `kind` and `entry` are hints for the row; the repository's ainize.json decides at every deploy.
     let project: Project;
     try {
-      project = deps.store.create({ repo, branch: input.branch, kind: input.kind ?? null, entry: input.entry ?? null, name: input.name }, who.subject);
+      project = deps.store.create({ repo, sourcePath: input.sourcePath, branch: input.branch, kind: input.kind ?? null, entry: input.entry ?? null, name: input.name }, who.subject);
     } catch (e) {
       if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
       if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
@@ -409,14 +411,23 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const existing = deps.store.byRepo(repo.url);
     if (existing) {
       if (existing.branch !== branch) return refuse(res, 409, 'repo_taken', `${repo.url} is bound to branch ${existing.branch} on this node`);
-      return res.status(200).json({ id: existing.id, pageUrl: pageUrlOf(req, existing), created: false });
+      // Recover a lost creation response only for the same authenticated application and request.
+      let webhookSecret: string | undefined;
+      if (input.bindRequestId && existing.bindingReceipt?.clientId === who.clientId && existing.bindingReceipt.requestId === input.bindRequestId) {
+        webhookSecret = deps.secrets.reveal(existing.id, [PROJECT_SECRET_WEBHOOK])[PROJECT_SECRET_WEBHOOK];
+        if (!webhookSecret) {
+          webhookSecret = `whsec_${randomBytes(24).toString('hex')}`;
+          deps.secrets.set(existing.id, PROJECT_SECRET_WEBHOOK, webhookSecret);
+        }
+      }
+      return res.status(200).json({ id: existing.id, pageUrl: pageUrlOf(req, existing), created: false, ...(webhookSecret ? { webhookSecret } : {}) });
     }
     const subject = input.pusher?.subject ?? null;
     const owner = subject ? deps.auto.principalForSubject(subject) : `org:${orgIds[0]}`;
     const kind = input.manifest?.kind ?? null;
     let project: Project;
     try {
-      project = deps.store.create({ repo, branch, kind: kind && (['nextjs', 'script', 'service', 'agent'] as const).includes(kind as 'script') ? (kind as Project['kind']) : null, entry: null, name: input.manifest?.name ?? undefined }, owner);
+      project = deps.store.create({ bindingReceipt: input.bindRequestId ? { clientId: who.clientId, requestId: input.bindRequestId } : undefined, repo, branch, kind: kind && (['nextjs', 'script', 'service', 'agent'] as const).includes(kind as 'script') ? (kind as Project['kind']) : null, entry: null, name: input.manifest?.name ?? undefined }, owner);
     } catch (e) {
       if (e instanceof ProjectRepoTakenError) return refuse(res, 409, 'repo_taken', e.message);
       if (e instanceof ProjectLimitError) return refuse(res, 429, 'limit', e.message);
@@ -539,7 +550,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const body = parsed.data;
     if (body.ref !== `refs/heads/${project.branch}`) return res.status(202).json({ ignored: true, reason: `this project deploys refs/heads/${project.branch}` });
     if (/^0+$/.test(body.after)) return res.status(202).json({ ignored: true, reason: 'branch deleted' });
-    const d = deps.store.createDeployment(project, body);
+    const deliveryId = body.deliveryId ?? createHash('sha256').update(raw).digest('hex');
+    const prior = deps.store.delivery(project.id, deliveryId);
+    if (prior) return res.status(202).json({ ...prior, duplicate: true });
+    const d = deps.store.createDeployment(project, { ...body, deliveryId });
     deps.worker.enqueue(d.id);
     deps.log?.('info', `project ${project.id}: push ${body.after.slice(0, 12)} by ${body.pusher?.subject ?? '?'} → deployment ${d.id}`);
     res.status(202).json({ deploymentId: d.id, status: d.status });
@@ -571,6 +585,8 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       return refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
     }
     if (ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
+    if (parsed.data.target === 'commit' && !parsed.data.sha) return refuse(res, 400, 'invalid_request', 'a commit run requires sha');
+    if (parsed.data.target === 'deployed' && !ctx.project.activeCommit) return refuse(res, 409, 'no_deployment', 'there is no successful deployment to run');
     const d = deps.store.createRun(ctx.project, parsed.data, actorOf(ctx.who));
     deps.log?.('info', `project ${ctx.project.id}: run ${d.id} (${d.entry ?? 'manifest entry'}) by ${ctx.who.subject}`);
     res.status(202).json({ runId: d.id, ...queued(d) });

@@ -17,7 +17,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH } from './agent-git.js';
+import { AgentGit, AgentGitError, AGENT_GIT_DEFAULT_BRANCH, AGENT_GIT_RESERVED_FIELDS } from './agent-git.js';
 import { hostedAgentSpecInput, type HostedAgentSpecInput } from './hosted-agent-types.js';
 
 const run = promisify(execFile);
@@ -156,6 +156,8 @@ export async function fetchMirror(git: AgentGit, mirror: AgentMirror, timeoutMs 
   try { json = JSON.parse(raw) as Record<string, unknown>; }
   catch (e) { return { changed: true, commit, error: `${prefix}agent.json is not valid JSON: ${(e as Error).message}` }; }
 
+  const reserved = AGENT_GIT_RESERVED_FIELDS.filter((f) => f in json);
+  if (reserved.length) return { changed: true, commit, error: `agent.json sets server-owned fields: ${reserved.join(', ')}` };
   const files: Record<string, string> = {};
   const listed = await g(['ls-tree', '-r', '--name-only', commit, ...(prefix ? [prefix] : [])]).catch(() => '');
   for (const full of listed.split('\n').map((l) => l.trim()).filter(Boolean)) {

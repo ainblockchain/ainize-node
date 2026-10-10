@@ -9,6 +9,8 @@
  *
  *   node --test --import tsx test/agent-mirror.test.ts
  */
+import { createHmac } from 'node:crypto';
+import { AgentMirrorSyncer } from '../src/agent-mirror-sync.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -173,4 +175,34 @@ test('an unreachable upstream is an error on the mirror, not an exception out of
   const r = await put({ url: 'http://127.0.0.1:9/nothing.git', branch: 'main', path: '' });
   assert.equal(r.status, 200, 'the route answers; the mirror carries the failure');
   assert.match((r.body as unknown as { mirror: { error: string } }).mirror.error, /could not fetch/);
+});
+
+
+test('periodic mirror reconciliation follows without a manual Sync and refuses reserved fields', async () => {
+  await upstreamCommit('Recover valid source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Automatically followed.' });
+  mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, apply: async (_id, input, commit) => { applied.push({ input, commit }); }, land: async (_id, commit) => { landed = commit; }, log: () => {} });
+  const before = applied.length;
+  await Promise.all([syncer.sweep(), syncer.sweep()]);
+  assert.equal(applied.length, before + 1, 'concurrent reconciliation cannot deploy twice');
+  assert.equal(applied.at(-1)!.input.systemPrompt, 'Automatically followed.');
+  await upstreamCommit('Attempt server-owned field', { 'news-agent/agent.json': AGENT({ owner: 'attacker' }) });
+  await syncer.sweep();
+  assert.match(mirrors.get('news-review')!.error!, /server-owned/);
+  assert.equal(applied.length, before + 1);
+  await syncer.stop();
+});
+
+test('webhook verifies original bytes even after the global JSON parser, and ignores tags', async () => {
+  const app = express();
+  app.use(express.json({ verify: (req, _res, buf) => { (req as typeof req & { rawBody?: Buffer }).rawBody = buf; } }));
+  app.use(agentMirrorRoutes({ git: repos, mirrors, canRead: () => true, canManage: () => true, principal: () => null, apply: async () => { throw new Error('tag must not apply'); }, land: async () => {}, log: () => {}, webhookSecret: () => 'secret' }));
+  const request = (await import('supertest')).default;
+  const body = '{ "ref": "refs/tags/v1", "repository": { "html_url": "https://github.com/a/b" } }';
+  const signature = `sha256=${createHmac('sha256', 'secret').update(body).digest('hex')}`;
+  const res = await request(app).post('/api/agent-mirrors/webhook').set('content-type', 'application/json').set('x-hub-signature-256', signature).send(body);
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.body, { synced: [] });
+  const refused = await request(app).post('/api/agent-mirrors/webhook').set('content-type', 'application/json').set('x-hub-signature-256', signature).send(body + ' ');
+  assert.equal(refused.status, 401);
 });

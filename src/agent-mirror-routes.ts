@@ -12,11 +12,13 @@ import express, { Router, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AgentGit, AgentGitError } from './agent-git.js';
-import { fetchMirror, mirrorUrlOk, type AgentMirror, type AgentMirrorStore } from './agent-mirror.js';
+import { mirrorUrlOk, type AgentMirror, type AgentMirrorStore } from './agent-mirror.js';
+import { AgentMirrorSyncer } from './agent-mirror-sync.js';
 import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentMirrorRoutesDeps {
   git: AgentGit;
+  writableSource?: (id: string) => string | null;
   mirrors: AgentMirrorStore;
   canRead: (req: Request, id: string) => boolean;
   /** Attaching an agent to a repository decides what it runs, so it is the same people who may push. */
@@ -31,6 +33,7 @@ export interface AgentMirrorRoutesDeps {
    * everything, rather than following whatever a stranger says changed.
    */
   webhookSecret?: () => string | null;
+  syncer?: AgentMirrorSyncer;
 }
 
 const refuse = (res: Response, status: number, code: string, message: string) => {
@@ -51,6 +54,7 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
   const open = (req: Request, res: Response, write: boolean): string | null => {
     const id = String(req.params.id ?? '');
     if (!deps.canRead(req, id)) { refuse(res, 404, 'not_found', `no agent "${id}" on this node`); return null; }
+    if (write && deps.writableSource?.(id)) { refuse(res, 409, 'read_only_source', `this agent follows ${deps.writableSource(id)}`); return null; }
     if (write && !deps.canManage(req, id)) { refuse(res, 403, 'not_allowed', 'only the people who may change this agent can attach it to a repository'); return null; }
     return id;
   };
@@ -62,24 +66,8 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
    * and the page says so. A mirror that quietly stopped following is worse than no mirror, because the person
    * reading the page believes the agent is tracking their repository.
    */
-  const sync = async (req: Request, mirror: AgentMirror): Promise<AgentMirror> => {
-    try {
-      const result = await fetchMirror(deps.git, mirror);
-      if (result.error) {
-        deps.log('warn', `agent ${mirror.agent}: ${mirror.url} fetched, but ${result.error.split('\n')[0]}`);
-        return deps.mirrors.patch(mirror.agent, { lastFetchAt: Date.now(), error: result.error })!;
-      }
-      if (!result.changed) return deps.mirrors.patch(mirror.agent, { lastFetchAt: Date.now(), error: null })!;
-      await deps.apply(mirror.agent, result.input!, result.commit, deps.principal(req));
-      await deps.land(mirror.agent, result.commit);
-      deps.log('info', `agent ${mirror.agent}: followed ${mirror.url} to ${result.commit.slice(0, 7)}, live now`);
-      return deps.mirrors.patch(mirror.agent, { lastFetchAt: Date.now(), lastCommit: result.commit, error: null })!;
-    } catch (e) {
-      const why = e instanceof AgentGitError ? e.message : (e as Error).message;
-      deps.log('warn', `agent ${mirror.agent}: ${why}`);
-      return deps.mirrors.patch(mirror.agent, { lastFetchAt: Date.now(), error: why })!;
-    }
-  };
+  const syncer = deps.syncer ?? new AgentMirrorSyncer(deps);
+  const sync = (req: Request, mirror: AgentMirror) => syncer.sync(mirror, deps.principal(req));
 
   router.get('/api/hosted-agents/:id/mirror', (req, res) => {
     const id = open(req, res, false); if (!id) return;
@@ -125,7 +113,7 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
     async (req, res) => {
       const secret = deps.webhookSecret?.() ?? null;
       if (!secret) { refuse(res, 404, 'not_configured', 'this node accepts no webhooks'); return; }
-      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+      const raw = Buffer.isBuffer(req.body) ? req.body : (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from('');
       const sent = String(req.header('x-hub-signature-256') ?? '');
       const want = `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
       const a = Buffer.from(want);
@@ -141,6 +129,7 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
 
       // Which of this node's mirrors is about this repository, and about the branch that moved. A repository
       // can be the upstream of several agents (one per folder), so every match is synced.
+      if (!payload.ref?.startsWith('refs/heads/')) { res.json({ synced: [] }); return; }
       const urls = [payload.repository?.html_url, payload.repository?.clone_url].filter(Boolean).map((u) => normaliseRepo(String(u)));
       const branch = typeof payload.ref === 'string' && payload.ref.startsWith('refs/heads/') ? payload.ref.slice('refs/heads/'.length) : null;
       const hit = deps.mirrors.list().filter((m) => urls.includes(normaliseRepo(m.url)) && (!branch || m.branch === branch));
@@ -162,5 +151,5 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
 
 /** `https://github.com/a/b`, `…/b.git` and `…/b/` are one repository; a webhook names it whichever way it likes. */
 function normaliseRepo(url: string): string {
-  return url.trim().toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
+  return url.trim().toLowerCase().replace(/\/+$/, '').replace(/\.git$/, '');
 }

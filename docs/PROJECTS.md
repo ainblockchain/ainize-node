@@ -268,3 +268,9 @@ To draw the Run form without a clone, a deployment records the commit's `ainize.
 it through the same `RunScript` the worker deploys with, the person's `aindrive run` key in `AINIZE_API_KEY`
 (`RunKeyIssuer.keyFor`). Nothing secret is in a snippet: no webhook secret, no deploy token, no key, no manifest
 `env` values.
+
+### Durable delivery receipts
+
+Drive push hooks may include `deliveryId`. Replaying the same id for a project returns the existing deployment with `duplicate: true`; it does not enqueue a second execution. The project reports both `sourceCommit` (newest accepted source) and `activeCommit` / `activeDeploymentId` (last successful runtime). An unsuccessful replacement retains the active deployment, including during history pruning and service recovery.
+
+Auto-binding may include `bindRequestId` (64 hexadecimal characters). Persisted receipts bind this request to the authenticated machine application's client id. Replaying that creation request returns its webhook secret so Drive can recover a lost response; ordinary existing-project lookups and different receipts continue to return no secret. The application must retain this receipt until it has durably stored the hook credential.
