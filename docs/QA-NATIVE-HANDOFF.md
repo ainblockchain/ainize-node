@@ -484,3 +484,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 Ainspace PR198은 여전히 `awaiting_merge_evidence`로 판정했다. 건강한 기존 서비스가 있다고 열린 후보를 배포 완료로 바꾸지 않는다.
 - 현행 공개 API 조사: Teams `/api/health`는 `version`, Ainspace `/api/health`는 `sha`를 제공한다. Ainmem `/api/health`는 `ok`만, Aindrive `/api/healthz`는 건강 상태만 제공한다. Ainize `/api/info`의 node.version은 semver이고 node.build는 날짜다. AINA `/api/health`와 Ainize `/api/health`는 404였다. 따라서 나머지 서비스에는 별도의 실제 실행 revision 증거/어댑터가 필요하다.
 - QA 타깃 테스트 80개 통과, 빌드 및 타입 검사 통과. 운영 전환·상태를 agent/Ainmem으로 환류·실제 사람 승인 릴리스·전 서비스 E2E는 여전히 남아 있다.
+
+### 2026-10-10 실제 Teams 원본 스레드 읽기
+
+- `hosted-qa-teams-thread.ts`는 신뢰된 원본 요청 바인딩(workspace/channel/root/request/author/time/content digest)에서 출발한다. 채널 목록·채널 페이지 조회로 root가 실제 지정 채널에 속함을 확인하고, `read_thread`의 parent가 같은 원본인지 재대조한다. 요청이 답글인 경우 그 답글의 작성자·시각·내용을 검증한다. 변경된 요청, 다른 스레드 답글, 중복 ID, 불완전 응답, 순환 cursor를 거부한다.
+- 마지막에 실제 채널 멤버십과 운영 SSO→Teams ID 매핑을 새로 읽고, 사람인 지정 승인자의 literal `LGTM`/`배포해` 답글만 관측 자료로 반환한다. 표시 이름·인용문·봇 메시지는 사용하지 않는다. **반환값은 `approvalGranted:false`이며 이 모듈만으로 배포를 승인하지 않는다.**
+- 호스트 MCP client에는 `read_channel`/`read_thread` 읽기만 추가했다. 쓰기 도구는 여전히 거부한다.
+- 실제 .41 진단: 7개 서비스 설정 모두 실제 채널의 최근 사람 원본 메시지와 스레드 읽기 성공. Ainmem 설정에서 지정 관리자 매핑의 literal 답글 1개를 관측했다. 그 답글은 검토 SHA/최초 제시 시각/현재 SSO 조직 권한에 결합하지 않았으므로 승인으로 소비하지 않았다. 진단 바인딩은 실제 QA intake의 영구 등록을 대신하지 않는다.
+- 서버 증거: `/mnt/newdata/qa-services/validation/native-thread-read-20261010-vZMOzm/run.mjs`, `result.json`. 2026-10-10 13:05 UTC 관측. 토큰·개인 ID·대화 본문은 결과 로그에 넣지 않았고, 서비스 메시지/페이지/PR/배포는 변경하지 않았다.
+- QA 타깃 테스트 90개 통과, 실패/skip 0. 빌드 통과. 다음 연결은 호스트가 검증·저장한 intake/thread 바인딩, 정확한 검토 후보 제시, 현재 SSO 조직 상태 조회, 이를 결합한 coordinator 검증이다. 원본 Teams 스레드 승인 경로는 아직 운영 활성화하지 않았다.

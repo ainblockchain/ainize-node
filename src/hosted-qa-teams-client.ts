@@ -4,7 +4,7 @@ import type {TeamsReviewMcp} from './hosted-qa-teams-review.js';
 export function teamsReviewClient(origin:string,token:string,request:typeof fetch=fetch):TeamsReviewMcp {
  const url=new URL(origin);if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw new Error('Invalid Teams origin');
  return {async call(name,args){
-  if(!['list_channels','list_channel_members'].includes(name))throw new Error('Read-only Teams review operation required');
+  if(!['list_channels','list_channel_members','read_channel','read_thread'].includes(name))throw new Error('Read-only Teams review operation required');
   let session:string|null=null;
   async function rpc(method:string,params:unknown,notify=false):Promise<any>{
    const id=randomUUID();let response:Response;
