@@ -47,6 +47,7 @@ const spawns: { args: string[]; cwd?: string }[] = [];
 const kills: string[] = [];
 const execs: string[] = [];
 let slotBusy = false;
+let trainerGpuUnavailable = false;
 const D = 160;
 function tinyNpz(path: string, addr: bigint) {
   const a = Buffer.alloc(8); a.writeBigInt64LE(addr);
@@ -100,6 +101,7 @@ const fakeSpawn: SpawnFn = (_cmd, args, opts) => {
 const fakeExec: ExecFn = async (cmd, args) => {
   execs.push([cmd, ...args].join(' '));
   if (cmd === 'docker' && args[0] === 'inspect') return { code: 0, out: 'true', err: '' };
+  if (cmd === 'docker' && args.includes('nvidia-smi')) return trainerGpuUnavailable ? { code: 1, out: '', err: 'Failed to initialize NVML: Unknown Error' } : { code: 0, out: 'GPU-cccc\nGPU-dddd', err: '' };
   if (cmd === 'docker' && args.includes('pgrep')) {
     if (args.includes('train/')) return slotBusy ? { code: 0, out: '109', err: '' } : { code: 1, out: '', err: '' };
     return { code: 0, out: '4242', err: '' };
@@ -891,6 +893,28 @@ test('public readiness waits for the serving runtime even when the trainer conta
   } finally {
     runtimeDown = false;
     N.teach!.invalidatePolicy();
+  }
+  assert.equal((await N.teach!.policy()).trainer, 'ready');
+});
+
+
+test('a running trainer with lost GPU access is paused and cannot accept a new lesson', async () => {
+  trainerGpuUnavailable = true;
+  N.teach!.invalidatePolicy();
+  try {
+    assert.equal((await N.teach!.trainerState(true)).state, 'paused');
+    const policy = await N.teach!.policy();
+    assert.equal(policy.trainer, 'paused');
+    assert.match(policy.paused_reason!, /cannot access.*GPUs/);
+    const before = spawns.length;
+    const result = await createJob();
+    assert.equal(result.status, 503);
+    assert.match(result.json.error!, /trainer_paused/);
+    assert.equal(spawns.length, before, 'an unavailable GPU must never launch a fake successful training run');
+  } finally {
+    trainerGpuUnavailable = false;
+    N.teach!.invalidatePolicy();
+    await N.teach!.trainerState(true);
   }
   assert.equal((await N.teach!.policy()).trainer, 'ready');
 });
