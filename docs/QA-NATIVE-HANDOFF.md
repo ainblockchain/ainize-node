@@ -614,3 +614,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 실제 .41의 현재 Ainize 웹 2개/API 3개 작업을 하나의 새 DB로 가져왔다. 재실행은 각각 2개/3개 unchanged, 호스트 history 이관은 5개 imported 후 재시작·재실행에서 5개 unchanged였다. 기존 jobs/reports digest가 실행 전후 동일했고 claimable/liveIntakeGranted/approvalGranted/productionCutover는 모두 false였다.
 - 증거: `/mnt/newdata/qa-services/validation/native-shared-history-20261010-cnv66oax/rehearse.mjs`, `result.json`, `run.log`, 새 jobs/checkpoints/host ledger. 승인을 검사하거나 실제 Teams/GitHub로 요청하지 않는 진단용 정책을 사용했다. 운영 profile 설치나 작업기 전환이 아니며 실제 권한 이관으로 해석하면 안 된다.
 - QA 125 pass/0 fail/0 skip, build pass. 이관·재시작·변조 거부·후속 스레드 선택·혼재 거부를 포함한다. Ainmem 기존 페이지 adoption 설정, 과거 후보 원격 대조 및 현재 승인/배포 확인, 전체 제품 프로필과 실채널 E2E, main 승인·배포는 여전히 남아 있다.
+
+### 2026-10-10 Ainmem 기존 페이지의 실제 DB 대조
+
+- ain-vault에 보관된 ainops SSH 키/관리 자격증명으로 .41을 경유해 .194에 접속했다. 기존 mTest3 키는 배포 명령 전용이므로 일반 조회에 사용하지 않았다. 비밀번호/키/토큰은 출력하거나 저장소에 기록하지 않았다.
+- 실제 Ainmem PostgreSQL에서 READ ONLY transaction으로 현재 23개 job의 canonical kanban_url을 대조했다. 원래 db row의 작업 ID 속성, 페이지 ID/부모 보드/workspace/creator, uuid5(job, qa-progress) paragraph, archive/lock 상태가 모두 일치했다. 페이지/행/블록/댓글은 수정하지 않았다.
+- 최초 네 작업에서 같은 페이지를 참조하는 행이 두 개씩 나왔다. 페이지의 실제 부모 보드와 database_id를 함께 확인하면 원본 행이 하나로 결정된다. 승인 모아보기의 별도 행을 원본 행으로 잘못 adoption하면 안 된다. 이 mirror 행의 상태 갱신/정리는 전환 시 별도 확인이 필요하다.
+- 검증 결과: Teams 11, Ainmem 2, Aindrive 2, Ainize 웹 2/API 3, AINA 2, Ainspace 1 = 23개. .194 private evidence: `/var/tmp/qa-native-page-adoption-3kephgru/evidence.json`, `bindings-without-agent.json`, `summary.json`. 이 파일은 기존 row/page/block/owner/jobProperty 매핑이며 **agentId가 없어 아직 활성화할 수 없다**.
+- 현재 ComCom Ainmem workspace `2c88615f-4a30-43f8-9608-6ac977919dc0`에는 `is_agent=true` workspace member가 0명이다. 이름이나 Teams agent ID를 임의로 Ainmem agent ID로 대입하면 안 된다. Ainize QA identity를 Ainmem에 정상 등록·workspace 연결하고 scoped token을 발급한 다음, 실제 발급된 Ainmem user ID로 23개 mapping을 완성해야 한다.
+- 운영 adoption 환경변수/새 token/페이지 쓰기는 아직 하지 않았다. PR76 배포 승인도 대기 중이다. 기존 작업 데이터가 준비됐다는 사실과 실제 native agent가 페이지를 갱신할 수 있다는 사실을 구분한다. 승인 모아보기와 페이지 댓글 LGTM을 포함한 실채널 E2E는 남아 있다.
