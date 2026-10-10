@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 151개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
+- QA 회귀 152개 및 build 통과. 전체 API suite는 5420891에서 906 pass/0 fail/18 skip.
   그 이후 공통 QA 변경에는 QA 회귀와 build를 실행했으며 전체 API suite 수치를
   새 head 전체 검증으로 확대해 해석하지 않는다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -25,6 +25,22 @@
   운영 이관·활성화는 하지 않았다.
 
 ### 운영 연결에 필요한 다음 조치
+
+추가 리뷰: Ainmem의 후속/동시 응답이 정본 page URL을 바꾸면 수신을 거부하고 기존
+링크와 미전달 revision을 보존하도록 수정했다. 정상 정본 응답으로 재시도할 수 있다.
+동시 flush와 후속 revision 회귀를 포함해 QA 152 pass/0 fail/0 skip, build 통과.
+
+**Teams 링크 지연 전달은 아직 미완료:** 최초 접수 시 Ainmem이 실패하면 plain 접수
+응답만 반환한다. 이후 tick의 보고 재시도로 페이지가 생겨도 원래 Teams 스레드에
+링크를 전송하는 경로가 없다. 현재 Teams MCP `send_message` 입력은
+`channelId/content/parentId`뿐이며 idempotency key가 없다. 단순 재전송을 붙이지 말고
+서버 중복 방지 또는 인증된 발신자·스레드 기반 응답 유실 조정과 영속 outbox를
+함께 구현해야 한다. 과거 이관 작업에 링크 알림을 무조건 소급 전송하지 않는다.
+
+서버 재조회: .41 SSH multiplex 연결은 열려 있고 사용자 서비스
+`ainize-public-node`, `ainize-auto-deploy.timer`는 active다. `acl`은 여전히 미설치다.
+사용자의 unlock 응답 뒤 로컬 Vault 조회는 locked였으므로 비밀정보를 요구하는
+설치나 운영 전환은 수행하지 않았다.
 
 1. 승인 대기: Ainize PR71 (`403860f`) 조직 참조 수정과 Ainmem PR76 (`971a776`)
    scoped 등록 API·기존 페이지 채택·통합 보드 반영. 두 PR 병합·배포와 Ainmem 전용

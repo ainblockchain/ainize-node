@@ -110,3 +110,32 @@ test('exhausted validation is shown as failed instead of an approval wait',t=>{
  assert.equal(payload.statusOptionId,'failed');assert.equal(payload.approvalPending,false);
  assert.match(payload.body,/제품 검증에 실패/);assert.doesNotMatch(payload.body,/관리자 배포 승인이 필요/);
 });
+
+test('later and concurrent receipts cannot replace the canonical task page', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-canonical-page-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const jobs = new Jobs(join(root, 'jobs.sqlite3')); t.after(() => jobs.close());
+  const job = jobs.enqueue('canonical', { text: '여백 고쳐줘', service: 'ainteams' });
+  const reports = new AinmemReports(jobs, config); reports.refresh(job.id);
+  const otherId = '22222222-2222-4222-8222-222222222222';
+  const receipt = (pageId, revision) => new Response(JSON.stringify({ pageId, rowId: pageId, path: `/p/${pageId}`, revision }));
+  let release;
+  let entered;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const delayed = reports.flush({ secret: () => 'private', fetch: async () => {
+    entered(); return new Promise(resolve => { release = resolve; });
+  } });
+  await started;
+  await new AinmemReports(jobs, config).flush({ secret: () => 'private', fetch: async () => receipt(id, 0) });
+  release(receipt(otherId, 0));
+  await assert.rejects(delayed, /canonical page changed/);
+  assert.equal(reports.refresh(job.id), `${config.origin}/p/${id}`);
+
+  const claim = jobs.claim(); jobs.finish(job.id, claim.lease, 'waiting', { stage: 'needs_validation' });
+  reports.refresh(job.id);
+  await assert.rejects(reports.flush({ secret: () => 'private', fetch: async () => receipt(otherId, 1) }), /canonical page changed/);
+  assert.equal(reports.refresh(job.id), `${config.origin}/p/${id}`);
+  assert.equal(jobs.db.prepare('SELECT delivered FROM ainmem_reports WHERE job_id=?').get(job.id).delivered, 0);
+  await reports.flush({ secret: () => 'private', fetch: async () => receipt(id, 1) });
+  assert.equal(jobs.db.prepare('SELECT delivered FROM ainmem_reports WHERE job_id=?').get(job.id).delivered, 1);
+});

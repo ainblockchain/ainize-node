@@ -82,8 +82,14 @@ export class AinmemReports {
         catch { throw new Error('Invalid Ainmem response'); }
         if (!uuid(result.pageId) || !uuid(result.rowId) || result.path !== `/p/${result.pageId}` || result.revision !== row.revision) throw new Error('Invalid Ainmem receipt');
         const url = `${this.config.origin}${result.path}`;
-        this.jobs.db.prepare('UPDATE ainmem_reports SET delivered=?,url=? WHERE job_id=? AND revision=? AND binding=?')
-          .run(row.revision,url,row.job_id,row.revision,this.binding);
+        this.jobs.transaction(() => {
+          // A canonical page is permanent, including across concurrent flushes. Never let a
+          // later receipt silently move the job away from its existing comments/approvals.
+          const current = this.jobs.db.prepare('SELECT url FROM ainmem_reports WHERE job_id=?').get(row.job_id);
+          if (current?.url && current.url !== url) throw new Error('Ainmem canonical page changed; reconcile existing page first');
+          this.jobs.db.prepare('UPDATE ainmem_reports SET delivered=?,url=? WHERE job_id=? AND revision=? AND binding=?')
+            .run(row.revision,url,row.job_id,row.revision,this.binding);
+        });
       } catch (error) { firstError ??= error; }
     }
     if (firstError) throw firstError;
