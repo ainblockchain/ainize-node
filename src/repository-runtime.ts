@@ -47,13 +47,19 @@ export interface AgentRuntime {
 /** Durable legacy adapter state. Projects retain their existing deployment store and expose this same contract. */
 export class AgentRuntimeStore {
   private readonly states = new Map<string, AgentRuntime>();
+  private readonly records = new Map<string, RuntimeExecution[]>();
   constructor(private readonly file: string) {
     if (existsSync(file)) {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { agents?: AgentRuntime[] };
-      for (const s of parsed.agents ?? []) this.states.set(s.agentId, s);
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { agents?: AgentRuntime[]; executions?: Record<string, RuntimeExecution[]> };
+      for (const s of parsed.agents ?? []) {
+        this.states.set(s.agentId, s);
+        // Older ledgers contain only the last execution; retain it during migration.
+        this.records.set(s.agentId, parsed.executions?.[s.agentId] ?? (s.execution ? [s.execution] : []));
+      }
     }
   }
   get(id: string): AgentRuntime | null { return this.states.get(id) ?? null; }
+  executionsOf(id: string): RuntimeExecution[] { return structuredClone(this.records.get(id) ?? []); }
   bind(id: string, source: RuntimeSource): AgentRuntime {
     const prior = this.get(id);
     const next = { agentId: id, source, activeCommit: prior?.activeCommit ?? null, activeVersion: prior?.activeVersion ?? null, execution: prior?.execution ?? null };
@@ -66,19 +72,24 @@ export class AgentRuntimeStore {
       sourceCommit: source.sourceCommit, ref: `refs/heads/${source.branch}`, trigger, actor, status: 'building',
       projectionCommit: null, version: null, error: null, createdAt: Date.now(), finishedAt: null,
     };
+    this.records.set(id, [...(this.records.get(id) ?? []), execution]);
     this.states.set(id, { ...state, execution }); this.save(); return execution;
   }
   finish(id: string, executionId: string, fields: Pick<RuntimeExecution, 'status' | 'version' | 'error' | 'projectionCommit'>): void {
     const state = this.get(id);
-    if (!state?.execution || state.execution.id !== executionId) return;
-    const execution = { ...state.execution, ...fields, finishedAt: fields.status === 'ready' || fields.status === 'error' ? Date.now() : null };
-    this.states.set(id, { ...state, execution, ...(fields.status === 'ready' ? { activeCommit: execution.sourceCommit, activeVersion: fields.version } : {}) });
+    const records = this.records.get(id);
+    const index = records?.findIndex((record) => record.id === executionId) ?? -1;
+    if (!state || !records || index < 0) return;
+    const execution = { ...records[index], ...fields, finishedAt: fields.status === 'ready' || fields.status === 'error' ? Date.now() : null };
+    this.records.set(id, records.map((record, n) => n === index ? execution : record));
+    // A delayed callback may complete an older record, but cannot activate it over a newer execution.
+    if (state.execution?.id === executionId) this.states.set(id, { ...state, execution, ...(fields.status === 'ready' ? { activeCommit: execution.sourceCommit, activeVersion: fields.version } : {}) });
     this.save();
   }
-  remove(id: string): void { if (this.states.delete(id)) this.save(); }
+  remove(id: string): void { this.records.delete(id); if (this.states.delete(id)) this.save(); }
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(`${this.file}.tmp`, JSON.stringify({ agents: [...this.states.values()] }), { mode: 0o600 });
+    writeFileSync(`${this.file}.tmp`, JSON.stringify({ agents: [...this.states.values()], executions: Object.fromEntries(this.records) }), { mode: 0o600 });
     renameSync(`${this.file}.tmp`, this.file);
   }
 }

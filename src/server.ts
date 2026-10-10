@@ -924,6 +924,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }));
   app.use(agentGitRoutes({
     git: agentGit,
+    executions: (id) => agentRuntimes.executionsOf(id),
     canRead: (req, id) => {
       const fork = agentForks.get(id);
       if (fork) return fork.owner === agentCaller(req)?.subject.toLowerCase();

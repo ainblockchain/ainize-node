@@ -149,6 +149,12 @@ test('a page can read the history, the branches and a diff without cloning', asy
   assert.deepEqual(body.commits.map((c) => c.subject), ['Update desk (v3)', 'Be careful', 'Create desk']);
   assert.match(body.commits[0]!.short, /^[0-9a-f]{7,}$/);
 
+  const executions = await call('GET', '/api/hosted-agents/desk/executions?limit=1');
+  assert.equal(executions.status, 200);
+  const records = executions.body as unknown as { executions: { agentId: string }[]; total: number };
+  assert.equal(records.executions.length, 1);
+  assert.ok(records.total >= 1);
+  assert.equal(records.executions[0].agentId, 'desk');
   const refs = await call('GET', '/api/hosted-agents/desk/refs');
   assert.deepEqual((refs.body as unknown as { branches: { name: string }[] }).branches.map((b) => b.name), ['main']);
 
@@ -180,6 +186,8 @@ test('the history is no more public than the agent it belongs to', async () => {
   await call('PUT', '/api/hosted-agents/desk', { id: 'desk', name: 'Desk', description: 'A desk.', model: MODEL, systemPrompt: 'Edited in the browser.', visibility: 'private' });
   const r = await call('GET', '/api/hosted-agents/desk/commits', undefined, theirs);
   assert.equal(r.status, 404, 'a private agent\'s history is its owner\'s alone');
+  assert.equal((await call('GET', '/api/hosted-agents/desk/executions', undefined, theirs)).status, 404);
+  assert.equal((await call('GET', '/api/hosted-agents/desk/executions?offset=-1')).status, 400);
   const mine = await call('GET', '/api/hosted-agents/desk/commits');
   assert.equal(mine.status, 200);
 });

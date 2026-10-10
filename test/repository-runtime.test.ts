@@ -16,7 +16,12 @@ test('agent source and projection commits are distinct; a failed build preserves
     store.finish('agent', first.id, { status: 'ready', version: 1, projectionCommit: 'b'.repeat(40), error: null });
     const next = store.begin('agent', { ...source, sourceCommit: 'c'.repeat(40) }, 'push', 'bob');
     store.finish('agent', next.id, { status: 'error', version: 2, projectionCommit: 'd'.repeat(40), error: 'failed build' });
-    const restored = new AgentRuntimeStore(file).get('agent')!;
+    const restarted = new AgentRuntimeStore(file);
+    const restored = restarted.get('agent')!;
+    assert.deepEqual(restarted.executionsOf('agent').map((e) => [e.sourceCommit, e.actor, e.status]), [[source.sourceCommit, 'alice', 'ready'], ['c'.repeat(40), 'bob', 'error']]);
+    const detached = restarted.executionsOf('agent');
+    detached[0].actor = 'mutated';
+    assert.equal(restarted.executionsOf('agent')[0].actor, 'alice');
     assert.equal(restored.activeCommit, 'a'.repeat(40));
     assert.equal(restored.source.sourceCommit, 'c'.repeat(40));
     assert.equal(restored.execution!.projectionCommit, 'd'.repeat(40));
@@ -31,6 +36,28 @@ test('ready for the previous agent version is a failed replacement, not a succes
   let count = 0;
   await waitForAgentVersion({ status: () => ({ status: 'ready', liveVersion: ++count >= 2 ? 2 : 1, error: null }) }, 'a', 2, 50, 1);
   assert.equal(count, 2);
+});
+
+test('legacy ledger migration and delayed completions preserve history without activating a superseded execution', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ainize-runtime-migrate-'));
+  try {
+    const file = join(dir, 'agents.json');
+    const source: RuntimeSource = { repoId: 'repository', provider: 'agent-git', url: 'https://node/git/a.git', branch: 'main', path: '', sourceCommit: 'a'.repeat(40), projectId: null, writable: true };
+    const initial = new AgentRuntimeStore(file);
+    const old = initial.begin('a', source, 'push', 'alice');
+    writeFileSync(file, JSON.stringify({ agents: [initial.get('a')] }));
+    const migrated = new AgentRuntimeStore(file);
+    assert.deepEqual(migrated.executionsOf('a'), [old]);
+    const newer = migrated.begin('a', { ...source, sourceCommit: 'b'.repeat(40) }, 'merge', 'bob');
+    migrated.finish('a', newer.id, { status: 'ready', version: 2, error: null, projectionCommit: 'c'.repeat(40) });
+    migrated.finish('a', old.id, { status: 'error', version: 1, error: 'superseded build failed', projectionCommit: null });
+    const restored = new AgentRuntimeStore(file);
+    assert.equal(restored.get('a')!.activeCommit, 'b'.repeat(40));
+    assert.equal(restored.get('a')!.execution!.id, newer.id);
+    assert.deepEqual(restored.executionsOf('a').map((e) => e.status), ['error', 'ready']);
+    restored.remove('a');
+    assert.deepEqual(new AgentRuntimeStore(file).executionsOf('a'), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('project active deployment survives newer failures and pruning; receipts and commit runs survive restart', () => {
