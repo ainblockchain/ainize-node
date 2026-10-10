@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 169개 및 build 통과. 704ced1의 전체 API suite는
+- QA 회귀 170개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -1331,3 +1331,21 @@ ledger에 등록하고 즉시 재실행해 7/7 동일 결과를 확인했다.
 검증이며 native coding 재개나 전 서비스 E2E 완료가 아니다. canonical Ainmem 페이지
 채택과 candidate 재검증/작업 재개 연결, 선행 PR71/76 승인·배포는 계속 남아 있다.
 이 실행에서 ainize SSH multiplex는 open, 로컬 Vault status는 locked로 확인됐다.
+
+
+### 기존 Ainmem 페이지를 쓰기 전에 고정 — 2026-10-11
+
+AinmemReports는 이관 작업을 처음 보고할 때 immutable archive의 fingerprint와 원래
+job/repository/workspace/channel/message를 대조하고 details.kanban_url을 먼저 고정한다.
+archive 누락/변경이나 외부 URL은 거부한다. handler는 Checkpoints reader를 전달한다.
+URL을 이미 아는 보고 요청에는 expectedPageId를 보내며, Ainmem PR76은 서버가 결정한
+정본 ID와 다르면 쓰기 전에 409를 반환한다. 이 필드는 내용 revision digest에서 제외해
+같은 revision의 재시도와 양립한다. 기존 API는 필드를 거부하므로 PR76의 최신 버전을
+먼저 배포해야 한다. 불일치 때 precondition을 제거해 재시도하지 않는다.
+
+QA 170 pass/0 fail/0 skip 및 build 통과. Ainmem 실제 격리 PostgreSQL HTTP suite
+39 pass/0 fail/0 skip, typecheck/build 통과. .41의 기존 23개 작업 DB 복사본에서 archive
+기반 URL 고정을 두 번 실행해 23/23 원래 URL을 보존했다. 이 마지막 검사는 보드 ID를
+fixture로 사용한 로컬 outbox 검사이며 API 호출/운영 쓰기는 0건이다.
+증거: `/mnt/newdata/qa-services/validation/native-canonical-pin-hvu9ia5j/summary.json`.
+운영 page adoption/enrollment, native writer 전환 및 채널 E2E는 여전히 미완료다.

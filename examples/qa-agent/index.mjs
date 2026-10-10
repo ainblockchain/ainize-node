@@ -92,7 +92,7 @@ export function createHandler({
     if (!config.ainmem) return null;
     let reports;
     try {
-      reports = new AinmemReports(jobs, config.ainmem);
+      reports = new AinmemReports(jobs, config.ainmem, { checkpoints: new CheckpointsClass(checkpointsDir) });
       if (jobId) reports.refresh(jobId);
       await reports.flush(ctx);
       return jobId ? reports.refresh(jobId) : null;

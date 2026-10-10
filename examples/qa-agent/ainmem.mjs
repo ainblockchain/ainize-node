@@ -36,7 +36,8 @@ function card(job, config) {
     body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason === 'base_changed' ? 'main이 변경되어 최신 코드 기준으로 수정·검증이 필요합니다. 기존 승인은 재사용하지 않습니다.\n' : job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${repair}${review}${deployment}\n이 상태 표시는 배포 승인이 아닙니다.` };
 }
 export class AinmemReports {
-  constructor(jobs, config) {
+  constructor(jobs, config, { checkpoints } = {}) {
+    this.checkpoints = checkpoints;
     this.jobs = jobs; this.config = parseAinmemConfig(config); this.binding = digest(this.config);
     jobs.db.exec(`CREATE TABLE IF NOT EXISTS ainmem_reports (
       job_id TEXT PRIMARY KEY, binding TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,
@@ -53,11 +54,26 @@ export class AinmemReports {
       // Re-read under the transaction: a late reporter must not publish an older job snapshot.
       const job = this.jobs.get(jobId);
       if (!job) throw new Error('Unknown report job');
+      let canonicalUrl;
+      if (job.checkpoint.legacy) {
+        if (!this.checkpoints) throw new Error('Legacy page archive required');
+        const archive = this.checkpoints.load(job.checkpoint.legacy);
+        if (digest(archive) !== job.checkpoint.legacyFingerprint || archive.kind !== 'legacy-job-v1'
+          || archive.job?.id !== job.id || archive.repository !== job.input.repository
+          || archive.workspaceId !== job.input.teams?.workspaceId || archive.channelId !== job.input.teams?.channelId
+          || archive.job.message_id !== job.input.teams?.messageId) throw new Error('Legacy page archive changed');
+        canonicalUrl = archive.job.details?.kanban_url;
+        const prefix = `${this.config.origin}/p/`;
+        if (typeof canonicalUrl !== 'string' || !canonicalUrl.startsWith(prefix)
+          || !uuid(canonicalUrl.slice(prefix.length))) throw new Error('Canonical legacy page required');
+      }
       const payload = card(job, this.config), hash = digest(payload);
       const prior = this.jobs.db.prepare('SELECT * FROM ainmem_reports WHERE job_id=?').get(jobId);
+      if (canonicalUrl && prior?.url && prior.url !== canonicalUrl) throw new Error('Legacy canonical page changed');
       if (prior && prior.binding !== this.binding) throw new Error('Ainmem board binding changed; reconcile existing page first');
       if (!prior) this.jobs.db.prepare('INSERT INTO ainmem_reports(job_id,binding,digest,payload,revision) VALUES(?,?,?,?,0)').run(jobId,this.binding,hash,JSON.stringify(payload));
       else if (prior.digest !== hash) this.jobs.db.prepare('UPDATE ainmem_reports SET digest=?,payload=?,revision=revision+1 WHERE job_id=?').run(hash,JSON.stringify(payload),jobId);
+      if (canonicalUrl) this.jobs.db.prepare('UPDATE ainmem_reports SET url=? WHERE job_id=? AND url IS NULL').run(canonicalUrl, jobId);
       return this.jobs.db.prepare('SELECT url FROM ainmem_reports WHERE job_id=?').get(jobId)?.url;
     });
   }
@@ -74,7 +90,7 @@ export class AinmemReports {
         try { response = await ctx.fetch(`${this.config.origin}/api/qa/tasks/${encodeURIComponent(row.job_id)}`, {
           method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(10_000), maxBytes: 4096,
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...JSON.parse(row.payload), revision: row.revision }),
+          body: JSON.stringify({ ...JSON.parse(row.payload), revision: row.revision, ...(row.url ? { expectedPageId: row.url.slice(`${this.config.origin}/p/`.length) } : {}) }),
         }); } catch { throw new Error('Ainmem connection failed; report retained'); }
         if (!response.ok) throw new Error('Ainmem update refused; report retained');
         let result;

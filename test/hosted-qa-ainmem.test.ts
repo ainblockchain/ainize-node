@@ -139,3 +139,31 @@ test('later and concurrent receipts cannot replace the canonical task page', asy
   await reports.flush({ secret: () => 'private', fetch: async () => receipt(id, 1) });
   assert.equal(jobs.db.prepare('SELECT delivered FROM ainmem_reports WHERE job_id=?').get(job.id).delivered, 1);
 });
+
+test('legacy reports pin the archived page before first write and retain it on rejection and restart', async t => {
+  const { createHash } = await import('node:crypto');
+  const { Checkpoints } = await import('../examples/qa-agent/checkpoints.mjs');
+  const root=mkdtempSync(join(tmpdir(),'qa-legacy-page-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  let jobs=new Jobs(join(root,'jobs.sqlite3'));
+  const job=jobs.enqueue('legacy',{text:'고쳐줘',service:'ainteams',repository:'owner/repo',teams:{workspaceId:'ws',channelId:'ch',messageId:'msg'}});
+  const checkpoints=new Checkpoints(join(root,'checkpoints'));
+  const archive={kind:'legacy-job-v1',repository:'owner/repo',workspaceId:'ws',channelId:'ch',job:{id:job.id,message_id:'msg',details:{kanban_url:`${config.origin}/p/${id}`}}};
+  const ref=checkpoints.save(job.id,archive),claim=jobs.claim();
+  jobs.finish(job.id,claim.lease,'waiting',{legacy:ref,legacyFingerprint:createHash('sha256').update(JSON.stringify(archive)).digest('hex')});
+  assert.throws(()=>new AinmemReports(jobs,config).refresh(job.id),/archive required/);
+  let reports=new AinmemReports(jobs,config,{checkpoints});
+  assert.equal(reports.refresh(job.id),`${config.origin}/p/${id}`);
+  await assert.rejects(reports.flush({secret:()=> 'private',fetch:async (_url,init)=>{
+    assert.equal(JSON.parse(init.body).expectedPageId,id);return new Response('',{status:409});
+  }}),/refused/);
+  jobs.close();jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());
+  reports=new AinmemReports(jobs,config,{checkpoints});
+  assert.equal(reports.refresh(job.id),`${config.origin}/p/${id}`);
+  await reports.flush({secret:()=> 'private',fetch:async (_url,init)=>{
+    assert.equal(JSON.parse(init.body).expectedPageId,id);
+    return new Response(JSON.stringify({pageId:id,rowId:id,path:`/p/${id}`,revision:0}));
+  }});
+  const corrupted={...archive,repository:'other/repo'};
+  assert.throws(()=>new AinmemReports(jobs,config,{checkpoints:{load:()=>corrupted}}).refresh(job.id),/archive changed/);
+});
