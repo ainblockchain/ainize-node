@@ -19,8 +19,10 @@
   채널→수정→PR→관리자 승인→배포 전체 흐름의 증거는 아니다.
 - 실제 모델의 **검증 실패 후 자동 재수정** 진단도 통과했다. 아래 기록의 실패 후보는
   테스트가 의도적으로 넣은 것으로, 최초 모델 출력이었다고 해석하지 않는다.
-- Teams main 0e6dfedd: typecheck/lint 통과, production build와 화면 4개 검사 통과.
-  전체 unit gate는 DNS/Git 메타데이터/thumbnail fixture 문제로 실패 기록이 남아 있다.
+- Teams main f118bbfe: typecheck/lint 통과. 12GiB 컨테이너/4GiB Node 힙에서 build 통과.
+  Git 인덱스 지원과 작업자 수 제한으로 Git 검사 4개·DB 9개·thumbnail 18개 단독 통과.
+  전체 unit suite는 아직 실패 상태이며 외부 DNS 의존 1건과 skip들이 남아 있다.
+  화면 4개 검사의 이전 통과는 0e6dfedd 기준이며 현재 main의 E2E 증거가 아니다.
 - Ainspace main 348b319: 201 tests 통과, lint 오류 0/경고 36. Google Fonts 다운로드
   의존으로 network=none build 실패. 네이티브 qa-ainspace를 통한 제품 수정이 필요하다.
 - 현재 운영 이력 23건을 6개 격리 저장소에 이관 시험했다. Ainize web/API 5건은 같은
@@ -1503,3 +1505,28 @@ OPEN/DRAFT/MERGEABLE이다. PR71/76 배포 승인에는 아직 답변이 없고 
 `/mnt/newdata/qa-services/validation/native-teams-build-12g-l5dhvl8w`, handle 23271.
 profile.json과 run.log/result.json이 정본이다. 이 결과는 아직 미확정이며 운영 profile은
 변경하지 않았다. 이전 실패 기록은 그대로 보존했다.
+
+
+### Teams build 통과 및 운영 연결 대기 — 2026-10-11
+
+`native-teams-build-12g-l5dhvl8w` build 진단(handle 23271)은 종료됐고 passed=true다.
+동일한 f118bbfea579984dabb6d652a2d5219bdce8708a 소스에서 12GiB memory와
+NODE_OPTIONS=--max-old-space-size=4096을 사용했다. 검사 생략/제품 변경은 없다.
+원본 result.json 및 evidence/build.*.log에 결과를 보존했다.
+
+이 디렉터리의 full-profile.json은 typecheck/lint/test/build 전체 gate를 유지하며
+현재 검증한 memory/heap, gitInventory, workspace-concurrency=1/maxWorkers=1을
+합쳤다. 해당 전체 profile의 모든 gate가 함께 성공한 것은 아니다. 외부 DNS 의존
+public-fetch 테스트와 건너뜀 항목이 남아 있어 릴리스 성공 receipt로 쓸 수 없다.
+진단용 QA validation 컨테이너가 더 이상 실행 중이지 않은 것을 확인했다.
+
+운영 다음 단계는 기존 승인 요청에 달려 있다. PR71(403860f), PR76(88ee41d)은
+현재 OPEN/MERGEABLE이며 병합·배포/전용 DB 변경 승인 답변은 없다. 동일한 승인
+대기를 여러 차례 연속 확인했고 Vault는 locked다. 기존 SSH multiplex 조회와 격리
+검증만으로는 새 페이지 자격증명 등록이나 native 운영 전환을 완료할 수 없다.
+
+승인과 필요한 자격증명 접근이 제공되면 선행 배포→페이지 등록/23건 채택→native
+단일 writer 전환→6개 채널 실제 요청·수정·검증·관리자 승인·서비스 SHA 확인으로
+이어가야 한다. 제품 수정은 사용자 요청대로 실제 QA 에이전트 경로에서 실행한다.
+승인 대기 중 임의 서비스 배포/중복 worker 활성화/기존 승인 승계를 하지 않았다.
+전체 목표는 미완료이며 운영 승인 없이는 다음 실제 연결 단계로 진행할 수 없다.
