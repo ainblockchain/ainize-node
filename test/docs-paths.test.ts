@@ -23,3 +23,21 @@ test('documentation uses this checkout when its directory is not named ainize-no
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('explicit sibling worktrees are validated and receive generated documentation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ainize-doc-worktrees-'));
+  const previous = process.env.AINIZE_DOCS_WEB_DIR;
+  try {
+    const web = join(root, 'web-review');
+    mkdirSync(web);
+    process.env.AINIZE_DOCS_WEB_DIR = web;
+    assert.equal(at(join(root, 'node-review'), 'docs/en/reference/api.md'), join(web, 'docs/en/reference/api.md'));
+    assert.doesNotThrow(() => requireSiblings(join(root, 'node-review'), ['web']));
+    rmSync(web, { recursive: true });
+    assert.throws(() => requireSiblings(join(root, 'node-review'), ['web']), /ainize-web/);
+  } finally {
+    if (previous === undefined) delete process.env.AINIZE_DOCS_WEB_DIR;
+    else process.env.AINIZE_DOCS_WEB_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
