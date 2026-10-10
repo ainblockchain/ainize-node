@@ -1,3 +1,4 @@
+import { AgentRepositoryQueue } from '../src/agent-repository-queue.js';
 /**
  * An agent that already lives somewhere else, followed rather than moved.
  *
@@ -262,4 +263,24 @@ test('agent deletion drains mirror apply before removing state and rejects a que
     assert.equal(repos.exists(mirror.agent), false);
     assert.equal(applied, 1); assert.equal(landed, 1);
   } finally { release(); await syncer.stop(); }
+});
+
+test('mirror mutations recheck permission inside the common queue after ownership or source policy changes', async () => {
+  const queue = new AgentRepositoryQueue();
+  const mirror = mirrors.set({ agent: 'permission-test', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let allowed = true, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const began = new Promise<void>((resolve) => { entered = resolve; });
+  const blocking = queue.run(mirror.agent, async () => { entered(); await gate; });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, serialize: (id, operation) => queue.run(id, operation), apply: async () => { assert.fail('revoked request must not apply'); }, land: async () => {}, log: () => {} });
+  try {
+    await began;
+    const configured = assert.rejects(syncer.configure({ ...mirror, path: 'another-folder' }, 'old-owner', () => allowed), /permission changed/);
+    const synced = assert.rejects(syncer.sync(mirror, 'old-owner', () => allowed), /permission changed/);
+    const detached = assert.rejects(syncer.detach(mirror.agent, () => allowed), /permission changed/);
+    allowed = false;
+    release(); await blocking; await Promise.all([configured, synced, detached]);
+    assert.equal(mirrors.get(mirror.agent)?.path, 'news-agent');
+    assert.equal(repos.exists(mirror.agent), false);
+  } finally { release(); await syncer.stop(); mirrors.remove(mirror.agent); }
 });

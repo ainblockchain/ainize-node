@@ -144,3 +144,7 @@ Real HTTP push validation holds its runtime apply open, verifies an archive cann
 The production node wiring now creates the owner-private archive inside the common repository queue before deleting hosted-agent state, secrets, runtime records, Git repository, reviews or mirror metadata. The archive captures the spec, all Git refs, PR/review records, mirror configuration and runtime/execution history. Deletion responds with its archive ID. Missing legacy repositories are recorded explicitly as metadata-only archives. Archive failure prevents cleanup.
 
 A real signed-in node test deletes the agent, reads the persisted archive, and restores every Git ref offline; PR and execution history survive. Another real API test fills the owner archive quota and proves the rejected deletion leaves the agent and repository accessible. 16 archive/node tests and typecheck pass. Owner download/restore endpoints, restored runtime application and user recovery UI are still pending; production deployment is still pending.
+
+### Queued mirror permissions
+
+Manual mirror configure/sync/detach now recheck current read/manage/source policy within the shared queue. A revoked or source-rebound request returns 403 without mutating mirror configuration, fetching, applying or detaching. Timer and authenticated webhook synchronization retain their separate operator authorization. A queue-gated permission-revocation test plus the real Git mirror regressions pass (11 tests); typecheck passes.

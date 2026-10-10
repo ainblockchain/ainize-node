@@ -13,22 +13,25 @@ export interface AgentMirrorSyncDeps {
   land: (id: string, commit: string) => Promise<void>;
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
+export class AgentMirrorAccessError extends Error {}
+const requireAccess = (allowed?: () => boolean) => { if (allowed && !allowed()) throw new AgentMirrorAccessError('mirror permission changed while waiting'); };
 export class AgentMirrorSyncer {
   private readonly inflight = new Map<string, Promise<AgentMirror | null>>();
   private timer: NodeJS.Timeout | null = null;
   constructor(private readonly deps: AgentMirrorSyncDeps) {}
-  sync(mirror: AgentMirror, by: string | null = null): Promise<AgentMirror | null> {
-    return this.serial(mirror.agent, () => this.perform(mirror, by));
+  sync(mirror: AgentMirror, by: string | null = null, allowed?: () => boolean): Promise<AgentMirror | null> {
+    return this.serial(mirror.agent, () => { requireAccess(allowed); return this.perform(mirror, by); });
   }
-  configure(mirror: AgentMirror, by: string | null = null): Promise<AgentMirror | null> {
+  configure(mirror: AgentMirror, by: string | null = null, allowed?: () => boolean): Promise<AgentMirror | null> {
     return this.serial(mirror.agent, () => {
+      requireAccess(allowed);
       if (this.deps.available?.(mirror.agent) === false) throw new Error('agent no longer exists');
       return this.perform(this.deps.mirrors.set(mirror), by);
     });
   }
-  async detach(agent: string): Promise<boolean> {
+  async detach(agent: string, allowed?: () => boolean): Promise<boolean> {
     let detached = false;
-    await this.serial(agent, async () => { detached = this.deps.mirrors.remove(agent); return null; });
+    await this.serial(agent, async () => { requireAccess(allowed); detached = this.deps.mirrors.remove(agent); return null; });
     return detached;
   }
   async removeAgent(agent: string, remove: () => Promise<void>): Promise<void> {

@@ -13,7 +13,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AgentGit, AgentGitError } from './agent-git.js';
 import { mirrorUrlOk, type AgentMirror, type AgentMirrorStore } from './agent-mirror.js';
-import { AgentMirrorSyncer } from './agent-mirror-sync.js';
+import { AgentMirrorSyncer, AgentMirrorAccessError } from './agent-mirror-sync.js';
 import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentMirrorRoutesDeps {
@@ -68,6 +68,11 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
    */
   const syncer = deps.syncer ?? new AgentMirrorSyncer(deps);
   const sync = (req: Request, mirror: AgentMirror) => syncer.sync(mirror, deps.principal(req));
+  const stillAllowed = (req: Request, id: string) => () => deps.canRead(req, id) && deps.canManage(req, id) && !deps.writableSource?.(id);
+  const permissionFailure = (res: Response, error: unknown) => {
+    if (!(error instanceof AgentMirrorAccessError)) throw error;
+    refuse(res, 403, 'not_allowed', error.message);
+  };
 
   router.get('/api/hosted-agents/:id/mirror', (req, res) => {
     const id = open(req, res, false); if (!id) return;
@@ -83,14 +88,16 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
       return;
     }
     // Configuration and detach serialize with fetch/apply, so completed mutations cannot be overtaken.
-    res.json({ mirror: await syncer.configure({ agent: id, ...parsed.data }, deps.principal(req)) });
+    try { res.json({ mirror: await syncer.configure({ agent: id, ...parsed.data }, deps.principal(req), stillAllowed(req, id)) }); }
+    catch (error) { permissionFailure(res, error); }
   });
 
   router.post('/api/hosted-agents/:id/mirror/sync', json, async (req, res) => {
     const id = open(req, res, true); if (!id) return;
     const mirror = deps.mirrors.get(id);
     if (!mirror) { refuse(res, 404, 'not_mirrored', `agent "${id}" does not follow a repository`); return; }
-    res.json({ mirror: await sync(req, mirror) });
+    try { res.json({ mirror: await syncer.sync(mirror, deps.principal(req), stillAllowed(req, id)) }); }
+    catch (error) { permissionFailure(res, error); }
   });
 
   /**
@@ -142,7 +149,8 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
   router.delete('/api/hosted-agents/:id/mirror', async (req, res) => {
     const id = open(req, res, true); if (!id) return;
     // What it is running stays running: detaching stops following, it does not revert the agent.
-    res.json({ detached: await syncer.detach(id) });
+    try { res.json({ detached: await syncer.detach(id, stillAllowed(req, id)) }); }
+    catch (error) { permissionFailure(res, error); }
   });
 
   return router;
