@@ -33,6 +33,18 @@ MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "16384"))
 HEAD_OVERRIDE = os.environ.get("HEAD_OVERRIDE", "").strip()
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def _warm_up() -> None:
+    """Load the model as the process starts, not on the first visitor's request.
+
+    A 27B backbone takes ~10 s to come off disk; lazily loading it meant the first decide after every
+    restart paid that inside its own latency (the owner saw 16 s). Loading in a background thread keeps
+    the port answering: /health says ready=false until the weights are in, and a request that arrives
+    first simply waits on the same lock. EAGER_LOAD=0 restores the lazy behaviour for tests."""
+    if os.environ.get("EAGER_LOAD", "1") != "0":
+        threading.Thread(target=_ensure_loaded, name="clef-warm-up", daemon=True).start()
 # One request at a time: the forward already occupies the card.
 _lock = threading.Lock()
 _model: Any = None
