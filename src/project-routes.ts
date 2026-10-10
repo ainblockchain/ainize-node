@@ -11,6 +11,12 @@
  * repository's organization (they run with the caller's own key). The push hook (`POST /:id/hook`) is aindrive's,
  * with an HMAC rather than a session. by-repo, by-name and the org listings answer CORS for
  * `https://aindrive.ainetwork.ai`. Errors are `{ error: { code, message } }` like the agent routes.
+ *
+ * A third door is the AIN-UI link snippet (docs/PROJECTS.md "Link snippets", aindrive docs/AINUI-LINK-SNIPPETS.md):
+ * a consumer application (AIN Teams) holding an AIN SSO machine token for this node names the VIEWER in
+ * `X-AIN-Actor`, and `GET /api/ainui/snippet`, `GET /:id/deployments`, `POST /:id/run` and `POST /:id/redeploy`
+ * answer for that person — owner, or an active member of the project's organization — exactly as a signed-in
+ * session of theirs would. `deps.actor` turns the two headers into a principal; without it those doors stay shut.
  */
 import { Router, type Request, type Response } from 'express';
 import type { HostedAgentSecretStore } from './hosted-agent-secrets.js';
@@ -19,11 +25,18 @@ import type { AgentCaller } from './shared-agents.js';
 import {
   hookBody, hookSignatureOk, parseRepoUrl, projectInput, runInput, type Deployment, type DeploymentLogs, type Project, ProjectLimitError, ProjectRepoTakenError,
   type ProjectStore, type ProjectWorker, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN, PROJECT_SECRET_WEBHOOK,
+  languageOf, readTree, PROJECT_RUN_TIMEOUT_MS,
 } from './projects.js';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
 import { SsoError, type ServicePrincipal } from './sso.js';
+import { AINUI_MEDIA_TYPE, deniedSnippet, parseSnippetUrl, projectSnippet, snippetInputsOf, validateRunEnv, wantsAinui } from './ainui-snippet.js';
+import { inputDefaults, resolveProjectManifest, ProjectManifestError } from './project-manifest.js';
+import { RUN_ACTOR_HEADER, RunActorError } from './run-actor.js';
 
 export interface ProjectRoutesDeps {
   store: ProjectStore;
@@ -68,7 +81,28 @@ export interface ProjectRoutesDeps {
     /** The principal an AIN SSO subject is here (`sso:<sub>`, or the legacy principal it was linked to). */
     principalForSubject: (subject: string) => string;
   };
+  /**
+   * A consumer application asking FOR a person (link snippets): its machine token + `X-AIN-Actor`. Absent → the
+   * snippet and the actor-driven run/redeploy answer 503 `snippets_off`.
+   */
+  actor?: {
+    /** Verifies `Authorization` as a machine token for this node (sso.ts verifyServiceToken); throws SsoError. */
+    servicePrincipal: (authorization: string | undefined) => Promise<ServicePrincipal>;
+    /** The principal an AIN SSO subject is here (`sso:<sub>`, or the legacy principal it was linked to). */
+    principalForSubject: (subject: string) => string;
+    /** AIN organization IDs this node knows under an org slug (the project's `org`). */
+    orgIdsForSlug: (slug: string) => string[];
+    /** The organizations the subject is an ACTIVE member of (provisioned memberships). */
+    memberOrgs: (subject: string) => string[];
+    /** The person's own `aindrive run` key for a run (run-actor.ts); absent → runs get no key. Throws RunActorError / SsoError. */
+    keyFor?: (subject: string) => string;
+  };
 }
+
+/** Who a snippet door is answering: a session of this node, or a person named by a trusted application. */
+type Viewer =
+  | { kind: 'session'; principal: string; subject: string | null; orgMember: (orgId: string) => boolean }
+  | { kind: 'actor'; principal: string; subject: string; orgs: string[]; app: string };
 
 /** `POST /api/projects/auto` body: the pushed repo and what aindrive knows about it. */
 export const autoBindInput = z.object({
@@ -163,6 +197,155 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
   });
   const queued = (d: Deployment) => { deps.worker.enqueue(d.id); return { deploymentId: d.id, status: d.status }; };
   const ORG_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+  // ------------------------------------------------------------------------------------------ viewers (link snippets)
+
+  const SUBJECT = /^[A-Za-z0-9._:@%+/-]{1,300}$/;
+  /**
+   * The viewer of a snippet door: a machine token names an application, and `X-AIN-Actor` the person it asks for;
+   * anything else is this node's own session. A machine token that does not verify is 401, never a fall-through
+   * to an anonymous answer; an application naming nobody is 403 (a snippet is always for someone).
+   */
+  const viewerOf = async (req: Request, res: Response): Promise<Viewer | null> => {
+    const authorization = req.header('authorization');
+    const looksLikeMachine = !!authorization && /^Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/i.test(authorization.trim()) && (() => {
+      try { return (JSON.parse(Buffer.from(authorization.trim().split(/\s+/)[1]!.split('.')[0]!, 'base64url').toString('utf8')) as { typ?: string }).typ === 'at+jwt'; } catch { return false; }
+    })();
+    if (looksLikeMachine) {
+      if (!deps.actor) { refuse(res, 503, 'snippets_off', 'this node accepts no machine tokens (AIN SSO off or AIN_SSO_SERVICE_APPS unset)'); return null; }
+      let app: ServicePrincipal;
+      try { app = await deps.actor.servicePrincipal(authorization); }
+      catch (e) {
+        if (e instanceof SsoError) { if (e.status === 401) res.set('www-authenticate', 'Bearer error="invalid_token"'); refuse(res, e.status, e.code, e.message); return null; }
+        throw e;
+      }
+      const subject = (req.header(RUN_ACTOR_HEADER) ?? '').trim();
+      if (!subject) { refuse(res, 403, 'actor_required', `${RUN_ACTOR_HEADER} names the person this is for; "${app.clientId}" named nobody`); return null; }
+      if (!SUBJECT.test(subject)) { refuse(res, 400, 'invalid_actor', `${RUN_ACTOR_HEADER} is not an AIN SSO subject`); return null; }
+      return { kind: 'actor', principal: deps.actor.principalForSubject(subject), subject, orgs: deps.actor.memberOrgs(subject), app: app.clientId };
+    }
+    const who = deps.caller(req);
+    if (!who) { refuse(res, 401, 'not_signed_in', 'sign in (AIN SSO or wallet), or ask through an application that names you'); return null; }
+    return { kind: 'session', principal: who.subject, subject: who.sso?.sub ?? null, orgMember: who.orgMember };
+  };
+
+  /** Viewer+: the owner, or an active member of an organization this node knows under the project's org slug. */
+  const canSee = (p: Project, v: Viewer): boolean => {
+    if (p.owner === v.principal) return true;
+    const orgIds = deps.actor?.orgIdsForSlug(p.org) ?? [];
+    return v.kind === 'actor' ? orgIds.some((id) => v.orgs.includes(id)) : orgIds.some((id) => v.orgMember(id));
+  };
+  /** Editor: the owner. */
+  const canEdit = (p: Project, v: Viewer): boolean => p.owner === v.principal;
+
+  const snippetHeaders = (res: Response) => res.set({ 'content-type': AINUI_MEDIA_TYPE, 'cache-control': 'private, no-store', vary: 'Accept, Authorization, X-AIN-Actor' });
+
+  /**
+   * `GET /api/ainui/snippet?url=<pasted URL>` (or `?path=/<org>/<repo>`): the project's AIN-UI snippet for the
+   * viewer. ainize-web's middleware sends a page request with `Accept: application/vnd.ain.ui+json` here. An
+   * unknown project is 404; a known one the viewer may not see is 403 with the sign-in surface.
+   */
+  router.get('/api/ainui/snippet', async (req, res) => {
+    const raw = String(req.query.url ?? req.query.path ?? '');
+    if (!raw) return refuse(res, 400, 'invalid_request', 'url: the pasted ainize URL (or path: its path)');
+    const target = parseSnippetUrl(raw, base(req));
+    if (!target) return refuse(res, 404, 'not_found', `${raw} is not a project page on this node`);
+    const project = 'projectId' in target ? deps.store.get(target.projectId) : deps.store.list().find((p) => p.org.toLowerCase() === target.org.toLowerCase() && p.repoName.toLowerCase() === target.repo.toLowerCase()) ?? null;
+    if (!project) return notFound(res, 'projectId' in target ? target.projectId : `${target.org}/${target.repo}`);
+    const viewer = await viewerOf(req, res);
+    if (!viewer) return;
+    snippetHeaders(res);
+    if (!canSee(project, viewer)) return res.status(403).send(JSON.stringify(deniedSnippet(new URL(base(req)).host, `${project.org}/${project.repoName}`, pageUrlOf(req, project))));
+    const deployments = deps.store.deploymentsOf(project.id);
+    const last = deployments[0] ?? null;
+    const kind = last?.kind ?? project.kind;
+    const entry = last?.manifest?.entry ?? project.entry;
+    const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs) } : null;
+    res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: pageUrlOf(req, project), run, canRedeploy: canEdit(project, viewer) })));
+  });
+
+  /** The project when the viewer may see it; 404 otherwise (never a hint that it exists). */
+  const seen = async (req: Request, res: Response): Promise<{ project: Project; viewer: Viewer } | null> => {
+    const project = deps.store.get(String(req.params.id));
+    if (!project) { notFound(res, req.params.id); return null; }
+    const viewer = await viewerOf(req, res);
+    if (!viewer) return null;
+    if (!canSee(project, viewer)) { notFound(res, req.params.id); return null; }
+    return { project, viewer };
+  };
+
+  /**
+   * `POST /api/projects/:id/run { env? }` → `text/event-stream` (`stdout` / `stderr` / `error` / `exit`, the shape of
+   * `/api/run`): the deployed commit of a `script` project, run again with the person's answers to the manifest's
+   * inputs — the Run button of the link snippet. Viewer+; the run is FOR the viewer (their `aindrive run` key).
+   */
+  router.post('/api/projects/:id/run', async (req, res) => {
+    const hit = await seen(req, res);
+    if (!hit) return;
+    const { project, viewer } = hit;
+    const env = validateRunEnv((req.body ?? {}).env);
+    if (env === null) return refuse(res, 400, 'invalid_request', 'env: at most 16 entries named like ^[A-Za-z_][A-Za-z0-9_]*$, values up to 2 KiB');
+    const last = project.lastDeploymentId ? deps.store.deployment(project.lastDeploymentId) : null;
+    if (!last) return refuse(res, 409, 'no_deployment', 'nothing has been deployed yet — push to the project\'s branch first');
+    if ((last.kind ?? project.kind) !== 'script') return refuse(res, 409, 'not_a_script', `a ${last.kind ?? project.kind ?? 'project of unknown kind'} is not run on demand`);
+    let apiKey: string | undefined;
+    if (viewer.subject && deps.actor?.keyFor) {
+      try { apiKey = deps.actor.keyFor(viewer.subject); }
+      catch (e) {
+        if (e instanceof RunActorError || e instanceof SsoError) return refuse(res, e.status, e.code, e.message);
+        throw e;
+      }
+    }
+    const work = mkdtempSync(join(tmpdir(), 'ainize-snippet-run-'));
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    let streaming = false;
+    const open = () => {
+      if (streaming) return;
+      streaming = true;
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' });
+      res.flushHeaders();
+    };
+    const send = (event: string, data: unknown) => { open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+    try {
+      await deps.worker.checkout(project, last.sha, work);
+      const manifest = resolveProjectManifest(work, { entry: project.entry });
+      if (manifest.kind !== 'script' || !manifest.entry) return refuse(res, 409, 'not_a_script', `the deployed commit's ainize.json is a ${manifest.kind}`);
+      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(manifest.entry);
+      if (!language) return refuse(res, 409, 'no_runtime', `no runtime for "${manifest.entry}"`);
+      const files = readTree(work);
+      if (!(manifest.entry in files)) return refuse(res, 409, 'no_entry', `entry "${manifest.entry}" is not in the repository`);
+      deps.log?.('info', `project ${project.id}: run ${manifest.entry}@${last.sha.slice(0, 12)} for ${viewer.principal}${viewer.kind === 'actor' ? ` via ${viewer.app}` : ''}`);
+      await deps.worker.runScript({
+        language, entry: manifest.entry, files,
+        env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...env, AINIZE_PROJECT: project.id, AINIZE_COMMIT: last.sha },
+        timeoutMs: manifest.timeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
+      }, (ev) => send(ev.event, ev.data));
+      if (!res.writableEnded) res.end();
+    } catch (e) {
+      const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
+      if (!streaming) return refuse(res, 502, 'run_failed', message);
+      send('error', message);
+      send('exit', { code: 1, ms: 0 });
+      res.end();
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  /** `POST /api/projects/:id/redeploy` — the owner deploys the project's newest commit again. 202 `{ deploymentId, status }`. */
+  router.post('/api/projects/:id/redeploy', async (req, res) => {
+    const hit = await seen(req, res);
+    if (!hit) return;
+    const { project, viewer } = hit;
+    if (!canEdit(project, viewer)) return refuse(res, 403, 'forbidden', 'only the project\'s owner redeploys it');
+    const last = project.lastDeploymentId ? deps.store.deployment(project.lastDeploymentId) : null;
+    if (!last) return refuse(res, 409, 'no_deployment', 'nothing has been deployed yet — push to the project\'s branch first');
+    const d = deps.store.createDeployment(project, { ref: `refs/heads/${project.branch}`, before: last.sha, after: last.sha, pusher: viewer.subject ? { subject: viewer.subject } : last.pusher ?? undefined });
+    deps.worker.enqueue(d.id);
+    deps.log?.('info', `project ${project.id}: redeploy ${last.sha.slice(0, 12)} by ${viewer.principal} → deployment ${d.id}`);
+    res.status(202).json({ deploymentId: d.id, status: d.status });
+  });
 
   // ------------------------------------------------------------------------------------------ projects
 

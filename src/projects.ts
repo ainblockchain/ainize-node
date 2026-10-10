@@ -464,6 +464,9 @@ export class ProjectWorker extends EventEmitter {
 
   stop(): void { this.stopped = true; }
 
+  /** The `RunScript` this worker deploys scripts with, for a run pressed from a link snippet (project-routes.ts). */
+  runScript(req: RunRequest, onEvent: (ev: RunEvent) => void): Promise<void> { return this.deps.run(req, onEvent); }
+
   /** Resolves when nothing is queued or building (tests). */
   idle(): Promise<void> {
     if (!this.active.size && ![...this.perProject.values()].some((q) => q.length)) return Promise.resolve();
@@ -610,6 +613,15 @@ export class ProjectWorker extends EventEmitter {
   private async subjectOf(dir: string): Promise<string | null> {
     try { return (await exec('git', ['-C', dir, 'log', '-1', '--format=%s'], { timeout: 10_000 })).stdout.trim().slice(0, 200) || null; }
     catch { return null; }
+  }
+
+  /**
+   * The repository at `sha` in `dir`, with the same credentials a deployment clones with — for a run pressed from a
+   * link snippet (`POST /api/projects/:id/run`, project-routes.ts), which executes the deployed commit again with
+   * a person's answers. The caller owns `dir` and removes it.
+   */
+  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
+    await this.clone(project, sha, dir, say);
   }
 
   /** Returns the commit the tree is at — `sha`, or the branch tip when `sha` is empty (an ad-hoc run of HEAD). */
