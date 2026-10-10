@@ -29,8 +29,13 @@ export class AinmemReports {
     this.jobs = jobs; this.config = parseAinmemConfig(config); this.binding = digest(this.config);
     jobs.db.exec(`CREATE TABLE IF NOT EXISTS ainmem_reports (
       job_id TEXT PRIMARY KEY, binding TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,
-      revision INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT -1, url TEXT
+      revision INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT -1, url TEXT, last_attempt INTEGER NOT NULL DEFAULT 0
     )`);
+    jobs.transaction(() => {
+      if (!jobs.db.prepare('PRAGMA table_info(ainmem_reports)').all().some(column => column.name === 'last_attempt')) {
+        jobs.db.exec('ALTER TABLE ainmem_reports ADD COLUMN last_attempt INTEGER NOT NULL DEFAULT 0');
+      }
+    });
   }
   refresh(jobId) {
     return this.jobs.transaction(() => {
@@ -48,23 +53,28 @@ export class AinmemReports {
   async flush(ctx) {
     const token = ctx.secret('AINMEM_TOKEN');
     if (!token) throw new Error('Ainmem credential unavailable');
-    const pending = this.jobs.db.prepare('SELECT * FROM ainmem_reports WHERE delivered<revision ORDER BY revision,job_id LIMIT 5').all();
+    const pending = this.jobs.db.prepare('SELECT * FROM ainmem_reports WHERE delivered<revision ORDER BY last_attempt,job_id LIMIT 5').all();
+    let firstError;
     for (const row of pending) {
-      if (row.binding !== this.binding) throw new Error('Ainmem board binding changed');
-      let response;
-      try { response = await ctx.fetch(`${this.config.origin}/api/qa/tasks/${encodeURIComponent(row.job_id)}`, {
-        method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(10_000), maxBytes: 4096,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...JSON.parse(row.payload), revision: row.revision }),
-      }); } catch { throw new Error('Ainmem connection failed; report retained'); }
-      if (!response.ok) throw new Error('Ainmem update refused; report retained');
-      let result;
-      try { const text = await response.text(); if (Buffer.byteLength(text) > 4096) throw new Error(); result = JSON.parse(text); }
-      catch { throw new Error('Invalid Ainmem response'); }
-      if (!uuid(result.pageId) || !uuid(result.rowId) || result.path !== `/p/${result.pageId}` || result.revision !== row.revision) throw new Error('Invalid Ainmem receipt');
-      const url = `${this.config.origin}${result.path}`;
-      this.jobs.db.prepare('UPDATE ainmem_reports SET delivered=?,url=? WHERE job_id=? AND revision=? AND binding=?')
-        .run(row.revision,url,row.job_id,row.revision,this.binding);
+      this.jobs.db.prepare('UPDATE ainmem_reports SET last_attempt=(SELECT COALESCE(MAX(last_attempt),0)+1 FROM ainmem_reports) WHERE job_id=?').run(row.job_id);
+      try {
+        if (row.binding !== this.binding) throw new Error('Ainmem board binding changed');
+        let response;
+        try { response = await ctx.fetch(`${this.config.origin}/api/qa/tasks/${encodeURIComponent(row.job_id)}`, {
+          method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(10_000), maxBytes: 4096,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...JSON.parse(row.payload), revision: row.revision }),
+        }); } catch { throw new Error('Ainmem connection failed; report retained'); }
+        if (!response.ok) throw new Error('Ainmem update refused; report retained');
+        let result;
+        try { const text = await response.text(); if (Buffer.byteLength(text) > 4096) throw new Error(); result = JSON.parse(text); }
+        catch { throw new Error('Invalid Ainmem response'); }
+        if (!uuid(result.pageId) || !uuid(result.rowId) || result.path !== `/p/${result.pageId}` || result.revision !== row.revision) throw new Error('Invalid Ainmem receipt');
+        const url = `${this.config.origin}${result.path}`;
+        this.jobs.db.prepare('UPDATE ainmem_reports SET delivered=?,url=? WHERE job_id=? AND revision=? AND binding=?')
+          .run(row.revision,url,row.job_id,row.revision,this.binding);
+      } catch (error) { firstError ??= error; }
     }
+    if (firstError) throw firstError;
   }
 }

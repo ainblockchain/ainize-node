@@ -294,3 +294,16 @@ parent/message identity를 SQLite transaction 안에서 대조한다. 기존 bas
 - 미완료: legacy canonical 페이지 채택, 초기 보고 실패 후 Teams 링크 후속 알림,
   영구 실패 보고가 다른 보고의 재시도를 막지 않는 정책, 제품 검증/PR/승인/배포 전체 흐름.
   두 구현 모두 운영 채널에 활성화하거나 배포하지 않았다. old/new writer 동시 활성화 금지.
+
+### 2026-10-10 후속: 보고 재시도와 기존 페이지 전환
+
+- Ainize 보고 outbox에 지속 재시도 순서를 추가했다. 실패한 보고도 순서를 뒤로 옮겨,
+  5개 이상의 실패 항목이 뒤의 정상 작업을 계속 막지 않는다. 배치의 일부가 실패해도
+  다른 항목을 시도하며, 성공한 현재 작업 링크는 반환한다. 기존 SQLite schema 자동 보완.
+- 관련 QA 테스트 39개 통과. 실패 5개 뒤 정상 2개가 있는 경우와 재시작 복구를 포함한다.
+- Ainmem `native-qa-task-api`에 operator-only legacy mapping 지원 추가. 지정된 기존
+  row/page/progress block과 원래 작성자, 작업 ID 속성을 확인하고 canonical ID를 유지한다.
+  실제 HTTP/PostgreSQL 테스트 6개, contract 테스트 4개, typecheck 통과.
+- 이 기능은 실제 운영 legacy 작업 import 및 승인 기록 migration 완료의 증거가 아니다.
+  운영 mapping 설치/배포/채널 전환은 아직 하지 않았다. 다음은 기존 작업 metadata와
+  approval SHA/history를 안전하게 import하고, 실제 화면·제품별 검증/게시/승인을 연결하는 일.

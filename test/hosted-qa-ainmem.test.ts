@@ -46,3 +46,33 @@ test('receipt cannot inject an external link or acknowledge the wrong revision',
   })) }), /Invalid Ainmem receipt/);
   assert.equal(reports.refresh(job.id), null);
 });
+
+test('failed reports do not starve later jobs, including across restart and beyond one batch', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-report-fairness-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  let jobs = new Jobs(join(root, 'jobs.sqlite3'));
+  let reports = new AinmemReports(jobs, config);
+  const ids = Array.from({ length: 7 }, (_, i) => jobs.enqueue(`request-${i}`, { text: '고쳐줘', service: 'ainteams' }).id).sort();
+  for (const job of ids) reports.refresh(job);
+  const attempted = [];
+  const ctx = { secret: () => 'private', fetch: async (url, init) => {
+    const jobId = url.split('/').at(-1); attempted.push(jobId);
+    if (ids.indexOf(jobId) < 5) return new Response('', { status: 403 });
+    return new Response(JSON.stringify({ pageId: id, rowId: id, path: `/p/${id}`, revision: JSON.parse(init.body).revision }));
+  } };
+  await assert.rejects(reports.flush(ctx), /refused/);
+  assert.equal(attempted.length, 5);
+  jobs.close(); jobs = new Jobs(join(root, 'jobs.sqlite3')); t.after(() => jobs.close());
+  reports = new AinmemReports(jobs, config);
+  await assert.rejects(reports.flush(ctx), /refused/);
+  for (const job of ids.slice(5)) assert.equal(reports.refresh(job), `https://ainmem.example/p/${id}`);
+  assert.equal(new Set(attempted).size, 7);
+});
+
+test('outbox migration preserves pending records from the previous schema', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-report-migrate-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const jobs = new Jobs(join(root, 'jobs.sqlite3')); t.after(() => jobs.close());
+  jobs.db.exec('CREATE TABLE ainmem_reports (job_id TEXT PRIMARY KEY, binding TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL, revision INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT -1, url TEXT)');
+  const job = jobs.enqueue('request', { text: '고쳐줘', service: 'ainteams' });
+  const reports = new AinmemReports(jobs, config); reports.refresh(job.id);
+  assert.equal(jobs.db.prepare('SELECT last_attempt FROM ainmem_reports WHERE job_id=?').get(job.id).last_attempt, 0);
+});

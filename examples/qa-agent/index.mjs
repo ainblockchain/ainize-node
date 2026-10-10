@@ -73,12 +73,17 @@ export function createHandler({
 
   async function report(jobs, ctx, jobId) {
     if (!config.ainmem) return null;
+    let reports;
     try {
-      const reports = new AinmemReports(jobs, config.ainmem);
+      reports = new AinmemReports(jobs, config.ainmem);
       if (jobId) reports.refresh(jobId);
       await reports.flush(ctx);
       return jobId ? reports.refresh(jobId) : null;
-    } catch { ctx?.log?.('qa Ainmem report pending'); return null; }
+    } catch {
+      ctx?.log?.('qa Ainmem report pending');
+      // An unrelated report failure must not hide this job's successfully delivered link.
+      try { return reports && jobId ? reports.refresh(jobId) : null; } catch { return null; }
+    }
   }
 
   async function execute(_input, ctx) {
