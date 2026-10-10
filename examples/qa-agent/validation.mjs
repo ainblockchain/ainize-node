@@ -20,6 +20,10 @@ export function candidateDigest({ repository, base, changes }) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository ?? '')) throw new Error('Repository required');
   if (!/^[a-f0-9]{40}$/.test(base ?? '')) throw new Error('Full base commit SHA required');
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('Candidate changes required');
+  const entries = Object.entries(changes);
+  if (!entries.length || entries.length > 40 || entries.some(([path, content]) =>
+    !path || path.startsWith('/') || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')
+    || typeof content !== 'string')) throw new Error('Invalid candidate files');
   return createHash('sha256').update(JSON.stringify(canonical({ repository, base, changes }))).digest('hex');
 }
 
@@ -35,15 +39,18 @@ export async function validateCandidate({ repository, base, changes, gates, run 
     || !gates.every(g => GATE.test(g)) || new Set(gates).size !== gates.length) throw new Error('Invalid gate list');
   if (typeof run !== 'function') throw new Error('A gate runner is required');
   const digest = candidateDigest({ repository, base, changes });
+  // Snapshot before the first await: caller and gate code cannot change what this digest covers.
+  const candidate = Object.freeze({ repository, base, changes: Object.freeze({ ...changes }) });
+  const gateNames = [...gates];
   const results = [];
-  for (const gate of gates) {
+  for (const gate of gateNames) {
     let outcome;
-    try { outcome = await run(gate, { repository, base, changes }); }
+    try { outcome = await run(gate, candidate); }
     catch (error) { outcome = { passed: false, summary: `gate errored: ${error?.message ?? 'unknown'}` }; }
     results.push({ gate, passed: outcome?.passed === true, summary: typeof outcome?.summary === 'string' ? outcome.summary.slice(0, 4000) : '' });
     if (!results.at(-1).passed) break;
   }
-  return { candidateDigest: digest, repository, base, gates: results, passed: results.length === gates.length && results.every(r => r.passed) };
+  return { candidateDigest: digest, repository, base, gates: results, passed: results.length === gateNames.length && results.every(r => r.passed) };
 }
 
 /**
@@ -59,6 +66,9 @@ export async function advanceValidation({ jobs, claim, checkpoints, gates, run }
   const codingRef = job.checkpoint.coding;
   if (!codingRef || codingRef.jobId !== job.id) throw new Error('No coding candidate to validate');
   const coding = checkpoints.load(codingRef);
+  if (coding.repository !== job.input.repository || coding.commit !== job.input.base) {
+    throw new Error('Coding candidate does not match the job repository and base');
+  }
   // Validation may outlive the initial claim; refresh the lease while gates run.
   jobs.renew(job.id, lease, 120_000);
   let lost = false;

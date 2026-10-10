@@ -78,9 +78,9 @@ This proves the native model/tool/checkpoint path, not product regression covera
   `needs_validation`. The handler never publishes commits, runs repository code, or deploys, and no
   release credential is reachable from this path.
 
-Per-service binding comes from `AINIZE_QA_CONFIG` (a secrets-free JSON file: `service`, `teamsOrigin`,
+Per-service binding comes from bundled `qa-config.json` next to `index.mjs` (a secrets-free JSON file: `service`, `teamsOrigin`,
 `workspaceId`, `channelId`, `enabledAt`, `repository`, full `baseCommit`) and the agent's own
-`AINIZE_AGENT_STATE_DIR` mount. Tokens (`TEAMS_TOKEN`, `GITHUB_READ_TOKEN`) are read through
+`AINIZE_AGENT_STATE_DIR` mount. Standalone tests may override the config path with `AINIZE_QA_CONFIG`; the hosted Docker runtime does not forward that variable. Tokens (`TEAMS_TOKEN`, `GITHUB_READ_TOKEN`) are read through
 `ctx.secret`, never from config. The focused test is `test/hosted-qa-index.test.ts`.
 
 `validation.mjs` is the next stage's reusable core: `validateCandidate` runs a product's configured
@@ -117,3 +117,12 @@ on where product gates run.
 
 The store is an implementation component, not a registered or production-ready
 QA agent. No external registration or deployment is performed by these files.
+
+### Recovery after a failed coding step
+
+Three consecutive thrown steps park the job in `waiting` with `holdReason: step_retry_limit`, preserving
+its candidate. A successful coding step resets the failure count. Investigate before waking it;
+waking does not approve release. Jobs with changed repository/base configuration are parked with
+`holdReason: configuration_changed` instead of repeatedly occupying a lease. Config changes still
+require reconciliation before replaying old channel messages: the current intake key includes the
+base SHA, so replay across a base change can create another job. This remains a cutover blocker.

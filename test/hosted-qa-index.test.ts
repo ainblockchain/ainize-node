@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 // @ts-expect-error - plain ESM example module without d.ts
 import { createHandler, parseConfig } from '../examples/qa-agent/index.mjs';
 
@@ -79,4 +80,47 @@ test('tick advances a queued job through real coding to needs_validation, never 
     assert.equal('approval' in stored.checkpoint, false, 'coding never records a deployment approval');
     assert.equal(jobs.claim(), null, 'a candidate awaiting validation is not re-claimed');
   } finally { jobs.close(); }
+});
+
+test('a repeatedly failing coding job is parked so later requests can advance', async t => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'qa-retry-')); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const handler = createHandler({ config: CONFIG, stateDir, verifyIntake: async () => verified,
+    newSnapshot: () => snapshot, advance: async () => { throw new Error('model unavailable'); } });
+  const first = await handler.execute('', locatorInput({ teamsMessage: { messageId: 'm1' } }));
+  for (let i = 0; i < 3; i++) await handler.tick({ log() {} });
+  // @ts-expect-error - example module
+  const { Jobs } = await import('../examples/qa-agent/jobs.mjs');
+  const jobs = new Jobs(join(stateDir, 'jobs.sqlite3'));
+  try {
+    assert.equal(jobs.get(first.metadata.jobId).state, 'waiting');
+    assert.equal(jobs.get(first.metadata.jobId).checkpoint.holdReason, 'step_retry_limit');
+    const next = jobs.enqueue('next', { text: 'next request' });
+    assert.equal(jobs.claim().job.id, next.id);
+  } finally { jobs.close(); }
+});
+
+test('configuration changes park old jobs without repeatedly claiming them', async t => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'qa-config-')); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const handler = createHandler({ config: CONFIG, stateDir, verifyIntake: async () => verified });
+  const first = await handler.execute('', locatorInput({ teamsMessage: { messageId: 'm1' } }));
+  await createHandler({ config: { ...CONFIG, baseCommit: 'b'.repeat(40) }, stateDir }).tick({ log() {} });
+  // @ts-expect-error - example module
+  const { Jobs } = await import('../examples/qa-agent/jobs.mjs');
+  const jobs = new Jobs(join(stateDir, 'jobs.sqlite3'));
+  try {
+    assert.equal(jobs.get(first.metadata.jobId).checkpoint.holdReason, 'configuration_changed');
+    assert.equal(jobs.claim(), null);
+  } finally { jobs.close(); }
+});
+
+
+test('hosted entry loads bundled config without an unsupported host environment variable', t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-entry-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  cpSync(new URL('../examples/qa-agent/', import.meta.url), root, { recursive: true });
+  writeFileSync(join(root, 'qa-config.json'), JSON.stringify(CONFIG));
+  const env = { ...process.env, AINIZE_AGENT_STATE_DIR: root };
+  delete env.AINIZE_QA_CONFIG;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+    "const {tick} = await import('./index.mjs'); await tick({log(){}});"], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
 });

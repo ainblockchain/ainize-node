@@ -221,3 +221,48 @@ node --test --import tsx \
 두 경우 모두 릴리스(merge)는 정본 경로의 지정 승인자 승인을 검증한 경우에만 수행한다.
 
 이 문서와 코드에는 비밀번호, OTP, 토큰, 비밀키가 포함되어서는 안 된다.
+
+## 10. 2026-10-10 코드 리뷰 후 복구 보완
+
+검토 기준: origin/hosted-qa-execution `5cb280c`를 fast-forward한 상태.
+
+### 확인하고 수정한 문제
+
+- **P1 — 운영 handler 설정 누락:** `index.mjs`가 필수로 요구하던 `AINIZE_QA_CONFIG`를
+  hosted Docker가 전달하지 않아 정상 등록된 handler도 시작할 수 없었다. 배포 파일의
+  `index.mjs` 옆 `qa-config.json`을 기본으로 읽도록 수정했다. 명시적 경로 override는 유지한다.
+- **P1 — 검증 결과의 코드 결합:** gate에 원본 `changes`와 변경 가능한 gate 목록을 넘겨,
+  검증 도중 코드/목록이 변경되면 처음 계산한 digest와 실제 검증 대상이 달라질 수 있었다.
+  변경 파일과 gate 목록을 복사하고 candidate를 동결했다. 잘못된 파일 경로/비문자열 내용과
+  작업 repository/base에 맞지 않는 checkpoint도 gate 실행 전에 거부한다.
+- **P2 — 실패 작업 반복 점유:** 설정이 달라진 작업을 claim한 뒤 그대로 반환하거나,
+  모델 오류를 계속 재시도해 오래된 작업이 대기열을 점유할 수 있었다. 설정이 달라진 작업은
+  보존한 채 대기시키고, 연속 실패 3회면 원인 확인을 기다린다. lease를 잃은 worker는
+  다른 worker의 상태를 덮어쓰지 않는다.
+
+### 검증 및 서버 확인
+
+- 로컬: QA 및 scheduler 회귀 테스트 **35개 통과, 실패/skip 0**, typecheck 통과.
+- Ainize .41 서버 Node v24.20.0: QA 테스트 **31개 통과, 실패/skip 0**.
+  이후 추가한 repository 불일치 회귀 테스트는 위 로컬 35개에 포함된다.
+- vault 저장 인증으로 SSH 연결 성공. 비밀정보/OTP를 출력하거나 저장소에 추가하지 않았다.
+- `systemctl --user is-active ainize-public-node`: **active**.
+  system 단위로 조회하면 inactive이므로 user unit을 확인해야 한다.
+- 현재 release symlink: `20261010T113546Z-a0f0ce178b5c`.
+- 이 변경으로 운영 agent 등록, 서비스 재시작, 제품 병합/배포를 수행하지 않았다.
+  서버 테스트는 별도 임시 디렉터리에서 수행했다.
+
+### 다음 작업 / 아직 해결되지 않은 리뷰 항목
+
+1. **P2 — 메시지 재수신 중복:** intake request key가 base SHA를 포함한다.
+   base 변경 후 같은 메시지가 재수신되면 새 작업이 생길 수 있으므로, 기존 SQLite key와
+   작업 ID를 유지하는 migration/reconciliation을 구현한 뒤 채널을 전환한다.
+2. 큰 tool 결과가 모델 context 예산을 넘을 때 최신 exchange 전체를 버리는 경로를
+   재현하고, 모델이 같은 읽기를 반복하지 않도록 제한된 결과를 제공한다.
+3. native handler tick에 실제 제품별 격리 검증 실행을 연결한다. 현재 `validation.mjs`는
+   주입된 gate runner의 orchestration이며, 운영 gate 실행기와 연결된 상태가 아니다.
+4. 검증된 candidate의 PR 게시, canonical Ainmem 카드 갱신, 실제 지정 관리자 승인,
+   정확한 commit SHA의 release 및 배포 SHA 확인을 연결한다. `awaiting_approval`이라는
+   내부 상태만으로 실제 승인 가능한 PR이 존재한다고 표시하지 않는다.
+5. 기존 runner의 진행 중 작업과 상태를 대조하여 중복 writer 없이 한 제품부터 전환한다.
+   전체 qa 채널 E2E 완료 또는 운영 migration 완료라고 보고하면 안 된다.

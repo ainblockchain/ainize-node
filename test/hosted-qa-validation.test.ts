@@ -95,3 +95,43 @@ test('a failing gate parks the candidate at validation_failed and preserves it',
     assert.equal(checkpoints.load(out.job.checkpoint.coding).changes['sum.js'], 'a+b');
   } finally { jobs.close(); }
 });
+
+test('validation snapshots caller input and rejects gate mutations', async () => {
+  const changes = { 'sum.js': 'a+b' };
+  const gates = ['test', 'build'];
+  const expected = candidateDigest({ repository: REPO, base: BASE, changes });
+  const result = await validateCandidate({ repository: REPO, base: BASE, changes, gates,
+    run: async (_gate, candidate) => {
+      changes['sum.js'] = 'unchecked';
+      gates.pop();
+      assert.equal(candidate.changes['sum.js'], 'a+b');
+      assert.throws(() => { candidate.changes['sum.js'] = 'mutated'; }, TypeError);
+      return { passed: true };
+    } });
+  assert.equal(result.candidateDigest, expected);
+  assert.equal(result.gates.length, 2);
+  assert.equal(result.passed, true);
+});
+
+test('candidate rejects traversal and non-text changes', () => {
+  for (const changes of [{ '../escape': 'x' }, { 'file': null }, {}]) {
+    assert.throws(() => candidateDigest({ repository: REPO, base: BASE, changes }), /candidate files/);
+  }
+});
+
+test('validation rejects a checkpoint bound to another repository before executing gates', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'qa-binding-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkpoints = new Checkpoints(join(root, 'checkpoints'));
+  const jobs = new Jobs(join(root, 'jobs.sqlite3'));
+  try {
+    const job = jobs.enqueue('bound', { repository: REPO, base: BASE });
+    const claim = jobs.claim();
+    const coding = checkpoints.save(job.id, { repository: 'other/product', commit: BASE, changes: { 'sum.js': 'a+b' } });
+    jobs.finish(job.id, claim.lease, 'waiting', { stage: 'needs_validation', coding });
+    jobs.wake(job.id);
+    let ran = false;
+    await assert.rejects(advanceValidation({ jobs, claim: jobs.claim(), checkpoints, gates: ['test'],
+      run: async () => { ran = true; return { passed: true }; } }), /does not match/);
+    assert.equal(ran, false);
+  } finally { jobs.close(); }
+});

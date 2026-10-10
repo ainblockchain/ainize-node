@@ -60,6 +60,7 @@ export function createHandler({
   advance = advanceCoding,
 } = {}) {
   if (!config) throw new Error('QA handler requires a config');
+  config = parseConfig(config);
   if (typeof stateDir !== 'string' || !stateDir) throw new Error('QA handler requires a state directory');
   const jobsFile = join(stateDir, 'jobs.sqlite3');
   const checkpointsDir = join(stateDir, 'checkpoints');
@@ -112,13 +113,15 @@ export function createHandler({
 
   async function tick(ctx) {
     const jobs = new JobsClass(jobsFile);
+    let claim;
     try {
-      const claim = jobs.claim(60_000);
+      claim = jobs.claim(60_000);
       if (!claim) return; // Nothing queued; a running job holds its own lease.
       const job = claim.job;
       // Defensive: only advance work pinned to this service's repository and base.
       if (job.input?.repository !== config.repository || job.input?.base !== config.baseCommit) {
-        ctx?.log?.('qa tick skipping foreign job', job.id);
+        jobs.finish(job.id, claim.lease, 'waiting', { ...job.checkpoint, holdReason: 'configuration_changed' });
+        ctx?.log?.('qa tick parked job with changed configuration', job.id);
         return;
       }
       const snapshot = newSnapshot(ctx, job.input.repository, job.input.base);
@@ -126,7 +129,16 @@ export function createHandler({
       const { job: updated } = await advance({ jobs, claim, checkpoints, snapshot, ctx });
       ctx?.log?.('qa tick advanced', updated.id, updated.state, updated.checkpoint?.stage);
     } catch (error) {
-      // A lost lease or a transient read error leaves the job for the next tick; never deploy on error.
+      // Bound retries while preserving the last durable candidate. Never overwrite a newer lease.
+      if (claim) {
+        try {
+          const failures = (claim.job.checkpoint.stepFailures ?? 0) + 1;
+          jobs.finish(claim.job.id, claim.lease, failures >= 3 ? 'waiting' : 'queued', {
+            ...claim.job.checkpoint, stepFailures: failures,
+            ...(failures >= 3 ? { holdReason: 'step_retry_limit' } : {}),
+          });
+        } catch { /* Another owner or an expired lease controls recovery. */ }
+      }
       ctx?.log?.('qa tick step failed', error?.message);
     } finally {
       jobs.close();
@@ -138,9 +150,9 @@ export function createHandler({
 
 /** Production entry: bind to the per-service config file and the agent's own private state mount. */
 function fromEnvironment() {
-  const configPath = process.env.AINIZE_QA_CONFIG;
+  const configPath = process.env.AINIZE_QA_CONFIG ?? new URL('./qa-config.json', import.meta.url);
   const stateDir = process.env.AINIZE_AGENT_STATE_DIR;
-  if (!configPath || !stateDir) return null;
+  if (!stateDir) return null;
   const config = parseConfig(readFileSync(configPath, 'utf8'));
   return createHandler({ config, stateDir });
 }
