@@ -6,9 +6,9 @@ import { buildOpenApi } from '../src/openapi.js';
 test('every repository history, review, mirror and preview API is discoverable in OpenAPI', () => {
  const spec = buildOpenApi('https://ainize.ai', 'test');
  const paths = spec.paths as Record<string, Record<string, { parameters?: {name: string; in: string; required?: boolean}[]; summary?: string }>>;
- for (const file of ['agent-git-routes.ts','agent-pull-routes.ts','agent-mirror-routes.ts','agent-preview-routes.ts']) {
+ for (const file of ['agent-git-routes.ts','agent-pull-routes.ts','agent-mirror-routes.ts','agent-preview-routes.ts','agent-archive-routes.ts']) {
   const source = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
-  for (const match of source.matchAll(/router\.(get|post|put|patch|delete)\('([^']+)'/g)) {
+  for (const match of source.matchAll(/(?:router|writes)\.(get|post|put|patch|delete)\('([^']+)'/g)) {
    const path = match[2]!.replace(/:(\w+)/g, '{$1}');
    const operation = paths[path]?.[match[1]!];
    assert.ok(operation?.summary, `${match[1]} ${path} is documented`);

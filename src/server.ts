@@ -1,3 +1,4 @@
+import { agentArchiveRoutes } from './agent-archive-routes.js';
 import { AgentArchives } from './agent-archives.js';
 import { AgentRepositoryQueue, type RepositorySerialize } from './agent-repository-queue.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
@@ -922,6 +923,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     },
     apply: applyPushedTree,
   }));
+  app.use(agentArchiveRoutes({ archives: agentArchives, caller: agentCaller, serialize: serializeRepository }));
   agentPreviews = new AgentPreviews(agentGit, hostedHost);
   agentPreviews.start();
   app.use(agentPreviewRoutes({

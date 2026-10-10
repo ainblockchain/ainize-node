@@ -148,3 +148,9 @@ A real signed-in node test deletes the agent, reads the persisted archive, and r
 ### Queued mirror permissions
 
 Manual mirror configure/sync/detach now recheck current read/manage/source policy within the shared queue. A revoked or source-rebound request returns 403 without mutating mirror configuration, fetching, applying or detaching. Timer and authenticated webhook synchronization retain their separate operator authorization. A queue-gated permission-revocation test plus the real Git mirror regressions pass (11 tests); typecheck passes.
+
+### Owner archive download APIs
+
+Added owner-only paginated archive summaries, detail, complete streamed export and permanent removal endpoints. The gzip tar includes metadata.json plus an independently cloneable repository.bundle; metadata-only legacy archives omit the bundle. It excludes runtime secret values and PoP private keys. Export/remove share the agent queue, and only a completed export permits permanent removal. Temporary export files are cleaned up. All new routes are documented in OpenAPI; repository route coverage now includes serialized write registrations.
+
+Real signed-in node tests prove owner isolation, pagination, actual tar extraction and Git restoration, export-before-removal and metadata-only downloads. An 8 MiB random proposal is archived and its actual HTTP download interrupted; permanent removal remains denied and exportedAt remains unset. 17 real node tests and 2 OpenAPI tests pass. Restore-to-running-node API, source-aware rollback/application and recovery UI remain pending; no production deployment claimed.
