@@ -24,6 +24,10 @@
  * the sandbox announces as `HTTPS_PROXY`, TLS to the few public hosts the run was allowed — `ainize.ai` and the
  * node's own public host — so a script that spells `https://ainize.ai/api/decide` works as written. Every other
  * host, port or scheme is refused at the proxy; nothing else has a route.
+ *
+ * The script's own key (`AINIZE_API_KEY`, run-sandbox.ts) is an ordinary API key of the run's caller or of the
+ * person aindrive named (run-actor.ts); on `/v1/*` it is forwarded as any `authorization` is, and the node treats
+ * it as it treats every key. The run token itself is never a credential the node knows.
  */
 import { hostedAgentAccess } from './hosted-agent-access.js';
 import { dirname } from 'node:path';

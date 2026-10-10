@@ -49,8 +49,9 @@ export interface SsoConfig {
   /**
    * First-party AIN applications whose MACHINE tokens this node accepts (`AIN_SSO_SERVICE_APPS`, comma-separated
    * client_ids; e.g. `aindrive`): an OAuth 2.0 client_credentials JWT with `aud` = this node's public URL and
-   * `sub` = `azp` = a listed client_id (`verifyServiceToken`). Empty = no machine token is accepted. Today's one
-   * door: `POST /api/projects/auto` (docs/PROJECTS.md), where aindrive binds a pushed repo to a project.
+   * `sub` = `azp` = a listed client_id (`verifyServiceToken`). Empty = no machine token is accepted. Two doors:
+   * `POST /api/projects/auto` (docs/PROJECTS.md), where aindrive binds a pushed repo to a project, and `POST /api/run`,
+   * where aindrive runs a script FOR the person named in `X-AIN-Actor` (run-actor.ts).
    */
   serviceApps: string[];
 }
@@ -427,6 +428,26 @@ export class SsoService {
       this.deps.log('info', `ain-sso: ${ident.principal} signed in${created ? ' (first time)' : ''}${linked ? `, linked to ${linked}` : ''}`,
         { actor: 'ain-sso', sub: input.sub, principal: ident.principal, linked });
       return { status: 'ok', token, principal: ident.principal, expiresAt: Date.now() + SSO_SESSION_TTL_MS, created, linked } as const;
+    });
+  }
+
+  /**
+   * The principal behind an SSO subject a trusted application names (run-actor.ts: aindrive's `X-AIN-Actor`),
+   * created just in time exactly as an automatic first sign-in creates it — `sso:<sub>`, proof `sso_login`, no
+   * session. A suspended account is refused as it is at sign-in. No legacy linking happens here: that needs the
+   * person's own proof, in the browser.
+   */
+  resolveActor(sub: string): { principal: string; created: boolean } {
+    const cfg = this.requireConfig();
+    if (!SUBJECT.test(sub)) throw new SsoError('invalid_request', 400, 'The subject is not usable here.', false);
+    const store = this.deps.store;
+    return store.transaction(() => {
+      const ident = store.ssoIdentity(cfg.issuer, sub);
+      if (ident && this.isBlocked(cfg.issuer, sub)) throw new SsoError('account_suspended', 403, 'This account is suspended.', false);
+      if (ident) return { principal: ident.principal, created: false };
+      store.insertSsoIdentity({ issuer: cfg.issuer, subject: sub, principal: ssoPrincipal(sub), linkProof: 'sso_login' });
+      this.deps.log('info', `ain-sso: ${ssoPrincipal(sub)} created just in time for a run`, { actor: 'ain-sso', sub, principal: ssoPrincipal(sub) });
+      return { principal: ssoPrincipal(sub), created: true };
     });
   }
 

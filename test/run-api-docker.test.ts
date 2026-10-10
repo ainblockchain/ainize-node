@@ -4,7 +4,9 @@
  * daemon, or when a container on an internal network cannot reach the host (see hosted-agents-docker.test.ts).
  *
  * What it proves: the fixture aindrive will run (art_search.py) prints its ranking and exits 0 with the stub
- * decision backend answering through the node's own /api/decide; a run has no route to the internet and the
+ * decision backend answering through the node's own /api/decide; the `ainize` SDK in the image reaches /v1/systemone
+ * through AINIZE_URL + AINIZE_API_KEY, the caller's own key (run-routes.ts; for aindrive's ▶ the person's key,
+ * run-actor.ts) — an anonymous run has no key and the SDK says so; a run has no route to the internet and the
  * proxy refuses hosts it was not allowed; a run that outlives timeoutMs is killed with exit 124; a third run per
  * caller is a 429; the rootfs is read-only and /work is the only writable place; the node runtime works too.
  */
@@ -95,6 +97,13 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
   const app = express();
   app.use(express.json({ limit: '5mb' }));
   app.use(freeTierRouter({ registry, gates, self: '0x1' }));
+  // The keyed surface, as a stub: what the SDK reaches with the caller's key. It wants that key and nothing else.
+  const CALLER_KEY = 'ainize-sk-docker-test-caller';
+  app.post('/v1/systemone', (req, res) => {
+    if (req.header('authorization') !== `Bearer ${CALLER_KEY}`) return res.status(401).json({ error: { message: 'invalid api key', code: 'invalid_api_key', type: 'authentication_error' } });
+    const questions = (req.body as { questions: Record<string, unknown> }).questions;
+    res.json({ model: 'clef-flash', answers: Object.fromEntries(Object.keys(questions).map((k) => [k, { type: 'noul', noul: 0.5 }])), usage: { questions: Object.keys(questions).length }, debug: req.body.debug?.prompt ? { prompt: 'keyed-surface-prompt' } : undefined });
+  });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -103,7 +112,7 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
     ...RUN_SANDBOX_DEFAULTS, workDir: join(dir, 'run'), imageRepository: 'ainize/run-runtime-test',
     log: (level, m) => logs.push(`${level} ${m}`),
   });
-  app.use(runRouter({ sandbox }));
+  app.use(runRouter({ sandbox, keys: { addressForKey: (key) => (key === CALLER_KEY ? '0xcaller' : null) } }));
   // With a fixed CI port, another test's gateway may hold it for a while: keep trying rather than fail.
   for (const until = Date.now() + 600_000; ; ) {
     await sandbox.start();
@@ -121,7 +130,7 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
       const res = await post({
         // the shape aindrive's run client sends (the other runs below use the map)
         language: 'python', entry: 'art_search.py', files: [{ path: 'art_search.py', content: source }, { path: 'README.md', content: '# art search' }],
-        env: { AINIZE_DECIDE_URL: 'https://node.example/api/decide' }, timeoutMs: 120_000,
+        env: { DECIDE_URL: 'https://node.example/api/decide' }, timeoutMs: 120_000,
       });
       assert.equal(res.status, 200);
       const events = await sse(res);
@@ -133,10 +142,12 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
       assert.ok(logs.some((l) => /^info run [0-9a-f]+: caller=ip:.* language=python entry=art_search.py bytes=\d+ ms=\d+ exit=0$/.test(l)), logs.join('\n'));
     });
 
-    await t.test('the default AINIZE_DECIDE_URL already points at this node, and JSON clients get one object', async () => {
+    await t.test('AINIZE_URL points at this node through the gateway, and JSON clients get one object', async () => {
       const res = await post(python([
         'import os, json, urllib.request',
-        'u = os.environ["AINIZE_DECIDE_URL"]',
+        'u = os.environ["AINIZE_URL"] + "/api/decide"',
+        'assert "AINIZE_API_KEY" not in os.environ, "an anonymous run has no key"',
+        'assert "AINIZE_DECIDE_URL" not in os.environ and "AINIZE_API_URL" not in os.environ',
         'body = {"model": "clef-flash", "state": {}, "questions": {"a1": {"type": "noul"}}}',
         'r = json.loads(urllib.request.urlopen(urllib.request.Request(u, data=json.dumps(body).encode(), headers={"content-type": "application/json"}), timeout=60).read())',
         'print(r["answers"]["a1"]["noul"])',
@@ -146,6 +157,29 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
       assert.equal(body.stdout, '0.91\n', JSON.stringify(body));
       assert.equal(body.code, 0);
       assert.ok(body.ms > 0);
+    });
+
+    await t.test('the ainize SDK in the image: connect(AINIZE_URL, api_key=AINIZE_API_KEY).decide() reaches /v1/systemone as the caller', async () => {
+      const script = [
+        'import os, ainize',
+        'client = ainize.connect(os.environ["AINIZE_URL"], api_key=os.environ["AINIZE_API_KEY"])',
+        'out = client.decide("clef-flash", state={"x": 1}, questions={"a1": {"type": "noul"}, "a2": {"type": "noul"}}, debug={"prompt": True})',
+        'print(ainize.__version__, out.answers["a1"]["noul"], out.answers["a2"]["noul"], (out.debug or {}).get("prompt"))',
+      ].join('\n');
+      // A keyed caller's run: the script holds the caller's key and the decision is the caller's.
+      const keyed = await post(python(script), { headers: { accept: 'application/json', authorization: `Bearer ${CALLER_KEY}` } });
+      const k = await keyed.json() as { stdout: string; stderr: string; code: number };
+      assert.equal(k.code, 0, JSON.stringify(k));
+      assert.equal(k.stdout, '0.2.0 0.5 0.5 keyed-surface-prompt\n');
+      assert.ok(logs.some((l) => /caller=key:0xcaller .*exit=0/.test(l)), 'the keyed run is logged as its caller');
+      // An anonymous run has no key: the same script fails on the missing variable, not on a silent free answer.
+      const anon = await post(python(script), { headers: { accept: 'application/json' } });
+      const a = await anon.json() as { stdout: string; stderr: string; code: number };
+      assert.notEqual(a.code, 0);
+      assert.match(a.stderr, /KeyError: 'AINIZE_API_KEY'/);
+      // A key written into the request's env is dropped: the sandbox's key is the caller's or nothing.
+      const planted = await post(python('import os; print("AINIZE_API_KEY" in os.environ)', { env: { AINIZE_API_KEY: 'ainize-sk-from-the-repo' } }), { headers: { accept: 'application/json' } });
+      assert.equal((await planted.json() as { stdout: string }).stdout, 'False\n');
     });
 
     await t.test('a run has no route to the internet, and the proxy refuses hosts it was not allowed', async () => {
@@ -222,7 +256,7 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
             'for p in ["/usr/x", "/etc/x", "/root/x", "/work/../x", "/home/x"]:',
             '    try: open(p, "w").write("x"); print(p, "WRITABLE")',
             '    except OSError as e: print(p, "readonly", e.errno)',
-            'try: import requests; print("requests", requests.__version__.split(".")[0])',
+            'try: import requests, ainize; print("requests", requests.__version__.split(".")[0], "ainize", ainize.__version__)',
             'except Exception as e: print("requests missing", e)',
           ].join('\n'),
           'pkg/__init__.py': '', 'pkg/mod.py': 'X = 42',
@@ -234,11 +268,11 @@ test('/api/run runs scripts in the hosted-agent sandbox', { skip, timeout: 900_0
       assert.equal(lines[0], 'work ok pkg 42 cwd /work uid 1000');
       assert.equal(lines.filter((l) => / readonly (30|13)$/.test(l)).length, 5, body.stdout); // EROFS, or EACCES where the dir is root's
       assert.ok(!body.stdout.includes('WRITABLE'));
-      assert.equal(lines.at(-1), 'requests 2');
+      assert.equal(lines.at(-1), 'requests 2 ainize 0.2.0');
     });
 
     await t.test('node scripts run on node 20', async () => {
-      const res = await post({ language: 'node', entry: 'index.mjs', files: { 'index.mjs': 'console.log(process.version.split(".")[0], process.env.AINIZE_DECIDE_URL.endsWith("/api/decide")); console.error("warned"); process.exit(3);' } }, { headers: { accept: 'application/json' } });
+      const res = await post({ language: 'node', entry: 'index.mjs', files: { 'index.mjs': 'console.log(process.version.split(".")[0], /\\/t\\/[0-9a-f]{48}$/.test(process.env.AINIZE_URL)); console.error("warned"); process.exit(3);' } }, { headers: { accept: 'application/json' } });
       const body = await res.json() as { stdout: string; stderr: string; code: number };
       assert.equal(body.stdout, 'v20 true\n');
       assert.equal(body.stderr, 'warned\n');

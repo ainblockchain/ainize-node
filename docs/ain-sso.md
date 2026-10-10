@@ -185,6 +185,7 @@ deployment with several would need a shared cache.
 | `AIN_SSO_CLIENT_ID` | ainize's client_id at AIN SSO (`aud` of adapter and logout tokens) |
 | `AIN_SSO_ADAPTER_URL` | the adapter URL registered at AIN SSO, e.g. `https://ainize.ai/api/sso/adapter`; unset = adapter answers 503 |
 | `AIN_SSO_JWKS_URI` | optional; default `{issuer}/oidc/jwks` |
+| `AIN_SSO_SERVICE_APPS` | optional; comma-separated client_ids of first-party applications whose `client_credentials` tokens (`aud` = this node's public URL) `POST /api/run` accepts to run a script FOR a person named in `X-AIN-Actor` — aindrive's ▶ button. That person's `aindrive run` key is issued once and handed to the sandbox (`src/run-actor.ts`, `deploy/run-runtime/README.md`). Unset = no application may do this |
 | `AIN_SSO_CLIENT_SECRET` | optional; ainize's client secret at AIN SSO (`client_secret_basic`). Only for what the node does **as itself**: `client_credentials` machine tokens that let it clone project repositories from aindrive (`docs/PROJECTS.md`, `src/sso-service-token.ts`). Sign-in needs none |
 | `AIN_SSO_SERVICE_APPS` | optional; comma-separated client_ids of first-party AIN applications whose **machine tokens** this node accepts (`aud` = the node's public URL). `aindrive` → it may auto-bind pushed repositories to projects (`POST /api/projects/auto`, `docs/PROJECTS.md`) |
 | `<AINIZE_HOME>/site-assertion.secret` | already required for Google vouching; also signs the site's SSO calls |

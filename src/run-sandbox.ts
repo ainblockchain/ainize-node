@@ -9,11 +9,18 @@
  * interpreter starts (so the script sees stdin at EOF).
  *
  * What the script can reach is decided by the gateway (hosted-agent-gateway.ts, `RunGrant`): this node's own
- * `/api/decide`, `/api/chat` and `/v1/*`, and a CONNECT tunnel to `ainize.ai` and this node's public host. The
- * sandbox tells the script where through its environment — `AINIZE_DECIDE_URL` and friends point at the gateway,
- * `HTTPS_PROXY` carries the run's token — and rewrites a caller-supplied URL that names this node's own public
- * host to the gateway path, so a run on ainize.ai calling `https://ainize.ai/api/decide` is answered here, in
- * the free class, attributed to the caller, rather than leaving for the internet and coming back as the node.
+ * `/v1/*` (and the older `/api/decide`, `/api/chat`), and a CONNECT tunnel to `ainize.ai` and this node's public
+ * host. The sandbox tells the script where through its environment — `AINIZE_URL` is the gateway standing in for
+ * the node, `HTTPS_PROXY` carries the run's token — and rewrites a caller-supplied URL that names this node's own
+ * public host to the gateway path, so a run on ainize.ai calling `https://ainize.ai/v1/…` is answered here rather
+ * than leaving for the internet and coming back as the node.
+ *
+ * The script's key is the CALLER's (run-routes.ts, run-actor.ts): the API key the run was started with, or the
+ * `aindrive run` key of the person aindrive named. It is handed over as `AINIZE_API_KEY`, so
+ * `ainize.connect(os.environ["AINIZE_URL"], api_key=os.environ["AINIZE_API_KEY"]).decide(...)` works with no
+ * secret committed anywhere, and the decision is billed and gated as that person's. An anonymous run gets no key.
+ * The python runner image ships the SDK from this repo's `sdk/python`, which is why the image's build context is
+ * staged rather than the Dockerfile's directory alone.
  *
  * Admission is a count, not a queue: more than `perCaller` runs for one caller or `maxRunning` on the node is a
  * 429 the button can show at once, rather than a spinner that may never end.
@@ -21,7 +28,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +66,10 @@ const RUN_SURFACE_PATH = /^\/(?:api\/decide|api\/chat|v1(?:\/|$))/;
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Names the sandbox sets itself; a caller's value for one is ignored rather than refused. */
-const ENV_RESERVED = new Set(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy', 'AINIZE_API_URL', 'AINIZE_RUN_ID', 'HOME', 'PATH']);
+const ENV_RESERVED = new Set(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy', 'AINIZE_URL', 'AINIZE_API_KEY', 'AINIZE_RUN_ID', 'HOME', 'PATH']);
+
+/** What goes into the python runner image besides its Dockerfile: the SDK a script is expected to `import`. */
+export const RUN_IMAGE_EXTRA_CONTEXT: Partial<Record<RunLanguage, string[]>> = { python: ['sdk/python/pyproject.toml', 'sdk/python/README.md', 'sdk/python/ainize'] };
 
 /** One path inside `/work`: relative, forward slashes, no empty, `.`, `..` or `.git` segment, nothing unprintable. */
 export function runFileNameOk(name: string): boolean {
@@ -240,6 +250,8 @@ export interface RunCaller {
   /** `ip:<address>` or `key:<owner address>` — the admission bucket and the log line's name. */
   id: string;
   keyed: boolean;
+  /** The key the script runs with (`AINIZE_API_KEY`): the caller's own, or the actor's `aindrive run` key. */
+  key?: string;
 }
 
 const RUN_CONTAINER_PREFIX = 'ainize-run-';
@@ -316,15 +328,37 @@ export class RunSandbox {
     return p;
   }
 
+  /**
+   * The build context is staged: the language's Dockerfile directory plus, for python, this repo's `sdk/python`
+   * (so the image's `ainize` is the one in this checkout, not whatever PyPI had). The tag hashes everything in
+   * it, so a change to the SDK or the Dockerfile builds a new image.
+   */
   private async buildImage(language: RunLanguage): Promise<string> {
     const dir = join(this.o.runtimeDir ?? join(packageRoot(), 'deploy', 'run-runtime'), language);
+    const extra = (RUN_IMAGE_EXTRA_CONTEXT[language] ?? []).map((rel) => [rel, join(packageRoot(), rel)] as const).filter(([, abs]) => existsSync(abs));
     const hash = createHash('sha256');
-    for (const f of readdirSync(dir).sort()) hash.update(f).update('\0').update(readFileSync(join(dir, f))).update('\0');
+    const hashTree = (abs: string, rel: string) => {
+      if (statSync(abs).isDirectory()) {
+        for (const f of readdirSync(abs).sort()) if (f !== '__pycache__' && !f.startsWith('.')) hashTree(join(abs, f), `${rel}/${f}`);
+        return;
+      }
+      hash.update(rel).update('\0').update(readFileSync(abs)).update('\0');
+    };
+    hashTree(dir, '.');
+    for (const [rel, abs] of extra) hashTree(abs, rel);
     const tag = `${this.o.imageRepository ?? 'ainize/run-runtime'}-${language}:${hash.digest('hex').slice(0, 16)}`;
     if ((await hostedAgentDockerExec(['image', 'inspect', tag], 20_000)).code === 0) return tag;
     this.o.log('info', `run sandbox: building ${tag}`);
-    const r = await hostedAgentDockerExec(['build', '-t', tag, '--label', 'ainize.run-runtime=1', dir], this.o.buildTimeoutMs);
-    if (r.code !== 0) throw new Error(`building ${tag} failed:\n${(r.stderr || r.stdout).slice(-4000)}`);
+    mkdirSync(this.o.workDir, { recursive: true });
+    const context = mkdtempSync(join(this.o.workDir, `build-${language}-`));
+    try {
+      cpSync(dir, context, { recursive: true });
+      for (const [rel, abs] of extra) cpSync(abs, join(context, rel), { recursive: true, filter: (src) => !/(^|\/)(__pycache__|\.[^/]+)$/.test(src.slice(abs.length)) });
+      const r = await hostedAgentDockerExec(['build', '-t', tag, '--label', 'ainize.run-runtime=1', context], this.o.buildTimeoutMs);
+      if (r.code !== 0) throw new Error(`building ${tag} failed:\n${(r.stderr || r.stdout).slice(-4000)}`);
+    } finally {
+      rmSync(context, { recursive: true, force: true });
+    }
     return tag;
   }
 
@@ -365,9 +399,11 @@ export class RunSandbox {
 
   /**
    * The script's environment: the caller's, with URLs naming this node's public host rewritten to the gateway
-   * (the run is answered here either way; this way it is attributed to the caller), then the sandbox's own.
+   * (the run is answered here either way), then the sandbox's own. `AINIZE_URL` + `AINIZE_API_KEY` are what the
+   * SDK reads; the key is the caller's and only the caller's — a value in the request's `env` is dropped, since a
+   * key in a repo is exactly what this exists to make unnecessary. Without a caller key the variable is absent.
    */
-  private environment(req: RunRequest, runId: string, base: string): Record<string, string> {
+  private environment(req: RunRequest, runId: string, base: string, token: string, caller: RunCaller): Record<string, string> {
     const pub = this.publicHost();
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.env)) {
@@ -379,13 +415,12 @@ export class RunSandbox {
         if ((u.protocol === 'https:' || u.protocol === 'http:') && u.hostname.toLowerCase() === pub && RUN_SURFACE_PATH.test(u.pathname)) env[k] = `${base}${u.pathname}${u.search}`;
       } catch { /* not a URL */ }
     }
-    env.AINIZE_DECIDE_URL ??= `${base}/api/decide`;
-    env.AINIZE_CHAT_URL ??= `${base}/api/chat`;
-    env.AINIZE_API_URL = base;
+    env.AINIZE_URL = base;
+    if (caller.key) env.AINIZE_API_KEY = caller.key;
     env.AINIZE_RUN_ID = runId;
     const proxy = new URL(this.gatewayUrl);
     proxy.username = 'run';
-    proxy.password = base.slice(base.lastIndexOf('/') + 1);
+    proxy.password = token;
     env.HTTPS_PROXY = proxy.href;
     env.https_proxy = proxy.href;
     env.HOME = '/work';
@@ -410,7 +445,7 @@ export class RunSandbox {
       if (signal?.aborted) return { code: RUN_TIMEOUT_EXIT_CODE, ms: Date.now() - started, error: 'cancelled' };
       token = this.o.gateway.issueRun({ id: runId, allowedHosts: this.allowedHosts(), selfUrl: this.o.selfUrl() });
       const base = `${this.gatewayUrl}/t/${token}`;
-      const env = this.environment(req, runId, base);
+      const env = this.environment(req, runId, base, token, caller);
       mkdirSync(this.o.workDir, { recursive: true });
       envFile = join(this.o.workDir, `run-env-${runId}`);
       writeFileSync(envFile, Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });

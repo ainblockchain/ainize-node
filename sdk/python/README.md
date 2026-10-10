@@ -18,6 +18,42 @@ client.chat.completions.create(
 
 Already hold a key? `ainize.connect(url, api_key="ainize-sk-…")` skips the signing.
 
+## Decision models (Cloudflare Clef)
+
+A decision model does not write text. It takes a `state` — any JSON describing a situation — and typed
+`questions` about it, and answers each with a probability. OpenAI's client has no method for that, so the client
+`connect()` returns is `openai.OpenAI` plus exactly one: `decide()`.
+
+```python
+out = client.decide(
+    "clef-flash",                       # or "clef" (27B, slower, sharper)
+    state="The payment webhook is failing and customers cannot check out.",
+    questions={
+        "outage":   {"type": "noul",   "instructions": "Is a service down?"},
+        "severity": {"type": "score",  "instructions": "How severe is it?", "criteria": ["low", "medium", "high"]},
+        "team":     {"type": "choice", "instructions": "Who should handle this?",
+                     "criteria": {"billing": "Payments or invoices", "technical": "Bugs or outages"}},
+    },
+)
+out.answers["outage"]["noul"]       # P(true)
+out.answers["severity"]["score"]    # index into criteria, with its distribution
+out.answers["team"]["choice"]       # an option id, with its distribution
+out.usage
+```
+
+`out` is a `DecideResult`: `.answers`, `.usage`, `.debug`, and the dict the node sent (`out["answers"]`,
+`dict(out)`). Pass `debug={"prompt": True}` and `out.debug["prompt"]` is the exact prompt the model received —
+the first thing to look at when an answer surprises you. A refusal raises `ainize.DecideError`, an
+`openai.APIStatusError` with the node's `status_code` and `code` (`invalid_api_key`, `model_not_found`, …).
+
+Inside an Ainize run sandbox (`POST /api/run`, or a `script` project) the environment already holds
+`AINIZE_URL` and `AINIZE_API_KEY`, so this is the whole program:
+
+```python
+import os, ainize
+client = ainize.connect(os.environ["AINIZE_URL"], api_key=os.environ["AINIZE_API_KEY"])
+```
+
 ## What you pay with
 
 A deposit, not a per-token charge. Send AIN or sAIN to the node; the operator holds it staked, and your share of

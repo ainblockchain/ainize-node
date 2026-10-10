@@ -56,7 +56,7 @@ export interface OpenaiApiKeySummary {
   disabled: boolean;
 }
 
-const OPENAI_API_KEY_PREFIX = 'ainize-sk-';
+export const OPENAI_API_KEY_PREFIX = 'ainize-sk-';
 
 export function hashOpenaiApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
@@ -92,6 +92,24 @@ export class OpenaiApiKeyStore {
     });
     this.persist();
     return key;
+  }
+
+  /**
+   * Record a key whose VALUE the caller derived (run-actor.ts): `issued` when it was new, `exists` when this same
+   * key is already on record for this address, `disabled` when a switched-off record for it exists — the caller
+   * must then not hand it out. A record for another address is refused outright: two accounts cannot share a key.
+   */
+  ensure(key: string, address: string, label: string | null, via: { iss: string; sub: string } | null = null): 'issued' | 'exists' | 'disabled' {
+    const hash = hashOpenaiApiKey(key);
+    const current = this.records.get(hash);
+    if (current) {
+      if (current.address !== address.toLowerCase()) throw new Error('that key is already another account\'s');
+      return current.disabled ? 'disabled' : 'exists';
+    }
+    if (this.records.has(`${DISABLED}${hash}`)) return 'disabled';
+    this.records.set(hash, { address: address.toLowerCase(), issuedAt: Date.now(), label, ...(via ? { via: { iss: via.iss, sub: via.sub } } : {}) });
+    this.persist();
+    return 'issued';
   }
 
   /** The address this key speaks for, or null. Checked shape-first so a foreign key costs no hash. */
