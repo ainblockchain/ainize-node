@@ -38,17 +38,24 @@ const hasDocker = await hostedAgentDockerAvailable();
  */
 async function dockerInternalNetReachesHost(): Promise<boolean> {
   if (!hasDocker) return false;
-  const net = 'ainize-hosted-agents';
+  // On a CI host whose firewall admits only one bridge port, probe that network and port (deploy/README.md).
+  const net = process.env.AINIZE_CI_DOCKER_NETWORK || 'ainize-hosted-agents';
+  const fixedPort = process.env.AINIZE_CI_DOCKER_NETWORK ? Number(process.env.AINIZE_CI_DOCKER_GATEWAY_PORT) : 0;
   try {
-    await hostedAgentDockerExec(['network', 'create', '--internal', '--label', 'ainize.hosted-agents=1', net]).catch(() => undefined);
-    const gw = (await hostedAgentDockerExec(['network', 'inspect', net, '--format', '{{(index .IPAM.Config 0).Gateway}}'])).out.trim();
+    if (!process.env.AINIZE_CI_DOCKER_NETWORK) await hostedAgentDockerExec(['network', 'create', '--internal', '--label', 'ainize.hosted-agents=1', net]).catch(() => undefined);
+    const gw = (await hostedAgentDockerExec(['network', 'inspect', net, '--format', '{{(index .IPAM.Config 0).Gateway}}'])).stdout.trim();
     if (!gw) return false;
     const probe = createServer((_q, s) => s.end('ok'));
-    await new Promise<void>((r) => probe.listen(0, '0.0.0.0', () => r()));
+    // The fixed port may be held by another test's gateway for a while; wait for it rather than skip.
+    const until = Date.now() + 600_000;
+    for (;;) {
+      try { await new Promise<void>((r, j) => { probe.once('error', j); probe.listen(fixedPort, '0.0.0.0', () => r()); }); break; }
+      catch (e) { if ((e as { code?: string }).code !== 'EADDRINUSE' || Date.now() > until) throw e; await new Promise((r) => setTimeout(r, 1000)); }
+    }
     const port = (probe.address() as AddressInfo).port;
     try {
       const r = await hostedAgentDockerExec(['run', '--rm', '--network', net, 'alpine:latest', 'sh', '-c', `wget -q -T 4 -O - http://${gw}:${port}/ || echo UNREACHABLE`], 30_000);
-      return /ok/.test(r.out) && !/UNREACHABLE/.test(r.out);
+      return /ok/.test(r.stdout) && !/UNREACHABLE/.test(r.stdout);
     } finally {
       probe.close();
     }

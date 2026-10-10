@@ -119,6 +119,11 @@ export async function prepareHostedAgentRuntimeContext(dir: string): Promise<str
 export class HostedAgentDocker {
   constructor(private readonly o: HostedAgentDockerOptions, private readonly exec = hostedAgentDockerExec, private readonly access = hostedAgentAccess) {}
 
+  /** The internal network's name — a run (run-sandbox.ts) joins the same one. */
+  get network(): string {
+    return this.o.network;
+  }
+
   /** The internal network, created if missing. Returns its gateway address — where the node's gateway listens. */
   async ensureNetwork(): Promise<string> {
     const inspect = async () => this.exec(['network', 'inspect', this.o.network, '--format', '{{(index .IPAM.Config 0).Gateway}}']);

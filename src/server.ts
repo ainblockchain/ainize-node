@@ -17,6 +17,8 @@ import { HostedAgentGateway } from './hosted-agent-gateway.js';
 import { HostedAgentHost } from './hosted-agent-host.js';
 import { HostedAgentTaskFile } from './hosted-agent-task-store.js';
 import { HostedAgentDocker, HOSTED_AGENT_DOCKER_DEFAULTS } from './hosted-agent-docker.js';
+import { RunSandbox, RUN_SANDBOX_DEFAULTS } from './run-sandbox.js';
+import { runRouter } from './run-routes.js';
 import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { AgentGit } from './agent-git.js';
 import { AgentGitHttp } from './agent-git-http.js';
@@ -534,6 +536,43 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
   const hostedAgents = { host: hostedHost, store: hostedStore };
   market.hostedAgents = hostedAgents;
+  /**
+   * `POST /api/run` (run-sandbox.ts, deploy/run-runtime/README.md): a script pressed ▶ on in aindrive, run once
+   * in the code agents' sandbox. The same Docker switch, daemon and internal network as code agents; without
+   * them the route answers 503 and nothing else changes. `runSandbox` is read like `agentHost`: an optional
+   * block @ainize/core's schema does not know yet.
+   */
+  const runCfg = (cfg as NodeConfig & { runSandbox?: { gatewayPort?: number; maxRunning?: number; perCaller?: number; perKeyedCaller?: number; memory?: string; cpus?: number; pidsLimit?: number } }).runSandbox ?? {};
+  const runSandbox = hostedHost.dockerEnabled && dockerCfg?.enabled ? new RunSandbox({
+    docker: new HostedAgentDocker({
+      runtime: dockerCfg.runtime,
+      memory: runCfg.memory ?? RUN_SANDBOX_DEFAULTS.memory,
+      cpus: runCfg.cpus ?? RUN_SANDBOX_DEFAULTS.cpus,
+      pidsLimit: runCfg.pidsLimit ?? RUN_SANDBOX_DEFAULTS.pidsLimit,
+      network: dockerCfg.network ?? HOSTED_AGENT_DOCKER_DEFAULTS.network,
+      buildTimeoutMs: dockerCfg.buildTimeoutMs ?? RUN_SANDBOX_DEFAULTS.buildTimeoutMs,
+      workDir: join(cfg.dataDir, 'run-sandbox'),
+      runtimeImage: 'ainize/run-runtime',
+    }),
+    gateway: hostedGateway,
+    gatewayPort: runCfg.gatewayPort,
+    selfUrl: () => `http://127.0.0.1:${(server.address() as { port?: number } | null)?.port ?? cfg.port}`,
+    publicUrl: () => market.publicUrl,
+    runtime: dockerCfg.runtime,
+    memory: runCfg.memory ?? RUN_SANDBOX_DEFAULTS.memory,
+    cpus: runCfg.cpus ?? RUN_SANDBOX_DEFAULTS.cpus,
+    pidsLimit: runCfg.pidsLimit ?? RUN_SANDBOX_DEFAULTS.pidsLimit,
+    maxRunning: runCfg.maxRunning ?? RUN_SANDBOX_DEFAULTS.maxRunning,
+    perCaller: runCfg.perCaller ?? RUN_SANDBOX_DEFAULTS.perCaller,
+    perKeyedCaller: runCfg.perKeyedCaller ?? RUN_SANDBOX_DEFAULTS.perKeyedCaller,
+    buildTimeoutMs: dockerCfg.buildTimeoutMs ?? RUN_SANDBOX_DEFAULTS.buildTimeoutMs,
+    workDir: join(cfg.dataDir, 'run-sandbox'),
+    log: (level, message) => market.log(level, 'run', message),
+  }) : null;
+  if (runSandbox) {
+    await runSandbox.start();
+    if (runSandbox.available) runSandbox.warm();
+  }
   market.linkedAgents = linkedStore;
   // Who is asking, for hosted agents and the shared registry: a wallet session, or an AIN SSO session — the one
   // place besides `/api/keys` where an SSO session acts here (it owns the agents it makes, and nothing a wallet
@@ -837,6 +876,9 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     // uses whatever the paying callers are not using.
     app.use(freeTierRouter({ registry: inferenceRegistry, gates: modalityGates, peerModels: peerModelAccess, self: cfg.identity.address }));
   }
+  // Beside the free tier, not inside the backends block: whether a script can run depends on Docker, not on
+  // what this node serves — and a 503 that says so is the answer a node without Docker should give.
+  app.use(runRouter({ sandbox: runSandbox, keys: openaiKeys }));
 
   // After the deposits block: the page needs the ledger and the staking contract it built.
   const throughputChains = cfg.deposits?.chains.map((c) => ({
@@ -1075,6 +1117,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       clearInterval(uploadSweep);
       clearInterval(driveSync);
       market.payouts.stop();
+      await runSandbox?.stop().catch(() => {});
       await hostedHost.stop().catch(() => {});
       if (stakeIdleSweep) clearInterval(stakeIdleSweep);
       await Promise.all([verifier?.stop(), p2p.stop(), teach?.stop()]);
