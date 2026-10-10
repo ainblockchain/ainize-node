@@ -1545,3 +1545,31 @@ app/drizzle/0005_qa_agent_credentials.sql만 적용하기 위해 아직 병합�
 연결 복구 뒤 .194의 배포 adapter/DB 현황 확인 → 백업 → 전용 SQL transaction 적용
 → PR76 exact head 병합 → 자동 배포와 schema health 확인 순서로 계속한다.
 PR70 운영 전환 승인과 실제 전체 채널 E2E는 별도 미완료다.
+
+
+### 승인 후 운영 적용과 추가 배포 관문 — 2026-10-11
+
+SSH 재연결 완료. Ainmem 운영 PostgreSQL의 읽기 가능한 custom-format 백업을
+/home/comcom/ainmem-backups/qa-credentials-20261010-214412/pre-migration.dump 에
+보존했다(9,099,656 bytes, sha256 2bfe1920b7c4e1028473c5896f3aa1a4f146daa53abae5717b48e0bb0a7fdb28).
+승인된 0005 SQL만 transaction/5s lock timeout으로 적용했고 13개 컬럼을 확인했다.
+PR76 병합 SHA b5acb28f3734bc9094c34e403a28106510717562.
+
+.194 operator adapter로 해당 SHA 배포를 시작했으나 pre-deploy --fast에서 중단됐다.
+typecheck/lint/DB/rules 통과, logic 625개 중624 pass/1 fail/0skip. access source guard가
+credentials.ts의 identity-only lookup 및 prepareTaskMirror의 간접 권한 확인을 지적했다.
+운영 앱 이미지는 그대로이며 배포 완료가 아니다. 로그 /tmp/ainmem-test.BUoNr3/logic.log.
+
+보완 PR83 https://github.com/ainetwork-ai/ainmem/pull/83 head e339fe8:
+prepareTaskMirror에서 실제 authorizeTaskMirror를 다시 호출하고, credential lookup에는
+페이지 본문을 반환하지 않는 인증 조회임을 기존 guard annotation으로 설명했다.
+로컬 access guard3개 통과. 서버 전체 --fast 실행은
+/mnt/newdata/qa-services/validation/native-ainmem-gates-QyYZbM8c, pid2195440,
+fast.log 및 exit-code가 정본. 검증 완료 전 배포하지 않았다.
+
+Ainize 서버는 docs-runtime-practice 709c888을 서빙 중이고 자동 배포가 main 전환을
+거부하는 것을 확인했다. 기존 GPU readiness 및 exact JSON proxy 수정2개가 main에
+없어 임의 덮어쓰지 않았다. 통합 후보 PR74:
+https://github.com/ainblockchain/ainize-node/pull/74 head4d4157b.
+기존 serving 커밋과 PR71을 보존한 merge이며 관련34tests/0fail/0skip 및 build 통과.
+통합·배포 승인을 별도로 질문한 상태다. 운영 serving SHA와 페이지 등록은 아직 미완료.
