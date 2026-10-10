@@ -310,6 +310,10 @@ test('Teams organization keys list canonical and SSO-alias agents together, with
         const r = await call(who, '/api/shared-agents?scope=shared_with_org' + query);
         assert.equal(r.status, 200);
         assert.deepEqual(listed(r as any), ['desk', 'slug-agent', 'sso-agent']);
+        if (query) for (const item of r.body.items) {
+          assert.equal(item.ref.orgRef.subject, query.slice('&org='.length));
+          assert.equal(item.ref.orgRef.issuer, SSO_ISSUER);
+        }
       }
     }
     const other = await call(P3, '/api/shared-agents?scope=shared_with_org');

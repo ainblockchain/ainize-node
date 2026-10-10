@@ -633,7 +633,11 @@ export function sharedAgentRoutes(deps: SharedAgentRoutesDeps): Router {
         break;
     }
     let items = picked.map((e) => e.item());
-    if (orgScope) items = items.filter((i) => inOrg(i.ref.orgRef?.subject));
+    // Filtering accepts configured organization aliases. Return the authorized
+    // requested identity too, so consumers can bind the result to that SSO org.
+    if (orgScope) items = items.filter((i) => inOrg(i.ref.orgRef?.subject)).map((item) => ({
+      ...item, ref: { ...item.ref, orgRef: { ...item.ref.orgRef!, subject: orgScope } },
+    }));
     if (q) {
       const needle = q.toLowerCase();
       items = items.filter((i) => i.ref.displayName.toLowerCase().includes(needle) || (i.ref.description ?? '').toLowerCase().includes(needle));

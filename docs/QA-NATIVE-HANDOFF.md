@@ -651,3 +651,25 @@ Registry에서 agent가 제거될 때 기존 token의 자동 폐기 동기화는
 그 전에는 explicit credential 폐기가 필요하며 운영 전환 완료로 보지 않는다.
 새 token을 Ainize private profile에 전달하고 실제 기존 페이지·채널 작업·승인·배포를
 검증하는 단계, 통합 승인 보드 mirror 갱신과 단일 작업기 전환은 계속 남아 있다.
+
+## 기존 페이지 권한 연결과 registry 조직 응답 수정 — 2026-10-11
+
+Ainmem의 `/api/qa/agents/adopt`는 관리자 세션과 credential ID로 서버의 명시적
+legacy mapping만 적용한다. 모든 row/page/block/job/creator/workspace/parent를
+대조한 뒤 한 transaction으로 edit grant를 부여한다. 매핑 하나가 틀리면 전체를
+거부하며 task 내용과 원작성자를 보존한다. 테스트에서는 새 scoped token으로
+그 기존 페이지를 갱신하고 ID·댓글·작성자 보존까지 확인했다. 운영 23개 page에는
+아직 적용하지 않았다. main `cae9ee1`도 Ainmem 작업 브랜치에 반영했다.
+
+운영 registry 실제 읽기 결과 QA 6개 중 5개의 orgRef.subject가 `comcom`,
+Teams QA만 실제 SSO 조직 ID였다. 전부 issuer는 `https://auth.comcom.ai`다.
+Ainmem enrollment의 issuer 검사를 실제 SSO issuer에 맞게 수정했다.
+Ainize의 목록은 기존 resolveOrgId로 별칭을 필터링한 뒤, org가 지정된 조회 응답의
+subject도 그 권한 확인된 조회 org로 맞춘다. 원본 agent ID/등록/공유 설정은
+변경하지 않는다. 다른 조직 거부와 SSO issuer 유지 테스트 포함 16 pass / 0 skip,
+Ainize 타입 빌드 통과. Ainmem은 QA/knowledge 회귀 33 pass / 0 skip.
+
+배포 순서는 registry 응답 수정 후 Ainmem enrollment/adoption 확인이 필요하다.
+운영 registry·스키마·페이지 권한·agent token에는 이번에도 쓰지 않았다.
+자동 registry 제거 동기화, 실제 관리자 세션 등록/비밀 토큰 전달, 23개 page 권한,
+승인 mirror, 단일 작업기 전환과 전 제품 채널 E2E는 남아 있다.
