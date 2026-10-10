@@ -6,6 +6,7 @@ import {HostedQaReviewStore,type QaRepositoryRoutes,type QaRoutedIntake,type QaH
 import {captureQaTeamsRequestWithText} from './hosted-qa-teams-thread.js';
 import type {HostedReviewProfile} from './hosted-qa-review-coordinator.js';
 import type {TeamsReviewMcp} from './hosted-qa-teams-review.js';
+import {verifyHistoricalQaIntake} from './hosted-qa-historical-intake.js';
 export type QaSharedProfiles=Record<string,{web:string;api:string}>;
 const canonical=(v:any):any=>v&&typeof v==='object'?Array.isArray(v)?v.map(canonical):Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 export class HostedQaRoutes {
@@ -30,6 +31,15 @@ export class HostedQaRoutes {
   if(Object.keys(this.owners).some(owner=>this.scopes.has(owner)))throw new Error('Shared QA owner cannot be an internal scope');
  }
  configured(id:string){return Object.hasOwn(this.owners,id);}
+ /** Operator-only continuation of an already imported route; message prefixes cannot reroute it. */
+ async activateHistory(owner:string,archive:any,fingerprint:string){
+  if(!this.configured(owner))throw new Error('Unknown shared QA owner');
+  const policy=this.owners[owner],historical=this.store.historicalRoute(owner,archive?.job?.id);
+  if(!historical||historical.policyDigest!==policy.digest||historical.archiveDigest!==fingerprint
+   ||policy.routes[historical.route]?.scope!==historical.scope||policy.routes[historical.route]?.repository!==historical.repository)throw new Error('Historical route policy changed');
+  const evidence=await verifyHistoricalQaIntake(this.teams(historical.scope),{...policy.profile,repository:historical.repository},archive,fingerprint);
+  return this.store.registerHistoricalIntake(historical.scope,evidence,{owner,record:historical});
+ }
  /** Offline operator entry only; no gateway endpoint exposes historical intake. */
  importHistory(owner:string,items:{archive:any;fingerprint:string}[]){
   if(!this.configured(owner)||!Array.isArray(items)||items.length>10000)throw new Error('Invalid route migration');

@@ -10,7 +10,7 @@
 - Native handler의 접수·모델 코딩·제품 검증·PR 게시·Teams/Ainmem 정본 승인 확인·
   승인 후보 반영·서비스 SHA 관측·페이지 보고를 구현했다. 검증 실패는 최대 2회 모델
   재수정, host 실행 예외는 30초 간격 최대 총 3회 재시도를 지원한다.
-- QA 회귀 167개 및 build 통과. 704ced1의 전체 API suite는
+- QA 회귀 169개 및 build 통과. 704ced1의 전체 API suite는
   937 tests, 919 pass/0 fail/18 skip, 32.5초다. skip은 통과로 계산하지 않는다.
   이전 5420891의 906 pass 결과는 과거 검증 기록이다.
 - .41 실제 hosted Docker→gateway→제품 lint, 중간 runtime restart, 실제 Ainize 모델의
@@ -1308,3 +1308,26 @@ Ainize web/API는 같은 jobs DB에 넣고 각각 web/api route를 보존했다.
 
 증거: /mnt/newdata/qa-services/validation/native-import-current-20261011-KvcFd8/summary.json.
 기존 writer/agent/page/승인을 변경하지 않았으며 운영 cutover는 아니다.
+
+
+### 원본 재확인 후 호스트 이관 등록 — 2026-10-11
+
+operator 전용 `HostedQaIntake.importHistorical`과 공유 채널의
+`HostedQaRoutes.activateHistory`를 추가했다. 매 실행마다 Teams 원본과 현재 작성자
+멤버십을 다시 확인한다. request binding, 이관 근거, web/API route를 한 SQLite
+transaction에 저장하며 부분 실패는 전부 rollback한다. 원래 job ID를 유지하고,
+같은 원본의 다른 job ID 중복 등록 및 기존 native job 덮어쓰기는 거부한다.
+공유 채널은 기존 importHistory로 등록한 저장소 선택만 이어받는다.
+과거 승인·candidate·publication은 활성 권한으로 복원하지 않는다.
+
+검증: QA 169 pass / 0 fail / 0 skip, TypeScript build 및 diff check 통과.
+실패 trigger를 넣어 intake/audit/route 전체 rollback을 확인했고, 재시도 때 작성자
+권한 회수도 다시 감지했다. .41의 실제 요청 7건(Teams3/web2/API1/Space1)을 새 격리
+ledger에 등록하고 즉시 재실행해 7/7 동일 결과를 확인했다.
+증거: `/mnt/newdata/qa-services/validation/native-historical-activation-gvwrq6at/summary.json`.
+원본 메시지/증거와 ledger는 서버 private 디렉터리에만 보관한다.
+
+운영 ledger/worker/페이지/승인/배포는 변경하지 않았다. 이 검사는 접수 이관 경로의
+검증이며 native coding 재개나 전 서비스 E2E 완료가 아니다. canonical Ainmem 페이지
+채택과 candidate 재검증/작업 재개 연결, 선행 PR71/76 승인·배포는 계속 남아 있다.
+이 실행에서 ainize SSH multiplex는 open, 로컬 Vault status는 locked로 확인됐다.

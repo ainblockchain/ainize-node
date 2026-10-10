@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval,verifyTeamsApproval} from './hosted-qa-review.js';
 import type {QaRevalidationRequest,QaRevalidationReceipt} from './hosted-qa-base.js';
 import {qaCandidateDigest,type QaCandidate} from './hosted-qa-validator.js';
+import type {HistoricalQaIntakeEvidence} from './hosted-qa-historical-intake.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>|ReturnType<typeof verifyTeamsApproval>>;
 interface RevalidationRecord {request:QaRevalidationRequest;generation:number;reviewKey:string|null;publication:any;repository?:string;observedBase:string;pageId?:string;prepared?:QaRevalidationReceipt;replacement?:{repository:string;base:string;sha:string;candidateDigest:string;number:number;url:string}}
 export interface QaRepositoryRoutes {web:{scope:string;repository:string};api:{scope:string;repository:string}}
@@ -28,6 +29,7 @@ export class HostedQaReviewStore {
    CREATE TABLE IF NOT EXISTS review_intakes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,request_key TEXT NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(agent_id,job_id),UNIQUE(agent_id,request_key));
    CREATE TABLE IF NOT EXISTS review_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
    CREATE TABLE IF NOT EXISTS review_historical_routes(owner_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(owner_id,job_id));
+   CREATE TABLE IF NOT EXISTS review_historical_intakes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id));
    CREATE TABLE IF NOT EXISTS review_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,review_key TEXT NOT NULL,observed_base TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_revalidations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,sequence INTEGER NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,sequence));
    CREATE TABLE IF NOT EXISTS publication_base_changes(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,candidate_digest TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,candidate_digest));
@@ -216,6 +218,46 @@ export class HostedQaReviewStore {
  routedIntake(owner:string,jobId:string):QaRoutedIntake|null {
   const row=this.db.prepare('SELECT record FROM review_routes WHERE owner_id=? AND job_id=?').get(owner,jobId);
   return row?JSON.parse(String(row.record)):null;
+ }
+ historicalRoute(owner:string,jobId:string):QaHistoricalRoute|null {
+  const row=this.db.prepare('SELECT record FROM review_historical_routes WHERE owner_id=? AND job_id=?').get(owner,jobId);
+  return row?JSON.parse(String(row.record)):null;
+ }
+ historicalIntake(agentId:string,jobId:string):HistoricalQaIntakeEvidence|null {
+  const row=this.db.prepare('SELECT record FROM review_historical_intakes WHERE agent_id=? AND job_id=?').get(agentId,jobId);
+  return row?JSON.parse(String(row.record)):null;
+ }
+ /** Operator-only activation after fresh canonical verification. Identity, audit and optional
+  * shared route are committed together; archived approval/candidate metadata is never accepted.
+  */
+ registerHistoricalIntake(agentId:string,raw:HistoricalQaIntakeEvidence,routing?:{owner:string;record:QaHistoricalRoute}):HistoricalQaIntakeEvidence {
+  const evidence=structuredClone(raw),{jobId,binding}=evidence;
+  if(Object.keys(evidence).sort().join(',')!=='archiveDigest,binding,jobId,repository,text'
+   ||!/^[-\w]{1,128}$/.test(agentId)||!/^[-\w]{1,80}$/.test(jobId)||!/^[a-f0-9]{64}$/.test(evidence.archiveDigest)
+   ||!/^[\w.-]+\/[\w.-]+$/.test(evidence.repository)||createHash('sha256').update(evidence.text).digest('hex')!==binding.requestDigest)throw new Error('Invalid historical intake evidence');
+  const value=json(evidence),key=json([binding.workspaceId,binding.channelId,binding.requestId]);
+  return this.transaction(()=>{
+   let route:QaRoutedIntake|undefined;
+   if(!routing&&this.db.prepare("SELECT 1 FROM review_historical_routes WHERE job_id=? AND json_extract(record,'$.scope')=? LIMIT 1").get(jobId,agentId))throw new Error('Historical intake requires routed registration');
+   if(routing){
+    const expected=this.historicalRoute(routing.owner,jobId),r=routing.record;
+    if(!expected||json(expected)!==json(r)||r.jobId!==jobId||r.scope!==agentId||r.repository!==evidence.repository||r.archiveDigest!==evidence.archiveDigest
+     ||r.workspaceId!==binding.workspaceId||r.channelId!==binding.channelId||r.rootId!==binding.rootId||r.requestId!==binding.requestId)throw new Error('Historical intake route changed');
+    route={scope:r.scope,repository:r.repository,route:r.route,policyDigest:r.policyDigest,binding};
+   }
+   const prior=this.historicalIntake(agentId,jobId),intake=this.intake(agentId,jobId);
+   if(prior){
+    if(json(prior)!==value||json(intake)!==json(binding)||(routing&&json(this.routedIntake(routing.owner,jobId))!==json(route)))throw new Error('Historical intake changed');
+    return prior;
+   }
+   if(intake||this.publication(agentId,jobId)||this.current(agentId,jobId)||(routing&&this.routedIntake(routing.owner,jobId)))throw new Error('Existing native job requires reconciliation');
+   if(this.db.prepare('SELECT 1 FROM review_intakes WHERE request_key=? LIMIT 1').get(key))throw new Error('Canonical historical request already assigned');
+   if(Number(this.db.prepare('SELECT count(*) AS n FROM review_intakes').get()!.n)>=10000)throw new Error('Intake capacity reached');
+   this.db.prepare('INSERT INTO review_intakes VALUES(?,?,?,?)').run(agentId,jobId,key,json(binding));
+   this.db.prepare('INSERT INTO review_historical_intakes VALUES(?,?,?)').run(agentId,jobId,value);
+   if(routing)this.db.prepare('INSERT INTO review_routes VALUES(?,?,?)').run(routing.owner,jobId,json(route));
+   return evidence;
+  });
  }
  /** Operator migration evidence only. Never creates a verified intake, review or release record. */
  importHistoricalRoutes(owner:string,records:QaHistoricalRoute[]){

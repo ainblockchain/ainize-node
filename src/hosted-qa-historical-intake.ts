@@ -5,9 +5,10 @@ import type {HostedReviewProfile} from './hosted-qa-review-coordinator.js';
 import type {TeamsReviewMcp} from './hosted-qa-teams-review.js';
 const id=(value:unknown):value is string=>typeof value==='string'&&/^[-\w]{1,80}$/.test(value);
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
+export interface HistoricalQaIntakeEvidence {jobId:string;repository:string;archiveDigest:string;binding:QaTeamsThreadBinding;text:string}
 
 export async function verifyHistoricalQaIntake(mcp:TeamsReviewMcp,rawProfile:HostedReviewProfile,
- rawArchive:unknown,archiveDigest:string,now=Date.now()) {
+ rawArchive:unknown,archiveDigest:string,now=Date.now()):Promise<HistoricalQaIntakeEvidence> {
  const profile=structuredClone(rawProfile),archive=structuredClone(rawArchive) as any;
  const encoded=JSON.stringify(archive);
  if(typeof encoded!=='string'||Buffer.byteLength(encoded)>4*1024*1024||digest(encoded)!==archiveDigest

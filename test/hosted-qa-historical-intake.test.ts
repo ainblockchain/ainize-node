@@ -46,3 +46,45 @@ test('terminal jobs, missing times, wrong scope and forged archives cannot obtai
  const approval={...f.archive,job:{...f.archive.job,payload:{...f.archive.job.payload,text:'LGTM'}}};
  await assert.rejects(verifyHistoricalQaIntake(f.mcp,f.profile,approval,hash(approval)),/not a fix/);
 });
+
+test('operator activation is atomic, idempotent and rechecks membership on retry',async t=>{
+ const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {DatabaseSync}=await import('node:sqlite');const {HostedQaReviewStore}=await import('../src/hosted-qa-review-store.js');const {HostedQaIntake}=await import('../src/hosted-qa-intake.js');
+ const root=mkdtempSync(join(tmpdir(),'qa-history-activate-')),store=new HostedQaReviewStore(root),f=setup();
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const service=new HostedQaIntake(store,{agent:f.profile},()=>f.mcp);
+ const db=new DatabaseSync(join(root,'reviews.sqlite3'));db.exec("CREATE TRIGGER fail_audit BEFORE INSERT ON review_historical_intakes BEGIN SELECT RAISE(ABORT,'audit write failed'); END");db.close();
+ await assert.rejects(service.importHistorical('agent',f.archive,hash(f.archive)),/audit write failed/);
+ assert.equal(store.intake('agent','job'),null);assert.equal(store.historicalIntake('agent','job'),null);
+ const repair=new DatabaseSync(join(root,'reviews.sqlite3'));repair.exec('DROP TRIGGER fail_audit');repair.close();
+ const verified=await service.importHistorical('agent',f.archive,hash(f.archive));
+ assert.deepEqual(await service.importHistorical('agent',f.archive,hash(f.archive)),verified);
+ assert.deepEqual(store.intake('agent','job'),verified.binding);assert.equal(store.publication('agent','job'),null);assert.equal(store.current('agent','job'),null);
+ const duplicate={...f.archive,job:{...f.archive.job,id:'other-job'}};
+ await assert.rejects(service.importHistorical('agent',duplicate,hash(duplicate)),/already assigned/);
+ f.revoke();await assert.rejects(service.importHistorical('agent',f.archive,hash(f.archive)),/no longer/);
+ assert.deepEqual(store.historicalIntake('agent','job'),verified);
+ assert.throws(()=>store.registerHistoricalIntake('agent',{...verified,approval:{approved:true}} as any),/Invalid/);
+});
+
+test('historical shared activation preserves the archived API route and rolls back partial route writes',async t=>{
+ const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {DatabaseSync}=await import('node:sqlite');
+ const {HostedQaReviewStore}=await import('../src/hosted-qa-review-store.js');const {HostedQaRoutes}=await import('../src/hosted-qa-routes.js');const {HostedQaIntake}=await import('../src/hosted-qa-intake.js');
+ const root=mkdtempSync(join(tmpdir(),'qa-history-route-')),store=new HostedQaReviewStore(root),f=setup();
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const profiles={web:f.profile,api:{...f.profile,repository:'test/api'}};
+ const routes=new HostedQaRoutes(store,{bot:{web:'web',api:'api'}},profiles,()=>f.mcp);
+ const archive={...f.archive,repository:'test/api'},fingerprint=hash(archive);
+ routes.importHistory('bot',[{archive,fingerprint}]);
+ await assert.rejects(new HostedQaIntake(store,profiles,()=>f.mcp).importHistorical('api',archive,fingerprint),/requires routed/);
+ const db=new DatabaseSync(join(root,'reviews.sqlite3'));db.exec("CREATE TRIGGER fail_route BEFORE INSERT ON review_routes BEGIN SELECT RAISE(ABORT,'route write failed'); END");db.close();
+ await assert.rejects(routes.activateHistory('bot',archive,fingerprint),/route write failed/);
+ assert.equal(store.intake('api','job'),null);assert.equal(store.historicalIntake('api','job'),null);assert.equal(store.routedIntake('bot','job'),null);
+ const repair=new DatabaseSync(join(root,'reviews.sqlite3'));repair.exec('DROP TRIGGER fail_route');repair.close();
+ const evidence=await routes.activateHistory('bot',archive,fingerprint);
+ assert.equal(routes.resolve('bot','job'),'api');assert.equal(store.routedIntake('bot','job')?.route,'api');assert.equal(store.intake('web','job'),null);
+ assert.deepEqual(await routes.activateHistory('bot',archive,fingerprint),evidence);
+ assert.equal(routes.submit('bot',{jobId:'job',locator:{messageId:'request'}}).state,'done');
+ assert.throws(()=>routes.resolve('api','job'),/Internal/);
+ assert.equal(store.current('api','job'),null);assert.equal(store.publication('api','job'),null);
+});
