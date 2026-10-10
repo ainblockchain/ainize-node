@@ -5,7 +5,7 @@ import type {QaCandidate} from './hosted-qa-validator.js';
 type Status={state:'running'}|{state:'done';result:unknown}|{state:'failed'};
 export class HostedQaPublicationService {
  private entries=new Map<string,{status:Status;finishedAt?:number}>();
- constructor(private publisher:HostedQaPublisher,private onPublished?:(agentId:string,jobId:string,result:unknown)=>void){}
+ constructor(private publisher:HostedQaPublisher,private onPublished?:(agentId:string,jobId:string,result:unknown,candidate:QaCandidate)=>void){}
  submit(agentId:string,raw:unknown):Status {
   const input=structuredClone(raw) as {jobId:string;candidate:QaCandidate};
   if(!input||Object.keys(input).sort().join(',')!=='candidate,jobId'||typeof input.jobId!=='string'||!/^[-\w]{1,128}$/.test(input.jobId))throw new Error('Invalid publication request');
@@ -16,7 +16,7 @@ export class HostedQaPublicationService {
   const task=this.publisher.publish(agentId,input.jobId,input.candidate);
   const entry:{status:Status;finishedAt?:number}={status:{state:'running'}};
   this.entries.set(key,entry);
-  void task.then(result=>{this.onPublished?.(agentId,input.jobId,result);entry.status={state:'done',result};}).catch(()=>{entry.status={state:'failed'};}).finally(()=>{entry.finishedAt=Date.now();});
+  void task.then(result=>{this.onPublished?.(agentId,input.jobId,result,input.candidate);entry.status={state:'done',result};}).catch(()=>{entry.status={state:'failed'};}).finally(()=>{entry.finishedAt=Date.now();});
   return entry.status;
  }
 }

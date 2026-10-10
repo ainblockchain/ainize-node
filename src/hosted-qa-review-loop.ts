@@ -1,10 +1,11 @@
+import type {HostedQaRelease} from './hosted-qa-release.js';
 /** Host background reconciliation; registration and checks are driven by verified publisher receipts. */
 import {HostedQaReviewStore} from './hosted-qa-review-store.js';
 import {HostedQaReviewCoordinator,type HostedReviewProfile,type HostedReviewReaders} from './hosted-qa-review-coordinator.js';
 export class HostedQaReviewLoop {
  private running:Promise<void>|null=null;
  private profiles:Record<string,HostedReviewProfile>;
- constructor(private store:HostedQaReviewStore,private coordinator:HostedQaReviewCoordinator,profiles:Record<string,HostedReviewProfile>,private readers:HostedReviewReaders,private log:(message:string)=>void=()=>{}){this.profiles=structuredClone(profiles);}
+ constructor(private store:HostedQaReviewStore,private coordinator:HostedQaReviewCoordinator,profiles:Record<string,HostedReviewProfile>,private readers:HostedReviewReaders,private log:(message:string)=>void=()=>{},private release?:Pick<HostedQaRelease,'attempt'>){this.profiles=structuredClone(profiles);}
  async drain(){if(this.running)await this.running;}
  tick():Promise<void>{
   if(this.running)return this.running;
@@ -23,7 +24,12 @@ export class HostedQaReviewLoop {
      if(!lines.includes(`검토 PR: ${r.url}`)||!lines.includes(`검토 커밋: ${r.sha}`)||!lines.includes('상태: waiting / awaiting_approval'))throw new Error('Published candidate not yet displayed');
      await this.coordinator.register(item.agentId,{jobId:item.jobId,repository:p.repository,branch:p.branch,base:r.base,sha:r.sha,number:r.number,candidateDigest:r.candidateDigest,pageId:snapshot.pageId,databaseId:p.databaseId,workspaceId:p.policy.workspaceId,teamsWorkspaceId:p.policy.teamsWorkspaceId,channelId:p.policy.channelId,issuer:p.policy.issuer,orgId:p.policy.orgId},snapshot.body);
     }
-    await this.coordinator.check(item.agentId,item.jobId);
+    const current=this.store.current(item.agentId,item.jobId)!;
+    const previous=this.store.releaseRecord(current);
+    if(previous?.receipt?.state==='branch_updated')continue; // Deployment observation is a separate stage.
+    if(previous&&this.release){await this.release.attempt(item.agentId,item.jobId);continue;}
+    const approval=await this.coordinator.check(item.agentId,item.jobId);
+    if(approval&&this.release)await this.release.attempt(item.agentId,item.jobId);
    }catch{this.log('QA canonical review pending; no release authorized');}
   }
  }

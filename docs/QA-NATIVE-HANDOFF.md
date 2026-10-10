@@ -452,3 +452,12 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - host 전용 `teamsReviewClient`는 list_channels/list_channel_members만 허용하고, HTTPS·redirect 거부·세션·SSE 응답 ID 대조·오류 비공개를 적용한다. .41에서 실제 7개 서비스 조회를 다시 성공했다. 증거는 `native-review-members-20261010-cjpgqw/host-client-result.json`에 있다.
 - QA 테스트 70개 통과. 후속 감사 중복 방지 뒤 review 테스트 11개 재검증 및 빌드 통과. publisher→durable queue→카드 대기→검토 등록→정본 확인을 테스트했다. 실제 토큰 조회 실증은 Teams 읽기만 수행했다.
 - 아직 merge/배포를 실행하지 않는다. 실제 승인 직후 exact-SHA merge·배포 상태 확인, Teams 원본 스레드 승인 경로, 운영 상태 보존 전환 및 전 채널 실제 요청 E2E가 남아 있다. Ainmem 새 API 역시 별도 배포가 필요하다.
+
+### 2026-10-10 승인된 정확한 커밋 반영 어댑터
+
+- `hosted-qa-release.ts`는 명시적으로 설정한 `fast-forward-unprotected` 대상만 처리한다. 현재 host validation 정책의 성공 기록과 원래 candidate digest, 검토 generation, 최신 실제 관리자 승인, PR/head/base, 후보의 단일 부모가 검증 base인지 확인한다. publication ledger에 원본 후보도 보존하도록 연결했다.
+- 외부 쓰기 전에 SQLite에 release intent를 남기고 GitHub ref에 `{sha: reviewedSha, force:false}`를 보낸다. 검증 후 main이 다른 후속 커밋으로 전진하면 non-fast-forward로 거부되어 그 변경을 덮어쓰지 않는다. 응답 유실/재시작은 기존 intent와 실제 ref를 대조하며, 이미 반영된 경우 재쓰기 없이 관측 기록만 남긴다.
+- 보호 규칙 우회는 하지 않는다. branch 상세의 `protected:false`와 공식 `branches?protected=false` 목록(최대 20페이지)을 모두 확인한다. 보호 브랜치/불완전 관측은 별도 merge 어댑터가 필요하다. 일부 비공개 저장소의 rules/protection 관리 API는 요금제 제한 403을 반환하므로 이를 보호 없음으로 간주하지 않는다. Teams main은 페이지 순회 후 비보호 목록에 있는 것을 실제 조회로 확인했다. 설정은 변경하지 않았다.
+- 서버 opt-in: `AINIZE_QA_RELEASE_PROFILES`는 agent ID → `{repository,branch,mode:"fast-forward-unprotected"}` JSON 파일 경로, `AINIZE_QA_RELEASE_TOKEN_FILE`은 별도 private 호스트 토큰 파일이다. review/publication/validation 설정이 필수다. 모델/agent container에 release token을 전달하지 않는다. **운영에서는 아직 비활성이다.**
+- 성공 receipt는 `branch_updated`, `deploymentVerified:false`다. GitHub PR merged 상태와 실제 서비스 배포/serving SHA 확인은 별도 단계이며 아직 미구현이다. 보호 저장소 전용 merge 방식, 변경 base 재검증, 실제 사람 승인 릴리스 E2E도 남아 있다. 이 코드 추가로 main을 변경하지 않았다.
+- QA 타깃 75개 통과 및 빌드 통과. 검증 정책 변경 테스트 추가 후 release 테스트 6개 통과. 승인 없음, 보호 규칙, 동시 main 갱신, 잘못된 ancestry, 응답 유실/서비스 재생성, 변경된 검증 정책을 검증했다. 실제 GitHub 쓰기/배포 테스트는 아직 수행하지 않았다.

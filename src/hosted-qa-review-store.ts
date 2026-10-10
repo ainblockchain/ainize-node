@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import type {ReviewPresentation,verifyAinmemApproval} from './hosted-qa-review.js';
 type Approval=NonNullable<ReturnType<typeof verifyAinmemApproval>>;
 export interface StoredReview {agentId:string;jobId:string;generation:number;key:string;presentation:ReviewPresentation}
-const json=(value:unknown)=>{const raw=JSON.stringify(value);if(Buffer.byteLength(raw)>64000)throw new Error('Review record too large');return raw;};
+const json=(value:unknown,limit=64000)=>{const raw=JSON.stringify(value);if(Buffer.byteLength(raw)>limit)throw new Error('Review record too large');return raw;};
 const fingerprint=(p:ReviewPresentation)=>createHash('sha256').update(json([Object.entries(p.target).sort(([a],[b])=>a.localeCompare(b)),p.body,p.bodyDigest,p.revision,p.digest,p.policyDigest??null])).digest('hex');
 export class HostedQaReviewStore {
  private db:DatabaseSync;
@@ -19,12 +19,33 @@ export class HostedQaReviewStore {
   this.db=new DatabaseSync(file);
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS reviews(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,key TEXT NOT NULL,presentation TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation));
+   CREATE TABLE IF NOT EXISTS review_releases(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,intent TEXT NOT NULL,receipt TEXT,PRIMARY KEY(agent_id,job_id,generation));
    CREATE TABLE IF NOT EXISTS review_publications(id INTEGER PRIMARY KEY AUTOINCREMENT,agent_id TEXT NOT NULL,job_id TEXT NOT NULL,receipt TEXT NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,job_id));
    CREATE TABLE IF NOT EXISTS review_observations(agent_id TEXT NOT NULL,job_id TEXT NOT NULL,generation INTEGER NOT NULL,comment_id TEXT NOT NULL,checked_at TEXT NOT NULL,evidence TEXT NOT NULL,PRIMARY KEY(agent_id,job_id,generation,comment_id,checked_at));`);
  }
+ releaseIntent(expected:StoredReview,approval:Approval){
+  this.observe(expected,approval);
+  return this.transaction(()=>{
+   const current=this.current(expected.agentId,expected.jobId);
+   if(!current||current.generation!==expected.generation||current.key!==expected.key)throw new Error('Review changed before release');
+   const prior=this.releaseRecord(expected);
+   if(prior)return prior;
+   const intent={target:current.presentation.target,approval,reviewKey:current.key};
+   this.db.prepare('INSERT INTO review_releases(agent_id,job_id,generation,intent) VALUES(?,?,?,?)').run(expected.agentId,expected.jobId,expected.generation,json(intent));
+   return {intent,receipt:null};
+  });
+ }
+ releaseRecord(expected:StoredReview):{intent:any;receipt:any}|null {
+  const row=this.db.prepare('SELECT intent,receipt FROM review_releases WHERE agent_id=? AND job_id=? AND generation=?').get(expected.agentId,expected.jobId,expected.generation);
+  return row?{intent:JSON.parse(String(row.intent)),receipt:row.receipt?JSON.parse(String(row.receipt)):null}:null;
+ }
+ releaseObserved(expected:StoredReview,receipt:unknown){
+  if(!this.releaseRecord(expected))throw new Error('No release intent');
+  this.db.prepare('UPDATE review_releases SET receipt=? WHERE agent_id=? AND job_id=? AND generation=?').run(json(receipt),expected.agentId,expected.jobId,expected.generation);
+ }
  enqueuePublication(agentId:string,jobId:string,receipt:unknown){
   if(!/^[-\w]{1,128}$/.test(agentId)||!/^[-\w]{1,80}$/.test(jobId))throw new Error('Invalid publication identity');
-  const value=json(receipt);
+  const value=json(receipt,3*1024*1024);
   this.transaction(()=>{
    const prior=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);
    if(prior){if(prior.receipt!==value)throw new Error('Published job changed; explicit reconciliation required');return;}
@@ -32,6 +53,7 @@ export class HostedQaReviewStore {
    this.db.prepare('INSERT INTO review_publications(agent_id,job_id,receipt) VALUES(?,?,?)').run(agentId,jobId,value);
   });
  }
+ publication(agentId:string,jobId:string){const row=this.db.prepare('SELECT receipt FROM review_publications WHERE agent_id=? AND job_id=?').get(agentId,jobId);return row?JSON.parse(String(row.receipt)):null;}
  pendingPublications(limit=5){
   return this.db.prepare('SELECT * FROM review_publications ORDER BY last_attempt,id LIMIT ?').all(limit).map(r=>({id:Number(r.id),agentId:String(r.agent_id),jobId:String(r.job_id),receipt:JSON.parse(String(r.receipt))}));
  }
