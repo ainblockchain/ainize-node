@@ -182,4 +182,42 @@ node --test --import tsx \
 3. 제품별 검증·게시와 Ainmem lifecycle을 구현한 뒤, 실제 관리자 승인을 보존하는 릴리스 경로를 연결한다.
 4. 전 서비스의 실제 E2E와 serving SHA 확인 전까지 목표를 완료로 표시하지 않는다.
 
+## 9. 2026-10-10 진행 상태와 남은 일
+
+이 브랜치에서 자격증명 없이 안전하게 구현·검증 가능한 범위를 완료했다. 라이브 제품에
+대한 쓰기·릴리스는 아래 "남은 일"로 분리했다.
+
+### 완료 (브랜치 `hosted-qa-execution` 커밋)
+
+- `a2a3f8e` 운영 핸들러 `examples/qa-agent/index.mjs` — 정본 Teams 검증 intake(locator는 힌트) + `tick`→`advanceCoding`. base SHA 고정 요청 키로 중복 제거. 배포 명령은 intake 아님. (§5-2)
+- `e885db5` 검증 단계 `examples/qa-agent/validation.mjs` — `validateCandidate`가 게이트를 순서대로 실행하고 결과를 정확한 `candidateDigest`(repository+base+변경 파일)에 바인딩. `advanceValidation`은 lease 하에 한 단계 실행 후 `awaiting_approval`/`validation_failed`로 정차(게시·배포·승인 기록 없음). (§5-3 코어)
+- `f30c700` Ainspace 배포 대상 확정: `https://ainspace.ainetwork.ai/`, Vercel Git 연동(`ainetwork-ai/ainspace` `main`), 게이트 `yarn lint && yarn test && yarn build`, 배포=main 병합. (§7 열린 질문 해소)
+- `9b97c6e` 전체 스위트 재실행 기록 (720: 712 pass / 1 환경fail / 7 skip).
+- `a4522b9` 실제 E2E 통과 기록 — 아래.
+
+### 검증 완료 (실제 자격증명·실제 서비스, 프로덕션 무쓰기)
+
+- `npm run typecheck` / `npm run build` 통과. 네이티브 QA 타깃 테스트 전부 통과.
+- **live-read 통과**: 네이티브 Docker 핸들러가 실제 ainteams-qa 정본 Teams 메시지를 게이트웨이+실제 `TEAMS_TOKEN`으로 읽어 검증, 격리 SQLite enqueue, 재시작 후 중복방지, 위조 metadata 거부.
+- **live-coding 통과**: 실제 `Qwen3.8-Flash-Next`가 네이티브 툴로 후보 수정→체크포인트 재개→격리 Docker 산술 검증 통과.
+
+### 남은 일 (라이브 쓰기·릴리스 — 조율·사람 승인 필요)
+
+> **블로커**: 외부 Python QA 워커(`qa_agent.server`, 단일 프로세스가 `--config`/`--extra-config`로 6개 채널 전부)가 **현재 라이브로 가동 중**이다. 네이티브로 같은 라이브 Teams/GitHub/Ainmem에 쓰기(후보 PR·Ainmem·merge)를 하면 이중 처리·중복 쓰기·충돌 배포가 난다. 따라서 아래는 **조율된 전환 없이 실행하면 안 된다.**
+
+1. **운영 QA handler 조립 마감** (§5-2): `index.mjs`에 서비스별 신뢰 config 로딩·오류/재시도/terminal 상태·`needs_validation` 작업을 검증으로 깨우는 wake 정책을 연결. (현재 `index.mjs`는 intake+coding까지만 자동, 검증 wake는 host 정책으로 미연결 — 의도적 보류.)
+2. **제품별 실제 게이트 러너 + GitHub 게시** (§5-3): `validation.mjs`의 주입 러너를 각 제품의 격리·무자격증명 컨테이너 게이트(예: Ainspace=`yarn lint && yarn test && yarn build`)에 연결하고, 검증 통과 후보를 정확한 SHA 바인딩으로 브랜치/PR 게시하는 `publish` 모듈 작성. read 토큰과 릴리스 자격증명 분리, main 자동 변경 금지.
+3. **Ainmem 정본 작업 페이지 lifecycle** (§5-4): 요청별 한 페이지 재사용, 서비스 보드/통합 승인 보기, 상태·검증·PR·실패 사유 갱신, Teams 한 링크 보고, 외부 쓰기 중복방지.
+4. **승인·릴리스 경로** (§5-5): Ainmem 정본 페이지/Teams 스레드의 **지정 승인자**가 **정확한 reviewed SHA**에 남긴 실제 승인을(활성 SSO 조직·채널 소속·시각 대조) 검증한 뒤에만 main 병합→Vercel 자동 배포→serving SHA 확인. 채팅·이름·metadata·모델 발언은 승인이 아니다. 과거 SHA 승인 재사용 금지.
+5. **라이브 전환** (§5-6): 외부 Python 워커를 정지/퇴역하고 linked QA 6개 + 7개 profile을 native hosted로 이식. 기존 job/ID/페이지/승인 보존, 실행 중 작업 비중단. checkpoint 보존 정책 추가.
+6. **전 채널 실제 E2E** (§5-7): 각 서비스 단순 요청 하나가 요청→native 실행→검증→PR→Ainmem→실제 관리자 승인→배포→serving SHA 확인까지 통과. 그 뒤 외부 Python 런타임 퇴역.
+7. **운영 전제**: `.41`/노드 접근은 소유자의 `ain-vault ssh`(OTP는 사람이 입력), `acl`(setfacl/getfacl)을 운영 unit PATH에 정식 설치, 프로덕션 `AINIZE_HOSTED_SCHEDULED_AGENTS`는 완성·복구 검증 후에만(사용자 메시지로 켜지 않음) 활성화.
+
+### 안전하게 남은 일을 재개하는 두 경로
+
+- **A. 전용 테스트 채널**: 라이브와 분리된 workspace/channel ID와 테스트 저장소에서 요청→PR→Ainmem→(승인 시)배포 전 과정을 충돌 없이 실증.
+- **B. 유지보수 창**: 외부 워커를 정지하고 한 제품을 실제로 끝까지 처리·검증 후 나머지로 확장하며 워커를 퇴역.
+
+두 경우 모두 릴리스(merge)는 정본 경로의 지정 승인자 승인을 검증한 경우에만 수행한다.
+
 이 문서와 코드에는 비밀번호, OTP, 토큰, 비밀키가 포함되어서는 안 된다.
