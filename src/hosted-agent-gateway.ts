@@ -17,13 +17,21 @@
  *
  * It listens on loopback for in-process agents and on the Docker bridge gateway address for containers, never on
  * a public interface: a container on the internal network can reach this and nothing else.
+ *
+ * A second kind of token belongs to a RUN (`POST /api/run`, run-sandbox.ts): a script somebody pressed ▶ on. It
+ * has no spec and no model of its own; what it may reach is this node's `/api/decide`, `/api/chat` and `/v1/*`
+ * (forwarded to the node's own listener, so the free tier sees the run's caller) and, through a CONNECT proxy
+ * the sandbox announces as `HTTPS_PROXY`, TLS to the few public hosts the run was allowed — `ainize.ai` and the
+ * node's own public host — so a script that spells `https://ainize.ai/api/decide` works as written. Every other
+ * host, port or scheme is refused at the proxy; nothing else has a route.
  */
 import { hostedAgentAccess } from './hosted-agent-access.js';
 import { dirname } from 'node:path';
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
-import { BlockList, isIP, type AddressInfo, type LookupFunction } from 'node:net';
+import { BlockList, connect as netConnect, isIP, type AddressInfo, type LookupFunction, type Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import type { InferenceBackend, InferenceBackendRegistry } from './inference-backends.js';
 import type { ModalityGate } from './modality-gate.js';
@@ -46,6 +54,20 @@ const HOSTED_AGENT_LLM_TIMEOUT_MS = 120_000;
 const HOSTED_AGENT_MEDIA_TIMEOUT_MS = 180_000;
 /** Kept low: an agent turn waits on this, and the paid surface is where many steps are bought. */
 const HOSTED_AGENT_IMAGE_MAX_STEPS = 30;
+/** What a run may forward to this node: the two free doors and the keyed surface; nothing that manages state. */
+const RUN_FORWARDED_PATH = /^\/(?:api\/decide|api\/chat|v1(?:\/|$))/;
+/** A CONNECT tunnel that carried no bytes for this long is closed; a decision call waits in the gate well under it. */
+const RUN_TUNNEL_IDLE_MS = 180_000;
+const RUN_FORWARD_TIMEOUT_MS = 300_000;
+
+/** What one run (run-sandbox.ts) is allowed, named by its token for as long as its container lives. */
+export interface RunGrant {
+  id: string;
+  /** Hosts a CONNECT tunnel may be opened to, port 443 only. */
+  allowedHosts: string[];
+  /** This node's own listener, where `/api/decide`, `/api/chat` and `/v1/*` are forwarded. */
+  selfUrl: string;
+}
 
 /** Everything that is not the public internet. */
 const hostedAgentNonPublic = (() => {
@@ -224,6 +246,7 @@ const sendJson = (res: ServerResponse, status: number, body: unknown, extra: Rec
 
 export class HostedAgentGateway {
   private readonly tokens = new Map<string, string>();
+  private readonly runs = new Map<string, RunGrant>();
   private readonly servers: Server[] = [];
   private readonly urls = new Map<string, string>();
 
@@ -244,11 +267,23 @@ export class HostedAgentGateway {
     for (const [t, id] of this.tokens) if (id === agentId) this.tokens.delete(t);
   }
 
+  /** A token for one run; forgotten when its container is. Distinct from agent tokens: a run is not an agent. */
+  issueRun(grant: RunGrant): string {
+    const token = randomBytes(24).toString('hex');
+    this.runs.set(token, grant);
+    return token;
+  }
+
+  revokeRun(token: string): void {
+    this.runs.delete(token);
+  }
+
   /** Listen on one address (loopback, or a bridge gateway). Returns the base URL a runtime there should use. */
   async listen(host: string, listenPort = 0): Promise<string> {
     const known = this.urls.get(host);
     if (known) return known;
     const server = createServer((req, res) => { void this.handle(req, res); });
+    server.on('connect', (req, socket, head) => this.tunnel(req, socket, head));
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(listenPort, host, () => resolve()); });
     this.servers.push(server);
     const { port } = server.address() as AddressInfo;
@@ -280,6 +315,8 @@ export class HostedAgentGateway {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const m = /^\/t\/([0-9a-f]{48})(\/.*)$/.exec((req.url ?? '').split('?')[0] ?? '');
+    const run = m ? this.runs.get(m[1]!) : undefined;
+    if (run) return this.forwardRun(req, res, run, (req.url ?? '').slice(3 + 48));
     const agentId = m ? this.tokens.get(m[1]!) : undefined;
     const spec = agentId ? this.deps.spec(agentId) : null;
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
@@ -295,6 +332,78 @@ export class HostedAgentGateway {
       if (!res.headersSent) sendJson(res, 502, { error: { message: e instanceof Error ? e.message : String(e) } });
       else res.destroy();
     }
+  }
+
+  /**
+   * A run's call to this node, as itself: the body and the caller's own `authorization` go through unchanged to
+   * the node's listener, so `/api/decide` queues it in the free class and `/v1/*` wants the key it always wants.
+   * Only the three surfaces; `/api/hosted-agents`, `/api/keys` and the rest are not a script's to call.
+   */
+  private forwardRun(req: IncomingMessage, res: ServerResponse, run: RunGrant, pathAndQuery: string): void {
+    if (!RUN_FORWARDED_PATH.test(pathAndQuery)) {
+      this.deps.log(`run ${run.id} refused: ${req.method} ${pathAndQuery.split('?')[0]} is not a surface a run may call`);
+      return sendJson(res, 403, { error: { message: 'a run may call /api/decide, /api/chat and /v1/* on this node, nothing else', code: 'run_path_refused' } });
+    }
+    const headers: Record<string, string> = { 'x-ainize-run': run.id };
+    for (const name of ['content-type', 'content-length', 'accept', 'authorization', 'transfer-encoding']) {
+      const v = req.headers[name];
+      if (typeof v === 'string') headers[name] = v;
+    }
+    const target = new URL(pathAndQuery, run.selfUrl);
+    const upstream = httpRequest(target, { method: req.method, headers, timeout: RUN_FORWARD_TIMEOUT_MS }, (answer) => {
+      const h: Record<string, string> = {};
+      for (const [k, v] of Object.entries(answer.headers)) if (v !== undefined && !['connection', 'keep-alive'].includes(k)) h[k] = Array.isArray(v) ? v.join(', ') : v;
+      res.writeHead(answer.statusCode ?? 502, h);
+      answer.pipe(res);
+    });
+    upstream.on('timeout', () => upstream.destroy(new Error('this node did not answer in time')));
+    upstream.on('error', (e) => {
+      if (!res.headersSent) sendJson(res, 502, { error: { message: e.message } });
+      else res.destroy();
+    });
+    req.pipe(upstream);
+  }
+
+  /**
+   * `CONNECT host:443` from a run — the proxy a script's HTTP client uses for an `https://` URL it spelled itself.
+   * TLS stays end to end (the gateway never sees the request); what it decides is only WHERE: a host on the
+   * run's list, port 443, resolved to a public address by the same lookup egress uses. The run names itself in
+   * `Proxy-Authorization: Basic base64("run:" + token)`, which `urllib`, `requests` and curl all send for a
+   * proxy URL with credentials in it.
+   */
+  private tunnel(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const refuse = (status: number, why: string) => {
+      socket.end(`HTTP/1.1 ${status} ${why}\r\nProxy-Authenticate: Basic realm="ainize-run"\r\nConnection: close\r\n\r\n`);
+    };
+    const auth = String(req.headers['proxy-authorization'] ?? '');
+    const basic = /^Basic\s+([A-Za-z0-9+/=]+)$/.exec(auth);
+    const cred = basic ? Buffer.from(basic[1]!, 'base64').toString('utf8') : '';
+    const token = /^run:([0-9a-f]{48})$/.exec(cred)?.[1];
+    const run = token ? this.runs.get(token) : undefined;
+    if (!run) return refuse(407, 'Proxy Authentication Required');
+    const m = /^(\[[0-9a-fA-F:.]+\]|[^:]+):(\d{1,5})$/.exec(req.url ?? '');
+    const host = m?.[1]?.replace(/^\[|\]$/g, '') ?? '';
+    const port = Number(m?.[2] ?? 0);
+    if (!host || port !== 443 || isIP(host) || !hostedAgentHostAllowed(host, run.allowedHosts)) {
+      this.deps.log(`run ${run.id} tunnel refused: ${req.url} is not an allowed host on port 443`);
+      return refuse(403, 'Forbidden');
+    }
+    const upstream: Socket = netConnect({ host, port, lookup: hostedAgentPublicLookup });
+    let open = false;
+    upstream.setTimeout(RUN_TUNNEL_IDLE_MS, () => upstream.destroy(new Error('idle')));
+    upstream.once('connect', () => {
+      open = true;
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    upstream.on('error', (e) => {
+      this.deps.log(`run ${run.id} tunnel to ${host} ${open ? 'failed' : 'refused'}: ${e.message}`);
+      if (!open) refuse(502, 'Bad Gateway'); else socket.destroy();
+    });
+    socket.on('error', () => upstream.destroy());
+    socket.on('close', () => upstream.destroy());
   }
 
   /**
