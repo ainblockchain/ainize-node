@@ -1,0 +1,70 @@
+/** Durable Ainmem reporting. Model output and transport errors are never used as authority or logs. */
+import { createHash } from 'node:crypto';
+const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+const statuses = ['queued', 'coding', 'validating', 'waiting', 'completed', 'failed'];
+export function parseAinmemConfig(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('Ainmem configuration required');
+  const origin = new URL(raw.origin);
+  if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') throw new Error('Invalid Ainmem origin');
+  for (const field of ['databaseId', 'titlePropertyId', 'statusPropertyId']) if (!uuid(raw[field])) throw new Error('Invalid Ainmem board binding');
+  const statusOptions = Object.fromEntries(statuses.map(status => {
+    const option = raw.statusOptions?.[status];
+    if (typeof option !== 'string' || !option || option.length > 100) throw new Error('Missing Ainmem status option');
+    return [status, option];
+  }));
+  return { origin: origin.origin, databaseId: raw.databaseId, titlePropertyId: raw.titlePropertyId, statusPropertyId: raw.statusPropertyId, statusOptions };
+}
+const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function card(job, config) {
+  const stage = job.checkpoint.stage;
+  const state = job.state === 'failed' ? 'failed' : job.state === 'completed' ? 'completed'
+    : job.checkpoint.holdReason || job.state === 'waiting' ? 'waiting'
+    : stage === 'needs_validation' ? 'validating' : stage === 'coding' ? 'coding' : 'queued';
+  return { databaseId: config.databaseId, titlePropertyId: config.titlePropertyId, statusPropertyId: config.statusPropertyId,
+    statusOptionId: config.statusOptions[state], title: job.input.text.trim().slice(0, 200) || 'QA 수정 요청',
+    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n\n이 상태 표시는 배포 승인이 아닙니다.` };
+}
+export class AinmemReports {
+  constructor(jobs, config) {
+    this.jobs = jobs; this.config = parseAinmemConfig(config); this.binding = digest(this.config);
+    jobs.db.exec(`CREATE TABLE IF NOT EXISTS ainmem_reports (
+      job_id TEXT PRIMARY KEY, binding TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,
+      revision INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT -1, url TEXT
+    )`);
+  }
+  refresh(jobId) {
+    return this.jobs.transaction(() => {
+      // Re-read under the transaction: a late reporter must not publish an older job snapshot.
+      const job = this.jobs.get(jobId);
+      if (!job) throw new Error('Unknown report job');
+      const payload = card(job, this.config), hash = digest(payload);
+      const prior = this.jobs.db.prepare('SELECT * FROM ainmem_reports WHERE job_id=?').get(jobId);
+      if (prior && prior.binding !== this.binding) throw new Error('Ainmem board binding changed; reconcile existing page first');
+      if (!prior) this.jobs.db.prepare('INSERT INTO ainmem_reports(job_id,binding,digest,payload,revision) VALUES(?,?,?,?,0)').run(jobId,this.binding,hash,JSON.stringify(payload));
+      else if (prior.digest !== hash) this.jobs.db.prepare('UPDATE ainmem_reports SET digest=?,payload=?,revision=revision+1 WHERE job_id=?').run(hash,JSON.stringify(payload),jobId);
+      return this.jobs.db.prepare('SELECT url FROM ainmem_reports WHERE job_id=?').get(jobId)?.url;
+    });
+  }
+  async flush(ctx) {
+    const token = ctx.secret('AINMEM_TOKEN');
+    if (!token) throw new Error('Ainmem credential unavailable');
+    const pending = this.jobs.db.prepare('SELECT * FROM ainmem_reports WHERE delivered<revision ORDER BY revision,job_id LIMIT 5').all();
+    for (const row of pending) {
+      if (row.binding !== this.binding) throw new Error('Ainmem board binding changed');
+      let response;
+      try { response = await ctx.fetch(`${this.config.origin}/api/qa/tasks/${encodeURIComponent(row.job_id)}`, {
+        method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(10_000), maxBytes: 4096,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...JSON.parse(row.payload), revision: row.revision }),
+      }); } catch { throw new Error('Ainmem connection failed; report retained'); }
+      if (!response.ok) throw new Error('Ainmem update refused; report retained');
+      let result;
+      try { const text = await response.text(); if (Buffer.byteLength(text) > 4096) throw new Error(); result = JSON.parse(text); }
+      catch { throw new Error('Invalid Ainmem response'); }
+      if (!uuid(result.pageId) || !uuid(result.rowId) || result.path !== `/p/${result.pageId}` || result.revision !== row.revision) throw new Error('Invalid Ainmem receipt');
+      const url = `${this.config.origin}${result.path}`;
+      this.jobs.db.prepare('UPDATE ainmem_reports SET delivered=?,url=? WHERE job_id=? AND revision=? AND binding=?')
+        .run(row.revision,url,row.job_id,row.revision,this.binding);
+    }
+  }
+}

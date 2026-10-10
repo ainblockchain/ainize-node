@@ -133,3 +133,20 @@ test('re-delivery after a base change reuses the existing candidate and job ID',
   const second = await make('b'.repeat(40)).execute('', input);
   assert.equal(second.metadata.jobId, first.metadata.jobId);
 });
+
+test('configured Ainmem intake returns exactly one canonical item link', async t => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'qa-card-')); t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const id = '11111111-1111-4111-8111-111111111111';
+  const ainmem = { origin: 'https://ainmem.example', databaseId: id, titlePropertyId: id, statusPropertyId: id,
+    statusOptions: Object.fromEntries(['queued','coding','validating','waiting','completed','failed'].map(s => [s,s])) };
+  const handler = createHandler({ config: { ...CONFIG, ainmem }, stateDir, verifyIntake: async () => verified });
+  let writes = 0;
+  const ctx = { ...locatorInput({ teamsMessage: { messageId: 'm1' } }), secret: () => 'private',
+    fetch: async (_url, init) => { writes++; return new Response(JSON.stringify({ pageId: id, rowId: id, path: `/p/${id}`, revision: JSON.parse(init.body).revision })); } };
+  const first = await handler.execute('', ctx);
+  const again = await handler.execute('', ctx);
+  assert.equal(writes, 1);
+  assert.equal(first.text, again.text);
+  assert.equal((first.text.match(/https:\/\//g) ?? []).length, 1);
+  assert.match(first.text, /칸반 작업 열기/);
+});

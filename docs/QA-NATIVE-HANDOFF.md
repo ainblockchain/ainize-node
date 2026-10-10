@@ -278,3 +278,19 @@ parent/message identity를 SQLite transaction 안에서 대조한다. 기존 bas
 운영 전환 시 이 충돌은 별도 대조가 필요하다. 회귀 테스트는 base 변경 후 재수신,
 기존 key/승인/card 보존, 수정된 원문 거부, 과거 중복 작업 거부를 포함한다.
 로컬 QA 테스트 34개 통과(실패/skip 0). 운영 writer 전환은 아직 수행하지 않았다.
+
+### 2026-10-10 추가 진행: Ainmem API와 native 보고 연결
+
+- Ainmem 별도 작업트리 `/Users/kmh4500/git/ainmem-native-qa`, branch `native-qa-task-api`.
+  API 구현 `c669e42`, PostgreSQL/HTTP 통합 테스트 `006ff95`.
+- 새 Ainmem `PUT /api/qa/tasks/:jobId`: agent token, workspace membership, board/host edit
+  permission 확인. 동일 ID/revision 재시도 허용, stale/conflicting revision 거부. 페이지/행/관리
+  paragraph를 transaction으로 갱신하고 사람의 다른 블록과 댓글을 보존한다.
+- Ainize `ainmem.mjs`: 지속 outbox, HTTP 응답 유실/재시작 재시도, revision 결합,
+  canonical URL 검증, board binding 변경 거부. 선택적 `ainmem` 설정을 handler에 연결했다.
+  요청 접수 응답은 성공 시 작업 링크 1개. tick은 대기 보고 재시도와 상태 갱신을 수행한다.
+- 검증: Ainmem 실제 PostgreSQL 16 + HTTP route 테스트 5개 통과; Ainize QA 테스트
+  37개 통과 및 typecheck 통과. Ainmem 화면/전체 Next 런타임 E2E 증거는 아직 없다.
+- 미완료: legacy canonical 페이지 채택, 초기 보고 실패 후 Teams 링크 후속 알림,
+  영구 실패 보고가 다른 보고의 재시도를 막지 않는 정책, 제품 검증/PR/승인/배포 전체 흐름.
+  두 구현 모두 운영 채널에 활성화하거나 배포하지 않았다. old/new writer 동시 활성화 금지.

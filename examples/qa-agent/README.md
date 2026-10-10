@@ -127,3 +127,21 @@ waking does not approve release. Jobs with changed repository/base configuration
 base-dependent keys. It keeps that job's original base, candidate, approvals and page references.
 Changed canonical text/repository or multiple historical matches require explicit reconciliation;
 intake never silently replaces a candidate. New message identities use a bounded SHA-256 key.
+
+## Native Ainmem reporting
+
+Optional `ainmem` config contains `origin` (HTTPS), `databaseId`, `titlePropertyId`,
+`statusPropertyId`, and `statusOptions` mapping queued/coding/validating/waiting/completed/failed
+onto existing board option IDs. The gateway must allow this origin. Store `AINMEM_TOKEN` as a
+private hosted secret for a workspace agent with edit permission on that board.
+
+`AinmemReports` keeps a SQLite report outbox alongside jobs. Reports have monotonic revisions;
+failed requests survive restart, and retries send the same revision/body. Acknowledgements must
+match the revision and canonical page path. Board changes are refused until reconciled. Intake
+returns one task link after a successful write. Tick retries pending reports and updates the
+canonical card after coding or a hold; reporting failure does not fail the coding step.
+
+Requires Ainmem branch `native-qa-task-api`. Do not enable for existing production jobs yet:
+legacy page adoption is not implemented. Initial report failure currently returns a text receipt;
+a later successful tick updates the page but does not yet send a Teams follow-up with its link.
+No PR publication, release approval or deployment authority is granted by this reporting path.

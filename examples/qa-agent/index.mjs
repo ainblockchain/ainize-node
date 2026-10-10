@@ -18,6 +18,7 @@ import { Jobs } from './jobs.mjs';
 import { Checkpoints } from './checkpoints.mjs';
 import { GitHubSnapshot } from './repository.mjs';
 import { advanceCoding } from './advance.mjs';
+import { AinmemReports, parseAinmemConfig } from './ainmem.mjs';
 
 const idPattern = /^[a-zA-Z0-9-]{1,80}$/;
 const slug = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
@@ -39,7 +40,7 @@ export function parseConfig(raw) {
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -70,6 +71,16 @@ export function createHandler({
     }, locator);
   });
 
+  async function report(jobs, ctx, jobId) {
+    if (!config.ainmem) return null;
+    try {
+      const reports = new AinmemReports(jobs, config.ainmem);
+      if (jobId) reports.refresh(jobId);
+      await reports.flush(ctx);
+      return jobId ? reports.refresh(jobId) : null;
+    } catch { ctx?.log?.('qa Ainmem report pending'); return null; }
+  }
+
   async function execute(_input, ctx) {
     const locator = ctx?.input?.metadata?.teamsMessage;
     // No trustworthy pointer to a canonical message: cannot verify, so do not enqueue.
@@ -95,8 +106,9 @@ export function createHandler({
         text: verified.text,
         teams: { workspaceId: verified.workspaceId, channelId: verified.channelId, messageId: verified.messageId, parentId: verified.parentId },
       });
+      const pageUrl = await report(jobs, ctx, job.id);
       return {
-        text: `수정 요청을 접수했습니다. 작업 ${job.id} (${job.state}). 검증과 배포 승인은 별도 단계로 진행됩니다.`,
+        text: pageUrl ? `[칸반 작업 열기](${pageUrl})\n\n진행 상태와 결과는 이 작업 페이지에서 확인할 수 있습니다.` : `수정 요청을 접수했습니다. 작업 ${job.id} (${job.state}). 검증과 배포 승인은 별도 단계로 진행됩니다.`,
         metadata: { jobId: job.id, state: job.state, service: config.service },
       };
     } catch (error) {
@@ -111,6 +123,7 @@ export function createHandler({
     const jobs = new JobsClass(jobsFile);
     let claim;
     try {
+      await report(jobs, ctx);
       claim = jobs.claim(60_000);
       if (!claim) return; // Nothing queued; a running job holds its own lease.
       const job = claim.job;
@@ -123,6 +136,7 @@ export function createHandler({
       const snapshot = newSnapshot(ctx, job.input.repository, job.input.base);
       const checkpoints = new CheckpointsClass(checkpointsDir);
       const { job: updated } = await advance({ jobs, claim, checkpoints, snapshot, ctx });
+      await report(jobs, ctx, updated.id);
       ctx?.log?.('qa tick advanced', updated.id, updated.state, updated.checkpoint?.stage);
     } catch (error) {
       // Bound retries while preserving the last durable candidate. Never overwrite a newer lease.
@@ -137,6 +151,7 @@ export function createHandler({
       }
       ctx?.log?.('qa tick step failed', error?.message);
     } finally {
+      if (claim) await report(jobs, ctx, claim.job.id);
       jobs.close();
     }
   }
