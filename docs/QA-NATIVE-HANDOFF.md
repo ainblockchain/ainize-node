@@ -427,3 +427,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - Ainmem API의 `observedAt`은 댓글과 같은 PostgreSQL 시계에서 읽도록 별도 Ainmem 브랜치를 보완했다. 승인 코어는 새 관측을 요구하며 오래된 스냅샷을 거부한다.
 - QA 타깃 테스트 62개 통과, 타입 검사/빌드 통과. 승인 코어 테스트는 권한 취소·후보 변경·옛 댓글·본문 변경·정본 경계/redirect를 포함한다.
 - **운영 승인 연결은 아직 미완료**: 코어에 전달할 호스트의 검토 기준을 durable하게 저장하고, 실제 Teams SSO subject/조직/채널 멤버십을 조회하는 어댑터를 연결해야 한다. 현재 코어는 승인 증거만 반환하고 merge 도구를 제공하지 않는다. 실제 사용자 승인 댓글을 소비하거나 배포하지 않았다. 단위 테스트의 관리자 ID는 운영 권한 설정이 아니다.
+
+### 2026-10-10 실제 Teams 승인자 멤버십 조회
+
+- `src/hosted-qa-teams-review.ts`는 기존 운영 설정의 검증된 `issuer + newline + subject → Teams user ID` 매핑을 사용한다. 이름으로 매핑하지 않으며 누락/중복 매핑을 거부한다. 각 조회마다 `list_channels`로 workspace/channel 관계를 확인하고 `list_channel_members`로 현재 사람 멤버만 남긴다.
+- 여기서 반환하는 org/issuer는 운영 매핑의 범위다. 실제 SSO 계정/조직 활성 상태는 Ainmem 정본 API에서 별도로 검증한다. Teams에 없는 SSO 사용자나 SSO에서 비활성인 Teams 사용자는 양쪽 검증을 모두 통과할 수 없다.
+- 실제 .41에서 운영 agent 토큰을 비공개로 읽어 네이티브 TeamsMcp와 새 어댑터를 실행했다. 7개 서비스 모두 조회 성공: Teams/Ainmem/Aindrive/Ainize 웹/Ainize API는 설정된 승인자 4명 중 현재 사람 채널 멤버 2명, AINA/Ainspace는 5명 중 3명이다. 현재 채널을 떠난 승인자는 제외했다. 재가입/설정 변경/메시지 게시/승인은 하지 않았다.
+- 증거: `/mnt/newdata/qa-services/validation/native-review-members-20261010-cjpgqw/result.json` 및 `run.mjs`. 로그에는 토큰·SSO subject·사용자 ID를 출력하지 않았다.
+- 관련 QA 테스트 64개 통과, 빌드 통과. 운영 호스트의 durable 검토 기준 저장 및 승인/merge 루프 연결은 아직 남아 있다. 이 조회는 실제 사용자 승인을 받은 것이 아니다.
