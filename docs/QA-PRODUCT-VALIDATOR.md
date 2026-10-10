@@ -143,3 +143,30 @@ synchronization and deployment approval remain required. The dependency image is
 Further image layout observation: Ainize web's package is directly at `/seed` (not `/seed/0`), but
 that seed also lacks its executable dependency links. This refines the prior inspection; it is not
 an absent package. A native-ready dependency image is still needed for that product.
+
+## AINA actual two-package profile (2026-10-10)
+
+Prepared a native validation image for current observed AINA main
+`7dd1029d329b0c4b476b3b10a5ac1cfd84119459`. The packages are `web` and `backend`.
+Both use their committed npm lockfiles. Image preparation includes `web/.npmrc`
+(`legacy-peer-deps=true`) and backend's committed vendor packages. Omitting the npm
+configuration caused an initial clean-install failure; including it resolved that failure
+without changing product source or lockfiles.
+
+- Image: `sha256:79f144599af9ca75d25258c259f1d2634fba5b9092a3b7d6c5149804becbbf14`.
+- Scopes: `web` → `/seed/native_aina/web`, `backend` → `/seed/native_aina/backend`.
+- Four gates passed: web `npm test`, web `npm run build`, backend
+  `npm test -- --runInBand`, backend `npm run build`.
+- Native runner uses 8 GiB memory, ten-minute per-gate timeout, no network,
+  non-root execution, and fresh source/dependency copies for each gate.
+- Evidence: `/mnt/newdata/qa-services/validation/native-aina-product-20261010-UHv7iD`.
+  Retained `profile.json`, `result.json`, `run.mjs`, `validator.mjs`, `image-id`,
+  Git bundle/checkout, Dockerfile and image-preparation logs.
+- Candidate digest: `2d3062949418144800584381a1047f72833f672261386cdea9b89b09842d2413`.
+
+The unchanged `web/package.json` is the candidate overlay. This checks the existing
+main tree and actual native execution environment; it is not an agent-authored fix,
+a live browser/SSO test, or a channel-to-release E2E. Successful gate receipts do not
+retain test output, so no assertion is made about individual test counts or skips.
+No production profile, job, approval, main branch or deployment was changed.
+The prepared image is retained; temporary validation containers are removed by the runner.

@@ -548,3 +548,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - native validator에서 app typecheck, MCP typecheck/build, QA contract test, app production build의 다섯 gate가 모두 통과했다. 실행은 네트워크/배포 자격증명 없이 격리된 컨테이너에서 수행했다.
 - 증거: `/mnt/newdata/qa-services/validation/native-ainmem-product-20261010-9EPoSz/profile.json`, `result.json`, `run.mjs`, `image-id`. 검증용 Git checkout/이미지는 재사용할 수 있게 보존했다. 운영 설정에 설치하거나 배포하지 않았다.
 - unchanged file overlay로 현재 PR tree를 검증한 결과다. 새로운 제품 버그의 모델 수정·실제 관리자 승인·배포 E2E를 대신하지 않는다. 전체 DB/UI 회귀를 이 다섯 gate만으로 판정하지 않는다. Ainmem 배포 승인 질문은 아직 답변 대기다.
+
+### 2026-10-10 AINA 실제 네이티브 제품 검증
+
+- 서버 연결을 확인하고 현재 QA 코드와 인수인계 기록을 대조했다. QA 타깃 101개(실패/skip 0)와 Ainize 빌드를 다시 통과했다.
+- AINA main `7dd1029`의 web/backend 의존성 이미지를 준비하고 실제 네이티브 검증기로 웹 테스트·빌드 및 백엔드 테스트·빌드 네 gate를 모두 통과했다. 서버 증거는 `native-aina-product-20261010-UHv7iD`, 이미지와 상세 범위는 `QA-PRODUCT-VALIDATOR.md`에 기록했다.
+- 최초 의존성 설치 실패는 이미지 준비 시 web/.npmrc 누락 때문이었다. 저장소 설정을 포함하자 통과했으며 제품 코드/lockfile은 수정하지 않았다.
+- 검토 시 확인한 잔여 과제: handler/host profile의 정적 base를 요청별 최신 main과 안전하게 동기화하는 경로, 기존 작업·승인 보존 이관 및 단일 실행자 전환, 실제 전 제품 채널→승인→배포 E2E. 이번 제품 gate 통과만으로 운영 준비 완료로 판단하지 않는다.
+- Ainmem PR76 승인 질문은 여전히 답변 대기이며 새 병합/배포는 실행하지 않았다. 검증용 이미지/checkout은 보존하고 임시 gate 컨테이너는 자동 정리했다.
