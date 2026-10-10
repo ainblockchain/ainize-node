@@ -42,7 +42,12 @@ export class HostedQaPublisher {
   const api=`/repos/${profile.repository}`, branch=`ainize-qa/${key}`, github=this.github;
   const head=await github('GET',`${api}/git/ref/heads/${encodeURIComponent(profile.branch)}`);
   if(!sha(head?.object?.sha))throw new Error('Incomplete publication base observation');
-  if(head.object.sha!==candidate.base)throw new QaPublicationBaseChanged(head.object.sha);
+  const refPath=`${api}/git/ref/heads/${encodeURIComponent(branch)}`;
+  const query=`${api}/pulls?state=all&head=${encodeURIComponent(profile.repository.split('/')[0]+':'+branch)}&base=${encodeURIComponent(profile.branch)}&per_page=100`;
+  const recovering=head.object.sha!==candidate.base;
+  const recoveryRef=recovering?await github('GET',refPath):null;
+  if(recovering&&!recoveryRef)throw new QaPublicationBaseChanged(head.object.sha);
+  if(recovering&&!sha(recoveryRef?.object?.sha))throw new Error('Incomplete prior candidate reference');
   const base=await github('GET',`${api}/git/commits/${candidate.base}`);
   if(base?.sha!==candidate.base||!sha(base.tree?.sha)||typeof base.committer?.date!=='string'||!Number.isFinite(Date.parse(base.committer.date)))throw new Error('Invalid base commit');
   const source=await github('GET',`${api}/git/trees/${base.tree.sha}?recursive=1`);
@@ -57,16 +62,34 @@ export class HostedQaPublisher {
    const mode=expected.get(path)?.mode??'100644';expected.set(path,{path,mode,type:'blob',sha:blob(content)});
    return {path,mode,type:'blob',content};
   });
+  const verifyTree=(actual:any)=>{
+   const entries=Array.isArray(actual?.tree)?actual.tree.filter((e:any)=>e.type!=='tree'):null;
+   if(actual?.truncated!==false||!Array.isArray(entries)||entries.length!==expected.size||new Set(entries.map((e:any)=>e.path)).size!==expected.size||entries.some((e:any)=>{const want=expected.get(e.path);return !want||want.sha!==e.sha||want.mode!==e.mode||want.type!==e.type;}))throw new Error('Published tree differs from validated candidate');
+  };
+  const verifyPr=(pr:any,commitSha:string)=>{
+   if(pr?.state!=='open'||pr.head?.sha!==commitSha||pr.head?.ref!==branch||pr.head?.repo?.full_name!==profile.repository||pr.base?.ref!==profile.branch||pr.base?.repo?.full_name!==profile.repository||!Number.isSafeInteger(pr.number)||pr.number<1)throw new Error('Candidate PR binding changed');
+  };
+  if(recovering){
+   // Reconcile an interrupted publication with GETs only. Its old base never authorizes another write.
+   const prior=await github('GET',`${api}/git/commits/${recoveryRef.object.sha}`);
+   if(prior?.sha!==recoveryRef.object.sha||prior.parents?.length!==1||prior.parents[0]?.sha!==candidate.base||!sha(prior.tree?.sha)||prior.message!==`QA candidate ${key}\n\nCandidate-Digest: ${digest}`)throw new Error('Prior candidate commit binding changed');
+   verifyTree(await github('GET',`${api}/git/trees/${prior.tree.sha}?recursive=1`));
+   const prs=await github('GET',query);
+   if(!Array.isArray(prs)||prs.length>1)throw new Error('Ambiguous prior candidate PR');
+   if(prs.length)verifyPr(prs[0],prior.sha);
+   const current=await github('GET',refPath);
+   if(current?.object?.sha!==prior.sha)throw new Error('Prior candidate reference changed during recovery');
+   // The branch may have moved again. Preserve the first observed invalidation; never restore approval.
+   throw new QaPublicationBaseChanged(head.object.sha,prs.length?{sha:prior.sha,number:prs[0].number,url:`https://github.com/${profile.repository}/pull/${prs[0].number}`}:undefined);
+  }
   const tree=await github('POST',`${api}/git/trees`,{base_tree:base.tree.sha,tree:changes});
   if(!sha(tree?.sha))throw new Error('Invalid created tree');
   const actual=await github('GET',`${api}/git/trees/${tree.sha}?recursive=1`);
-  const entries=actual?.tree?.filter((e:any)=>e.type!=='tree');
-  if(actual?.truncated!==false||!Array.isArray(entries)||entries.length!==expected.size||new Set(entries.map((e:any)=>e.path)).size!==expected.size||entries.some((e:any)=>{const want=expected.get(e.path);return !want||want.sha!==e.sha||want.mode!==e.mode||want.type!==e.type;}))throw new Error('Published tree differs from validated candidate');
+  verifyTree(actual);
   // Fixed metadata makes repeated commit creation content-addressed, including after a lost response.
   const identity={name:'Ainize QA',email:'qa@ainize.ai',date:base.committer.date};
   const commit=await github('POST',`${api}/git/commits`,{message:`QA candidate ${key}\n\nCandidate-Digest: ${digest}`,tree:tree.sha,parents:[candidate.base],author:identity,committer:identity});
   if(!sha(commit?.sha)||commit.tree?.sha!==tree.sha||commit.parents?.length!==1||commit.parents[0].sha!==candidate.base)throw new Error('Invalid candidate commit');
-  const refPath=`${api}/git/ref/heads/${encodeURIComponent(branch)}`;
   let ref=await github('GET',refPath);
   if(!ref){
    try{await github('POST',`${api}/git/refs`,{ref:`refs/heads/${branch}`,sha:commit.sha});}
@@ -74,7 +97,6 @@ export class HostedQaPublisher {
    ref=await github('GET',refPath);
   }
   if(ref?.object?.sha!==commit.sha)throw new Error('Candidate branch was changed; refusing overwrite');
-  const query=`${api}/pulls?state=all&head=${encodeURIComponent(profile.repository.split('/')[0]+':'+branch)}&base=${encodeURIComponent(profile.branch)}&per_page=100`;
   let prs=await github('GET',query);
   if(!Array.isArray(prs))throw new Error('Invalid PR listing');
   if(prs.length===0){
@@ -84,7 +106,7 @@ export class HostedQaPublisher {
   }
   if(prs.length!==1)throw new Error('Ambiguous candidate PR');
   const pr=prs[0];
-  if(pr.state!=='open'||pr.head?.sha!==commit.sha||pr.head?.ref!==branch||pr.head?.repo?.full_name!==profile.repository||pr.base?.ref!==profile.branch||pr.base?.repo?.full_name!==profile.repository||!Number.isSafeInteger(pr.number)||pr.number<1)throw new Error('Candidate PR binding changed');
+  verifyPr(pr,commit.sha);
   const currentBase=await github('GET',`${api}/git/ref/heads/${encodeURIComponent(profile.branch)}`);
   const currentHead=await github('GET',refPath);
   if(currentHead?.object?.sha!==commit.sha||!sha(currentBase?.object?.sha))throw new Error('Publication changed during reconciliation; revalidation required');

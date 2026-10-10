@@ -6,15 +6,16 @@ const base='a'.repeat(40),baseTree='b'.repeat(40),newTree='c'.repeat(40);
 const candidate={repository:'test/product',base,changes:{'run.sh':'echo fixed\n','new.txt':'한글'}};
 const hash=(s:string)=>createHash('sha1').update(s).digest('hex');
 function remote(){
- const state={refs:new Map<string,string>(),prs:[] as any[],writes:[] as any[],lostRef:false,lostPr:false,corrupt:false,stale:false,advanceAfterPr:false,commit:''};
+ const state={refs:new Map<string,string>(),prs:[] as any[],writes:[] as any[],lostRef:false,lostPr:false,corrupt:false,stale:false,advanceAfterPr:false,commit:'',commitRecord:null as any,changeDuringRecovery:false};
  let entries:any[]=[];
  const github:QaGitHub=async(method,path,body:any)=>{
   if(method==='POST')state.writes.push({path,body});
   if(path.includes('/git/ref/heads/')){const branch=decodeURIComponent(path.split('/heads/')[1]);return branch==='main'?{object:{sha:state.stale?'d'.repeat(40):base}}:state.refs.has(branch)?{object:{sha:state.refs.get(branch)}}:null;}
+  if(state.commit&&path.endsWith('/git/commits/'+state.commit)&&method==='GET'){if(state.changeDuringRecovery)for(const key of state.refs.keys())state.refs.set(key,'f'.repeat(40));return state.commitRecord;}
   if(path.endsWith('/git/commits/'+base))return {sha:base,tree:{sha:baseTree},committer:{date:'2026-10-10T00:00:00Z'}};
   if(path.includes('/git/trees/')&&method==='GET')return {truncated:false,tree:path.includes(baseTree)?[{path:'run.sh',mode:'100755',type:'blob',sha:'e'.repeat(40)}]:state.corrupt?[]:entries};
   if(path.endsWith('/git/trees')){entries=body.tree.map((e:any)=>({path:e.path,mode:e.mode,type:e.type,sha:hash(`blob ${Buffer.byteLength(e.content)}\0${e.content}`)}));return {sha:newTree};}
-  if(path.endsWith('/git/commits')){state.commit=hash(JSON.stringify(body));return {sha:state.commit,tree:{sha:body.tree},parents:body.parents.map((sha:string)=>({sha}))};}
+  if(path.endsWith('/git/commits')){state.commit=hash(JSON.stringify(body));state.commitRecord={sha:state.commit,message:body.message,tree:{sha:body.tree},parents:body.parents.map((sha:string)=>({sha}))};return state.commitRecord;}
   if(path.endsWith('/git/refs')){state.refs.set(body.ref.slice(11),body.sha);if(state.lostRef){state.lostRef=false;throw Error('lost ref response');}return {};}
   if(path.includes('/pulls?'))return state.prs;
   if(path.endsWith('/pulls')){assert.equal(body.draft,true);state.prs.push({number:7,state:'open',head:{sha:state.commit,ref:body.head,repo:{full_name:'test/product'}},base:{ref:body.base,repo:{full_name:'test/product'}}});if(state.advanceAfterPr)state.stale=true;if(state.lostPr){state.lostPr=false;throw Error('lost PR response');}return state.prs[0];}
@@ -60,4 +61,28 @@ test('publication distinguishes a changed base from incomplete reads and preserv
  assert.equal(late.state.prs.length,1);
  const incomplete=new HostedQaPublisher({agent:{repository:'test/product',branch:'main'}},{requirePassed:()=>({} as any)},async()=>null);
  await assert.rejects(incomplete.publish('agent','job',candidate),error=>!(error instanceof QaPublicationBaseChanged)&&/Incomplete/.test(String(error)));
+});
+
+
+test('restart recovers a PR after main moved without new writes or cached approval',async()=>{
+ const f=remote();f.state.advanceAfterPr=true;
+ await assert.rejects(f.publisher().publish('agent','job',candidate),QaPublicationBaseChanged);
+ const writes=f.state.writes.length,sha=f.state.commit;
+ await assert.rejects(f.publisher().publish('agent','job',candidate),error=>error instanceof QaPublicationBaseChanged&&error.artifact?.sha===sha&&error.artifact?.number===7);
+ assert.equal(f.state.writes.length,writes);assert.equal(f.state.prs.length,1);
+});
+
+test('recovery refuses changed commit contents, ancestry, PR bindings and concurrent ref changes',async()=>{
+ for(const mutate of [
+  (s:any)=>{s.corrupt=true;},
+  (s:any)=>{s.commitRecord.parents=[{sha:'f'.repeat(40)}];},
+  (s:any)=>{s.commitRecord.message='unrelated';},
+  (s:any)=>{s.prs[0].head.repo.full_name='other/product';},
+  (s:any)=>{s.prs.push({...s.prs[0],number:8});},
+  (s:any)=>{s.changeDuringRecovery=true;},
+ ]){
+  const f=remote();await f.publisher().publish('agent','job',candidate);f.state.stale=true;mutate(f.state);const writes=f.state.writes.length;
+  await assert.rejects(f.publisher().publish('agent','job',candidate),error=>error instanceof Error&&!(error instanceof QaPublicationBaseChanged));
+  assert.equal(f.state.writes.length,writes);
+ }
 });
