@@ -61,3 +61,29 @@ operator-only configuration, deduplication, receipt persistence, polling and pub
 transition. Actual Docker product execution was tested separately on .41. The complete hosted
 Docker → gateway → product runner chain still needs an integration run before production enablement.
 No production profile configuration has been installed in this work.
+
+## Actual hosted Docker integration (2026-10-10)
+
+`e2e/hosted-qa-product-validation.test.ts` passed on Ainize .41, 1 test / 0 failures / 0 skips,
+about 19 seconds. It uses an isolated agent store, the separate internal `ainize-cicd-integration`
+network, and a private Unix gateway socket. The actual hosted handler enqueues once, automatic host
+ticks invoke `ctx.qa.validate`, the host executes Ainspace's real lint gate in a second isolated
+container, and the job reaches `needs_publication`. The agent is restarted during the operation;
+job ID is preserved and host validator execution count is exactly one. No model is called in this
+diagnostic: it validates the existing PR tree, not a newly generated product fix.
+
+The first attempt hit the normal A2A rate limit because its observer polled A2A every second. The
+final test sends a single intake call and then reads durable job state without generating more
+user requests. Both test containers/agent images were removed after the test; production network,
+registered agents, channels, pages, and release settings were not changed.
+
+Evidence: `/mnt/newdata/qa-services/validation/native-gateway-20261010-ZhEcNt/integration-retry.log`.
+Profile: existing Ainspace PR #198, immutable dependency image, lint-only for this combined path.
+The previous standalone runner separately passed lint/test/build at the same PR tree. Full real
+channel → model edit → all product checks → PR → page → real approval → deployment remains pending.
+
+To reproduce on a prepared host: build this repository; run the opt-in test with
+`AINIZE_QA_VALIDATION_PROFILE` pointing at an operator profile and `AINIZE_CI_DOCKER_NETWORK` naming
+an unused internal test network. It intentionally refuses the production network name. The profile
+must include an available checkout/commit and pinned dependency image. Runtime state/socket access
+requires the host ACL utilities used by other hosted agent Docker tests.

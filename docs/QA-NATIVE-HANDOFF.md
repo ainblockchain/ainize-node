@@ -372,3 +372,17 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 제한: host crash 시 orphan validation container 정리, 일시적 infrastructure 실패 receipt의
   재시도 정책, profile 변경/정리 정책을 운영 전환 전에 점검해야 한다. 기존 단계 이력·승인
   재검증과 PR 게시/배포/전 채널 화면 E2E도 여전히 남아 있다.
+
+### 2026-10-10 후속: 실제 hosted Docker 검증 연결 통과
+
+- `.41`에서 실제 hosted runtime → Unix gateway → host validation service → 제품 검증
+  container → durable job 상태 전환 시험 통과. 1 test, 0 fail, 0 skip, 약 19초.
+- A2A intake 1회 후 host scheduler가 자동 진행. 에이전트 재시작에도 job ID 유지,
+  validator 실행 1회, 최종 needs_publication. 이 진단은 기존 Ainspace 후보의 lint를
+  실행했으며 새 모델 코드 수정/실제 채널 요청/PR 생성/운영 배포를 포함하지 않는다.
+- 첫 시도 observer가 초당 A2A 호출로 rate limit에 걸려 실패했다. observer를 durable
+  SQLite read로 수정한 뒤 전체 시험 통과. 실제 작업 요청은 추가로 보내지 않는다.
+- 증거: `/mnt/newdata/qa-services/validation/native-gateway-20261010-ZhEcNt/integration-retry.log`.
+  임시 agent/validator container와 agent image가 남아 있지 않음을 Docker로 확인했다.
+- 다음 주요 미완료: PR 게시 단계 및 검토 SHA 결합, 실제 관리자 승인 재검증/배포,
+  Ainmem 페이지 UI와 전체 채널별 신규 요청 E2E. 운영 schedule/profile은 아직 미활성화.
