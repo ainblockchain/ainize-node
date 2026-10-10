@@ -21,6 +21,8 @@ import { hostedAgentRoutes } from './hosted-agent-routes.js';
 import { AgentGit } from './agent-git.js';
 import { AgentGitHttp } from './agent-git-http.js';
 import { agentGitRoutes } from './agent-git-routes.js';
+import { DeploymentLogs, ProjectStore, ProjectWorker, runScriptOverHttp, PROJECT_SECRET_DEPLOY_TOKEN } from './projects.js';
+import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
 import { AgentMirrorStore } from './agent-mirror.js';
@@ -604,6 +606,29 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       return own + peers;
     },
   }));
+  // Projects bound to aindrive git repositories (projects.ts, docs/PROJECTS.md): no repository lives here; a push
+  // there calls the hook here, and the worker clones that commit and runs it through this node's /api/run.
+  const projectStore = new ProjectStore(join(cfg.dataDir, 'projects.json'));
+  const projectSecrets = new HostedAgentSecretStore(join(cfg.dataDir, 'project-secrets.json'), join(hostedHome, 'hosted-agent-secrets.key'));
+  const projectLogs = new DeploymentLogs(join(cfg.dataDir, 'projects', 'logs'));
+  const projectWorker = new ProjectWorker({
+    store: projectStore,
+    logs: projectLogs,
+    run: runScriptOverHttp(() => `http://127.0.0.1:${cfg.port}`),
+    deployToken: (id) => projectSecrets.reveal(id, [PROJECT_SECRET_DEPLOY_TOKEN])[PROJECT_SECRET_DEPLOY_TOKEN] ?? null,
+    publicUrl: () => market.publicUrl ?? selfUrl,
+    log: (level, message) => market.log(level, 'projects', message),
+  });
+  app.use(projectRoutes({
+    store: projectStore,
+    secrets: projectSecrets,
+    logs: projectLogs,
+    worker: projectWorker,
+    caller: agentCaller,
+    publicBase: (req) => market.publicUrl ?? `${req.protocol}://${req.get('host') ?? ''}`,
+    log: (level, message) => market.log(level, 'projects', message),
+  }));
+  projectWorker.recover();
   app.use(hostedAgentRoutes({
     store: hostedStore,
     secrets: hostedSecrets,

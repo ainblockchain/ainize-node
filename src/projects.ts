@@ -1,0 +1,511 @@
+/**
+ * Projects — an ainize deployment bound to a git repository that lives in an aindrive drive.
+ *
+ * "ainize git = aindrive git": this node keeps NO repositories of its own for projects. A project names a repo by
+ * its aindrive URL (`https://aindrive.ainetwork.ai/<org>/git/<repo>`, or `/api/drives/<driveId>/git/<path>`), a
+ * branch and a kind; aindrive calls `POST /api/projects/:id/hook` after a successful `git-receive-pack`, and the
+ * worker here clones THAT commit, runs it (`kind: 'script'` → the `/api/run` sandbox) and keeps the output as a
+ * Deployment. The owner is the signed-in account (AIN SSO or wallet session) that created the project.
+ *
+ * Persistence is the hosted-agent bargain (hosted-agent-store.ts): one JSON file, written atomically, a few
+ * hundred records. Secrets (the webhook secret aindrive signs with, the deploy token the clone presents) live in
+ * the encrypted secret store, never in this file. Logs are plain files under `<dataDir>/projects/logs`, and the
+ * last `retainPerProject` deployments of a project are kept — older ones go, records and logs together.
+ *
+ * Reading the repository. aindrive serves a drive's repo behind its own auth (viewer+), and there is no
+ * machine-to-machine path from this node's SSO app credentials to an aindrive read token yet. Until there is,
+ * a project carries a per-project DEPLOY TOKEN the owner pastes at creation — an aindrive session JWT or an
+ * `aind_aat_…` account token with `drives:read` — sent as `Authorization: Bearer …` on the clone. It is written
+ * into the git process's environment (GIT_CONFIG_*), never its argument list. docs/PROJECTS.md documents the
+ * limitation; `TODO(projects-sso)` below marks where the SSO-issued token goes once aindrive accepts one.
+ */
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
+import { z } from 'zod';
+import { mirrorUrlOk } from './agent-mirror.js';
+
+const exec = promisify(execFile);
+
+// ------------------------------------------------------------------------------------------------ types
+
+export const PROJECT_KINDS = ['script', 'agent'] as const;
+export type ProjectKind = (typeof PROJECT_KINDS)[number];
+export type ProjectStatus = 'idle' | 'queued' | 'building' | 'ready' | 'error';
+export type DeploymentStatus = 'queued' | 'building' | 'ready' | 'error';
+
+export interface Project {
+  id: string;
+  /** The account that created it — `AgentCaller.subject` (shared-agents.ts). */
+  owner: string;
+  /** The repo URL exactly as given, normalized (no trailing slash, no `.git`). */
+  repo: string;
+  org: string;
+  repoName: string;
+  branch: string;
+  kind: ProjectKind;
+  entry: string | null;
+  name: string;
+  /** The last deployment's status, or `idle` before the first push. */
+  status: ProjectStatus;
+  lastDeploymentId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Deployment {
+  id: string;
+  projectId: string;
+  sha: string;
+  ref: string;
+  status: DeploymentStatus;
+  /** Who pushed, as aindrive reported it. */
+  pusher: { subject: string; email?: string } | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  ms: number | null;
+  exitCode: number | null;
+  /** Why it ended in `error` when there is no exit code to say so (clone failed, too many files, …). */
+  error: string | null;
+}
+
+/** `POST /api/run`'s request, as deploy/run-runtime/README.md describes it. */
+export interface RunRequest {
+  language: 'python' | 'node';
+  entry: string;
+  files: Record<string, string>;
+  env: Record<string, string>;
+  timeoutMs: number;
+}
+export type RunEvent = { event: 'stdout' | 'stderr' | 'error'; data: string } | { event: 'exit'; data: { code: number; ms: number } };
+/** Run one script; every event the sandbox emits goes to `onEvent`, `exit` last. */
+export type RunScript = (req: RunRequest, onEvent: (ev: RunEvent) => void) => Promise<void>;
+
+// The same caps as /api/run — refused here so a repo over them fails with a reason, not a 413 from the sandbox.
+export const PROJECT_MAX_FILES = 32;
+export const PROJECT_MAX_BYTES = 2 * 1024 * 1024;
+export const PROJECT_RUN_TIMEOUT_MS = 120_000;
+export const PROJECT_RETAIN_PER_PROJECT = 20;
+export const PROJECT_MAX_CONCURRENT = 2;
+export const PROJECT_DEFAULT_BRANCH = 'main';
+export const PROJECT_DEFAULT_CORS_ORIGINS = ['https://aindrive.ainetwork.ai'];
+export const PROJECT_SECRET_WEBHOOK = 'webhookSecret';
+export const PROJECT_SECRET_DEPLOY_TOKEN = 'deployToken';
+
+// ------------------------------------------------------------------------------------------------ repo URLs
+
+export interface RepoRef { url: string; org: string; repoName: string }
+
+/**
+ * `https://aindrive.ainetwork.ai/<org>/git/<repo>` → org, repo. `…/api/drives/<driveId>/git/<path>` → the drive
+ * id stands as the org and the last path segment as the name. Anything else with a `/git/` in it is read the same
+ * way; a URL with none is refused. https anywhere, http only on loopback, no credentials (mirrorUrlOk).
+ */
+export function parseRepoUrl(input: string): RepoRef | null {
+  let u: URL;
+  try { u = new URL(input.trim()); } catch { return null; }
+  if (!mirrorUrlOk(u.toString())) return null;
+  const segs = u.pathname.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+  const at = segs.indexOf('git');
+  if (at < 1 || at === segs.length - 1) return null;
+  const before = segs.slice(0, at);
+  const after = segs.slice(at + 1);
+  const org = before[0] === 'api' && before[1] === 'drives' && before[2] ? before[2] : before[before.length - 1]!;
+  const repoName = after[after.length - 1]!.replace(/\.git$/, '');
+  if (!/^[A-Za-z0-9._-]+$/.test(org) || !/^[A-Za-z0-9._-]+$/.test(repoName)) return null;
+  const path = [...before, 'git', ...after.slice(0, -1), repoName].map(encodeURIComponent).join('/');
+  return { url: `${u.protocol}//${u.host}/${path}`, org, repoName };
+}
+
+export const projectInput = z.object({
+  repo: z.string().min(1).max(1024),
+  branch: z.string().regex(/^[A-Za-z0-9._\/-]+$/, 'a branch name').max(200).default(PROJECT_DEFAULT_BRANCH),
+  kind: z.enum(PROJECT_KINDS),
+  entry: z.string().regex(/^(?!\.\.)(?!.*\/\.\.)[^\0]+$/).max(200).optional(),
+  name: z.string().min(1).max(100).optional(),
+  deployToken: z.string().min(1).max(8192).optional(),
+});
+export type ProjectInput = z.infer<typeof projectInput>;
+
+export const hookBody = z.object({
+  ref: z.string().min(1).max(300),
+  before: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+  after: z.string().regex(/^[0-9a-f]{40,64}$/),
+  pusher: z.object({ subject: z.string().min(1).max(300), email: z.string().max(300).optional() }).optional(),
+});
+export type HookBody = z.infer<typeof hookBody>;
+
+export function languageOf(entry: string): RunRequest['language'] | null {
+  const ext = extname(entry).toLowerCase();
+  if (ext === '.py') return 'python';
+  if (ext === '.js' || ext === '.mjs' || ext === '.cjs') return 'node';
+  return null;
+}
+
+// ------------------------------------------------------------------------------------------------ signatures
+
+export function signHook(secret: string, rawBody: Buffer | string): string {
+  return `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+}
+
+export function hookSignatureOk(secret: string, rawBody: Buffer | string, header: string | undefined): boolean {
+  if (!header) return false;
+  const want = Buffer.from(signHook(secret, rawBody));
+  const got = Buffer.from(header.trim());
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+
+// ------------------------------------------------------------------------------------------------ store
+
+export class ProjectLimitError extends Error {}
+export class ProjectRepoTakenError extends Error {}
+
+export interface ProjectStoreLimits { perOwner: number; total: number }
+export const PROJECT_DEFAULT_LIMITS: ProjectStoreLimits = { perOwner: 20, total: 500 };
+
+export class ProjectStore {
+  private readonly projects = new Map<string, Project>();
+  private readonly deployments = new Map<string, Deployment>();
+
+  constructor(private readonly file: string, private readonly limits: ProjectStoreLimits = PROJECT_DEFAULT_LIMITS) {
+    if (existsSync(file)) {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { projects?: Project[]; deployments?: Deployment[] };
+      for (const p of parsed.projects ?? []) if (p?.id) this.projects.set(p.id, p);
+      for (const d of parsed.deployments ?? []) if (d?.id) this.deployments.set(d.id, d);
+    }
+  }
+
+  list(): Project[] { return [...this.projects.values()].sort((a, b) => a.createdAt - b.createdAt); }
+  get(id: string): Project | null { return this.projects.get(id) ?? null; }
+  listByOwner(owner: string): Project[] { return this.list().filter((p) => p.owner === owner); }
+  byRepo(url: string): Project | null {
+    const ref = parseRepoUrl(url);
+    if (!ref) return null;
+    return this.list().find((p) => p.repo === ref.url) ?? null;
+  }
+
+  create(input: { repo: RepoRef; branch: string; kind: ProjectKind; entry: string | null; name?: string }, owner: string, now = Date.now()): Project {
+    if (this.list().some((p) => p.repo === input.repo.url && p.branch === input.branch)) throw new ProjectRepoTakenError(`${input.repo.url} (${input.branch}) is already a project on this node`);
+    if (this.listByOwner(owner).length >= this.limits.perOwner) throw new ProjectLimitError(`an account may have ${this.limits.perOwner} projects on this node`);
+    if (this.projects.size >= this.limits.total) throw new ProjectLimitError(`this node holds its maximum of ${this.limits.total} projects`);
+    const project: Project = {
+      id: `prj_${randomBytes(8).toString('hex')}`, owner, repo: input.repo.url, org: input.repo.org, repoName: input.repo.repoName,
+      branch: input.branch, kind: input.kind, entry: input.entry, name: input.name ?? input.repo.repoName,
+      status: 'idle', lastDeploymentId: null, createdAt: now, updatedAt: now,
+    };
+    this.projects.set(project.id, project);
+    this.save();
+    return project;
+  }
+
+  delete(id: string): boolean {
+    const had = this.projects.delete(id);
+    if (!had) return false;
+    for (const d of [...this.deployments.values()]) if (d.projectId === id) this.deployments.delete(d.id);
+    this.save();
+    return true;
+  }
+
+  deployment(id: string): Deployment | null { return this.deployments.get(id) ?? null; }
+  /** Newest first. */
+  deploymentsOf(projectId: string): Deployment[] {
+    return [...this.deployments.values()].filter((d) => d.projectId === projectId).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+  }
+
+  createDeployment(project: Project, body: HookBody, now = Date.now()): Deployment {
+    const d: Deployment = {
+      id: `dep_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: body.after, ref: body.ref, status: 'queued',
+      pusher: body.pusher ?? null, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null,
+    };
+    this.deployments.set(d.id, d);
+    this.projects.set(project.id, { ...project, status: 'queued', lastDeploymentId: d.id, updatedAt: now });
+    this.save();
+    return d;
+  }
+
+  updateDeployment(id: string, fields: Partial<Deployment>, now = Date.now()): Deployment | null {
+    const prior = this.deployments.get(id);
+    if (!prior) return null;
+    const next = { ...prior, ...fields };
+    this.deployments.set(id, next);
+    const project = this.projects.get(prior.projectId);
+    // The project's status is its newest deployment's: an older one finishing must not overwrite a newer one's state.
+    if (project && project.lastDeploymentId === id && fields.status) this.projects.set(project.id, { ...project, status: fields.status, updatedAt: now });
+    this.save();
+    return next;
+  }
+
+  /** Drop the deployments beyond the newest `keep` of a project; returns the ids that went (for their logs). */
+  prune(projectId: string, keep: number): string[] {
+    const gone = this.deploymentsOf(projectId).slice(keep).filter((d) => d.status === 'ready' || d.status === 'error');
+    for (const d of gone) this.deployments.delete(d.id);
+    if (gone.length) this.save();
+    return gone.map((d) => d.id);
+  }
+
+  private save(): void {
+    mkdirSync(dirname(this.file), { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ projects: this.list(), deployments: [...this.deployments.values()] }), { mode: 0o600 });
+    renameSync(tmp, this.file);
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ logs
+
+/**
+ * One file per deployment, appended as the run speaks; `tail` is the live feed (`GET /api/deployments/:id/log`
+ * while it runs). stdout alone is kept beside it as `<id>.out` — the script's output, without the build chatter.
+ */
+export class DeploymentLogs extends EventEmitter {
+  constructor(readonly dir: string) { super(); mkdirSync(dir, { recursive: true }); this.setMaxListeners(0); }
+  logPath(id: string): string { return join(this.dir, `${id}.log`); }
+  outPath(id: string): string { return join(this.dir, `${id}.out`); }
+  append(id: string, line: string, stream: 'log' | 'out' = 'log'): void {
+    appendFileSync(stream === 'log' ? this.logPath(id) : this.outPath(id), line);
+    if (stream === 'log') this.emit(`log:${id}`, line);
+  }
+  read(id: string, stream: 'log' | 'out' = 'log'): string | null {
+    const p = stream === 'log' ? this.logPath(id) : this.outPath(id);
+    return existsSync(p) ? readFileSync(p, 'utf8') : null;
+  }
+  remove(id: string): void {
+    for (const p of [this.logPath(id), this.outPath(id)]) rmSync(p, { force: true });
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ worker
+
+export interface ProjectWorkerDeps {
+  store: ProjectStore;
+  logs: DeploymentLogs;
+  run: RunScript;
+  /** The deploy token for a project, or null for an anonymous clone (a public repo). */
+  deployToken: (projectId: string) => string | null;
+  /** This node's public base URL — what `AINIZE_DECIDE_URL` is built from. */
+  publicUrl: () => string;
+  log?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  maxConcurrent?: number;
+  retainPerProject?: number;
+  cloneTimeoutMs?: number;
+  runTimeoutMs?: number;
+}
+
+/**
+ * One queue per project, run in order; at most `maxConcurrent` deployments building node-wide. A deployment left
+ * `queued` or `building` by a restart is re-queued at start (the clone is idempotent; the run is re-done).
+ */
+export class ProjectWorker extends EventEmitter {
+  private readonly perProject = new Map<string, string[]>();
+  private readonly active = new Set<string>();
+  private readonly maxConcurrent: number;
+  private readonly retain: number;
+  private stopped = false;
+
+  constructor(private readonly deps: ProjectWorkerDeps) {
+    super();
+    this.maxConcurrent = deps.maxConcurrent ?? PROJECT_MAX_CONCURRENT;
+    this.retain = deps.retainPerProject ?? PROJECT_RETAIN_PER_PROJECT;
+  }
+
+  /** Re-queue what a previous process left unfinished. */
+  recover(): void {
+    for (const p of this.deps.store.list()) {
+      for (const d of this.deps.store.deploymentsOf(p.id).reverse()) {
+        if (d.status === 'queued' || d.status === 'building') {
+          if (d.status === 'building') this.deps.store.updateDeployment(d.id, { status: 'queued', startedAt: null });
+          this.enqueue(d.id);
+        }
+      }
+    }
+  }
+
+  enqueue(deploymentId: string): void {
+    const d = this.deps.store.deployment(deploymentId);
+    if (!d) return;
+    const q = this.perProject.get(d.projectId) ?? [];
+    if (!q.includes(deploymentId)) q.push(deploymentId);
+    this.perProject.set(d.projectId, q);
+    this.pump();
+  }
+
+  stop(): void { this.stopped = true; }
+
+  /** Resolves when nothing is queued or building (tests). */
+  idle(): Promise<void> {
+    if (!this.active.size && ![...this.perProject.values()].some((q) => q.length)) return Promise.resolve();
+    return new Promise((resolve) => this.once('idle', resolve));
+  }
+
+  private pump(): void {
+    if (this.stopped) return;
+    for (const [projectId, q] of this.perProject) {
+      if (this.active.size >= this.maxConcurrent) break;
+      if (!q.length || this.active.has(projectId)) continue;
+      const id = q.shift()!;
+      this.active.add(projectId);
+      void this.build(id).catch((e) => this.deps.log?.('error', `project ${projectId}: deployment ${id} crashed: ${(e as Error).message}`)).finally(() => {
+        this.active.delete(projectId);
+        if (!q.length) this.perProject.delete(projectId);
+        this.emit('done', id);
+        if (!this.active.size && ![...this.perProject.values()].some((x) => x.length)) this.emit('idle');
+        this.pump();
+      });
+    }
+  }
+
+  private async build(deploymentId: string): Promise<void> {
+    const { store, logs } = this.deps;
+    const d = store.deployment(deploymentId);
+    const project = d ? store.get(d.projectId) : null;
+    if (!d || !project) return;
+    const startedAt = Date.now();
+    store.updateDeployment(d.id, { status: 'building', startedAt });
+    const say = (line: string) => logs.append(d.id, `${line}\n`);
+    const finish = (fields: Partial<Deployment>) => {
+      const finishedAt = Date.now();
+      store.updateDeployment(d.id, { ...fields, finishedAt, ms: finishedAt - startedAt });
+      for (const gone of store.prune(project.id, this.retain)) logs.remove(gone);
+    };
+    const work = mkdtempSync(join(tmpdir(), 'ainize-project-'));
+    try {
+      say(`[ainize] ${project.org}/${project.repoName}@${d.sha.slice(0, 12)} (${d.ref})`);
+      say(`[ainize] clone ${project.repo}`);
+      await this.clone(project, d.sha, work);
+      if (project.kind !== 'script') {
+        // TODO(projects-agent): build the tree as a hosted agent — agent-mirror.ts already reads a folder of a repo
+        // into a HostedAgentSpec; wiring that here needs the host and a per-project agent id.
+        finish({ status: 'error', error: `kind "${project.kind}" is not implemented on this node` });
+        say(`[ainize] error: kind "${project.kind}" is not implemented`);
+        return;
+      }
+      const entry = project.entry ?? '';
+      const language = languageOf(entry);
+      if (!language) { say(`[ainize] error: no runnable entry ("${entry}")`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file` }); return; }
+      let files: Record<string, string>;
+      try { files = readTree(work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
+      if (!(entry in files)) { say(`[ainize] error: entry "${entry}" is not in the repository`); finish({ status: 'error', error: `entry "${entry}" not found` }); return; }
+      const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
+      say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
+      let exit: { code: number; ms: number } | null = null;
+      let runError: string | null = null;
+      await this.deps.run({ language, entry, files, env: { AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, AINIZE_PROJECT: project.id, AINIZE_COMMIT: d.sha }, timeoutMs: this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
+        if (ev.event === 'stdout') { logs.append(d.id, ev.data); logs.append(d.id, ev.data, 'out'); }
+        else if (ev.event === 'stderr') logs.append(d.id, ev.data);
+        else if (ev.event === 'error') { runError = ev.data; say(`[ainize] error: ${ev.data}`); }
+        else if (ev.event === 'exit') exit = ev.data;
+      });
+      if (!exit) { finish({ status: 'error', error: runError ?? 'the run ended without an exit event' }); return; }
+      const { code, ms } = exit as { code: number; ms: number };
+      say(`[ainize] exit ${code} after ${ms}ms`);
+      finish({ status: code === 0 ? 'ready' : 'error', exitCode: code, error: code === 0 ? null : (runError ?? `exit ${code}`) });
+    } catch (e) {
+      const message = (e as Error).message ?? String(e);
+      say(`[ainize] error: ${message}`);
+      finish({ status: 'error', error: message });
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+      this.deps.log?.('info', `project ${project.id}: deployment ${d.id} ${store.deployment(d.id)?.status ?? '?'} (${d.sha.slice(0, 12)})`);
+    }
+  }
+
+  /**
+   * `git clone --depth 1 --branch <branch>` then land on `sha`. Right after a push the tip IS the sha; when a
+   * later push queued behind this one has moved the tip, the commit is fetched by id (or the clone deepened when
+   * the server will not serve a bare sha). The token travels in the environment as a git config entry, so a
+   * process listing never shows it.
+   */
+  private async clone(project: Project, sha: string, dir: string): Promise<void> {
+    const token = this.deps.deployToken(project.id);
+    // TODO(projects-sso): once aindrive accepts a token this node mints from its SSO app credentials, obtain it here
+    // instead of reading a pasted one.
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' };
+    if (token) {
+      env.GIT_CONFIG_COUNT = '1';
+      env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
+      env.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${token}`;
+    }
+    const timeout = this.deps.cloneTimeoutMs ?? 120_000;
+    const git = async (args: string[]) => {
+      try { return await exec('git', args, { env, timeout, maxBuffer: 8 * 1024 * 1024 }); }
+      catch (e) {
+        const x = e as { stderr?: string; message?: string };
+        throw new Error(`git ${args[0]} failed: ${(x.stderr ?? x.message ?? '').replace(/Authorization: Bearer \S+/g, 'Authorization: Bearer ***').trim().slice(0, 500)}`);
+      }
+    };
+    await git(['clone', '--quiet', '--depth', '1', '--branch', project.branch, '--', project.repo, dir]);
+    const head = (await git(['-C', dir, 'rev-parse', 'HEAD'])).stdout.trim();
+    if (head === sha) return;
+    try { await git(['-C', dir, 'fetch', '--quiet', '--depth', '1', 'origin', sha]); }
+    catch { await git(['-C', dir, 'fetch', '--quiet', '--unshallow', 'origin', project.branch]); }
+    await git(['-C', dir, 'checkout', '--quiet', '--detach', sha]);
+  }
+}
+
+/** The working tree as `/api/run` files: every regular file but `.git`, ≤ 32 of them, ≤ 2 MiB, utf-8. */
+export function readTree(root: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  let bytes = 0;
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      if (name === '.git') continue;
+      const full = join(dir, name);
+      const st = statSync(full);
+      if (st.isDirectory()) { walk(full); continue; }
+      if (!st.isFile()) continue;
+      if (Object.keys(files).length >= PROJECT_MAX_FILES) throw new Error(`the repository has more than ${PROJECT_MAX_FILES} files; a script project runs a tree of at most ${PROJECT_MAX_FILES}`);
+      bytes += st.size;
+      if (bytes > PROJECT_MAX_BYTES) throw new Error(`the repository is over ${PROJECT_MAX_BYTES / 1024 / 1024} MiB of files`);
+      files[relative(root, full).split('\\').join('/')] = readFileSync(full, 'utf8');
+    }
+  };
+  walk(root);
+  return files;
+}
+
+// ------------------------------------------------------------------------------------------------ run over HTTP
+
+/**
+ * `POST /api/run` on this node, read as SSE. The default `RunScript` when nothing in-process is wired — the run
+ * API is another module's (deploy/run-runtime/README.md) and this is its contract, not its code.
+ */
+export function runScriptOverHttp(base: () => string, headers: () => Record<string, string> = () => ({})): RunScript {
+  return async (req, onEvent) => {
+    const res = await fetch(`${base().replace(/\/+$/, '')}/api/run`, {
+      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers() }, body: JSON.stringify(req),
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      let message = text.slice(0, 300);
+      try { message = (JSON.parse(text) as { error?: { message?: string; code?: string } }).error?.message ?? message; } catch { /* plain text */ }
+      onEvent({ event: 'error', data: `run api answered ${res.status}: ${message}` });
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buf = '';
+    const dispatch = (block: string) => {
+      let event = 'message';
+      const data: string[] = [];
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (!data.length) return;
+      let parsed: unknown;
+      try { parsed = JSON.parse(data.join('\n')); } catch { parsed = data.join('\n'); }
+      if (event === 'exit' && parsed && typeof parsed === 'object') onEvent({ event: 'exit', data: parsed as { code: number; ms: number } });
+      else if (event === 'stdout' || event === 'stderr' || event === 'error') onEvent({ event, data: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) });
+    };
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buf += decoder.decode(chunk, { stream: true });
+      let at: number;
+      while ((at = buf.indexOf('\n\n')) !== -1) { dispatch(buf.slice(0, at)); buf = buf.slice(at + 2); }
+    }
+    if (buf.trim()) dispatch(buf);
+  };
+}
