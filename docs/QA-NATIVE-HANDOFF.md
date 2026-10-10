@@ -943,3 +943,25 @@ assertion을 모두 실행했다. 개발 서버 첫 진입 실패 없이 동일 
 제품 소스와 테스트 timeout은 수정하지 않았다. 단, 이 결과는 앞서 실패한 root 단위
 테스트 전체나 운영 QA 채널의 접수→모델→PR→승인→배포를 통과했다는 뜻이 아니다.
 그 경로와 선행 PR71/76 승인·배포 및 실제 Ainmem 등록은 여전히 남아 있다.
+
+### 검증 실패 후 Ainize 모델 자동 재수정 — 2026-10-11
+
+기존 hosted validation은 첫 제품 검사 실패에서 작업을 validation_failed로 멈췄다.
+이제 정확한 repository/base/candidateDigest에 묶인 호스트 실패 결과를 받은 경우,
+게시 전 후보에 한해 같은 job의 coding으로 되돌린다. 같은 base와 변경 파일을 유지하고
+원본 요청을 바꾸지 않는다. 과거 coding/validation checkpoint는 validationAttempts에
+보존한다. immutable blob 작성 뒤 lease 조건으로 job을 갱신하므로 재시작에도 이어진다.
+
+실패 진단은 다음 모델 입력의 비신뢰 데이터로 전달한다. 이전 읽기 권한은 지워
+모델이 수정할 코드를 다시 읽게 하고, 전체 40라운드 예산은 초기화하지 않는다.
+최대 두 번 재수정한 뒤에도 실패하면 validation_failed로 남긴다. 이미 published,
+approval, release, deployment가 있는 작업은 이 경로로 되돌리지 않는다.
+후보가 달라지면 새로운 digest로 호스트 검증을 다시 받아야 한다. PR 게시나 배포
+승인을 추가하거나 우회하는 변경은 없다. 직접 advanceValidation 경로는 유지하며
+운영 핸들러가 사용하는 advanceHostedValidation에 연결했다.
+
+QA 144 tests/0 skip 및 TypeScript build 통과. 한국어 진단을 UTF8 3000바이트 수준으로
+제한하는 최종 수정 후 관련 5 tests/0 skip도 통과했다. 테스트는 실패→재시작→모델
+도구 수정→새 후보 검증 성공, 실패 반복 상한, 잘못된 digest 거부, 게시된 후보 및
+소진된 coding 예산의 재수정 거부를 포함한다. 실서비스 모델 호출/운영 배포 검증은
+아직 아니다. main 변경 뒤 새 base로 자동 재수정하는 별도 경로도 여전히 남아 있다.

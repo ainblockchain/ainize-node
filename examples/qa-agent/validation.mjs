@@ -8,6 +8,7 @@
  * it can never be reattributed to a different candidate or an older commit.
  */
 import { createHash } from 'node:crypto';
+import { CodingSession } from './coding.mjs';
 
 const canonical = value => {
   if (Array.isArray(value)) return value.map(canonical);
@@ -108,5 +109,17 @@ export async function advanceHostedValidation({ jobs, claim, checkpoints, ctx })
     || result.gates.some(g=>typeof g.gate!=='string'||typeof g.passed!=='boolean')
     || (result.passed && !result.gates.every(g=>g.passed))) throw new Error('Host validation receipt mismatch');
   const validation=checkpoints.save(job.id,{kind:'validation',...result});
+  const attempts=job.checkpoint.validationAttempts ?? [];
+  if(!Array.isArray(attempts)||attempts.length>2||attempts.some(a=>a?.coding?.jobId!==job.id||a?.validation?.jobId!==job.id))throw new Error('Invalid validation repair history');
+  // Only pre-publication failures can return to coding. Prior candidates remain immutable.
+  if(!result.passed && attempts.length<2 && coding.rounds<40
+    && !['published','approval','release','deployment'].some(k=>Object.hasOwn(job.checkpoint,k))){
+    const feedback=JSON.stringify(result.gates.filter(g=>!g.passed).map(g=>({gate:g.gate,summary:g.summary,diagnostics:g.diagnostics}))).slice(0,5000);
+    const session=new CodingSession({repository:coding.repository,commit:coding.commit},job.input.text,coding);
+    const repaired=checkpoints.save(job.id,session.retryValidation(feedback));
+    const {stepFailures:_stepFailures,holdReason:_holdReason,...prior}=job.checkpoint;
+    return jobs.finish(job.id,lease,'queued',{...prior,stage:'coding',coding:repaired,validation,
+      validationAttempts:[...attempts,{coding:job.checkpoint.coding,validation}]});
+  }
   return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,validation,stage:result.passed?'needs_publication':'validation_failed'});
 }
