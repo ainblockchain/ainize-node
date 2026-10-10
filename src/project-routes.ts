@@ -329,7 +329,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     }
     const record = deps.store.createRun(project, input, viewer.subject ? { subject: viewer.subject } : { subject: viewer.principal });
     const startedAt = Date.now();
-    deps.store.updateDeployment(record.id, { status: 'building', startedAt });
+    let releaseSlot: (() => void) | undefined;
     res.setHeader('X-Ainize-Execution', record.id);
     const work = mkdtempSync(join(tmpdir(), 'ainize-snippet-run-'));
     const abort = new AbortController();
@@ -343,7 +343,9 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     };
     const send = (event: string, data: unknown) => { if (abort.signal.aborted) return; open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
     try {
+      releaseSlot = await deps.worker.acquireRunSlot(record.id, abort.signal);
       abort.signal.throwIfAborted();
+      deps.store.updateDeployment(record.id, { status: 'building', startedAt: Date.now() });
       const sha = await deps.worker.checkout(project, record.sha, work);
       abort.signal.throwIfAborted();
       const root = projectRoot(work, project.sourcePath);
@@ -385,6 +387,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       res.end();
     } finally {
       rmSync(work, { recursive: true, force: true });
+      releaseSlot?.();
     }
   });
 

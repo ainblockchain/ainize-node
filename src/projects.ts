@@ -459,6 +459,7 @@ export class ProjectWorker extends EventEmitter {
   private readonly maxConcurrent: number;
   private readonly retain: number;
   private stopped = false;
+  private readonly streamed = new Map<string, { start: () => Promise<void>; cancel: (reason: Error) => void }>();
 
   constructor(private readonly deps: ProjectWorkerDeps) {
     super();
@@ -472,6 +473,9 @@ export class ProjectWorker extends EventEmitter {
    */
   recover(): void {
     for (const p of this.deps.store.list()) {
+      for (const run of this.deps.store.runsOf(p.id)) {
+        if (run.status === 'queued' || run.status === 'building') this.deps.store.updateDeployment(run.id, { status: 'error', error: 'node restarted before the streamed run completed', finishedAt: Date.now() });
+      }
       const all = this.deps.store.deploymentsOf(p.id);
       for (const d of [...all].reverse()) {
         if (d.status === 'queued' || d.status === 'building') {
@@ -497,7 +501,42 @@ export class ProjectWorker extends EventEmitter {
     this.pump();
   }
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    for (const job of this.streamed.values()) job.cancel(new Error('project worker stopped'));
+  }
+
+  /** Hold the same FIFO/concurrency slot as deployments until the caller finishes its streamed run. */
+  acquireRunSlot(id: string, signal: AbortSignal): Promise<() => void> {
+    const record = this.deps.store.deployment(id);
+    if (!record || record.trigger !== 'run') return Promise.reject(new Error('unknown streamed run'));
+    if (this.stopped) return Promise.reject(new Error('project worker stopped'));
+    if (this.streamed.has(id)) return Promise.reject(new Error('run is already queued'));
+    if (signal.aborted) return Promise.reject(signal.reason ?? new Error('run cancelled'));
+    return new Promise((resolve, reject) => {
+      let started = false;
+      const cancel = (reason: Error) => {
+        if (started) return;
+        this.streamed.delete(id);
+        const q = this.perProject.get(record.projectId);
+        if (q) { const index = q.indexOf(id); if (index >= 0) q.splice(index, 1); }
+        signal.removeEventListener('abort', onAbort);
+        reject(reason);
+      };
+      const onAbort = () => cancel(signal.reason ?? new Error('run cancelled'));
+      this.streamed.set(id, {
+        cancel,
+        start: () => new Promise<void>((release) => {
+          started = true;
+          signal.removeEventListener('abort', onAbort);
+          let released = false;
+          resolve(() => { if (released) return; released = true; this.streamed.delete(id); release(); });
+        }),
+      });
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.enqueue(id);
+    });
+  }
 
   /** The `RunScript` this worker deploys scripts with, for a run pressed from a link snippet (project-routes.ts). */
   runScript(req: RunRequest, onEvent: (ev: RunEvent) => void, signal?: AbortSignal): Promise<void> { return this.deps.run(req, onEvent, signal); }
@@ -528,7 +567,7 @@ export class ProjectWorker extends EventEmitter {
       if (!q.length || this.active.has(projectId)) continue;
       const id = q.shift()!;
       this.active.add(projectId);
-      void this.build(id).catch((e) => this.deps.log?.('error', `project ${projectId}: deployment ${id} crashed: ${(e as Error).message}`)).finally(() => {
+      void (this.streamed.get(id)?.start() ?? this.build(id)).catch((e) => this.deps.log?.('error', `project ${projectId}: deployment ${id} crashed: ${(e as Error).message}`)).finally(() => {
         this.active.delete(projectId);
         if (!q.length) this.perProject.delete(projectId);
         this.emit('done', id);
