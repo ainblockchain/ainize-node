@@ -95,6 +95,8 @@ export interface RunRequest {
   files: Record<string, string>;
   env: Record<string, string>;
   timeoutMs: number;
+  /** The key the script runs with (`AINIZE_API_KEY`): the pusher's `aindrive run` key (run-actor.ts), when known. */
+  apiKey?: string;
 }
 export type RunEvent = { event: 'stdout' | 'stderr' | 'error'; data: string } | { event: 'exit'; data: { code: number; ms: number } };
 /** Run one script; every event the sandbox emits goes to `onEvent`, `exit` last. */
@@ -312,8 +314,14 @@ export interface ProjectWorkerDeps {
    * or null when the node has none / the issuer refuses. Used when the project has no deploy token.
    */
   serviceToken?: (resource: string) => Promise<string | null>;
-  /** This node's public base URL — what `AINIZE_DECIDE_URL` is built from. */
+  /** This node's public base URL — where a deployment's output and services are reachable. */
   publicUrl: () => string;
+  /**
+   * The `aindrive run` key of the person behind an SSO subject (run-actor.ts `RunKeyIssuer.keyFor`), or null when
+   * the node cannot say (AIN SSO off, the account suspended). A push whose hook names `pusher.subject` runs its
+   * script and its service with that person's key in `AINIZE_API_KEY`; without one, with no key.
+   */
+  keyForActor?: (subject: string) => string | null;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   maxConcurrent?: number;
   retainPerProject?: number;
@@ -377,6 +385,19 @@ export class ProjectWorker extends EventEmitter {
     return new Promise((resolve) => this.once('idle', resolve));
   }
 
+  /** The pusher's own key for this deployment's run, when the hook named them and the node can issue one. */
+  private actorKey(d: { pusher: { subject: string } | null }, say: (line: string) => void): string | null {
+    if (!d.pusher?.subject || !this.deps.keyForActor) return null;
+    try {
+      const key = this.deps.keyForActor(d.pusher.subject);
+      if (!key) say('[ainize] no API key for the pusher — the run has no AINIZE_API_KEY');
+      return key;
+    } catch (e) {
+      say(`[ainize] no API key for the pusher (${(e as Error).message}) — the run has no AINIZE_API_KEY`);
+      return null;
+    }
+  }
+
   private pump(): void {
     if (this.stopped) return;
     for (const [projectId, q] of this.perProject) {
@@ -429,7 +450,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
         if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
-        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, work, manifest, env, say);
+        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, work, manifest, env, say, this.actorKey(d, say));
         const outputUrl = `${publicUrl}/svc/${project.id}/`;
         say(`[ainize] ready at ${outputUrl}`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -454,7 +475,8 @@ export class ProjectWorker extends EventEmitter {
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;
       let runError: string | null = null;
-      await this.deps.run({ language, entry, files, env: { ...manifest.env, ...inputDefaults(manifest.inputs), AINIZE_DECIDE_URL: `${publicUrl}/api/decide`, ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS }, (ev) => {
+      const apiKey = this.actorKey(d, say);
+      await this.deps.run({ language, entry, files, env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...env }, timeoutMs: manifest.timeoutMs ?? this.deps.runTimeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}) }, (ev) => {
         if (ev.event === 'stdout') { logs.append(d.id, ev.data); logs.append(d.id, ev.data, 'out'); }
         else if (ev.event === 'stderr') logs.append(d.id, ev.data);
         else if (ev.event === 'error') { runError = ev.data; say(`[ainize] error: ${ev.data}`); }
@@ -541,7 +563,8 @@ export function readTree(root: string): Record<string, string> {
 export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId = 'project'): RunScript {
   return async (req, onEvent) => {
     try {
-      const outcome = await sandbox.run({ ...req, bytes: Object.values(req.files).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0) }, { id: `project:${callerId}`, keyed: true }, {
+      const { apiKey, ...rest } = req;
+      const outcome = await sandbox.run({ ...rest, bytes: Object.values(req.files).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0) }, { id: `project:${callerId}`, keyed: true, ...(apiKey ? { key: apiKey } : {}) }, {
         stdout: (chunk) => onEvent({ event: 'stdout', data: chunk }),
         stderr: (chunk) => onEvent({ event: 'stderr', data: chunk }),
       });
@@ -561,8 +584,10 @@ export function runScriptViaSandbox(sandbox: Pick<RunSandbox, 'run'>, callerId =
  */
 export function runScriptOverHttp(base: () => string, headers: () => Record<string, string> = () => ({})): RunScript {
   return async (req, onEvent) => {
+    // Over HTTP the key is the caller's bearer, never a body field: the pusher's key rides as `authorization`.
+    const { apiKey, ...body } = req;
     const res = await fetch(`${base().replace(/\/+$/, '')}/api/run`, {
-      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers() }, body: JSON.stringify(req),
+      method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...headers(), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify(body),
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');

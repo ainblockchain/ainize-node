@@ -308,7 +308,7 @@ test('a push clones that commit with the deploy token, runs the entry, and the d
   assert.equal(run.language, 'python');
   assert.equal(run.entry, 'main.py');
   assert.deepEqual(Object.keys(run.files).sort(), ['README.md', 'ainize.json', 'main.py'], '.git is not shipped');
-  assert.equal(run.env.AINIZE_DECIDE_URL, 'https://node.example/api/decide');
+  assert.equal(run.env.AINIZE_DECIDE_URL, undefined, 'the sandbox sets AINIZE_URL itself; nothing here names /api/decide');
   assert.equal(run.env.GREETING, 'hi', 'ainize.json env reaches the run');
   assert.equal(run.env.INPUT_DESC, 'a boat at dusk', 'an input default is INPUT_<NAME> on a push-deploy');
   assert.equal(run.env.INPUT_TOP_K, '5', 'a number default travels as text');

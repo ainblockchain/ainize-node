@@ -68,6 +68,7 @@ import { readSiteAssertionSecret, siteSubject } from './site-assertion.js';
 import { SiteCallVerifier } from './site-call.js';
 import { readSsoConfig, SsoService, ssoPrincipal, verifyServiceToken, type JwksSource } from './sso.js';
 import { ServiceTokenClient } from './sso-service-token.js';
+import { RunKeyIssuer } from './run-actor.js';
 import { SSO_ADAPTER_MOUNT, ssoRawBodyParser, ssoRoutes } from './sso-routes.js';
 import { ModalityGate } from './modality-gate.js';
 import { DepositWatcher } from './deposit-watcher.js';
@@ -390,6 +391,15 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   if (ssoConfig) {
     market.log('info', 'sso', `AIN SSO on: issuer ${ssoConfig.issuer}, client ${ssoConfig.clientId}, adapter ${ssoConfig.adapterUrl ?? 'off (AIN_SSO_ADAPTER_URL unset)'}, machine identity ${ssoConfig.clientSecret ? 'on' : 'off (AIN_SSO_CLIENT_SECRET unset)'}, machine tokens accepted from ${ssoConfig.serviceApps.length ? ssoConfig.serviceApps.join(', ') : 'nobody (AIN_SSO_SERVICE_APPS unset)'}`);
   }
+  /**
+   * Runs for a person (run-actor.ts): aindrive proves itself with a machine token and names who pressed ▶; the
+   * node issues that account's `aindrive run` key once and hands it to the script. Only with AIN SSO on.
+   */
+  const runKeys = ssoConfig ? new RunKeyIssuer({
+    keys: openaiKeys, issuer: ssoConfig.issuer, secretFile: join(opts.home ?? tmpdir(), 'run-keys.secret'),
+    resolveActor: (subject) => sso.resolveActor(subject),
+    log: (level, message) => market.log(level, 'run', message),
+  }) : null;
   const serviceTokens = ssoConfig?.clientSecret
     ? new ServiceTokenClient({ issuer: ssoConfig.issuer, clientId: ssoConfig.clientId, clientSecret: ssoConfig.clientSecret, log: (level, message) => market.log(level, 'sso', message) })
     : null;
@@ -698,6 +708,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
       catch (e) { market.log('warn', 'projects', `no machine token for ${resource}: ${(e as Error).message}`); return null; }
     } : undefined,
     publicUrl: () => market.publicUrl ?? selfUrl,
+    keyForActor: runKeys ? (subject) => runKeys.keyFor(subject).key : undefined,
     log: (level, message) => market.log(level, 'projects', message),
   });
   app.use(projectRoutes({
@@ -928,7 +939,13 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   }
   // Beside the free tier, not inside the backends block: whether a script can run depends on Docker, not on
   // what this node serves — and a 503 that says so is the answer a node without Docker should give.
-  app.use(runRouter({ sandbox: runSandbox, keys: openaiKeys }));
+  app.use(runRouter({
+    sandbox: runSandbox, keys: openaiKeys,
+    actor: runKeys && ssoConfig ? {
+      verify: (authorization) => verifyServiceToken(authorization, { issuer: ssoConfig.issuer, audience: (market.publicUrl ?? selfUrl).replace(/\/+$/, ''), jwks: sso.jwks!, serviceApps: ssoConfig.serviceApps }),
+      keys: runKeys,
+    } : undefined,
+  }));
 
   // After the deposits block: the page needs the ledger and the staking contract it built.
   const throughputChains = cfg.deposits?.chains.map((c) => ({

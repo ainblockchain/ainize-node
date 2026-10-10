@@ -16,7 +16,11 @@ import express from 'express';
 import request from 'supertest';
 import { HostedAgentGateway } from '../src/hosted-agent-gateway.js';
 import { runRouter } from '../src/run-routes.js';
-import { RUN_LIMITS, RunRefused, packRunFiles, parseRunRequest, runFileNameOk } from '../src/run-sandbox.js';
+import { RUN_LIMITS, RunRefused, packRunFiles, parseRunRequest, runFileNameOk, type RunCaller, type RunRequest, type RunSandbox } from '../src/run-sandbox.js';
+import { RunKeyIssuer } from '../src/run-actor.js';
+import { OpenaiApiKeyStore } from '../src/openai-api-keys.js';
+import { SsoError, verifyServiceToken } from '../src/sso.js';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -79,6 +83,8 @@ test('the gateway forwards a run only to /api/decide, /api/chat and /v1/*, and t
   const self = express();
   self.use(express.json());
   self.post('/api/decide', (req, res) => res.json({ got: req.body, run: req.header('x-ainize-run'), auth: req.header('authorization') ?? null }));
+  self.post('/v1/systemone', (req, res) => res.json({ surface: 'v1', got: req.body, auth: req.header('authorization') ?? null }));
+  self.get('/v1/models', (req, res) => res.json({ surface: 'models', auth: req.header('authorization') ?? null }));
   self.get('/api/hosted-agents', (_req, res) => res.json({ leaked: true }));
   const selfServer = createServer(self);
   await new Promise<void>((r) => selfServer.listen(0, '127.0.0.1', () => r()));
@@ -93,6 +99,12 @@ test('the gateway forwards a run only to /api/decide, /api/chat and /v1/*, and t
     const other = await fetch(`${gw.origin}/t/${token}/api/hosted-agents`);
     assert.equal(other.status, 403);
     assert.equal(((await other.json()) as { error: { code: string } }).error.code, 'run_path_refused');
+
+    // The script's key is an ordinary API key of the caller (run-sandbox.ts); the gateway forwards it as it is.
+    const v1 = await fetch(`${gw.origin}/t/${token}/v1/systemone`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ainize-sk-real' }, body: JSON.stringify({ model: 'clef-flash', state: {}, questions: { a1: { type: 'noul' } } }) });
+    assert.deepEqual(await v1.json(), { surface: 'v1', got: { model: 'clef-flash', state: {}, questions: { a1: { type: 'noul' } } }, auth: 'Bearer ainize-sk-real' });
+    const keyless = await fetch(`${gw.origin}/t/${token}/v1/models`);
+    assert.deepEqual(await keyless.json(), { surface: 'models', auth: null }, 'no key, no key: the node refuses as it would a keyless curl');
     gateway.revokeRun(token);
     assert.equal((await fetch(`${gw.origin}/t/${token}/api/decide`, { method: 'POST' })).status, 401, 'a revoked run token is nobody');
 
@@ -119,5 +131,107 @@ test('the gateway forwards a run only to /api/decide, /api/chat and /v1/*, and t
   } finally {
     await gateway.close();
     await new Promise<void>((r) => selfServer.close(() => r()));
+  }
+});
+
+// ── runs for a person: aindrive's machine token + X-AIN-Actor → the person's own `aindrive run` key in the sandbox
+
+test('/api/run for a person: a trusted app names the actor, the node issues their key once and hands it to the run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'run-actor-'));
+  const { publicKey, privateKey } = await generateKeyPair('ES256');
+  const jwks = { keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'ES256', use: 'sig' }] };
+  const ISSUER = 'https://sso.example';
+  const NODE = 'https://node.example';
+  const mint = (claims: Record<string, unknown>, opts: { aud?: string; typ?: string; exp?: string } = {}) =>
+    new SignJWT({ orgs: ['org_1'], ...claims }).setProtectedHeader({ alg: 'ES256', kid: 'k1', typ: opts.typ ?? 'at+jwt' })
+      .setIssuer(ISSUER).setAudience(opts.aud ?? NODE).setIssuedAt().setExpirationTime(opts.exp ?? '5m').setJti('j' + Math.random()).sign(privateKey);
+  const asApp = (app: string, o: Parameters<typeof mint>[1] = {}) => mint({ sub: app, azp: app, client_id: app }, o);
+
+  const keys = new OpenaiApiKeyStore(join(dir, 'keys.json'));
+  const identities = new Map<string, string>();
+  const suspended = new Set<string>();
+  const issuer = new RunKeyIssuer({
+    keys, issuer: ISSUER, secretFile: join(dir, 'run-keys.secret'),
+    resolveActor: (sub) => {
+      if (suspended.has(sub)) throw new SsoError('account_suspended', 403, 'This account is suspended.', false);
+      const created = !identities.has(sub);
+      if (created) identities.set(sub, `sso:${sub}`);
+      return { principal: identities.get(sub)!, created };
+    },
+  });
+  const runs: { caller: RunCaller; req: RunRequest }[] = [];
+  const fakeSandbox = {
+    available: true,
+    run: async (req: RunRequest, caller: RunCaller, sink: { stdout(c: string): void }) => { runs.push({ caller, req }); sink.stdout('ok\n'); return { code: 0, ms: 1 }; },
+  } as unknown as RunSandbox;
+  const app = express();
+  app.use(express.json());
+  app.use(runRouter({
+    sandbox: fakeSandbox, keys,
+    actor: { verify: (authorization) => verifyServiceToken(authorization, { issuer: ISSUER, audience: NODE, jwks, serviceApps: ['aindrive'] }), keys: issuer },
+  }));
+  const run = (headers: Record<string, string>) => request(app).post('/api/run').set({ accept: 'application/json', ...headers }).send(good);
+  try {
+    // as the person: key issued, handed to the run, the caller is the person
+    const first = await run({ authorization: `Bearer ${await asApp('aindrive')}`, 'x-ain-actor': 'acc_alice' });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(runs[0]!.caller.id, 'key:sso:acc_alice');
+    assert.ok(runs[0]!.caller.keyed);
+    const key = runs[0]!.caller.key!;
+    assert.match(key, /^ainize-sk-[A-Za-z0-9_-]{32}$/);
+    assert.equal(keys.addressForKey(key), 'sso:acc_alice', 'a real key of that account');
+    assert.deepEqual(keys.listFor('sso:acc_alice').map((k) => k.label), ['aindrive run']);
+    assert.ok(runs[0]!.req.env.AINIZE_API_KEY === undefined, 'the key travels as the caller, not in the request env');
+
+    // next time: the same key, no second record
+    const second = await run({ authorization: `Bearer ${await asApp('aindrive')}`, 'x-ain-actor': 'acc_alice' });
+    assert.equal(second.status, 200);
+    assert.equal(runs[1]!.caller.key, key);
+    assert.equal(keys.countFor('sso:acc_alice'), 1);
+    assert.equal(identities.size, 1);
+
+    // another person, another key; a suspended account is refused as it is at sign-in
+    await run({ authorization: `Bearer ${await asApp('aindrive')}`, 'x-ain-actor': 'acc_bob' });
+    assert.notEqual(runs[2]!.caller.key, key);
+    suspended.add('acc_bob');
+    const blocked = await run({ authorization: `Bearer ${await asApp('aindrive')}`, 'x-ain-actor': 'acc_bob' });
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.body.error, 'account_suspended');
+
+    // the app alone names nobody: an anonymous run, as the app
+    const nobody = await run({ authorization: `Bearer ${await asApp('aindrive')}` });
+    assert.equal(nobody.status, 200);
+    assert.deepEqual(runs.at(-1)!.caller, { id: 'app:aindrive', keyed: false });
+
+    // refused machine tokens are 401, never a silent downgrade to anonymous
+    for (const [why, token] of [
+      ['untrusted app', await asApp('someone-else')],
+      ['another audience', await asApp('aindrive', { aud: 'https://other.example' })],
+      ['expired', await asApp('aindrive', { exp: '-1m' })],
+      ['sub/azp disagree', await mint({ sub: 'aindrive', azp: 'other', client_id: 'aindrive' })],
+    ] as const) {
+      const r = await run({ authorization: `Bearer ${token}`, 'x-ain-actor': 'acc_alice' });
+      assert.equal(r.status, 401, why);
+      assert.equal(r.body.error, 'invalid_service_token', why);
+    }
+    assert.equal(runs.length, 4, 'none of the refused tokens ran anything');
+    // a JWT that is not shaped as a machine token (no `typ: at+jwt`) is just a bearer nobody knows: an anonymous run
+    const notMachine = await run({ authorization: `Bearer ${await asApp('aindrive', { typ: 'JWT' })}`, 'x-ain-actor': 'acc_alice' });
+    assert.equal(notMachine.status, 200);
+    assert.ok(runs.at(-1)!.caller.id.startsWith('ip:') && !runs.at(-1)!.caller.key, 'anonymous, and no key');
+    const badActor = await run({ authorization: `Bearer ${await asApp('aindrive')}`, 'x-ain-actor': 'not a subject!' });
+    assert.equal(badActor.status, 400);
+    assert.equal(badActor.body.error, 'invalid_actor');
+
+    // an ordinary API key still runs as its owner, with that key in the run
+    const own = keys.issue('0xowner', 'mine');
+    const direct = await run({ authorization: `Bearer ${own}` });
+    assert.equal(direct.status, 200);
+    assert.deepEqual(runs.at(-1)!.caller, { id: 'key:0xowner', keyed: true, key: own });
+    // and the derivation is stable across restarts: a new issuer over the same secret file derives the same key
+    const again = new RunKeyIssuer({ keys, issuer: ISSUER, secretFile: join(dir, 'run-keys.secret'), resolveActor: () => ({ principal: 'sso:acc_alice', created: false }) });
+    assert.equal(again.keyFor('acc_alice').key, key);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

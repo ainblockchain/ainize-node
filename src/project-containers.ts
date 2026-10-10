@@ -89,7 +89,7 @@ export class ProjectContainers {
    * then). Rejects — with the old container still serving — on a build, start or health failure. `say` receives
    * every line of build and run output for the deployment log.
    */
-  async deploy(p: { projectId: string; deploymentId: string; sha: string }, dir: string, manifest: ProjectManifest, env: Record<string, string>, say: (line: string) => void): Promise<ProjectContainer> {
+  async deploy(p: { projectId: string; deploymentId: string; sha: string }, dir: string, manifest: ProjectManifest, env: Record<string, string>, say: (line: string) => void, apiKey: string | null = null): Promise<ProjectContainer> {
     const kind = manifest.kind;
     if (kind !== 'service' && kind !== 'nextjs') throw new Error(`kind "${kind}" does not run as a container`);
     const gatewayUrl = this.o.gatewayUrl();
@@ -118,7 +118,7 @@ export class ProjectContainers {
     const runId = `project-${p.projectId}-${randomBytes(4).toString('hex')}`;
     const token = this.o.gateway.issueRun({ id: runId, allowedHosts: this.allowedHosts(), selfUrl: this.o.selfUrl() });
     const base = `${gatewayUrl}/t/${token}`;
-    const full = this.environment(env, manifest, base, gatewayUrl, token);
+    const full = this.environment(env, manifest, base, gatewayUrl, token, apiKey);
     mkdirSync(this.o.workDir, { recursive: true });
     const envFile = join(this.o.workDir, `project-env-${runId}`);
     writeFileSync(envFile, Object.entries(full).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
@@ -208,8 +208,8 @@ export class ProjectContainers {
   }
 
   /** The manifest's env under the project's, then what the sandbox contract promises a script (run-sandbox.ts). */
-  private environment(env: Record<string, string>, manifest: ProjectManifest, base: string, gatewayUrl: string, token: string): Record<string, string> {
-    const reserved = new Set(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'AINIZE_API_URL', 'PATH', 'PORT', 'HOSTNAME']);
+  private environment(env: Record<string, string>, manifest: ProjectManifest, base: string, gatewayUrl: string, token: string, apiKey: string | null): Record<string, string> {
+    const reserved = new Set(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'AINIZE_URL', 'AINIZE_API_KEY', 'PATH', 'PORT', 'HOSTNAME']);
     const out: Record<string, string> = {};
     const pub = this.publicHost();
     for (const [k, v] of Object.entries({ ...manifest.env, ...env })) {
@@ -221,9 +221,10 @@ export class ProjectContainers {
         if ((u.protocol === 'https:' || u.protocol === 'http:') && u.hostname.toLowerCase() === pub && /^\/(?:api\/decide|api\/chat|v1(?:\/|$))/.test(u.pathname)) out[k] = `${base}${u.pathname}${u.search}`;
       } catch { /* not a URL */ }
     }
-    out.AINIZE_DECIDE_URL ??= `${base}/api/decide`;
-    out.AINIZE_CHAT_URL ??= `${base}/api/chat`;
-    out.AINIZE_API_URL = base;
+    // What the ainize SDK reads: the gateway as the node, and the pusher's own key (run-actor.ts) when the hook
+    // named them. A key written into the repo's env is dropped: that is the thing this exists to make unnecessary.
+    out.AINIZE_URL = base;
+    if (apiKey) out.AINIZE_API_KEY = apiKey;
     out.PORT = String(manifest.port);
     out.HOSTNAME = '0.0.0.0';
     const proxy = new URL(gatewayUrl);

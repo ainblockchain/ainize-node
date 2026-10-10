@@ -17,10 +17,10 @@ POST /api/run
 content-type: application/json
 accept: text/event-stream            (default)   | application/json
 
-{ "language": "python",                     # "python" (3.11, stdlib + requests) | "node" (20, stdlib)
+{ "language": "python",                     # "python" (3.11, stdlib + requests + ainize SDK) | "node" (20, stdlib)
   "entry": "art_search.py",                 # one of `files`
   "files": { "art_search.py": "...", "README.md": "..." },   # or [{ "path": "art_search.py", "content": "..." }, …]
-  "env": { "AINIZE_DECIDE_URL": "https://ainize.ai/api/decide" },
+  "env": { "TOP_K": "5" },                  # the script's inputs; never a key (the sandbox provides AINIZE_API_KEY)
   "timeoutMs": 120000 }                     # ≤ 300000, default 120000
 ```
 
@@ -47,24 +47,45 @@ Status codes: `400 invalid_request`, `413 files_too_large`, `429 too_many_runs` 
 same caller, or 8 node-wide — an API key in `authorization: Bearer …` raises the per-caller limit to 4),
 `503 runner_unavailable` (this node has no Docker, or `agentHost.docker.enabled` is off).
 
-Auth is the `/api/decide` free tier's: none required. Anonymous callers are told apart by address; a key by its
-owner. Each run writes one log line (caller, entry, bytes, ms, exit).
+Starting a run needs no key. Who the run is FOR decides what the script holds (below): an API key in
+`authorization: Bearer …` runs it as that key's owner; aindrive, presenting an AIN SSO machine token
+(`client_credentials`, `aud` = this node's public URL, `azp` in `AIN_SSO_SERVICE_APPS`) and naming the person in
+`X-AIN-Actor: <SSO subject>`, runs it as that person; anything else runs anonymously. A machine token that does not
+verify is `401 invalid_service_token` (never a silent downgrade); a suspended account is `403 account_suspended`.
+Each run writes one log line (caller, entry, bytes, ms, exit).
 
 ## What the script can reach
 
 Nothing, except through the gateway, which the sandbox tells it about:
 
-* `AINIZE_DECIDE_URL`, `AINIZE_CHAT_URL`, `AINIZE_API_URL` — this node's `/api/decide`, `/api/chat` and `/v1`
-  through the gateway. A caller-supplied env value whose URL points at the node's own public host (for the
-  ainize.ai node, `https://ainize.ai/api/decide`) is rewritten to the same gateway path, so the request is
-  answered by this node and attributed to the caller rather than making a round trip through the internet.
+* `AINIZE_URL` — the gateway base standing in for this node: `/v1/*` under it is this node's keyed surface
+  (`/v1/systemone` for a decision model, `/v1/chat/completions`, …). The `ainize` SDK is preinstalled in the
+  python image (from this repo's `sdk/python`; the image tag hashes it, so an SDK change rebuilds).
+* `AINIZE_API_KEY` — **the caller's own key**: the API key the run was started with, or, for aindrive's ▶, the
+  `aindrive run` key of the person who pressed it (issued once per account by `src/run-actor.ts`, visible and
+  revocable on their keys page, switched off with their organization's other keys on suspension). A decision made
+  with it is gated, billed and recorded as theirs. An anonymous run has **no** `AINIZE_API_KEY`; a key written
+  into the request's `env` is dropped — a key in a repo is what this exists to make unnecessary. The whole program
+  is then:
+
+  ```python
+  import os, ainize
+  client = ainize.connect(os.environ["AINIZE_URL"], api_key=os.environ["AINIZE_API_KEY"])
+  out = client.decide("clef-flash", state={...}, questions={...})
+  ```
+
 * `HTTPS_PROXY` / `https_proxy` — a CONNECT proxy for `https://ainize.ai/…` and `https://<this node's public
   host>/…` written literally in the script; `urllib`, `requests` and most HTTP clients honour it on their own.
-  Any other host, any plain `http://`, and any IP literal is refused (`403` from the proxy, or no route at all).
+  A caller-supplied env value whose URL points at the node's own public host is rewritten to the gateway path, so
+  the request is answered by this node rather than making a round trip through the internet. Any other host, any
+  plain `http://`, and any IP literal is refused (`403` from the proxy, or no route at all).
 
 ## Operating
 
-Turn it on with `agentHost.docker.enabled: true` (the same switch and daemon as code agents). The gateway listens
+Turn it on with `agentHost.docker.enabled: true` (the same switch and daemon as code agents). Runs for a person
+need AIN SSO on (`docs/ain-sso.md` §5) and `AIN_SSO_SERVICE_APPS=<aindrive's client_id>`; the key derivation secret
+is `<AINIZE_HOME>/run-keys.secret` (0600, made on first use — back it up with the keys file, or every account gets a
+new `aindrive run` key after a loss). The gateway listens
 for runs on the internal network's bridge address, on an ephemeral port unless `runSandbox.gatewayPort` is set —
 set it when the host firewall only admits fixed ports from the docker bridge. `runSandbox.maxRunning` (8),
 `runSandbox.perCaller` (2) and `runSandbox.memory` (`512m`) adjust the limits above. Leftover `ainize-run-*`
