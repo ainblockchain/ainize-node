@@ -99,3 +99,14 @@ test('approval display flag excludes failures, holds and deployment observation'
     assert.equal(payload.body.includes('관리자 배포 승인이 필요합니다.'),example.expected);
   }
 });
+
+test('exhausted validation is shown as failed instead of an approval wait',t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-validation-card-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());
+ const job=jobs.enqueue('request',{text:'고쳐줘',service:'ainteams'}),claim=jobs.claim();
+ jobs.finish(job.id,claim.lease,'waiting',{stage:'validation_failed',validationAttempts:[{},{}]});
+ const reports=new AinmemReports(jobs,config);reports.refresh(job.id);
+ const payload=JSON.parse(jobs.db.prepare('SELECT payload FROM ainmem_reports WHERE job_id=?').get(job.id).payload);
+ assert.equal(payload.statusOptionId,'failed');assert.equal(payload.approvalPending,false);
+ assert.match(payload.body,/제품 검증에 실패/);assert.doesNotMatch(payload.body,/관리자 배포 승인이 필요/);
+});

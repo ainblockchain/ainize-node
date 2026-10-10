@@ -965,3 +965,16 @@ QA 144 tests/0 skip 및 TypeScript build 통과. 한국어 진단을 UTF8 3000�
 도구 수정→새 후보 검증 성공, 실패 반복 상한, 잘못된 digest 거부, 게시된 후보 및
 소진된 coding 예산의 재수정 거부를 포함한다. 실서비스 모델 호출/운영 배포 검증은
 아직 아니다. main 변경 뒤 새 base로 자동 재수정하는 별도 경로도 여전히 남아 있다.
+
+### 자동 재수정 핸들러 통합 및 Ainmem 표시 — 2026-10-11
+
+실제 createHandler의 execute/tick과 SQLite/checkpoint/reporter를 연결한 통합 테스트를
+추가했다. 한 요청의 첫 후보 실패→프로세스 재생성→같은 후보에서 재읽기/수정→다른
+candidateDigest 검증 성공→needs_publication까지 확인한다. 전체 동안 job ID와 Ainmem
+PUT 대상은 하나이며, 재전송 응답에도 작업 링크 하나만 유지한다. 모델/외부 API는
+테스트 대역이므로 실제 서비스 E2E 완료로 취급하지 않는다.
+
+Ainmem reporter는 validation_failed를 failed 칼럼으로 매핑하고 후보와 실패 기록을
+보존했음을 설명한다. coding/needs_validation에서 재수정 이력이 있으면 현재 회차를
+표시한다. 이 과정에서 approvalPending은 false이며 승인 대기 문구를 내보내지 않는다.
+공통 QA 147 tests/0 skip, TypeScript build 및 diff check 통과. 운영 배포는 하지 않았다.

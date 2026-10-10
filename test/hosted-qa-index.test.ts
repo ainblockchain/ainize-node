@@ -197,3 +197,33 @@ test('shared handler queues both repositories and requires matching host route b
  const jobs=new Jobs(join(stateDir,'jobs.sqlite3'));
  try{for(const id of Object.values(ids)){assert.equal(jobs.get(id).checkpoint.hostIntake,true);assert.equal(jobs.get(id).checkpoint.hostBase,true);}}finally{jobs.close();}
 });
+
+test('native handler repairs a failed candidate and keeps one Ainmem task through publication readiness',async t=>{
+ const {Jobs}=await import('../examples/qa-agent/jobs.mjs');
+ const {candidateDigest}=await import('../examples/qa-agent/validation.mjs');
+ const dir=mkdtempSync(join(tmpdir(),'qa-handler-repair-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const pageId='11111111-1111-4111-8111-111111111111';
+ const ainmem={origin:'https://ainmem.example',databaseId:pageId,titlePropertyId:pageId,statusPropertyId:pageId,
+  statusOptions:Object.fromEntries(['queued','coding','validating','waiting','completed','failed'].map(s=>[s,s]))};
+ const make=()=>createHandler({config:{...CONFIG,hostValidation:true,ainmem},stateDir:dir,verifyIntake:async()=>verified,newSnapshot:()=>snapshot});
+ const sent:any[]=[],validated:any[]=[];
+ const transport={secret:()=> 'fixture-token',fetch:async(url,init)=>{const payload=JSON.parse(init.body);sent.push({url,payload});return new Response(JSON.stringify({pageId,rowId:pageId,path:`/p/${pageId}`,revision:payload.revision}));}};
+ const first=await make().execute('',{...locatorInput({teamsMessage:{messageId:'m1'}}),...transport});
+ const qa={validate:async(candidate)=>{validated.push(candidate);const passed=candidate.changes['sum.js']==='a+b';return {state:'done',result:{repository:candidate.repository,base:candidate.base,candidateDigest:candidateDigest(candidate),passed,gates:[{gate:'test',passed,summary:passed?'ok':'expected sum, got multiplication',diagnostics:''}]}};}};
+ const tick=async(calls)=>make().tick({...model(calls),...transport,qa});
+ await tick([['read_file',{path:'sum.js',startLine:1}]]);
+ await tick([['replace_text',{path:'sum.js',oldText:'a-b',newText:'a*b'}]]);
+ await tick([]);await tick([]); // first validation fails, then model can resume
+ let jobs=new Jobs(join(dir,'jobs.sqlite3'));
+ assert.equal(jobs.get(first.metadata.jobId).checkpoint.stage,'coding');jobs.close();
+ assert(sent.some(x=>x.payload.statusOptionId==='coding'&&x.payload.body.includes('자동 재수정')));
+ await tick([['read_file',{path:'sum.js',startLine:1}]]);
+ await tick([['replace_text',{path:'sum.js',oldText:'a*b',newText:'a+b'}]]);
+ await tick([]);await tick([]);
+ jobs=new Jobs(join(dir,'jobs.sqlite3'));
+ try{const job=jobs.get(first.metadata.jobId);assert.equal(job.checkpoint.stage,'needs_publication');assert.equal(job.checkpoint.validationAttempts.length,1);assert.equal(job.checkpoint.approval,undefined);}finally{jobs.close();}
+ assert.equal(validated.length,2);assert.notEqual(candidateDigest(validated[0]),candidateDigest(validated[1]));
+ assert.equal(new Set(sent.map(x=>x.url)).size,1);assert(sent.every(x=>x.payload.approvalPending===false));
+ const again=await make().execute('',{...locatorInput({teamsMessage:{messageId:'m1'}}),...transport});
+ assert.equal(again.metadata.jobId,first.metadata.jobId);assert.equal((again.text.match(/https:\/\//g)??[]).length,1);
+});

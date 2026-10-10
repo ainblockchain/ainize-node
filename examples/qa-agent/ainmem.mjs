@@ -17,9 +17,12 @@ export function parseAinmemConfig(raw) {
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function card(job, config) {
   const stage = job.checkpoint.stage;
-  const state = job.state === 'failed' ? 'failed' : job.state === 'completed' ? 'completed'
+  const state = job.state === 'failed' || stage === 'validation_failed' ? 'failed' : job.state === 'completed' ? 'completed'
     : job.checkpoint.holdReason || job.state === 'waiting' ? 'waiting'
     : stage === 'needs_validation' ? 'validating' : stage === 'coding' ? 'coding' : 'queued';
+  const repairs=Array.isArray(job.checkpoint.validationAttempts)?job.checkpoint.validationAttempts.length:0;
+  const repair=stage==='validation_failed'?'제품 검증에 실패했습니다. 수정 후보와 실패 기록을 보존했습니다. 배포하지 않았습니다.\n'
+    :repairs>0&&['coding','needs_validation'].includes(stage)?`검증 실패를 반영해 자동 재수정 중입니다 (${repairs}/2).\n`:'';
   const published=job.checkpoint.published;
   const review=stage==='awaiting_approval' && job.state==='waiting' && !job.checkpoint.holdReason && published?.repository===job.input.repository
     && /^[a-f0-9]{40}$/.test(published.sha??'') && Number.isSafeInteger(published.number) && published.number>0
@@ -30,7 +33,7 @@ function card(job, config) {
   return { databaseId: config.databaseId, titlePropertyId: config.titlePropertyId, statusPropertyId: config.statusPropertyId,
     approvalPending: !!review && job.state === 'waiting' && !job.checkpoint.holdReason,
     statusOptionId: config.statusOptions[state], title: job.input.text.trim().slice(0, 200) || 'QA 수정 요청',
-    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason === 'base_changed' ? 'main이 변경되어 최신 코드 기준으로 수정·검증이 필요합니다. 기존 승인은 재사용하지 않습니다.\n' : job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${review}${deployment}\n이 상태 표시는 배포 승인이 아닙니다.` };
+    body: `작업 ${job.id}\n서비스: ${job.input.service}\n상태: ${job.state} / ${stage ?? 'queued'}\n${job.checkpoint.holdReason === 'base_changed' ? 'main이 변경되어 최신 코드 기준으로 수정·검증이 필요합니다. 기존 승인은 재사용하지 않습니다.\n' : job.checkpoint.holdReason ? '작업을 보존하고 실행 문제 확인을 기다리고 있습니다.\n' : ''}\n${job.input.text.slice(0, 12000)}\n${repair}${review}${deployment}\n이 상태 표시는 배포 승인이 아닙니다.` };
 }
 export class AinmemReports {
   constructor(jobs, config) {
