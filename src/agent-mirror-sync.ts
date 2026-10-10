@@ -5,6 +5,7 @@ import type { HostedAgentSpecInput } from './hosted-agent-types.js';
 
 export interface AgentMirrorSyncDeps {
   git: AgentGit;
+  available?: (id: string) => boolean;
   mirrors: AgentMirrorStore;
   apply: (id: string, input: HostedAgentSpecInput, commit: string, by: string | null) => Promise<void>;
   land: (id: string, commit: string) => Promise<void>;
@@ -18,12 +19,22 @@ export class AgentMirrorSyncer {
     return this.serial(mirror.agent, () => this.perform(mirror, by));
   }
   configure(mirror: AgentMirror, by: string | null = null): Promise<AgentMirror | null> {
-    return this.serial(mirror.agent, () => this.perform(this.deps.mirrors.set(mirror), by));
+    return this.serial(mirror.agent, () => {
+      if (this.deps.available?.(mirror.agent) === false) throw new Error('agent no longer exists');
+      return this.perform(this.deps.mirrors.set(mirror), by);
+    });
   }
   async detach(agent: string): Promise<boolean> {
     let detached = false;
     await this.serial(agent, async () => { detached = this.deps.mirrors.remove(agent); return null; });
     return detached;
+  }
+  async removeAgent(agent: string, remove: () => Promise<void>): Promise<void> {
+    await this.serial(agent, async () => {
+      await remove();
+      this.deps.mirrors.remove(agent);
+      return null;
+    });
   }
   private serial(agent: string, operation: () => Promise<AgentMirror | null>): Promise<AgentMirror | null> {
     const previous = this.inflight.get(agent) ?? Promise.resolve(null);
@@ -55,7 +66,7 @@ export class AgentMirrorSyncer {
       const m = this.deps.mirrors.get(mirror.agent);
       return m && m.url === mirror.url && m.path === mirror.path && m.branch === mirror.branch ? m : null;
     };
-    if (!current()) return null;
+    if (this.deps.available?.(mirror.agent) === false || !current()) return null;
     try {
       const result = await fetchMirror(this.deps.git, current()!);
       if (!current()) return null;

@@ -49,6 +49,7 @@ export interface HostedAgentRoutesDeps {
     create: (spec: HostedAgentSpec) => Promise<void>;
     commit: (spec: HostedAgentSpec, message: string, by: string) => Promise<void>;
     remove: (id: string) => Promise<void>;
+    deleting?: (id: string, remove: () => Promise<void>) => Promise<void>;
     /**
      * Where to clone it, which commit is live, and whether it follows a repository elsewhere.
      *
@@ -288,11 +289,17 @@ export function hostedAgentRoutes(deps: HostedAgentRoutesDeps): Router {
     const hit = administered(req, res);
     if (!hit) return;
     const { spec, who } = hit;
-    deps.store.delete(spec.id);
-    deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
-    deps.secrets.dropAgent(spec.id);
-    await deps.host.remove(spec.id);
-    await deps.repo?.remove(spec.id).catch(() => {});
+    const remove = async () => {
+      deps.store.delete(spec.id);
+      deps.orgAudit?.([spec.orgId], who.subject, 'agent.delete', spec.id, { kind: 'hosted' });
+      deps.secrets.dropAgent(spec.id);
+      await deps.host.remove(spec.id);
+      await deps.repo?.remove(spec.id);
+    };
+    try {
+      if (deps.repo?.deleting) await deps.repo.deleting(spec.id, remove);
+      else await remove();
+    } catch (error) { return refuse(res, 502, 'delete_failed', (error as Error).message); }
     // One past the last release: the feed's version is strictly increasing per resource, and the delete comes after.
     deps.events?.append({ type: 'agent.deleted', registryIssuer: issuer(req), agentId: spec.id, version: spec.version + 1, audience: audienceOf(spec) });
     res.json({ deleted: spec.id });

@@ -838,6 +838,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
         // The person who made the change is the author, so `git log` names them and not the node.
         await agentGit.commitSpec(spec.id, spec, { message, parent, author: { name: by, email: `${by}@ainize` } });
       },
+      deleting: (id, remove) => mirrorSyncer.removeAgent(id, remove),
       remove: async (id) => { agentRuntimes.remove(id); await agentGit.deleteRepo(id); agentPulls.dropAgent(id); agentMirrors.remove(id); },
       info: (id) => {
         if (!agentGit.exists(id)) return null;
@@ -868,7 +869,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
    * push on this side and name GitHub instead.
    */
   const agentMirrors = new AgentMirrorStore(join(hostedHome, 'agent-mirrors.json'));
-  const mirrorSyncer = new AgentMirrorSyncer({ git: agentGit, mirrors: agentMirrors, apply: applyPushedTree, land: (id, commit) => agentGit.setRef(id, 'main', commit), log: (level, message) => market.log(level, 'agents', message) });
+  const mirrorSyncer = new AgentMirrorSyncer({ available: (id) => !!hostedStore.get(id), git: agentGit, mirrors: agentMirrors, apply: applyPushedTree, land: (id, commit) => agentGit.setRef(id, 'main', commit), log: (level, message) => market.log(level, 'agents', message) });
   app.use(agentMirrorRoutes({
     syncer: mirrorSyncer,
     webhookSecret: () => process.env.AINIZE_AGENT_MIRROR_WEBHOOK_SECRET || null,

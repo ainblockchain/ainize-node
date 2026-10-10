@@ -233,3 +233,33 @@ test('detach waits for an in-flight apply, and queued stale synchronization cann
     assert.equal(applies, 2, 'a subsequent configure owns its own serialized apply');
   } finally { release(); await syncer.stop(); }
 });
+
+test('agent deletion drains mirror apply before removing state and rejects a queued reconfiguration', async () => {
+  await upstreamCommit('Delete race source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Pending deletion.' });
+  const mirror = mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let available = true, applied = 0, landed = 0, removed = false;
+  let release!: () => void, started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, available: () => available,
+    apply: async () => { applied++; started(); await gate; }, land: async () => { landed++; }, log: () => {} });
+  const fetching = syncer.sync(mirror);
+  try {
+    await began;
+    const deleting = syncer.removeAgent(mirror.agent, async () => {
+      assert.equal(landed, 1, 'the in-flight apply lands before destructive cleanup');
+      available = false;
+      await repos.deleteRepo(mirror.agent);
+      removed = true;
+    });
+    const reconfiguring = assert.rejects(syncer.configure({ ...mirror, lastCommit: undefined }), /no longer exists/);
+    const stale = syncer.sync(mirror);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(removed, false);
+    release(); await fetching; await deleting; await reconfiguring;
+    assert.equal(await stale, null);
+    assert.equal(mirrors.get(mirror.agent), null);
+    assert.equal(repos.exists(mirror.agent), false);
+    assert.equal(applied, 1); assert.equal(landed, 1);
+  } finally { release(); await syncer.stop(); }
+});
