@@ -12,7 +12,7 @@
  * logout endpoint at the site's public origin. The last two are for the site alone and demand its signature
  * (site-call.ts), which the relay strips from anything a visitor sends.
  */
-import express, { Router, type NextFunction, type Request, type Response } from 'express';
+import express, { Router, type NextFunction, type RequestHandler, type ErrorRequestHandler, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { SITE_CALL_HEADER, type SiteCallVerifier } from './site-call.js';
 import {
@@ -67,7 +67,7 @@ export interface SsoRoutesDeps {
  * Mount BEFORE the node's JSON body parser: the adapter's request JWT signs the exact body bytes, so its route
  * gets them raw (`express.raw` here), and the JSON parser then leaves that request alone.
  */
-export function ssoRawBodyParser() {
+export function ssoRawBodyParser(): (RequestHandler | ErrorRequestHandler)[] {
   const raw = express.raw({ type: () => true, limit: SSO_ADAPTER_MAX_BODY });
   // A body over the limit fails in the parser, before any route runs: answer it in the protocol's shape too.
   const tooLarge = (err: unknown, _req: Request, res: Response, next: NextFunction) => {
