@@ -206,3 +206,30 @@ test('webhook verifies original bytes even after the global JSON parser, and ign
   const refused = await request(app).post('/api/agent-mirrors/webhook').set('content-type', 'application/json').set('x-hub-signature-256', signature).send(body + ' ');
   assert.equal(refused.status, 401);
 });
+
+test('detach waits for an in-flight apply, and queued stale synchronization cannot change the detached agent', async () => {
+  await upstreamCommit('Detach race source', { 'news-agent/agent.json': AGENT(), 'news-agent/prompt.md': 'Reviewed before detach.' });
+  const mirror = mirrors.set({ agent: 'news-review', url: `${base}/donga-science-admin.git`, branch: 'main', path: 'news-agent' });
+  let release!: () => void, started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let applies = 0, lands = 0;
+  const syncer = new AgentMirrorSyncer({ git: repos, mirrors, apply: async () => { applies++; if (applies === 1) { started(); await gate; } }, land: async () => { lands++; }, log: () => {} });
+  const fetching = syncer.sync(mirror);
+  try {
+    await began;
+    let detached = false;
+    const removing = syncer.detach(mirror.agent).then((value) => { detached = true; return value; });
+    const stale = syncer.sync(mirror);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(detached, false, 'detach cannot acknowledge while an older apply is still running');
+    release(); await fetching;
+    assert.equal(await removing, true);
+    assert.equal(await stale, null);
+    assert.equal(mirrors.get(mirror.agent), null);
+    assert.equal(applies, 1); assert.equal(lands, 1);
+    const configured = await syncer.configure({ ...mirror, lastCommit: undefined });
+    assert.ok(configured?.lastCommit);
+    assert.equal(applies, 2, 'a subsequent configure owns its own serialized apply');
+  } finally { release(); await syncer.stop(); }
+});

@@ -82,9 +82,8 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
       refuse(res, 400, 'invalid_request', 'a mirror is an https URL with no credentials in it (http only on loopback) — ainize fetches it as a public repository');
       return;
     }
-    const mirror = deps.mirrors.set({ agent: id, ...parsed.data });
-    // Fetched now, not later: a mirror that has never fetched is one nobody can tell is broken.
-    res.json({ mirror: await sync(req, mirror) });
+    // Configuration and detach serialize with fetch/apply, so completed mutations cannot be overtaken.
+    res.json({ mirror: await syncer.configure({ agent: id, ...parsed.data }, deps.principal(req)) });
   });
 
   router.post('/api/hosted-agents/:id/mirror/sync', json, async (req, res) => {
@@ -140,10 +139,10 @@ export function agentMirrorRoutes(deps: AgentMirrorRoutesDeps): Router {
       res.json({ synced });
     });
 
-  router.delete('/api/hosted-agents/:id/mirror', (req, res) => {
+  router.delete('/api/hosted-agents/:id/mirror', async (req, res) => {
     const id = open(req, res, true); if (!id) return;
     // What it is running stays running: detaching stops following, it does not revert the agent.
-    res.json({ detached: deps.mirrors.remove(id) });
+    res.json({ detached: await syncer.detach(id) });
   });
 
   return router;

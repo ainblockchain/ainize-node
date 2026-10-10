@@ -15,10 +15,21 @@ export class AgentMirrorSyncer {
   private timer: NodeJS.Timeout | null = null;
   constructor(private readonly deps: AgentMirrorSyncDeps) {}
   sync(mirror: AgentMirror, by: string | null = null): Promise<AgentMirror | null> {
-    const previous = this.inflight.get(mirror.agent) ?? Promise.resolve(null);
-    const next = previous.catch(() => null).then(() => this.perform(mirror, by));
-    this.inflight.set(mirror.agent, next);
-    void next.finally(() => { if (this.inflight.get(mirror.agent) === next) this.inflight.delete(mirror.agent); }).catch(() => {});
+    return this.serial(mirror.agent, () => this.perform(mirror, by));
+  }
+  configure(mirror: AgentMirror, by: string | null = null): Promise<AgentMirror | null> {
+    return this.serial(mirror.agent, () => this.perform(this.deps.mirrors.set(mirror), by));
+  }
+  async detach(agent: string): Promise<boolean> {
+    let detached = false;
+    await this.serial(agent, async () => { detached = this.deps.mirrors.remove(agent); return null; });
+    return detached;
+  }
+  private serial(agent: string, operation: () => Promise<AgentMirror | null>): Promise<AgentMirror | null> {
+    const previous = this.inflight.get(agent) ?? Promise.resolve(null);
+    const next = previous.catch(() => null).then(operation);
+    this.inflight.set(agent, next);
+    void next.finally(() => { if (this.inflight.get(agent) === next) this.inflight.delete(agent); }).catch(() => {});
     return next;
   }
   async sweep(): Promise<void> {
