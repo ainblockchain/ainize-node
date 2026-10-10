@@ -37,3 +37,27 @@ Private diagnostics are returned separately; never copy arbitrary gate output in
   Database/browser fixtures and network-dependent build assets are not supplied by this module.
 - A passing validation checkpoint now waits at `needs_publication`, not approval: no reviewable
   published commit or PR exists until the publication stage actually succeeds.
+
+## Host capability connection (2026-10-10)
+
+The 8 GiB retry passed Ainspace's build for the same candidate digest. Combined with the earlier
+lint/test passes, all three checks ran successfully on the existing PR tree; latest-main merge
+validation and browser regression checks remain separate.
+
+`AINIZE_QA_VALIDATION_PROFILES` optionally points at an operator-controlled JSON object mapping
+agent IDs to `QaValidationProfile` values. The server creates `HostedQaValidationService` and
+exposes `/t/<runtime token>/qa/validation` only on its existing private gateway. Runtime code uses
+`ctx.qa.validate(candidate)`. A request cannot select commands, Docker image, checkout or another
+agent. The service validates the bound candidate, runs one candidate at a time, and persists private
+receipts under the node data directory. Duplicate requests poll the running operation; completed
+receipts survive node restart. Other work receives `busy` and retries on a later tick.
+
+QA handler config `hostValidation: true` wakes completed coding candidates into validation. Each
+tick starts/polls validation, validates receipt digest and base, and preserves the job until it can
+advance to `needs_publication` or `validation_failed`. Coding and release remain separate.
+
+Tests cover the real runtime HTTP gateway with a controlled executor, token binding/revocation,
+operator-only configuration, deduplication, receipt persistence, polling and publication-stage
+transition. Actual Docker product execution was tested separately on .41. The complete hosted
+Docker → gateway → product runner chain still needs an integration run before production enablement.
+No production profile configuration has been installed in this work.

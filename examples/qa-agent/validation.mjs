@@ -88,3 +88,25 @@ export async function advanceValidation({ jobs, claim, checkpoints, gates, run }
     return { job: updated, result };
   } finally { clearInterval(heartbeat); }
 }
+
+/** Poll an operator-configured host validator. Commands, images and checkout paths never come from the model. */
+export async function advanceHostedValidation({ jobs, claim, checkpoints, ctx }) {
+  const { job, lease } = claim;
+  if (job.state !== 'running' || job.checkpoint.stage !== 'needs_validation' || job.checkpoint.coding?.jobId !== job.id) throw new Error('Job is not awaiting hosted validation');
+  const coding=checkpoints.load(job.checkpoint.coding);
+  if (coding.repository !== job.input.repository || coding.commit !== job.input.base) throw new Error('Candidate binding mismatch');
+  if (!ctx.qa?.validate) throw new Error('Host validation capability unavailable');
+  const candidate={repository:coding.repository,base:coding.commit,changes:coding.changes};
+  const digest=candidateDigest(candidate);
+  jobs.renew(job.id,lease,60000);
+  const reply=await ctx.qa.validate(candidate);
+  if (reply?.state === 'running' || reply?.state === 'busy') return jobs.finish(job.id,lease,'queued',job.checkpoint);
+  if (reply?.state === 'failed') return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,holdReason:'host_validation_failed'});
+  const result=reply?.result;
+  if (reply?.state !== 'done' || result?.candidateDigest !== digest || result.repository !== candidate.repository || result.base !== candidate.base
+    || typeof result.passed !== 'boolean' || !Array.isArray(result.gates) || !result.gates.length
+    || result.gates.some(g=>typeof g.gate!=='string'||typeof g.passed!=='boolean')
+    || (result.passed && !result.gates.every(g=>g.passed))) throw new Error('Host validation receipt mismatch');
+  const validation=checkpoints.save(job.id,{kind:'validation',...result});
+  return jobs.finish(job.id,lease,'waiting',{...job.checkpoint,validation,stage:result.passed?'needs_publication':'validation_failed'});
+}

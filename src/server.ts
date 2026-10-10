@@ -1,3 +1,5 @@
+import { HostedQaValidationService } from './hosted-qa-validation-service.js';
+import type { QaValidationProfile } from './hosted-qa-validator.js';
 import { preferredChatPeers, preferredChatPlayground } from './preferred-chat.js';
 import { NODE_VERSION as VERSION } from './version.js';
 /**
@@ -365,7 +367,11 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
     call: (target: PeerModelTarget, kind: 'transcription' | 'image', body: unknown) => callPeerModel(cfg.identity, target, kind, body),
     models: () => peerModelRefs(peerModelRows(), cfg.identity.address),
   };
+  const qaProfilesPath=process.env.AINIZE_QA_VALIDATION_PROFILES;
+  const qaValidation=qaProfilesPath ? new HostedQaValidationService(join(cfg.dataDir,'qa-validation'),
+    JSON.parse(readFileSync(qaProfilesPath,'utf8')) as Record<string,QaValidationProfile>) : undefined;
   const hostedGateway = new HostedAgentGateway({
+    qaValidation: qaValidation ? (id,candidate)=>qaValidation.submit(id,candidate) : undefined,
     registry: () => inferenceRegistry,
     peerModels,
     // Read on each call: the gates are filled further down, once the backends block has been walked.

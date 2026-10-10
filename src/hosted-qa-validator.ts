@@ -16,7 +16,12 @@ const canonical = (value: unknown): unknown => value && typeof value === 'object
   ? Array.isArray(value) ? value.map(canonical) : Object.fromEntries(Object.entries(value).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0).map(([k,v]) => [k,canonical(v)])) : value;
 const pathSafe = (path: string) => !!path && path.length <= 500 && !/[\\\x00-\x1f]/.test(path)
   && path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git' && p !== 'node_modules');
+export function qaCandidateDigest(candidate: QaCandidate) {
+  return createHash('sha256').update(JSON.stringify(canonical(candidate))).digest('hex');
+}
 export function validateQaProfile(profile: QaValidationProfile, candidate: QaCandidate) {
+  if(!candidate||typeof candidate!=='object'||Array.isArray(candidate)||Object.keys(candidate).sort().join(',')!=='base,changes,repository'
+    ||!candidate.changes||typeof candidate.changes!=='object'||Array.isArray(candidate.changes))throw new Error('Invalid candidate shape');
   if (!/^[\w.-]+\/[\w.-]+$/.test(profile.repository) || !/^[a-f0-9]{40}$/.test(profile.base)
     || candidate.repository !== profile.repository || candidate.base !== profile.base) throw new Error('Candidate/profile binding mismatch');
   if (!/^sha256:[a-f0-9]{64}$/.test(profile.image)) throw new Error('Immutable validation image required');
@@ -56,7 +61,7 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
   // Freeze the exact input before any asynchronous checkout/container operation.
   profile = structuredClone(profile); candidate = structuredClone(candidate);
   validateQaProfile(profile, candidate);
-  const candidateDigest = createHash('sha256').update(JSON.stringify(canonical(candidate))).digest('hex');
+  const candidateDigest = qaCandidateDigest(candidate);
   const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000;
   if (uid === 0) throw new Error('Run validation host under a non-root account');
   const dir = await mkdtemp(join(tmpdir(), 'ainize-qa-validation-'));

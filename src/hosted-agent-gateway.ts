@@ -205,16 +205,17 @@ export interface HostedAgentGatewayDeps {
     target(model: string, node: string | null): PeerModelTarget | null;
     fetch(target: PeerModelTarget, body: unknown): Promise<Response>;
   };
+  qaValidation?: (agentId: string, candidate: unknown) => unknown;
   spec: (agentId: string) => HostedAgentSpec | null;
   log: (message: string) => void;
 }
 
-async function readBody(req: IncomingMessage): Promise<Buffer> {
+async function readBody(req: IncomingMessage, limit = HOSTED_AGENT_GATEWAY_MAX_BODY): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += (c as Buffer).length;
-    if (size > HOSTED_AGENT_GATEWAY_MAX_BODY) throw new HostedAgentEgressRefusal('request body too large');
+    if (size > limit) throw new HostedAgentEgressRefusal('request body too large');
     chunks.push(c as Buffer);
   }
   return Buffer.concat(chunks);
@@ -288,6 +289,14 @@ export class HostedAgentGateway {
     if (!m || !spec) return sendJson(res, 401, { error: { message: 'unknown or expired agent token' } });
     const path = m[2]!;
     try {
+      if (req.method === 'POST' && path === '/qa/validation') {
+        if (!this.deps.qaValidation) return sendJson(res, 403, { error: { message: 'QA validation disabled' } });
+        let candidate: unknown;
+        try { candidate=JSON.parse((await readBody(req,3*1024*1024)).toString('utf8')); }
+        catch { return sendJson(res,400,{error:{message:'Invalid QA candidate'}}); }
+        try { return sendJson(res,200,this.deps.qaValidation(spec.id,candidate)); }
+        catch { return sendJson(res,403,{error:{message:'QA candidate or agent binding refused'}}); }
+      }
       if (req.method === 'POST' && path === '/v1/chat/completions') return await this.llm(req, res, spec);
       if (req.method === 'GET' && path === '/v1/models') return sendJson(res, 200, { object: 'list', data: [{ id: spec.model, object: 'model', owned_by: 'ainize' }] });
       if (req.method === 'POST' && path === '/egress') return await this.egress(req, res, spec);

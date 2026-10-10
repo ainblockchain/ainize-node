@@ -358,3 +358,17 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
   awaiting_approval로 표시하던 문제를 수정했다.
 - 로컬 QA suite 47개 및 typecheck 통과. 서버 실행기는 production gateway/tick에 아직
   연결되지 않았다. 검증 runner 코드 존재를 모든 채널 자동 실행 완료로 간주하면 안 된다.
+
+### 2026-10-10 후속: 검증 gateway/tick 연결
+
+- Ainspace 8GB build 재실행 통과. 기존 PR tree의 lint/test/build 증거를 확보했다.
+  이 결과는 최신 main 반영이나 실제 화면 회귀 통과의 증거는 아니다.
+- host validation service + private runtime gateway + ctx.qa.validate + native handler tick 연결.
+  설정된 agent/repo/base만 실행하며 commands/images/checkout은 operator profile에서 결정.
+  실행 중 요청은 polling, 다른 후보는 busy, 완료 receipt는 private 파일에 보존하여 재사용.
+- QA/scheduler 테스트 52개, 기존 gateway/runtime 회귀 26개, typecheck 통과.
+- 실제 Docker 제품 실행과 실제 HTTP gateway test는 각각 통과했지만 둘을 합친 hosted
+  Docker 전체 통합 실행은 아직 하지 않았다. production profile/schedule 설치도 아직이다.
+- 제한: host crash 시 orphan validation container 정리, 일시적 infrastructure 실패 receipt의
+  재시도 정책, profile 변경/정리 정책을 운영 전환 전에 점검해야 한다. 기존 단계 이력·승인
+  재검증과 PR 게시/배포/전 채널 화면 E2E도 여전히 남아 있다.

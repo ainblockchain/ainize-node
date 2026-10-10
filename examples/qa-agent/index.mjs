@@ -18,6 +18,7 @@ import { Jobs } from './jobs.mjs';
 import { Checkpoints } from './checkpoints.mjs';
 import { GitHubSnapshot } from './repository.mjs';
 import { advanceCoding } from './advance.mjs';
+import { advanceHostedValidation } from './validation.mjs';
 import { AinmemReports, parseAinmemConfig } from './ainmem.mjs';
 
 const idPattern = /^[a-zA-Z0-9-]{1,80}$/;
@@ -40,7 +41,7 @@ export function parseConfig(raw) {
   if (!/^[a-f0-9]{40}$/.test(baseCommit ?? '')) throw new Error('QA config requires a full base commit SHA');
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > 86_400_000) throw new Error('QA config maxAgeMs out of range');
   // `enabledAt`/`maxAgeMs` reach the verifier, which re-reads the canonical message's time itself.
-  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
+  return { service, teamsOrigin: origin.origin + '/', workspaceId, channelId, enabledAt, maxAgeMs, repository, baseCommit, hostValidation: config.hostValidation === true, ...(config.ainmem ? { ainmem: parseAinmemConfig(config.ainmem) } : {}) };
 }
 
 /**
@@ -138,10 +139,15 @@ export function createHandler({
         ctx?.log?.('qa tick parked job with changed configuration', job.id);
         return;
       }
+      if (job.checkpoint.stage === 'needs_validation') {
+        await advanceHostedValidation({jobs,claim,checkpoints:new CheckpointsClass(checkpointsDir),ctx});
+        return;
+      }
       const snapshot = newSnapshot(ctx, job.input.repository, job.input.base);
       const checkpoints = new CheckpointsClass(checkpointsDir);
       const { job: updated } = await advance({ jobs, claim, checkpoints, snapshot, ctx });
       await report(jobs, ctx, updated.id);
+      if (config.hostValidation && updated.checkpoint.stage === 'needs_validation') jobs.wake(updated.id);
       ctx?.log?.('qa tick advanced', updated.id, updated.state, updated.checkpoint?.stage);
     } catch (error) {
       // Bound retries while preserving the last durable candidate. Never overwrite a newer lease.

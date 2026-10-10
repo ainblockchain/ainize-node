@@ -1,0 +1,65 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync,rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { HostedQaValidationService } from '../src/hosted-qa-validation-service.js';
+import { qaCandidateDigest } from '../src/hosted-qa-validator.js';
+const profile={repository:'test/product',base:'a'.repeat(40),checkout:'/operator/repo',image:'sha256:'+'b'.repeat(64),dependencyPath:'/seed/0',cwd:'.',gates:[{name:'test',argv:['yarn','test']}]};
+const candidate={repository:profile.repository,base:profile.base,changes:{'b.js':'b','a.js':'a'}};
+test('only configured agent can start validation; duplicates and restarts reuse exact receipts',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'qa-service-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let resolve!:()=>void;const pending=new Promise<void>(r=>{resolve=r;});let runs=0;
+ const run=async()=>{runs++;await pending;return {repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}],passed:true};};
+ const service=new HostedQaValidationService(root,{agent:profile},run);
+ assert.throws(()=>service.submit('other',candidate),/not configured/);
+ assert.deepEqual(service.submit('agent',candidate),{state:'running'});
+ assert.deepEqual(service.submit('agent',{...candidate,changes:{'a.js':'a','b.js':'b'}}),{state:'running'});
+ assert.deepEqual(service.submit('agent',{...candidate,changes:{'a.js':'different'}}),{state:'busy'});
+ await new Promise(r=>setImmediate(r));assert.equal(runs,1);
+ resolve();await new Promise(r=>setImmediate(r));
+ assert.equal(service.submit('agent',candidate).state,'done');
+ const restored=new HostedQaValidationService(root,{agent:profile},async()=>{throw new Error('must not re-run');});
+ assert.equal(restored.submit('agent',candidate).state,'done');
+ assert.throws(()=>service.submit('agent',{...candidate,image:'user-supplied'}),/shape/);
+});
+
+test('runtime gateway binds validation to the authenticated agent and polling preserves the job stage',async t=>{
+ const {HostedAgentGateway}=await import('../src/hosted-agent-gateway.js');
+ const {hostedAgentSpecInput}=await import('../src/hosted-agent-types.js');
+ const {createHostedAgentCtx}=await import('../src/hosted-agent-runtime/hostedAgentContext.js');
+ // @ts-expect-error - example module
+ const {Jobs}=await import('../examples/qa-agent/jobs.mjs');
+ // @ts-expect-error - example module
+ const {Checkpoints}=await import('../examples/qa-agent/checkpoints.mjs');
+ // @ts-expect-error - example module
+ const {advanceHostedValidation}=await import('../examples/qa-agent/validation.mjs');
+ const root=mkdtempSync(join(tmpdir(),'qa-gateway-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const jobs=new Jobs(join(root,'jobs.sqlite3'));t.after(()=>jobs.close());
+ const checkpoints=new Checkpoints(join(root,'checkpoints'));
+ let resolve!:()=>void;const pending=new Promise<void>(r=>{resolve=r;});
+ const service=new HostedQaValidationService(join(root,'host'),{agent:profile},async()=>{
+  await pending;return {repository:candidate.repository,base:candidate.base,candidateDigest:qaCandidateDigest(candidate),gates:[{gate:'test',passed:true,summary:'ok',diagnostics:''}],passed:true};
+ });
+ const spec=(id:string)=>({...hostedAgentSpecInput.parse({id,name:id,model:'unused',mode:'handler',files:{'index.mjs':'export default {}'}}),version:1,owner:'test',createdAt:1,updatedAt:1});
+ const gateway=new HostedAgentGateway({registry:()=>null,spec:id=>spec(id),log:()=>{},qaValidation:(id,c)=>service.submit(id,c)});
+ const url=await gateway.listen('127.0.0.1');t.after(()=>gateway.close());
+ const token=gateway.issue('agent'),other=gateway.issue('other');
+ const ctx=createHostedAgentCtx({spec:spec('agent'),gateway:{url,token},secrets:{},log:()=>{}},{text:''});
+ const denied=await fetch(`${url}/t/${other}/qa/validation`,{method:'POST',body:JSON.stringify(candidate)});
+ assert.equal(denied.status,403);
+ const forged=await fetch(`${url}/t/${token}/qa/validation`,{method:'POST',body:JSON.stringify({...candidate,agentId:'other'})});
+ assert.equal(forged.status,403);
+ const job=jobs.enqueue('request',{repository:candidate.repository,base:candidate.base,text:'고쳐줘'});
+ const claim=jobs.claim();const coding=checkpoints.save(job.id,{repository:candidate.repository,commit:candidate.base,changes:candidate.changes});
+ jobs.finish(job.id,claim.lease,'queued',{stage:'needs_validation',coding});
+ const polling=await advanceHostedValidation({jobs,claim:jobs.claim(),checkpoints,ctx});
+ assert.equal(polling.state,'queued');assert.equal(polling.checkpoint.stage,'needs_validation');
+ resolve();await new Promise(r=>setImmediate(r));
+ const done=await advanceHostedValidation({jobs,claim:jobs.claim(),checkpoints,ctx});
+ assert.equal(done.state,'waiting');assert.equal(done.checkpoint.stage,'needs_publication');
+ assert.equal(done.checkpoint.approval,undefined);
+ assert.equal(checkpoints.load(done.checkpoint.validation).candidateDigest,qaCandidateDigest(candidate));
+ gateway.revoke(token);
+ await assert.rejects(ctx.qa!.validate(candidate),/refused/);
+});
