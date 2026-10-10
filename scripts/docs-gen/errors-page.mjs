@@ -11,7 +11,7 @@
 import { relative, join } from 'node:path';
 import { ts, parseFile, tsFiles, literal, walk, resolveConst } from './ts.mjs';
 import { code, cell, table } from './md.mjs';
-import { at as srcPath } from './paths.mjs';
+import { at as srcPath, sourceLabel } from './paths.mjs';
 
 /** `'quota_rows: this node trains up to 300 questions'` -> the code and the sentence, or null when there is none. */
 export function splitCoded(message) {
@@ -167,7 +167,7 @@ export function codedErrors(files, classes, repo) {
         const v = literal(args[0]);
         status = typeof v === 'number' ? v : null;
       }
-      const rel = relative(repo, file);
+      const rel = sourceLabel(repo, file);
       if (message === null || status === null) { uncoded.push({ file: rel, klass: info.name, message, status }); return; }
       const split = splitCoded(message);
       if (!split) { uncoded.push({ file: rel, klass: info.name, message, status }); return; }

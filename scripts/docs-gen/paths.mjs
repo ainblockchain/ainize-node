@@ -13,7 +13,7 @@
  * sources absent is not a smaller page, it is a page that says a command or an error code does not exist.
  */
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, isAbsolute } from 'node:path';
 
 /** The directory the repositories sit in — `ainize-node`'s parent, wherever it has been checked out. */
 export function workspaceRoot(repo) { return dirname(repo); }
@@ -46,4 +46,15 @@ export function requireSiblings(repo, names = ['core', 'node', 'cli', 'web']) {
       + `not found in ${workspaceRoot(repo)}. The reference pages are generated from all four, and one missing source does not `
       + `make a shorter page — it makes a page that says a command does not exist.`);
   }
+}
+
+/** Stable reference links must not expose the temporary checkout used to build a release. */
+export function sourceLabel(repo, file) {
+  for (const name of ['node', 'core', 'cli', 'web']) {
+    const path = relative(sourceRepo(repo, name), file);
+    if (!isAbsolute(path) && path !== '..' && !path.startsWith('../') && !path.startsWith('..\\')) {
+      return `${name === 'node' ? '' : `../ainize-${name}/`}${path.replaceAll('\\', '/')}`;
+    }
+  }
+  return relative(repo, file);
 }
