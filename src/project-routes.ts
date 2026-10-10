@@ -262,7 +262,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const last = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
     const kind = last?.kind ?? project.kind;
     const entry = last?.manifest?.entry ?? project.entry;
-    const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs) } : null;
+    const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs), sha: last.sha } : null;
     res.status(200).send(JSON.stringify(projectSnippet({ project, deployments, base: base(req), pageUrl: pageUrlOf(req, project), run, canRedeploy: canEdit(project, viewer) })));
   });
 

@@ -113,7 +113,7 @@ export function snippetInputsOf(inputs: ProjectManifestInput['inputs'] | undefin
 export function runBlock(entry: string, inputs: SnippetInput[]): { components: A2uiComponent[]; data: Record<string, unknown>; context: Record<string, unknown> } {
   const comps: A2uiComponent[] = [];
   const fields: string[] = [];
-  const inputsData: Record<string, string> = {};
+  const inputsData: Record<string, string | string[]> = {};
   const context: Record<string, unknown> = {};
   for (const i of inputs) {
     const id = `run.input.${i.name}`;
@@ -122,9 +122,10 @@ export function runBlock(entry: string, inputs: SnippetInput[]): { components: A
     if (i.required) label += ' *';
     if (i.type === 'choice' && i.options) label += ` (${i.options.join(' | ')})`;
     if (i.type === 'boolean') label += ' (true | false)';
-    comps.push({ id, component: 'TextField', label, value: bind(path), ...(i.type === 'number' ? { variant: 'number' } : {}) });
+    const options = i.type === 'choice' ? i.options : i.type === 'boolean' ? ['true', 'false'] : null;
+    comps.push(options ? { id, component: 'ChoicePicker', label, value: bind(path), variant: 'mutuallyExclusive', options: options.map((value) => ({ label: value, value })) } : { id, component: 'TextField', label, value: bind(path), ...(i.type === 'number' ? { variant: 'number' } : {}) });
     fields.push(id);
-    inputsData[i.name] = i.default ?? '';
+    inputsData[i.name] = options ? (i.default === null ? [] : [i.default]) : i.default ?? '';
     context[inputEnvName(i.name)] = bind(path);
   }
   comps.push(text('run.entry', `▶ Run ${entry}`, 'h5'));
@@ -146,7 +147,7 @@ export interface ProjectSnippetInput {
   /** the `/<org>/<repo>` page and the `/projects/<id>` page */
   pageUrl: string;
   /** the deployed commit's run form — `script` projects with a deployment that recorded its manifest */
-  run: { entry: string; inputs: SnippetInput[] } | null;
+  run: { entry: string; inputs: SnippetInput[]; sha?: string } | null;
   /** owner: may redeploy */
   canRedeploy: boolean;
   now?: number;
@@ -192,9 +193,12 @@ export function projectSnippet(i: ProjectSnippetInput): AinuiSnippet {
   let data: Record<string, unknown> = {};
   if (i.run) {
     const r = runBlock(i.run.entry, i.run.inputs);
+    if (i.run.sha) r.components.push(text('run.commit', `Commit ${i.run.sha}`, 'caption'));
+    const runBody = r.components.find((c) => c.id === 'run.body');
+    if (i.run.sha && runBody && Array.isArray(runBody.children)) runBody.children.unshift('run.commit');
     comps.push(...r.components);
     data = { ...data, ...r.data };
-    actions.run = { method: 'POST', url: `${base}/api/projects/${p.id}/run`, body: { env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } };
+    actions.run = { method: 'POST', url: `${base}/api/projects/${p.id}/run`, body: { ...(i.run.sha ? { target: 'commit', sha: i.run.sha } : { target: 'deployed' }), env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } };
     sections.push('run');
   }
 

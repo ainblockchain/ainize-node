@@ -180,7 +180,7 @@ function checkSurface(s: AinuiSnippet): A2uiComponent[] {
   assert.equal(new Set(ids).size, ids.length, 'ids are unique');
   assert.ok(ids.includes('root'));
   for (const c of comps) {
-    assert.ok(['Column', 'Row', 'Card', 'Text', 'Divider', 'TextField', 'Button'].includes(c.component), `${c.id}: ${c.component} is in the shared vocabulary`);
+    assert.ok(['Column', 'Row', 'Card', 'Text', 'Divider', 'TextField', 'ChoicePicker', 'Button'].includes(c.component), `${c.id}: ${c.component} is in the shared vocabulary`);
     const refs = [...(Array.isArray(c.children) ? (c.children as string[]) : []), ...(typeof c.child === 'string' ? [c.child] : [])];
     for (const r of refs) assert.ok(ids.includes(r), `${c.id} → ${r} resolves`);
     if (c.component === 'Button') {
@@ -240,7 +240,7 @@ test('projectSnippet: header, three deployment rows, the Run form from the manif
   assert.match(comps.find((c) => c.id === 'deployments.1.text')!.text as string, /^● error {2}1111111 \(exit 2\) · /);
   assert.deepEqual(s.actions['open:visit:0'], { method: 'GET', url: `${NODE}/api/deployments/dep_0/output`, navigate: true });
   assert.equal(s.actions['open:visit:1'], undefined);
-  assert.deepEqual(s.actions.run, { method: 'POST', url: `${NODE}/api/projects/${p.id}/run`, body: { env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } });
+  assert.deepEqual(s.actions.run, { method: 'POST', url: `${NODE}/api/projects/${p.id}/run`, body: { target: 'deployed', env: { $context: true } }, stream: 'sse', output: { path: '/run/output', status: '/run/status' } });
   assert.deepEqual(comps.find((c) => c.id === 'run.button')!.action, { event: { name: 'run', context: { INPUT_DESC: { path: '/inputs/DESC' } } } });
   assert.deepEqual(comps.find((c) => c.id === 'run.input.DESC'), { id: 'run.input.DESC', component: 'TextField', label: '묘사 *', value: { path: '/inputs/DESC' } });
   assert.deepEqual((s.surface[2] as { updateDataModel: { value: unknown } }).updateDataModel.value, { inputs: { DESC: 'a boat' }, run: { status: 'idle', output: '' } });
@@ -289,6 +289,8 @@ test('GET /api/ainui/snippet: the project page URL → the snippet for the viewe
     assert.equal(comps.find((c) => c.id === 'run.input.MODEL')!.label, 'MODEL (clef-flash | clef)');
     assert.equal((s.surface[2] as { updateDataModel: { value: { inputs: unknown } } }).updateDataModel.value.inputs && (s.surface[2] as { updateDataModel: { value: { inputs: Record<string, string> } } }).updateDataModel.value.inputs.DESC, 'a boat at dusk');
     assert.equal(s.actions.run!.url, `${NODE}/api/projects/${p.id}/run`);
+    assert.deepEqual(s.actions.run!.method === 'POST' && s.actions.run.body, { target: 'commit', sha: sha1, env: { $context: true } });
+    assert.equal(comps.find((c) => c.id === 'run.input.MODEL')!.component, 'ChoicePicker');
     assert.equal('redeploy' in s.actions, who !== 'member actor', `${who}: redeploy is the owner's`);
   }
   // By id, and by path.
