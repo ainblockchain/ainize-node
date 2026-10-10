@@ -25,7 +25,7 @@ import type { AgentCaller } from './shared-agents.js';
 import {
   hookBody, hookSignatureOk, parseRepoUrl, projectInput, runInput, type Deployment, type DeploymentLogs, type Project, ProjectLimitError, ProjectRepoTakenError,
   type ProjectStore, type ProjectWorker, PROJECT_DEFAULT_CORS_ORIGINS, PROJECT_SECRET_DEPLOY_TOKEN, PROJECT_SECRET_WEBHOOK,
-  languageOf, readTree, PROJECT_RUN_TIMEOUT_MS,
+  languageOf, readTree, projectRoot, PROJECT_RUN_TIMEOUT_MS,
 } from './projects.js';
 import { repositoryId } from './repository-runtime.js';
 import { randomBytes, createHash } from 'node:crypto';
@@ -193,7 +193,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     id: d.id, projectId: d.projectId, repoId: repositoryId(deps.store.get(d.projectId)?.repo ?? ''), sourceCommit: d.sha || null, actor: d.pusher?.subject ?? null, sha: d.sha, ref: d.ref, status: d.status, pusher: d.pusher, createdAt: d.createdAt,
     startedAt: d.startedAt, finishedAt: d.finishedAt, ms: d.ms, ...(d.exitCode === null ? {} : { exitCode: d.exitCode }), ...(d.error ? { error: d.error } : {}),
     ...(d.kind ? { kind: d.kind } : {}), trigger: d.trigger ?? 'push', ...(d.subject ? { subject: d.subject } : {}),
-    ...(d.trigger === 'run' ? { entry: d.entry ?? null, inputs: d.inputs ?? {}, env: d.env ?? {} } : {}),
+    ...(d.trigger === 'run' ? { target: d.target ?? 'head', entry: d.entry ?? null, inputs: d.inputs ?? {}, env: d.env ?? {} } : {}),
     logUrl: `${base(req)}/api/deployments/${d.id}/log`,
     ...(d.status === 'ready' && d.outputUrl ? { outputUrl: d.outputUrl } : {}),
   });
@@ -259,7 +259,7 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     snippetHeaders(res);
     if (!canSee(project, viewer)) return res.status(403).send(JSON.stringify(deniedSnippet(new URL(base(req)).host, `${project.org}/${project.repoName}`, pageUrlOf(req, project))));
     const deployments = deps.store.deploymentsOf(project.id);
-    const last = deployments[0] ?? null;
+    const last = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
     const kind = last?.kind ?? project.kind;
     const entry = last?.manifest?.entry ?? project.entry;
     const run = kind === 'script' && last && entry ? { entry, inputs: snippetInputsOf(last.manifest?.inputs) } : null;
@@ -285,11 +285,16 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     const hit = await seen(req, res);
     if (!hit) return;
     const { project, viewer } = hit;
-    const env = validateRunEnv((req.body ?? {}).env);
-    if (env === null) return refuse(res, 400, 'invalid_request', 'env: at most 16 entries named like ^[A-Za-z_][A-Za-z0-9_]*$, values up to 2 KiB');
-    const last = project.lastDeploymentId ? deps.store.deployment(project.lastDeploymentId) : null;
-    if (!last) return refuse(res, 409, 'no_deployment', 'nothing has been deployed yet — push to the project\'s branch first');
-    if ((last.kind ?? project.kind) !== 'script') return refuse(res, 409, 'not_a_script', `a ${last.kind ?? project.kind ?? 'project of unknown kind'} is not run on demand`);
+    const parsed = runInput.safeParse({ ...(req.body ?? {}), target: req.body?.target ?? 'deployed' });
+    if (!parsed.success) return refuse(res, 400, 'invalid_request', parsed.error.issues[0]?.message ?? 'invalid run');
+    const input = parsed.data;
+    const env = validateRunEnv(input.env);
+    if (env === null) return refuse(res, 400, 'invalid_request', 'invalid environment variables');
+    if (input.target === 'commit' && !input.sha) return refuse(res, 400, 'invalid_request', 'sha is required for a commit run');
+    if (input.target !== 'commit' && input.sha) return refuse(res, 400, 'invalid_request', 'sha is only used for a commit run');
+    if (input.entry && input.entry.split('/').some((part) => part === '' || part === '.' || part === '..')) return refuse(res, 400, 'invalid_request', 'entry is a repository-relative file');
+    const active = project.activeDeploymentId ? deps.store.deployment(project.activeDeploymentId) : null;
+    if (input.target === 'deployed' && !active?.sha) return refuse(res, 409, 'no_deployment', 'no successful deployment is available');
     let apiKey: string | undefined;
     if (viewer.subject && deps.actor?.keyFor) {
       try { apiKey = deps.actor.keyFor(viewer.subject); }
@@ -298,6 +303,10 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
         throw e;
       }
     }
+    const record = deps.store.createRun(project, input, viewer.subject ? { subject: viewer.subject } : { subject: viewer.principal });
+    const startedAt = Date.now();
+    deps.store.updateDeployment(record.id, { status: 'building', startedAt });
+    res.setHeader('X-Ainize-Execution', record.id);
     const work = mkdtempSync(join(tmpdir(), 'ainize-snippet-run-'));
     const abort = new AbortController();
     res.on('close', () => abort.abort());
@@ -310,22 +319,39 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
     };
     const send = (event: string, data: unknown) => { open(); if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
     try {
-      await deps.worker.checkout(project, last.sha, work);
-      const manifest = resolveProjectManifest(work, { entry: project.entry });
-      if (manifest.kind !== 'script' || !manifest.entry) return refuse(res, 409, 'not_a_script', `the deployed commit's ainize.json is a ${manifest.kind}`);
-      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(manifest.entry);
-      if (!language) return refuse(res, 409, 'no_runtime', `no runtime for "${manifest.entry}"`);
-      const files = readTree(work);
-      if (!(manifest.entry in files)) return refuse(res, 409, 'no_entry', `entry "${manifest.entry}" is not in the repository`);
-      deps.log?.('info', `project ${project.id}: run ${manifest.entry}@${last.sha.slice(0, 12)} for ${viewer.principal}${viewer.kind === 'actor' ? ` via ${viewer.app}` : ''}`);
+      const sha = await deps.worker.checkout(project, record.sha, work);
+      const root = projectRoot(work, project.sourcePath);
+      const manifest = resolveProjectManifest(root, { entry: project.entry });
+      const entry = input.entry ?? manifest.entry;
+      if (manifest.kind !== 'script' || !entry) throw new Error(`the selected commit's ainize.json is a ${manifest.kind}`);
+      const language = manifest.runtime === 'python3.11' ? 'python' : manifest.runtime === 'node20' ? 'node' : languageOf(entry);
+      if (!language) throw new Error(`no runtime for "${entry}"`);
+      const files = readTree(root);
+      if (!(entry in files)) throw new Error(`entry "${entry}" is not in the repository`);
+      deps.store.updateDeployment(record.id, { sha, kind: manifest.kind, entry, manifest });
+      deps.log?.('info', `project ${project.id}: run ${entry}@${sha.slice(0, 12)} for ${viewer.principal}${viewer.kind === 'actor' ? ` via ${viewer.app}` : ''}`);
+      deps.logs.append(record.id, `[ainize] ${input.target}: ${entry}@${sha}\n`);
+      let exit: { code: number; ms: number } | null = null;
       await deps.worker.runScript({
-        language, entry: manifest.entry, files,
-        env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...env, AINIZE_PROJECT: project.id, AINIZE_COMMIT: last.sha },
-        timeoutMs: manifest.timeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
-      }, (ev) => send(ev.event, ev.data));
+        language, entry, files,
+        env: { ...manifest.env, ...inputDefaults(manifest.inputs), ...Object.fromEntries(Object.entries(input.inputs ?? {}).map(([key, value]) => [`INPUT_${key}`, String(value)])), ...env, AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha },
+        timeoutMs: input.timeoutMs ?? manifest.timeoutMs ?? PROJECT_RUN_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
+      }, (ev) => {
+        if (ev.event === 'exit') exit = ev.data;
+        else {
+          deps.logs.append(record.id, ev.data);
+          if (ev.event === 'stdout') deps.logs.append(record.id, ev.data, 'out');
+        }
+        send(ev.event, ev.data);
+      });
+      const result = exit as { code: number; ms: number } | null;
+      if (!result) throw new Error('runner ended without an exit code');
+      deps.store.updateDeployment(record.id, { status: result.code === 0 ? 'ready' : 'error', exitCode: result.code, ms: result.ms, finishedAt: Date.now(), error: result.code === 0 ? null : `exit ${result.code}` });
       if (!res.writableEnded) res.end();
     } catch (e) {
       const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
+      deps.logs.append(record.id, `[ainize] ${message}\n`);
+      deps.store.updateDeployment(record.id, { status: 'error', error: message, ms: Date.now() - startedAt, finishedAt: Date.now() });
       if (!streaming) return refuse(res, 502, 'run_failed', message);
       send('error', message);
       send('exit', { code: 1, ms: 0 });
@@ -585,6 +611,8 @@ export function projectRoutes(deps: ProjectRoutesDeps): Router {
       return refuse(res, 400, 'invalid_request', `${issue?.path.join('.') || 'body'}: ${issue?.message ?? 'invalid'}`);
     }
     if (ctx.project.kind && ctx.project.kind !== 'script') return refuse(res, 409, 'not_a_script', `${ctx.project.org}/${ctx.project.repoName} is a ${ctx.project.kind} project — it is deployed by a push, not run`);
+    if (parsed.data.target !== 'commit' && parsed.data.sha) return refuse(res, 400, 'invalid_request', 'sha is only used for a commit run');
+    if (parsed.data.entry && parsed.data.entry.split('/').some((part) => part === '' || part === '.' || part === '..')) return refuse(res, 400, 'invalid_request', 'entry is a repository-relative file');
     if (parsed.data.target === 'commit' && !parsed.data.sha) return refuse(res, 400, 'invalid_request', 'a commit run requires sha');
     if (parsed.data.target === 'deployed' && !ctx.project.activeCommit) return refuse(res, 409, 'no_deployment', 'there is no successful deployment to run');
     const d = deps.store.createRun(ctx.project, parsed.data, actorOf(ctx.who));

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentRuntimeStore, repositoryId, waitForAgentVersion, type RuntimeSource } from '../src/repository-runtime.js';
-import { ProjectStore, parseRepoUrl } from '../src/projects.js';
+import { ProjectStore, parseRepoUrl, projectRoot, readTree } from '../src/projects.js';
 
 test('agent source and projection commits are distinct; a failed build preserves the active commit after restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ainize-runtime-'));
@@ -53,5 +53,18 @@ test('project active deployment survives newer failures and pruning; receipts an
     assert.equal(run.sha, ready.sha);
     restored.updateDeployment(run.id, { status: 'ready' });
     assert.equal(restored.get(p.id)!.activeDeploymentId, ready.id, 'a run cannot become the deployment');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('run trees and source folders cannot follow symlinks outside the checkout', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ainize-run-root-'));
+  try {
+    const checkout = join(dir, 'repo'), outside = join(dir, 'outside');
+    mkdirSync(checkout); mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.txt'), 'server-only');
+    symlinkSync(outside, join(checkout, 'source'));
+    assert.throws(() => projectRoot(checkout, 'source'), /escapes the repository/);
+    assert.throws(() => readTree(checkout), /symlinks cannot be run/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

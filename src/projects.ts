@@ -26,7 +26,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, lstatSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -99,6 +99,7 @@ export interface Deployment {
   trigger?: DeploymentTrigger;
   /** `run` only: the file to run instead of the manifest's entry, and the answers to its `inputs` / extra env. */
   entry?: string | null;
+  target?: RunInput['target'];
   inputs?: Record<string, string>;
   env?: Record<string, string>;
   /** The commit's subject line, read after the clone. */
@@ -351,7 +352,7 @@ export class ProjectStore {
     const d: Deployment = {
       id: `run_${randomBytes(8).toString('hex')}`, projectId: project.id, sha: input.target === 'deployed' ? project.activeCommit ?? '' : input.sha ?? '', ref: `refs/heads/${project.branch}`, status: 'queued',
       pusher: actor, createdAt: now, startedAt: null, finishedAt: null, ms: null, exitCode: null, error: null, trigger: 'run',
-      entry: input.entry ?? null, inputs, env: input.env ?? {},
+      target: input.target, entry: input.entry ?? null, inputs, env: input.env ?? {},
     };
     this.deployments.set(d.id, d);
     this.save();
@@ -564,7 +565,7 @@ export class ProjectWorker extends EventEmitter {
       store.updateDeployment(d.id, { sha, subject });
       if (isRun) say(`[ainize] at ${sha.slice(0, 12)}${subject ? ` — ${subject}` : ''}`);
       let manifest: ProjectManifest;
-      try { manifest = resolveProjectManifest(project.sourcePath ? join(work, project.sourcePath) : work, { entry: d.entry ?? project.entry }); }
+      try { manifest = resolveProjectManifest(projectRoot(work, project.sourcePath), { entry: d.entry ?? project.entry }); }
       catch (e) {
         const message = e instanceof ProjectManifestError ? e.message : (e as Error).message;
         say(`[ainize] error: ${message}`);
@@ -577,7 +578,7 @@ export class ProjectWorker extends EventEmitter {
         ...(manifest.name ? { name: manifest.name } : {}), ...(manifest.entry ? { entry: manifest.entry } : {}),
         ...(manifest.runtime ? { runtime: manifest.runtime } : {}), ...(manifest.timeoutMs ? { timeoutMs: manifest.timeoutMs } : {}),
       };
-      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(project.sourcePath ? join(work, project.sourcePath) : work) });
+      store.updateDeployment(d.id, { kind: manifest.kind, manifest: snapshot, runnable: runnableFiles(projectRoot(work, project.sourcePath)) });
       say(`[ainize] ${manifest.kind} (${manifest.detected === 'package.json' ? 'no ainize.json; package.json depends on next' : 'ainize.json'})`);
       const publicUrl = this.deps.publicUrl().replace(/\/+$/, '');
       const env = { AINIZE_PROJECT: project.id, AINIZE_COMMIT: sha };
@@ -589,7 +590,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'service' || manifest.kind === 'nextjs') {
         if (!this.deps.containers) { say('[ainize] error: this node runs no project containers (Docker is not enabled)'); finish({ status: 'error', error: 'this node runs no project containers (Docker is not enabled)' }); return; }
-        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, project.sourcePath ? join(work, project.sourcePath) : work, manifest, env, say, this.actorKey(d, say));
+        await this.deps.containers.deploy({ projectId: project.id, deploymentId: d.id, sha: d.sha }, projectRoot(work, project.sourcePath), manifest, env, say, this.actorKey(d, say));
         const outputUrl = `${publicUrl}/svc/${project.id}/`;
         say(`[ainize] ready at ${outputUrl}`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -598,7 +599,7 @@ export class ProjectWorker extends EventEmitter {
 
       if (manifest.kind === 'agent') {
         if (!this.deps.agents) { say('[ainize] error: this node hosts no agents'); finish({ status: 'error', error: 'this node hosts no agents' }); return; }
-        const spec = await deployProjectAgent(this.deps.agents, project, project.sourcePath ? join(work, project.sourcePath) : work, manifest, say, sha);
+        const spec = await deployProjectAgent(this.deps.agents, project, projectRoot(work, project.sourcePath), manifest, say, sha);
         const outputUrl = `${publicUrl}/agents/${spec.id}`;
         say(`[ainize] ready at ${outputUrl} (A2A, v${spec.version})`);
         finish({ status: 'ready', exitCode: null, error: null, outputUrl });
@@ -609,7 +610,7 @@ export class ProjectWorker extends EventEmitter {
       const language = manifest.runtime === 'python3.11' && !d.entry ? 'python' : manifest.runtime === 'node20' && !d.entry ? 'node' : languageOf(entry);
       if (!language) { say(`[ainize] error: no runtime for "${entry}"`); finish({ status: 'error', error: `entry "${entry}" is not a .py/.js/.mjs file and ainize.json names no runtime` }); return; }
       let files: Record<string, string>;
-      try { files = readTree(project.sourcePath ? join(work, project.sourcePath) : work); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
+      try { files = readTree(projectRoot(work, project.sourcePath)); } catch (e) { say(`[ainize] error: ${(e as Error).message}`); finish({ status: 'error', error: (e as Error).message }); return; }
       if (!(entry in files)) { say(`[ainize] error: entry "${entry}" is not in the repository`); finish({ status: 'error', error: `entry "${entry}" not found` }); return; }
       say(`[ainize] run ${entry} (${language}, ${Object.keys(files).length} files)`);
       let exit: { code: number; ms: number } | null = null;
@@ -654,8 +655,8 @@ export class ProjectWorker extends EventEmitter {
    * link snippet (`POST /api/projects/:id/run`, project-routes.ts), which executes the deployed commit again with
    * a person's answers. The caller owns `dir` and removes it.
    */
-  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<void> {
-    await this.clone(project, sha, dir, say);
+  async checkout(project: Project, sha: string, dir: string, say: (line: string) => void = () => {}): Promise<string> {
+    return this.clone(project, sha, dir, say);
   }
 
   /** Returns the commit the tree is at — `sha`, or the branch tip when `sha` is empty (an ad-hoc run of HEAD). */
@@ -694,6 +695,16 @@ export class ProjectWorker extends EventEmitter {
   }
 }
 
+/** A configured source folder must remain inside its checked-out repository, including after resolving symlinks. */
+export function projectRoot(work: string, sourcePath?: string): string {
+  const checkout = realpathSync(work);
+  const root = realpathSync(sourcePath ? join(checkout, sourcePath) : checkout);
+  const rel = relative(checkout, root);
+  if (rel === '..' || rel.startsWith('../') || rel.startsWith('..\\')) throw new Error('sourcePath escapes the repository');
+  if (!statSync(root).isDirectory()) throw new Error('sourcePath is not a directory');
+  return root;
+}
+
 /** The repository's runnable files (what the Run panel offers as `entry`), `main.*`/`index.*` first, ≤ 64. */
 export function runnableFiles(root: string): string[] {
   const out: string[] = [];
@@ -702,7 +713,7 @@ export function runnableFiles(root: string): string[] {
     for (const name of readdirSync(dir).sort()) {
       if (name === '.git' || name === 'node_modules' || name.startsWith('.')) continue;
       const full = join(dir, name);
-      let st; try { st = statSync(full); } catch { continue; }
+      let st; try { st = lstatSync(full); } catch { continue; }
       if (st.isDirectory()) { walk(full, depth + 1); continue; }
       if (st.isFile() && languageOf(name) && out.length < 64) out.push(relative(root, full).split('\\').join('/'));
     }
@@ -720,7 +731,8 @@ export function readTree(root: string): Record<string, string> {
     for (const name of readdirSync(dir).sort()) {
       if (name === '.git') continue;
       const full = join(dir, name);
-      const st = statSync(full);
+      const st = lstatSync(full);
+      if (st.isSymbolicLink()) throw new Error(`repository symlinks cannot be run: ${relative(root, full)}`);
       if (st.isDirectory()) { walk(full); continue; }
       if (!st.isFile()) continue;
       if (Object.keys(files).length >= PROJECT_MAX_FILES) throw new Error(`the repository has more than ${PROJECT_MAX_FILES} files; a script project runs a tree of at most ${PROJECT_MAX_FILES}`);

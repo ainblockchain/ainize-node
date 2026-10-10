@@ -39,3 +39,15 @@ Configuration remains local to its package: ainize.json owns execution; agent.js
 - Auto-binding accepts `bindRequestId` so the same authenticated application can recover its lost creation response. A different receipt or legacy lookup cannot read the hook secret. Eight auto-binding API tests passed; Drive's 15 binding/delivery tests passed.
 
 Remaining ledger items retain their full scope; these observations do not prove end-to-end completion or production deployment.
+
+## Added deployment and HANDOFF scope (user instruction, 2026-10-10)
+
+All remaining items in `HANDOFF.md` are explicitly required, including its smaller items:
+
+- [ ] Cross-owner forks and cross-repository PR permissions, preserving the original source and validating the merged result.
+- [ ] PR review comments (authenticated authorship and proposal visibility rules).
+- [ ] AIN Teams Run UI: viewer identity, manifest inputs/model, selected/deployed commit, streaming output, error/cancellation, and mobile reachability.
+- [ ] Deploy the completed changes to ainize-node, ainize-web, AIN Drive, AinCode workspace runtime and AIN Teams using their release procedures.
+- [ ] Verify production repository endpoints, signed mirror synchronization, preview isolation/expiry, Run from Drive and AIN Teams, preserved active runtime on failed replacement, and compatibility URLs.
+
+Current version-run progress: streamed project runs accept explicit HEAD/commit/deployed targets, persist execution/actor/input/log records, and default link snippets to the last successful deployment. Real Git HTTP tests prove HEAD differs from a pinned older SHA and that a failed latest deployment does not redirect deployed runs. Drive forwards immutable version runs to the project using the person’s SSO actor; it does not fall back to mutable files on authorization failure. Local rendering at 320/390/640/1280 px had no horizontal overflow; mobile version selectors are 44 px high with 16 px text. Ainize console exposes version selection and exact-SHA Run again. This is partial evidence; selected-version manifest forms and full AIN Teams integration still need completion.

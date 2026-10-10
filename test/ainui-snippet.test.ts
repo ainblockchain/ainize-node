@@ -374,3 +374,39 @@ test('POST /api/projects/:id/redeploy: the owner (session or actor) queues the n
   assert.equal(session.status, 202);
   await worker.idle();
 });
+
+test('streamed runs pin the selected source and deployed runs survive a newer failed deployment', async () => {
+  const work = join(tmp, 'work');
+  writeFileSync(join(work, 'main.py'), 'print("v2")\n');
+  await git(work, ['add', '.']);
+  await git(work, ['commit', '-qm', 'Second source']);
+  await git(work, ['push', '-q', 'origin', 'main']);
+  const second = (await git(work, ['rev-parse', 'HEAD'])).trim();
+  const p = store.get(projectId)!;
+  const failed = store.createDeployment(p, { ref: 'refs/heads/main', after: second });
+  store.updateDeployment(failed.id, { status: 'error', error: 'replacement failed' });
+  const invoke = async (body: Record<string, unknown>) => {
+    const res = await request(app).post(`/api/projects/${projectId}/run`).set(await asActor('acc_member')).send(body);
+    assert.equal(res.status, 200, res.text);
+    const record = store.deployment(res.headers['x-ainize-execution'])!;
+    assert.equal(record.status, 'ready');
+    assert.equal(record.pusher?.subject, 'acc_member');
+    return record;
+  };
+  const deployed = await invoke({ target: 'deployed', inputs: { MODEL: 'clef', DESC: 'a harbour' } });
+  assert.equal(deployed.sha, sha1);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v1")\n');
+  assert.equal(deployed.inputs?.MODEL, 'clef');
+  assert.equal(runs.at(-1)!.env.INPUT_MODEL, 'clef');
+  const head = await invoke({ target: 'head' });
+  assert.equal(head.sha, second);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v2")\n');
+  const commit = await invoke({ target: 'commit', sha: sha1 });
+  assert.equal(commit.sha, sha1);
+  assert.equal(runs.at(-1)!.files['main.py'], 'print("v1")\n');
+  assert.equal(store.get(projectId)!.activeCommit, sha1, 'runs do not replace production');
+  assert.equal(store.get(projectId)!.lastDeploymentId, failed.id, 'runs do not hide failed deployment status');
+  for (const body of [{ target: 'commit' }, { target: 'head', sha: sha1 }, { entry: 'sub/../main.py' }]) {
+    assert.equal((await request(app).post(`/api/projects/${projectId}/run`).set(await asActor('acc_member')).send(body)).status, 400);
+  }
+});
