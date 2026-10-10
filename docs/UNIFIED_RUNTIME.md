@@ -61,3 +61,11 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - 남은 수용 조건(포크·미리보기·CLI·AinCode·공통 문서·보관/삭제/크기 및 전체 운영 배포)은 계속 열려 있다. 위 진행 기록은 전체 완료나 배포 완료를 의미하지 않는다.
 
 - 포크: 읽기 권한이 있는 사용자가 개인 Git 저장소로 포크하고 원본에 변경을 제안할 수 있다. 포크는 실행 환경/비밀값을 만들지 않으며 다른 사용자와 원본 관리자도 직접 읽을 수 없다. 제안 시점 SHA는 원본 저장소 내부 참조로 보존한다. 실제 HTTP clone/push, 타인 포크 도용 거절, 이후 push/삭제 후 고정된 코드 merge를 포함하는 실제 노드 12개 테스트가 통과했다. 소유자별 포크 한도와 재시작 보존 테스트도 통과했다. 운영 검증은 아직 남아 있다.
+
+### 2026-10-10: 미리보기·Git 도구·모델 선택
+
+- 임시 에이전트 미리보기(`8262015`, web `59b1027`)는 제안의 고정 SHA로 별도 실행한다. 읽는 사용자 본인만 접근하며 운영 비밀값·외부 호스트 권한·운영 작업 저장소를 상속하지 않는다. 15분 만료·사용자/전체 한도·중단 및 컨테이너 이미지 정리를 구현했다. 실제 Git 및 실제 prompt runtime 기반 테스트 14개와 host 회귀 테스트 22개 통과. 브라우저에서 제안·댓글·포크·대화/종료를 확인했고 320/390/640/1280px에 가로 넘침이 없었다. 실행 비교 기록의 지속 보관과 운영 검증은 남아 있다.
+- AinCode(`c63c88c`)의 agent 폴더는 실제 clone이며 pull은 fast-forward, push는 commit 후 main push다. 기존 JSON 폴더와 동시 원격 편집을 강제로 덮지 않는다. 게이트웨이가 현재 세션으로 smart HTTP를 중계하며 자격증명은 clone 설정에 저장하지 않는다. 실제 bare Git/HTTP clone·push·충돌 테스트를 포함한 8개 검사와 gateway 타입 검사 통과. 새 이미지 배포는 남아 있다.
+- ainize-cli(`fedf78f`)에 agent clone/pulls/mirror를 추가했다. 실제 HTTP Git clone에서 토큰을 설정 파일에 저장하지 않음을 검증했고 제안·미러의 요청/권한 계약 테스트가 통과했다. build/typecheck 통과. 전체 테스트의 초기 실행에서 dist가 없던 version 검사 1건을 빌드 후 재검증했다. 패키지 배포는 남아 있다.
+- ainize 스니펫은 폼에 표시한 active SHA를 `target=commit` 실행 요청에 고정한다(`5ca49c0`). Drive와 ainize 생산자가 표준 ChoicePicker로 모델/boolean을 표현하고, Teams와 ainize 소비자가 이를 그린다. node 11개, Drive 28개 및 관련 타입 검사 통과. Teams의 선택값/스트림 보존 검사는 통과했으며 전체 회귀·채팅 레이아웃 검사 및 운영 연동은 진행 중이다.
+- 아직 모든 운영 배포, Teams/Drive 스니펫의 실행 대상 전환, CLI 생성 문서, 저장소 성장/GC/보관 및 Clef 서비스 전환 검증은 완료하지 않았다.
