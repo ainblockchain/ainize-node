@@ -28,6 +28,7 @@ import { ProjectContainers, PROJECT_CONTAINER_DEFAULTS } from './project-contain
 import { projectRoutes } from './project-routes.js';
 import { AgentPullStore } from './agent-pulls.js';
 import { AgentForkStore } from './agent-forks.js';
+import { AgentPreviewRuns } from './agent-preview-runs.js';
 import { AgentPreviews } from './agent-previews.js';
 import { agentPreviewRoutes } from './agent-preview-routes.js';
 import { agentPullRoutes } from './agent-pull-routes.js';
@@ -914,6 +915,7 @@ export async function startNode(cfg: NodeConfig, opts: StartOptions = {}): Promi
   agentPreviews.start();
   app.use(agentPreviewRoutes({
     previews: agentPreviews,
+    runs: new AgentPreviewRuns(join(cfg.dataDir, 'agent-preview-runs.json')),
     principal: (req) => agentCaller(req)?.subject ?? null,
     canRead: (req, id) => {
       const fork = agentForks.get(id);

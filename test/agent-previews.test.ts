@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentGit } from '../src/agent-git.js';
+import { AgentPreviewRuns } from '../src/agent-preview-runs.js';
 import { AgentPreviews } from '../src/agent-previews.js';
 import { agentPreviewRoutes } from '../src/agent-preview-routes.js';
 import { HostedAgentGateway } from '../src/hosted-agent-gateway.js';
@@ -38,7 +39,8 @@ test('preview executes the pinned prompt through the real runtime, without sourc
     const pinned = await git.commitSpec('desk', original, { message: 'Proposal' });
     previews = new AgentPreviews(git, host, { now: () => now, ttlMs: 1000, pollMs: 1 });
     const app = express(); app.use(express.json());
-    app.use(agentPreviewRoutes({ previews, principal: (req) => req.get('x-person') ?? null, canRead: (req) => req.get('x-person') !== 'denied' }));
+    const evidence = new AgentPreviewRuns(join(root, 'review-runs.json'));
+    app.use(agentPreviewRoutes({ previews, runs: evidence, principal: (req) => req.get('x-person') ?? null, canRead: (req) => req.get('x-person') !== 'denied' }));
     assert.equal((await request(app).post('/api/hosted-agents/desk/previews').send({ ref: pinned })).status, 401);
     const started = await request(app).post('/api/hosted-agents/desk/previews').set('x-person', 'reader').send({ ref: pinned });
     assert.equal(started.status, 202, started.text);
@@ -73,6 +75,17 @@ test('preview executes the pinned prompt through the real runtime, without sourc
     assert.equal(host.has(id), false);
     assert.equal((await fetch(`${gatewayUrl}/t/${gatewayToken}/v1/models`)).status, 401);
     assert.equal(await git.resolve('desk', 'main') === pinned, false, 'source remains at its newer commit');
+    const history = await request(app).get('/api/hosted-agents/desk/preview-runs').set('x-person', 'reader');
+    assert.equal(history.status, 200);
+    assert.equal(history.body.runs.length, 1);
+    assert.equal(history.body.runs[0].commit, pinned);
+    assert.equal(history.body.runs[0].model, original.model);
+    assert.deepEqual(history.body.runs[0].request, rpc);
+    assert.match(history.body.runs[0].output, /Reviewed prompt/);
+    assert.equal(history.body.runs[0].status, 'ready');
+    assert.equal(new AgentPreviewRuns(join(root, 'review-runs.json')).list('desk', 'reader').length, 1);
+    assert.deepEqual((await request(app).get('/api/hosted-agents/desk/preview-runs').set('x-person', 'other')).body.runs, []);
+    assert.equal((await request(app).get('/api/hosted-agents/desk/preview-runs').set('x-person', 'denied')).status, 404);
   } finally {
     await previews?.stop(); await host.stop();
     await new Promise<void>((resolve) => modelServer.close(() => resolve()));
