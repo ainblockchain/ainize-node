@@ -69,3 +69,10 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - ainize-cli(`fedf78f`)에 agent clone/pulls/mirror를 추가했다. 실제 HTTP Git clone에서 토큰을 설정 파일에 저장하지 않음을 검증했고 제안·미러의 요청/권한 계약 테스트가 통과했다. build/typecheck 통과. 전체 테스트의 초기 실행에서 dist가 없던 version 검사 1건을 빌드 후 재검증했다. 패키지 배포는 남아 있다.
 - ainize 스니펫은 폼에 표시한 active SHA를 `target=commit` 실행 요청에 고정한다(`5ca49c0`). Drive와 ainize 생산자가 표준 ChoicePicker로 모델/boolean을 표현하고, Teams와 ainize 소비자가 이를 그린다. node 11개, Drive 28개 및 관련 타입 검사 통과. Teams의 선택값/스트림 보존 검사는 통과했으며 전체 회귀·채팅 레이아웃 검사 및 운영 연동은 진행 중이다.
 - 아직 모든 운영 배포, Teams/Drive 스니펫의 실행 대상 전환, CLI 생성 문서, 저장소 성장/GC/보관 및 Clef 서비스 전환 검증은 완료하지 않았다.
+
+### 2026-10-10: 카드 버전 고정과 실행 기록 보존
+
+- Drive `a053215`: 연결된 저장소의 파일/저장소 카드가 표시한 SHA의 manifest를 사용자 권한으로 조회하고 같은 SHA를 실행한다. 해당 버전 조회가 거절되거나 실행 불가능한 서비스 버전이면 mutable 파일 실행으로 대체하지 않는다. ChoicePicker 모델 선언도 선택된 manifest에서 가져온다. 카드/HTTP 관련 30개 테스트 및 타입 검사 통과. 작업 트리/HEAD/배포본을 카드 안에서 전환하는 UI와 운영 확인은 남아 있다.
+- Node `e60b93e`: 에이전트 실행 이력을 전체 보존하고 `/api/hosted-agents/:id/executions`에서 조회 권한과 페이지 제한을 적용해 최신순으로 반환한다. 이전 ledger의 마지막 실행을 이전하며, 늦은 콜백은 이전 기록만 완료하고 현재 활성 버전을 덮어쓰지 않는다. 실제 Git HTTP·권한·문서·재시작 검증 18개와 타입 검사 통과. 이는 에이전트 배포 기록 보존이며 preview 입력/출력 기록과 비교 화면까지 완료했다는 의미는 아니다.
+- 이전 Teams 레이아웃 검사와 CLI start 재검증 핸들은 더 이상 존재하지 않고 로그도 최종 결과 없이 끝났다. Teams 데스크톱/확장 검사 중 실패 흔적이 있어 전체 화면 검증 통과로 간주하지 않는다. 완료된 웹 단위 검사 결과(7,396개)는 별도 증거로 유지한다.
+- 전체 구현·배포 목표는 계속 열려 있다. 새로운 운영 배포를 수행하거나 확인한 상태는 아니다.
