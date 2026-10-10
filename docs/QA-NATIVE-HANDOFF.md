@@ -419,3 +419,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - 서버 증거: `/mnt/newdata/qa-services/validation/native-publication-20261010-7vIY21` (`profile.json`, `candidate.json`, `result.json`, `published.json`, `retry.json`, `run.mjs`, Dockerfile/빌드 로그). 검증 컨테이너가 남지 않았음을 확인했다.
 - 검증 이미지: `sha256:457897dc8ad84cac7fa3feebe1b81032d96b84b5ed0acc7456e1c6ee2796b6ba`. 개발용 이미지 준비 변경은 운영 실행 이미지나 에이전트 설정을 바꾸지 않았다.
 - 로컬 관련 QA 테스트 57개 통과, 빌드 통과. 승인 댓글 연결·릴리스·라이브 전환·전 채널 E2E는 여전히 미완료다.
+
+### 2026-10-10 승인 검증 코어
+
+- `src/hosted-qa-review.ts`: 호스트가 게시한 정본 Ainmem 본문/PR/전체 SHA와 서버 관측 시각을 검토 기준으로 고정한다. 다시 읽은 페이지 ID·본문·revision·digest, PR head/base/저장소, 지정 관리자 SSO subject, 활성 Teams 채널 소속을 모두 대조한다. `LGTM`/`배포해`의 단독 문구만 인정하며, 최초 제시 시각 이전 댓글·다른 조직/채널·에이전트·정지 멤버·바뀐 후보는 승인하지 않는다.
+- Ainmem 읽기 어댑터는 설정된 HTTPS origin과 호스트 토큰만 사용한다. 응답 redirect를 거부하고 정본 task API만 읽는다. 모델 metadata나 표시 이름은 권한 근거가 아니다.
+- Ainmem API의 `observedAt`은 댓글과 같은 PostgreSQL 시계에서 읽도록 별도 Ainmem 브랜치를 보완했다. 승인 코어는 새 관측을 요구하며 오래된 스냅샷을 거부한다.
+- QA 타깃 테스트 62개 통과, 타입 검사/빌드 통과. 승인 코어 테스트는 권한 취소·후보 변경·옛 댓글·본문 변경·정본 경계/redirect를 포함한다.
+- **운영 승인 연결은 아직 미완료**: 코어에 전달할 호스트의 검토 기준을 durable하게 저장하고, 실제 Teams SSO subject/조직/채널 멤버십을 조회하는 어댑터를 연결해야 한다. 현재 코어는 승인 증거만 반환하고 merge 도구를 제공하지 않는다. 실제 사용자 승인 댓글을 소비하거나 배포하지 않았다. 단위 테스트의 관리자 ID는 운영 권한 설정이 아니다.
