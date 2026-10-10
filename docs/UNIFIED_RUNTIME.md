@@ -108,3 +108,9 @@ Current version-run progress: streamed project runs accept explicit HEAD/commit/
 - Node `50b3f2b`: streamed Run OpenAPI에 실제 head/commit/deployed 선택, SHA, 입력/env 한도, timeout, 실행 ID, 대기열/취소 및 재시작 동작을 반영했다. 필드/한도와 실제 repository 라우트의 문서 존재 검사 2개 및 타입 검사 통과.
 - Web `d795f5c`: 커밋된 node API와 실제 CLI 선언에서 HTTP API/CLI 참조를 생성해 Git transport, PR/댓글/포크, 자동 미러, 미리보기·개인 기록/내보내기/삭제, 실행 기록과 clone/pulls/mirror 명령을 포함했다. 해당 참조의 화면 데이터도 커밋했다. 다른 작업의 AINFT 문서와 화면 데이터는 작업 트리에 보존하고 이 커밋에 포함하지 않았다. `gen:check` 통과.
 - 문서 생성은 명시적인 sibling worktree 경로를 환경 변수로 받을 수 있으며 경로/누락 검사 2개가 통과했다. 전체 config/schema/error 참조의 생성 검사와 모든 운영 배포는 아직 미완료다.
+
+### 2026-10-10: 카드 버전 전환
+
+- Teams `dd93e1151`: 같은 생산자 origin의 GET replace 액션을 현재 사람으로 조회해 카드의 폼/봉투를 교체한다. 이후 Run은 새 봉투의 고정 URL에서 액션을 다시 읽는다. 선택 실패 때 이전 편집값을 유지하고 원래 링크 refresh가 선택을 덮지 않는다. 새 원본 URL은 카드 key로 이전 요청/상태를 폐기한다. 관련 카드 8개/계약 14개, 웹 전체 7,398개(98개 환경 의존 제외), 타입 및 변경 파일 lint 통과.
+- Drive `cb82cb8`: 연결된 저장소/파일 카드에 최신 커밋·배포본·작업 트리 교체 버튼을 추가했다. 커밋과 배포본의 폼은 선택 SHA를 canonical URL과 Run body에 함께 고정한다. 작업 트리는 mutable manifest/파일과 명시적인 target을 사용하며 파일 카드에 committed Raw 링크를 제공하지 않는다. 이전 트리/커밋 링크는 해당 소스를 조회한다. 실제 SSO/조회 권한·버전별 폼·고정 URL 재조회·파일 조회·거절 시 mutable fallback 없음 및 표준 A2UI schema를 포함한 33개 검사와 타입 검사 통과.
+- ainize 생산자도 같은 선택 버튼/고정 URL을 제공하는 구현, 교체 액션의 실제 모바일 렌더·운영 신원/Run 검증 및 전체 배포는 남아 있다. 전체 목표는 계속 미완료다.
