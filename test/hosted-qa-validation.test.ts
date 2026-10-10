@@ -135,3 +135,13 @@ test('validation rejects a checkpoint bound to another repository before executi
     assert.equal(ran, false);
   } finally { jobs.close(); }
 });
+
+test('operator workspace capacity is bounded by container memory and validates independently of candidates',async()=>{
+ const {validateQaProfile}=await import('../src/hosted-qa-validator.js');
+ const profile={repository:'test/product',base:'a'.repeat(40),checkout:'/operator/repo',image:'sha256:'+'b'.repeat(64),dependencyPath:'/seed/0',cwd:'.',memory:'8g',workspaceMiB:4096,gates:[{name:'test',argv:['npm','test']}]};
+ const candidate={repository:profile.repository,base:profile.base,changes:{'code.js':'fixed'}};
+ assert.doesNotThrow(()=>validateQaProfile(profile,candidate));
+ for(const workspaceMiB of [0,511,4096.5,8193,Infinity])assert.throws(()=>validateQaProfile({...profile,workspaceMiB},candidate),/workspace size/);
+ assert.throws(()=>validateQaProfile({...profile,memory:'2g'},candidate),/workspace size/);
+ assert.throws(()=>validateQaProfile(profile,{...candidate,workspaceMiB:8192}),/shape/);
+});

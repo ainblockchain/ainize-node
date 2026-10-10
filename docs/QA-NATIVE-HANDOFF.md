@@ -564,3 +564,11 @@ QA 테스트 46개 통과. 운영 PR/작업 상태를 수정하거나 추가 배
 - opt-in `AINIZE_QA_BASE_PROFILES` 및 handler `hostBase: true`; 상세 설정/한계는 `QA-PRODUCT-VALIDATOR.md`. 의존성 변경은 이미지 갱신 요구로 멈추며, 코딩/게시 후 main 전진에 대한 후보 재작업은 아직 자동화하지 않았다. 기존 작업 이관과 운영 단일 실행자 전환도 남아 있다.
 - QA 테스트 107 pass/0 skip, build pass. 실제 .41 AINA checkout에서 기준 준비→서비스 재생성→동일 SHA 재사용을 확인했다. 증거 `native-base-20261010-fU8Ndn`; 정본 운영 접수/비공개 Git fetch 전체 검증은 아니다.
 - 운영 설정은 활성화하지 않았고 Ainmem PR76 승인 질문도 계속 대기 중이다. 새 main 병합/배포는 수행하지 않았다.
+
+### 2026-10-10 Aindrive 실제 검증 및 공간 부족 수정
+
+- Aindrive main `8d6834f`에 맞는 web+cli 검증 이미지를 준비했다. 실제 native gate에서 web typecheck, web 1263 pass/3 TODO, CLI 336 pass, CLI build가 통과했다. 전체 profile은 웹 빌드 실패로 실패 상태다.
+- 웹 빌드는 Google Fonts 다운로드 차단과 webpack cache ENOSPC로 실패했다. 기존 PR199는 여전히 open, head `483fc269d531e34effbbb412221ec4c97bfe347c`다. 제품 코드/승인/PR은 바꾸지 않았다.
+- 실행기 `workspaceMiB`를 추가했다(기본 2048, 최대 container memory 이내). Aindrive 의존성만 약 1.8GiB였으므로 4096MiB/8GiB memory로 재검증한다. 성공 로그도 private tail에 보존해 pass/skip/TODO 수를 확인할 수 있게 했다. 실제 Docker probe로 4GiB mount와 성공 로그 보존을 확인했다. QA 108 pass/0 skip, build pass.
+- 서버 증거: `/mnt/newdata/qa-services/validation/native-aindrive-product-20261010-dOcf0d`. 첫 별도 full E2E는 실제 서버/CLI가 실행되었으나 SQLITE_FULL 발생 후 해당 컨테이너를 종료하고 로그를 보존했다. 실패를 통과로 처리하지 않았다.
+- 새 `run-e2e-workspace.mjs`가 4GiB 환경에서 실행 중이다. 다음 작업은 실제 프로세스와 `e2e-workspace-result.json`을 확인하는 것이다. 운영 채널의 모델 수정→승인→배포 E2E와는 별도 제품 시나리오 검증이다. 운영 설정/작업기 전환은 아직 수행하지 않았다.

@@ -11,7 +11,7 @@ export const QA_VALIDATOR_VERSION = '3-multiple-dependency-scopes';
 export interface QaValidationProfile {
   repository: string; base: string; checkout: string; image: string;
   dependencyPath: string; cwd: string; dependencies?:{cwd:string;dependencyPath:string}[]; gates: { name: string; argv: string[]; cwd?:string }[];
-  timeoutMs?: number; memory?: string;
+  timeoutMs?: number; memory?: string; workspaceMiB?: number;
 }
 export interface QaCandidate { repository: string; base: string; changes: Record<string, string> }
 const canonical = (value: unknown): unknown => value && typeof value === 'object'
@@ -38,6 +38,7 @@ export function validateQaProfile(profile: QaValidationProfile, candidate: QaCan
     || Buffer.byteLength(JSON.stringify(candidate.changes)) > 2*1024*1024) throw new Error('Invalid candidate changes');
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1000 || profile.timeoutMs > 1800000)) throw new Error('Invalid validation timeout');
   if (profile.memory !== undefined && !/^[1-8]g$/.test(profile.memory)) throw new Error('Invalid memory limit');
+  if(profile.workspaceMiB!==undefined&&(!Number.isSafeInteger(profile.workspaceMiB)||profile.workspaceMiB<512||profile.workspaceMiB>Number.parseInt(profile.memory??'4g')*1024))throw new Error('Invalid workspace size');
 }
 async function rejectLinks(root: string) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -98,10 +99,12 @@ export async function runQaValidation(profile: QaValidationProfile, candidate: Q
       const name=`ainize-qa-validation-${randomUUID()}`;
       let passed=false, diagnostics='';
       try {
-        await exec('docker',['run','--rm','--name',name,'--network','none','--read-only','--user',`${uid}:${gid}`,
+        const output=await exec('docker',['run','--rm','--name',name,'--network','none','--read-only','--user',`${uid}:${gid}`,
           '--cap-drop','ALL','--security-opt','no-new-privileges','--memory',profile.memory??'4g','--cpus','2','--pids-limit','256',
-          '--tmpfs','/tmp:rw,exec,nosuid,nodev,size=2147483648','--mount',`type=bind,src=${dir},dst=/input,readonly`,
+          '--tmpfs',`/tmp:rw,exec,nosuid,nodev,size=${(profile.workspaceMiB??2048)*1024*1024}`,'--mount',`type=bind,src=${dir},dst=/input,readonly`,
           '--entrypoint','node',profile.image,'-e',bootstrap],{timeout:profile.timeoutMs??300000,maxBuffer:4*1024*1024});
+        // Retain bounded private evidence on success too: an exit code alone cannot show skipped tests.
+        diagnostics=`${output.stdout}\n${output.stderr}`.slice(-12000);
         passed=true;
       } catch (error) {
         // Private validation evidence only. Callers must not copy arbitrary product logs to public cards.

@@ -218,3 +218,45 @@ An initial unauthenticated server API attempt failed; production uses the config
 host GitHub client/token. This diagnostic uses a fixture intake identity and an already
 available object; it does not prove live canonical intake or private-token remote fetch.
 No production job, profile, page, approval or branch was changed.
+
+## Aindrive product preparation and workspace limits (2026-10-10)
+
+Prepared main `8d6834ff68a98d1db276821459f001fb2f5b2329` in the native runner, with
+both `web` and `cli` package scopes (the web tests import CLI modules). The dependency
+image is `sha256:8599a1a1e2a57ea2b0b81de61fba7f887fb3025e4c8b4144d1f64a353c46d9f2`.
+Preparation used committed npm manifests, lockfiles and scoped registry configuration,
+including native addon installation on Node 22. Preparation passed no runtime tokens or host configuration into the build context.
+
+Evidence root: `/mnt/newdata/qa-services/validation/native-aindrive-product-20261010-dOcf0d`.
+`profile.json`, `result.json`, `run.mjs`, Dockerfile/build log, image ID, and exact Git
+checkout/bundle are retained. The unchanged `web/package.json` is the candidate overlay.
+This verifies the existing main tree, not an agent-authored product fix.
+
+The initial run passed web typecheck, web tests (126 files; 1,263 passed, 3 TODO),
+CLI tests (28 files; 336 passed), and CLI build. Web build failed for both unavailable
+Google Fonts and `ENOSPC` during webpack caching. It is **not a passing product profile**.
+Aindrive PR199 remains open at `483fc269d531e34effbbb412221ec4c97bfe347c`, containing
+the existing QA-authored offline font fix. No product source, PR or approval was changed.
+
+`workspaceMiB` now optionally sets the ephemeral workspace capacity (default 2048).
+It must be an integer of at least 512 and no greater than the configured container
+memory in MiB (default memory 4 GiB). Container memory/CPU/process/network restrictions
+remain enforced. The profile hash binds this setting, so a receipt for a smaller or
+larger workspace cannot substitute for the current policy. Aindrive's two dependency
+trees consumed about 1.8 GiB before build artifacts; use a prepared 4096 MiB workspace
+with 8 GiB memory for further diagnosis.
+
+The actual native `workspace-probe.mjs` confirmed 4,294,967,296 bytes in `/tmp` and
+successful private output retention. Evidence: `workspace-probe-result.json` and log.
+Success and failure gate output now retain a bounded 12,000-character private tail;
+never post raw diagnostics to public task cards. A zero exit code still does not prove
+all cases ran: inspect skipped/TODO output and suite coverage before claiming completion.
+QA tests: 108 passed, zero skips; build passed.
+
+A separate full scenario E2E attempt (`e2e-result.json`) booted the real temporary server
+and CLI, but later exhausted the 2 GiB workspace and reported `SQLITE_FULL`. After that
+confirmed environmental failure, its specifically identified container was stopped and
+its full private stdout/stderr preserved as `e2e-2g-stdout.log` / `e2e-2g-stderr.log`.
+That result is failed, not a partial success. A fresh 4096 MiB attempt is now running via
+`run-e2e-workspace.mjs`; inspect `e2e-workspace-result.json` and the actual running process
+before taking further action. Do not infer completion from the log file alone.
