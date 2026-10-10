@@ -17,3 +17,16 @@ test('every repository history, review, mirror and preview API is discoverable i
  }
  for (const path of ['/git/{id}.git/info/refs','/git/{id}.git/git-upload-pack','/git/{id}.git/git-receive-pack','/api/projects/{id}/source']) assert.ok(paths[path], path);
 });
+
+test('streamed run documentation exposes immutable targets and the effective input limits', () => {
+ const operation = buildOpenApi('https://ainize.ai', 'test').paths['/api/projects/{id}/run'].post;
+ const fields = operation.requestBody.content['application/json'].schema.properties;
+ assert.deepEqual(fields.target.enum, ['head', 'commit', 'deployed']);
+ assert.equal(fields.target.default, 'deployed');
+ assert.equal(fields.sha.pattern, '^[0-9a-f]{40,64}$');
+ assert.equal(fields.env.maxProperties, 16);
+ assert.equal(fields.env.additionalProperties.maxLength, 2048);
+ assert.equal(fields.inputs.maxProperties, 16);
+ assert.match(operation.description, /FIFO/);
+ assert.match(operation.description, /cancels queued or active/);
+});
